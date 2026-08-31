@@ -27,6 +27,50 @@ crate::declare_annotations! {
         test_json: Some(r#"["container.memory.usage"]"#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
     };
+    /// `cluster_agent.auth_token`-Bearer token for Cluster Agent requests
+    CLUSTER_AGENT_AUTH_TOKEN = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_AUTH_TOKEN,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some(r#""cluster-agent-token""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.enabled`-Enable Cluster Agent communication
+    CLUSTER_AGENT_ENABLED = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.kubernetes_service_name`-Cluster Agent Kubernetes service name
+    CLUSTER_AGENT_KUBERNETES_SERVICE_NAME = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_KUBERNETES_SERVICE_NAME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some(r#""datadog-cluster-agent""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.url`-Cluster Agent HTTPS endpoint
+    CLUSTER_AGENT_URL = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_URL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some(r#""https://cluster-agent.example.com""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
     /// `cluster_name`-EKS Fargate cluster name static tag
     CLUSTER_NAME = SalukiAnnotation {
         schema: &schema::CLUSTER_NAME,

@@ -521,19 +521,38 @@ pub struct HistogramEncoding {
 }
 
 /// Cluster Agent connection, shared by checks, DogStatsD, and OTLP.
+///
+/// The defaults named on each field are the Datadog schema defaults, which translation writes whenever the key is
+/// absent. They are not the values `Default` produces: that is the zero value of each field, which for
+/// `kubernetes_service_name` is the empty string and therefore not the schema default.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ClusterAgent {
     /// Whether the Cluster Agent connection is used.
+    ///
+    /// Defaults to `false`. Turn it on in a deployment that runs a Cluster Agent; while it is off, nothing talks to it.
     pub enabled: bool,
 
     /// URL of the Cluster Agent.
+    ///
+    /// Defaults to unset, which leaves the endpoint to Kubernetes service discovery through
+    /// `kubernetes_service_name`. A blank value is normalized to unset. Set this in a deployment where the Cluster
+    /// Agent is not reachable through an injected Kubernetes service, and give an `https` endpoint: consumers use only
+    /// `https`.
     pub url: Option<String>,
 
     /// Token used to authenticate to the Cluster Agent.
+    ///
+    /// Defaults to unset, which leaves the Cluster Agent unreachable: there is no anonymous access. Set it wherever the
+    /// Cluster Agent is enabled, to that Agent's own token; a blank value is normalized to unset.
     pub auth_token: Option<String>,
 
     /// Kubernetes service name used to discover the Cluster Agent.
-    pub kubernetes_service_name: Option<String>,
+    ///
+    /// Defaults to `datadog-cluster-agent`. The name is turned into the `<NAME>_SERVICE_HOST` and
+    /// `<NAME>_SERVICE_PORT` environment variables that Kubernetes injects into the pod. Set this when the Cluster
+    /// Agent runs under a different service name, or set it to the empty string to turn the lookup off, which leaves
+    /// `url` as the only way to reach the Cluster Agent.
+    pub kubernetes_service_name: String,
 }
 
 /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.

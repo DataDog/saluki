@@ -499,40 +499,40 @@ inventory:
     pipelines: [checks, dogstatsd, otlp]
     description: "Bearer token for Cluster Agent requests"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '"cluster-agent-token"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable Cluster Agent communication"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.kubernetes_service_name:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent Kubernetes service name"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '"datadog-cluster-agent"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.url:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent HTTPS endpoint"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '"https://cluster-agent.example.com"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_name:
     support: full
