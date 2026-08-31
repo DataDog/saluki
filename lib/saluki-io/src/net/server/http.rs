@@ -836,11 +836,6 @@ mod tests {
         Ok(Response::new(Full::new(bytes::Bytes::from_static(b"ok"))))
     }
 
-    /// An ephemeral loopback address, for servers that are never actually bound.
-    fn loopback() -> ListenAddress {
-        ListenAddress::Tcp("127.0.0.1:0".parse().expect("address should parse"))
-    }
-
     /// Drives a request through a router without going near a socket.
     async fn route_request(router: Router, uri: &str, content_type: Option<&str>) -> Response<axum::body::Body> {
         let mut builder = Request::builder().uri(uri);
@@ -879,7 +874,7 @@ mod tests {
 
     #[tokio::test]
     async fn accumulated_http_and_grpc_routes_are_served_together() {
-        let router = HttpServer::from_listen_address(loopback())
+        let router = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
             .add_routes(Router::new().route("/first", axum::routing::get(|| async { "first" })))
             .add_routes(Router::new().route("/second", axum::routing::get(|| async { "second" })))
             .add_grpc_service(EmptyGrpcService)
@@ -913,7 +908,7 @@ mod tests {
     async fn an_http_only_server_keeps_its_own_fallback() {
         // With no gRPC service attached there is no protocol-aware fallback to install, so the caller's own fallback
         // is left alone rather than being displaced by one it never asked for.
-        let router = HttpServer::from_listen_address(loopback())
+        let router = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
             .add_routes(Router::new().fallback(|| async { StatusCode::IM_A_TEAPOT }))
             .build_router();
 
@@ -923,7 +918,7 @@ mod tests {
 
     #[tokio::test]
     async fn overriding_the_router_discards_accumulated_routes() {
-        let router = HttpServer::from_listen_address(loopback())
+        let router = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
             .add_routes(Router::new().route("/added", axum::routing::get(|| async { "added" })))
             .add_grpc_service(EmptyGrpcService)
             .with_routes(Router::new().route("/override", axum::routing::get(|| async { "override" })))
