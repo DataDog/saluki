@@ -206,6 +206,10 @@ impl<T: fmt::Debug> fmt::Debug for Live<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
     use super::*;
 
     /// A configuration cell and its notification channel, with the two steps kept separate so that a
@@ -242,6 +246,20 @@ mod tests {
         let mut config = SalukiConfiguration::default();
         config.shared.endpoints.api_key = api_key.to_string();
         config
+    }
+
+    /// Polls `changed()` once and returns the value it yields.
+    ///
+    /// The crate depends on tokio for `sync` only, so there is no runtime to drive the future. One
+    /// poll is enough because the caller notifies first; a view that lost its notification parks
+    /// instead, and this panics.
+    #[track_caller]
+    fn poll_changed(view: &mut Live<String>) -> String {
+        let mut changed = pin!(view.changed());
+        match changed.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("changed() has a notification to observe"),
+        }
     }
 
     #[test]
@@ -283,5 +301,45 @@ mod tests {
             tick.has_changed().expect("the channel is open"),
             "the notification is still pending after refresh()"
         );
+    }
+
+    #[test]
+    fn refresh_on_one_clone_leaves_another_clones_snapshot_alone() {
+        let source = Source::new("key-1");
+        let mut refreshed = source.api_key_view();
+        let untouched = refreshed.clone();
+
+        source.store("key-2");
+        source.notify();
+        assert_eq!("key-2", refreshed.refresh());
+
+        assert_eq!("key-1", &*untouched, "the clone still reads its own snapshot");
+    }
+
+    #[test]
+    fn refresh_on_one_clone_leaves_another_clone_able_to_observe_the_update() {
+        let source = Source::new("key-1");
+        let mut refreshed = source.api_key_view();
+        let mut waiting = refreshed.clone();
+
+        source.store("key-2");
+        source.notify();
+        assert_eq!("key-2", refreshed.refresh());
+
+        assert_eq!("key-2", poll_changed(&mut waiting));
+        assert_eq!("key-2", &*waiting);
+    }
+
+    #[test]
+    fn one_notification_updates_the_snapshot_of_every_clone() {
+        let source = Source::new("key-1");
+        let mut first = source.api_key_view();
+        let mut second = first.clone();
+
+        source.store("key-2");
+        source.notify();
+
+        assert_eq!("key-2", poll_changed(&mut first));
+        assert_eq!("key-2", poll_changed(&mut second));
     }
 }
