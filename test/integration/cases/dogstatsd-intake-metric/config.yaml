@@ -33,10 +33,13 @@ procedure:
     port: 58125
     timeout: 10s
   # Polls to cover the aggregation and flush window rather than sleeping for it.
+  #
+  # DogStatsD counters leave the aggregate transform as rates, so the exported value is the
+  # payload count divided by the aggregation window (10s by default).
   - assertion: intake_has_metric
     name: "integration.intake.counter"
-    mtype: count
-    value: 3
+    mtype: rate
+    value: 0.3
     tags: ["source:integration-test"]
     timeout: 120s
   - parallel:
