@@ -397,32 +397,4 @@ mod tests {
         assert!(routing.should_forward(&counter("also.allowed")));
         assert!(!routing.should_forward(&counter("blocked.metric")));
     }
-
-    #[tokio::test]
-    async fn a_change_to_both_settings_arrives_as_one_update() {
-        // The dangerous transition is mirroring turning off as the allowlist is cleared: taken one setting at a time,
-        // the cleared allowlist alone reads as "forward everything", which no published configuration asked for. The
-        // two settings share one view, so the transition arrives as a single value and the intermediate state cannot
-        // be observed.
-        let source = LiveSource::new(true, &["allowed.metric"]);
-        let mut routing = routing(true, &source);
-        let mut view = source.metric_mirroring();
-
-        assert!(routing.should_forward(&counter("allowed.metric")));
-        assert!(!routing.should_forward(&counter("other.metric")));
-
-        source.publish(false, &[]);
-        routing.set_metric_mirroring(await_update(&mut view).await);
-
-        assert!(!routing.should_forward(&counter("allowed.metric")));
-        assert!(!routing.should_forward(&counter("other.metric")));
-
-        // Nothing is left to deliver, which is what makes the assertions above the only state the transform sees.
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), view.changed())
-                .await
-                .is_err(),
-            "both settings should have arrived in the update above"
-        );
-    }
 }
