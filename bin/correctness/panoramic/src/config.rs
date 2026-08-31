@@ -114,7 +114,7 @@ pub struct IntegrationConfig {
     #[serde(default)]
     pub container: ContainerConfig,
 
-    /// Mock intake sidecar configuration. Optional; disabled by default.
+    /// Datadog intake sidecar configuration. Optional; disabled by default.
     #[serde(default)]
     pub intake: IntakeConfig,
 
@@ -201,7 +201,7 @@ pub fn default_host_runtime() -> &'static str {
     }
 }
 
-/// Mock intake sidecar configuration for a test case.
+/// Datadog intake sidecar configuration for a test case.
 ///
 /// When enabled, the runner starts a `datadog-intake` container in the test's isolation group,
 /// reachable from the target under a fixed network alias. Tests point the target's intake URL at

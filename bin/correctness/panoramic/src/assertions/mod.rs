@@ -179,7 +179,7 @@ pub struct AssertionContext {
     /// exits. `None` on host-process runtimes; otherwise an empty cell that becomes populated
     /// when the docker wait stream completes.
     pub docker_container_exit_code: Option<DockerExitCodeCell>,
-    /// Host port of the mock intake sidecar's HTTP endpoint, when the test runs one.
+    /// Published port of the Datadog intake sidecar's HTTP endpoint, when the test runs one.
     ///
     /// `None` when the test has no intake sidecar, including on host-process runtimes.
     pub intake_host_port: Option<u16>,

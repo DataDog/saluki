@@ -938,7 +938,7 @@ impl IntegrationRunner {
         Ok(config)
     }
 
-    /// Starts the mock intake sidecar in this test's isolation group.
+    /// Starts the Datadog intake sidecar in this test's isolation group.
     ///
     /// Sharing the isolation group puts the sidecar on the same Docker network as the target, which
     /// reaches it by network alias. Returns the sidecar's driver and the host port that its HTTP

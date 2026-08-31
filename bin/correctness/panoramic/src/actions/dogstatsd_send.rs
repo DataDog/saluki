@@ -53,36 +53,45 @@ impl Action for DogstatsdSendAction {
             );
         }
 
-        // The datagram is sent from the host, so the target must publish the port.
+        // Docker publishes the target container's DogStatsD port on the test runner.
         let mapping_key = format!("{}/udp", self.port);
-        let Some(host_port) = ctx.port_mappings.get(&mapping_key).copied() else {
+        let Some(published_port) = ctx.port_mappings.get(&mapping_key).copied() else {
             return self.result(
                 started,
                 false,
-                format!("No host port mapping for {}; expose it in the test case.", mapping_key),
+                format!(
+                    "Target port {} is not published; expose it in the test case.",
+                    mapping_key
+                ),
             );
         };
 
         let send = async {
+            // Bind an ephemeral source port, then send through Docker's published port to the target.
             let socket = UdpSocket::bind("127.0.0.1:0").await?;
-            socket.send_to(self.payload.as_bytes(), ("127.0.0.1", host_port)).await
+            socket
+                .send_to(self.payload.as_bytes(), ("127.0.0.1", published_port))
+                .await
         };
 
         match tokio::time::timeout(self.timeout, send).await {
             Ok(Ok(sent)) => self.result(
                 started,
                 true,
-                format!("Sent {} bytes to host port {}.", sent, host_port),
+                format!("Sent {} bytes to published port {}.", sent, published_port),
             ),
             Ok(Err(error)) => self.result(
                 started,
                 false,
-                format!("Failed to send datagram to host port {}: {}.", host_port, error),
+                format!(
+                    "Failed to send datagram to published port {}: {}.",
+                    published_port, error
+                ),
             ),
             Err(_) => self.result(
                 started,
                 false,
-                format!("Timed out sending datagram to host port {}.", host_port),
+                format!("Timed out sending datagram to published port {}.", published_port),
             ),
         }
     }

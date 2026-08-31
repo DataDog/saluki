@@ -97,7 +97,7 @@ description: "Verifies that feature X works correctly"
 # Required: overall timeout for the test
 timeout: 60s
 
-# Optional: mock intake sidecar. When enabled, the runner starts a datadog-intake
+# Optional: Datadog intake sidecar. When enabled, the runner starts a datadog-intake
 # container on the test's Docker network under the `datadog-intake` alias, so the
 # target can forward to `http://datadog-intake:2049`. Docker runtimes only.
 # The sidecar runs from the correctness-tools image, which `make test-integration`
@@ -347,7 +347,7 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 
 #### `intake_has_metric`
 
-Polls the mock intake sidecar until it holds a metric matching every criterion given, or until `timeout` elapses. Requires `intake.enabled: true` on the test case. Polling, rather than a single check, absorbs the target's aggregation and flush window without a fixed sleep.
+Polls the Datadog intake sidecar until it holds a metric matching every criterion given, or until `timeout` elapses. Requires `intake.enabled: true` on the test case. Polling, rather than a single check, absorbs the target's aggregation and flush window without a fixed sleep.
 
 Only `name` is required, and it must match exactly. `metric_type` (`count`, `rate`, `gauge`, or `sketch`) and `value` must both hold for the same metric value. `tags` is a subset requirement: every listed tag must be present, and additional tags, such as the environment-derived ones the Agent adds, are allowed.
 

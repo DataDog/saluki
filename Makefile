@@ -225,6 +225,7 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		.
 
 
+# TODO: Use a suite-neutral name now that integration tests also use this image.
 .PHONY: build-correctness-tools-image
 build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
 	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."

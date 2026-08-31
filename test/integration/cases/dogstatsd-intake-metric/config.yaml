@@ -1,6 +1,6 @@
 type: integration
 name: "dogstatsd-intake-metric"
-description: "Sends one UDP DogStatsD metric through Agent+ADP and asserts it reaches the mock intake"
+description: "Sends one UDP DogStatsD metric through Agent+ADP and asserts it reaches datadog-intake"
 timeout: 180s
 # Docker only: the host-process runtime has no container network and so no intake sidecar.
 runtimes: [linux]
