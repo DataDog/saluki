@@ -46,7 +46,9 @@ abstractions. Reviewers will help guide you on this during the review process.
 
 ### Release notes
 
-When a change has customer-visible release information, add an optional Reno note. Notes are self-contained and describe behavior for someone operating Agent Data Plane.
+Every pull request records whether it has customer-visible release information. When it does, add a Reno note. When it does not, ask a maintainer to apply the `changelog/no-changelog` label. The release-note check requires one of these choices before the pull request can merge.
+
+Notes are self-contained and describe behavior for someone operating Agent Data Plane.
 
 ```shell
 make ensure-python-venv
@@ -61,7 +63,7 @@ fixes:
     Fix a listener shutdown race that could drop telemetry during process exit.
 ```
 
-Validate notes locally with `make check-release-notes`. Pull requests without a release note remain valid; Saluki does not use changelog labels to enforce note creation.
+Validate notes locally with `make check-release-notes`.
 
 ### Commit messages
 

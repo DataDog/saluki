@@ -302,5 +302,22 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertEqual(repair_policy["claim_pattern"]["ref"], "refs/heads/main")
 
 
+class ReleaseNoteDecisionWorkflowTest(unittest.TestCase):
+    def test_requires_a_fragment_or_no_changelog_label_for_every_pull_request(self):
+        workflow_path = MODULE_PATH.parents[2] / ".github/workflows/release-note-check.yml"
+        workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+        self.assertEqual(
+            workflow["on"]["pull_request"]["types"], ["opened", "reopened", "synchronize", "labeled", "unlabeled"]
+        )
+        job = workflow["jobs"]["release-note-check"]
+        self.assertEqual(job["permissions"]["pull-requests"], "read")
+        script = job["steps"][0]["with"]["script"]
+        self.assertIn("github.rest.pulls.listFiles", script)
+        self.assertIn("releasenotes/notes/", script)
+        self.assertIn("changelog/no-changelog", script)
+        self.assertIn("core.setFailed", script)
+
+
 if __name__ == "__main__":
     unittest.main()
