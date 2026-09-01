@@ -44,6 +44,9 @@ use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::Metrics;
 
+/// Whether OpenTelemetry runtime metrics are remapped to their Datadog-conventional names.
+const RUNTIME_REMAPPING_ENABLED: bool = false;
+
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
 static RATE_AS_GAUGE_METRICS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|| {
     let mut m = FastHashSet::default();
@@ -562,35 +565,38 @@ impl OtlpMetricsTranslator {
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
             for mut metric in scope_metrics.metrics {
                 if let Some(mappings) = RUNTIME_METRICS_MAPPINGS.get(metric.name.as_str()) {
-                    // Detect runtime languages only for metrics that match a known runtime metric
-                    // mapping, matching the Agent's behavior. This avoids over-reporting languages
-                    // for unmapped customer metrics that happen to share a prefix (e.g. `jvm.*`).
                     for (prefix, language) in RUNTIME_METRIC_PREFIX_LANGUAGE_MAP.iter() {
                         if metric.name.starts_with(prefix) {
                             detected_languages.insert(*language);
                         }
                     }
 
-                    for mapping in mappings {
-                        if mapping.attributes.is_empty() {
-                            // If there are no attributes to match, just duplicate the metric with the new name.
-                            let mut new_metric = metric.clone();
-                            new_metric.name = mapping.mapped_name.to_string();
-                            new_metrics.push(new_metric);
-                            break;
-                        }
-                        if let Some(ref data) = metric.data {
-                            match data {
-                                OtlpMetricData::Sum(_) => {
-                                    map_sum_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
+                    if RUNTIME_REMAPPING_ENABLED {
+                        for mapping in mappings {
+                            if mapping.attributes.is_empty() {
+                                // If there are no attributes to match, just duplicate the metric with the new name.
+                                let mut new_metric = metric.clone();
+                                new_metric.name = mapping.mapped_name.to_string();
+                                new_metrics.push(new_metric);
+                                break;
+                            }
+                            if let Some(ref data) = metric.data {
+                                match data {
+                                    OtlpMetricData::Sum(_) => {
+                                        map_sum_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
+                                    }
+                                    OtlpMetricData::Gauge(_) => {
+                                        map_gauge_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
+                                    }
+                                    OtlpMetricData::Histogram(_) => {
+                                        map_histogram_runtime_metric_with_attributes(
+                                            &metric,
+                                            &mut new_metrics,
+                                            mapping,
+                                        );
+                                    }
+                                    _ => {}
                                 }
-                                OtlpMetricData::Gauge(_) => {
-                                    map_gauge_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
-                                }
-                                OtlpMetricData::Histogram(_) => {
-                                    map_histogram_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -4748,39 +4754,37 @@ mod tests {
     }
 
     #[test]
-    fn translate_metrics_renames_runtime_metric_without_attributes() {
+    fn translate_metrics_forwards_runtime_metric_under_original_name() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // `process.runtime.go.goroutines` maps (with no attribute matching) to `runtime.go.num_goroutine`.
-        let metric = OtlpMetric {
-            name: "process.runtime.go.goroutines".to_string(),
-            data: Some(OtlpMetricData::Gauge(Gauge {
-                data_points: vec![OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(5)),
-                    time_unix_nano: nanos_from_seconds(1),
-                    ..Default::default()
-                }],
-            })),
-            ..Default::default()
-        };
+        let metric = gauge_metric_named("process.runtime.go.goroutines");
 
-        let (events_iter, _) = translator
+        let (events_iter, languages) = translator
             .translate_metrics(resource_metrics_with_metric(metric), &metrics)
             .expect("translation should succeed");
         let events = events_iter.collect::<Vec<_>>();
 
-        let renamed = metric_by_name(&events, "runtime.go.num_goroutine");
-        assert_eq!(renamed.values(), &MetricValues::gauge((1, 5.0)));
+        let original = metric_by_name(&events, "process.runtime.go.goroutines");
+        assert_eq!(original.values(), &MetricValues::gauge((1, 1.0)));
+
+        assert!(
+            events
+                .iter()
+                .filter_map(|e| e.try_as_metric())
+                .all(|m| m.context().name() != "runtime.go.num_goroutine"),
+            "no remapped runtime metric should be emitted"
+        );
+
+        assert_eq!(languages.len(), 1);
+        assert!(languages.contains("go"));
     }
 
     #[test]
-    fn translate_metrics_maps_runtime_gauge_by_attribute() {
+    fn translate_metrics_forwards_runtime_gauge_with_attributes_under_original_name() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // `process.runtime.jvm.memory.usage` fans out by the `type` attribute: heap -> jvm.heap_memory,
-        // non_heap -> jvm.non_heap_memory. The `type` attribute is stripped from the mapped metric.
         let metric = OtlpMetric {
             name: "process.runtime.jvm.memory.usage".to_string(),
             data: Some(OtlpMetricData::Gauge(Gauge {
@@ -4792,20 +4796,29 @@ mod tests {
             ..Default::default()
         };
 
-        let (events_iter, _) = translator
+        let (events_iter, languages) = translator
             .translate_metrics(resource_metrics_with_metric(metric), &metrics)
             .expect("translation should succeed");
         let events = events_iter.collect::<Vec<_>>();
 
-        let heap = metric_by_name(&events, "jvm.heap_memory");
-        assert_eq!(heap.values(), &MetricValues::gauge((1, 100.0)));
         assert!(
-            heap.context().tags().get_single_tag("type").is_none(),
-            "the matched `type` attribute should be stripped from the mapped metric"
+            events
+                .iter()
+                .filter_map(|e| e.try_as_metric())
+                .any(|m| m.context().name() == "process.runtime.jvm.memory.usage"),
+            "the original runtime metric should be emitted under its OpenTelemetry name"
         );
 
-        let non_heap = metric_by_name(&events, "jvm.non_heap_memory");
-        assert_eq!(non_heap.values(), &MetricValues::gauge((1, 50.0)));
+        assert!(
+            events
+                .iter()
+                .filter_map(|e| e.try_as_metric())
+                .all(|m| m.context().name() != "jvm.heap_memory" && m.context().name() != "jvm.non_heap_memory"),
+            "no remapped runtime metrics should be emitted"
+        );
+
+        assert_eq!(languages.len(), 1);
+        assert!(languages.contains("jvm"));
     }
 
     #[test]
@@ -4974,7 +4987,6 @@ mod tests {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Translate a Go runtime metric to accumulate the language.
         let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
         let (_, languages) = translator.translate_metrics(resource_metrics, &metrics).unwrap();
 
@@ -5000,7 +5012,6 @@ mod tests {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Translate two Go runtime metrics with different names.
         let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
         let (_, mut languages) = translator.translate_metrics(resource_metrics, &metrics).unwrap();
         let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.gc.pause"));
@@ -5026,7 +5037,6 @@ mod tests {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Translate Go and JVM runtime metrics.
         let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
         let (_, mut languages) = translator.translate_metrics(resource_metrics, &metrics).unwrap();
         let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.jvm.memory.usage"));
@@ -5059,7 +5069,6 @@ mod tests {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Translate a metric with a resource-level host that differs from the default.
         let mut resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
         resource_metrics.resource = Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
             attributes: vec![OtlpKeyValue {
@@ -5266,5 +5275,107 @@ mod tests {
                 "counter {counter_name} with reason={reason} should be zero after a successful translation"
             );
         }
+    }
+
+    /// Generator helper for the `otlp-metrics-runtime-remapping` correctness case.
+    ///
+    /// Prints a base64-encoded `ExportMetricsServiceRequest` for the correctness case's `millstone.yaml`.
+    #[test]
+    #[ignore = "payload generator; run with --ignored --nocapture to print base64"]
+    fn generate_runtime_remapping_payload() {
+        use base64::Engine as _;
+        use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
+        use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+        use prost::Message;
+
+        let ts = nanos_from_seconds(1);
+
+        // JVM gauge with attribute-selected mapping.
+        let jvm_gauge = OtlpMetric {
+            name: "process.runtime.jvm.memory.usage".to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(100.0)),
+                        time_unix_nano: ts,
+                        attributes: vec![string_attribute("type", "heap")],
+                        ..Default::default()
+                    },
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(50.0)),
+                        time_unix_nano: ts,
+                        attributes: vec![string_attribute("type", "non_heap")],
+                        ..Default::default()
+                    },
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(200.0)),
+                        time_unix_nano: ts,
+                        attributes: vec![string_attribute("type", "heap"), string_attribute("region", "us-east")],
+                        ..Default::default()
+                    },
+                ],
+            })),
+            ..Default::default()
+        };
+
+        // Go gauge (no attribute matching).
+        let go_gauge = OtlpMetric {
+            name: "process.runtime.go.goroutines".to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsInt(5)),
+                    time_unix_nano: ts,
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+
+        // .NET histogram with attribute-matching duplication.
+        let dotnet_histogram = OtlpMetric {
+            name: "process.runtime.dotnet.gc.heap.size".to_string(),
+            data: Some(OtlpMetricData::Histogram(OtlpHistogram {
+                aggregation_temporality: AggregationTemporality::Delta as i32,
+                data_points: vec![
+                    OtlpHistogramDataPoint {
+                        count: 2,
+                        sum: Some(6.0),
+                        bucket_counts: vec![1, 1],
+                        explicit_bounds: vec![10.0],
+                        time_unix_nano: ts,
+                        attributes: vec![string_attribute("generation", "gen0")],
+                        ..Default::default()
+                    },
+                    OtlpHistogramDataPoint {
+                        count: 1,
+                        sum: Some(3.0),
+                        bucket_counts: vec![1, 0],
+                        explicit_bounds: vec![10.0],
+                        time_unix_nano: ts,
+                        attributes: vec![string_attribute("generation", "gen1")],
+                        ..Default::default()
+                    },
+                ],
+            })),
+            ..Default::default()
+        };
+
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![OtlpResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![string_attribute("service.name", "otlp-test")],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![jvm_gauge, go_gauge, dotnet_histogram],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let encoded = request.encode_to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&encoded);
+        println!("RUNTIME_REMAPPING_PAYLOAD_BASE64:\n{b64}");
     }
 }
