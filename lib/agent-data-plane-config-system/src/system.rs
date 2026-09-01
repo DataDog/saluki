@@ -337,12 +337,17 @@ fn translate(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
+    use arc_swap::ArcSwap;
     use datadog_agent_config::DatadogConfiguration;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
     use saluki_config::ConfigurationLoader;
@@ -392,6 +397,42 @@ mod tests {
             .await
             .expect("system builds");
         (system, agent_tx)
+    }
+
+    /// Sends a DogStatsD port update over the Agent stream.
+    async fn send_port(agent_tx: &mpsc::Sender<ConfigUpdate>, port: u16) {
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_port",
+                json!(port),
+            )))
+            .await
+            .unwrap();
+    }
+
+    /// Polls `future` once with the calling task's own waker, so a notification that arrives later
+    /// wakes this task rather than a discarded noop waker.
+    async fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
+        std::future::poll_fn(move |cx| Poll::Ready(future.as_mut().poll(cx))).await
+    }
+
+    /// Records the published DogStatsD port at the instant the update task wakes a parked view.
+    ///
+    /// `watch::Sender::send_replace` wakes registered wakers inline, so what this observes is exactly
+    /// what the woken view would re-project.
+    struct PublicationWitness {
+        current: Arc<ArcSwap<SalukiConfiguration>>,
+        observed: mpsc::UnboundedSender<u16>,
+    }
+
+    impl Wake for PublicationWitness {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let _ = self.observed.send(self.current.load().domains.dogstatsd.listeners.port);
+        }
     }
 
     /// Polls the current configuration until `predicate` holds, failing if it never does.
@@ -1092,6 +1133,111 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_parked_changed_wakes_for_an_update_that_lands_after_a_refresh() {
+        let (system, agent_tx) = connected_system(json!({ "dogstatsd_port": 8125 })).await;
+        let mut port = system.live(|c| &c.domains.dogstatsd.listeners.port);
+        assert_eq!(8125, *port);
+
+        send_port(&agent_tx, 9125).await;
+        await_config(&system, "the first port update", |c| {
+            c.domains.dogstatsd.listeners.port == 9125
+        })
+        .await;
+        assert_eq!(&9125, port.refresh());
+
+        // refresh() leaves the notification pending, so this drains the report it still owes before
+        // the test parks on a genuinely later update.
+        let refreshed = tokio::time::timeout(Duration::from_secs(2), port.changed())
+            .await
+            .expect("the view still owes the refreshed value");
+        assert_eq!(9125, refreshed);
+
+        let mut changed = Box::pin(port.changed());
+        assert!(
+            poll_once(changed.as_mut()).await.is_pending(),
+            "nothing is left to report, so this parks with the runtime's waker registered"
+        );
+
+        send_port(&agent_tx, 9126).await;
+
+        let woken = tokio::time::timeout(Duration::from_secs(2), changed)
+            .await
+            .expect("the parked changed() wakes for the update that follows it");
+        assert_eq!(9126, woken);
+        assert_eq!(9126, *port);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_changed_that_consumed_an_unrelated_notification_keeps_its_baseline() {
+        let (system, agent_tx) = connected_system(json!({ "dogstatsd_port": 8125 })).await;
+        let mut port = system.live(|c| &c.domains.dogstatsd.listeners.port);
+        // A second view of the updated setting pins the notification to have been sent, so the port
+        // view below is guaranteed to consume it rather than to park on an empty channel.
+        let mut log_level = system.live(|c| &c.control.logging.level);
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("warn"),
+            )))
+            .await
+            .unwrap();
+        let level = tokio::time::timeout(Duration::from_secs(2), log_level.changed())
+            .await
+            .expect("the unrelated update is notified");
+        assert_eq!("warn", level);
+
+        {
+            let mut changed = Box::pin(port.changed());
+            assert!(
+                poll_once(changed.as_mut()).await.is_pending(),
+                "the unrelated update does not move this view's projection"
+            );
+            // Cancelling here must not advance the baseline past the value never reported.
+        }
+
+        send_port(&agent_tx, 9125).await;
+
+        let updated = tokio::time::timeout(Duration::from_secs(2), port.changed())
+            .await
+            .expect("the cancellation left the view able to observe its own update");
+        assert_eq!(9125, updated);
+        assert_eq!(9125, *port);
+    }
+
+    #[tokio::test]
+    async fn a_notification_never_precedes_the_configuration_it_announces() {
+        // The update task must store the new configuration before firing the tick. Were the order
+        // reversed, a view woken by the tick could re-project the previous configuration, find no
+        // change, and park with the update unreported.
+        let (system, agent_tx) = connected_system(json!({ "dogstatsd_port": 8125 })).await;
+        let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+        let witness = Arc::new(PublicationWitness {
+            current: system.current_handle(),
+            observed: observed_tx,
+        });
+        let waker = Waker::from(witness);
+
+        let mut port = system.live(|c| &c.domains.dogstatsd.listeners.port);
+        let mut changed = Box::pin(port.changed());
+        assert!(
+            changed.as_mut().poll(&mut Context::from_waker(&waker)).is_pending(),
+            "the view parks with the witness waker registered"
+        );
+
+        send_port(&agent_tx, 9125).await;
+
+        let observed = tokio::time::timeout(Duration::from_secs(2), observed_rx.recv())
+            .await
+            .expect("the update wakes the parked view")
+            .expect("the witness records the wake");
+        assert_eq!(
+            9125, observed,
+            "the configuration is published before the notification that announces it"
+        );
     }
 
     #[tokio::test]

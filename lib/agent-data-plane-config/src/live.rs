@@ -514,6 +514,84 @@ mod tests {
     }
 
     #[test]
+    fn repeated_refreshes_keep_the_baseline_changed_compares_against() {
+        // Regression: refresh() sets the comparison baseline only on the first refresh past a reported
+        // value. Setting it on every refresh would move the baseline to key-2 and swallow the return
+        // to key-2 below.
+        let source = Source::new("key-1");
+        let mut view = source.api_key_view();
+
+        source.store("key-2");
+        source.notify();
+        assert_eq!("key-2", view.refresh());
+
+        source.store("key-3");
+        source.notify();
+        assert_eq!("key-3", view.refresh());
+
+        source.store("key-2");
+        source.notify();
+
+        assert_eq!(
+            "key-2",
+            poll_changed(&mut view),
+            "key-1 is still the baseline, so key-2 is a change"
+        );
+        assert_eq!("key-2", &*view);
+    }
+
+    #[test]
+    fn repeated_refreshes_do_not_turn_a_return_to_the_baseline_into_a_report() {
+        // The other half of the baseline regression: a baseline moved by the second refresh would
+        // report key-1 a second time instead of parking.
+        let source = Source::new("key-1");
+        let mut view = source.api_key_view();
+
+        source.store("key-2");
+        source.notify();
+        assert_eq!("key-2", view.refresh());
+
+        source.store("key-3");
+        source.notify();
+        assert_eq!("key-3", view.refresh());
+
+        source.store("key-1");
+        source.notify();
+
+        assert_changed_pending(&mut view);
+        assert_eq!("key-1", &*view, "the snapshot resynchronizes with the source");
+    }
+
+    #[test]
+    fn changed_parks_when_the_notification_channel_closes() {
+        let source = Source::new("key-1");
+        let mut view = source.api_key_view();
+
+        drop(source);
+
+        assert_changed_pending(&mut view);
+        assert_eq!("key-1", &*view, "the view keeps reading its own snapshot");
+    }
+
+    #[test]
+    fn a_final_update_before_the_channel_closes_is_reported_once() {
+        let source = Source::new("key-1");
+        let mut view = source.api_key_view();
+
+        source.store("key-2");
+        source.notify();
+        drop(source);
+
+        assert_eq!(
+            "key-2",
+            poll_changed(&mut view),
+            "an unseen update outlives the sender that announced it"
+        );
+        assert_eq!("key-2", &*view);
+        assert_changed_pending(&mut view);
+    }
+
+    #[test]
     fn a_projected_child_starts_converged() {
         let source = Source::new("key-1");
         let view = source.api_key_view();
@@ -524,5 +602,19 @@ mod tests {
         let mut child = view.project(|api_key| api_key);
         assert_eq!("key-2", &*child, "the child projects the current source");
         assert_changed_pending(&mut child);
+    }
+
+    #[test]
+    fn a_projected_child_observes_an_update_without_moving_the_parent() {
+        let source = Source::new("key-1");
+        let parent = source.api_key_view();
+        let mut child = parent.project(|api_key| api_key);
+
+        source.store("key-2");
+        source.notify();
+
+        assert_eq!("key-2", poll_changed(&mut child));
+        assert_eq!("key-2", &*child, "Deref agrees with the value changed() returned");
+        assert_eq!("key-1", &*parent, "the parent keeps its own snapshot");
     }
 }
