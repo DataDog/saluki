@@ -95,6 +95,20 @@ be configured to run in `parallel`.
 
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
+## Panoramic CLI and environment
+
+Both suites run through the same `panoramic` binary. Run `panoramic --help` for its flags and for the
+environment variables the runner reads; `-h` prints the same text. That help output is meant to be
+complete, so we don't repeat a flag reference here that would drift away from it.
+
+```bash
+cargo run --release --bin panoramic -- --help
+```
+
+> [!NOTE]
+> When both are set, `--log-dir` wins over `PANORAMIC_LOG_DIR`. Either way, each run gets its own
+> timestamped subdirectory underneath the base directory you pick.
+
 ## Benchmark tests: Single Machine Performance (SMP)
 
 SMP is a system that runs on internal, dedicated infrastructure to check the Agent for performance regressions. It runs

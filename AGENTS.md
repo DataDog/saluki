@@ -79,8 +79,8 @@ Check these facts against the Makefile as this is a fast-moving project.
 Alternatively, `panoramic` can be invoked directly, for example if the user requests certain command-line options like
 `--no-tui`. Examples:
 - `cargo run --release --bin panoramic -- run -d test/correctness/cases --no-tui`
-- `cargo run --release --bin panoramic -- run -d test/correctness/cases -t test-name-1 -t test-name-2`
-- `cargo run --release --bin panoramic -- --help`
+- `cargo run --release --bin panoramic -- run -d test/correctness/cases -t test-name-1,test-name-2`
+- `cargo run --release --bin panoramic -- --help` (lists the runner's environment variables too)
 
 ## Agent guidelines
 

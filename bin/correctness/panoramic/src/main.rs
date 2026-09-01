@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
+use clap::Parser as _;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -56,14 +57,14 @@ async fn main() -> ExitCode {
     // process-wide provider must be installed before any Rustls client configuration is built.
     let _ = default_crypto_provider().install_default();
 
-    let cli: Cli = argh::from_env();
+    let cli = Cli::parse();
 
     // See if we should use TUI mode.
     //
     // This influences how we configure things since some output gets redirected/rendered differently in TUI mode.
     let (use_tui, is_test_run) = match &cli.command {
         Command::Run(cmd) => (
-            !cmd.no_tui && cmd.output == "text" && std::io::stdout().is_terminal(),
+            !cmd.no_tui && matches!(cmd.output, OutputFormat::Text) && std::io::stdout().is_terminal(),
             true,
         ),
         Command::List(_) => (false, false),
@@ -312,15 +313,7 @@ async fn run_with_logging_consumer(
     rx: mpsc::UnboundedReceiver<TestEvent>, cmd: &cli::RunCommand, log_dir: Option<PathBuf>,
     runner_handle: tokio::task::JoinHandle<Vec<TestResult>>,
 ) -> bool {
-    let output_format = match OutputFormat::from_str(&cmd.output) {
-        Some(format) => format,
-        None => {
-            error!("Invalid output format '{}'. Use 'text' or 'json'.", cmd.output);
-            return false;
-        }
-    };
-
-    let reporter = Reporter::new(output_format, cmd.verbose);
+    let reporter = Reporter::new(cmd.output, cmd.verbose);
 
     info!("Starting test run with parallelism of {}...", cmd.parallelism);
 

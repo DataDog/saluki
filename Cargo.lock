@@ -3119,11 +3119,11 @@ name = "panoramic"
 version = "0.1.0"
 dependencies = [
  "airlock",
- "argh",
  "async-trait",
  "base64 0.23.1",
  "bollard",
  "chrono",
+ "clap",
  "colored",
  "crossterm",
  "futures",
