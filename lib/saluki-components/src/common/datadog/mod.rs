@@ -1,3 +1,4 @@
+pub(crate) mod api_key;
 pub mod config;
 pub mod endpoints;
 pub mod io;

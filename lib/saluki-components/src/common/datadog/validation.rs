@@ -142,10 +142,10 @@ fn spawn_validation_task(
 }
 
 async fn run_validation_loop(
-    mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live_config: Option<GenericConfiguration>,
+    endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live_config: Option<GenericConfiguration>,
     interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
 ) {
-    if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await {
+    if !validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await {
         return;
     }
 
@@ -161,12 +161,12 @@ async fn run_validation_loop(
     loop {
         select! {
             _ = interval.tick() => {
-                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await {
+                if !validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await {
                     return;
                 }
             },
             _ = wait_for_validation_config_change(&mut config_updates_rx) => {
-                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await {
+                if !validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await {
                     return;
                 }
             },
@@ -201,7 +201,7 @@ fn is_validation_trigger_key(key: &str) -> bool {
 }
 
 async fn validate_and_send_readiness(
-    endpoints: &mut [RoutableEndpoint], client: &mut HttpClient, readiness_tx: &mpsc::Sender<ValidationReadiness>,
+    endpoints: &[RoutableEndpoint], client: &mut HttpClient, readiness_tx: &mpsc::Sender<ValidationReadiness>,
     emitter: &DiagnosticsEmitter,
 ) -> bool {
     let targets = collect_validation_targets(endpoints);
@@ -245,14 +245,15 @@ async fn validate_targets(client: &mut HttpClient, targets: &[ValidationTarget])
     }
 }
 
-fn collect_validation_targets(endpoints: &mut [RoutableEndpoint]) -> Vec<ValidationTarget> {
+fn collect_validation_targets(endpoints: &[RoutableEndpoint]) -> Vec<ValidationTarget> {
     let mut seen = HashSet::new();
     let mut targets = Vec::new();
 
     for routable in endpoints {
-        // `api_key()` lazily refreshes the cached key from live configuration before validation.
-        let endpoint = routable.endpoint_mut();
-        let api_key = endpoint.api_key().trim().to_string();
+        // `api_key()` returns whatever the endpoint's refresher stored last, so validation follows a
+        // rotation without rebuilding the endpoint set.
+        let endpoint = routable.endpoint();
+        let api_key = endpoint.api_key().to_string();
         if api_key.is_empty() {
             continue;
         }
@@ -367,20 +368,18 @@ mod tests {
 
     use agent_data_plane_config::{
         shared::{AltMetricsIntake, SharedConfiguration},
-        ConfigValue,
+        ConfigValue, SalukiConfiguration,
     };
     use axum::{routing::get, Router};
-    use saluki_config::{
-        dynamic::{ConfigSetting, ConfigUpdate},
-        ConfigurationLoader,
-    };
     use saluki_tls::initialize_default_crypto_provider;
-    use serde_json::json;
     use tokio::net::TcpListener;
 
     use super::*;
     use crate::common::datadog::{
-        config::ForwarderConfiguration, endpoints::ResolvedEndpoint, test_util::shared_configuration,
+        api_key::ApiKeyRefresher,
+        config::ForwarderConfiguration,
+        endpoints::ResolvedEndpoint,
+        test_util::{shared_configuration, LiveConfiguration},
     };
 
     /// Returns shared configuration whose primary endpoint is `dd_url`, with `primary-key` as its API key.
@@ -485,7 +484,6 @@ mod tests {
 
     #[tokio::test]
     async fn validation_targets_include_primary_additional_and_opw() {
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
         let mut shared = shared_configuration_for("http://primary.example.com");
         shared.endpoints.additional_endpoints = HashMap::from([(
             "http://additional.example.com".to_string(),
@@ -501,11 +499,11 @@ mod tests {
             use_v3_series: false,
         };
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
-        let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+        let endpoints = forwarder_config
+            .build_routable_endpoints()
             .expect("endpoints should resolve");
 
-        let targets = collect_validation_targets(&mut endpoints);
+        let targets = collect_validation_targets(&endpoints);
         let mut target_pairs = targets
             .into_iter()
             .map(|target| (target.endpoint.to_string(), target.api_key))
@@ -526,64 +524,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validation_targets_refresh_existing_additional_endpoint_key() {
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(ConfigUpdate::snapshot([
-                ConfigSetting::explicit("api_key", json!("primary-key")),
-                ConfigSetting::explicit("dd_url", json!("http://primary.example.com")),
-                ConfigSetting::explicit(
-                    "additional_endpoints",
-                    json!({ "http://additional.example.com": ["old-additional-key"] }),
-                ),
-            ]))
-            .await
-            .expect("initial snapshot should send");
-        config.ready().await;
-
+    async fn validation_follows_rotated_keys_but_does_not_add_new_endpoints() {
+        // Validation reads the same cells the request path does, so a rotated key reaches validation
+        // without rebuilding the endpoint set.
+        let url = "http://additional.example.com";
         let mut shared = shared_configuration_for("http://primary.example.com");
-        shared.endpoints.additional_endpoints = HashMap::from([(
-            "http://additional.example.com".to_string(),
-            vec!["old-additional-key".to_string()],
-        )]);
-        let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
-        let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config.clone()))
+        shared.endpoints.additional_endpoints =
+            HashMap::from([(url.to_string(), vec!["old-additional-key".to_string()])]);
+
+        let mut live_config = SalukiConfiguration::default();
+        live_config.shared.endpoints.api_key = "primary-key".to_string();
+        live_config.shared.endpoints.additional_endpoints = shared.endpoints.additional_endpoints.clone();
+        let live = LiveConfiguration::new(live_config.clone());
+
+        let endpoints = ForwarderConfiguration::from_configuration(&shared)
+            .build_routable_endpoints()
             .expect("endpoints should resolve");
+        ApiKeyRefresher::new(&endpoints, &live.api_keys())
+            .expect("the endpoints should follow the live views")
+            .spawn();
 
-        sender
-            .send(ConfigUpdate::snapshot([
-                ConfigSetting::explicit("api_key", json!("primary-key")),
-                ConfigSetting::explicit("dd_url", json!("http://primary.example.com")),
-                ConfigSetting::explicit(
-                    "additional_endpoints",
-                    json!({
-                        "http://additional.example.com": ["new-additional-key"],
-                        "http://new.example.com": ["ignored-new-domain-key"]
-                    }),
-                ),
-            ]))
-            .await
-            .expect("updated snapshot should send");
+        // Rotate the key at the configured position, and add a URL no endpoint was built for.
+        live_config.shared.endpoints.additional_endpoints = HashMap::from([
+            (url.to_string(), vec!["new-additional-key".to_string()]),
+            (
+                "http://new.example.com".to_string(),
+                vec!["ignored-new-domain-key".to_string()],
+            ),
+        ]);
+        live.store(live_config);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let targets = loop {
-            let targets = collect_validation_targets(&mut endpoints);
-            if targets.iter().any(|target| target.api_key == "new-additional-key") {
-                break targets;
+        let targets = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let targets = collect_validation_targets(&endpoints);
+                if targets.iter().any(|target| target.api_key == "new-additional-key") {
+                    return targets;
+                }
+                tokio::task::yield_now().await;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for key refresh"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        })
+        .await
+        .expect("the rotated key should reach validation");
 
-        assert!(targets.iter().any(|target| target.api_key == "new-additional-key"));
-        assert!(!targets
-            .iter()
-            .any(|target| target.endpoint.as_str() == "http://new.example.com/"));
+        assert!(
+            !targets
+                .iter()
+                .any(|target| target.endpoint.as_str() == "http://new.example.com/"),
+            "a URL no endpoint was built for is not validated"
+        );
     }
 
     #[tokio::test]
@@ -625,10 +613,9 @@ mod tests {
 
         // A validation server that rejects the key with a 403, so validation concludes it is invalid.
         let invalid_url = start_validation_server(StatusCode::FORBIDDEN).await;
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&invalid_url));
-        let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+        let endpoints = forwarder_config
+            .build_routable_endpoints()
             .expect("endpoints should resolve");
 
         // Subscribe to diagnostic events on a dataspace, then build an emitter that publishes to that same dataspace.
@@ -640,7 +627,7 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
 
-        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await);
+        assert!(validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await);
         assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::NotReady));
 
         // The rejected key must have produced an `InvalidApiKey` diagnostic event.
@@ -661,10 +648,9 @@ mod tests {
 
         // A validation server that accepts the key, so validation concludes it is valid.
         let valid_url = start_validation_server(StatusCode::OK).await;
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&valid_url));
-        let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+        let endpoints = forwarder_config
+            .build_routable_endpoints()
             .expect("endpoints should resolve");
 
         let dataspace = DataspaceRegistry::new();
@@ -675,7 +661,7 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
 
-        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await);
+        assert!(validate_and_send_readiness(&endpoints, &mut client, &readiness_tx, &emitter).await);
         assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::Ready));
 
         // A valid key must not produce any diagnostic event.

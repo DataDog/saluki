@@ -45,6 +45,7 @@ use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
 
 use super::{
+    api_key::{ApiKeyRefresher, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
@@ -236,6 +237,7 @@ pub struct TransactionForwarder<B> {
     client: HttpClient,
     endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
+    api_key_refresher: Option<ApiKeyRefresher>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     emitter: DiagnosticsEmitter,
     _marker: PhantomData<B>,
@@ -297,9 +299,13 @@ where
     B::Error: std::error::Error + Send + Sync,
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
+    ///
+    /// Two configuration inputs arrive here, and they are not interchangeable: `api_keys` holds the typed live views
+    /// the endpoints take their API keys from, while `live_config` is the raw map that the retry policy's secrets gate
+    /// still reads and that API key validation subscribes to for change notifications.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -308,6 +314,7 @@ where
             context,
             config,
             live_config,
+            api_keys,
             endpoint_name,
             telemetry,
             metrics_builder,
@@ -318,13 +325,14 @@ where
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
         endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let endpoints = config.build_routable_endpoints(live_config.clone())?;
+        let endpoints = config.build_routable_endpoints()?;
+        let api_key_refresher = ApiKeyRefresher::new(&endpoints, api_keys);
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
         let endpoint_name_for_client = Arc::clone(&endpoint_name);
         let mut client_builder = HttpClient::builder()
@@ -363,6 +371,7 @@ where
             client,
             endpoint_name,
             endpoints,
+            api_key_refresher,
             endpoint_request_mapper_factory,
             emitter,
             _marker: PhantomData,
@@ -387,10 +396,17 @@ where
             client,
             endpoint_name,
             endpoints,
+            api_key_refresher,
             endpoint_request_mapper_factory,
             emitter,
             _marker,
         } = self;
+
+        // The endpoints already hold the keys configuration reports, stored when the refresher was
+        // built; this task carries the changes that come after that.
+        if let Some(api_key_refresher) = api_key_refresher {
+            api_key_refresher.spawn();
+        }
 
         spawn_traced_named(
             "dd-txn-forwarder-io-loop",
@@ -1221,7 +1237,7 @@ mod tests {
             ("app.datadoghq.com".to_string(), vec!["key-a".to_string()]),
             ("https://app.datadoghq.com".to_string(), vec!["key-b".to_string()]),
         ]);
-        let mut endpoints = resolve_additional_endpoints(&additional, None).expect("endpoints should resolve");
+        let mut endpoints = resolve_additional_endpoints(&additional).expect("endpoints should resolve");
         // The configured endpoints are a map, so fix an order to compare queue IDs against.
         endpoints.sort_by(|left, right| left.configured_endpoint().cmp(right.configured_endpoint()));
 
@@ -1241,7 +1257,7 @@ mod tests {
             "app.datadoghq.com".to_string(),
             vec!["key-a".to_string(), "key-b".to_string()],
         )]);
-        let endpoints = resolve_additional_endpoints(&additional, None).expect("endpoints should resolve");
+        let endpoints = resolve_additional_endpoints(&additional).expect("endpoints should resolve");
 
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].endpoint(), endpoints[1].endpoint());
@@ -2067,6 +2083,7 @@ mod tests {
                     context,
                     forwarder_config,
                     live_config,
+                    &LiveApiKeys::default(),
                     test_logical_endpoint,
                     telemetry,
                     metrics_builder,

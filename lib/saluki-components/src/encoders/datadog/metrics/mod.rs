@@ -331,7 +331,7 @@ impl DatadogMetricsConfiguration {
             }
         }
 
-        for endpoint in resolve_additional_endpoints(&self.additional_endpoints, None)
+        for endpoint in resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
             let settings = self.endpoint_v3_settings(&endpoint, None, None);
