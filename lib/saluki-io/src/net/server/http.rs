@@ -490,9 +490,7 @@ where
 {
     let maybe_tls_acceptor = match tls_config {
         Some(mut config) => {
-            // Allow for HTTP/1.1 and HTTP/2.
-            config.alpn_protocols.push(b"h2".to_vec());
-            config.alpn_protocols.push(b"http/1.1".to_vec());
+            config.alpn_protocols = alpn_protocols(&conn_builder);
 
             ensure_server_config_fips_compliant(&mut config)?;
 
@@ -788,6 +786,21 @@ fn build_conn_builder(http2_config: Http2Config, http2_only: bool) -> Builder<To
 /// Name a server reports when it has no identifier of its own.
 const DEFAULT_SERVER_NAME: &str = "http_server";
 
+/// ALPN protocols a server advertises, in preference order.
+fn alpn_protocols(conn_builder: &Builder<TokioExecutor>) -> Vec<Vec<u8>> {
+    let mut protocols = vec![];
+
+    if conn_builder.is_http2_available() {
+        protocols.push(b"h2".to_vec());
+    }
+
+    if conn_builder.is_http1_available() {
+        protocols.push(b"http/1.1".to_vec());
+    }
+
+    protocols
+}
+
 fn get_bound_address_id(server_id: &str) -> Identifier {
     Identifier::from(format!("http-server-{}", server_id))
 }
@@ -1014,6 +1027,122 @@ mod tests {
         // here since no panic means "it worked."
         let stream = connect_unix(&socket_path).await;
         drop(stream);
+
+        harness.shutdown().await;
+    }
+
+    /// Builds a TLS config for a server presenting `cert`.
+    fn server_tls_config(cert: &SelfSignedCert) -> ServerConfig {
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert.cert_chain(), cert.private_key())
+            .expect("should build TLS config")
+    }
+
+    /// Handshakes with a TLS server offering exactly `client_alpn`, returning the negotiated protocol.
+    async fn negotiate_alpn(
+        address: SocketAddr, cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>, client_alpn: &[&[u8]],
+    ) -> std::io::Result<Option<Vec<u8>>> {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in cert_chain {
+            roots.add(cert).expect("should trust the self-signed cert");
+        }
+
+        let mut client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client_config.alpn_protocols = client_alpn.iter().map(|protocol| protocol.to_vec()).collect();
+
+        let stream = TcpStream::connect(address).await.expect("should connect");
+        let server_name = rustls::pki_types::ServerName::try_from("localhost").expect("should be a valid server name");
+        let tls_stream = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+            .connect(server_name, stream)
+            .await?;
+
+        Ok(tls_stream.get_ref().1.alpn_protocol().map(ToOwned::to_owned))
+    }
+
+    /// Starts a TLS server on an ephemeral port, returning its address and the cert chain to trust.
+    async fn start_tls_server(
+        harness_id: &str, http2_only: bool,
+    ) -> (
+        ServerTestHarness,
+        SocketAddr,
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+    ) {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let cert = SelfSignedCert::localhost();
+        let cert_chain = cert.cert_chain();
+        let tls_config = server_tls_config(&cert);
+
+        let harness = ServerTestHarness::start(harness_id, move |supervisor, server_id| {
+            let mut server = server_with(ListenAddress::tcp_loopback(0), ok_response)
+                .with_tls_config(tls_config)
+                .with_server_id(server_id);
+            if http2_only {
+                server = server.with_http2_only();
+            }
+            supervisor.add_worker(server);
+        })
+        .await;
+
+        let address = match harness.bound_address().await {
+            BoundListenAddress::Tcp(addr) => addr,
+            other_addr => panic!("expected TCP address, got {:?}", other_addr),
+        };
+
+        (harness, address, cert_chain)
+    }
+
+    #[test]
+    fn advertised_alpn_protocols_track_the_protocol_restriction() {
+        let conn_builder_both = build_conn_builder(Http2Config::default(), false);
+        assert_eq!(
+            alpn_protocols(&conn_builder_both),
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+
+        let conn_builder_http2_only = build_conn_builder(Http2Config::default(), true);
+        assert_eq!(alpn_protocols(&conn_builder_http2_only), vec![b"h2".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn tls_server_advertises_both_protocols_by_default() {
+        let (harness, address, cert_chain) = start_tls_server("http-alpn-auto", false).await;
+
+        // A client that prefers HTTP/2 gets it, and one that only speaks HTTP/1.1 is still served.
+        let negotiated = negotiate_alpn(address, cert_chain.clone(), &[b"h2", b"http/1.1"])
+            .await
+            .expect("handshake should succeed");
+        assert_eq!(negotiated, Some(b"h2".to_vec()));
+
+        let negotiated = negotiate_alpn(address, cert_chain, &[b"http/1.1"])
+            .await
+            .expect("handshake should succeed");
+        assert_eq!(negotiated, Some(b"http/1.1".to_vec()));
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tls_server_advertises_only_http2_when_restricted() {
+        let (harness, address, cert_chain) = start_tls_server("http-alpn-http2-only", true).await;
+
+        let negotiated = negotiate_alpn(address, cert_chain.clone(), &[b"h2", b"http/1.1"])
+            .await
+            .expect("handshake should succeed");
+        assert_eq!(negotiated, Some(b"h2".to_vec()));
+
+        // The point of the restriction: an HTTP/1.1-only client cannot get a connection at all, instead of negotiating
+        // a protocol the connection would immediately be torn down for. That the HTTP/2 client above succeeded against
+        // the same certificate is what makes this failure attributable to ALPN rather than to trust.
+        //
+        // Which error the client sees is deliberately not pinned down: `rustls` rejects the handshake with a
+        // `no_application_protocol` alert, but the accept loop drops the stream on handshake failure, so whether that
+        // alert reaches the client before EOF is a race.
+        negotiate_alpn(address, cert_chain, &[b"http/1.1"])
+            .await
+            .expect_err("handshake should fail when no offered protocol is served");
 
         harness.shutdown().await;
     }
