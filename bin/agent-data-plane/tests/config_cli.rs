@@ -89,7 +89,8 @@ async fn run_config_request(extra_args: &[&str], response_body: &'static str) ->
         HttpServer::from_listen_address(ListenAddress::tcp_loopback(0))
             .with_routes(Router::new().fallback_service(service))
             .with_tls_config(server_tls_config)
-            .with_server_id(SERVER_ID),
+            .with_server_id(SERVER_ID)
+            .into_supervisor(),
     );
     supervisor.add_worker(DataspaceCapture {
         dataspace_tx: Mutex::new(Some(dataspace_tx)),

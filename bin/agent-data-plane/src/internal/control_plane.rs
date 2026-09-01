@@ -55,7 +55,7 @@ pub async fn create_control_plane_supervisor(
     let api_listen_address = dp.api_listen_address()?;
     let secure_api_listen_address = dp.secure_api_listen_address()?;
 
-    supervisor.add_worker(APIBuilder::new(EndpointType::Unprivileged, api_listen_address));
+    supervisor.add_worker(APIBuilder::new(EndpointType::Unprivileged, api_listen_address).into_supervisor());
     let ipc_config = dp.ipc_auth_configuration();
     let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
 
@@ -73,7 +73,7 @@ pub async fn create_control_plane_supervisor(
             .with_grpc_service(ra_bootstrap.create_telemetry_service());
     }
 
-    supervisor.add_worker(privileged_api);
+    supervisor.add_worker(privileged_api.into_supervisor());
 
     Ok(supervisor)
 }

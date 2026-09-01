@@ -6,7 +6,6 @@
 #![deny(missing_docs)]
 
 pub mod accounting;
-#[path = "dynamic_api.rs"]
 pub mod api;
 pub mod bootstrap;
 pub mod config;

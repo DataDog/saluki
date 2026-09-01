@@ -287,6 +287,7 @@ pub struct WorkerSpec {
 /// Child specification state for a supervisor.
 pub struct SupervisorSpec {
     supervisor: Supervisor,
+    options: ChildOptions,
 }
 
 // The configuration surface below is deliberately crate-internal: `ChildBuilder` is the public front end for all of
@@ -378,6 +379,37 @@ impl ChildSpecification<WorkerSpec> {
     }
 }
 
+// Crate-internal for the same reason as the worker surface above: `NestedSupervisorBuilder` is the public front end,
+// and going around it would allow combinations the builder refuses to express.
+//
+// Deliberately narrower than the worker surface, though. A nested supervisor bounds its own subtree through its
+// children's deadlines: `SupervisedChild::shutdown_strategy` reports `Graceful(Duration::MAX)` for one, and
+// `WorkerState::add_worker` exempts it from the parent's budget. Offering a shutdown setting here would let a caller
+// truncate a drain the subtree is already responsible for, so there isn't one. Placement is likewise absent: a nested
+// supervisor runs wherever its parent does, and its children carry their own placement.
+impl ChildSpecification<SupervisorSpec> {
+    /// Sets the restart policy for this nested supervisor.
+    ///
+    /// When left unset, the policy depends on how the child is registered: a child added up front with
+    /// [`Supervisor::add_worker`] defaults to [`RestartType::Permanent`], while one spawned dynamically with
+    /// [`SupervisorHandle::spawn`] defaults to [`RestartType::Temporary`].
+    #[must_use]
+    pub(crate) fn with_restart_type(mut self, restart_type: RestartType) -> Self {
+        self.spec_inner.options.restart = Some(restart_type);
+        self
+    }
+
+    /// Sets whether this nested supervisor is _significant_.
+    ///
+    /// A significant child's termination (when it isn't restarted) can drive the parent supervisor to shut down, per
+    /// the parent's [`AutoShutdown`] policy.
+    #[must_use]
+    pub(crate) fn with_significant(mut self, significant: bool) -> Self {
+        self.spec_inner.options.significant = significant;
+        self
+    }
+}
+
 impl<T> From<T> for ChildSpecification<WorkerSpec>
 where
     T: Supervisable + 'static,
@@ -390,7 +422,10 @@ where
 impl From<Supervisor> for ChildSpecification<SupervisorSpec> {
     fn from(supervisor: Supervisor) -> Self {
         Self {
-            spec_inner: SupervisorSpec { supervisor },
+            spec_inner: SupervisorSpec {
+                supervisor,
+                options: ChildOptions::default(),
+            },
         }
     }
 }
@@ -438,10 +473,10 @@ impl ChildState for WorkerSpec {
 
 impl ChildState for SupervisorSpec {
     fn into_child_parts(spec: ChildSpecification<Self>, default_restart: RestartType) -> LoweredChild {
-        // Supervisors have no user-configurable per-child settings of their own.
+        let SupervisorSpec { supervisor, options } = spec.spec_inner;
         LoweredChild {
-            spec: SupervisedChild::Supervisor(spec.spec_inner.supervisor),
-            config: ChildOptions::default().resolve(default_restart),
+            spec: SupervisedChild::Supervisor(supervisor),
+            config: options.resolve(default_restart),
         }
     }
 }
@@ -2698,6 +2733,102 @@ mod tests {
             result.is_ok(),
             "the nested subtree should have drained cleanly: {result:?}"
         );
+    }
+
+    /// Counts how many times a nested subtree is started, by counting starts of its sole child.
+    ///
+    /// The child fails immediately and the subtree has a restart intensity of zero, so the subtree gives up the first
+    /// time it fails. That makes the child's start count equal to the number of times the *subtree* ran, which is what
+    /// these tests are actually asserting on -- without the zero intensity the subtree's own one-for-one restart would
+    /// be indistinguishable from the parent restarting the subtree.
+    fn failing_subtree(name: &'static str) -> (Supervisor, Arc<AtomicUsize>) {
+        let worker = MockWorker::failing("nested-child", Duration::from_millis(5));
+        let started = worker.start_count();
+        let mut nested = Supervisor::new(name)
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(30)));
+        nested.add_worker(worker);
+
+        (nested, started)
+    }
+
+    #[tokio::test]
+    async fn dynamic_nested_supervisor_defaults_to_temporary() {
+        // Spawning a bare `Supervisor` takes the dynamic default, so a subtree that gives up stays gone. For a
+        // listener that means it silently disappears while whatever owns it keeps reporting healthy -- which is the
+        // reason `nested_supervisor` exists.
+        let (nested, started) = failing_subtree("nested-temp");
+
+        let sup = Supervisor::new("dyn-temp-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+
+        handle.spawn(nested);
+        wait_until("the subtree has started once", || started.load(Ordering::SeqCst) == 1).await;
+
+        // Give the subtree time to fail and be reaped. Nothing brings it back.
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "a temporary subtree must not be restarted"
+        );
+
+        tx.send(()).unwrap();
+        assert!(join_supervisor(run).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dynamic_nested_supervisor_can_be_made_permanent() {
+        // What `nested_supervisor` buys: the same subtree, spawned permanent, is brought back when it terminates.
+        let (nested, started) = failing_subtree("nested-perm");
+
+        let sup = Supervisor::new("dyn-perm-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::new(
+                RestartMode::OneForOne,
+                100,
+                Duration::from_secs(30),
+            ));
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+
+        handle.nested_supervisor(nested).spawn();
+        wait_until("the subtree has been restarted", || started.load(Ordering::SeqCst) >= 2).await;
+
+        tx.send(()).unwrap();
+        assert!(join_supervisor(run).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dynamic_nested_supervisor_can_be_significant() {
+        // The other half: a subtree its parent can't function without takes the parent with it when it terminates,
+        // rather than leaving it running with nothing behind it.
+        let (nested, _started) = failing_subtree("nested-sig");
+
+        let sup = Supervisor::new("dyn-sig-sup")
+            .unwrap()
+            .with_auto_shutdown(AutoShutdown::AnySignificant);
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+
+        handle
+            .nested_supervisor(nested)
+            .temporary()
+            .with_significant(true)
+            .spawn();
+
+        let result = timeout(Duration::from_secs(5), run)
+            .await
+            .expect("supervisor should stop once the significant subtree terminates")
+            .expect("supervisor task should not panic");
+        assert!(
+            matches!(result, Err(SupervisorError::SignificantChildExited)),
+            "the significant subtree's termination should have stopped the parent, got {result:?}"
+        );
+
+        // The run already ended; the trigger is redundant but keeps the sender alive to the end of the test.
+        let _ = tx.send(());
     }
 
     #[tokio::test]

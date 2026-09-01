@@ -24,8 +24,9 @@ use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::{collections::FastIndexMap, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{
+    self,
     state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter, Subscription},
-    InitializationError, Supervisable, SupervisorFuture,
+    AutoShutdown, InitializationError, Supervisable, Supervisor, SupervisorFuture,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
@@ -33,7 +34,6 @@ use saluki_io::net::{
     ListenAddress,
 };
 use saluki_tls::ensure_server_config_fips_compliant;
-use tokio::select;
 use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
 use tracing::{debug, info, warn};
@@ -67,6 +67,11 @@ use tracing::{debug, info, warn};
 ///
 /// See [`HttpServer`] for more information on available assertions. The server ID provided by `APIBuilder` to the
 /// underlying `HttpServer` will be `privileged-api` or `unprivileged-api`, depending on the configured endpoint type.
+///
+/// ## Supervision
+///
+/// The API can't be run directly: [`into_supervisor`][Self::into_supervisor] turns it into the [`Supervisor`] that
+/// runs it, which is then added to another supervisor like any other child.
 pub struct APIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
@@ -165,16 +170,21 @@ impl APIBuilder {
     }
 }
 
-#[async_trait]
-impl Supervisable for APIBuilder {
-    fn name(&self) -> &str {
-        match self.endpoint_type {
-            EndpointType::Unprivileged => "unprivileged-api",
-            EndpointType::Privileged => "privileged-api",
-        }
-    }
-
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+impl APIBuilder {
+    /// Converts this builder into the supervisor that runs the API.
+    ///
+    /// The result is added to another supervisor like any other child. Two children run underneath it: the
+    /// [`HttpServer`] subtree that serves the routes, and a worker that keeps the dynamic routes up to date.
+    ///
+    /// The route worker is _significant_, and the supervisor uses [`AutoShutdown::AnySignificant`], so the API stops
+    /// as a unit if the route worker ever terminates. Serving stale routes indefinitely because the thing that
+    /// maintains them died is worse than not serving at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the supervisor can't be created, which can only happen for an empty name. The name comes from a
+    /// fixed set of non-empty constants, so this is unreachable.
+    pub fn into_supervisor(self) -> Supervisor {
         // Build the static base router, folding the gRPC routes in alongside the HTTP ones.
         //
         // Every router that goes into a merge has its fallback reset first: axum refuses to merge two routers that both
@@ -183,29 +193,74 @@ impl Supervisable for APIBuilder {
         // also why the base itself is kept fallback-free -- it gets re-merged on every rebuild.
         let base = self
             .http_router
-            .clone()
             .reset_fallback()
-            .merge(self.grpc_router.clone().routes().into_axum_router().reset_fallback());
+            .merge(self.grpc_router.routes().into_axum_router().reset_fallback());
 
         // Create the dynamic inner router, seeded with the static base so that the static routes are served even before
         // any dynamic routes are asserted.
         let (inner, outer) = create_dynamic_router(apply_fallback(base.clone()));
 
-        let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
-
-        // Hand the outer router to a supervised HTTP server, initializing it here so that binding the listen address
-        // -- and asserting the address we ended up bound to -- happens before this worker starts running.
-        //
-        // The server is given no graceful shutdown timeout of its own: how long draining connections is allowed to take
-        // is bounded by the shutdown strategy this worker reports, and thus by whatever budget our supervisor sets.
+        // Hand the outer router to an HTTP server subtree. The server carries no shutdown timeout of its own, so it
+        // takes its default: how long a connection is given to drain, and the budget that bounds the subtree.
         let mut http_server = HttpServer::from_listen_address(self.listen_address.clone())
             .with_routes(outer)
             .with_server_id(format!("{}-api", self.endpoint_type.name()));
-        if let Some(tls_config) = self.tls_config.clone() {
+        if let Some(tls_config) = self.tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }
-        let http_server = http_server.initialize(process_shutdown).await?;
 
+        let endpoint_type = self.endpoint_type;
+        let name = match endpoint_type {
+            EndpointType::Unprivileged => "unprivileged-api",
+            EndpointType::Privileged => "privileged-api",
+        };
+
+        let mut supervisor = Supervisor::new(name)
+            .expect("API supervisor name is a non-empty constant")
+            .with_auto_shutdown(AutoShutdown::AnySignificant);
+
+        supervisor.add_worker(runtime::nested_supervisor(http_server.into_supervisor()).build());
+        supervisor.add_worker(
+            runtime::supervisable(RouteWorker {
+                inner,
+                base,
+                endpoint_type,
+                listen_address: self.listen_address,
+            })
+            .temporary()
+            .with_significant(true)
+            .build(),
+        );
+
+        supervisor
+    }
+}
+
+/// Keeps an [`APIBuilder`]'s router in step with the dynamic routes currently asserted.
+struct RouteWorker {
+    inner: Arc<ArcSwap<Router>>,
+    base: Router,
+    endpoint_type: EndpointType,
+    listen_address: ListenAddress,
+}
+
+#[async_trait]
+impl Supervisable for RouteWorker {
+    fn name(&self) -> &str {
+        "routes"
+    }
+
+    fn wants_shutdown_signal(&self) -> bool {
+        // The subscription closing is what ends this worker, which happens when the dataspace goes away with the rest
+        // of the subtree.
+        false
+    }
+
+    async fn initialize(&self, _process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
+
+        let inner = Arc::clone(&self.inner);
+        let base = self.base.clone();
         let endpoint_type = self.endpoint_type;
         let listen_address = self.listen_address.clone();
 
@@ -215,12 +270,7 @@ impl Supervisable for APIBuilder {
             // Subscribe to all dynamic route assertions.
             let route_assertions = dataspace.subscribe::<DynamicRoute>(IdentifierFilter::All);
 
-            // The HTTP server owns the shutdown signal: when it fires, the server stops accepting connections and
-            // drains the ones still in flight, and only completes once it has, which is what ends this worker.
-            select! {
-                result = http_server => result,
-                result = run_event_loop(inner, base, route_assertions, endpoint_type) => result,
-            }
+            run_event_loop(inner, base, route_assertions, endpoint_type).await
         }))
     }
 }
@@ -530,7 +580,7 @@ mod tests {
         };
 
         let mut sup = Supervisor::new("test-dynamic-api").unwrap();
-        sup.add_worker(api_builder);
+        sup.add_worker(api_builder.into_supervisor());
         sup.add_worker(route_asserter);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

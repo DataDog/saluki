@@ -367,15 +367,14 @@ impl OtlpServerConfiguration {
             .add_grpc_service(grpc_traces_server)
             .with_http2_only()
             .with_http2_config(self.grpc_http2_config)
-            .with_server_id(self.grpc_server_id);
+            .with_server_id(self.grpc_server_id)
+            .with_worker_pool(worker_pool.clone());
 
         if let Some(tls_config) = grpc_tls_config {
             grpc_server = grpc_server.with_tls_config(tls_config);
         }
 
-        runtime::supervisable(grpc_server)
-            .on_runtime(worker_pool.clone())
-            .spawn();
+        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
 
         // Create and spawn the HTTP server.
         //
@@ -404,15 +403,14 @@ impl OtlpServerConfiguration {
 
         let mut http_server = HttpServer::from_listen_address(self.http_endpoint)
             .add_routes(router)
-            .with_server_id(self.http_server_id);
+            .with_server_id(self.http_server_id)
+            .with_worker_pool(worker_pool.clone());
 
         if let Some(tls_config) = http_tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }
 
-        runtime::supervisable(http_server)
-            .on_runtime(worker_pool.clone())
-            .spawn();
+        runtime::nested_supervisor(http_server.into_supervisor()).spawn();
 
         Ok(())
     }
