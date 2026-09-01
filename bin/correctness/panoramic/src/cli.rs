@@ -237,8 +237,8 @@ impl RunCommand {
     pub fn log_dir(&self) -> PathBuf {
         let base = self.log_dir.clone().unwrap_or_else(std::env::temp_dir);
 
-        // Always append a timestamped subdirectory, even when the user provides a base dir.
-        // TODO: consider not adding a subdirectory when the user provides a desired log dir.
+        // Always append a timestamped subdirectory so artifacts from separate runs never mix. The
+        // reports name the directory they landed in.
         let timestamp = Local::now().format("%Y%m%d-%H%M%S");
         base.join(format!("panoramic-{}", timestamp))
     }

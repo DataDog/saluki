@@ -716,6 +716,10 @@ impl Test for IntegrationConfig {
         self.description.clone()
     }
 
+    fn case_path(&self) -> PathBuf {
+        self.base_path.clone()
+    }
+
     fn timeout(&self) -> Duration {
         self.timeout.0
     }
