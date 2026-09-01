@@ -302,7 +302,7 @@ where
     ///
     /// Two configuration inputs arrive here, and they are not interchangeable: `api_keys` holds the typed live views
     /// the endpoints take their API keys from, while `live_config` is the raw map that the retry policy's secrets gate
-    /// still reads and that API key validation subscribes to for change notifications.
+    /// still reads.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
         api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
@@ -441,7 +441,7 @@ where
         ApiKeyValidator::new(
             self.endpoints.clone(),
             self.client.clone(),
-            self.live_config.clone(),
+            self.api_key_refresher.as_ref().map(ApiKeyRefresher::changes),
             self.config.api_key_validation_interval(),
             self.emitter.clone(),
         )

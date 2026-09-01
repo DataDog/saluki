@@ -6,18 +6,24 @@
 //! writes it when typed configuration reports a new key. The write is an atomic pointer swap, so a
 //! request reads either the previous key or the new one.
 //!
-//! Splitting the read from the write keeps the policy in one place. Trimming, and the decision to
-//! keep the last usable key when configuration supplies none, happen where the key is written rather
-//! than on every read.
+//! Splitting the read from the write keeps the policy in one place. Trimming and input validation
+//! happen where the key is written. Missing, blank, or invalid updates leave the last usable key in
+//! place.
+//!
+//! The refresher signals each write through [`ApiKeyChanges`], so a reader that has to act on a new
+//! key waits for the write rather than racing it.
 
 use std::collections::HashMap;
+use std::future;
 use std::sync::Arc;
 
 use agent_data_plane_config::Live;
 use arc_swap::ArcSwap;
+use http::{header::InvalidHeaderValue, HeaderValue};
 use saluki_common::task::spawn_traced_named;
 use stringtheory::MetaString;
-use tracing::{debug, warn};
+use tokio::sync::watch;
+use tracing::{debug, error, warn};
 
 use super::endpoints::RoutableEndpoint;
 
@@ -32,10 +38,17 @@ pub(crate) struct ApiKeyCell {
 
 impl ApiKeyCell {
     /// Creates a cell holding `api_key`, trimmed.
-    pub(crate) fn new(api_key: &str) -> Self {
-        Self {
-            current: Arc::new(ArcSwap::from_pointee(shared(api_key.trim()))),
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key cannot be used as an HTTP header value.
+    pub(crate) fn new(api_key: &str) -> Result<Self, InvalidHeaderValue> {
+        let api_key = api_key.trim();
+        HeaderValue::try_from(api_key)?;
+
+        Ok(Self {
+            current: Arc::new(ArcSwap::from_pointee(shared(api_key))),
+        })
     }
 
     /// Returns the current API key.
@@ -46,12 +59,16 @@ impl ApiKeyCell {
     /// Replaces the current API key, and reports whether it changed.
     ///
     /// `api_key` is trimmed here so that a caller cannot install a key that differs from the
-    /// configured one only by surrounding whitespace. A blank key, or no key at all, leaves the cell
-    /// alone: a request with no key cannot succeed, so the last usable key stays in place.
+    /// configured one only by surrounding whitespace. A missing, blank, or header-invalid key leaves
+    /// the cell alone, so the last usable key stays in place.
     fn store(&self, api_key: Option<&str>) -> StoreOutcome {
         let Some(api_key) = api_key.map(str::trim).filter(|key| !key.is_empty()) else {
             return StoreOutcome::NoUsableKey;
         };
+
+        if HeaderValue::try_from(api_key).is_err() {
+            return StoreOutcome::InvalidHeaderValue;
+        }
 
         if **self.current.load() == *api_key {
             return StoreOutcome::Unchanged;
@@ -73,11 +90,35 @@ enum StoreOutcome {
     /// Configuration supplied no key, or a blank one, and the cell keeps its key.
     NoUsableKey,
 
+    /// Configuration supplied a key that cannot be used as an HTTP header value.
+    InvalidHeaderValue,
+
     /// Configuration supplied the key the cell already holds.
     Unchanged,
 
     /// The cell now holds a new key.
     Replaced,
+}
+
+/// Notifies a reader that an endpoint's API key changed.
+///
+/// API key validation follows this instead of the configuration update that drove the change: the
+/// refresher installs the new key before it signals, so validation cannot validate a key the request
+/// path has already stopped using.
+#[derive(Clone, Debug)]
+pub(crate) struct ApiKeyChanges {
+    changed: watch::Receiver<()>,
+}
+
+impl ApiKeyChanges {
+    /// Waits until at least one endpoint holds a new API key.
+    ///
+    /// Once the refresher stops, no key can change again, so this never returns.
+    pub(crate) async fn changed(&mut self) {
+        if self.changed.changed().await.is_err() {
+            future::pending().await
+        }
+    }
 }
 
 /// A live view of the configured additional endpoints, keyed by intake URL as configuration spells it.
@@ -157,6 +198,9 @@ struct AdditionalTarget {
 pub(crate) struct ApiKeyRefresher {
     primary: Option<(ApiKeyView, Vec<PrimaryTarget>)>,
     additional: Option<(AdditionalEndpointsView, Vec<AdditionalTarget>)>,
+
+    // Both refresh tasks signal through the one sender, so a reader sees a single stream of changes.
+    changed: Arc<watch::Sender<()>>,
 }
 
 impl ApiKeyRefresher {
@@ -217,7 +261,18 @@ impl ApiKeyRefresher {
             }
         }
 
-        Some(Self { primary, additional })
+        Some(Self {
+            primary,
+            additional,
+            changed: Arc::new(watch::channel(()).0),
+        })
+    }
+
+    /// Returns a handle that reports when an endpoint's API key changes.
+    pub(crate) fn changes(&self) -> ApiKeyChanges {
+        ApiKeyChanges {
+            changed: self.changed.subscribe(),
+        }
     }
 
     /// Spawns one task per bound view.
@@ -225,29 +280,48 @@ impl ApiKeyRefresher {
     /// The two views are independent, so a change to one does not re-read the other.
     pub(crate) fn spawn(self) {
         if let Some((view, targets)) = self.primary {
-            spawn_traced_named("dd-api-key-refresher-primary", refresh_primary(view, targets));
+            spawn_traced_named(
+                "dd-api-key-refresher-primary",
+                refresh_primary(view, targets, Arc::clone(&self.changed)),
+            );
         }
 
         if let Some((view, targets)) = self.additional {
-            spawn_traced_named("dd-api-key-refresher-additional", refresh_additional(view, targets));
+            spawn_traced_named(
+                "dd-api-key-refresher-additional",
+                refresh_additional(view, targets, self.changed),
+            );
         }
     }
 }
 
-async fn refresh_primary(mut view: ApiKeyView, targets: Vec<PrimaryTarget>) {
+async fn refresh_primary(mut view: ApiKeyView, targets: Vec<PrimaryTarget>, changed: Arc<watch::Sender<()>>) {
     loop {
         let api_key = view.changed().await;
+        let mut replaced = false;
         for target in &targets {
-            store(&target.cell, &target.endpoint, api_key.as_deref());
+            replaced |= store(&target.cell, &target.endpoint, api_key.as_deref());
+        }
+
+        // Signalling after the writes is what lets a reader act on keys the endpoints already hold.
+        if replaced {
+            let _ = changed.send(());
         }
     }
 }
 
-async fn refresh_additional(mut view: AdditionalEndpointsView, targets: Vec<AdditionalTarget>) {
+async fn refresh_additional(
+    mut view: AdditionalEndpointsView, targets: Vec<AdditionalTarget>, changed: Arc<watch::Sender<()>>,
+) {
     loop {
         let configured = view.changed().await;
+        let mut replaced = false;
         for target in &targets {
-            store(&target.cell, &target.url, additional_api_key(&configured, target));
+            replaced |= store(&target.cell, &target.url, additional_api_key(&configured, target));
+        }
+
+        if replaced {
+            let _ = changed.send(());
         }
     }
 }
@@ -260,16 +334,25 @@ fn additional_api_key<'a>(configured: &'a HashMap<String, Vec<String>>, target: 
         .map(String::as_str)
 }
 
-fn store(cell: &ApiKeyCell, endpoint: &str, api_key: Option<&str>) {
-    match cell.store(api_key) {
+/// Stores `api_key` in `cell`, logging what it did, and returns whether the cell holds a new key.
+fn store(cell: &ApiKeyCell, endpoint: &str, api_key: Option<&str>) -> bool {
+    let outcome = cell.store(api_key);
+    match outcome {
         StoreOutcome::NoUsableKey => warn!(
             endpoint,
             "Configuration no longer supplies a usable API key for this endpoint. Continuing with the previously \
              configured API key."
         ),
+        StoreOutcome::InvalidHeaderValue => error!(
+            endpoint,
+            "Configuration supplied an API key that cannot be used as an HTTP header value. Continuing with the \
+             previously configured API key."
+        ),
         StoreOutcome::Unchanged => {}
         StoreOutcome::Replaced => debug!(endpoint, "Refreshed endpoint API key."),
     }
+
+    outcome == StoreOutcome::Replaced
 }
 
 #[cfg(test)]
@@ -361,34 +444,46 @@ mod tests {
 
     #[test]
     fn a_cell_trims_the_key_it_is_created_with() {
-        let cell = ApiKeyCell::new("  key-1  ");
+        let cell = ApiKeyCell::new("  key-1  ").expect("the key should be valid");
         assert_eq!("key-1", &*cell.load());
     }
 
     #[test]
+    fn a_cell_rejects_an_initial_key_that_cannot_be_an_http_header() {
+        assert!(ApiKeyCell::new("key\nvalue").is_err());
+    }
+
+    #[test]
     fn a_store_replaces_a_key_that_differs() {
-        let cell = ApiKeyCell::new("key-1");
+        let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
         assert_eq!(StoreOutcome::Replaced, cell.store(Some("key-2")));
         assert_eq!("key-2", &*cell.load());
     }
 
     #[test]
     fn a_store_trims_the_key_before_comparing_it() {
-        let cell = ApiKeyCell::new("key-1");
+        let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
         assert_eq!(StoreOutcome::Unchanged, cell.store(Some("  key-1  ")));
         assert_eq!("key-1", &*cell.load());
     }
 
     #[test]
     fn a_store_of_a_blank_key_leaves_the_last_usable_key() {
-        let cell = ApiKeyCell::new("key-1");
+        let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
         assert_eq!(StoreOutcome::NoUsableKey, cell.store(Some("   ")));
         assert_eq!("key-1", &*cell.load());
     }
 
     #[test]
+    fn a_store_of_a_header_invalid_key_leaves_the_last_usable_key() {
+        let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
+        assert_eq!(StoreOutcome::InvalidHeaderValue, cell.store(Some("key\nvalue")));
+        assert_eq!("key-1", &*cell.load());
+    }
+
+    #[test]
     fn a_store_of_no_key_leaves_the_last_usable_key() {
-        let cell = ApiKeyCell::new("key-1");
+        let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
         assert_eq!(StoreOutcome::NoUsableKey, cell.store(None));
         assert_eq!("key-1", &*cell.load());
     }
@@ -435,6 +530,43 @@ mod tests {
         live.store(config("rotated-key", &[]));
 
         await_api_key(endpoints[0].endpoint(), "rotated-key").await;
+    }
+
+    #[tokio::test]
+    async fn a_change_is_signalled_only_once_the_endpoint_holds_the_new_key() {
+        let live = LiveConfiguration::new(config("start-key", &[]));
+        let endpoints = datadog_endpoints(&[]);
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
+        let mut changes = refresher.changes();
+        refresher.spawn();
+
+        live.store(config("rotated-key", &[]));
+
+        tokio::time::timeout(Duration::from_secs(2), changes.changed())
+            .await
+            .expect("the rotation should signal a change");
+        assert_eq!("rotated-key", &*endpoints[0].endpoint().api_key());
+    }
+
+    #[tokio::test]
+    async fn a_key_the_cell_rejects_signals_nothing() {
+        let live = LiveConfiguration::new(config("start-key", &[]));
+        let endpoints = datadog_endpoints(&[]);
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
+        let mut changes = refresher.changes();
+        refresher.spawn();
+
+        live.store(config("key\nvalue", &[]));
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), changes.changed())
+                .await
+                .is_err(),
+            "a rejected key leaves the endpoint's key alone, so there is nothing to revalidate"
+        );
+        assert_eq!("start-key", &*endpoints[0].endpoint().api_key());
     }
 
     #[tokio::test]

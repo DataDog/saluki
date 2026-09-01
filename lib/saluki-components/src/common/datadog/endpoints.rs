@@ -206,7 +206,13 @@ pub(crate) fn is_datadog_url(url: &Url) -> bool {
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub(crate) enum EndpointError {
-    Parse { source: url::ParseError, endpoint: String },
+    Parse {
+        source: url::ParseError,
+        endpoint: String,
+    },
+
+    #[snafu(display("API key contains characters that are invalid in HTTP headers."))]
+    InvalidApiKey,
 }
 
 /// Returns the resolved endpoints for each configured additional endpoint and API key.
@@ -218,8 +224,7 @@ pub(crate) enum EndpointError {
 ///
 /// # Errors
 ///
-/// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
-/// the necessary normalization / modifications, an error will be returned.
+/// Returns an error if an endpoint URL is invalid or an API key cannot be used as an HTTP header value.
 pub(crate) fn resolve_additional_endpoints(
     additional_endpoints: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
@@ -243,7 +248,7 @@ pub(crate) fn resolve_additional_endpoints(
             resolved.push(ResolvedEndpoint {
                 endpoint: endpoint.clone(),
                 configured_endpoint: raw_endpoint.to_string(),
-                api_key: ApiKeyCell::new(trimmed_api_key),
+                api_key: ApiKeyCell::new(trimmed_api_key).map_err(|_| EndpointError::InvalidApiKey)?,
                 api_key_index: Some(index),
                 raw_additional_url: Some(raw_endpoint.to_string()),
                 logs_authority: logs_authority.clone(),
@@ -411,8 +416,7 @@ impl ResolvedEndpoint {
     ///
     /// # Errors
     ///
-    /// If the given endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the necessary
-    /// normalization / modifications, an error will be returned.
+    /// Returns an error if the endpoint URL is invalid or the API key cannot be used as an HTTP header value.
     pub(crate) fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
         let logs_authority = compute_logs_authority(&endpoint);
@@ -420,7 +424,7 @@ impl ResolvedEndpoint {
         Ok(Self {
             endpoint,
             configured_endpoint: raw_endpoint.to_string(),
-            api_key: ApiKeyCell::new(api_key),
+            api_key: ApiKeyCell::new(api_key).map_err(|_| EndpointError::InvalidApiKey)?,
             api_key_index: None,
             raw_additional_url: None,
             logs_authority,
