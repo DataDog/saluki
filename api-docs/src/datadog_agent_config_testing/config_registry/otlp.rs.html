@@ -421,20 +421,20 @@
 <a href=#421 id=421 data-nosnippet>421</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#422 id=422 data-nosnippet>422</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#423 id=423 data-nosnippet>423</a>    };
-<a href=#424 id=424 data-nosnippet>424</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.tls.ca_file`-gRPC TLS CA file path
-<a href=#425 id=425 data-nosnippet>425</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE = SalukiAnnotation {
-<a href=#426 id=426 data-nosnippet>426</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE,
+<a href=#424 id=424 data-nosnippet>424</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.max_concurrent_streams`-HTTP/2 max concurrent streams (0 = unlimited)
+<a href=#425 id=425 data-nosnippet>425</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS = SalukiAnnotation {
+<a href=#426 id=426 data-nosnippet>426</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS,
 <a href=#427 id=427 data-nosnippet>427</a>        support_level: SupportLevel::Full,
 <a href=#428 id=428 data-nosnippet>428</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#429 id=429 data-nosnippet>429</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#430 id=430 data-nosnippet>430</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
-<a href=#431 id=431 data-nosnippet>431</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#431 id=431 data-nosnippet>431</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#432 id=432 data-nosnippet>432</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#433 id=433 data-nosnippet>433</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#434 id=434 data-nosnippet>434</a>    };
-<a href=#435 id=435 data-nosnippet>435</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.tls.cert_file`-gRPC TLS cert file path
-<a href=#436 id=436 data-nosnippet>436</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE = SalukiAnnotation {
-<a href=#437 id=437 data-nosnippet>437</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE,
+<a href=#435 id=435 data-nosnippet>435</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.tls.ca_file`-gRPC TLS CA file path
+<a href=#436 id=436 data-nosnippet>436</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE = SalukiAnnotation {
+<a href=#437 id=437 data-nosnippet>437</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE,
 <a href=#438 id=438 data-nosnippet>438</a>        support_level: SupportLevel::Full,
 <a href=#439 id=439 data-nosnippet>439</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#440 id=440 data-nosnippet>440</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -443,9 +443,9 @@
 <a href=#443 id=443 data-nosnippet>443</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#444 id=444 data-nosnippet>444</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#445 id=445 data-nosnippet>445</a>    };
-<a href=#446 id=446 data-nosnippet>446</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.tls.key_file`-gRPC TLS key file path
-<a href=#447 id=447 data-nosnippet>447</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE = SalukiAnnotation {
-<a href=#448 id=448 data-nosnippet>448</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE,
+<a href=#446 id=446 data-nosnippet>446</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.tls.cert_file`-gRPC TLS cert file path
+<a href=#447 id=447 data-nosnippet>447</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE = SalukiAnnotation {
+<a href=#448 id=448 data-nosnippet>448</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE,
 <a href=#449 id=449 data-nosnippet>449</a>        support_level: SupportLevel::Full,
 <a href=#450 id=450 data-nosnippet>450</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#451 id=451 data-nosnippet>451</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -454,9 +454,9 @@
 <a href=#454 id=454 data-nosnippet>454</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#455 id=455 data-nosnippet>455</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#456 id=456 data-nosnippet>456</a>    };
-<a href=#457 id=457 data-nosnippet>457</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.allowed_headers`-HTTP CORS allowed headers
-<a href=#458 id=458 data-nosnippet>458</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS = SalukiAnnotation {
-<a href=#459 id=459 data-nosnippet>459</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS,
+<a href=#457 id=457 data-nosnippet>457</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.grpc.tls.key_file`-gRPC TLS key file path
+<a href=#458 id=458 data-nosnippet>458</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE = SalukiAnnotation {
+<a href=#459 id=459 data-nosnippet>459</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE,
 <a href=#460 id=460 data-nosnippet>460</a>        support_level: SupportLevel::Full,
 <a href=#461 id=461 data-nosnippet>461</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#462 id=462 data-nosnippet>462</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -465,9 +465,9 @@
 <a href=#465 id=465 data-nosnippet>465</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#466 id=466 data-nosnippet>466</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#467 id=467 data-nosnippet>467</a>    };
-<a href=#468 id=468 data-nosnippet>468</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.allowed_origins`-HTTP CORS allowed origins
-<a href=#469 id=469 data-nosnippet>469</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS = SalukiAnnotation {
-<a href=#470 id=470 data-nosnippet>470</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS,
+<a href=#468 id=468 data-nosnippet>468</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.allowed_headers`-HTTP CORS allowed headers
+<a href=#469 id=469 data-nosnippet>469</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS = SalukiAnnotation {
+<a href=#470 id=470 data-nosnippet>470</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS,
 <a href=#471 id=471 data-nosnippet>471</a>        support_level: SupportLevel::Full,
 <a href=#472 id=472 data-nosnippet>472</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#473 id=473 data-nosnippet>473</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -476,9 +476,9 @@
 <a href=#476 id=476 data-nosnippet>476</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#477 id=477 data-nosnippet>477</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#478 id=478 data-nosnippet>478</a>    };
-<a href=#479 id=479 data-nosnippet>479</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.exposed_headers`-HTTP CORS exposed headers
-<a href=#480 id=480 data-nosnippet>480</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS = SalukiAnnotation {
-<a href=#481 id=481 data-nosnippet>481</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS,
+<a href=#479 id=479 data-nosnippet>479</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.allowed_origins`-HTTP CORS allowed origins
+<a href=#480 id=480 data-nosnippet>480</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS = SalukiAnnotation {
+<a href=#481 id=481 data-nosnippet>481</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS,
 <a href=#482 id=482 data-nosnippet>482</a>        support_level: SupportLevel::Full,
 <a href=#483 id=483 data-nosnippet>483</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#484 id=484 data-nosnippet>484</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -487,9 +487,9 @@
 <a href=#487 id=487 data-nosnippet>487</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#488 id=488 data-nosnippet>488</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#489 id=489 data-nosnippet>489</a>    };
-<a href=#490 id=490 data-nosnippet>490</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.max_age`-HTTP CORS max age
-<a href=#491 id=491 data-nosnippet>491</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE = SalukiAnnotation {
-<a href=#492 id=492 data-nosnippet>492</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE,
+<a href=#490 id=490 data-nosnippet>490</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.exposed_headers`-HTTP CORS exposed headers
+<a href=#491 id=491 data-nosnippet>491</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS = SalukiAnnotation {
+<a href=#492 id=492 data-nosnippet>492</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS,
 <a href=#493 id=493 data-nosnippet>493</a>        support_level: SupportLevel::Full,
 <a href=#494 id=494 data-nosnippet>494</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#495 id=495 data-nosnippet>495</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -498,9 +498,9 @@
 <a href=#498 id=498 data-nosnippet>498</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#499 id=499 data-nosnippet>499</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#500 id=500 data-nosnippet>500</a>    };
-<a href=#501 id=501 data-nosnippet>501</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.tls.ca_file`-HTTP TLS CA file path
-<a href=#502 id=502 data-nosnippet>502</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE = SalukiAnnotation {
-<a href=#503 id=503 data-nosnippet>503</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE,
+<a href=#501 id=501 data-nosnippet>501</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.cors.max_age`-HTTP CORS max age
+<a href=#502 id=502 data-nosnippet>502</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE = SalukiAnnotation {
+<a href=#503 id=503 data-nosnippet>503</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE,
 <a href=#504 id=504 data-nosnippet>504</a>        support_level: SupportLevel::Full,
 <a href=#505 id=505 data-nosnippet>505</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#506 id=506 data-nosnippet>506</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -509,20 +509,20 @@
 <a href=#509 id=509 data-nosnippet>509</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#510 id=510 data-nosnippet>510</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#511 id=511 data-nosnippet>511</a>    };
-<a href=#512 id=512 data-nosnippet>512</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.tls.cert_file`-HTTP TLS cert file path
-<a href=#513 id=513 data-nosnippet>513</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE = SalukiAnnotation {
-<a href=#514 id=514 data-nosnippet>514</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE,
+<a href=#512 id=512 data-nosnippet>512</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.max_request_body_size`-HTTP max request body size in bytes (0 = 20 MiB)
+<a href=#513 id=513 data-nosnippet>513</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE = SalukiAnnotation {
+<a href=#514 id=514 data-nosnippet>514</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE,
 <a href=#515 id=515 data-nosnippet>515</a>        support_level: SupportLevel::Full,
 <a href=#516 id=516 data-nosnippet>516</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#517 id=517 data-nosnippet>517</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#518 id=518 data-nosnippet>518</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
-<a href=#519 id=519 data-nosnippet>519</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#519 id=519 data-nosnippet>519</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#520 id=520 data-nosnippet>520</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#521 id=521 data-nosnippet>521</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#522 id=522 data-nosnippet>522</a>    };
-<a href=#523 id=523 data-nosnippet>523</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.tls.key_file`-HTTP TLS key file path
-<a href=#524 id=524 data-nosnippet>524</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE = SalukiAnnotation {
-<a href=#525 id=525 data-nosnippet>525</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE,
+<a href=#523 id=523 data-nosnippet>523</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.tls.ca_file`-HTTP TLS CA file path
+<a href=#524 id=524 data-nosnippet>524</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE = SalukiAnnotation {
+<a href=#525 id=525 data-nosnippet>525</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE,
 <a href=#526 id=526 data-nosnippet>526</a>        support_level: SupportLevel::Full,
 <a href=#527 id=527 data-nosnippet>527</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#528 id=528 data-nosnippet>528</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -531,9 +531,9 @@
 <a href=#531 id=531 data-nosnippet>531</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#532 id=532 data-nosnippet>532</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#533 id=533 data-nosnippet>533</a>    };
-<a href=#534 id=534 data-nosnippet>534</a>    <span class="doccomment">/// `tags`-Global tags for EKS Fargate OTLP metrics
-<a href=#535 id=535 data-nosnippet>535</a>    </span>TAGS = SalukiAnnotation {
-<a href=#536 id=536 data-nosnippet>536</a>        schema: <span class="kw-2">&amp;</span>schema::TAGS,
+<a href=#534 id=534 data-nosnippet>534</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.tls.cert_file`-HTTP TLS cert file path
+<a href=#535 id=535 data-nosnippet>535</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE = SalukiAnnotation {
+<a href=#536 id=536 data-nosnippet>536</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE,
 <a href=#537 id=537 data-nosnippet>537</a>        support_level: SupportLevel::Full,
 <a href=#538 id=538 data-nosnippet>538</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#539 id=539 data-nosnippet>539</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -542,5 +542,27 @@
 <a href=#542 id=542 data-nosnippet>542</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#543 id=543 data-nosnippet>543</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#544 id=544 data-nosnippet>544</a>    };
-<a href=#545 id=545 data-nosnippet>545</a>}
+<a href=#545 id=545 data-nosnippet>545</a>    <span class="doccomment">/// `otlp_config.receiver.protocols.http.tls.key_file`-HTTP TLS key file path
+<a href=#546 id=546 data-nosnippet>546</a>    </span>OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE = SalukiAnnotation {
+<a href=#547 id=547 data-nosnippet>547</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE,
+<a href=#548 id=548 data-nosnippet>548</a>        support_level: SupportLevel::Full,
+<a href=#549 id=549 data-nosnippet>549</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#550 id=550 data-nosnippet>550</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#551 id=551 data-nosnippet>551</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#552 id=552 data-nosnippet>552</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#553 id=553 data-nosnippet>553</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#554 id=554 data-nosnippet>554</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
+<a href=#555 id=555 data-nosnippet>555</a>    };
+<a href=#556 id=556 data-nosnippet>556</a>    <span class="doccomment">/// `tags`-Global tags for EKS Fargate OTLP metrics
+<a href=#557 id=557 data-nosnippet>557</a>    </span>TAGS = SalukiAnnotation {
+<a href=#558 id=558 data-nosnippet>558</a>        schema: <span class="kw-2">&amp;</span>schema::TAGS,
+<a href=#559 id=559 data-nosnippet>559</a>        support_level: SupportLevel::Full,
+<a href=#560 id=560 data-nosnippet>560</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#561 id=561 data-nosnippet>561</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#562 id=562 data-nosnippet>562</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#563 id=563 data-nosnippet>563</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#564 id=564 data-nosnippet>564</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#565 id=565 data-nosnippet>565</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
+<a href=#566 id=566 data-nosnippet>566</a>    };
+<a href=#567 id=567 data-nosnippet>567</a>}
 </code></pre></div></section></main></body></html>
