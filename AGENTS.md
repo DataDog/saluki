@@ -33,6 +33,8 @@ of software projects, in addition to making them harder to maintain and debug ov
   not for production use and supporting it need not be a blocker during feature development.
 - We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
 - Our Rust code wraps at 120 characters.
+- Customer-visible changes need a Reno release note under `releasenotes/notes/`, created with `reno new` and written in
+  reStructuredText; read `.claude/skills/create-release-note/SKILL.md`.
 - For configuration work, read `.claude/skills/config-system/SKILL.md`.
   - Keys in `lib/datadog-agent/config/schema/core/` are Datadog; absent keys are Saluki-only.
   - Edit `schema_overlay.yaml` for Datadog inventory; generated code files are output.

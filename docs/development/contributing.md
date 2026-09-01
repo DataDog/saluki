@@ -55,6 +55,9 @@ make ensure-python-venv
 .venv/bin/reno new describe-the-change --edit
 ```
 
+Always create the file with `reno new`: the hexadecimal suffix it appends is the note's unique identifier, and two notes
+that share one break release-note rendering at release time.
+
 Keep the applicable section and remove unused template sections. For example:
 
 ```yaml
@@ -62,6 +65,9 @@ fixes:
   - |
     Fix a listener shutdown race that could drop telemetry during process exit.
 ```
+
+Reno renders note prose as reStructuredText, so write ``double backticks`` for inline code and
+`` `link text <https://example.test>`_ `` for links. Markdown spellings appear verbatim in the published release notes.
 
 Validate notes locally with `make check-release-notes`.
 

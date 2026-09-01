@@ -102,6 +102,56 @@ class ReleaseNoteValidationTest(unittest.TestCase):
 
         self.assertTrue(subject.validate_note_file(path))
 
+    def test_rejects_markdown_where_reno_renders_restructuredtext(self):
+        markdown_entries = (
+            "See [the docs](https://example.test) for details.",
+            "Set `dogstatsd_port` to 8125.",
+            "This is __important__ to note.",
+            "# Heading",
+            "```yaml",
+            "> Quoted text.",
+            "![diagram](https://example.test/diagram.png)",
+        )
+        for entry in markdown_entries:
+            with self.subTest(entry=entry):
+                path = self.write_note("fix-listener-0123456789abcdef.yaml", f"fixes:\n  - |\n    {entry}\n")
+
+                self.assertTrue(any("uses Markdown" in error for error in subject.validate_note_file(path)))
+
+    def test_accepts_restructuredtext_markup(self):
+        entries = (
+            "Set ``dogstatsd_port`` to 8125.",
+            "See `the docs <https://example.test>`_ for details.",
+            "This is **important** to note.",
+            "Rename metric_name_prefix to metric_prefix.",
+        )
+        for entry in entries:
+            with self.subTest(entry=entry):
+                path = self.write_note("fix-listener-0123456789abcdef.yaml", f"fixes:\n  - |\n    {entry}\n")
+
+                self.assertEqual(subject.validate_note_file(path), [])
+
+    def test_rejects_notes_sharing_a_reno_unique_identifier(self):
+        notes = [
+            self.write_note("fix-listener-0123456789abcdef.yaml", "fixes:\n  - First.\n"),
+            self.write_note("fix-forwarder-0123456789abcdef.yaml", "fixes:\n  - Second.\n"),
+        ]
+
+        errors = subject.find_duplicate_note_ids(notes)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("0123456789abcdef", errors[0])
+        self.assertIn("fix-forwarder-0123456789abcdef.yaml", errors[0])
+        self.assertIn("fix-listener-0123456789abcdef.yaml", errors[0])
+
+    def test_accepts_notes_with_distinct_reno_unique_identifiers(self):
+        notes = [
+            self.write_note("fix-listener-0123456789abcdef.yaml", "fixes:\n  - First.\n"),
+            self.write_note("fix-forwarder-fedcba9876543210.yaml", "fixes:\n  - Second.\n"),
+        ]
+
+        self.assertEqual(subject.find_duplicate_note_ids(notes), [])
+
 
 class ReleaseNoteRenderingTest(unittest.TestCase):
     def setUp(self):
