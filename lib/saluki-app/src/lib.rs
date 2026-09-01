@@ -9,7 +9,6 @@ pub mod accounting;
 pub mod api;
 pub mod bootstrap;
 pub mod config;
-pub mod dynamic_api;
 pub mod logging;
 pub mod metrics;
 mod tls;

@@ -28,8 +28,8 @@
 //! # }
 //! ```
 //!
-//! [`merge_grpc_routes`] is for callers that build and serve their own router, such as those still on
-//! [`UnsupervisedHttpServer`][super::http::UnsupervisedHttpServer].
+//! [`merge_grpc_routes`] is for callers that build their own router up-front and hand it over with
+//! [`HttpServer::with_routes`][super::http::HttpServer::with_routes], rather than accumulating routes on the server.
 
 use std::{
     convert::Infallible,
