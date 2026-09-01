@@ -456,6 +456,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.receiver.protocols.grpc.include_metadata`-gRPC metadata propagation (not supported)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_INCLUDE_METADATA = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_INCLUDE_METADATA,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`-gRPC keepalive: min time between pings
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_ENFORCEMENT_POLICY_MIN_TIME = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_ENFORCEMENT_POLICY_MIN_TIME,
@@ -481,6 +492,17 @@ crate::declare_annotations! {
     /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`-gRPC keepalive: max connection idle
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_IDLE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_IDLE,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.read_buffer_size`-gRPC read buffer size (not supported)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_READ_BUFFER_SIZE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_READ_BUFFER_SIZE,
         support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -647,6 +669,28 @@ crate::declare_annotations! {
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_PATH = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_PATH,
         support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.write_buffer_size`-gRPC write buffer size (not supported)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_WRITE_BUFFER_SIZE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_WRITE_BUFFER_SIZE,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.include_metadata`-HTTP metadata propagation (not supported)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_INCLUDE_METADATA = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_INCLUDE_METADATA,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],

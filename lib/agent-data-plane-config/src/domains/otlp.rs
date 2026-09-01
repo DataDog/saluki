@@ -354,8 +354,14 @@ pub struct GrpcReceiver {
     /// Transport the gRPC receiver binds. Defaults to `tcp`.
     pub transport: GrpcTransport,
 
+    /// HTTP/2 maximum concurrent streams per connection.
+    ///
+    /// Defaults to `0`, which means no limit (the server applies no cap). A positive value sets
+    /// the `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting.
+    pub max_concurrent_streams: u32,
+
     /// Server-side keepalive parameters. Always present; zero durations are resolved to the
-    /// grpc-go defaults (2 h interval, 20 s timeout) by the translator.
+    /// grpc-go defaults (2 h interval, 20 s timeout) by the translator.
     pub keepalive: KeepaliveServerParameters,
 
     /// TLS settings for the gRPC receiver.
@@ -377,6 +383,12 @@ pub struct HttpReceiver {
 
     /// TLS settings for the HTTP receiver.
     pub tls: Tls,
+
+    /// Maximum HTTP request body size, in bytes.
+    ///
+    /// Defaults to `0`, which applies the 20 MiB limit used by the Datadog Agent. A positive value
+    /// sets the limit in bytes.
+    pub max_request_body_size: u64,
 }
 
 impl Default for HttpReceiver {
@@ -387,6 +399,7 @@ impl Default for HttpReceiver {
             transport: "tcp".to_string(),
             cors: Cors::default(),
             tls: Tls::default(),
+            max_request_body_size: 0,
         }
     }
 }
@@ -501,7 +514,7 @@ impl Default for Contexts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CumulativeMonotonicMode, GrpcTransport, InitialCumulativeMonotonicValue};
+    use super::{CumulativeMonotonicMode, GrpcReceiver, GrpcTransport, HttpReceiver, InitialCumulativeMonotonicValue};
 
     #[test]
     fn grpc_transport_parses_known_values() {
@@ -569,5 +582,17 @@ mod tests {
             error.to_string(),
             "unknown initial cumulative monotonic value `unsupported`; expected `auto`, `drop`, or `keep`"
         );
+    }
+
+    #[test]
+    fn grpc_receiver_defaults_to_agent_compatible_values() {
+        let grpc = GrpcReceiver::default();
+        assert_eq!(grpc.max_concurrent_streams, 0, "0 means no limit (Agent default)");
+    }
+
+    #[test]
+    fn http_receiver_defaults_to_agent_compatible_values() {
+        let http = HttpReceiver::default();
+        assert_eq!(http.max_request_body_size, 0, "0 means 20 MiB default (Agent default)");
     }
 }
