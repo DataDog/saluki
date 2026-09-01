@@ -421,6 +421,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.receiver.protocols.grpc.max_concurrent_streams`-HTTP/2 max concurrent streams (0 = unlimited)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.receiver.protocols.grpc.tls.ca_file`-gRPC TLS CA file path
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE,
@@ -495,6 +506,17 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.max_request_body_size`-HTTP max request body size in bytes (0 = 20 MiB)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };

@@ -129,6 +129,8 @@ impl RelayBuilder for OtlpRelayConfiguration {
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
             grpc_keepalive: resolve_grpc_keepalive(&self.receiver.grpc.keepalive),
+            grpc_max_concurrent_streams: self.receiver.grpc.max_concurrent_streams,
+            http_max_request_body_size: self.receiver.http.max_request_body_size,
             cors: cors_configuration(&self.receiver.http.cors),
             http_tls_config,
             grpc_tls_config,
@@ -145,6 +147,8 @@ pub struct OtlpRelay {
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
+    grpc_max_concurrent_streams: u32,
+    http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls_config: Option<OtlpTlsConfiguration>,
     grpc_tls_config: Option<OtlpTlsConfiguration>,
@@ -159,6 +163,8 @@ impl Relay for OtlpRelay {
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_keepalive,
+            grpc_max_concurrent_streams,
+            http_max_request_body_size,
             cors,
             http_tls_config,
             grpc_tls_config,
@@ -181,7 +187,9 @@ impl Relay for OtlpRelay {
             grpc_max_recv_msg_size_bytes,
         )
         .with_cors(cors)
-        .with_grpc_keepalive(grpc_keepalive);
+        .with_grpc_keepalive(grpc_keepalive)
+        .with_grpc_max_concurrent_streams(grpc_max_concurrent_streams)
+        .with_http_max_request_body_size(http_max_request_body_size);
 
         if let Some(tls) = http_tls_config {
             server_config = server_config.with_http_tls(tls);

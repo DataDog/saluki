@@ -1636,6 +1636,10 @@ pub struct OtlpConfigReceiverProtocolsGrpc {
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_concurrent_streams: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_recv_msg_size_mib: i64,
 
     #[serde(default)]
@@ -1653,6 +1657,7 @@ impl Default for OtlpConfigReceiverProtocolsGrpc {
         Self {
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint(),
             keepalive: Default::default(),
+            max_concurrent_streams: Default::default(),
             max_recv_msg_size_mib: Default::default(),
             tls: Default::default(),
             transport: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport(),
@@ -1753,6 +1758,10 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     pub endpoint: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_request_body_size: i64,
+
+    #[serde(default)]
     pub tls: OtlpConfigReceiverProtocolsHttpTls,
 }
 
@@ -1761,6 +1770,7 @@ impl Default for OtlpConfigReceiverProtocolsHttp {
         Self {
             cors: Default::default(),
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
+            max_request_body_size: Default::default(),
             tls: Default::default(),
         }
     }

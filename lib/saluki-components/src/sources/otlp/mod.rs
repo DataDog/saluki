@@ -220,6 +220,8 @@ impl SourceBuilder for OtlpConfiguration {
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_keepalive = resolve_grpc_keepalive(&self.otlp.receiver.grpc.keepalive);
+        let grpc_max_concurrent_streams = self.otlp.receiver.grpc.max_concurrent_streams;
+        let http_max_request_body_size = self.otlp.receiver.http.max_request_body_size;
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
         let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
         let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
@@ -234,6 +236,8 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             grpc_keepalive,
+            grpc_max_concurrent_streams,
+            http_max_request_body_size,
             metrics_translator_config,
             metric_tags,
             default_hostname: self.default_hostname.clone(),
@@ -263,6 +267,8 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
+    grpc_max_concurrent_streams: u32,
+    http_max_request_body_size: u64,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,
     default_hostname: MetaString,
@@ -284,6 +290,8 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_keepalive,
+            grpc_max_concurrent_streams,
+            http_max_request_body_size,
             metrics_translator_config,
             metric_tags,
             default_hostname,
@@ -318,7 +326,9 @@ impl Source for Otlp {
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
                 .with_cors(cors)
-                .with_grpc_keepalive(grpc_keepalive);
+                .with_grpc_keepalive(grpc_keepalive)
+                .with_grpc_max_concurrent_streams(grpc_max_concurrent_streams)
+                .with_http_max_request_body_size(http_max_request_body_size);
 
         if let Some(tls) = http_tls_config {
             server_config = server_config.with_http_tls(tls);

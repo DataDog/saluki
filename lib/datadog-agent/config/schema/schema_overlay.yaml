@@ -2235,8 +2235,19 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.include_metadata:
-    support: unknown
-    description: "gRPC include metadata in context"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "gRPC metadata propagation (not supported)"
+    documentation: |-
+      The Datadog Agent uses `include_metadata` to control whether incoming gRPC request metadata
+      (headers) is propagated to downstream consumers in the OpenTelemetry Collector pipeline
+      context. ADP does not support this setting.
+
+      ADP's OTLP receiver does not propagate request metadata to downstream components. The gRPC
+      and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+      setting has no effect in ADP.
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time:
     support: none
@@ -2358,8 +2369,14 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_concurrent_streams:
-    support: unknown
-    description: "gRPC max concurrent streams"
+    support: full
+    pipelines: [otlp]
+    description: "HTTP/2 max concurrent streams (0 = unlimited)"
+    test_support:
+      used_by: [TypedConfigSystem]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
     support: full
@@ -2372,8 +2389,21 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.read_buffer_size:
-    support: unknown
-    description: "gRPC read buffer size"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "gRPC read buffer size (not supported)"
+    documentation: |-
+      The Datadog Agent uses `read_buffer_size` to set the gRPC server's per-connection read buffer
+      size in bytes (default `524288`). ADP does not support this setting.
+
+      Tonic (the gRPC library ADP uses) does not expose a fixed read buffer size. Its I/O stack
+      (hyper → h2 → tokio) uses a expandable `BytesMut` buffer that starts at 8 KiB and expands
+      dynamically to accommodate incoming frames, then retains the larger size for subsequent
+      reads. This auto-tunes to the typical message size per connection without configuration.
+
+      Setting `read_buffer_size` has no effect in ADP.
 
   otlp_config.receiver.protocols.grpc.tls.ca_file:
     support: full
@@ -2533,8 +2563,22 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.write_buffer_size:
-    support: unknown
-    description: "gRPC write buffer size"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "gRPC write buffer size (not supported)"
+    documentation: |-
+      The Datadog Agent uses `write_buffer_size` to set the gRPC server's per-connection write buffer
+      size in bytes (default `0`, which selects grpc-go's built-in default). ADP does not support this
+      setting.
+
+      Tonic (the gRPC library ADP uses) does not expose a fixed write buffer size. Its I/O stack
+      (hyper → h2 → tokio) manages write buffering internally with adaptive defaults. The closest
+      available knob, h2's `max_send_buffer_size`, controls backpressure rather than per-syscall write
+      sizing and is not surfaced by Tonic.
+
+      Setting `write_buffer_size` has no effect in ADP.
 
   otlp_config.receiver.protocols.http.compression_algorithms:
     support: unknown
@@ -2590,8 +2634,19 @@ inventory:
     description: "HTTP idle timeout"
 
   otlp_config.receiver.protocols.http.include_metadata:
-    support: unknown
-    description: "HTTP include metadata in context"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "HTTP metadata propagation (not supported)"
+    documentation: |-
+      The Datadog Agent uses `include_metadata` to control whether incoming HTTP request headers
+      are propagated to downstream consumers in the OpenTelemetry Collector pipeline context. ADP
+      does not support this setting.
+
+      ADP's OTLP receiver does not propagate request headers to downstream components. The gRPC
+      and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+      setting has no effect in ADP.
 
   otlp_config.receiver.protocols.http.keep_alives_enabled:
     support: unknown
@@ -2602,8 +2657,14 @@ inventory:
     description: "HTTP logs URL path"
 
   otlp_config.receiver.protocols.http.max_request_body_size:
-    support: unknown
-    description: "HTTP max request body size"
+    support: full
+    pipelines: [otlp]
+    description: "HTTP max request body size in bytes (0 = 20 MiB)"
+    test_support:
+      used_by: [TypedConfigSystem]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.metrics_url_path:
     support: unknown
