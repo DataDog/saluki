@@ -70,6 +70,10 @@ pub struct Metrics {
     logs_received: Counter,
     bytes_received: Counter,
     spans_received: Counter,
+    metrics_errors_decode: Counter,
+    metrics_errors_channel: Counter,
+    metrics_errors_dispatch: Counter,
+    metrics_errors_flush: Counter,
 }
 
 impl Metrics {
@@ -89,6 +93,22 @@ impl Metrics {
         &self.bytes_received
     }
 
+    pub fn metrics_errors_decode(&self) -> &Counter {
+        &self.metrics_errors_decode
+    }
+
+    pub fn metrics_errors_channel(&self) -> &Counter {
+        &self.metrics_errors_channel
+    }
+
+    pub fn metrics_errors_dispatch(&self) -> &Counter {
+        &self.metrics_errors_dispatch
+    }
+
+    pub fn metrics_errors_flush(&self) -> &Counter {
+        &self.metrics_errors_flush
+    }
+
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_tests() -> Self {
@@ -97,6 +117,10 @@ impl Metrics {
             logs_received: Counter::noop(),
             bytes_received: Counter::noop(),
             spans_received: Counter::noop(),
+            metrics_errors_decode: Counter::noop(),
+            metrics_errors_channel: Counter::noop(),
+            metrics_errors_dispatch: Counter::noop(),
+            metrics_errors_flush: Counter::noop(),
         }
     }
 }
@@ -113,6 +137,10 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+        metrics_errors_decode: builder.register_counter_with_tags("component_errors_total", [("reason", "decode")]),
+        metrics_errors_channel: builder.register_counter_with_tags("component_errors_total", [("reason", "channel")]),
+        metrics_errors_dispatch: builder.register_counter_with_tags("component_errors_total", [("reason", "dispatch")]),
+        metrics_errors_flush: builder.register_counter_with_tags("component_errors_total", [("reason", "flush")]),
     }
 }
 

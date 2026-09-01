@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use ::ddsketch::canonical::mapping::IndexMapping;
@@ -37,6 +37,7 @@ use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS, RUNTIME_METRIC_PREFIX_LANGUAGE_MAP};
+use super::telemetry::OtlpMetricsTranslatorMetrics;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::attributes::ResourceAttributeTagMode;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
@@ -104,6 +105,8 @@ pub struct OtlpMetricsTranslator {
     metric_type_override_warnings: FastHashSet<(String, MetricTypeOverrideWarningKind)>,
     // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
     metric_tags: SharedTagSet,
+    // Self-telemetry for translation errors, dropped points, and processing latency.
+    translator_metrics: OtlpMetricsTranslatorMetrics,
 }
 
 #[derive(Debug, Default)]
@@ -445,6 +448,7 @@ impl OtlpMetricsTranslator {
     pub fn new(
         config: OtlpMetricsTranslatorConfig, default_hostname: MetaString, context_resolver: ContextResolver,
         origin_tag_resolver: OtlpOriginTagResolver, metric_tags: SharedTagSet,
+        translator_metrics: OtlpMetricsTranslatorMetrics,
     ) -> Result<Self, GenericError> {
         config
             .validate()
@@ -463,6 +467,7 @@ impl OtlpMetricsTranslator {
             attribute_translator: AttributeTranslator::new(),
             metric_type_override_warnings: FastHashSet::default(),
             metric_tags,
+            translator_metrics,
         })
     }
 
@@ -471,7 +476,24 @@ impl OtlpMetricsTranslator {
     ///
     /// Returns the translated events and the set of runtime languages detected from metric names
     /// in this `ResourceMetrics`.
+    ///
+    /// The processing duration is recorded on the translator's latency histogram regardless of whether the
+    /// translation succeeds or fails, so the histogram captures the full distribution of processing times.
     pub fn translate_metrics(
+        &mut self, resource_metrics: OtlpResourceMetrics, metrics: &Metrics,
+    ) -> Result<(IntoIter<Event>, FastHashSet<&'static str>), GenericError> {
+        let start = Instant::now();
+        let result = self.translate_metrics_inner(resource_metrics, metrics);
+        self.translator_metrics
+            .processing_duration()
+            .record(start.elapsed().as_secs_f64());
+        if result.is_err() {
+            self.translator_metrics.errors_translate().increment(1);
+        }
+        result
+    }
+
+    fn translate_metrics_inner(
         &mut self, resource_metrics: OtlpResourceMetrics, metrics: &Metrics,
     ) -> Result<(IntoIter<Event>, FastHashSet<&'static str>), GenericError> {
         let mut events = Vec::new();
@@ -656,6 +678,13 @@ impl OtlpMetricsTranslator {
 
     /// Creates a new `OtlpMetricsTranslator` for tests.
     pub fn for_tests() -> OtlpMetricsTranslator {
+        Self::for_tests_with_translator_metrics(OtlpMetricsTranslatorMetrics::for_tests())
+    }
+
+    /// Creates a new `OtlpMetricsTranslator` for tests with the given translator telemetry.
+    pub fn for_tests_with_translator_metrics(
+        translator_metrics: OtlpMetricsTranslatorMetrics,
+    ) -> OtlpMetricsTranslator {
         let process_start_time_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("System time is before the UNIX epoch, this should not happen.")
@@ -674,6 +703,7 @@ impl OtlpMetricsTranslator {
             attribute_translator: AttributeTranslator::new(),
             metric_type_override_warnings: FastHashSet::default(),
             metric_tags: SharedTagSet::default(),
+            translator_metrics,
         }
     }
 
@@ -725,6 +755,9 @@ impl OtlpMetricsTranslator {
                             temporality = sum.aggregation_temporality,
                             "Unsupported or unknown aggregation temporality for Sum metric."
                         );
+                        self.translator_metrics
+                            .dropped_unsupported_temporality()
+                            .increment(sum.data_points.len() as u64);
                         Vec::new()
                     }
                 },
@@ -742,6 +775,9 @@ impl OtlpMetricsTranslator {
                                 temporality = histogram.aggregation_temporality,
                                 "Unsupported or unknown aggregation temporality for Histogram metric."
                             );
+                            self.translator_metrics
+                                .dropped_unsupported_temporality()
+                                .increment(histogram.data_points.len() as u64);
                             Vec::new()
                         }
                     }
@@ -761,6 +797,9 @@ impl OtlpMetricsTranslator {
                                 temporality = exponential_histogram.aggregation_temporality,
                                 "Unknown or unsupported aggregation temporality"
                             );
+                            self.translator_metrics
+                                .dropped_unsupported_temporality()
+                                .increment(exponential_histogram.data_points.len() as u64);
                             Vec::new()
                         }
                     }
@@ -842,6 +881,8 @@ impl OtlpMetricsTranslator {
                     if ok {
                         self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context);
                     }
+                } else {
+                    self.translator_metrics.dropped_invalid_value().increment(1);
                 }
             }
 
@@ -850,6 +891,7 @@ impl OtlpMetricsTranslator {
                 let quantiles = &dp.quantile_values;
                 for quantile in quantiles {
                     if is_skippable(quantile.value) {
+                        self.translator_metrics.dropped_invalid_value().increment(1);
                         continue;
                     }
                     let quantile_dims = base_quantile_dims.add_tags([format_quantile_tag(quantile.quantile)]);
@@ -889,6 +931,7 @@ impl OtlpMetricsTranslator {
                     metric_name = point_dims.name,
                     value, "Skipping metric with unsupported value (NaN or Infinity)."
                 );
+                self.translator_metrics.dropped_invalid_value().increment(1);
                 continue;
             }
 
@@ -951,6 +994,7 @@ impl OtlpMetricsTranslator {
                     metric_name = point_dims.name,
                     value, "Skipping metric with unsupported value (NaN or Infinity)."
                 );
+                self.translator_metrics.dropped_invalid_value().increment(1);
                 continue;
             }
 
@@ -1209,6 +1253,7 @@ impl OtlpMetricsTranslator {
             // Validate before updating cumulative state.
             if let Err(e) = validate_histogram_buckets(&point_dims, &dp) {
                 warn!(error = %e, "Failed to validate histogram buckets, dropping data point.");
+                self.translator_metrics.dropped_histogram_conversion().increment(1);
                 continue;
             }
 
@@ -1258,6 +1303,7 @@ impl OtlpMetricsTranslator {
                 }
             } else {
                 hist_info.ok = false;
+                self.translator_metrics.dropped_invalid_value().increment(1);
             }
 
             if let Some(min) = dp.min {
@@ -1305,11 +1351,13 @@ impl OtlpMetricsTranslator {
                 HistogramMode::Counters => {
                     if let Err(e) = self.get_legacy_buckets(context, point_dims, dp, delta, &mut events) {
                         warn!(error = %e, "Failed to convert histogram buckets to counters, dropping data point.");
+                        self.translator_metrics.dropped_histogram_conversion().increment(1);
                     }
                 }
                 HistogramMode::Distributions => {
                     if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
                         warn!(error = %e, "Failed to convert histogram buckets to sketch, dropping data point.");
+                        self.translator_metrics.dropped_histogram_conversion().increment(1);
                     }
                 }
             }
@@ -1372,6 +1420,7 @@ impl OtlpMetricsTranslator {
                 }
             } else {
                 hist_info.ok = false;
+                self.translator_metrics.dropped_invalid_value().increment(1);
             }
 
             let min_dims = point_dims.with_suffix("min");
@@ -1412,6 +1461,7 @@ impl OtlpMetricsTranslator {
                         error = %e,
                         "Failed to convert ExponentialHistogram into DDSketch"
                     );
+                    self.translator_metrics.dropped_histogram_conversion().increment(1);
                     continue;
                 }
             };
@@ -1424,6 +1474,7 @@ impl OtlpMetricsTranslator {
                         error = %e,
                         "Failed to convert DDSketch into agent sketch"
                     );
+                    self.translator_metrics.dropped_histogram_conversion().increment(1);
                     continue;
                 }
             };
@@ -5033,5 +5084,187 @@ mod tests {
 
         let runtime_beacon = metric_by_name(&events, "datadog.agent.otlp.runtime_metrics");
         assert_eq!(runtime_beacon.context().host(), Some("default-host"));
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Self-telemetry: error, dropped-point, and latency metrics.
+    // -----------------------------------------------------------------------------------------------
+
+    use saluki_core::components::ComponentContext;
+    use saluki_metrics::test::TestRecorder;
+
+    fn test_translator_metrics(recorder: &TestRecorder) -> OtlpMetricsTranslatorMetrics {
+        let _ = recorder; // recorder is already set as the default local recorder by the caller
+        OtlpMetricsTranslatorMetrics::from_component_context(&ComponentContext::test_source("otlp_test"))
+    }
+
+    /// Default tags attached to every metric registered via `ComponentContext::test_source("otlp_test")`.
+    const TELEMETRY_DEFAULT_TAGS: &[(&str, &str)] = &[("component_id", "otlp_test"), ("component_type", "source")];
+
+    #[test]
+    fn translate_metrics_records_processing_duration_on_success() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let translator_metrics = test_translator_metrics(&recorder);
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests_with_translator_metrics(translator_metrics);
+
+        let _ = translator.translate_metrics(single_gauge_resource_metrics(None), &metrics);
+
+        let samples = recorder
+            .histogram(("component_processing_duration_seconds", TELEMETRY_DEFAULT_TAGS))
+            .expect("processing duration histogram should have a sample");
+        assert_eq!(samples.len(), 1, "exactly one latency sample should be recorded");
+        assert!(samples[0] >= 0.0, "duration should be non-negative");
+    }
+
+    #[test]
+    fn translate_metrics_increments_dropped_points_for_unsupported_temporality() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let translator_metrics = test_translator_metrics(&recorder);
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests_with_translator_metrics(translator_metrics);
+
+        // A Sum with an invalid aggregation temporality (99) triggers the unsupported-temporality drop path.
+        // Two data points are dropped, so the counter should increment by 2.
+        let metric = OtlpMetric {
+            name: "unsupported.temporality".to_string(),
+            data: Some(OtlpMetricData::Sum(Sum {
+                aggregation_temporality: 99,
+                is_monotonic: false,
+                data_points: vec![
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                        time_unix_nano: nanos_from_seconds(1),
+                        ..Default::default()
+                    },
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(2.0)),
+                        time_unix_nano: nanos_from_seconds(2),
+                        ..Default::default()
+                    },
+                ],
+            })),
+            ..Default::default()
+        };
+
+        let _ = translator.translate_metrics(resource_metrics_with_metric(metric), &metrics);
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("reason", "unsupported_temporality"),
+        ];
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(2));
+    }
+
+    #[test]
+    fn translate_metrics_increments_dropped_points_for_invalid_value() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let translator_metrics = test_translator_metrics(&recorder);
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests_with_translator_metrics(translator_metrics);
+
+        // A gauge with a NaN value triggers the invalid-value drop path.
+        let metric = OtlpMetric {
+            name: "nan.gauge".to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(f64::NAN)),
+                    time_unix_nano: nanos_from_seconds(1),
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+
+        let _ = translator.translate_metrics(resource_metrics_with_metric(metric), &metrics);
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("reason", "invalid_value"),
+        ];
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(1));
+    }
+
+    #[test]
+    fn translate_metrics_increments_dropped_points_for_histogram_conversion_failure() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let translator_metrics = test_translator_metrics(&recorder);
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests_with_translator_metrics(translator_metrics);
+        translator.config.hist_mode = HistogramMode::Distributions;
+
+        // Mismatched bucket/bound counts trigger the histogram conversion failure path.
+        let metric = OtlpMetric {
+            name: "bad.histogram".to_string(),
+            data: Some(OtlpMetricData::Histogram(
+                otlp_protos::opentelemetry::proto::metrics::v1::Histogram {
+                    aggregation_temporality: AggregationTemporality::Delta as i32,
+                    data_points: vec![OtlpHistogramDataPoint {
+                        count: 1,
+                        sum: Some(0.5),
+                        bucket_counts: vec![1],
+                        explicit_bounds: vec![1.0, 2.0],
+                        time_unix_nano: nanos_from_seconds(1),
+                        ..Default::default()
+                    }],
+                },
+            )),
+            ..Default::default()
+        };
+
+        let _ = translator.translate_metrics(resource_metrics_with_metric(metric), &metrics);
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("reason", "histogram_conversion"),
+        ];
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(1));
+    }
+
+    #[test]
+    fn translate_metrics_does_not_increment_drop_counters_on_success() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let translator_metrics = test_translator_metrics(&recorder);
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests_with_translator_metrics(translator_metrics);
+
+        // A valid gauge should not increment any drop counter.
+        let _ = translator.translate_metrics(single_gauge_resource_metrics(None), &metrics);
+
+        for reason in [
+            "unsupported_temporality",
+            "histogram_conversion",
+            "invalid_value",
+            "translate",
+        ] {
+            let tags: &[(&str, &str)] = &[
+                ("component_id", "otlp_test"),
+                ("component_type", "source"),
+                ("reason", reason),
+            ];
+            let counter_name = if reason == "translate" {
+                "component_errors_total"
+            } else {
+                "component_events_dropped_total"
+            };
+            assert_eq!(
+                recorder.counter((counter_name, tags)),
+                Some(0),
+                "counter {counter_name} with reason={reason} should be zero after a successful translation"
+            );
+        }
     }
 }
