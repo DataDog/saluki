@@ -137,12 +137,12 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
-        metrics_errors_decode: builder.register_counter_with_tags("otlp_metrics_errors_total", [("reason", "decode")]),
+        metrics_errors_decode: builder.register_counter_with_tags("component_errors_total", [("reason", "decode")]),
         metrics_errors_channel: builder
-            .register_counter_with_tags("otlp_metrics_errors_total", [("reason", "channel")]),
+            .register_counter_with_tags("component_errors_total", [("reason", "channel")]),
         metrics_errors_dispatch: builder
-            .register_counter_with_tags("otlp_metrics_errors_total", [("reason", "dispatch")]),
-        metrics_errors_flush: builder.register_counter_with_tags("otlp_metrics_errors_total", [("reason", "flush")]),
+            .register_counter_with_tags("component_errors_total", [("reason", "dispatch")]),
+        metrics_errors_flush: builder.register_counter_with_tags("component_errors_total", [("reason", "flush")]),
     }
 }
 

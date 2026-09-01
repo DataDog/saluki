@@ -487,7 +487,7 @@ impl OtlpMetricsTranslator {
         self.translator_metrics
             .processing_duration()
             .record(start.elapsed().as_secs_f64());
-        if let Err(ref _e) = &result {
+        if result.is_err() {
             self.translator_metrics.errors_translate().increment(1);
         }
         result
@@ -5113,7 +5113,7 @@ mod tests {
         let _ = translator.translate_metrics(single_gauge_resource_metrics(None), &metrics);
 
         let samples = recorder
-            .histogram(("otlp_metrics_processing_duration_seconds", TELEMETRY_DEFAULT_TAGS))
+            .histogram(("component_processing_duration_seconds", TELEMETRY_DEFAULT_TAGS))
             .expect("processing duration histogram should have a sample");
         assert_eq!(samples.len(), 1, "exactly one latency sample should be recorded");
         assert!(samples[0] >= 0.0, "duration should be non-negative");
@@ -5158,7 +5158,7 @@ mod tests {
             ("component_type", "source"),
             ("reason", "unsupported_temporality"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_dropped_points_total", tags)), Some(2));
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(2));
     }
 
     #[test]
@@ -5190,7 +5190,7 @@ mod tests {
             ("component_type", "source"),
             ("reason", "invalid_value"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_dropped_points_total", tags)), Some(1));
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(1));
     }
 
     #[test]
@@ -5229,7 +5229,7 @@ mod tests {
             ("component_type", "source"),
             ("reason", "histogram_conversion"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_dropped_points_total", tags)), Some(1));
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(1));
     }
 
     #[test]
@@ -5256,9 +5256,9 @@ mod tests {
                 ("reason", reason),
             ];
             let counter_name = if reason == "translate" {
-                "otlp_metrics_errors_total"
+                "component_errors_total"
             } else {
-                "otlp_metrics_dropped_points_total"
+                "component_events_dropped_total"
             };
             assert_eq!(
                 recorder.counter((counter_name, tags)),

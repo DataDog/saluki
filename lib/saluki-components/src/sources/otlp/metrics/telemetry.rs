@@ -22,18 +22,18 @@ impl OtlpMetricsTranslatorMetrics {
 
         Self {
             errors_translate: builder
-                .register_counter_with_tags("otlp_metrics_errors_total", [("reason", "translate")]),
+                .register_counter_with_tags("component_errors_total", [("reason", "translate")]),
             dropped_unsupported_temporality: builder.register_counter_with_tags(
-                "otlp_metrics_dropped_points_total",
+                "component_events_dropped_total",
                 [("reason", "unsupported_temporality")],
             ),
             dropped_histogram_conversion: builder.register_counter_with_tags(
-                "otlp_metrics_dropped_points_total",
+                "component_events_dropped_total",
                 [("reason", "histogram_conversion")],
             ),
             dropped_invalid_value: builder
-                .register_counter_with_tags("otlp_metrics_dropped_points_total", [("reason", "invalid_value")]),
-            processing_duration: builder.register_histogram("otlp_metrics_processing_duration_seconds"),
+                .register_counter_with_tags("component_events_dropped_total", [("reason", "invalid_value")]),
+            processing_duration: builder.register_histogram("component_processing_duration_seconds"),
         }
     }
 

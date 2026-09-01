@@ -847,7 +847,7 @@ mod tests {
             ("component_type", "source"),
             ("reason", "decode"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_errors_total", tags)), Some(1));
+        assert_eq!(recorder.counter(("component_errors_total", tags)), Some(1));
     }
 
     #[tokio::test]
@@ -872,7 +872,7 @@ mod tests {
             ("component_type", "source"),
             ("reason", "channel"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_errors_total", tags)), Some(1));
+        assert_eq!(recorder.counter(("component_errors_total", tags)), Some(1));
 
         // The decode counter should not have been incremented.
         let decode_tags: &[(&str, &str)] = &[
@@ -880,6 +880,6 @@ mod tests {
             ("component_type", "source"),
             ("reason", "decode"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_errors_total", decode_tags)), Some(0));
+        assert_eq!(recorder.counter(("component_errors_total", decode_tags)), Some(0));
     }
 }
