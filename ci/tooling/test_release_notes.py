@@ -111,6 +111,8 @@ class ReleaseNoteValidationTest(unittest.TestCase):
             "```yaml",
             "> Quoted text.",
             "![diagram](https://example.test/diagram.png)",
+            "Point it at `<host>:8125` to send metrics.",
+            "Set `value > 0` to enable the check.",
         )
         for entry in markdown_entries:
             with self.subTest(entry=entry):
@@ -124,6 +126,10 @@ class ReleaseNoteValidationTest(unittest.TestCase):
             "See `the docs <https://example.test>`_ for details.",
             "This is **important** to note.",
             "Rename metric_name_prefix to metric_prefix.",
+            "Set :code:`dogstatsd_port` to 8125.",
+            "The ``foo__bar__baz`` identifier is unchanged.",
+            "Use ``[a](b)`` to spell a Markdown link.",
+            "See `the docs <https://example.test>`__ for details.",
         )
         for entry in entries:
             with self.subTest(entry=entry):

@@ -23,11 +23,16 @@ MARKDOWN_PATTERNS = (
     (re.compile(r"!\[[^\]]*\]\(([^)]+)\)"), "image syntax; use a '.. image:: {0}' directive"),
     (re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)"), "link syntax; use '`{0} <{1}>`_'"),
     (re.compile(r"__([^_]+)__"), "bold syntax; use '**{0}**'"),
-    (re.compile(r"(?<!`)`([^`<>]+)`(?![_`])"), "single-backtick inline code; use '``{0}``'"),
+    # A single-backtick span is Markdown inline code, unless it is a reStructuredText hyperlink or
+    # reference (both end in an underscore) or the payload of an explicit role such as :code:`x`.
+    (re.compile(r"(?<![:`])`([^`]+)`(?![_`])"), "single-backtick inline code; use '``{0}``'"),
     (re.compile(r"^#{1,6}\s+\S"), "heading syntax; use a reStructuredText title underline"),
     (re.compile(r"^```"), "fenced code block; use a '.. code-block::' directive"),
     (re.compile(r"^>\s+\S"), "block quote syntax; use indentation or a '.. note::' directive"),
 )
+# Prose inside a reStructuredText inline literal renders verbatim, so Markdown spelled there is
+# intentional rather than a mistake.
+RST_INLINE_LITERAL_RE = re.compile(r"``[^`]+``")
 RELEASE_NOTE_CONFIG_PATH = "releasenotes/config.yaml"
 
 
@@ -66,7 +71,7 @@ def find_markdown_syntax(text: str) -> list[str]:
     """Return descriptions of the Markdown constructs used in one release-note entry."""
     return [
         description.format(*match.groups())
-        for line in text.splitlines()
+        for line in (RST_INLINE_LITERAL_RE.sub(" ", line) for line in text.splitlines())
         for pattern, description in MARKDOWN_PATTERNS
         for match in pattern.finditer(line)
     ]
