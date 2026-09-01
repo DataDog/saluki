@@ -34,7 +34,7 @@
 <a href=#34 id=34 data-nosnippet>34</a>    <span class="doccomment">/// Extracts well-known tags from the raw tags of a DogStatsD payload.
 <a href=#35 id=35 data-nosnippet>35</a>    ///
 <a href=#36 id=36 data-nosnippet>36</a>    /// All fields default to `None`.
-<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub fn </span>from_raw_tags(tags: RawTags&lt;<span class="lifetime">'a</span>&gt;) -&gt; <span class="self">Self </span>{
+<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub fn </span>from_raw_tags(tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>RawTags&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="self">Self </span>{
 <a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span><span class="kw-2">mut </span>well_known_tags = <span class="self">Self </span>{
 <a href=#39 id=39 data-nosnippet>39</a>            hostname: <span class="prelude-val">None</span>,
 <a href=#40 id=40 data-nosnippet>40</a>            pod_uid: <span class="prelude-val">None</span>,
@@ -77,7 +77,7 @@
 <a href=#77 id=77 data-nosnippet>77</a>    <span class="attr">#[test]
 <a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">fn </span>well_known_tags_empty() {
 <a href=#79 id=79 data-nosnippet>79</a>        <span class="kw">let </span>tags = RawTags::new(<span class="string">""</span>, usize::MAX, usize::MAX);
-<a href=#80 id=80 data-nosnippet>80</a>        <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(tags);
+<a href=#80 id=80 data-nosnippet>80</a>        <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>tags);
 <a href=#81 id=81 data-nosnippet>81</a>
 <a href=#82 id=82 data-nosnippet>82</a>        <span class="macro">assert_eq!</span>(wkt.cardinality, <span class="prelude-val">None</span>);
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="macro">assert_eq!</span>(wkt.hostname, <span class="prelude-val">None</span>);
@@ -105,7 +105,7 @@
 <a href=#105 id=105 data-nosnippet>105</a>        <span class="kw">for </span>(tag_value, expected) <span class="kw">in </span>cases {
 <a href=#106 id=106 data-nosnippet>106</a>            <span class="kw">let </span>card_tag = <span class="macro">format!</span>(<span class="string">"{}:{}"</span>, CARDINALITY_TAG_KEY, tag_value);
 <a href=#107 id=107 data-nosnippet>107</a>            <span class="kw">let </span>tags = RawTags::new(<span class="kw-2">&amp;</span>card_tag, usize::MAX, usize::MAX);
-<a href=#108 id=108 data-nosnippet>108</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(tags);
+<a href=#108 id=108 data-nosnippet>108</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>tags);
 <a href=#109 id=109 data-nosnippet>109</a>
 <a href=#110 id=110 data-nosnippet>110</a>            <span class="macro">assert_eq!</span>(wkt.cardinality, expected);
 <a href=#111 id=111 data-nosnippet>111</a>        }
@@ -118,7 +118,7 @@
 <a href=#118 id=118 data-nosnippet>118</a>        <span class="kw">for </span>(tag_value, expected) <span class="kw">in </span>cases {
 <a href=#119 id=119 data-nosnippet>119</a>            <span class="kw">let </span>host_tag = <span class="macro">format!</span>(<span class="string">"{}:{}"</span>, HOST_TAG_KEY, tag_value);
 <a href=#120 id=120 data-nosnippet>120</a>            <span class="kw">let </span>tags = RawTags::new(<span class="kw-2">&amp;</span>host_tag, usize::MAX, usize::MAX);
-<a href=#121 id=121 data-nosnippet>121</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(tags);
+<a href=#121 id=121 data-nosnippet>121</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>tags);
 <a href=#122 id=122 data-nosnippet>122</a>
 <a href=#123 id=123 data-nosnippet>123</a>            <span class="macro">assert_eq!</span>(wkt.hostname, expected);
 <a href=#124 id=124 data-nosnippet>124</a>        }
@@ -131,7 +131,7 @@
 <a href=#131 id=131 data-nosnippet>131</a>        <span class="kw">for </span>(tag_value, expected) <span class="kw">in </span>cases {
 <a href=#132 id=132 data-nosnippet>132</a>            <span class="kw">let </span>jmx_tag = <span class="macro">format!</span>(<span class="string">"{}:{}"</span>, JMX_CHECK_NAME_TAG_KEY, tag_value);
 <a href=#133 id=133 data-nosnippet>133</a>            <span class="kw">let </span>tags = RawTags::new(<span class="kw-2">&amp;</span>jmx_tag, usize::MAX, usize::MAX);
-<a href=#134 id=134 data-nosnippet>134</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(tags);
+<a href=#134 id=134 data-nosnippet>134</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>tags);
 <a href=#135 id=135 data-nosnippet>135</a>
 <a href=#136 id=136 data-nosnippet>136</a>            <span class="macro">assert_eq!</span>(wkt.jmx_check_name, expected);
 <a href=#137 id=137 data-nosnippet>137</a>        }
@@ -144,7 +144,7 @@
 <a href=#144 id=144 data-nosnippet>144</a>        <span class="kw">for </span>(tag_value, expected) <span class="kw">in </span>cases {
 <a href=#145 id=145 data-nosnippet>145</a>            <span class="kw">let </span>pod_tag = <span class="macro">format!</span>(<span class="string">"{}:{}"</span>, ENTITY_ID_TAG_KEY, tag_value);
 <a href=#146 id=146 data-nosnippet>146</a>            <span class="kw">let </span>tags = RawTags::new(<span class="kw-2">&amp;</span>pod_tag, usize::MAX, usize::MAX);
-<a href=#147 id=147 data-nosnippet>147</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(tags);
+<a href=#147 id=147 data-nosnippet>147</a>            <span class="kw">let </span>wkt = WellKnownTags::from_raw_tags(<span class="kw-2">&amp;</span>tags);
 <a href=#148 id=148 data-nosnippet>148</a>
 <a href=#149 id=149 data-nosnippet>149</a>            <span class="macro">assert_eq!</span>(wkt.pod_uid, expected);
 <a href=#150 id=150 data-nosnippet>150</a>        }

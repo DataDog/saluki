@@ -154,7 +154,7 @@
 <a href=#154 id=154 data-nosnippet>154</a>        <span class="macro">assert!</span>(remaining.is_empty());
 <a href=#155 id=155 data-nosnippet>155</a>
 <a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">let </span><span class="kw-2">mut </span>service_check_tags = TagSet::default();
-<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">for </span>tag <span class="kw">in </span>packet.tags.into_iter() {
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">for </span>tag <span class="kw">in </span>packet.tags.iter() {
 <a href=#158 id=158 data-nosnippet>158</a>            service_check_tags.insert_tag(tag);
 <a href=#159 id=159 data-nosnippet>159</a>        }
 <a href=#160 id=160 data-nosnippet>160</a>
@@ -212,102 +212,116 @@
 <a href=#212 id=212 data-nosnippet>212</a>    }
 <a href=#213 id=213 data-nosnippet>213</a>
 <a href=#214 id=214 data-nosnippet>214</a>    <span class="attr">#[test]
-<a href=#215 id=215 data-nosnippet>215</a>    </span><span class="kw">fn </span>service_check_message() {
-<a href=#216 id=216 data-nosnippet>216</a>        <span class="kw">let </span>name = <span class="string">"testsvc"</span>;
-<a href=#217 id=217 data-nosnippet>217</a>        <span class="kw">let </span>sc_status = CheckStatus::Ok;
-<a href=#218 id=218 data-nosnippet>218</a>        <span class="kw">let </span>sc_message = MetaString::from(<span class="string">"service running properly"</span>);
-<a href=#219 id=219 data-nosnippet>219</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"_sc|{}|{}|m:{}"</span>, name, sc_status.as_u8(), sc_message);
-<a href=#220 id=220 data-nosnippet>220</a>        <span class="kw">let </span>actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-<a href=#221 id=221 data-nosnippet>221</a>        <span class="kw">let </span>expected = ServiceCheck::new(name, sc_status).with_message(sc_message);
-<a href=#222 id=222 data-nosnippet>222</a>        check_basic_service_check_eq(expected, actual);
-<a href=#223 id=223 data-nosnippet>223</a>    }
+<a href=#215 id=215 data-nosnippet>215</a>    </span><span class="kw">fn </span>service_check_tags_with_invalid_utf8_are_normalized() {
+<a href=#216 id=216 data-nosnippet>216</a>        <span class="kw">let </span><span class="kw-2">mut </span>input = <span class="string">b"_sc|testsvc|0|#env:prod,tag:"</span>.to_vec();
+<a href=#217 id=217 data-nosnippet>217</a>        input.extend_from_slice(<span class="kw-2">&amp;</span>[<span class="number">0xff</span>, <span class="number">0xfe</span>]);
+<a href=#218 id=218 data-nosnippet>218</a>
+<a href=#219 id=219 data-nosnippet>219</a>        <span class="kw">let </span>tags = [<span class="string">"env:prod"</span>, <span class="string">"tag:\u{FFFD}"</span>];
+<a href=#220 id=220 data-nosnippet>220</a>        <span class="kw">let </span>expected = ServiceCheck::new(<span class="string">"testsvc"</span>, CheckStatus::Ok).with_tags(SharedTagSet::from(TagSet::from_iter(
+<a href=#221 id=221 data-nosnippet>221</a>            tags.iter().map(|<span class="kw-2">&amp;</span>tag| tag.into()),
+<a href=#222 id=222 data-nosnippet>222</a>        )));
+<a href=#223 id=223 data-nosnippet>223</a>        <span class="kw">let </span>actual = parse_dsd_service_check(<span class="kw-2">&amp;</span>input).expect(<span class="string">"service check with invalid tag bytes should parse"</span>);
 <a href=#224 id=224 data-nosnippet>224</a>
-<a href=#225 id=225 data-nosnippet>225</a>    <span class="attr">#[test]
-<a href=#226 id=226 data-nosnippet>226</a>    </span><span class="kw">fn </span>service_check_fields_after_message() {
-<a href=#227 id=227 data-nosnippet>227</a>        <span class="kw">let </span>name = <span class="string">"testsvc"</span>;
-<a href=#228 id=228 data-nosnippet>228</a>        <span class="kw">let </span>sc_status = CheckStatus::Ok;
-<a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">let </span>sc_message = MetaString::from(<span class="string">"service running properly"</span>);
-<a href=#230 id=230 data-nosnippet>230</a>        <span class="kw">let </span>sc_local_data = <span class="string">"ci-1234567890"</span>;
-<a href=#231 id=231 data-nosnippet>231</a>        <span class="kw">let </span>sc_external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
-<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
-<a href=#233 id=233 data-nosnippet>233</a>            <span class="string">"_sc|{}|{}|#tag1,tag2|m:{}|c:{}|e:{}"</span>,
-<a href=#234 id=234 data-nosnippet>234</a>            name,
-<a href=#235 id=235 data-nosnippet>235</a>            sc_status.as_u8(),
-<a href=#236 id=236 data-nosnippet>236</a>            sc_message,
-<a href=#237 id=237 data-nosnippet>237</a>            sc_local_data,
-<a href=#238 id=238 data-nosnippet>238</a>            sc_external_data,
-<a href=#239 id=239 data-nosnippet>239</a>        );
-<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw">let </span>result = parse_dsd_service_check(raw.as_bytes()).unwrap();
-<a href=#241 id=241 data-nosnippet>241</a>        <span class="kw">let </span>tags = [<span class="string">"tag1"</span>, <span class="string">"tag2"</span>];
-<a href=#242 id=242 data-nosnippet>242</a>        <span class="kw">let </span>shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|<span class="kw-2">&amp;</span>s| s.into())));
-<a href=#243 id=243 data-nosnippet>243</a>        <span class="kw">let </span>expected = ServiceCheck::new(name, sc_status)
-<a href=#244 id=244 data-nosnippet>244</a>            .with_message(sc_message)
-<a href=#245 id=245 data-nosnippet>245</a>            .with_tags(shared_tag_set);
-<a href=#246 id=246 data-nosnippet>246</a>        check_basic_service_check_eq(expected, result);
-<a href=#247 id=247 data-nosnippet>247</a>
-<a href=#248 id=248 data-nosnippet>248</a>        <span class="comment">// We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
-<a href=#249 id=249 data-nosnippet>249</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">true</span>);
-<a href=#250 id=250 data-nosnippet>250</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_service_check(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#251 id=251 data-nosnippet>251</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(sc_local_data));
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(sc_external_data));
-<a href=#253 id=253 data-nosnippet>253</a>    }
-<a href=#254 id=254 data-nosnippet>254</a>
-<a href=#255 id=255 data-nosnippet>255</a>    <span class="attr">#[test]
-<a href=#256 id=256 data-nosnippet>256</a>    </span><span class="kw">fn </span>service_check_multiple_extensions() {
-<a href=#257 id=257 data-nosnippet>257</a>        <span class="kw">let </span>name = <span class="string">"testsvc"</span>;
-<a href=#258 id=258 data-nosnippet>258</a>        <span class="kw">let </span>sc_status = CheckStatus::Unknown;
-<a href=#259 id=259 data-nosnippet>259</a>        <span class="kw">let </span>sc_timestamp = <span class="number">1234567890</span>;
-<a href=#260 id=260 data-nosnippet>260</a>        <span class="kw">let </span>sc_hostname = MetaString::from(<span class="string">"myhost"</span>);
-<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>sc_local_data = <span class="string">"abcdef123456"</span>;
-<a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">let </span>sc_external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
-<a href=#263 id=263 data-nosnippet>263</a>        <span class="kw">let </span>tags = [<span class="string">"tag1"</span>, <span class="string">"tag2"</span>];
-<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">let </span>sc_message = MetaString::from(<span class="string">"service status unknown"</span>);
-<a href=#265 id=265 data-nosnippet>265</a>        <span class="kw">let </span>sc_cardinality = <span class="string">"none"</span>;
-<a href=#266 id=266 data-nosnippet>266</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
-<a href=#267 id=267 data-nosnippet>267</a>            <span class="string">"_sc|{}|{}|d:{}|h:{}|c:{}|e:{}|card:{}|#{}|m:{}"</span>,
-<a href=#268 id=268 data-nosnippet>268</a>            name,
-<a href=#269 id=269 data-nosnippet>269</a>            sc_status.as_u8(),
-<a href=#270 id=270 data-nosnippet>270</a>            sc_timestamp,
-<a href=#271 id=271 data-nosnippet>271</a>            sc_hostname,
-<a href=#272 id=272 data-nosnippet>272</a>            sc_local_data,
-<a href=#273 id=273 data-nosnippet>273</a>            sc_external_data,
-<a href=#274 id=274 data-nosnippet>274</a>            sc_cardinality,
-<a href=#275 id=275 data-nosnippet>275</a>            tags.join(<span class="string">","</span>),
-<a href=#276 id=276 data-nosnippet>276</a>            sc_message
-<a href=#277 id=277 data-nosnippet>277</a>        );
-<a href=#278 id=278 data-nosnippet>278</a>        <span class="kw">let </span>shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|<span class="kw-2">&amp;</span>s| s.into())));
-<a href=#279 id=279 data-nosnippet>279</a>        <span class="kw">let </span>actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-<a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">let </span>expected = ServiceCheck::new(name, sc_status)
-<a href=#281 id=281 data-nosnippet>281</a>            .with_timestamp(sc_timestamp)
-<a href=#282 id=282 data-nosnippet>282</a>            .with_hostname(sc_hostname)
-<a href=#283 id=283 data-nosnippet>283</a>            .with_tags(shared_tag_set)
-<a href=#284 id=284 data-nosnippet>284</a>            .with_message(sc_message);
-<a href=#285 id=285 data-nosnippet>285</a>        check_basic_service_check_eq(expected, actual);
-<a href=#286 id=286 data-nosnippet>286</a>
-<a href=#287 id=287 data-nosnippet>287</a>        <span class="comment">// We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
-<a href=#288 id=288 data-nosnippet>288</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">true</span>);
-<a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_service_check(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#290 id=290 data-nosnippet>290</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(sc_local_data));
-<a href=#291 id=291 data-nosnippet>291</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(sc_external_data));
-<a href=#292 id=292 data-nosnippet>292</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::None));
-<a href=#293 id=293 data-nosnippet>293</a>    }
-<a href=#294 id=294 data-nosnippet>294</a>
-<a href=#295 id=295 data-nosnippet>295</a>    <span class="attr">#[test]
-<a href=#296 id=296 data-nosnippet>296</a>    </span><span class="kw">fn </span>client_origin_fields_ignored_when_disabled() {
-<a href=#297 id=297 data-nosnippet>297</a>        <span class="kw">let </span>local_data = <span class="string">"abcdef123456"</span>;
-<a href=#298 id=298 data-nosnippet>298</a>        <span class="kw">let </span>external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
-<a href=#299 id=299 data-nosnippet>299</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"_sc|testsvc|0|c:{}|e:{}|card:low"</span>, local_data, external_data);
-<a href=#300 id=300 data-nosnippet>300</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">false</span>);
-<a href=#301 id=301 data-nosnippet>301</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_service_check(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#302 id=302 data-nosnippet>302</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">None</span>);
-<a href=#303 id=303 data-nosnippet>303</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">None</span>);
-<a href=#304 id=304 data-nosnippet>304</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">None</span>);
-<a href=#305 id=305 data-nosnippet>305</a>    }
-<a href=#306 id=306 data-nosnippet>306</a>
-<a href=#307 id=307 data-nosnippet>307</a>    <span class="attr">#[test]
-<a href=#308 id=308 data-nosnippet>308</a>    </span><span class="kw">fn </span>service_check_semi_real_payload_kafka() {
-<a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span>raw_payload = <span class="string">"_sc|kafka.can_connect|2|#env:staging,service:datadog-agent,dd.internal.entity_id:none,dd.internal.card:none,instance:kafka-127.0.0.1-9999,jmx_server:127.0.0.1|m:Unable to instantiate or initialize instance 127.0.0.1:9999. Is the target JMX Server or JVM running? Failed to retrieve RMIServer stub: javax.naming.ServiceUnavailableException [Root exception is java.rmi.ConnectException: Connection refused to host: 127.0.0.1; nested exception is: \\n\tjava.net.ConnectException: Connection refused (Connection refused)]"</span>;
-<a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let _ </span>= parse_dsd_service_check(raw_payload.as_bytes()).unwrap();
-<a href=#311 id=311 data-nosnippet>311</a>    }
-<a href=#312 id=312 data-nosnippet>312</a>}
+<a href=#225 id=225 data-nosnippet>225</a>        check_basic_service_check_eq(expected, actual);
+<a href=#226 id=226 data-nosnippet>226</a>    }
+<a href=#227 id=227 data-nosnippet>227</a>
+<a href=#228 id=228 data-nosnippet>228</a>    <span class="attr">#[test]
+<a href=#229 id=229 data-nosnippet>229</a>    </span><span class="kw">fn </span>service_check_message() {
+<a href=#230 id=230 data-nosnippet>230</a>        <span class="kw">let </span>name = <span class="string">"testsvc"</span>;
+<a href=#231 id=231 data-nosnippet>231</a>        <span class="kw">let </span>sc_status = CheckStatus::Ok;
+<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>sc_message = MetaString::from(<span class="string">"service running properly"</span>);
+<a href=#233 id=233 data-nosnippet>233</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"_sc|{}|{}|m:{}"</span>, name, sc_status.as_u8(), sc_message);
+<a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span>actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">let </span>expected = ServiceCheck::new(name, sc_status).with_message(sc_message);
+<a href=#236 id=236 data-nosnippet>236</a>        check_basic_service_check_eq(expected, actual);
+<a href=#237 id=237 data-nosnippet>237</a>    }
+<a href=#238 id=238 data-nosnippet>238</a>
+<a href=#239 id=239 data-nosnippet>239</a>    <span class="attr">#[test]
+<a href=#240 id=240 data-nosnippet>240</a>    </span><span class="kw">fn </span>service_check_fields_after_message() {
+<a href=#241 id=241 data-nosnippet>241</a>        <span class="kw">let </span>name = <span class="string">"testsvc"</span>;
+<a href=#242 id=242 data-nosnippet>242</a>        <span class="kw">let </span>sc_status = CheckStatus::Ok;
+<a href=#243 id=243 data-nosnippet>243</a>        <span class="kw">let </span>sc_message = MetaString::from(<span class="string">"service running properly"</span>);
+<a href=#244 id=244 data-nosnippet>244</a>        <span class="kw">let </span>sc_local_data = <span class="string">"ci-1234567890"</span>;
+<a href=#245 id=245 data-nosnippet>245</a>        <span class="kw">let </span>sc_external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
+<a href=#246 id=246 data-nosnippet>246</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
+<a href=#247 id=247 data-nosnippet>247</a>            <span class="string">"_sc|{}|{}|#tag1,tag2|m:{}|c:{}|e:{}"</span>,
+<a href=#248 id=248 data-nosnippet>248</a>            name,
+<a href=#249 id=249 data-nosnippet>249</a>            sc_status.as_u8(),
+<a href=#250 id=250 data-nosnippet>250</a>            sc_message,
+<a href=#251 id=251 data-nosnippet>251</a>            sc_local_data,
+<a href=#252 id=252 data-nosnippet>252</a>            sc_external_data,
+<a href=#253 id=253 data-nosnippet>253</a>        );
+<a href=#254 id=254 data-nosnippet>254</a>        <span class="kw">let </span>result = parse_dsd_service_check(raw.as_bytes()).unwrap();
+<a href=#255 id=255 data-nosnippet>255</a>        <span class="kw">let </span>tags = [<span class="string">"tag1"</span>, <span class="string">"tag2"</span>];
+<a href=#256 id=256 data-nosnippet>256</a>        <span class="kw">let </span>shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|<span class="kw-2">&amp;</span>s| s.into())));
+<a href=#257 id=257 data-nosnippet>257</a>        <span class="kw">let </span>expected = ServiceCheck::new(name, sc_status)
+<a href=#258 id=258 data-nosnippet>258</a>            .with_message(sc_message)
+<a href=#259 id=259 data-nosnippet>259</a>            .with_tags(shared_tag_set);
+<a href=#260 id=260 data-nosnippet>260</a>        check_basic_service_check_eq(expected, result);
+<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#262 id=262 data-nosnippet>262</a>        <span class="comment">// We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+<a href=#263 id=263 data-nosnippet>263</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">true</span>);
+<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_service_check(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
+<a href=#265 id=265 data-nosnippet>265</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(sc_local_data));
+<a href=#266 id=266 data-nosnippet>266</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(sc_external_data));
+<a href=#267 id=267 data-nosnippet>267</a>    }
+<a href=#268 id=268 data-nosnippet>268</a>
+<a href=#269 id=269 data-nosnippet>269</a>    <span class="attr">#[test]
+<a href=#270 id=270 data-nosnippet>270</a>    </span><span class="kw">fn </span>service_check_multiple_extensions() {
+<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw">let </span>name = <span class="string">"testsvc"</span>;
+<a href=#272 id=272 data-nosnippet>272</a>        <span class="kw">let </span>sc_status = CheckStatus::Unknown;
+<a href=#273 id=273 data-nosnippet>273</a>        <span class="kw">let </span>sc_timestamp = <span class="number">1234567890</span>;
+<a href=#274 id=274 data-nosnippet>274</a>        <span class="kw">let </span>sc_hostname = MetaString::from(<span class="string">"myhost"</span>);
+<a href=#275 id=275 data-nosnippet>275</a>        <span class="kw">let </span>sc_local_data = <span class="string">"abcdef123456"</span>;
+<a href=#276 id=276 data-nosnippet>276</a>        <span class="kw">let </span>sc_external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
+<a href=#277 id=277 data-nosnippet>277</a>        <span class="kw">let </span>tags = [<span class="string">"tag1"</span>, <span class="string">"tag2"</span>];
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="kw">let </span>sc_message = MetaString::from(<span class="string">"service status unknown"</span>);
+<a href=#279 id=279 data-nosnippet>279</a>        <span class="kw">let </span>sc_cardinality = <span class="string">"none"</span>;
+<a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
+<a href=#281 id=281 data-nosnippet>281</a>            <span class="string">"_sc|{}|{}|d:{}|h:{}|c:{}|e:{}|card:{}|#{}|m:{}"</span>,
+<a href=#282 id=282 data-nosnippet>282</a>            name,
+<a href=#283 id=283 data-nosnippet>283</a>            sc_status.as_u8(),
+<a href=#284 id=284 data-nosnippet>284</a>            sc_timestamp,
+<a href=#285 id=285 data-nosnippet>285</a>            sc_hostname,
+<a href=#286 id=286 data-nosnippet>286</a>            sc_local_data,
+<a href=#287 id=287 data-nosnippet>287</a>            sc_external_data,
+<a href=#288 id=288 data-nosnippet>288</a>            sc_cardinality,
+<a href=#289 id=289 data-nosnippet>289</a>            tags.join(<span class="string">","</span>),
+<a href=#290 id=290 data-nosnippet>290</a>            sc_message
+<a href=#291 id=291 data-nosnippet>291</a>        );
+<a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">let </span>shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|<span class="kw-2">&amp;</span>s| s.into())));
+<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+<a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">let </span>expected = ServiceCheck::new(name, sc_status)
+<a href=#295 id=295 data-nosnippet>295</a>            .with_timestamp(sc_timestamp)
+<a href=#296 id=296 data-nosnippet>296</a>            .with_hostname(sc_hostname)
+<a href=#297 id=297 data-nosnippet>297</a>            .with_tags(shared_tag_set)
+<a href=#298 id=298 data-nosnippet>298</a>            .with_message(sc_message);
+<a href=#299 id=299 data-nosnippet>299</a>        check_basic_service_check_eq(expected, actual);
+<a href=#300 id=300 data-nosnippet>300</a>
+<a href=#301 id=301 data-nosnippet>301</a>        <span class="comment">// We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+<a href=#302 id=302 data-nosnippet>302</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">true</span>);
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_service_check(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
+<a href=#304 id=304 data-nosnippet>304</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(sc_local_data));
+<a href=#305 id=305 data-nosnippet>305</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(sc_external_data));
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::None));
+<a href=#307 id=307 data-nosnippet>307</a>    }
+<a href=#308 id=308 data-nosnippet>308</a>
+<a href=#309 id=309 data-nosnippet>309</a>    <span class="attr">#[test]
+<a href=#310 id=310 data-nosnippet>310</a>    </span><span class="kw">fn </span>client_origin_fields_ignored_when_disabled() {
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>local_data = <span class="string">"abcdef123456"</span>;
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span>external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
+<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"_sc|testsvc|0|c:{}|e:{}|card:low"</span>, local_data, external_data);
+<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">false</span>);
+<a href=#315 id=315 data-nosnippet>315</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_service_check(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">None</span>);
+<a href=#317 id=317 data-nosnippet>317</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">None</span>);
+<a href=#318 id=318 data-nosnippet>318</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">None</span>);
+<a href=#319 id=319 data-nosnippet>319</a>    }
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a>    <span class="attr">#[test]
+<a href=#322 id=322 data-nosnippet>322</a>    </span><span class="kw">fn </span>service_check_semi_real_payload_kafka() {
+<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>raw_payload = <span class="string">"_sc|kafka.can_connect|2|#env:staging,service:datadog-agent,dd.internal.entity_id:none,dd.internal.card:none,instance:kafka-127.0.0.1-9999,jmx_server:127.0.0.1|m:Unable to instantiate or initialize instance 127.0.0.1:9999. Is the target JMX Server or JVM running? Failed to retrieve RMIServer stub: javax.naming.ServiceUnavailableException [Root exception is java.rmi.ConnectException: Connection refused to host: 127.0.0.1; nested exception is: \\n\tjava.net.ConnectException: Connection refused (Connection refused)]"</span>;
+<a href=#324 id=324 data-nosnippet>324</a>        <span class="kw">let _ </span>= parse_dsd_service_check(raw_payload.as_bytes()).unwrap();
+<a href=#325 id=325 data-nosnippet>325</a>    }
+<a href=#326 id=326 data-nosnippet>326</a>}
 </code></pre></div></section></main></body></html>

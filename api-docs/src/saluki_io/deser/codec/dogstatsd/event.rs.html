@@ -208,7 +208,7 @@
 <a href=#208 id=208 data-nosnippet>208</a>        <span class="macro">assert!</span>(remaining.is_empty());
 <a href=#209 id=209 data-nosnippet>209</a>
 <a href=#210 id=210 data-nosnippet>210</a>        <span class="kw">let </span><span class="kw-2">mut </span>event_tags = TagSet::default();
-<a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">for </span>tag <span class="kw">in </span>packet.tags.into_iter() {
+<a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">for </span>tag <span class="kw">in </span>packet.tags.iter() {
 <a href=#212 id=212 data-nosnippet>212</a>            event_tags.insert_tag(tag);
 <a href=#213 id=213 data-nosnippet>213</a>        }
 <a href=#214 id=214 data-nosnippet>214</a>
@@ -277,141 +277,155 @@
 <a href=#277 id=277 data-nosnippet>277</a>    }
 <a href=#278 id=278 data-nosnippet>278</a>
 <a href=#279 id=279 data-nosnippet>279</a>    <span class="attr">#[test]
-<a href=#280 id=280 data-nosnippet>280</a>    </span><span class="kw">fn </span>eventd_priority() {
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">let </span>event_title = <span class="string">"my event"</span>;
-<a href=#282 id=282 data-nosnippet>282</a>        <span class="kw">let </span>event_text = <span class="string">"text"</span>;
-<a href=#283 id=283 data-nosnippet>283</a>        <span class="kw">let </span>event_priority = Priority::Low;
-<a href=#284 id=284 data-nosnippet>284</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
-<a href=#285 id=285 data-nosnippet>285</a>            <span class="string">"_e{{{},{}}}:{}|{}|p:{}"</span>,
-<a href=#286 id=286 data-nosnippet>286</a>            event_title.len(),
-<a href=#287 id=287 data-nosnippet>287</a>            event_text.len(),
-<a href=#288 id=288 data-nosnippet>288</a>            event_title,
-<a href=#289 id=289 data-nosnippet>289</a>            event_text,
-<a href=#290 id=290 data-nosnippet>290</a>            event_priority
-<a href=#291 id=291 data-nosnippet>291</a>        );
+<a href=#280 id=280 data-nosnippet>280</a>    </span><span class="kw">fn </span>event_tags_with_invalid_utf8_are_normalized() {
+<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">let </span><span class="kw-2">mut </span>input = <span class="string">b"_e{5,4}:title|text|#env:prod,tag:"</span>.to_vec();
+<a href=#282 id=282 data-nosnippet>282</a>        input.extend_from_slice(<span class="kw-2">&amp;</span>[<span class="number">0xff</span>, <span class="number">0xfe</span>]);
+<a href=#283 id=283 data-nosnippet>283</a>
+<a href=#284 id=284 data-nosnippet>284</a>        <span class="kw">let </span>tags = [<span class="string">"env:prod"</span>, <span class="string">"tag:\u{FFFD}"</span>];
+<a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">let </span>expected = EventD::new(<span class="string">"title"</span>, <span class="string">"text"</span>).with_tags(SharedTagSet::from(TagSet::from_iter(
+<a href=#286 id=286 data-nosnippet>286</a>            tags.iter().map(|<span class="kw-2">&amp;</span>tag| tag.into()),
+<a href=#287 id=287 data-nosnippet>287</a>        )));
+<a href=#288 id=288 data-nosnippet>288</a>        <span class="kw">let </span>actual = parse_dsd_eventd(<span class="kw-2">&amp;</span>input).expect(<span class="string">"event with invalid tag bytes should parse"</span>);
+<a href=#289 id=289 data-nosnippet>289</a>
+<a href=#290 id=290 data-nosnippet>290</a>        check_basic_eventd_eq(expected, actual);
+<a href=#291 id=291 data-nosnippet>291</a>    }
 <a href=#292 id=292 data-nosnippet>292</a>
-<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>expected = EventD::new(event_title, event_text).with_priority(event_priority);
-<a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">let </span>actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-<a href=#295 id=295 data-nosnippet>295</a>        check_basic_eventd_eq(expected, actual);
-<a href=#296 id=296 data-nosnippet>296</a>    }
-<a href=#297 id=297 data-nosnippet>297</a>
-<a href=#298 id=298 data-nosnippet>298</a>    <span class="attr">#[test]
-<a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">fn </span>eventd_alert_type() {
-<a href=#300 id=300 data-nosnippet>300</a>        <span class="kw">let </span>event_title = <span class="string">"my event"</span>;
-<a href=#301 id=301 data-nosnippet>301</a>        <span class="kw">let </span>event_text = <span class="string">"text"</span>;
-<a href=#302 id=302 data-nosnippet>302</a>        <span class="kw">let </span>event_alert_type = AlertType::Warning;
-<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
-<a href=#304 id=304 data-nosnippet>304</a>            <span class="string">"_e{{{},{}}}:{}|{}|t:{}"</span>,
-<a href=#305 id=305 data-nosnippet>305</a>            event_title.len(),
-<a href=#306 id=306 data-nosnippet>306</a>            event_text.len(),
-<a href=#307 id=307 data-nosnippet>307</a>            event_title,
-<a href=#308 id=308 data-nosnippet>308</a>            event_text,
-<a href=#309 id=309 data-nosnippet>309</a>            event_alert_type
-<a href=#310 id=310 data-nosnippet>310</a>        );
+<a href=#293 id=293 data-nosnippet>293</a>    <span class="attr">#[test]
+<a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">fn </span>eventd_priority() {
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">let </span>event_title = <span class="string">"my event"</span>;
+<a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">let </span>event_text = <span class="string">"text"</span>;
+<a href=#297 id=297 data-nosnippet>297</a>        <span class="kw">let </span>event_priority = Priority::Low;
+<a href=#298 id=298 data-nosnippet>298</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
+<a href=#299 id=299 data-nosnippet>299</a>            <span class="string">"_e{{{},{}}}:{}|{}|p:{}"</span>,
+<a href=#300 id=300 data-nosnippet>300</a>            event_title.len(),
+<a href=#301 id=301 data-nosnippet>301</a>            event_text.len(),
+<a href=#302 id=302 data-nosnippet>302</a>            event_title,
+<a href=#303 id=303 data-nosnippet>303</a>            event_text,
+<a href=#304 id=304 data-nosnippet>304</a>            event_priority
+<a href=#305 id=305 data-nosnippet>305</a>        );
+<a href=#306 id=306 data-nosnippet>306</a>
+<a href=#307 id=307 data-nosnippet>307</a>        <span class="kw">let </span>expected = EventD::new(event_title, event_text).with_priority(event_priority);
+<a href=#308 id=308 data-nosnippet>308</a>        <span class="kw">let </span>actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+<a href=#309 id=309 data-nosnippet>309</a>        check_basic_eventd_eq(expected, actual);
+<a href=#310 id=310 data-nosnippet>310</a>    }
 <a href=#311 id=311 data-nosnippet>311</a>
-<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span>expected = EventD::new(event_title, event_text).with_alert_type(event_alert_type);
-<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-<a href=#314 id=314 data-nosnippet>314</a>        check_basic_eventd_eq(expected, actual);
-<a href=#315 id=315 data-nosnippet>315</a>    }
-<a href=#316 id=316 data-nosnippet>316</a>
-<a href=#317 id=317 data-nosnippet>317</a>    <span class="attr">#[test]
-<a href=#318 id=318 data-nosnippet>318</a>    </span><span class="kw">fn </span>eventd_multiple_extensions() {
-<a href=#319 id=319 data-nosnippet>319</a>        <span class="kw">let </span>event_title = <span class="string">"my event"</span>;
-<a href=#320 id=320 data-nosnippet>320</a>        <span class="kw">let </span>event_text = <span class="string">"text"</span>;
-<a href=#321 id=321 data-nosnippet>321</a>        <span class="kw">let </span>event_hostname = MetaString::from(<span class="string">"testhost"</span>);
-<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span>event_aggregation_key = MetaString::from(<span class="string">"testkey"</span>);
-<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>event_priority = Priority::Low;
-<a href=#324 id=324 data-nosnippet>324</a>        <span class="kw">let </span>event_source_type = MetaString::from(<span class="string">"testsource"</span>);
-<a href=#325 id=325 data-nosnippet>325</a>        <span class="kw">let </span>event_alert_type = AlertType::Success;
-<a href=#326 id=326 data-nosnippet>326</a>        <span class="kw">let </span>event_timestamp = <span class="number">1234567890</span>;
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="kw">let </span>event_local_data = <span class="string">"abcdef123456"</span>;
-<a href=#328 id=328 data-nosnippet>328</a>        <span class="kw">let </span>event_external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
-<a href=#329 id=329 data-nosnippet>329</a>        <span class="kw">let </span>event_cardinality = <span class="string">"low"</span>;
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">let </span>tags = [<span class="string">"tags1"</span>, <span class="string">"tags2"</span>];
-<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">let </span>shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|<span class="kw-2">&amp;</span>s| s.into())));
-<a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
-<a href=#333 id=333 data-nosnippet>333</a>            <span class="string">"_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|card:{}|#{}"</span>,
-<a href=#334 id=334 data-nosnippet>334</a>            event_title.len(),
-<a href=#335 id=335 data-nosnippet>335</a>            event_text.len(),
-<a href=#336 id=336 data-nosnippet>336</a>            event_title,
-<a href=#337 id=337 data-nosnippet>337</a>            event_text,
-<a href=#338 id=338 data-nosnippet>338</a>            event_hostname,
-<a href=#339 id=339 data-nosnippet>339</a>            event_aggregation_key,
-<a href=#340 id=340 data-nosnippet>340</a>            event_priority,
-<a href=#341 id=341 data-nosnippet>341</a>            event_source_type,
-<a href=#342 id=342 data-nosnippet>342</a>            event_alert_type,
-<a href=#343 id=343 data-nosnippet>343</a>            event_timestamp,
-<a href=#344 id=344 data-nosnippet>344</a>            event_local_data,
-<a href=#345 id=345 data-nosnippet>345</a>            event_external_data,
-<a href=#346 id=346 data-nosnippet>346</a>            event_cardinality,
-<a href=#347 id=347 data-nosnippet>347</a>            tags.join(<span class="string">","</span>),
-<a href=#348 id=348 data-nosnippet>348</a>        );
-<a href=#349 id=349 data-nosnippet>349</a>        <span class="kw">let </span>actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
-<a href=#350 id=350 data-nosnippet>350</a>        <span class="kw">let </span>expected = EventD::new(event_title, event_text)
-<a href=#351 id=351 data-nosnippet>351</a>            .with_hostname(event_hostname)
-<a href=#352 id=352 data-nosnippet>352</a>            .with_aggregation_key(event_aggregation_key)
-<a href=#353 id=353 data-nosnippet>353</a>            .with_priority(event_priority)
-<a href=#354 id=354 data-nosnippet>354</a>            .with_source_type_name(event_source_type)
-<a href=#355 id=355 data-nosnippet>355</a>            .with_alert_type(event_alert_type)
-<a href=#356 id=356 data-nosnippet>356</a>            .with_timestamp(event_timestamp)
-<a href=#357 id=357 data-nosnippet>357</a>            .with_tags(shared_tag_set);
-<a href=#358 id=358 data-nosnippet>358</a>        check_basic_eventd_eq(expected, actual);
-<a href=#359 id=359 data-nosnippet>359</a>
-<a href=#360 id=360 data-nosnippet>360</a>        <span class="comment">// We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
-<a href=#361 id=361 data-nosnippet>361</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">true</span>);
-<a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#363 id=363 data-nosnippet>363</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(event_local_data));
-<a href=#364 id=364 data-nosnippet>364</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(event_external_data));
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::Low));
-<a href=#366 id=366 data-nosnippet>366</a>    }
-<a href=#367 id=367 data-nosnippet>367</a>
-<a href=#368 id=368 data-nosnippet>368</a>    <span class="attr">#[test]
-<a href=#369 id=369 data-nosnippet>369</a>    </span><span class="kw">fn </span>event_rejects_empty_title_or_text() {
-<a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">use </span>nom::error::ErrorKind;
-<a href=#371 id=371 data-nosnippet>371</a>
-<a href=#372 id=372 data-nosnippet>372</a>        <span class="comment">// Title and text are the two required fields of an event: a declared length of zero for either one is a
-<a href=#373 id=373 data-nosnippet>373</a>        // structural error, so the parser rejects the frame with a `Verify` error rather than emitting an event with
-<a href=#374 id=374 data-nosnippet>374</a>        // an empty title/text.
-<a href=#375 id=375 data-nosnippet>375</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
-<a href=#376 id=376 data-nosnippet>376</a>
-<a href=#377 id=377 data-nosnippet>377</a>        <span class="kw">match </span>parse_dogstatsd_event(<span class="string">b"_e{0,4}:|text"</span>, <span class="kw-2">&amp;</span>config) {
-<a href=#378 id=378 data-nosnippet>378</a>            <span class="prelude-val">Err</span>(nom::Err::Error(e)) =&gt; <span class="macro">assert_eq!</span>(e.code, ErrorKind::Verify),
-<a href=#379 id=379 data-nosnippet>379</a>            <span class="prelude-val">Err</span>(other) =&gt; <span class="macro">panic!</span>(<span class="string">"expected Verify error for empty title, got {other:?}"</span>),
-<a href=#380 id=380 data-nosnippet>380</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"empty title must be rejected"</span>),
-<a href=#381 id=381 data-nosnippet>381</a>        }
-<a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>        <span class="kw">match </span>parse_dogstatsd_event(<span class="string">b"_e{5,0}:title|"</span>, <span class="kw-2">&amp;</span>config) {
-<a href=#384 id=384 data-nosnippet>384</a>            <span class="prelude-val">Err</span>(nom::Err::Error(e)) =&gt; <span class="macro">assert_eq!</span>(e.code, ErrorKind::Verify),
-<a href=#385 id=385 data-nosnippet>385</a>            <span class="prelude-val">Err</span>(other) =&gt; <span class="macro">panic!</span>(<span class="string">"expected Verify error for empty text, got {other:?}"</span>),
-<a href=#386 id=386 data-nosnippet>386</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"empty text must be rejected"</span>),
-<a href=#387 id=387 data-nosnippet>387</a>        }
-<a href=#388 id=388 data-nosnippet>388</a>    }
-<a href=#389 id=389 data-nosnippet>389</a>
-<a href=#390 id=390 data-nosnippet>390</a>    <span class="attr">#[test]
-<a href=#391 id=391 data-nosnippet>391</a>    </span><span class="kw">fn </span>client_origin_fields_ignored_when_disabled() {
-<a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">let </span>local_data = <span class="string">"abcdef123456"</span>;
-<a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">let </span>external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
-<a href=#394 id=394 data-nosnippet>394</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"_e{{5,4}}:title|text|c:{}|e:{}|card:low"</span>, local_data, external_data);
-<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">false</span>);
-<a href=#396 id=396 data-nosnippet>396</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#397 id=397 data-nosnippet>397</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">None</span>);
-<a href=#398 id=398 data-nosnippet>398</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">None</span>);
-<a href=#399 id=399 data-nosnippet>399</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">None</span>);
-<a href=#400 id=400 data-nosnippet>400</a>    }
-<a href=#401 id=401 data-nosnippet>401</a>
-<a href=#402 id=402 data-nosnippet>402</a>    <span class="attr">#[test]
-<a href=#403 id=403 data-nosnippet>403</a>    </span><span class="kw">fn </span>empty_structured_fields_treated_as_missing() {
-<a href=#404 id=404 data-nosnippet>404</a>        <span class="comment">// All optional stringy fields are empty — should parse successfully and treat them as missing.
-<a href=#405 id=405 data-nosnippet>405</a>        </span><span class="kw">let </span>raw = <span class="string">"_e{5,4}:title|text|h:|k:|s:|c:|e:|card:|#"</span>;
-<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
-<a href=#407 id=407 data-nosnippet>407</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#408 id=408 data-nosnippet>408</a>        <span class="macro">assert_eq!</span>(packet.hostname, <span class="prelude-val">None</span>);
-<a href=#409 id=409 data-nosnippet>409</a>        <span class="macro">assert_eq!</span>(packet.aggregation_key, <span class="prelude-val">None</span>);
-<a href=#410 id=410 data-nosnippet>410</a>        <span class="macro">assert_eq!</span>(packet.source_type_name, <span class="prelude-val">None</span>);
+<a href=#312 id=312 data-nosnippet>312</a>    <span class="attr">#[test]
+<a href=#313 id=313 data-nosnippet>313</a>    </span><span class="kw">fn </span>eventd_alert_type() {
+<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span>event_title = <span class="string">"my event"</span>;
+<a href=#315 id=315 data-nosnippet>315</a>        <span class="kw">let </span>event_text = <span class="string">"text"</span>;
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="kw">let </span>event_alert_type = AlertType::Warning;
+<a href=#317 id=317 data-nosnippet>317</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
+<a href=#318 id=318 data-nosnippet>318</a>            <span class="string">"_e{{{},{}}}:{}|{}|t:{}"</span>,
+<a href=#319 id=319 data-nosnippet>319</a>            event_title.len(),
+<a href=#320 id=320 data-nosnippet>320</a>            event_text.len(),
+<a href=#321 id=321 data-nosnippet>321</a>            event_title,
+<a href=#322 id=322 data-nosnippet>322</a>            event_text,
+<a href=#323 id=323 data-nosnippet>323</a>            event_alert_type
+<a href=#324 id=324 data-nosnippet>324</a>        );
+<a href=#325 id=325 data-nosnippet>325</a>
+<a href=#326 id=326 data-nosnippet>326</a>        <span class="kw">let </span>expected = EventD::new(event_title, event_text).with_alert_type(event_alert_type);
+<a href=#327 id=327 data-nosnippet>327</a>        <span class="kw">let </span>actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+<a href=#328 id=328 data-nosnippet>328</a>        check_basic_eventd_eq(expected, actual);
+<a href=#329 id=329 data-nosnippet>329</a>    }
+<a href=#330 id=330 data-nosnippet>330</a>
+<a href=#331 id=331 data-nosnippet>331</a>    <span class="attr">#[test]
+<a href=#332 id=332 data-nosnippet>332</a>    </span><span class="kw">fn </span>eventd_multiple_extensions() {
+<a href=#333 id=333 data-nosnippet>333</a>        <span class="kw">let </span>event_title = <span class="string">"my event"</span>;
+<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>event_text = <span class="string">"text"</span>;
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>event_hostname = MetaString::from(<span class="string">"testhost"</span>);
+<a href=#336 id=336 data-nosnippet>336</a>        <span class="kw">let </span>event_aggregation_key = MetaString::from(<span class="string">"testkey"</span>);
+<a href=#337 id=337 data-nosnippet>337</a>        <span class="kw">let </span>event_priority = Priority::Low;
+<a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">let </span>event_source_type = MetaString::from(<span class="string">"testsource"</span>);
+<a href=#339 id=339 data-nosnippet>339</a>        <span class="kw">let </span>event_alert_type = AlertType::Success;
+<a href=#340 id=340 data-nosnippet>340</a>        <span class="kw">let </span>event_timestamp = <span class="number">1234567890</span>;
+<a href=#341 id=341 data-nosnippet>341</a>        <span class="kw">let </span>event_local_data = <span class="string">"abcdef123456"</span>;
+<a href=#342 id=342 data-nosnippet>342</a>        <span class="kw">let </span>event_external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
+<a href=#343 id=343 data-nosnippet>343</a>        <span class="kw">let </span>event_cardinality = <span class="string">"low"</span>;
+<a href=#344 id=344 data-nosnippet>344</a>        <span class="kw">let </span>tags = [<span class="string">"tags1"</span>, <span class="string">"tags2"</span>];
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="kw">let </span>shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|<span class="kw-2">&amp;</span>s| s.into())));
+<a href=#346 id=346 data-nosnippet>346</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(
+<a href=#347 id=347 data-nosnippet>347</a>            <span class="string">"_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|card:{}|#{}"</span>,
+<a href=#348 id=348 data-nosnippet>348</a>            event_title.len(),
+<a href=#349 id=349 data-nosnippet>349</a>            event_text.len(),
+<a href=#350 id=350 data-nosnippet>350</a>            event_title,
+<a href=#351 id=351 data-nosnippet>351</a>            event_text,
+<a href=#352 id=352 data-nosnippet>352</a>            event_hostname,
+<a href=#353 id=353 data-nosnippet>353</a>            event_aggregation_key,
+<a href=#354 id=354 data-nosnippet>354</a>            event_priority,
+<a href=#355 id=355 data-nosnippet>355</a>            event_source_type,
+<a href=#356 id=356 data-nosnippet>356</a>            event_alert_type,
+<a href=#357 id=357 data-nosnippet>357</a>            event_timestamp,
+<a href=#358 id=358 data-nosnippet>358</a>            event_local_data,
+<a href=#359 id=359 data-nosnippet>359</a>            event_external_data,
+<a href=#360 id=360 data-nosnippet>360</a>            event_cardinality,
+<a href=#361 id=361 data-nosnippet>361</a>            tags.join(<span class="string">","</span>),
+<a href=#362 id=362 data-nosnippet>362</a>        );
+<a href=#363 id=363 data-nosnippet>363</a>        <span class="kw">let </span>actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">let </span>expected = EventD::new(event_title, event_text)
+<a href=#365 id=365 data-nosnippet>365</a>            .with_hostname(event_hostname)
+<a href=#366 id=366 data-nosnippet>366</a>            .with_aggregation_key(event_aggregation_key)
+<a href=#367 id=367 data-nosnippet>367</a>            .with_priority(event_priority)
+<a href=#368 id=368 data-nosnippet>368</a>            .with_source_type_name(event_source_type)
+<a href=#369 id=369 data-nosnippet>369</a>            .with_alert_type(event_alert_type)
+<a href=#370 id=370 data-nosnippet>370</a>            .with_timestamp(event_timestamp)
+<a href=#371 id=371 data-nosnippet>371</a>            .with_tags(shared_tag_set);
+<a href=#372 id=372 data-nosnippet>372</a>        check_basic_eventd_eq(expected, actual);
+<a href=#373 id=373 data-nosnippet>373</a>
+<a href=#374 id=374 data-nosnippet>374</a>        <span class="comment">// We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+<a href=#375 id=375 data-nosnippet>375</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">true</span>);
+<a href=#376 id=376 data-nosnippet>376</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
+<a href=#377 id=377 data-nosnippet>377</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(event_local_data));
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(event_external_data));
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::Low));
+<a href=#380 id=380 data-nosnippet>380</a>    }
+<a href=#381 id=381 data-nosnippet>381</a>
+<a href=#382 id=382 data-nosnippet>382</a>    <span class="attr">#[test]
+<a href=#383 id=383 data-nosnippet>383</a>    </span><span class="kw">fn </span>event_rejects_empty_title_or_text() {
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">use </span>nom::error::ErrorKind;
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a>        <span class="comment">// Title and text are the two required fields of an event: a declared length of zero for either one is a
+<a href=#387 id=387 data-nosnippet>387</a>        // structural error, so the parser rejects the frame with a `Verify` error rather than emitting an event with
+<a href=#388 id=388 data-nosnippet>388</a>        // an empty title/text.
+<a href=#389 id=389 data-nosnippet>389</a>        </span><span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
+<a href=#390 id=390 data-nosnippet>390</a>
+<a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">match </span>parse_dogstatsd_event(<span class="string">b"_e{0,4}:|text"</span>, <span class="kw-2">&amp;</span>config) {
+<a href=#392 id=392 data-nosnippet>392</a>            <span class="prelude-val">Err</span>(nom::Err::Error(e)) =&gt; <span class="macro">assert_eq!</span>(e.code, ErrorKind::Verify),
+<a href=#393 id=393 data-nosnippet>393</a>            <span class="prelude-val">Err</span>(other) =&gt; <span class="macro">panic!</span>(<span class="string">"expected Verify error for empty title, got {other:?}"</span>),
+<a href=#394 id=394 data-nosnippet>394</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"empty title must be rejected"</span>),
+<a href=#395 id=395 data-nosnippet>395</a>        }
+<a href=#396 id=396 data-nosnippet>396</a>
+<a href=#397 id=397 data-nosnippet>397</a>        <span class="kw">match </span>parse_dogstatsd_event(<span class="string">b"_e{5,0}:title|"</span>, <span class="kw-2">&amp;</span>config) {
+<a href=#398 id=398 data-nosnippet>398</a>            <span class="prelude-val">Err</span>(nom::Err::Error(e)) =&gt; <span class="macro">assert_eq!</span>(e.code, ErrorKind::Verify),
+<a href=#399 id=399 data-nosnippet>399</a>            <span class="prelude-val">Err</span>(other) =&gt; <span class="macro">panic!</span>(<span class="string">"expected Verify error for empty text, got {other:?}"</span>),
+<a href=#400 id=400 data-nosnippet>400</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"empty text must be rejected"</span>),
+<a href=#401 id=401 data-nosnippet>401</a>        }
+<a href=#402 id=402 data-nosnippet>402</a>    }
+<a href=#403 id=403 data-nosnippet>403</a>
+<a href=#404 id=404 data-nosnippet>404</a>    <span class="attr">#[test]
+<a href=#405 id=405 data-nosnippet>405</a>    </span><span class="kw">fn </span>client_origin_fields_ignored_when_disabled() {
+<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>local_data = <span class="string">"abcdef123456"</span>;
+<a href=#407 id=407 data-nosnippet>407</a>        <span class="kw">let </span>external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"_e{{5,4}}:title|text|c:{}|e:{}|card:low"</span>, local_data, external_data);
+<a href=#409 id=409 data-nosnippet>409</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_client_origin_detection(<span class="bool-val">false</span>);
+<a href=#410 id=410 data-nosnippet>410</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#411 id=411 data-nosnippet>411</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">None</span>);
 <a href=#412 id=412 data-nosnippet>412</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">None</span>);
 <a href=#413 id=413 data-nosnippet>413</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">None</span>);
-<a href=#414 id=414 data-nosnippet>414</a>        <span class="macro">assert!</span>(packet.tags.into_iter().next().is_none());
-<a href=#415 id=415 data-nosnippet>415</a>    }
-<a href=#416 id=416 data-nosnippet>416</a>}
+<a href=#414 id=414 data-nosnippet>414</a>    }
+<a href=#415 id=415 data-nosnippet>415</a>
+<a href=#416 id=416 data-nosnippet>416</a>    <span class="attr">#[test]
+<a href=#417 id=417 data-nosnippet>417</a>    </span><span class="kw">fn </span>empty_structured_fields_treated_as_missing() {
+<a href=#418 id=418 data-nosnippet>418</a>        <span class="comment">// All optional stringy fields are empty — should parse successfully and treat them as missing.
+<a href=#419 id=419 data-nosnippet>419</a>        </span><span class="kw">let </span>raw = <span class="string">"_e{5,4}:title|text|h:|k:|s:|c:|e:|card:|#"</span>;
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
+<a href=#421 id=421 data-nosnippet>421</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
+<a href=#422 id=422 data-nosnippet>422</a>        <span class="macro">assert_eq!</span>(packet.hostname, <span class="prelude-val">None</span>);
+<a href=#423 id=423 data-nosnippet>423</a>        <span class="macro">assert_eq!</span>(packet.aggregation_key, <span class="prelude-val">None</span>);
+<a href=#424 id=424 data-nosnippet>424</a>        <span class="macro">assert_eq!</span>(packet.source_type_name, <span class="prelude-val">None</span>);
+<a href=#425 id=425 data-nosnippet>425</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">None</span>);
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">None</span>);
+<a href=#427 id=427 data-nosnippet>427</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">None</span>);
+<a href=#428 id=428 data-nosnippet>428</a>        <span class="macro">assert!</span>(packet.tags.iter().next().is_none());
+<a href=#429 id=429 data-nosnippet>429</a>    }
+<a href=#430 id=430 data-nosnippet>430</a>}
 </code></pre></div></section></main></body></html>
