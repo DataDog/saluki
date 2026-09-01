@@ -787,9 +787,11 @@ mod tests {
         ClientConfig, ProtocolVersion, RootCertStore, ServerConfig,
     };
 
-    use super::test_util::SelfSignedCert;
     #[cfg(not(feature = "fips"))]
-    use super::{build_nss_key_log_line, open_key_log_file};
+    use super::build_nss_key_log_line;
+    #[cfg(all(unix, not(feature = "fips")))]
+    use super::open_key_log_file;
+    use super::test_util::SelfSignedCert;
     use super::{
         ensure_client_config_fips_compliant, ensure_server_config_fips_compliant, AcceptAllServerCertVerifier,
         ClientTLSConfigBuilder, ServerTLSConfigBuilder, TlsMinimumVersion,

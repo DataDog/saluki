@@ -1,6 +1,6 @@
 #[cfg(unix)]
-use std::{io::ErrorKind, path::Path};
-use std::{net::SocketAddr, sync::Mutex, time::Duration};
+use std::path::Path;
+use std::{io::ErrorKind, net::SocketAddr, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownHandle;
@@ -9,9 +9,14 @@ use saluki_core::runtime::{
     InitializationError, Supervisable, Supervisor, SupervisorError, SupervisorFuture,
 };
 use saluki_error::generic_error;
-use tokio::{net::TcpStream, sync::oneshot, task::JoinHandle, time::timeout};
 #[cfg(unix)]
-use tokio::{net::UnixStream, time::sleep};
+use tokio::net::UnixStream;
+use tokio::{
+    net::TcpStream,
+    sync::oneshot,
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
 
 use crate::net::addr::BoundListenAddress;
 

@@ -822,9 +822,9 @@ mod tests {
 
     use super::*;
     use crate::net::addr::BoundListenAddress;
-    use crate::net::server::test_util::connect_tcp;
     #[cfg(unix)]
-    use crate::net::server::test_util::{connect_unix, ServerTestHarness};
+    use crate::net::server::test_util::connect_unix;
+    use crate::net::server::test_util::{connect_tcp, ServerTestHarness};
 
     /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
