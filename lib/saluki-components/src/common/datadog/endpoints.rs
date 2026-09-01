@@ -11,7 +11,7 @@ use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use snafu::{ResultExt, Snafu};
 use stringtheory::MetaString;
-use tracing::debug;
+use tracing::{debug, error};
 use url::Url;
 
 use super::api_key::ApiKeyCell;
@@ -224,7 +224,7 @@ pub(crate) enum EndpointError {
 ///
 /// # Errors
 ///
-/// Returns an error if an endpoint URL is invalid or an API key cannot be used as an HTTP header value.
+/// Returns an error if an endpoint URL is invalid.
 pub(crate) fn resolve_additional_endpoints(
     additional_endpoints: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
@@ -245,10 +245,22 @@ pub(crate) fn resolve_additional_endpoints(
             }
 
             seen.insert(trimmed_api_key);
+            let api_key = match ApiKeyCell::new(trimmed_api_key) {
+                Ok(api_key) => api_key,
+                Err(_) => {
+                    error!(
+                        config_key = "additional_endpoints",
+                        endpoint = raw_endpoint,
+                        api_key_index = index,
+                        "Skipping API key because it cannot be used as an HTTP header value."
+                    );
+                    continue;
+                }
+            };
             resolved.push(ResolvedEndpoint {
                 endpoint: endpoint.clone(),
                 configured_endpoint: raw_endpoint.to_string(),
-                api_key: ApiKeyCell::new(trimmed_api_key).map_err(|_| EndpointError::InvalidApiKey)?,
+                api_key,
                 api_key_index: Some(index),
                 raw_additional_url: Some(raw_endpoint.to_string()),
                 logs_authority: logs_authority.clone(),
@@ -657,6 +669,19 @@ mod tests {
         let resolved2 = resolve_additional_endpoints(&endpoints2).expect("should resolve");
         assert_eq!(resolved2[0].api_key_index(), Some(0));
         assert_eq!(resolved2[1].api_key_index(), Some(1));
+    }
+
+    #[test]
+    fn header_invalid_additional_api_keys_are_skipped() {
+        let endpoints = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key\nvalue", "key-b"])]);
+
+        let resolved = resolve_additional_endpoints(&endpoints).expect("should resolve");
+
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(&*resolved[0].api_key(), "key-a");
+        assert_eq!(resolved[0].api_key_index(), Some(0));
+        assert_eq!(&*resolved[1].api_key(), "key-b");
+        assert_eq!(resolved[1].api_key_index(), Some(2));
     }
 
     #[test]

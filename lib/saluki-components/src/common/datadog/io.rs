@@ -1137,7 +1137,7 @@ mod tests {
         },
     };
 
-    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
+    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue, SalukiConfiguration};
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
@@ -1163,7 +1163,10 @@ mod tests {
 
     use super::*;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
-    use crate::common::datadog::{endpoints::resolve_additional_endpoints, test_util::shared_configuration};
+    use crate::common::datadog::{
+        endpoints::resolve_additional_endpoints,
+        test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
+    };
     use crate::common::datadog::{
         METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
@@ -1971,12 +1974,23 @@ mod tests {
     /// accepted/processed connection (one connection per request, since the server replies with
     /// `Connection: close`).
     async fn start_recording_http_server(statuses: Vec<StatusCode>) -> (String, Arc<AtomicUsize>) {
+        let (url, counter, _requests) = start_recording_http_server_with_requests(statuses).await;
+
+        (url, counter)
+    }
+
+    /// Starts the same server as [`start_recording_http_server`], additionally handing back the text
+    /// of each request it accepted, for a test that has to inspect what the forwarder sent.
+    async fn start_recording_http_server_with_requests(
+        statuses: Vec<StatusCode>,
+    ) -> (String, Arc<AtomicUsize>, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let counter = Arc::new(AtomicUsize::new(0));
 
         let statuses = Arc::new(statuses);
         let counter_for_task = Arc::clone(&counter);
+        let (request_tx, request_rx) = mpsc::channel(16);
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = match listener.accept().await {
@@ -1985,6 +1999,7 @@ mod tests {
                 };
                 let statuses = Arc::clone(&statuses);
                 let counter = Arc::clone(&counter_for_task);
+                let request_tx = request_tx.clone();
 
                 tokio::spawn(async move {
                     let mut request = Vec::new();
@@ -2020,6 +2035,9 @@ mod tests {
                         }
                     }
 
+                    // A test that does not read the requests drops the receiver, so never block here.
+                    let _ = request_tx.try_send(request_str);
+
                     let nth = counter.fetch_add(1, Ordering::SeqCst);
                     let idx = nth.min(statuses.len() - 1);
                     let status = statuses[idx];
@@ -2035,7 +2053,7 @@ mod tests {
             }
         });
 
-        (format!("http://127.0.0.1:{port}/"), counter)
+        (format!("http://127.0.0.1:{port}/"), counter, request_rx)
     }
 
     fn parse_content_length(request: &str) -> Option<usize> {
@@ -2052,6 +2070,14 @@ mod tests {
 
     async fn build_test_forwarder(
         forwarder_url: &str, live_config: Option<GenericConfiguration>,
+    ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
+        build_test_forwarder_with_api_keys(forwarder_url, live_config, &LiveApiKeys::default()).await
+    }
+
+    /// Builds a forwarder pointed at `forwarder_url`, with `api_keys` as the live views its endpoints
+    /// take their API keys from.
+    async fn build_test_forwarder_with_api_keys(
+        forwarder_url: &str, live_config: Option<GenericConfiguration>, api_keys: &LiveApiKeys,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
@@ -2083,7 +2109,7 @@ mod tests {
                     context,
                     forwarder_config,
                     live_config,
-                    &LiveApiKeys::default(),
+                    api_keys,
                     test_logical_endpoint,
                     telemetry,
                     metrics_builder,
@@ -2109,6 +2135,22 @@ mod tests {
 
     async fn config_with(values: serde_json::Value) -> GenericConfiguration {
         config_from(values).await
+    }
+
+    /// Returns a configuration whose primary API key is `api_key`.
+    fn config_with_api_key(api_key: &str) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.api_key = api_key.to_string();
+
+        config
+    }
+
+    /// Returns the API key a recorded request presented.
+    fn recorded_api_key(request: &str) -> Option<&str> {
+        request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("dd-api-key").then_some(value.trim())
+        })
     }
 
     async fn wait_for_count_at_least(counter: &Arc<AtomicUsize>, target: usize, deadline: Duration) -> usize {
@@ -2169,6 +2211,46 @@ mod tests {
             recorder.counter(retry_metric_key("network_http_requests_requeued_total")),
             Some(0)
         );
+    }
+
+    #[tokio::test]
+    async fn a_rotated_api_key_reaches_the_requests_a_spawned_forwarder_sends() {
+        let (server_url, _counter, mut requests) =
+            start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
+        let live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
+        let (_, forwarder) = build_test_forwarder_with_api_keys(&server_url, None, &live.api_keys()).await;
+
+        // Spawning the forwarder is what starts key refreshing in production.
+        let handle = forwarder.spawn().await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+        let request = timeout(Duration::from_secs(3), requests.recv())
+            .await
+            .expect("the server should record the request")
+            .expect("the server should be running");
+        assert_eq!(Some(TEST_API_KEY), recorded_api_key(&request));
+
+        live.store(config_with_api_key("rotated-api-key"));
+
+        // A key is installed by a task of its own, so keep sending until a request carries the new one.
+        let rotated = timeout(Duration::from_secs(3), async {
+            loop {
+                handle
+                    .send_transaction(build_test_transaction())
+                    .await
+                    .expect("send should succeed");
+                let request = requests.recv().await.expect("the server should be running");
+                if recorded_api_key(&request) == Some("rotated-api-key") {
+                    return;
+                }
+            }
+        })
+        .await;
+
+        handle.shutdown().await;
+        assert!(rotated.is_ok(), "a rotated API key should reach the request path");
     }
 
     #[tokio::test]
