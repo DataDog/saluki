@@ -154,7 +154,7 @@ mod tests {
         assert!(remaining.is_empty());
 
         let mut service_check_tags = TagSet::default();
-        for tag in packet.tags.into_iter() {
+        for tag in packet.tags.iter() {
             service_check_tags.insert_tag(tag);
         }
 
@@ -208,6 +208,20 @@ mod tests {
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let expected = ServiceCheck::new(name, sc_status).with_tags(shared_tag_set);
+        check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn service_check_tags_with_invalid_utf8_are_normalized() {
+        let mut input = b"_sc|testsvc|0|#env:prod,tag:".to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+
+        let tags = ["env:prod", "tag:\u{FFFD}"];
+        let expected = ServiceCheck::new("testsvc", CheckStatus::Ok).with_tags(SharedTagSet::from(TagSet::from_iter(
+            tags.iter().map(|&tag| tag.into()),
+        )));
+        let actual = parse_dsd_service_check(&input).expect("service check with invalid tag bytes should parse");
+
         check_basic_service_check_eq(expected, actual);
     }
 

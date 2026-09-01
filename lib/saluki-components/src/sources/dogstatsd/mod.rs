@@ -2106,7 +2106,7 @@ fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String], default_hostname: &MetaString,
 ) -> Option<Metric> {
-    let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
+    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
 
     let origin = origin_from_metric_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
@@ -2118,7 +2118,7 @@ fn handle_metric_packet(
         context_resolvers.primary()
     };
 
-    let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
+    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
 
     let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
 
@@ -2147,12 +2147,12 @@ fn handle_event_packet(
     packet: EventPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<EventD> {
-    let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
+    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
 
     let origin = origin_from_event_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
-    let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
+    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
     let tags_resolver = context_resolvers.tags();
     let tags = tags_resolver.create_tag_set(tags)?;
 
@@ -2190,12 +2190,12 @@ fn handle_service_check_packet(
     packet: ServiceCheckPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<ServiceCheck> {
-    let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
+    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
 
     let origin = origin_from_service_check_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
-    let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
+    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
     let tags_resolver = context_resolvers.tags();
     let tags = tags_resolver.create_tag_set(tags)?;
 
@@ -2217,7 +2217,7 @@ fn handle_service_check_packet(
 }
 
 fn get_filtered_tags_iterator<'a>(
-    raw_tags: RawTags<'a>, additional_tags: &'a [String],
+    raw_tags: &'a RawTags<'_>, additional_tags: &'a [String],
 ) -> impl Iterator<Item = &'a str> + Clone {
     // This filters out "well-known" tags from the raw tags in the DogStatsD packet, and then chains on any additional tags
     // that were configured on the source.
