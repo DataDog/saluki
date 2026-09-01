@@ -20,20 +20,20 @@ type Projection<T> = Arc<dyn for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send
 ///
 /// # Contract
 ///
-/// - **1–3:** `Deref` reads only this clone's snapshot. `refresh()` and `changed()` update it before
+/// - **1:** `Deref` reads only this clone's snapshot. `refresh()` and `changed()` update it before
 ///   returning.
-/// - **4–8:** `changed()` compares with the initial snapshot, then its last return; `refresh()` never
-///   moves this baseline. After `A→refresh(B)`, stable B returns B, C returns C, and A parks without a
-///   duplicate after resynchronizing `Deref`. Returns may coalesce to the latest value.
-/// - **9:** Ticks only re-project and compare; unrelated updates stay pending.
-/// - **10–13:** Each clone owns and inherits its snapshot, baseline, receiver, and cursor; clones cannot
+/// - **2:** `changed()` compares with the initial snapshot, then its last return; `refresh()` never
+///   moves this baseline. After A then `refresh(B)`, stable B returns B, C returns C, and A parks without
+///   a duplicate after resynchronizing `Deref`. Returns may coalesce to the latest value.
+/// - **3:** Ticks only re-project and compare; unrelated updates stay pending.
+/// - **4:** Each clone owns and inherits its snapshot, baseline, receiver, and cursor; clones cannot
 ///   suppress each other. Borrowing prevents `clone()` from racing with `refresh()` or `changed()` on
 ///   one instance.
-/// - **14:** A projected child starts current and owes no parent report.
-/// - **15–18:** Publish before notifying and subscribe before loading. `refresh()` leaves the cursor
+/// - **5:** A projected child starts current and owes no parent report.
+/// - **6:** Publish before notifying and subscribe before loading. `refresh()` leaves the cursor
 ///   unobserved; cancelling `changed()` preserves the cursor and baseline.
-/// - **19:** `&mut self` guards snapshot mutations; per-clone state needs no shared locks or atomics.
-/// - **20–23:** Fixed views return their value from `refresh()` and park in `changed()`; closed channels
+/// - **7:** `&mut self` guards snapshot mutations; per-clone state needs no shared locks or atomics.
+/// - **8:** Fixed views return their value from `refresh()` and park in `changed()`; closed channels
 ///   also park. Equal projections neither clone nor notify. Stable notified values eventually return
 ///   unless already reported.
 pub struct Live<T> {
@@ -243,7 +243,7 @@ impl<T: fmt::Debug> fmt::Debug for Live<T> {
     }
 }
 
-// Invariant 24: Cover transitions, not internals: same-clone mixing, clone isolation, coalescing,
+// Invariant 9: Cover transitions, not internals: same-clone mixing, clone isolation, coalescing,
 // reversion, unrelated ticks, cancellation, and projected children.
 #[cfg(test)]
 mod tests {
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn refresh_updates_the_snapshot_deref_returns() {
-        // Invariants: 1, 2.
+        // Invariant: 1.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
         assert_eq!("key-1", &*view);
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn refresh_leaves_a_fixed_view_alone() {
-        // Invariant: 20.
+        // Invariant: 8.
         let mut view = Live::new_fixed("key-1".to_string());
         assert_eq!("key-1", view.refresh());
         assert_eq!("key-1", &*view);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn refresh_does_not_consume_a_pending_notification() {
-        // Invariant: 17.
+        // Invariant: 6.
         // Asserting on the cursor rather than on changed() keeps the test synchronous, and the cursor
         // is the thing that must not move: were refresh() to mark it, an update that lands between
         // the load and the mark would have no notification left to wake changed() with.
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn refresh_on_one_clone_leaves_another_clones_snapshot_alone() {
-        // Invariant: 10.
+        // Invariant: 4.
         let source = Source::new("key-1");
         let mut refreshed = source.api_key_view();
         let untouched = refreshed.clone();
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn refresh_on_one_clone_leaves_another_clone_able_to_observe_the_update() {
-        // Invariant: 11.
+        // Invariant: 4.
         let source = Source::new("key-1");
         let mut refreshed = source.api_key_view();
         let mut waiting = refreshed.clone();
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn one_notification_updates_the_snapshot_of_every_clone() {
-        // Invariant: 11.
+        // Invariant: 4.
         let source = Source::new("key-1");
         let mut first = source.api_key_view();
         let mut second = first.clone();
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn changed_reports_a_value_refresh_already_observed() {
-        // Invariants: 4–6.
+        // Invariant: 2.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn changed_reports_a_refreshed_value_when_refresh_ran_before_the_tick() {
-        // Invariants: 5, 6.
+        // Invariant: 2.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn changed_reports_only_the_latest_value_after_refresh() {
-        // Invariants: 6, 8.
+        // Invariant: 2.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn changed_reports_a_refreshed_value_once_only() {
-        // Invariants: 6, 7.
+        // Invariant: 2.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn changed_stays_pending_when_the_source_returns_to_the_refreshed_value() {
-        // Invariants: 6, 7.
+        // Invariant: 2.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn an_unrelated_configuration_tick_leaves_changed_pending() {
-        // Invariant: 9.
+        // Invariant: 3.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_changed_does_not_lose_a_refreshed_value() {
-        // Invariant: 18.
+        // Invariant: 6.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn a_clone_made_after_refresh_inherits_the_pending_report() {
-        // Invariant: 12.
+        // Invariant: 4.
         let source = Source::new("key-1");
         let mut refreshed = source.api_key_view();
 
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn repeated_refreshes_keep_the_baseline_changed_compares_against() {
-        // Invariants: 5, 6.
+        // Invariant: 2.
         // Regression: refresh() sets the comparison baseline only on the first refresh past a reported
         // value. Setting it on every refresh would move the baseline to key-2 and swallow the return
         // to key-2 below.
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn repeated_refreshes_do_not_turn_a_return_to_the_baseline_into_a_report() {
-        // Invariants: 5–7.
+        // Invariant: 2.
         // The other half of the baseline regression: a baseline moved by the second refresh would
         // report key-1 a second time instead of parking.
         let source = Source::new("key-1");
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn changed_parks_when_the_notification_channel_closes() {
-        // Invariant: 21.
+        // Invariant: 8.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn a_final_update_before_the_channel_closes_is_reported_once() {
-        // Invariants: 21, 23.
+        // Invariant: 8.
         let source = Source::new("key-1");
         let mut view = source.api_key_view();
 
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_projected_child_starts_converged() {
-        // Invariant: 14.
+        // Invariant: 5.
         let source = Source::new("key-1");
         let view = source.api_key_view();
 
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn a_projected_child_observes_an_update_without_moving_the_parent() {
-        // Invariants: 1, 3, 14.
+        // Invariants: 1, 5.
         let source = Source::new("key-1");
         let parent = source.api_key_view();
         let mut child = parent.project(|api_key| api_key);

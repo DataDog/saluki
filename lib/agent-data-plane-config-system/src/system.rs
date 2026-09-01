@@ -1005,7 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_live_view_wakes_when_only_provenance_changes() {
-        // Invariant: 23.
+        // Invariant: 8.
         let (system, agent_tx) = connected_system(json!({})).await;
         let mut dd_url = system.live(|c| &c.shared.endpoints.dd_url);
         // Nothing has set the URL, so it is the schema default the Agent supplies.
@@ -1031,7 +1031,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_view_observes_debug_log_update() {
-        // Invariant: 3.
+        // Invariant: 1.
         let (system, agent_tx) = connected_system(json!({ "dogstatsd_metrics_stats_enable": false })).await;
         let mut view = system.live(|c| &c.domains.dogstatsd.debug_log);
         assert!(!view.metrics_stats_enable);
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn field_view_wakes_on_its_field() {
-        // Invariant: 3.
+        // Invariant: 1.
         // Projecting straight to a single field needs no schema change and no central registration:
         // the granularity is chosen at the call site.
         let (system, agent_tx) = connected_system(json!({ "dogstatsd_metrics_stats_enable": false })).await;
@@ -1078,7 +1078,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_metric_filter_follows_current_and_legacy_precedence() {
-        // Invariant: 23.
+        // Invariant: 8.
         // Regression: clearing `metric_filterlist` must restore the legacy list and match mode.
         let (system, agent_tx) = connected_system(json!({})).await;
         let mut metric_filter = system.live(|c| &c.domains.dogstatsd.metric_filter);
@@ -1131,7 +1131,7 @@ mod tests {
 
     #[tokio::test]
     async fn fixed_view_never_changes() {
-        // Invariant: 20.
+        // Invariant: 8.
         let mut view: Live<bool> = Live::new_fixed(true);
         assert!(*view);
         // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
@@ -1142,7 +1142,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_parked_changed_wakes_for_an_update_that_lands_after_a_refresh() {
-        // Invariants: 3, 5, 17, 23.
+        // Invariants: 1, 2, 6, 8.
         let (system, agent_tx) = connected_system(json!({ "dogstatsd_port": 8125 })).await;
         let mut port = system.live(|c| &c.domains.dogstatsd.listeners.port);
         assert_eq!(8125, *port);
@@ -1178,7 +1178,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancelled_changed_that_consumed_an_unrelated_notification_keeps_its_baseline() {
-        // Invariants: 9, 18.
+        // Invariants: 3, 6.
         let (system, agent_tx) = connected_system(json!({ "dogstatsd_port": 8125 })).await;
         let mut port = system.live(|c| &c.domains.dogstatsd.listeners.port);
         // A second view of the updated setting pins the notification to have been sent, so the port
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_notification_never_precedes_the_configuration_it_announces() {
-        // Invariant: 15.
+        // Invariant: 6.
         // The update task must store the new configuration before firing the tick. Were the order
         // reversed, a view woken by the tick could re-project the previous configuration, find no
         // change, and park with the update unreported.
