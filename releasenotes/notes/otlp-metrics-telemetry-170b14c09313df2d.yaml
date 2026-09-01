@@ -1,0 +1,6 @@
+enhancements:
+  - |
+    Added self-telemetry for OTLP metrics ingest: error counters for decode, channel,
+    dispatch, flush, and translation failures; dropped-point counters for unsupported
+    aggregation temporalities, histogram conversion failures, and invalid values; and a
+    processing-latency histogram for OTLP metrics batches.
