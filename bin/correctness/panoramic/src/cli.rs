@@ -1,16 +1,4 @@
 //! Defines Panoramic's command-line interface.
-//!
-//! The CLI is the configuration boundary for runner settings:
-//!
-//! - Panoramic-owned settings expose an argument and a matching `PANORAMIC_*` environment fallback. The environment
-//!   name is the argument name in uppercase snake case with the prefix added.
-//! - Settings shared across Saluki keep their repository-wide environment name and also expose an argument.
-//! - Canonical environment variables consumed by dependencies are documented instead of duplicated as arguments.
-//! - Parsed settings are passed explicitly to the code that uses them. Panoramic and its libraries do not read
-//!   Panoramic- or Saluki-owned settings directly from the process environment.
-//!
-//! Logging is the exception. `--log-level` provides a convenient filter for Panoramic and its first-party libraries.
-//! When `RUST_LOG` is set, its tracing filter takes precedence.
 
 use std::path::{Path, PathBuf};
 
@@ -86,6 +74,29 @@ impl LogLevel {
     }
 }
 
+// CLI Interface Doctorine: human-authored rules for the public interface of the panoramic binary.
+//
+// Panoramic-owned settings should be passed preferably by command line argument. If an
+// environment variable is desired, it should be prefixed with PANORAMIC_. For example:
+// CLI arg: --adp-binary-path
+// ENV var: PANORAMIC_ADP_BINARY_PATH
+//
+// Panoramic-owned or Saluki-repo-owned settings need not have a PANORAMIC_ prefix if they are
+// shared other processes, build or CI environments. These SHOULD have an addressable command line
+// argument. For example:
+// CLI arg: --some-shared-saluki-ci-thing
+// ENV var: SOME_SHARED_SALUKI_CI_THING
+//
+// Environment variables MUST be parsed by the clap command line argument interface and documented
+// in its help text. Downstream procedural code must not do its own discovery of environment
+// variables; doing so makes the interface diffuse and hard to discover. The only exceptions are
+// canonical environment variables, such as DOCKER_HOST, that downstream libraries discover on their
+// own, but even these MUST be documented in the help text manually.
+//
+// Logging is a special exception. `--log-level` provides a convenient filter for Panoramic and its
+// first-party libraries. The canonical RUST_LOG overrides this and feeds the logging library
+// directly.
+//
 /// Panoramic: Integration test runner for Agent Data Plane.
 #[derive(Parser)]
 #[command(
