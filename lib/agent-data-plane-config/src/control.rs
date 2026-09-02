@@ -217,12 +217,6 @@ pub struct ControlIpc {
     /// Defaults to `134217728` (128 MiB).
     pub grpc_max_message_size: usize,
 
-    /// Timeout for establishing a connection to the container runtime interface.
-    pub cri_connection_timeout: i64,
-
-    /// Timeout for a single container runtime interface query.
-    pub cri_query_timeout: i64,
-
     /// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
     pub remote_agent_string_interner_size_bytes: usize,
 }

@@ -831,8 +831,11 @@ The following settings work in ADP with the same behavior as the core agent.
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
+| `container_cgroup_root`                                                                    | cgroupfs root for container metadata               |
+| `container_proc_root`                                                                      | procfs root for container metadata                 |
 | `cri_connection_timeout`                                                                   | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                                                        | CRI container runtime query timeout (s)            |
+| `cri_socket_path`                                                                          | containerd/CRI socket path                         |
 | `data_plane.api_listen_address`                                                            | Unprivileged API listen address                    |
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`                                | Tag-filter deduplication cache size                |
 | `data_plane.dogstatsd.enabled`                                                             | Enable the DogStatsD pipeline                      |
@@ -908,6 +911,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `histogram_copy_to_distribution`                                                           | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
+| `hostname`                                                                                 | Forced hostname for emitted data                   |
 | `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |

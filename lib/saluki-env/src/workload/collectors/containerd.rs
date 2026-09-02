@@ -1,10 +1,9 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use async_stream::stream;
 use async_trait::async_trait;
 use containerd_protos::services::namespaces::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_error::GenericError;
@@ -18,7 +17,7 @@ use crate::workload::{
     entity::EntityId,
     helpers::containerd::{
         events::{ContainerdEvent, ContainerdTopic},
-        ContainerdClient,
+        ContainerdClient, ContainerdConfiguration,
     },
     metadata::MetadataOperation,
 };
@@ -43,16 +42,17 @@ pub struct ContainerdMetadataCollector {
 }
 
 impl ContainerdMetadataCollector {
-    /// Creates a new `ContainerdMetadataCollector` from the given configuration.
+    /// Creates a new `ContainerdMetadataCollector` from the given containerd configuration.
     ///
     /// # Errors
     ///
     /// If the containerd gRPC client can't be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,
+    pub async fn new(
+        configured_socket_path: Option<PathBuf>, containerd_config: &ContainerdConfiguration, health: Health,
+        tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
-        let client = ContainerdClient::from_configuration(config).await?;
+        let client = ContainerdClient::new(configured_socket_path, containerd_config).await?;
         let watched_namespaces = client.list_namespaces().await?;
 
         Ok(Self {

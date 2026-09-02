@@ -1,7 +1,7 @@
+use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 
-use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use stringtheory::interning::GenericMapInterner;
 
@@ -27,17 +27,25 @@ pub struct OnDemandPIDResolver {
 }
 
 impl OnDemandPIDResolver {
-    /// Creates a new `OnDemandPIDResolver` from the given configuration.
+    /// Creates a new `OnDemandPIDResolver` for the given container filesystem roots.
+    ///
+    /// A root given as `None` isn't configured, and is resolved from the detected features.
     ///
     /// # Errors
     ///
     /// If a cgroups hierarchy can't be found, or the internal cache can't be created, an error is returned.
-    pub fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
+    pub fn new(
+        procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
+        interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         #[cfg(target_os = "linux")]
         {
-            let resolver_inner = linux::ResolverImpl::from_configuration(config, feature_detector, interner)?;
+            let cgroups_config = crate::workload::helpers::cgroups::CgroupsConfiguration::new(
+                procfs_root,
+                cgroupfs_root,
+                feature_detector,
+            );
+            let resolver_inner = linux::ResolverImpl::new(&cgroups_config, interner)?;
             Ok(Self {
                 inner: Arc::new(resolver_inner),
             })
@@ -46,7 +54,8 @@ impl OnDemandPIDResolver {
         #[cfg(not(target_os = "linux"))]
         {
             // Rebind to make compiler happy.
-            let _config = config;
+            let _procfs_root = procfs_root;
+            let _cgroupfs_root = cgroupfs_root;
             let _feature_detector = feature_detector;
             let _interner = interner;
 
