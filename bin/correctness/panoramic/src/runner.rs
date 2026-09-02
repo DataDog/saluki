@@ -520,6 +520,24 @@ impl IntegrationRunner {
             "Starting test case."
         );
 
+        // The intake sidecar is a Linux container, so it creates the isolation group's network with
+        // Docker's `bridge` driver. A Windows target needs a `nat` network and cannot join that one,
+        // so reject the combination up front instead of failing later inside Docker.
+        if self.test_case.intake.enabled && self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+            return TestResult {
+                name: test_name,
+                passed: false,
+                duration: started.elapsed(),
+                assertion_results: vec![],
+                error: Some(format!(
+                    "Intake sidecar is not supported on the '{}' runtime.",
+                    crate::config::WINDOWS_RUNTIME
+                )),
+                phase_timings,
+                assertion_details: vec![],
+            };
+        }
+
         // Build the driver configuration.
         debug!(test = %test_name, "Building driver configuration...");
         let phase_start = Instant::now();
@@ -591,6 +609,9 @@ impl IntegrationRunner {
                     phase: "container_start".to_string(),
                     duration: phase_start.elapsed(),
                 });
+                // An intake sidecar started above already owns a container and the isolation group's
+                // network, so tear the group down before giving up on the test.
+                let _ = self.cleanup().await;
                 return TestResult {
                     name: test_name,
                     passed: false,

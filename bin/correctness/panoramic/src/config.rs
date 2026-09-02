@@ -206,6 +206,11 @@ pub fn default_host_runtime() -> &'static str {
 /// When enabled, the runner starts a `datadog-intake` container in the test's isolation group,
 /// reachable from the target under a fixed network alias. Tests point the target's intake URL at
 /// that alias and assert on what the intake received.
+///
+/// Only the `linux` runtime can host the sidecar: the `mac` runtime runs the target as a host
+/// process with no container network, and the `windows` runtime needs a `nat` network that the
+/// sidecar's Linux container cannot share. Runners reject the combination rather than skip it, so a
+/// test that needs the sidecar must declare `runtimes: [linux]`.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct IntakeConfig {
     /// Whether to start the intake sidecar.
