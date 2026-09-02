@@ -97,23 +97,11 @@ CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, r
 
 ## Panoramic CLI and environment
 
-Both suites run through the same `panoramic` binary. Run `panoramic --help` for its flags and for the
-environment variables the runner reads; `-h` prints the same text. That help output is meant to be
-complete, so we don't repeat a flag reference here that would drift away from it.
+Both suites run through the same `panoramic` binary.
 
 ```bash
 cargo run --release --bin panoramic -- --help
 ```
-
-> [!NOTE]
-> When both are set, `--log-dir` wins over `PANORAMIC_LOG_DIR`. Either way, each run gets its own
-> timestamped subdirectory underneath the base directory you pick.
-
-> [!TIP]
-> To turn up the runner's own logging, use `--log-level`, which applies to `panoramic` and the
-> first-party libraries it links while leaving external dependencies silent. To see everything,
-> including those dependencies, set `RUST_LOG` instead: it's the full tracing-subscriber filter and
-> takes precedence over `--log-level`.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 
