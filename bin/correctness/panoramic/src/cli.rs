@@ -155,8 +155,9 @@ pub struct RunCommand {
 
     /// Integration-test runtime to scope discovery to (for example, `linux`, `mac`,
     /// or `windows`). Only integration tests whose `runtimes:` list contains this
-    /// value are eligible to run. Defaults to `mac` on macOS hosts and `docker`
-    /// everywhere else. Correctness tests are unaffected by this flag
+    /// value are eligible to run. Defaults to the host's own runtime: `mac` on
+    /// macOS, `windows` on Windows, and `linux` everywhere else. Correctness tests
+    /// are unaffected by this flag
     #[arg(long, verbatim_doc_comment)]
     pub runtime: Option<String>,
 
@@ -256,8 +257,8 @@ pub struct ListCommand {
     pub test_dirs: Vec<PathBuf>,
 
     /// Integration-test runtime to scope discovery to. Same semantics as on `run`:
-    /// defaults to `mac` on macOS, `docker` everywhere else. Correctness tests are
-    /// unaffected
+    /// defaults to `mac` on macOS, `windows` on Windows, and `linux` everywhere
+    /// else. Correctness tests are unaffected
     #[arg(long, verbatim_doc_comment)]
     pub runtime: Option<String>,
 
