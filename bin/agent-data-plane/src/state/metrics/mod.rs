@@ -582,7 +582,12 @@ mod tests {
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
                     internal_name,
-                    &["component_id:dsd_client_telemetry_out", "component_type:destination"],
+                    &[
+                        "component_id:dsd_client_telemetry_out",
+                        "component_type:destination",
+                        "client:go",
+                        "client_transport:uds",
+                    ],
                 ),
                 7.0,
             ))
@@ -598,7 +603,10 @@ mod tests {
             "dogstatsd_client__bytes_dropped_writer",
         ] {
             assert!(output.contains(&format!("# TYPE {exported_name} counter")), "{output}");
-            assert!(output.contains(&format!("{exported_name} 7")), "{output}");
+            assert!(
+                output.contains(&format!("{exported_name}{{client=\"go\",client_transport=\"uds\"}} 7")),
+                "{output}"
+            );
         }
     }
 
