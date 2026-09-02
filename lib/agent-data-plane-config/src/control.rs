@@ -217,9 +217,15 @@ pub struct ControlIpc {
     /// Defaults to `134217728` (128 MiB).
     pub grpc_max_message_size: usize,
 
-    /// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
+    /// Byte budget for the remote-agent workload metadata string interner. (not in Datadog Agent config schema)
     ///
-    /// Defaults to `524288` (512 KiB). An explicit `0` fails the configuration load.
+    /// The workload provider interns entity IDs and tags into a single allocation of this size, taken at startup and
+    /// charged in full against the memory bounds ceiling. A workload whose tag cardinality outgrows the budget starts
+    /// failing to intern, which drops the affected tags and entity updates and increments the collectors'
+    /// `intern_failed_total` counters.
+    ///
+    /// Defaults to `524288` (512 KiB). An explicit `0` fails the configuration load. Change it when tuning ADP itself;
+    /// operators are not expected to.
     pub remote_agent_string_interner_size_bytes: NonZeroUsize,
 }
 
