@@ -167,7 +167,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: updatePR.data.number,
-              labels: [prLabel, 'automated']
+              labels: [prLabel, 'automated', 'changelog/no-changelog']
             });
 
             // Look for other open PRs bumping the ADP version on the same target branch, and close them out so this

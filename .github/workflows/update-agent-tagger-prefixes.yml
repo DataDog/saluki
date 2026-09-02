@@ -243,7 +243,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: updatePR.data.number,
-              labels: [prLabel, 'automated']
+              labels: [prLabel, 'automated', 'changelog/no-changelog']
             });
 
             // Close out any older PRs from this workflow: the newest fixture is a superset of what they reported.
