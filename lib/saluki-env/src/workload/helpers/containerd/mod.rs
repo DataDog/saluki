@@ -67,24 +67,26 @@ pub struct ContainerdClient {
 }
 
 impl ContainerdClient {
-    /// Creates a client using an optional socket override and client configuration.
+    /// Creates a new `ContainerdClient` from the given socket path and client configuration.
+    ///
+    /// If `socket_path` is given, that path is used. Otherwise, well-known paths are probed.
     ///
     /// ## Errors
     ///
-    /// If the containerd socket path wasn't configured or couldn't be detected, or if the gRPC transport to containerd
+    /// If the containerd socket path wasn't given and couldn't be detected, or if the gRPC transport to containerd
     /// couldn't be created, an error will be returned.
     pub async fn new(
-        configured_socket_path: Option<PathBuf>, containerd_config: &ContainerdConfiguration,
+        socket_path: Option<PathBuf>, containerd_config: &ContainerdConfiguration,
     ) -> Result<Self, GenericError> {
-        let socket_path = ContainerdDetector::detect_grpc_socket_path(configured_socket_path)
+        let detected_socket_path = ContainerdDetector::detect_grpc_socket_path(socket_path)
             .ok_or(generic_error!(
                 "failed to detect containerd socket path; not available at default path and not specified in configuration (`cri_socket_path`)"
             ))?;
 
-        if !path_exists(&socket_path).await {
+        if !path_exists(&detected_socket_path).await {
             return Err(generic_error!(
                 "Detected containerd socket path ({}) but path does not exist, or process lacks permissions.",
-                socket_path.to_string_lossy()
+                detected_socket_path.to_string_lossy()
             ));
         }
 
@@ -92,7 +94,7 @@ impl ContainerdClient {
             .unwrap()
             .connect_timeout(containerd_config.connection_timeout)
             .connect_with_connector(service_fn(move |_| {
-                let socket_path = socket_path.clone();
+                let socket_path = detected_socket_path.clone();
                 async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
             }))
             .await?;

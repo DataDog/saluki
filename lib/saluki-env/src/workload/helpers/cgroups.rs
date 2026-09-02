@@ -42,7 +42,10 @@ pub struct CgroupsConfiguration {
 }
 
 impl CgroupsConfiguration {
-    /// Resolves unset roots from host-mapped procfs detection.
+    /// Creates a new `CgroupsConfiguration` from the given filesystem roots.
+    ///
+    /// If a root is given, that path is used. Otherwise, both roots fall back to their host-mapped default when
+    /// host-mapped procfs is detected, and to their local default when it isn't.
     pub fn new(
         procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
     ) -> Self {

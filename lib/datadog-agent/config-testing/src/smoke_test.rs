@@ -313,9 +313,10 @@ mod tests {
 
     #[tokio::test]
     async fn flags_a_supported_key_that_never_changes_the_struct() {
-        // `TYPED_CONFIG_SYSTEM` has registered (supported) keys. A factory that ignores the config
-        // entirely means each supported key "produces the default struct", violating the supported-key
-        // guarantee, which the harness must flag.
+        // This case needs a consumer with registered (supported) keys. No struct-deserializing consumer has
+        // any left, so it uses the `TYPED_CONFIG_SYSTEM` sentinel. A factory that ignores the config entirely
+        // means each supported key "produces the default struct", violating the supported-key guarantee, which
+        // the harness must flag.
         let outcome = tokio::spawn(async {
             run_config_smoke_tests(
                 structs::TYPED_CONFIG_SYSTEM,

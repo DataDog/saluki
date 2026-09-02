@@ -55,7 +55,13 @@ pub struct SharedConfiguration {
 /// Host identity and container runtime discovery inputs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Environment {
-    /// Hostname override. A defaulted empty value is treated as absent.
+    /// Hostname reported for all emitted data.
+    ///
+    /// Only read in standalone mode, where it is reported verbatim. In connected mode the hostname comes from the
+    /// Datadog Agent and this value is ignored.
+    ///
+    /// Defaults to empty, and a defaulted or empty value is treated as absent. Operators running standalone must set
+    /// it explicitly; startup fails otherwise.
     pub hostname: ConfigValue<String>,
 
     /// containerd runtime discovery and client timeouts.
