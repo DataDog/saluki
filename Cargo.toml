@@ -177,6 +177,7 @@ ndarray = { version = "0.17", default-features = false }
 ndarray-stats = { version = "0.7", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.186", default-features = false }
+mio = { version = "1.2.3", default-features = false }
 socket2 = { version = "0.6", default-features = false }
 tonic-prost-build = { version = "0.14", default-features = false }
 tonic-prost = { version = "0.14", default-features = false }
@@ -296,7 +297,3 @@ mutable_key_type = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(system_allocator)'] }
-
-[patch.crates-io]
-# Backport the Unix listener poll readiness re-arm fix from tokio-rs/mio#1998.
-mio = { git = "https://github.com/tokio-rs/mio", rev = "1e79434244eed630a1ee7f227117960c6296e7f3" }
