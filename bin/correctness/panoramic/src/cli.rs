@@ -1,3 +1,17 @@
+//! Defines Panoramic's command-line interface.
+//!
+//! The CLI is the configuration boundary for runner settings:
+//!
+//! - Panoramic-owned settings expose an argument and a matching `PANORAMIC_*` environment fallback. The environment
+//!   name is the argument name in uppercase snake case with the prefix added.
+//! - Settings shared across Saluki keep their repository-wide environment name and also expose an argument.
+//! - Canonical environment variables consumed by dependencies are documented instead of duplicated as arguments.
+//! - Parsed settings are passed explicitly to the code that uses them. Panoramic and its libraries do not read
+//!   Panoramic- or Saluki-owned settings directly from the process environment.
+//!
+//! Logging is the exception. `--log-level` provides a convenient filter for Panoramic and its first-party libraries.
+//! When `RUST_LOG` is set, its tracing filter takes precedence.
+
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
