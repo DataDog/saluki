@@ -16,7 +16,23 @@ RELEASE_TAG_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 START_MARKER = "<!-- saluki-curated-notes:start -->"
 END_MARKER = "<!-- saluki-curated-notes:end -->"
 CATEGORY_ORDER = ("upgrade", "features", "enhancements", "issues", "deprecations", "security", "fixes", "other")
-RENO_FILENAME_RE = re.compile(r"^.+-[0-9a-f]{16}\.yaml$")
+RENO_FILENAME_RE = re.compile(r"^.+-([0-9a-f]{16})\.yaml$")
+# Reno renders note prose as reStructuredText, so Markdown markup survives into the release body
+# verbatim. Each pattern pairs with a description of the reStructuredText spelling to use instead.
+MARKDOWN_PATTERNS = (
+    (re.compile(r"!\[[^\]]*\]\(([^)]+)\)"), "image syntax; use a '.. image:: {0}' directive"),
+    (re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)"), "link syntax; use '`{0} <{1}>`_'"),
+    (re.compile(r"__([^_]+)__"), "bold syntax; use '**{0}**'"),
+    # A single-backtick span is Markdown inline code, unless it is a reStructuredText hyperlink or
+    # reference (both end in an underscore) or the payload of an explicit role such as :code:`x`.
+    (re.compile(r"(?<![:`])`([^`]+)`(?![_`])"), "single-backtick inline code; use '``{0}``'"),
+    (re.compile(r"^#{1,6}\s+\S"), "heading syntax; use a reStructuredText title underline"),
+    (re.compile(r"^```"), "fenced code block; use a '.. code-block::' directive"),
+    (re.compile(r"^>\s+\S"), "block quote syntax; use indentation or a '.. note::' directive"),
+)
+# Prose inside a reStructuredText inline literal renders verbatim, so Markdown spelled there is
+# intentional rather than a mistake.
+RST_INLINE_LITERAL_RE = re.compile(r"``[^`]+``")
 RELEASE_NOTE_CONFIG_PATH = "releasenotes/config.yaml"
 
 
@@ -51,6 +67,31 @@ def merge_release_body(existing: str, markdown: str) -> str:
     return block + "\n\n" + existing if existing else block
 
 
+def find_markdown_syntax(text: str) -> list[str]:
+    """Return descriptions of the Markdown constructs used in one release-note entry."""
+    return [
+        description.format(*match.groups())
+        for line in (RST_INLINE_LITERAL_RE.sub(" ", line) for line in text.splitlines())
+        for pattern, description in MARKDOWN_PATTERNS
+        for match in pattern.finditer(line)
+    ]
+
+
+def find_duplicate_note_ids(paths: list[Path]) -> list[str]:
+    """Return errors for release notes sharing a Reno unique identifier."""
+    notes_by_id: dict[str, list[Path]] = {}
+    for path in sorted(paths):
+        match = RENO_FILENAME_RE.fullmatch(path.name)
+        if match:
+            notes_by_id.setdefault(match.group(1), []).append(path)
+    return [
+        f"{', '.join(str(path) for path in notes)}: release notes share the Reno unique identifier "
+        f"{identifier!r}; create notes with `reno new` so each one gets a fresh identifier"
+        for identifier, notes in sorted(notes_by_id.items())
+        if len(notes) > 1
+    ]
+
+
 def validate_note_file(path: Path) -> list[str]:
     """Return validation errors for one opt-in Reno release note."""
     errors = []
@@ -67,12 +108,19 @@ def validate_note_file(path: Path) -> list[str]:
             errors.append(f"{path}: unsupported release-note category {category!r}")
         elif not isinstance(entries, list) or not entries or any(not isinstance(entry, str) or not entry.strip() for entry in entries):
             errors.append(f"{path}: {category!r} must be a non-empty list of non-empty strings")
+        else:
+            errors.extend(
+                f"{path}: {category!r} uses Markdown {problem}"
+                for entry in entries
+                for problem in find_markdown_syntax(entry)
+            )
     return errors
 
 
 def check_command(arguments: argparse.Namespace) -> int:
     """Validate every supplied release-note file."""
     errors = [error for path in arguments.note_files for error in validate_note_file(path)]
+    errors.extend(find_duplicate_note_ids(arguments.note_files))
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
