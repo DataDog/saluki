@@ -382,7 +382,7 @@ crate::declare_annotations! {
     /// `secret_backend_command`-Path to the Agent secret-fetch executable
     SECRET_BACKEND_COMMAND = SalukiAnnotation {
         schema: &schema::SECRET_BACKEND_COMMAND,
-        support_level: SupportLevel::Full,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
@@ -393,7 +393,7 @@ crate::declare_annotations! {
     /// `secret_refresh_on_api_key_failure_interval`-Minutes between secret refreshes after a 403
     SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL = SalukiAnnotation {
         schema: &schema::SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL,
-        support_level: SupportLevel::Full,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],

@@ -1257,7 +1257,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64) {
         // A negative interval is not an error the Core Agent reports, and it means the same thing as
-        // no interval at all, so clamp rather than refuse to start.
+        // no interval at all, so clamp rather than reporting an error.
+        if value < 0 {
+            warn!("`secret_refresh_on_api_key_failure_interval` is negative ({value}). Treating it as 0 (disabled).");
+        }
+
         self.config.shared.secrets.refresh_on_api_key_failure_interval = value.max(0) as u64;
     }
 

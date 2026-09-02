@@ -7,5 +7,5 @@ pub use self::http::{HttpRetryPredicate, StandardHttpClassifier};
 /// whether or not a request should be retried from the logic of determining how long to wait before retrying.
 pub trait RetryClassifier<Res, Error> {
     /// Returns `true` if the original request should be retried.
-    fn should_retry(&mut self, response: &Result<Res, Error>) -> bool;
+    fn should_retry(&self, response: &Result<Res, Error>) -> bool;
 }

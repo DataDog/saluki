@@ -154,7 +154,7 @@ mod tests {
     struct ErrIsRetriable;
 
     impl RetryClassifier<(), ()> for ErrIsRetriable {
-        fn should_retry(&mut self, response: &Result<(), ()>) -> bool {
+        fn should_retry(&self, response: &Result<(), ()>) -> bool {
             response.is_err()
         }
     }

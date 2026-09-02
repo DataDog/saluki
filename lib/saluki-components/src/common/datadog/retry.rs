@@ -50,7 +50,7 @@ impl SecretsGate {
     }
 }
 
-/// Updates a [`SecretsGate`] as typed configuration changes.
+/// Updates a [`SecretsGate`] when configuration changes.
 pub(crate) struct SecretsGateRefresher {
     secrets: Live<Secrets>,
 
@@ -96,7 +96,7 @@ impl<B> Clone for SecretsHttpClassifier<B> {
 }
 
 impl<B, Error> RetryClassifier<Response<B>, Error> for SecretsHttpClassifier<B> {
-    fn should_retry(&mut self, response: &Result<Response<B>, Error>) -> bool {
+    fn should_retry(&self, response: &Result<Response<B>, Error>) -> bool {
         if let Ok(response) = response {
             if response.status() == StatusCode::FORBIDDEN && self.secrets.is_open() {
                 return true;

@@ -84,7 +84,7 @@ impl<B: 'static> StandardHttpClassifier<B> {
 }
 
 impl<B, Error> RetryClassifier<http::Response<B>, Error> for StandardHttpClassifier<B> {
-    fn should_retry(&mut self, response: &Result<http::Response<B>, Error>) -> bool {
+    fn should_retry(&self, response: &Result<http::Response<B>, Error>) -> bool {
         match response {
             Ok(resp) => self.predicates.iter().any(|p| p(resp)),
             Err(_) => true,
@@ -110,16 +110,16 @@ mod tests {
         Err(())
     }
 
-    fn classify(classifier: &mut StandardHttpClassifier<()>, response: &TestResponse) -> bool {
+    fn classify(classifier: &StandardHttpClassifier<()>, response: &TestResponse) -> bool {
         <StandardHttpClassifier<()> as RetryClassifier<http::Response<()>, ()>>::should_retry(classifier, response)
     }
 
     #[test]
     fn default_classifier_retries_5xx_and_most_4xx() {
-        let mut classifier = StandardHttpClassifier::new();
+        let classifier = StandardHttpClassifier::new();
 
-        assert!(!classify(&mut classifier, &ok(StatusCode::OK)));
-        assert!(!classify(&mut classifier, &ok(StatusCode::NO_CONTENT)));
+        assert!(!classify(&classifier, &ok(StatusCode::OK)));
+        assert!(!classify(&classifier, &ok(StatusCode::NO_CONTENT)));
 
         for status in [
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -127,7 +127,7 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             StatusCode::GATEWAY_TIMEOUT,
         ] {
-            assert!(classify(&mut classifier, &ok(status)), "{} should be retried", status);
+            assert!(classify(&classifier, &ok(status)), "{} should be retried", status);
         }
 
         for status in [
@@ -135,13 +135,13 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             StatusCode::NOT_FOUND,
         ] {
-            assert!(classify(&mut classifier, &ok(status)), "{} should be retried", status);
+            assert!(classify(&classifier, &ok(status)), "{} should be retried", status);
         }
     }
 
     #[test]
     fn default_classifier_does_not_retry_known_client_misconfig() {
-        let mut classifier = StandardHttpClassifier::new();
+        let classifier = StandardHttpClassifier::new();
 
         for status in [
             StatusCode::BAD_REQUEST,
@@ -149,31 +149,27 @@ mod tests {
             StatusCode::FORBIDDEN,
             StatusCode::PAYLOAD_TOO_LARGE,
         ] {
-            assert!(
-                !classify(&mut classifier, &ok(status)),
-                "{} should not be retried",
-                status
-            );
+            assert!(!classify(&classifier, &ok(status)), "{} should not be retried", status);
         }
     }
 
     #[test]
     fn default_classifier_retries_transport_error() {
-        let mut classifier = StandardHttpClassifier::new();
-        assert!(classify(&mut classifier, &err()));
+        let classifier = StandardHttpClassifier::new();
+        assert!(classify(&classifier, &err()));
     }
 
     #[test]
     fn predicate_adds_retry_for_403() {
-        let mut classifier = StandardHttpClassifier::new()
+        let classifier = StandardHttpClassifier::new()
             .with_predicate(Arc::new(|response| response.status() == StatusCode::FORBIDDEN));
 
-        assert!(classify(&mut classifier, &ok(StatusCode::FORBIDDEN)));
+        assert!(classify(&classifier, &ok(StatusCode::FORBIDDEN)));
         // Sibling client-misconfig statuses without a matching predicate keep their default (non-retriable) behavior.
-        assert!(!classify(&mut classifier, &ok(StatusCode::UNAUTHORIZED)));
-        assert!(!classify(&mut classifier, &ok(StatusCode::BAD_REQUEST)));
+        assert!(!classify(&classifier, &ok(StatusCode::UNAUTHORIZED)));
+        assert!(!classify(&classifier, &ok(StatusCode::BAD_REQUEST)));
         // Status codes that are retried by default are unaffected.
-        assert!(classify(&mut classifier, &ok(StatusCode::INTERNAL_SERVER_ERROR)));
+        assert!(classify(&classifier, &ok(StatusCode::INTERNAL_SERVER_ERROR)));
     }
 
     #[test]
@@ -183,14 +179,14 @@ mod tests {
         let predicate: HttpRetryPredicate =
             Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && flag_clone.load(Ordering::SeqCst));
 
-        let mut classifier = StandardHttpClassifier::new().with_predicate(predicate);
+        let classifier = StandardHttpClassifier::new().with_predicate(predicate);
 
-        assert!(!classify(&mut classifier, &ok(StatusCode::FORBIDDEN)));
+        assert!(!classify(&classifier, &ok(StatusCode::FORBIDDEN)));
 
         flag.store(true, Ordering::SeqCst);
-        assert!(classify(&mut classifier, &ok(StatusCode::FORBIDDEN)));
+        assert!(classify(&classifier, &ok(StatusCode::FORBIDDEN)));
 
         flag.store(false, Ordering::SeqCst);
-        assert!(!classify(&mut classifier, &ok(StatusCode::FORBIDDEN)));
+        assert!(!classify(&classifier, &ok(StatusCode::FORBIDDEN)));
     }
 }
