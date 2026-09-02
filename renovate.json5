@@ -28,6 +28,12 @@
     "schedule:weekly"
   ],
 
+  // Renovate PRs are dependency bumps, not customer-facing changes, so they don't need a
+  // release-note fragment. Applying this label satisfies the release-note-check CI job by
+  // default; a reviewer who spots a bump that does warrant a changelog entry (e.g. one that
+  // fixes a user-visible bug) can remove the label and add a release note instead.
+  "labels": ["changelog/no-changelog"],
+
   // Maximum number of Renovate-authored PRs that may be open at once.
   "prConcurrentLimit": 5,
 
