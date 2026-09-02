@@ -181,7 +181,7 @@ impl OpwMetricsConfiguration {
 /// Forwarder configuration based on the Datadog Agent's forwarder configuration.
 ///
 /// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
-/// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction with
+/// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
