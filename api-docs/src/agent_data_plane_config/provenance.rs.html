@@ -51,7 +51,7 @@
 <a href=#51 id=51 data-nosnippet>51</a>///
 <a href=#52 id=52 data-nosnippet>52</a>/// Prefer `ConfigValue&lt;T&gt;` over `ConfigValue&lt;Option&lt;T&gt;&gt;`. Reaching for the inner `Option` usually
 <a href=#53 id=53 data-nosnippet>53</a>/// means it is duplicating the provenance: a `T` with [`Provenance::Default`] already expresses "no
-<a href=#54 id=54 data-nosnippet>54</a>/// one configured this", and the nested form leaves two different ways to say so.
+<a href=#54 id=54 data-nosnippet>54</a>/// one configured this," and the nested form leaves two different ways to say so.
 <a href=#55 id=55 data-nosnippet>55</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 <a href=#56 id=56 data-nosnippet>56</a></span><span class="kw">pub struct </span>ConfigValue&lt;T&gt; {
 <a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// The effective value.

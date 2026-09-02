@@ -10,7 +10,7 @@ potentially a mapped version of it, allowing for transforming the data in whatev
     S: <a class="trait" href="https://docs.rs/futures-core/0.3.34/futures_core/stream/trait.Stream.html" title="trait futures_core::stream::Stream">Stream</a>&lt;Item = I&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Unpin.html" title="trait core::marker::Unpin">Unpin</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'static,
     I: <a class="trait" href="https://doc.rust-lang.org/nightly/core/iter/traits/collect/trait.IntoIterator.html" title="trait core::iter::traits::collect::IntoIterator">IntoIterator</a>&lt;Item = P::<a class="associatedtype" href="trait.Processor.html#associatedtype.Input" title="type saluki_core::observability::metrics::Processor::Input">Input</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a>,
     P: 'static,</div></h4></section></summary><div class="docblock"><p>Creates a new reflector with the given data source and processor.</p>
-<p>A reflector composes a source of data with a processor that’s used to transform the data, and then stores the
+<p>A reflector composes a source of data with a processor that’s used to transform the data, and then stores
 the processed results. It can be listened to for updates, and cheaply shared. This allows multiple interested
 components to subscribe to the same data source without having to duplicate the processing or storage of the
 data.</p>
