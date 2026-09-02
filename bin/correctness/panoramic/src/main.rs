@@ -261,7 +261,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     machine_output::write_run_report(&RunReport::new(
         cmd.test_dirs.clone(),
         integration_runtime.clone(),
-        cmd.parallelism,
+        cmd.parallelism.get(),
         started_at.clone(),
         Duration::ZERO,
         log_dir.clone(),
@@ -344,17 +344,21 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let run_report = RunReport::new(
         cmd.test_dirs.clone(),
         integration_runtime,
-        cmd.parallelism,
+        cmd.parallelism.get(),
         started_at,
         suite_result.duration,
         log_dir,
         &suite_result.results,
     );
     machine_output::write_run_report(&run_report);
+    let mut json_output_failed = false;
     if matches!(cmd.output, OutputFormat::Json) {
         match serde_json::to_string_pretty(&run_report) {
             Ok(json) => println!("{}", json),
-            Err(e) => error!("Failed to serialize the machine-readable run report: {}", e),
+            Err(e) => {
+                error!("Failed to serialize the machine-readable run report: {}", e);
+                json_output_failed = true;
+            }
         }
     }
 
@@ -380,6 +384,12 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 cmd.kind_cluster_name, cmd.kind_cluster_name
             );
         }
+    }
+
+    // A caller that asked for JSON and got none has no verdict to read, so the run's own exit code
+    // would be a claim about a report that was never printed.
+    if json_output_failed {
+        return ExitCode::from(EXIT_HARNESS_ERROR);
     }
 
     exit_code_for(&suite_result)

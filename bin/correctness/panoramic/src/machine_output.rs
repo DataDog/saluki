@@ -30,6 +30,12 @@ const DIAGNOSTIC_LINE_CAP: usize = 25;
 /// Length a reported diagnostic line is cut to, so one long line cannot bloat a report.
 const DIAGNOSTIC_LINE_LENGTH_CAP: usize = 500;
 
+/// Log files the harness writes itself, which are never scanned for diagnostic lines.
+///
+/// The harness's own summaries repeat assertion messages, so scanning them would report the
+/// verdict back as if it were evidence.
+const HARNESS_LOG_FILE_NAMES: &[&str] = &["result.log"];
+
 /// Severity markers that qualify a captured stdout line.
 ///
 /// Matched case-sensitively, so a level token is distinguished from prose mentioning an error.
@@ -130,7 +136,7 @@ pub struct DiagnosticLine {
 pub enum DiagnosticReason {
     /// The line was written to the component's stderr, where anything at all is worth reading.
     CapturedStderr,
-    /// The stdout line carries one of the severity markers the harness looks for.
+    /// The line carries one of the severity markers the harness looks for.
     SeverityMarker,
 }
 
@@ -139,20 +145,27 @@ pub enum DiagnosticReason {
 enum CapturedStream {
     Stdout,
     Stderr,
+    /// Both streams interleaved in one file, which is how a Kubernetes container's log arrives.
+    Combined,
 }
 
 impl CapturedStream {
-    /// Classifies an artifact by the captured stream it holds, or `None` if it holds neither.
+    /// Classifies an artifact by the captured output it holds, or `None` if it holds none.
     ///
-    /// Only these two are read, so the harness's own files (`result.log`, the JSON reports, and
-    /// assertion detail) never feed back into the reported lines.
+    /// Only log files are read, and only those the components wrote, so the harness's own files
+    /// (`result.log`, the JSON reports, and assertion detail) never feed back into the reported
+    /// lines.
     fn from_artifact(path: &Path) -> Option<Self> {
         let name = path.file_name().and_then(|name| name.to_str())?;
 
-        if name.ends_with("stderr.log") {
+        if HARNESS_LOG_FILE_NAMES.contains(&name) {
+            None
+        } else if name.ends_with("stderr.log") {
             Some(Self::Stderr)
         } else if name.ends_with("stdout.log") {
             Some(Self::Stdout)
+        } else if name.ends_with(".log") {
+            Some(Self::Combined)
         } else {
             None
         }
@@ -162,7 +175,9 @@ impl CapturedStream {
     fn reason_for(&self, line: &str) -> Option<DiagnosticReason> {
         match self {
             Self::Stderr if !line.trim().is_empty() => Some(DiagnosticReason::CapturedStderr),
-            Self::Stdout if SEVERITY_MARKERS.iter().any(|marker| line.contains(marker)) => {
+            // A combined log holds stderr lines the reader cannot tell apart from stdout, so both
+            // are held to the marker test rather than reporting an entire container's output.
+            Self::Stdout | Self::Combined if SEVERITY_MARKERS.iter().any(|marker| line.contains(marker)) => {
                 Some(DiagnosticReason::SeverityMarker)
             }
             _ => None,
@@ -662,8 +677,11 @@ mod tests {
         )
         .expect("stderr log should be writable");
         // The harness's own files are not scanned, so its summaries never feed back as leads.
-        std::fs::write(log_dir.path().join("result.log"), "FAIL error in the summary line\n")
-            .expect("result log should be writable");
+        std::fs::write(
+            log_dir.path().join("result.log"),
+            "FAIL log_contains: ERROR failed to bind socket\n",
+        )
+        .expect("result log should be writable");
 
         let mut result = TestResult::from_assertions(
             "dsd-plain",
@@ -697,6 +715,58 @@ mod tests {
         assert_eq!(report.diagnostic_lines[0].line_number, 2);
         assert_eq!(report.diagnostic_lines[1].source, log_dir.path().join("stdout.log"));
         assert_eq!(report.diagnostic_lines[1].line_number, 2);
+    }
+
+    #[test]
+    fn failed_test_report_surfaces_diagnostic_lines_from_container_logs() {
+        // Kubernetes container logs arrive as one file per container, with stderr interleaved into
+        // stdout, so they are named after the container rather than after a stream.
+        let log_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        std::fs::write(
+            log_dir.path().join("target.log"),
+            "starting up\nERROR failed to bind socket\n",
+        )
+        .expect("target log should be writable");
+        std::fs::write(
+            log_dir.path().join("millstone.log"),
+            "sending payloads\npanicked at src/main.rs:1:1\n",
+        )
+        .expect("millstone log should be writable");
+
+        let mut result = TestResult::from_assertions(
+            "dsd-plain",
+            Duration::from_secs(1),
+            vec![assertion("telemetry matches", false)],
+            Vec::new(),
+        );
+        result.log_dir = Some(log_dir.path().to_path_buf());
+
+        let report = TestReport::new(&result);
+
+        let selected: Vec<(&Path, usize, &str)> = report
+            .diagnostic_lines
+            .iter()
+            .map(|line| (line.source.as_path(), line.line_number, line.text.as_str()))
+            .collect();
+        assert_eq!(
+            selected,
+            vec![
+                (
+                    log_dir.path().join("millstone.log").as_path(),
+                    2,
+                    "panicked at src/main.rs:1:1"
+                ),
+                (
+                    log_dir.path().join("target.log").as_path(),
+                    2,
+                    "ERROR failed to bind socket"
+                ),
+            ]
+        );
+        assert!(report
+            .diagnostic_lines
+            .iter()
+            .all(|line| line.reason == DiagnosticReason::SeverityMarker));
     }
 
     #[test]

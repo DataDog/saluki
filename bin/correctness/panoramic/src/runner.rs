@@ -4,6 +4,7 @@
 //! is used regardless of output mode (TUI or plain). Events are emitted to a channel
 //! and consumed by either a TUI renderer or logging consumer.
 
+use std::num::NonZeroUsize;
 use std::sync::RwLock;
 use std::{
     collections::HashMap,
@@ -159,7 +160,7 @@ fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) ->
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
-    parallelism: usize,
+    parallelism: NonZeroUsize,
 
     /// Whether to stop execution at the first failure.
     fail_fast: bool,
@@ -180,7 +181,7 @@ pub(crate) struct RunArgs {
 impl RunArgs {
     pub(crate) fn new(cancel_all: CancellationToken) -> Self {
         Self {
-            parallelism: 1,
+            parallelism: NonZeroUsize::MIN,
             fail_fast: false,
             filter: None,
             event_sender: None,
@@ -188,7 +189,7 @@ impl RunArgs {
         }
     }
 
-    pub(crate) fn with_parallelism(mut self, parallelism: usize) -> Self {
+    pub(crate) fn with_parallelism(mut self, parallelism: NonZeroUsize) -> Self {
         self.parallelism = parallelism;
         self
     }
@@ -272,7 +273,7 @@ impl Runner {
             });
         }
 
-        let parallelism = parallelism.max(1);
+        let parallelism = parallelism.get();
         let semaphore = Arc::new(Semaphore::new(parallelism));
 
         let results = if fail_fast {
