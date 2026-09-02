@@ -28,20 +28,12 @@ use self::events::{decode_envelope_to_event, ContainerdEvent, ContainerdTopic};
 const MAX_LIST_CONTAINERS_RESPONSE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Containerd gRPC client configuration.
-#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct ContainerdConfiguration {
-    connection_timeout: Duration,
-    query_timeout: Duration,
-}
+    /// Timeout for establishing the gRPC connection to the containerd socket.
+    pub connection_timeout: Duration,
 
-impl ContainerdConfiguration {
-    /// Creates a client configuration with connection and query timeouts.
-    pub const fn new(connection_timeout: Duration, query_timeout: Duration) -> Self {
-        Self {
-            connection_timeout,
-            query_timeout,
-        }
-    }
+    /// Per-RPC timeout for containerd API calls.
+    pub query_timeout: Duration,
 }
 
 /// A [`ContainerdClient`] error.

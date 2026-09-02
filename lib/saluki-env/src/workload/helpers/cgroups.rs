@@ -42,7 +42,7 @@ pub struct CgroupsConfiguration {
 }
 
 impl CgroupsConfiguration {
-    /// Resolves optional roots from the detected host-mount features.
+    /// Resolves unset roots from host-mapped filesystem detection.
     pub fn new(
         procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
     ) -> Self {
