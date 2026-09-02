@@ -46,7 +46,7 @@ def build_curated_block(markdown: str) -> str:
     if not markdown.strip():
         return ""
 
-    return "\n".join((START_MARKER, "# Release notes", "", markdown.strip(), END_MARKER))
+    return "\n".join((START_MARKER, markdown.strip(), END_MARKER))
 
 
 def merge_release_body(existing: str, markdown: str) -> str:

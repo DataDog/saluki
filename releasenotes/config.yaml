@@ -31,9 +31,9 @@ template: |
 sections:
   - [upgrade, Upgrade Notes]
   - [features, New Features]
-  - [enhancements, Enhancement Notes]
+  - [enhancements, Enhancements]
   - [issues, Known Issues]
-  - [deprecations, Deprecation Notes]
+  - [deprecations, Deprecations]
   - [security, Security Notes]
   - [fixes, Bug Fixes]
   - [other, Other Notes]
