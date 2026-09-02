@@ -3,10 +3,11 @@ use std::{convert::Infallible, fs, process::Output, time::Duration};
 use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
 use http::{Request, Response};
 use http_body_util::Full;
-use hyper::{body::Bytes, service::service_fn};
+use hyper::body::Bytes;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use saluki_io::net::{listener::ConnectionOrientedListener, server::http::UnsupervisedHttpServer, ListenAddress};
 use tokio::{process::Command, time::timeout};
+use tower::util::service_fn;
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 const SERVER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -20,12 +21,10 @@ async fn run_config_request(extra_args: &[&str], response_body: &'static str) ->
     fs::write(&cert_path, format!("{}{}", cert.pem(), signing_key.serialize_pem()))
         .expect("certificate and private key should be written");
 
-    let listener = ConnectionOrientedListener::from_listen_address(
-        ListenAddress::try_from("tcp://127.0.0.1:0").expect("ephemeral TCP address should parse"),
-    )
-    .await
-    .expect("privileged API listener should bind");
-    let listen_addr = listener.local_addr().expect("listener should have a local address");
+    let listener = ConnectionOrientedListener::from_listen_address(ListenAddress::tcp_loopback(0))
+        .await
+        .expect("privileged API listener should bind");
+    let listen_addr = listener.bound_listen_address();
     let server_tls_config = build_ipc_server_tls_config(&cert_path)
         .await
         .expect("production IPC server TLS config should build");
@@ -48,7 +47,7 @@ async fn run_config_request(extra_args: &[&str], response_body: &'static str) ->
     let config = serde_json::json!({
         "disable_file_logging": true,
         "ipc_cert_file_path": cert_path,
-        "data_plane": { "secure_api_listen_address": format!("tcp://{listen_addr}") },
+        "data_plane": { "secure_api_listen_address": listen_addr.to_string() },
     });
     fs::write(
         &config_path,

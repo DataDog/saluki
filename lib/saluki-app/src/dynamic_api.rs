@@ -8,7 +8,6 @@ use std::{
     convert::Infallible,
     error::Error,
     future::Future,
-    net::SocketAddr,
     panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
     sync::Arc,
@@ -31,8 +30,7 @@ use saluki_core::runtime::{
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::{http::UnsupervisedHttpServer, multiplex_service::MultiplexService},
-    util::hyper::TowerToHyperService,
+    server::{grpc::unmatched_route, http::UnsupervisedHttpServer},
     ListenAddress,
 };
 use saluki_tls::ensure_server_config_fips_compliant;
@@ -41,17 +39,11 @@ use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder
 use tower::Service;
 use tracing::{debug, info, warn};
 
-/// The actual bound listen address of a running dynamic API server.
-///
-/// Asserted by dynamic API servers to allow discovering the exact socket address the server is bound to.
-#[derive(Clone, Debug)]
-pub struct BoundApiAddress(pub SocketAddr);
-
 /// A dynamic API server that can add and remove routes at runtime.
 ///
-/// `DynamicAPIBuilder` serves HTTP and gRPC on a given address, multiplexing both protocols on a single port. Route
-/// additions and removals are handled by subscribing to assertions/retractions of [`DynamicRoute`] in the
-/// [`DataspaceRegistry`].
+/// `DynamicAPIBuilder` serves HTTP and gRPC on a given address, on a single port. gRPC is HTTP/2 with a distinct route
+/// naming convention, so both protocols share one router and one server. Route additions and removals are handled by
+/// subscribing to assertions/retractions of [`DynamicRoute`] in the [`DataspaceRegistry`].
 ///
 /// ## Adding and removing routes
 ///
@@ -69,10 +61,14 @@ pub struct BoundApiAddress(pub SocketAddr);
 /// with the currently asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
 /// and method overlap with a static route is skipped (with a warning) until the conflict clears.
 ///
+/// HTTP and gRPC routes share one path space, so a gRPC route can in principle collide with an HTTP one. In practice
+/// it can't: gRPC paths are `/<package>.<Service>/<Method>`, which no HTTP handler here registers.
+///
 /// ## Assertions
 ///
-/// - `BoundApiAddress`: the actual listen address bound by the API server. Identifier is `"dynamic-<type>-api"`, where
-///   `type` is the stringified value of `EndpointType::as_str` (for example, `"dynamic-privileged-api"`)
+/// - [`BoundListenAddress`][saluki_io::net::BoundListenAddress]: the address the API server bound to. Identifier is
+///   `"dynamic-<type>-api"`, where `type` is the stringified value of `EndpointType::as_str` (for example,
+///   `"dynamic-privileged-api"`)
 pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
@@ -181,20 +177,21 @@ impl Supervisable for DynamicAPIBuilder {
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        // Build the static base routers.
+        // Build the static base router, folding the gRPC routes in alongside the HTTP ones.
         //
-        // We reset the fallback route of the base gRPC router as Tonic's `unimplemented` fallback handle will collide
-        // when merging additional gRPC service routers together. We do this for every gRPC service router that we merge
-        // and then we re-apply a fallback handler that returns a standard gRPC `UNIMPLEMENTED` response when we have
-        // our final, merged gRPC router.
-        let base_http = self.http_router.clone();
-        let base_grpc = self.grpc_router.clone().routes().into_axum_router().reset_fallback();
+        // Every router that goes into a merge has its fallback reset first: axum refuses to merge two routers that both
+        // define one, and Tonic's `Routes` always carries its own `unimplemented` fallback. The single fallback that
+        // does the right thing for both protocols is applied by `apply_fallback` once merging is finished, which is
+        // also why the base itself is kept fallback-free -- it gets re-merged on every rebuild.
+        let base = self
+            .http_router
+            .clone()
+            .reset_fallback()
+            .merge(self.grpc_router.clone().routes().into_axum_router().reset_fallback());
 
-        // Create dynamic inner routers for both HTTP and gRPC sides, seeded with the static base so that the static
-        // routes are served even before any dynamic routes are asserted. The gRPC seed gets the unimplemented fallback
-        // applied so unmatched gRPC requests return the correct status from the start.
-        let (inner_http, outer_http) = create_dynamic_router(base_http.clone());
-        let (inner_grpc, outer_grpc) = create_dynamic_router(grpc_post_process(base_grpc.clone()));
+        // Create the dynamic inner router, seeded with the static base so that the static routes are served even before
+        // any dynamic routes are asserted.
+        let (inner, outer) = create_dynamic_router(apply_fallback(base.clone()));
 
         let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
@@ -207,14 +204,9 @@ impl Supervisable for DynamicAPIBuilder {
         //
         // This allows other processes to find out where we've bound to when the port isn't known ahead of time,
         // such as during tests when binding to ephemeral ports.
-        let bound_addr = listener
-            .local_addr()
-            .map_err(|e| InitializationError::Failed { source: e.into() })?;
-        dataspace.assert(BoundApiAddress(bound_addr), Identifier::named(self.name()));
+        dataspace.assert(listener.bound_listen_address(), Identifier::named(self.name()));
 
-        let multiplexed_service = TowerToHyperService::new(MultiplexService::new(outer_http, outer_grpc));
-
-        let mut http_server = UnsupervisedHttpServer::from_listener(listener, multiplexed_service);
+        let mut http_server = UnsupervisedHttpServer::from_listener(listener, outer);
         if let Some(tls_config) = self.tls_config.clone() {
             http_server = http_server.with_tls_config(tls_config);
         }
@@ -242,7 +234,7 @@ impl Supervisable for DynamicAPIBuilder {
                     Some(e) => Err(GenericError::from(e)),
                     None => Ok(()),
                 },
-                result = run_event_loop(inner_http, inner_grpc, base_http, base_grpc, route_assertions, endpoint_type) => result,
+                result = run_event_loop(inner, base, route_assertions, endpoint_type) => result,
             }
         }))
     }
@@ -282,19 +274,16 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
     }
 }
 
-/// Runs the event loop that listens for route assertions/retractions and hot-swaps the inner routers.
-#[allow(clippy::too_many_arguments)]
+/// Runs the event loop that listens for route assertions/retractions and hot-swaps the inner router.
 async fn run_event_loop(
-    inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>, base_http: Router, base_grpc: Router,
-    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
+    inner: Arc<ArcSwap<Router>>, base: Router, mut route_assertions: Subscription<DynamicRoute>,
+    endpoint_type: EndpointType,
 ) -> Result<(), GenericError> {
-    let mut http_handlers = FastIndexMap::default();
-    let mut grpc_handlers = FastIndexMap::default();
+    // HTTP and gRPC handlers share a map because they share a router: a gRPC route is a route like any other, just
+    // one whose path follows the gRPC naming convention. The protocol is still worth naming in the logs.
+    let mut handlers = FastIndexMap::default();
 
     while let Some(update) = route_assertions.recv().await {
-        let mut rebuild_http = false;
-        let mut rebuild_grpc = false;
-
         match update {
             DataspaceUpdate::Asserted(id, route) => {
                 if route.endpoint_type() != endpoint_type {
@@ -302,42 +291,24 @@ async fn run_event_loop(
                 }
 
                 match route.endpoint_protocol() {
-                    EndpointProtocol::Http => {
-                        debug!(?id, "Registering dynamic HTTP handler.");
-                        http_handlers.insert(id, route.into_router());
-
-                        rebuild_http = true;
-                    }
-                    EndpointProtocol::Grpc => {
-                        debug!(?id, "Registering dynamic gRPC handler.");
-                        grpc_handlers.insert(id, route.into_router());
-
-                        rebuild_grpc = true;
-                    }
+                    EndpointProtocol::Http => debug!(?id, "Registering dynamic HTTP handler."),
+                    EndpointProtocol::Grpc => debug!(?id, "Registering dynamic gRPC handler."),
                 }
+
+                handlers.insert(id, route.into_router());
             }
             DataspaceUpdate::Retracted(id) => {
-                if http_handlers.swap_remove(&id).is_some() {
-                    debug!(?id, "Withdrawing dynamic HTTP handler.");
-                    rebuild_http = true;
+                if handlers.swap_remove(&id).is_none() {
+                    continue;
                 }
 
-                if grpc_handlers.swap_remove(&id).is_some() {
-                    debug!(?id, "Withdrawing dynamic gRPC handler.");
-                    rebuild_grpc = true;
-                }
+                debug!(?id, "Withdrawing dynamic handler.");
             }
             // Routes are modeled as assertions; transient messages are not meaningful here.
             DataspaceUpdate::Message(..) => continue,
         }
 
-        if rebuild_http {
-            rebuild_router(&inner_http, &base_http, &http_handlers, http_post_process);
-        }
-
-        if rebuild_grpc {
-            rebuild_router(&inner_grpc, &base_grpc, &grpc_handlers, grpc_post_process);
-        }
+        rebuild_router(&inner, &base, &handlers);
     }
 
     Ok(())
@@ -382,12 +353,9 @@ fn try_merge_router(base: &Router, id: &Identifier, other: &Router) -> Result<Ro
     }
 }
 
-/// Rebuilds the merged inner router from the static `base` and all currently registered dynamic handlers, applies
-/// `post_process` to the merged router, then stores the result in the [`ArcSwap`].
-fn rebuild_router(
-    inner_router: &Arc<ArcSwap<Router>>, base: &Router, handlers: &FastIndexMap<Identifier, Router>,
-    post_process: fn(Router) -> Router,
-) {
+/// Rebuilds the merged inner router from the static `base` and all currently registered dynamic handlers, applies the
+/// protocol-aware fallback, then stores the result in the [`ArcSwap`].
+fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, base: &Router, handlers: &FastIndexMap<Identifier, Router>) {
     let mut merged = base.clone();
     let mut skipped = 0usize;
 
@@ -402,22 +370,16 @@ fn rebuild_router(
         }
     }
 
-    let merged = post_process(merged);
-    inner_router.store(Arc::new(merged));
+    inner_router.store(Arc::new(apply_fallback(merged)));
     debug!(handler_count = handlers.len(), skipped, "Rebuilt inner router.");
 }
 
-fn http_post_process(router: Router) -> Router {
-    router
-}
-
-/// Adds a fallback handler that returns a standard gRPC `UNIMPLEMENTED` response when no other handler matches.
-fn grpc_post_process(router: Router) -> Router {
-    router.fallback(grpc_unimplemented)
-}
-
-async fn grpc_unimplemented() -> Response<AxumBody> {
-    tonic::Status::unimplemented("").into_http()
+/// Adds the fallback that answers unmatched requests in whichever protocol the caller spoke.
+///
+/// Kept separate from the base router so that the base can be re-merged on every rebuild, which axum only allows for
+/// routers without an explicit fallback.
+fn apply_fallback(router: Router) -> Router {
+    router.fallback(unmatched_route)
 }
 
 #[cfg(test)]
@@ -434,6 +396,7 @@ mod tests {
         state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter},
         InitializationError, Supervisable, Supervisor, SupervisorFuture,
     };
+    use saluki_io::net::BoundListenAddress;
     use tokio::{
         pin, select,
         sync::{mpsc, oneshot},
@@ -497,11 +460,11 @@ mod tests {
                     EndpointType::Unprivileged => "dynamic-unprivileged-api",
                     EndpointType::Privileged => "dynamic-privileged-api",
                 };
-                let mut addr_sub =
-                    dataspace.subscribe::<BoundApiAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
+                let mut addr_sub = dataspace
+                    .subscribe::<BoundListenAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
 
                 let addr = match addr_sub.recv().await {
-                    Some(DataspaceUpdate::Asserted(_, BoundApiAddress(mut addr))) => {
+                    Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(mut addr))) => {
                         // Convert 0.0.0.0 to 127.0.0.1 so the test client can connect.
                         if addr.ip().is_unspecified() {
                             addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
@@ -574,7 +537,7 @@ mod tests {
         let (commands_tx, commands_rx) = mpsc::channel(16);
         let (addr_tx, addr_rx) = oneshot::channel();
 
-        let api_builder = configure(DynamicAPIBuilder::new(endpoint_type, ListenAddress::any_tcp(0)));
+        let api_builder = configure(DynamicAPIBuilder::new(endpoint_type, ListenAddress::tcp_any(0)));
         let route_asserter = RouteAsserter {
             commands_rx: std::sync::Mutex::new(Some(commands_rx)),
             addr_tx: std::sync::Mutex::new(Some(addr_tx)),

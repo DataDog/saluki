@@ -11,8 +11,7 @@ use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::{http::UnsupervisedHttpServer, multiplex_service::MultiplexService},
-    util::hyper::TowerToHyperService,
+    server::{grpc::merge_grpc_routes, http::UnsupervisedHttpServer},
     ListenAddress,
 };
 use saluki_tls::ensure_server_config_fips_compliant;
@@ -40,7 +39,8 @@ pub struct APIBuilder {
 impl APIBuilder {
     /// Create a new `APIBuilder` with an empty router.
     ///
-    /// A fallback route will be provided that returns a 404 Not Found response for any route that isn't explicitly handled.
+    /// A fallback route will be provided for any route that isn't explicitly handled: gRPC requests receive an
+    /// `UNIMPLEMENTED` status, and everything else receives a 404 Not Found response.
     pub fn new() -> Self {
         Self {
             http_router: Router::new(),
@@ -148,15 +148,12 @@ impl APIBuilder {
     {
         let listener = ConnectionOrientedListener::from_listen_address(listen_address).await?;
 
-        // Wrap up our HTTP and gRPC routers in a multiplexed service, allowing us to handle both types of requests on
-        // the same port. Additionally, we have to wrap the service to translate from `tower::Service` to `hyper::Service`.
-        let multiplexed_service = TowerToHyperService::new(MultiplexService::new(
-            self.http_router,
-            self.grpc_router.routes().into_axum_router(),
-        ));
+        // Fold the gRPC routes into the HTTP router so both are handled on the same port. gRPC is HTTP/2 with a
+        // distinct route naming convention, so a single router and a single server cover both.
+        let router = merge_grpc_routes(self.http_router, self.grpc_router.routes());
 
         // Create and spawn the HTTP server.
-        let mut http_server = UnsupervisedHttpServer::from_listener(listener, multiplexed_service);
+        let mut http_server = UnsupervisedHttpServer::from_listener(listener, router);
         if let Some(tls_config) = self.tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }

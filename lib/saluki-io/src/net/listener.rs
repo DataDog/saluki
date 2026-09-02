@@ -1,4 +1,6 @@
 //! Network listeners.
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize};
 #[cfg(windows)]
 use std::{ffi::c_void, mem, ptr};
@@ -8,6 +10,8 @@ use socket2::SockRef;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
+#[cfg(unix)]
+use tokio::net::{UnixDatagram, UnixListener};
 use tracing::warn;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -26,6 +30,7 @@ use super::{
     addr::ListenAddress,
     stream::{Connection, Stream},
 };
+use crate::net::addr::BoundListenAddress;
 
 const SOCKET_RECV_BUFFER_SIZE_SETTING: &str = "SO_RCVBUF";
 
@@ -93,12 +98,12 @@ pub enum ListenerError {
 }
 
 enum ListenerInner {
-    Tcp(TcpListener),
-    Udp(VecDeque<TokioUdpSocket>),
+    Tcp(TcpListener, SocketAddr),
+    Udp(VecDeque<TokioUdpSocket>, SocketAddr),
     #[cfg(unix)]
-    Unixgram(Option<tokio::net::UnixDatagram>),
+    Unixgram(Option<UnixDatagram>, PathBuf),
     #[cfg(unix)]
-    Unix(tokio::net::UnixListener),
+    Unix(UnixListener, PathBuf),
     #[cfg(windows)]
     NamedPipe {
         server: NamedPipeServer,
@@ -113,7 +118,7 @@ enum ListenerInner {
 /// `Listener` is a abstract listener that works in conjunction with `Stream`, providing the ability to listen on
 /// arbitrary addresses and accept new streams of that address family.
 ///
-/// ## Connection-oriented vs connectionless listeners
+/// # Connection-oriented vs connectionless listeners
 ///
 /// For listeners on connection-oriented address families (for example, TCP, Unix domain sockets in stream mode), the listener
 /// will listen for and accept new connections in the typical fashion. However, for connectionless address families
@@ -121,7 +126,7 @@ enum ListenerInner {
 /// continually "accepted." Instead, `Listener` will emit a single `Stream` that can be used to send and receive data
 /// from multiple remote peers.
 ///
-/// ## UDP autoscaling
+/// # UDP autoscaling
 ///
 /// On Linux, UDP listeners can be configured to bind multiple sockets to the same address using `SO_REUSEPORT`,
 /// allowing the kernel to load-balance incoming datagrams across them. The configured number of sockets are yielded
@@ -136,7 +141,7 @@ pub struct Listener {
 impl Listener {
     /// Creates a new `Listener` from the given listen address.
     ///
-    /// ## UDP streams
+    /// # UDP streams
     ///
     /// For UDP listen addresses, `udp_streams` controls how many sockets are bound to the address and how many
     /// `Stream`s the listener will yield from [`accept`](Self::accept) before going pending forever. `None` behaves
@@ -148,21 +153,19 @@ impl Listener {
     ///
     /// For non-UDP listen addresses, `udp_streams` is ignored.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listen address can't be bound, or if the listener can't be configured correctly, an error is returned.
     pub async fn from_listen_address(
         listen_address: ListenAddress, mut udp_streams: Option<NonZeroUsize>,
     ) -> Result<Self, ListenerError> {
         let inner = match &listen_address {
-            ListenAddress::Tcp(addr) => {
-                TcpListener::bind(addr)
-                    .await
-                    .map(ListenerInner::Tcp)
-                    .context(FailedToBind {
-                        address: listen_address.clone(),
-                    })?
-            }
+            ListenAddress::Tcp(addr) => TcpListener::bind(addr)
+                .await
+                .and_then(|listener| listener.local_addr().map(|addr| ListenerInner::Tcp(listener, addr)))
+                .context(FailedToBind {
+                    address: listen_address.clone(),
+                })?,
             ListenAddress::Udp(addr) => {
                 // See if we have platform support for SO_REUSEPORT, and if not, fall back to the default behavior.
                 if !socket_reuseport_supported() {
@@ -170,10 +173,10 @@ impl Listener {
                     warn!("SO_REUSEPORT not supported on the current platform. Falling back to the default behavior.");
                 }
 
-                let sockets = bind_udp_sockets(*addr, udp_streams).await.context(FailedToBind {
+                let (sockets, bound_addr) = bind_udp_sockets(*addr, udp_streams).await.context(FailedToBind {
                     address: listen_address.clone(),
                 })?;
-                ListenerInner::Udp(sockets)
+                ListenerInner::Udp(sockets, bound_addr)
             }
             #[cfg(unix)]
             ListenAddress::Unixgram(addr) => {
@@ -181,9 +184,9 @@ impl Listener {
                     address: listen_address.clone(),
                 })?;
 
-                let listener = tokio::net::UnixDatagram::bind(addr)
+                let listener = UnixDatagram::bind(addr)
                     .map(Some)
-                    .map(ListenerInner::Unixgram)
+                    .map(|listener| ListenerInner::Unixgram(listener, addr.clone()))
                     .context(FailedToBind {
                         address: listen_address.clone(),
                     })?;
@@ -203,8 +206,8 @@ impl Listener {
                     address: listen_address.clone(),
                 })?;
 
-                let listener = tokio::net::UnixListener::bind(addr)
-                    .map(ListenerInner::Unix)
+                let listener = UnixListener::bind(addr)
+                    .map(|listener| ListenerInner::Unix(listener, addr.clone()))
                     .context(FailedToBind {
                         address: listen_address.clone(),
                     })?;
@@ -271,18 +274,32 @@ impl Listener {
         &self.listen_address
     }
 
+    /// Gets the bound listen address for this listener.
+    pub fn bound_listen_address(&self) -> BoundListenAddress {
+        match &self.inner {
+            ListenerInner::Tcp(_, bound_addr) => BoundListenAddress::Tcp(*bound_addr),
+            ListenerInner::Udp(_, bound_addr) => BoundListenAddress::Udp(*bound_addr),
+            #[cfg(unix)]
+            ListenerInner::Unixgram(_, bound_addr) => BoundListenAddress::Unixgram(bound_addr.clone()),
+            #[cfg(unix)]
+            ListenerInner::Unix(_, bound_addr) => BoundListenAddress::Unix(bound_addr.clone()),
+            #[cfg(windows)]
+            ListenerInner::NamedPipe { path, .. } => BoundListenAddress::NamedPipe(path.clone()),
+        }
+    }
+
     /// Minimum number of I/O buffers needed to service every stream this listener will yield.
     ///
     /// Connectionless listeners contribute one buffer per yielded stream. Connection-oriented listeners contribute one
     /// buffer per configured listener.
     pub fn min_buffer_reservation(&self) -> usize {
         match &self.inner {
-            ListenerInner::Tcp(_) => 1,
-            ListenerInner::Udp(sockets) => sockets.len(),
+            ListenerInner::Tcp(_, _) => 1,
+            ListenerInner::Udp(sockets, _) => sockets.len(),
             #[cfg(unix)]
-            ListenerInner::Unixgram(_) => 1,
+            ListenerInner::Unixgram(_, _) => 1,
             #[cfg(unix)]
-            ListenerInner::Unix(_) => 1,
+            ListenerInner::Unix(_, _) => 1,
             #[cfg(windows)]
             ListenerInner::NamedPipe { .. } => 1,
         }
@@ -301,14 +318,14 @@ impl Listener {
     pub async fn accept(&mut self) -> Result<Stream, ListenerError> {
         let stream_type = self.listen_address.listener_type();
         match &mut self.inner {
-            ListenerInner::Tcp(tcp) => {
+            ListenerInner::Tcp(tcp, _) => {
                 let (socket, addr) = tcp.accept().await.context(FailedToAccept {
                     address: self.listen_address.clone(),
                 })?;
                 configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                 Ok((socket, addr).into())
             }
-            ListenerInner::Udp(udp) => {
+            ListenerInner::Udp(udp, _) => {
                 if let Some(socket) = udp.pop_front() {
                     configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                     Ok(socket.into())
@@ -317,7 +334,7 @@ impl Listener {
                 }
             }
             #[cfg(unix)]
-            ListenerInner::Unixgram(unix) => {
+            ListenerInner::Unixgram(unix, _) => {
                 if let Some(socket) = unix.take() {
                     configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                     enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
@@ -330,7 +347,7 @@ impl Listener {
                 }
             }
             #[cfg(unix)]
-            ListenerInner::Unix(unix) => unix
+            ListenerInner::Unix(unix, _) => unix
                 .accept()
                 .await
                 .context(FailedToAccept {
@@ -449,59 +466,61 @@ where
     Ok(())
 }
 
-async fn bind_udp_socket_standard(addr: SocketAddr) -> io::Result<VecDeque<TokioUdpSocket>> {
-    let socket = TokioUdpSocket::bind(addr).await?;
-    let mut sockets = VecDeque::with_capacity(1);
-    sockets.push_back(socket);
-    Ok(sockets)
+fn bind_udp_socket(addr: SocketAddr, _allow_multi_bind: bool) -> io::Result<TokioUdpSocket> {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+
+    #[cfg(target_os = "linux")]
+    if _allow_multi_bind {
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+    }
+
+    socket.set_nonblocking(true)?;
+    socket.bind(&SockAddr::from(addr))?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    TokioUdpSocket::from_std(std_socket)
 }
 
 #[cfg(target_os = "linux")]
 async fn bind_udp_sockets(
     addr: SocketAddr, maybe_socket_count: Option<NonZeroUsize>,
-) -> io::Result<VecDeque<TokioUdpSocket>> {
-    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-
-    fn bind_one(addr: SocketAddr) -> io::Result<TokioUdpSocket> {
-        let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
-        socket.set_reuse_address(true)?;
-        socket.set_reuse_port(true)?;
-        socket.set_nonblocking(true)?;
-        socket.bind(&SockAddr::from(addr))?;
-        let std_socket: std::net::UdpSocket = socket.into();
-        TokioUdpSocket::from_std(std_socket)
-    }
-
+) -> io::Result<(VecDeque<TokioUdpSocket>, SocketAddr)> {
     let socket_count = maybe_socket_count.map(NonZeroUsize::get).unwrap_or(1);
-    if socket_count == 1 {
-        return bind_udp_socket_standard(addr).await;
-    }
-
     let mut sockets = VecDeque::with_capacity(socket_count);
 
     // Bind the first socket to learn the effective address. When the caller passed port `0`, the OS assigns an
     // ephemeral port; every remaining socket must bind to that same port for SO_REUSEPORT load balancing to work
     // (otherwise each subsequent socket would receive its own distinct ephemeral port).
-    let first = bind_one(addr)?;
+    let first = bind_udp_socket(addr, true)?;
     let effective_addr = first.local_addr()?;
     sockets.push_back(first);
 
     for _ in 1..socket_count {
-        sockets.push_back(bind_one(effective_addr)?);
+        sockets.push_back(bind_udp_socket(effective_addr, true)?);
     }
 
-    Ok(sockets)
+    Ok((sockets, effective_addr))
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn bind_udp_sockets(addr: SocketAddr, _: Option<NonZeroUsize>) -> io::Result<VecDeque<TokioUdpSocket>> {
-    bind_udp_socket_standard(addr).await
+async fn bind_udp_sockets(
+    addr: SocketAddr, _: Option<NonZeroUsize>,
+) -> io::Result<(VecDeque<TokioUdpSocket>, SocketAddr)> {
+    let socket = bind_udp_socket(addr, false)?;
+    let local_addr = socket.local_addr()?;
+
+    let mut sockets = VecDeque::new();
+    sockets.push_back(socket);
+
+    Ok((sockets, local_addr))
 }
 
 enum ConnectionOrientedListenerInner {
-    Tcp(TcpListener),
+    Tcp(TcpListener, SocketAddr),
     #[cfg(unix)]
-    Unix(tokio::net::UnixListener),
+    Unix(UnixListener, PathBuf),
 }
 
 /// A connection-oriented network listener.
@@ -517,7 +536,7 @@ pub struct ConnectionOrientedListener {
 impl ConnectionOrientedListener {
     /// Creates a new `ConnectionOrientedListener` from the given listen address.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listen address isn't a connection-oriented address family, or if the listen address can't be bound, or
     /// if the listener can't be configured correctly, an error is returned.
@@ -525,7 +544,11 @@ impl ConnectionOrientedListener {
         let inner = match &listen_address {
             ListenAddress::Tcp(addr) => TcpListener::bind(addr)
                 .await
-                .map(ConnectionOrientedListenerInner::Tcp)
+                .and_then(|listener| {
+                    listener
+                        .local_addr()
+                        .map(|addr| ConnectionOrientedListenerInner::Tcp(listener, addr))
+                })
                 .context(FailedToBind {
                     address: listen_address.clone(),
                 })?,
@@ -535,8 +558,8 @@ impl ConnectionOrientedListener {
                     address: listen_address.clone(),
                 })?;
 
-                let listener = tokio::net::UnixListener::bind(addr)
-                    .map(ConnectionOrientedListenerInner::Unix)
+                let listener = UnixListener::bind(addr)
+                    .map(|listener| ConnectionOrientedListenerInner::Unix(listener, addr.clone()))
                     .context(FailedToBind {
                         address: listen_address.clone(),
                     })?;
@@ -567,31 +590,24 @@ impl ConnectionOrientedListener {
         &self.listen_address
     }
 
-    /// Returns the actual local socket address this listener is bound to.
-    ///
-    /// This is useful when binding to port `0` to discover the ephemeral port assigned by the OS.
-    pub fn local_addr(&self) -> Result<SocketAddr, ListenerError> {
+    /// Gets the bound listen address for this listener.
+    pub fn bound_listen_address(&self) -> BoundListenAddress {
         match &self.inner {
-            ConnectionOrientedListenerInner::Tcp(tcp) => tcp.local_addr().context(FailedToConfigureListener {
-                address: self.listen_address.clone(),
-                setting: "local_addr",
-            }),
+            ConnectionOrientedListenerInner::Tcp(_, bound_addr) => BoundListenAddress::Tcp(*bound_addr),
             #[cfg(unix)]
-            ConnectionOrientedListenerInner::Unix(_) => Err(ListenerError::InvalidConfiguration {
-                reason: "local_addr is not supported for Unix listeners",
-            }),
+            ConnectionOrientedListenerInner::Unix(_, bound_addr) => BoundListenAddress::Unix(bound_addr.clone()),
         }
     }
 
     /// Accepts a new connection from the listener.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listener fails to accept a new connection, or if the accepted connection can't be configured correctly,
     /// an error is returned.
     pub async fn accept(&mut self) -> Result<Connection, ListenerError> {
         match &mut self.inner {
-            ConnectionOrientedListenerInner::Tcp(tcp) => tcp
+            ConnectionOrientedListenerInner::Tcp(tcp, _) => tcp
                 .accept()
                 .await
                 .map(|(stream, addr)| Connection::Tcp(stream, addr))
@@ -599,7 +615,7 @@ impl ConnectionOrientedListener {
                     address: self.listen_address.clone(),
                 }),
             #[cfg(unix)]
-            ConnectionOrientedListenerInner::Unix(unix) => unix
+            ConnectionOrientedListenerInner::Unix(unix, _) => unix
                 .accept()
                 .await
                 .context(FailedToAccept {
@@ -681,7 +697,7 @@ mod tests {
             .await
             .expect("listener should bind")
             .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
-        let local_addr = udp_local_addr(&listener).expect("local addr should be available");
+        let local_addr = udp_local_addr(&listener);
 
         let sender = TokioUdpSocket::bind("127.0.0.1:0").await.expect("sender should bind");
         sender
@@ -715,7 +731,7 @@ mod tests {
             .await
             .expect("listener should bind")
             .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
-        let local_addr = tcp_local_addr(&listener).expect("local addr should be available");
+        let local_addr = tcp_local_addr(&listener);
 
         let client = tokio::spawn(async move { TcpStream::connect(local_addr).await });
         let stream = timeout(Duration::from_secs(1), listener.accept())
@@ -883,7 +899,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn udp_socket_ports(listener: &Listener) -> Vec<u16> {
         match &listener.inner {
-            ListenerInner::Udp(sockets) => sockets
+            ListenerInner::Udp(sockets, _) => sockets
                 .iter()
                 .map(|s| s.local_addr().expect("socket should have local addr").port())
                 .collect(),
@@ -891,16 +907,16 @@ mod tests {
         }
     }
 
-    fn tcp_local_addr(listener: &Listener) -> io::Result<SocketAddr> {
+    fn tcp_local_addr(listener: &Listener) -> SocketAddr {
         match &listener.inner {
-            ListenerInner::Tcp(tcp) => tcp.local_addr(),
+            ListenerInner::Tcp(_, local_addr) => *local_addr,
             _ => panic!("expected TCP listener"),
         }
     }
 
-    fn udp_local_addr(listener: &Listener) -> io::Result<SocketAddr> {
+    fn udp_local_addr(listener: &Listener) -> SocketAddr {
         match &listener.inner {
-            ListenerInner::Udp(sockets) => sockets.front().expect("UDP listener has no sockets").local_addr(),
+            ListenerInner::Udp(_, local_addr) => *local_addr,
             _ => panic!("expected UDP listener"),
         }
     }

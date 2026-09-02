@@ -30,7 +30,7 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::{server::grpc::GrpcKeepalive, ListenAddress};
+use saluki_io::net::{server::http::Http2Config, ListenAddress};
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -39,7 +39,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, resolve_grpc_keepalive, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    build_metrics, resolve_grpc_http2_config, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
     OtlpTlsConfiguration,
 };
 
@@ -219,8 +219,10 @@ impl SourceBuilder for OtlpConfiguration {
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
-        let grpc_keepalive = resolve_grpc_keepalive(&self.otlp.receiver.grpc.keepalive);
-        let grpc_max_concurrent_streams = self.otlp.receiver.grpc.max_concurrent_streams;
+        let grpc_http2_config = resolve_grpc_http2_config(
+            &self.otlp.receiver.grpc.keepalive,
+            self.otlp.receiver.grpc.max_concurrent_streams,
+        );
         let http_max_request_body_size = self.otlp.receiver.http.max_request_body_size;
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
         let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
@@ -235,8 +237,7 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive,
-            grpc_max_concurrent_streams,
+            grpc_http2_config,
             http_max_request_body_size,
             metrics_translator_config,
             metric_tags,
@@ -266,8 +267,7 @@ pub struct Otlp {
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
-    grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: u32,
+    grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,
@@ -289,8 +289,7 @@ impl Source for Otlp {
             grpc_endpoint,
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive,
-            grpc_max_concurrent_streams,
+            grpc_http2_config,
             http_max_request_body_size,
             metrics_translator_config,
             metric_tags,
@@ -326,8 +325,7 @@ impl Source for Otlp {
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
                 .with_cors(cors)
-                .with_grpc_keepalive(grpc_keepalive)
-                .with_grpc_max_concurrent_streams(grpc_max_concurrent_streams)
+                .with_grpc_http2_config(grpc_http2_config)
                 .with_http_max_request_body_size(http_max_request_body_size);
 
         if let Some(tls) = http_tls_config {

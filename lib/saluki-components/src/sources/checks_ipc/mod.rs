@@ -26,7 +26,10 @@ use saluki_core::{
     data_model::event::log::LogStatus,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::{server::grpc::GrpcServer, ListenAddress};
+use saluki_io::net::{
+    server::http::{Http2Config, HttpServer},
+    ListenAddress,
+};
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
@@ -104,11 +107,15 @@ impl Source for ChecksIPC {
             return Err(generic_error!("Checks IPC gRPC endpoint must be a TCP address."));
         };
 
-        let grpc_server =
-            GrpcServer::new(ListenAddress::Tcp(grpc_socket_addr)).add_service(ChecksServer::new(ChecksService {
+        // This endpoint only ever speaks gRPC, so it is restricted to HTTP/2: an HTTP/1.1 caller here is a client bug,
+        // and rejecting it at the protocol level says so more clearly than routing it and answering with a 404.
+        let grpc_server = HttpServer::from_listen_address(ListenAddress::Tcp(grpc_socket_addr))
+            .add_grpc_service(ChecksServer::new(ChecksService {
                 events_tx,
                 default_hostname,
-            }));
+            }))
+            .with_http2_only()
+            .with_http2_config(Http2Config::grpc_defaults());
 
         runtime::supervisable(grpc_server)
             .on_runtime(context.topology_context().global_thread_pool().clone())
