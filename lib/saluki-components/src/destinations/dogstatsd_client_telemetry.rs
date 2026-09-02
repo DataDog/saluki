@@ -1,26 +1,18 @@
 use async_trait::async_trait;
-use metrics::Counter;
-use saluki_common::collections::FastHashMap;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
-    components::{destinations::*, BuildContext},
+    components::{destinations::*, BuildContext, ComponentContext},
     data_model::event::{
         metric::{Metric, MetricValues},
         Event, EventType,
     },
-    observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
-use saluki_metrics::MetricsBuilder;
+use saluki_metrics::{static_metrics, Counter};
 use tokio::select;
 use tracing::debug;
 
-const BYTES_SENT_METRIC: &str = "dogstatsd_client_telemetry_bytes_sent";
-const BYTES_DROPPED_METRIC: &str = "dogstatsd_client_telemetry_bytes_dropped";
-const BYTES_DROPPED_QUEUE_METRIC: &str = "dogstatsd_client_telemetry_bytes_dropped_queue";
-const BYTES_DROPPED_WRITER_METRIC: &str = "dogstatsd_client_telemetry_bytes_dropped_writer";
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy)]
 struct ClientTelemetryTags {
     client: &'static str,
     client_transport: &'static str,
@@ -43,10 +35,6 @@ impl ClientTelemetryTags {
             }
         }
         tags
-    }
-
-    fn as_metric_tags(&self) -> [(&'static str, &'static str); 2] {
-        [("client", self.client), ("client_transport", self.client_transport)]
     }
 }
 
@@ -78,23 +66,17 @@ pub(super) fn normalize_client_transport(transport: Option<&str>) -> &'static st
     }
 }
 
+#[static_metrics(prefix = dogstatsd_client_telemetry, labels(component_id, component_type))]
+#[derive(Clone)]
 struct ClientTelemetryCounters {
+    #[metric(mapped(client, client_transport))]
     bytes_sent: Counter,
+    #[metric(mapped(client, client_transport))]
     bytes_dropped: Counter,
+    #[metric(mapped(client, client_transport))]
     bytes_dropped_queue: Counter,
+    #[metric(mapped(client, client_transport))]
     bytes_dropped_writer: Counter,
-}
-
-impl ClientTelemetryCounters {
-    fn new(metrics_builder: &MetricsBuilder, tags: &ClientTelemetryTags) -> Self {
-        let metric_tags = tags.as_metric_tags();
-        Self {
-            bytes_sent: metrics_builder.register_counter_with_tags(BYTES_SENT_METRIC, metric_tags),
-            bytes_dropped: metrics_builder.register_counter_with_tags(BYTES_DROPPED_METRIC, metric_tags),
-            bytes_dropped_queue: metrics_builder.register_counter_with_tags(BYTES_DROPPED_QUEUE_METRIC, metric_tags),
-            bytes_dropped_writer: metrics_builder.register_counter_with_tags(BYTES_DROPPED_WRITER_METRIC, metric_tags),
-        }
-    }
 }
 
 enum ClientTelemetryMetric {
@@ -115,9 +97,7 @@ impl DestinationBuilder for DogStatsDClientTelemetryConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        Ok(Box::new(DogStatsDClientTelemetry::new(
-            MetricsBuilder::from_component_context(context.component_context()),
-        )))
+        Ok(Box::new(DogStatsDClientTelemetry::new(context.component_context())))
     }
 }
 
@@ -131,19 +111,20 @@ impl MemoryBounds for DogStatsDClientTelemetryConfiguration {
 
 /// Mirrors supported DogStatsD client telemetry metrics into ADP internal telemetry.
 pub struct DogStatsDClientTelemetry {
-    metrics_builder: MetricsBuilder,
-    counters_by_tags: FastHashMap<ClientTelemetryTags, ClientTelemetryCounters>,
+    counters: ClientTelemetryCounters,
 }
 
 impl DogStatsDClientTelemetry {
-    pub(super) fn new(metrics_builder: MetricsBuilder) -> Self {
+    pub(super) fn new(component_context: &ComponentContext) -> Self {
         Self {
-            metrics_builder,
-            counters_by_tags: FastHashMap::default(),
+            counters: ClientTelemetryCounters::new(
+                component_context.component_id(),
+                component_context.component_type().as_str(),
+            ),
         }
     }
 
-    pub(super) fn record_metric(&mut self, metric: &Metric) {
+    pub(super) fn record_metric(&self, metric: &Metric) {
         let metric_kind = match metric.context().name().as_ref() {
             "datadog.dogstatsd.client.bytes_sent" => ClientTelemetryMetric::Sent,
             "datadog.dogstatsd.client.bytes_dropped" => ClientTelemetryMetric::Dropped,
@@ -156,16 +137,15 @@ impl DogStatsDClientTelemetry {
             // A delayed aggregate flush can contain several closed time buckets in one metric. Separate tag contexts
             // arrive as separate metrics and accumulate into counters with their client dimensions preserved.
             let tags = ClientTelemetryTags::from_metric(metric);
-            let metrics_builder = &self.metrics_builder;
-            let counters = self
-                .counters_by_tags
-                .entry(tags)
-                .or_insert_with_key(|tags| ClientTelemetryCounters::new(metrics_builder, tags));
             let counter = match metric_kind {
-                ClientTelemetryMetric::Sent => &counters.bytes_sent,
-                ClientTelemetryMetric::Dropped => &counters.bytes_dropped,
-                ClientTelemetryMetric::DroppedQueue => &counters.bytes_dropped_queue,
-                ClientTelemetryMetric::DroppedWriter => &counters.bytes_dropped_writer,
+                ClientTelemetryMetric::Sent => self.counters.bytes_sent(tags.client, tags.client_transport),
+                ClientTelemetryMetric::Dropped => self.counters.bytes_dropped(tags.client, tags.client_transport),
+                ClientTelemetryMetric::DroppedQueue => {
+                    self.counters.bytes_dropped_queue(tags.client, tags.client_transport)
+                }
+                ClientTelemetryMetric::DroppedWriter => {
+                    self.counters.bytes_dropped_writer(tags.client, tags.client_transport)
+                }
             };
             for (_, value) in values {
                 if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
@@ -178,7 +158,7 @@ impl DogStatsDClientTelemetry {
 
 #[async_trait]
 impl Destination for DogStatsDClientTelemetry {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+    async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
         debug!("DogStatsD client telemetry destination started.");

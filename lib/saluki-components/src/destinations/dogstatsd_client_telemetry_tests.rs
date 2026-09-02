@@ -2,15 +2,23 @@ use std::time::Duration;
 
 use metrics::{set_default_local_recorder, Key, Label};
 use saluki_context::Context;
-use saluki_core::data_model::event::metric::Metric;
-use saluki_metrics::{test::TestRecorder, MetricsBuilder};
+use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
+use saluki_metrics::test::TestRecorder;
 
 use super::dogstatsd_client_telemetry::{normalize_client_transport, DogStatsDClientTelemetry};
+
+const COMPONENT_ID: &str = "dogstatsd_client_telemetry_test";
+
+fn test_telemetry() -> DogStatsDClientTelemetry {
+    DogStatsDClientTelemetry::new(&ComponentContext::test_destination(COMPONENT_ID))
+}
 
 fn client_counter_key(metric_name: &'static str, client: &str, client_transport: &str) -> Key {
     Key::from_parts(
         metric_name,
         vec![
+            Label::new("component_id", COMPONENT_ID),
+            Label::new("component_type", "destination"),
             Label::new("client", client.to_string()),
             Label::new("client_transport", client_transport.to_string()),
         ],
@@ -21,7 +29,7 @@ fn client_counter_key(metric_name: &'static str, client: &str, client_transport:
 fn records_all_supported_client_telemetry_rates_with_client_dimensions() {
     let recorder = TestRecorder::default();
     let _recorder_guard = set_default_local_recorder(&recorder);
-    let mut telemetry = DogStatsDClientTelemetry::new(MetricsBuilder::default());
+    let telemetry = test_telemetry();
 
     for (metric_name, telemetry_name) in [
         (
@@ -60,7 +68,7 @@ fn records_all_supported_client_telemetry_rates_with_client_dimensions() {
 fn ignores_unknown_client_telemetry_names_and_non_rate_values() {
     let recorder = TestRecorder::default();
     let _recorder_guard = set_default_local_recorder(&recorder);
-    let mut telemetry = DogStatsDClientTelemetry::new(MetricsBuilder::default());
+    let telemetry = test_telemetry();
 
     telemetry.record_metric(&Metric::rate(
         "datadog.dogstatsd.client.unrecognized",
@@ -95,7 +103,7 @@ fn ignores_unknown_client_telemetry_names_and_non_rate_values() {
 fn accumulates_client_telemetry_rate_buckets_as_counter_deltas() {
     let recorder = TestRecorder::default();
     let _recorder_guard = set_default_local_recorder(&recorder);
-    let mut telemetry = DogStatsDClientTelemetry::new(MetricsBuilder::default());
+    let telemetry = test_telemetry();
 
     telemetry.record_metric(&Metric::rate(
         "datadog.dogstatsd.client.bytes_sent",
@@ -117,7 +125,7 @@ fn accumulates_client_telemetry_rate_buckets_as_counter_deltas() {
 fn keeps_client_telemetry_tag_contexts_separate() {
     let recorder = TestRecorder::default();
     let _recorder_guard = set_default_local_recorder(&recorder);
-    let mut telemetry = DogStatsDClientTelemetry::new(MetricsBuilder::default());
+    let telemetry = test_telemetry();
 
     telemetry.record_metric(&Metric::rate(
         Context::from_static_parts(
