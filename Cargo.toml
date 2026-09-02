@@ -296,7 +296,3 @@ mutable_key_type = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(system_allocator)'] }
-
-[patch.crates-io]
-# Backport the Unix listener poll readiness re-arm fix from tokio-rs/mio#1998.
-mio = { git = "https://github.com/tokio-rs/mio", rev = "1e79434244eed630a1ee7f227117960c6296e7f3" }
