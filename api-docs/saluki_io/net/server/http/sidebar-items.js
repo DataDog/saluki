@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ErrorHandle","HttpServer","UnsupervisedHttpServer"]};
+window.SIDEBAR_ITEMS = {"struct":["ErrorHandle","Http2Config","HttpServer","UnsupervisedHttpServer"]};

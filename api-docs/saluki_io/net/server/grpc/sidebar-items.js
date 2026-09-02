@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["GrpcKeepalive","GrpcServer"]};
+window.SIDEBAR_ITEMS = {"fn":["is_grpc_request","merge_grpc_routes","unmatched_route"],"struct":["GrpcTimeout","GrpcTimeoutFuture","GrpcTimeoutLayer"]};

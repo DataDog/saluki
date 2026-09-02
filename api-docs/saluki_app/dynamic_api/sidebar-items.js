@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["BoundApiAddress","DynamicAPIBuilder"]};
+window.SIDEBAR_ITEMS = {"struct":["DynamicAPIBuilder"]};

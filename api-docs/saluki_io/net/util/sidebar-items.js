@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["http","hyper","middleware","retry","tonic"]};
+window.SIDEBAR_ITEMS = {"mod":["http","middleware","retry","tonic"]};
