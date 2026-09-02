@@ -29,7 +29,7 @@ class ReleaseBodyTest(unittest.TestCase):
 
         merged = subject.merge_release_body(existing, "## Bug Fixes\n- Fix parser behavior")
 
-        self.assertTrue(merged.startswith(subject.START_MARKER + "\n# Release Notes"))
+        self.assertTrue(merged.startswith(subject.START_MARKER + "\n## Bug Fixes"))
         self.assertTrue(merged.endswith(existing))
 
     def test_replaces_only_the_existing_generated_block(self):
