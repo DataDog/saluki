@@ -10,9 +10,9 @@ use crate::{reporter::OutputFormat, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///
-/// Panoramic's own settings are arguments carrying a `PANORAMIC_*` fallback, which clap renders next to the flag they
-/// belong to. These two belong to a dependency instead: bollard reads `DOCKER_HOST`, and tracing-subscriber reads
-/// `RUST_LOG`. Neither gets a flag, so both are described here by hand.
+/// Panoramic-owned environment settings are arguments carrying a `PANORAMIC_*` fallback, which clap renders
+/// next to the flag they belong to. Bollard reads `DOCKER_HOST` and tracing-subscriber reads `RUST_LOG`.
+/// `DOCKER_HOST` is not a flag, and `RUST_LOG` is not a clap environment fallback, so both are described here by hand.
 const ENV_HELP: &str = "\
 Environment variables:
   DOCKER_HOST    Docker endpoint to talk to. When unset, the standard socket path and common
@@ -74,20 +74,20 @@ impl LogLevel {
     }
 }
 
-// CLI Interface Doctorine: human-authored rules for the public interface of the panoramic binary.
+// CLI Interface Doctrine: human-authored rules for the public interface of this binary.
 //
-// Panoramic-owned settings should be passed preferably by command line argument. If an
+// Panoramic-owned settings should preferably be passed by command-line argument. If an
 // environment variable is desired, it should be prefixed with PANORAMIC_. For example:
 // CLI arg: --adp-binary-path
 // ENV var: PANORAMIC_ADP_BINARY_PATH
 //
-// Panoramic-owned or Saluki-repo-owned settings need not have a PANORAMIC_ prefix if they are
-// shared other processes, build or CI environments. These SHOULD have an addressable command line
-// argument. For example:
+// Saluki-repo-owned settings need not have a PANORAMIC_ prefix if they are shared with other
+// processes, build or CI environments. These SHOULD have an addressable command-line argument.
+// For example:
 // CLI arg: --some-shared-saluki-ci-thing
 // ENV var: SOME_SHARED_SALUKI_CI_THING
 //
-// Environment variables MUST be parsed by the clap command line argument interface and documented
+// Environment variables MUST be parsed by the clap command-line argument interface and documented
 // in its help text. Downstream procedural code must not do its own discovery of environment
 // variables; doing so makes the interface diffuse and hard to discover. The only exceptions are
 // canonical environment variables, such as DOCKER_HOST, that downstream libraries discover on their
