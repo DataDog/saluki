@@ -18,7 +18,9 @@
 //! configuration without shadowing it, and what lets translation resolve a setting whose meaning
 //! depends on whether it was set explicitly.
 
-#![recursion_limit = "256"]
+// The `json!` fixture in `saluki_only`'s tests nests deeply enough to exhaust the default macro
+// expansion limit. Only test builds need the higher limit.
+#![cfg_attr(test, recursion_limit = "256")]
 
 mod env_provider;
 mod loaded;
