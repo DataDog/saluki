@@ -14,32 +14,77 @@
 
 use std::path::{Path, PathBuf};
 
+use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::reporter::OutputFormat;
+use crate::{reporter::OutputFormat, test::RunnerSettings};
 
-/// Environment inputs the runner reads on its own, rendered at the bottom of the help output.
+/// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///
-/// Only `PANORAMIC_LOG_DIR` has a flag behind it, so the rest can't be described by an `#[arg(env =
-/// ...)]` attribute. Anything the runner starts reading has to be added here by hand; the tests
-/// below check the list against the variables we know about.
+/// Panoramic's own settings are arguments carrying a `PANORAMIC_*` fallback, which clap renders next to the flag they
+/// belong to. These two belong to a dependency instead: bollard reads `DOCKER_HOST`, and tracing-subscriber reads
+/// `RUST_LOG`. Neither gets a flag, so both are described here by hand.
 const ENV_HELP: &str = "\
 Environment variables:
-  ADP_BINARY_PATH           `agent-data-plane` binary that host-process (`runtime: mac`) tests
-                            spawn. Defaults to `target/release/agent-data-plane`, resolved
-                            against the current directory.
-  CORE_AGENT_BINARY_PATH    Datadog Agent binary that converged host-process tests spawn.
-                            Defaults to the sandbox install that `make provision-macos-test-env`
-                            writes.
-  DOCKER_HOST               Docker endpoint to talk to. When unset, the standard socket path and
-                            common non-standard locations are probed.
-  PANORAMIC_ALPINE_IMAGE    Alpine image used for the short-lived container that fixes up
-                            shared-volume permissions. Defaults to `alpine:latest`; CI points
-                            this at an internal registry.
-  PANORAMIC_LOG_DIR         Base directory for container logs. `--log-dir` wins when both are
-                            set. Defaults to the system temporary directory.
-  RUST_LOG                  Tracing filter for non-TUI output. Defaults to `info`.";
+  DOCKER_HOST    Docker endpoint to talk to. When unset, the standard socket path and common
+                 non-standard locations are probed.
+  RUST_LOG       tracing-subscriber filter, for expert use. When set, it takes precedence over
+                 --log-level and applies to every crate, including external dependencies.";
+
+/// Default `agent-data-plane` binary for host-process tests, resolved against the current directory.
+const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
+
+/// Default Datadog Agent binary for host-process tests: the sandbox install `make provision-macos-test-env` writes.
+const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/agent/agent";
+
+/// Crates that `--log-level` applies to: Panoramic itself and the first-party libraries it links.
+///
+/// These are tracing target names, which are crate names with underscores rather than dashes.
+const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
+    "panoramic",
+    "airlock",
+    "stele",
+    "saluki_common",
+    "saluki_config",
+    "saluki_error",
+];
+
+/// Verbosity selected by `--log-level`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+
+    /// Builds the tracing filter directives that scope this level to Panoramic and its first-party libraries.
+    ///
+    /// The leading `off` is the default for everything else, which keeps external dependencies silent.
+    pub fn filter_directives(self) -> String {
+        let scoped: Vec<String> = FIRST_PARTY_LOG_TARGETS
+            .iter()
+            .map(|target| format!("{}={}", target, self.as_str()))
+            .collect();
+
+        format!("off,{}", scoped.join(","))
+    }
+}
 
 /// Panoramic: Integration test runner for Agent Data Plane.
 #[derive(Parser)]
@@ -52,6 +97,19 @@ Environment variables:
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+
+    /// Log level for panoramic and the first-party libraries it links (airlock,
+    /// stele, saluki-common, saluki-config, saluki-error). External dependencies
+    /// stay silent. RUST_LOG, when set, takes precedence over this flag
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        ignore_case = true,
+        default_value = "info",
+        verbatim_doc_comment
+    )]
+    pub log_level: LogLevel,
 
     // Replaces clap's built-in help flag, which renders an abbreviated `-h` and a fuller `--help`.
     // Both forms should show everything, so both are wired to the long renderer. `global` carries
@@ -122,7 +180,7 @@ pub struct RunCommand {
     /// Defaults to `bin/correctness/panoramic/mounts/` in the Saluki workspace where
     /// this binary was compiled
     #[arg(long, default_value_os_t = default_mounts_dir(), verbatim_doc_comment)]
-    pub mounts_dir: PathBuf,
+    mounts_dir: PathBuf,
 
     /// Name of the kind cluster to create or reuse for kind-runtime tests.
     #[arg(long, default_value = crate::kind::DEFAULT_CLUSTER_NAME)]
@@ -132,9 +190,35 @@ pub struct RunCommand {
     /// local iteration)
     #[arg(long, verbatim_doc_comment)]
     pub no_delete_kind_cluster: bool,
+
+    /// `agent-data-plane` binary that host-process (`runtime: mac`) tests spawn. A
+    /// relative path resolves against the current directory
+    #[arg(long, env = "PANORAMIC_ADP_BINARY_PATH", default_value = DEFAULT_ADP_BINARY_PATH, verbatim_doc_comment)]
+    adp_binary_path: PathBuf,
+
+    /// Datadog Agent binary that converged host-process tests spawn. Point this at
+    /// another install (a system-wide /opt/datadog-agent, for example) to test
+    /// against it
+    #[arg(long, env = "PANORAMIC_CORE_AGENT_BINARY_PATH", default_value = DEFAULT_CORE_AGENT_BINARY_PATH, verbatim_doc_comment)]
+    core_agent_binary_path: PathBuf,
+
+    /// Alpine image for the short-lived container that fixes up shared-volume
+    /// permissions. CI points this at an internal registry
+    #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", default_value = DEFAULT_ALPINE_IMAGE, verbatim_doc_comment)]
+    alpine_image: String,
 }
 
 impl RunCommand {
+    /// Collects the settings that the runner hands to every test.
+    pub(crate) fn runner_settings(&self) -> RunnerSettings {
+        RunnerSettings {
+            mounts_dir: self.mounts_dir.clone(),
+            adp_binary_path: self.adp_binary_path.clone(),
+            core_agent_binary_path: self.core_agent_binary_path.clone(),
+            alpine_image: self.alpine_image.clone(),
+        }
+    }
+
     /// Gets the log directory for this run.
     ///
     /// The base comes from `--log-dir`/`PANORAMIC_LOG_DIR`, falling back to a temporary directory.
@@ -180,15 +264,17 @@ mod tests {
 
     use super::*;
 
-    /// Every environment variable the runner reads, and therefore every variable the help output
-    /// has to mention. Grep for `env::var` under `bin/correctness/` when this list changes.
-    const RUNNER_ENV_VARS: &[&str] = &[
-        "ADP_BINARY_PATH",
-        "CORE_AGENT_BINARY_PATH",
-        "DOCKER_HOST",
-        "PANORAMIC_ALPINE_IMAGE",
-        "PANORAMIC_LOG_DIR",
-        "RUST_LOG",
+    /// Environment variables a dependency reads on its own, and therefore the ones the help footer
+    /// has to spell out. Grep for `env::var` under `bin/correctness/` when this list changes.
+    const EXTERNAL_ENV_VARS: &[&str] = &["DOCKER_HOST", "RUST_LOG"];
+
+    /// Panoramic's own settings, each an argument on `run` with a `PANORAMIC_*` fallback that clap
+    /// renders next to the flag.
+    const PANORAMIC_ENV_FALLBACKS: &[(&str, &str)] = &[
+        ("adp_binary_path", "PANORAMIC_ADP_BINARY_PATH"),
+        ("core_agent_binary_path", "PANORAMIC_CORE_AGENT_BINARY_PATH"),
+        ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
+        ("log_dir", "PANORAMIC_LOG_DIR"),
     ];
 
     fn run_command_of(cli: &Cli) -> &RunCommand {
@@ -234,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn help_documents_every_runner_environment_variable() {
+    fn help_documents_every_external_environment_variable() {
         let mut command = Cli::command();
         let top_level = command.render_long_help().to_string();
         let run = command
@@ -243,25 +329,67 @@ mod tests {
             .render_long_help()
             .to_string();
 
-        for var in RUNNER_ENV_VARS {
+        for var in EXTERNAL_ENV_VARS {
             assert!(top_level.contains(var), "`panoramic --help` does not mention {}", var);
             assert!(run.contains(var), "`panoramic run --help` does not mention {}", var);
         }
     }
 
     #[test]
-    fn log_dir_reads_its_environment_fallback() {
+    fn help_footer_covers_only_the_external_environment_variables() {
+        // The footer is hand-written prose, so it's the one place a Panoramic-owned setting could be
+        // documented twice: once by clap next to its flag, once here. Keep it to the exceptions.
+        for (_, var) in PANORAMIC_ENV_FALLBACKS {
+            assert!(
+                !ENV_HELP.contains(var),
+                "the help footer should not re-document {}",
+                var
+            );
+        }
+
+        for var in EXTERNAL_ENV_VARS {
+            assert!(ENV_HELP.contains(var), "the help footer does not mention {}", var);
+        }
+    }
+
+    #[test]
+    fn help_explains_that_rust_log_outranks_the_log_level_flag() {
+        let help = Cli::command().render_long_help().to_string();
+
+        assert!(help.contains("--log-level"), "help was:\n{}", help);
+        assert!(help.contains("takes precedence over"), "help was:\n{}", help);
+        assert!(help.contains("External dependencies"), "help was:\n{}", help);
+    }
+
+    #[test]
+    fn panoramic_settings_read_their_environment_fallbacks() {
         // Asserted against the argument model rather than by mutating the process environment,
         // which would race with the other tests in this binary.
         let command = Cli::command();
-        let log_dir = command
-            .find_subcommand("run")
-            .expect("run subcommand should exist")
-            .get_arguments()
-            .find(|arg| arg.get_id() == "log_dir")
-            .expect("run should have a log-dir argument");
+        let run = command.find_subcommand("run").expect("run subcommand should exist");
 
-        assert_eq!(log_dir.get_env(), Some(OsStr::new("PANORAMIC_LOG_DIR")));
+        for (id, var) in PANORAMIC_ENV_FALLBACKS {
+            let arg = run
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .unwrap_or_else(|| panic!("run should have a '{}' argument", id));
+
+            assert_eq!(arg.get_env(), Some(OsStr::new(var)), "'{}' has the wrong fallback", id);
+        }
+    }
+
+    #[test]
+    fn panoramic_settings_are_scoped_to_the_run_subcommand() {
+        let command = Cli::command();
+        let list = command.find_subcommand("list").expect("list subcommand should exist");
+
+        for (id, _) in PANORAMIC_ENV_FALLBACKS {
+            assert!(
+                !list.get_arguments().any(|arg| arg.get_id() == id),
+                "'{}' should not be defined on `list`",
+                id
+            );
+        }
     }
 
     #[test]
@@ -358,6 +486,91 @@ mod tests {
         assert_eq!(cmd.runtime.as_deref(), Some("mac"));
         assert_eq!(cmd.kind_cluster_name, "custom");
         assert!(cmd.no_delete_kind_cluster);
+    }
+
+    #[test]
+    fn runner_settings_fall_back_to_the_documented_defaults() {
+        let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases"]).expect("minimal run should parse");
+        let settings = run_command_of(&cli).runner_settings();
+
+        assert_eq!(settings.mounts_dir, default_mounts_dir());
+        assert_eq!(settings.adp_binary_path, Path::new(DEFAULT_ADP_BINARY_PATH));
+        assert_eq!(
+            settings.core_agent_binary_path,
+            Path::new(DEFAULT_CORE_AGENT_BINARY_PATH)
+        );
+        assert_eq!(settings.alpine_image, DEFAULT_ALPINE_IMAGE);
+    }
+
+    #[test]
+    fn explicit_run_flags_plumb_into_runner_settings() {
+        let cli = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            "cases",
+            "--adp-binary-path",
+            "/build/adp",
+            "--core-agent-binary-path",
+            "/build/agent",
+            "--alpine-image",
+            "registry.example/alpine:3.20",
+            "--mounts-dir",
+            "/build/mounts",
+        ])
+        .expect("run with explicit paths should parse");
+        let settings = run_command_of(&cli).runner_settings();
+
+        assert_eq!(settings.adp_binary_path, Path::new("/build/adp"));
+        assert_eq!(settings.core_agent_binary_path, Path::new("/build/agent"));
+        assert_eq!(settings.alpine_image, "registry.example/alpine:3.20");
+        assert_eq!(settings.mounts_dir, Path::new("/build/mounts"));
+    }
+
+    #[test]
+    fn log_level_is_global_and_defaults_to_info() {
+        let cli = Cli::try_parse_from(["panoramic", "list", "-d", "cases"]).expect("minimal list should parse");
+        assert_eq!(cli.log_level, LogLevel::Info);
+
+        // `--log-level` is global, so it parses on either side of the subcommand.
+        let cli = Cli::try_parse_from(["panoramic", "--log-level", "trace", "run", "-d", "cases"])
+            .expect("a leading --log-level should parse");
+        assert_eq!(cli.log_level, LogLevel::Trace);
+
+        let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases", "--log-level", "DEBUG"])
+            .expect("a trailing, mixed-case --log-level should parse");
+        assert_eq!(cli.log_level, LogLevel::Debug);
+
+        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "--log-level", "verbose"]).is_err());
+    }
+
+    #[test]
+    fn log_level_lists_every_accepted_value() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            help.contains("[possible values: off, error, warn, info, debug, trace]"),
+            "help was:\n{}",
+            help
+        );
+    }
+
+    #[test]
+    fn log_level_filters_scope_the_level_to_first_party_crates() {
+        let directives = LogLevel::Debug.filter_directives();
+
+        assert!(directives.starts_with("off,"), "directives were '{}'", directives);
+        for target in FIRST_PARTY_LOG_TARGETS {
+            assert!(
+                directives.contains(&format!("{}=debug", target)),
+                "'{}' is missing from '{}'",
+                target,
+                directives
+            );
+        }
+
+        // `off` is a level like any other: the scoped crates go quiet, they don't fall back to a
+        // default.
+        assert!(LogLevel::Off.filter_directives().contains("panoramic=off"));
     }
 
     #[test]

@@ -109,6 +109,12 @@ cargo run --release --bin panoramic -- --help
 > When both are set, `--log-dir` wins over `PANORAMIC_LOG_DIR`. Either way, each run gets its own
 > timestamped subdirectory underneath the base directory you pick.
 
+> [!TIP]
+> To turn up the runner's own logging, use `--log-level`, which applies to `panoramic` and the
+> first-party libraries it links while leaving external dependencies silent. To see everything,
+> including those dependencies, set `RUST_LOG` instead: it's the full tracing-subscriber filter and
+> takes precedence over `--log-level`.
+
 ## Benchmark tests: Single Machine Performance (SMP)
 
 SMP is a system that runs on internal, dedicated infrastructure to check the Agent for performance regressions. It runs
