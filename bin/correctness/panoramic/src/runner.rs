@@ -413,11 +413,25 @@ impl Runner {
         // Create a directory for the test to write logs into and pass it into the test context.
         let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
-            return TestResult::setup_error(
-                name,
+            let mut result = TestResult::setup_error(
+                name.clone(),
                 started.elapsed(),
                 format!("Error creating log directory at {}: {e}", log_dir.display()),
             );
+            result.case_path = Some(test.case_path());
+
+            // There is no log directory, so this result has no artifacts to point at. It still has
+            // to reach the event stream: consumers that build the suite result from events would
+            // otherwise report a run that skipped the test and exited zero.
+            if let Some(ref tx) = event_sender {
+                let _ = tx.send(TestEvent::TestStarted { name });
+                let _ = tx.send(TestEvent::TestCompleted {
+                    result: Box::new(result.clone()),
+                    log_dir,
+                });
+            }
+
+            return result;
         }
 
         let mut tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), settings);
@@ -1231,26 +1245,68 @@ mod tests {
         }
     }
 
-    async fn run_stuck_test(test: StuckTest) -> TestResult {
-        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
-        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
-
-        let settings = RunnerSettings {
-            mounts_dir: mounts_dir.path().to_path_buf(),
+    fn test_runner_settings(mounts_dir: &Path) -> RunnerSettings {
+        RunnerSettings {
+            mounts_dir: mounts_dir.to_path_buf(),
             adp_binary_path: PathBuf::new(),
             core_agent_binary_path: PathBuf::new(),
             alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
-        };
+        }
+    }
+
+    async fn run_stuck_test(test: StuckTest) -> TestResult {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
 
         Runner::run_one(
             &test,
             &None,
             &CancellationToken::new(),
             log_base_dir.path().to_path_buf(),
-            settings,
+            test_runner_settings(mounts_dir.path()),
             None,
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn setup_failure_before_the_test_starts_is_reported_as_an_error() {
+        // A regular file where the log base directory belongs, so the test's log directory cannot be
+        // created. Consumers that build the suite result from events have to see this failure, or
+        // the run reports no test at all and exits zero.
+        let occupied_base_dir = tempfile::NamedTempFile::new().expect("temp file should be creatable");
+        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let result = Runner::run_one(
+            &StuckTest {
+                phase: "assertions",
+                timeout: Duration::from_secs(60),
+                finish_on_cancel: true,
+            },
+            &Some(tx),
+            &CancellationToken::new(),
+            occupied_base_dir.path().to_path_buf(),
+            test_runner_settings(mounts_dir.path()),
+            None,
+        )
+        .await;
+
+        assert_eq!(result.outcome, TestOutcome::Errored);
+        assert_eq!(result.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
+        assert_eq!(result.case_path, Some(PathBuf::from("/cases/stuck")));
+
+        let mut reported = None;
+        while let Ok(event) = rx.try_recv() {
+            if let TestEvent::TestCompleted { result, .. } = event {
+                reported = Some(result);
+            }
+        }
+
+        let reported = reported.expect("a setup failure should be reported as a completed test");
+        assert_eq!(reported.name, "stuck");
+        assert_eq!(reported.outcome, TestOutcome::Errored);
+        assert_eq!(reported.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
     }
 
     #[tokio::test]

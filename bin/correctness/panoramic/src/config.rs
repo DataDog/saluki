@@ -978,7 +978,10 @@ impl MatrixConfig {
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                     additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
                     require_dogstatsd_forwarded_packets: self.require_dogstatsd_forwarded_packets,
-                    base_config_path: PathBuf::new(),
+                    // Every variant comes from the matrix config's directory. Reports name it as the
+                    // case each expanded test came from, and it anchors any path this expansion did
+                    // not already make absolute.
+                    base_config_path: self.base_config_path.clone(),
                 }
             })
             .collect()
@@ -1341,6 +1344,36 @@ procedure: []
         let images = tests[0].images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
+    }
+
+    #[test]
+    fn matrix_variants_report_the_case_directory_they_expanded_from() {
+        let base_dir = create_test_case_dir(
+            "dsd-matrix",
+            r#"
+type: correctness_matrix
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+variants:
+  - name: first
+    additional_env_vars: ["DD_EXAMPLE=1"]
+  - name: second
+    additional_env_vars: ["DD_EXAMPLE=2"]
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux").unwrap();
+
+        assert_eq!(tests.len(), 2);
+        // Canonicalized, because the loader canonicalizes the config path it derives this from.
+        let case_dir = base_dir.path().join("dsd-matrix").canonicalize().unwrap();
+        for test in &tests {
+            assert_eq!(test.case_path(), case_dir, "case path for '{}'", test.name());
+        }
     }
 
     fn dynamic_vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
