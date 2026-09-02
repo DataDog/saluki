@@ -103,11 +103,7 @@ Both suites run through the same `panoramic` binary.
 cargo run --release --bin panoramic -- --help
 ```
 
-Every run writes `run.json` in its log directory and a `result.json` per test case: the versioned,
-machine-readable record of the run's outcomes, errors, assertions, and artifact paths. `-o json`
-prints the same run document on stdout, with all tracing on stderr.
-`.agents/skills/panoramic-tests/SKILL.md` documents that contract, the exit codes, and how to read a
-failing case's artifacts.
+`.agents/skills/panoramic/SKILL.md` documents panoramic usage for LLM agents.
 
 ## Benchmark tests: Single Machine Performance (SMP)
 
