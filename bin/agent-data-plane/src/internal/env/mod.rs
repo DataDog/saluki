@@ -64,13 +64,12 @@ impl ADPEnvironmentProvider {
         if standalone {
             warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
 
-            let hostname = environment
-                .hostname
-                .is_explicit()
-                .then(|| environment.hostname.value.clone())
-                .ok_or_else(|| {
-                    generic_error!("A hostname must be configured (`hostname`) when using the fixed host provider.")
-                })?;
+            let hostname = environment.hostname.value.clone();
+            if !environment.hostname.is_explicit() || hostname.is_empty() {
+                return Err(generic_error!(
+                    "A non-empty hostname must be configured (`hostname`) when running in standalone mode."
+                ));
+            }
 
             let env = Self {
                 host_provider: BoxedHostProvider::from_provider(FixedHostProvider::new(hostname)),

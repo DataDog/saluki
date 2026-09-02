@@ -15,13 +15,7 @@ const DEFAULT_CONTAINERD_SOCKET_PATH_LINUX: &str = "/var/run/containerd/containe
 pub struct ContainerdDetector;
 
 impl ContainerdDetector {
-    /// Tries to detect the containerd gRPC socket path.
-    ///
-    /// When a socket path is configured, it is used as-is. Otherwise, default paths are checked for the presence of the
-    /// socket path.
-    ///
-    /// If the socket path is configured or detected, and is a valid Unix domain socket, `Some` is returned with the
-    /// socket path. Otherwise, `None` is returned.
+    /// Returns a non-empty containerd socket override or probes well-known Unix sockets.
     #[cfg(unix)]
     pub fn detect_grpc_socket_path(configured_socket_path: Option<PathBuf>) -> Option<PathBuf> {
         let detected_socket_path = match configured_socket_path {
@@ -51,5 +45,34 @@ impl ContainerdDetector {
     #[cfg(not(unix))]
     pub fn detect_grpc_socket_path(_: Option<PathBuf>) -> Option<PathBuf> {
         None
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::ContainerdDetector;
+
+    #[test]
+    fn a_configured_socket_path_is_used_without_probing() {
+        let configured = PathBuf::from("/custom/run/containerd/containerd.sock");
+
+        assert_eq!(
+            ContainerdDetector::detect_grpc_socket_path(Some(configured.clone())),
+            Some(configured)
+        );
+    }
+
+    #[test]
+    fn a_configured_empty_socket_path_leaves_containerd_undetected() {
+        assert_eq!(ContainerdDetector::detect_grpc_socket_path(Some(PathBuf::new())), None);
+    }
+
+    #[test]
+    fn a_configured_socket_path_for_another_runtime_leaves_containerd_undetected() {
+        let configured = PathBuf::from("/var/run/crio/crio.sock");
+
+        assert_eq!(ContainerdDetector::detect_grpc_socket_path(Some(configured)), None);
     }
 }

@@ -42,14 +42,14 @@ pub struct CgroupsConfiguration {
 }
 
 impl CgroupsConfiguration {
-    /// Resolves optional roots from the detected host-mount features.
+    /// Resolves unset roots from host-mapped procfs detection.
     pub fn new(
         procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
     ) -> Self {
-        let host_mapped = feature_detector.is_feature_available(Feature::HostMappedProcfs);
+        let host_mapped_procfs = feature_detector.is_feature_available(Feature::HostMappedProcfs);
 
         let procfs_root = procfs_root.unwrap_or_else(|| {
-            if host_mapped {
+            if host_mapped_procfs {
                 PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
             } else {
                 PathBuf::from(DEFAULT_PROCFS_ROOT)
@@ -57,11 +57,11 @@ impl CgroupsConfiguration {
         });
 
         let cgroupfs_root = cgroupfs_root.unwrap_or_else(|| {
-            if host_mapped {
+            if host_mapped_procfs {
                 PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
             } else {
-                // TODO: Consider if we need to do anything specific for Amazon Linux [1] or does the referenced code only
-                // matter for cgroups v1?
+                // TODO: Consider if we need to do anything specific for Amazon Linux [1] or does the referenced
+                // code only matter for cgroups v1?
                 //
                 // [1]: https://github.com/DataDog/datadog-agent/blob/fe75b815c2f135f0d2ea85d7a57a8fc8cbf56bd9/pkg/config/setup/config.go#L1172-L1173
                 PathBuf::from(DEFAULT_CGROUPFS_ROOT)

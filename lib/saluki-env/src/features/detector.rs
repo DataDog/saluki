@@ -19,7 +19,7 @@ pub struct FeatureDetector {
 }
 
 impl FeatureDetector {
-    /// Creates a detector for all features and an optional containerd socket override.
+    /// Detects all features, probing containerd when no socket is configured.
     pub fn automatic(configured_containerd_socket_path: Option<PathBuf>) -> Self {
         Self::for_feature(configured_containerd_socket_path, Feature::all_bits())
     }

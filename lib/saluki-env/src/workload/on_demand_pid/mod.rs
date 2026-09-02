@@ -33,7 +33,8 @@ impl OnDemandPIDResolver {
     ///
     /// # Errors
     ///
-    /// If a cgroups hierarchy can't be found, or the internal cache can't be created, an error is returned.
+    /// On Linux, if a cgroups hierarchy can't be found, or the internal cache can't be created, an error is returned.
+    /// On all other platforms, no error is possible.
     pub fn new(
         procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
         interner: GenericMapInterner,

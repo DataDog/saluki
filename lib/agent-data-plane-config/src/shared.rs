@@ -55,7 +55,7 @@ pub struct SharedConfiguration {
 /// Host identity and container runtime discovery inputs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Environment {
-    /// Hostname override, with provenance to distinguish the schema default.
+    /// Hostname override. A defaulted empty value is treated as absent.
     pub hostname: ConfigValue<String>,
 
     /// containerd runtime discovery and client timeouts.
@@ -68,23 +68,23 @@ pub struct Environment {
 /// containerd runtime discovery and client timeouts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Containerd {
-    /// containerd gRPC socket, with provenance to control path detection.
+    /// containerd gRPC socket. A defaulted empty value enables path probing.
     pub socket_path: ConfigValue<PathBuf>,
 
-    /// Timeout for establishing a containerd gRPC connection.
+    /// Timeout for establishing a containerd gRPC connection. Defaults to 1 second; `0` never connects.
     pub connection_timeout: Duration,
 
-    /// Per-RPC timeout for containerd API calls.
+    /// Per-RPC timeout for containerd API calls. Defaults to 5 seconds; `0` fails every call.
     pub query_timeout: Duration,
 }
 
 /// Filesystem roots describing container workloads.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ContainerRoots {
-    /// procfs root, with provenance for host-mount detection.
+    /// procfs root. Defaults to `/host/proc`, which is only used when set explicitly.
     pub proc_root: ConfigValue<PathBuf>,
 
-    /// cgroupfs root, with provenance for host-mount detection.
+    /// cgroupfs root. Defaults to `/host/sys/fs/cgroup/`, which is only used when set explicitly.
     pub cgroup_root: ConfigValue<PathBuf>,
 }
 

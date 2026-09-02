@@ -129,14 +129,15 @@ impl RemoteAgentWorkloadProvider {
             .is_explicit()
             .then(|| environment.container_roots.cgroup_root.value.clone());
 
-        // Add the containerd collector if the feature is available.
         let feature_detector = FeatureDetector::automatic(containerd_socket_path.clone());
+
+        // Add the containerd collector if the feature is available.
         #[cfg(unix)]
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let containerd_config = ContainerdConfiguration::new(
-                environment.containerd.connection_timeout,
-                environment.containerd.query_timeout,
-            );
+            let containerd_config = ContainerdConfiguration {
+                connection_timeout: environment.containerd.connection_timeout,
+                query_timeout: environment.containerd.query_timeout,
+            };
             let cri_collector = build_collector(
                 &collectors_root,
                 "containerd",
