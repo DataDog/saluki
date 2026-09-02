@@ -1,4 +1,4 @@
 fixes:
   - |
-    Updated `mio` to 1.2.3, which fixes an issue with listening for new connections on Unix Domain Socket-based API
+    Updated ``mio`` to 1.2.3, which fixes an issue with listening for new connections on Unix Domain Socket-based API
     endpoints on AIX, as well as spurious crashes due to a race condition when using named pipes on Windows.
