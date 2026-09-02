@@ -77,7 +77,7 @@ async fn main() -> Result<(), GenericError> {
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
-    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.raw_config())
+    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.local().control.logging)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
     if matches!(&cli.action, Action::Config(command) if command.json) {
         bootstrap_logging_config.log_to_console = false;

@@ -8,7 +8,9 @@ use std::{path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
-/// Topology gates and orchestration decisions. Static for the process lifetime.
+use crate::ConfigValue;
+
+/// Topology gates and orchestration decisions. Most are static; `logging.level` is live.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ControlConfiguration {
     /// Master switch for the whole data plane; when false, no pipelines are built.
@@ -97,7 +99,9 @@ pub struct Logging {
     pub syslog_uri: String,
 
     /// Path of the log file.
-    pub file: String,
+    ///
+    /// A defaulted or explicitly empty path selects the platform-specific ADP log file path.
+    pub file: ConfigValue<String>,
 
     /// Whether file logging is turned off entirely.
     pub disable_file_logging: bool,
@@ -106,7 +110,9 @@ pub struct Logging {
     pub file_max_rolls: usize,
 
     /// Maximum size, in bytes, a log file reaches before it is rotated.
-    pub file_max_size: u64,
+    ///
+    /// When defaulted, the logging stack keeps its own 10 MiB threshold instead.
+    pub file_max_size: ConfigValue<u64>,
 }
 
 /// IPC and remote-agent connection parameters, read once at bootstrap before runtime authority

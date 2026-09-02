@@ -479,7 +479,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_log_file(&mut self, value: String) {
-        self.config.control.logging.file = value;
+        let provenance = self.sources.provenance("data_plane.log_file");
+        self.config.control.logging.file = ConfigValue::new(value, provenance);
     }
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
@@ -883,8 +884,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_log_file_max_size(&mut self, value: String) {
+        let provenance = self.sources.provenance("log_file_max_size");
         match value.parse::<ByteSize>() {
-            Ok(size) => self.config.control.logging.file_max_size = size.as_u64(),
+            Ok(size) => self.config.control.logging.file_max_size = ConfigValue::new(size.as_u64(), provenance),
             Err(reason) => self.record_error(TranslateError::new_with_message("log_file_max_size", reason)),
         }
     }
@@ -1987,6 +1989,31 @@ mod tests {
             DEFAULT_ZSTD_COMPRESSOR_LEVEL,
             config.shared.endpoints.compression.effective_zstd_level()
         );
+    }
+
+    #[test]
+    fn logging_file_and_max_size_record_whether_an_operator_set_them() {
+        let (config, errors) = translate_stream(&[
+            (
+                "data_plane.log_file",
+                json!("/var/log/datadog/agent-data-plane.log"),
+                StreamProvenance::Default,
+            ),
+            ("log_file_max_size", json!("10Mb"), StreamProvenance::Default),
+        ]);
+        assert!(errors.is_none());
+        let logging = &config.control.logging;
+        assert_defaulted(&logging.file, "/var/log/datadog/agent-data-plane.log".to_string());
+        assert_defaulted(&logging.file_max_size, 10_000_000);
+
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "log_file": "/tmp/adp.log" },
+            "log_file_max_size": "1MiB",
+        }));
+        assert!(errors.is_none());
+        let logging = &config.control.logging;
+        assert_explicit(&logging.file, "/tmp/adp.log".to_string());
+        assert_explicit(&logging.file_max_size, 1024 * 1024);
     }
 
     #[test]
