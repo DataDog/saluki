@@ -54,7 +54,7 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
 pub struct LoggingConfigurationTranslator;
 
 impl LoggingConfigurationTranslator {
-    /// Builds a [`LoggingConfiguration`] from the typed logging configuration, applying ADP's per-subagent rules.
+    /// Builds a [`LoggingConfiguration`] from the given configuration, applying ADP's per-subagent rules.
     ///
     /// # Errors
     ///

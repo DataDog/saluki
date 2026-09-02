@@ -107,6 +107,9 @@ pub struct Logging {
     pub disable_file_logging: bool,
 
     /// Number of rotated log files retained.
+    ///
+    /// Defaults to `1`. The file writer retains one rotated file when this is `0`. A negative value is
+    /// rejected during translation.
     pub file_max_rolls: usize,
 
     /// Maximum size, in bytes, a log file reaches before it is rotated.

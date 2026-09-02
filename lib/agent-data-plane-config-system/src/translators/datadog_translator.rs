@@ -880,7 +880,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_log_file_max_rolls(&mut self, value: i64) {
-        self.config.control.logging.file_max_rolls = value.max(0) as usize;
+        match usize::try_from(value) {
+            Ok(max_rolls) => self.config.control.logging.file_max_rolls = max_rolls,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "log_file_max_rolls",
+                "log file max rolls must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_log_file_max_size(&mut self, value: String) {
@@ -2014,6 +2020,18 @@ mod tests {
         let logging = &config.control.logging;
         assert_explicit(&logging.file, "/tmp/adp.log".to_string());
         assert_explicit(&logging.file_max_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn negative_log_file_max_rolls_records_translation_error() {
+        // A negative roll count is not a smaller retention policy: clamping it would silently accept an
+        // invalid setting, so translation rejects it instead.
+        let (config, errors) = translate_explicit(json!({ "log_file_max_rolls": -1 }));
+
+        assert_eq!(config.control.logging.file_max_rolls, 0);
+        let error = errors.expect("negative log file max rolls should record an error");
+        assert!(error.to_string().contains("log_file_max_rolls"));
+        assert!(error.to_string().contains("greater than or equal to 0"));
     }
 
     #[test]
