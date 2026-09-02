@@ -29,7 +29,7 @@ pub struct OnDemandPIDResolver {
 impl OnDemandPIDResolver {
     /// Creates a new `OnDemandPIDResolver` for the given container filesystem roots.
     ///
-    /// A root given as `None` isn't configured, and is resolved from the detected features.
+    /// If a root is given, that path is used. Otherwise, it is resolved from the detected features.
     ///
     /// # Errors
     ///

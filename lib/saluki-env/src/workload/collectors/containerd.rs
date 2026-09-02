@@ -44,15 +44,17 @@ pub struct ContainerdMetadataCollector {
 impl ContainerdMetadataCollector {
     /// Creates a new `ContainerdMetadataCollector` from the given containerd configuration.
     ///
+    /// If `socket_path` is given, that path is used. Otherwise, well-known paths are probed.
+    ///
     /// # Errors
     ///
     /// If the containerd gRPC client can't be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
     pub async fn new(
-        configured_socket_path: Option<PathBuf>, containerd_config: &ContainerdConfiguration, health: Health,
+        socket_path: Option<PathBuf>, containerd_config: &ContainerdConfiguration, health: Health,
         tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
-        let client = ContainerdClient::new(configured_socket_path, containerd_config).await?;
+        let client = ContainerdClient::new(socket_path, containerd_config).await?;
         let watched_namespaces = client.list_namespaces().await?;
 
         Ok(Self {

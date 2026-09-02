@@ -15,10 +15,13 @@ const DEFAULT_CONTAINERD_SOCKET_PATH_LINUX: &str = "/var/run/containerd/containe
 pub struct ContainerdDetector;
 
 impl ContainerdDetector {
-    /// Returns a non-empty containerd socket override or probes well-known Unix sockets.
+    /// Tries to detect the containerd gRPC socket path.
+    ///
+    /// If `socket_path` is given, that path is used. Otherwise, well-known paths are probed for a Unix domain socket.
+    /// Either way, `None` is returned unless the resulting path refers to containerd.
     #[cfg(unix)]
-    pub fn detect_grpc_socket_path(configured_socket_path: Option<PathBuf>) -> Option<PathBuf> {
-        let detected_socket_path = match configured_socket_path {
+    pub fn detect_grpc_socket_path(socket_path: Option<PathBuf>) -> Option<PathBuf> {
+        let detected_socket_path = match socket_path {
             Some(socket_path) => Some(socket_path),
             None => {
                 if is_running_inside_docker() {
