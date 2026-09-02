@@ -52,7 +52,10 @@ pub async fn create_control_plane_supervisor(
         config_system.live(|config| &config.control.logging.level),
         logging_controller,
     ));
-    supervisor.add_worker(ConfigWorker::new(raw_map));
+    // Re-read the compatibility map on every request/dump so the endpoint reflects live updates.
+    supervisor.add_worker(ConfigWorker::new(Arc::new(move || {
+        raw_map.as_typed::<serde_json::Value>().map_err(Into::into)
+    })));
     supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
 
     let api_listen_address = dp.api_listen_address()?;

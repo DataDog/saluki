@@ -1,5 +1,7 @@
 //! Configuration API handler.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use http::StatusCode;
 use saluki_api::{
@@ -9,19 +11,21 @@ use saluki_api::{
     APIHandler, DynamicRoute, EndpointType,
 };
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_config::GenericConfiguration;
 use saluki_core::{
     diagnostic::DiagnosticsEmitter,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
     support::SubsystemIdentifier,
 };
-use saluki_error::generic_error;
+use saluki_error::{generic_error, GenericError};
 use serde_json::Value;
+
+/// Produces a fresh serialized configuration snapshot per call.
+pub type ConfigSnapshotFn = Arc<dyn Fn() -> Result<Value, GenericError> + Send + Sync>;
 
 /// State used for the config API handler.
 #[derive(Clone)]
 pub struct ConfigState {
-    config: GenericConfiguration,
+    snapshot: ConfigSnapshotFn,
 }
 
 /// An API handler for returning the current configuration.
@@ -34,14 +38,14 @@ pub struct ConfigAPIHandler {
 }
 
 impl ConfigAPIHandler {
-    fn new(config: GenericConfiguration) -> Self {
+    fn new(snapshot: ConfigSnapshotFn) -> Self {
         Self {
-            state: ConfigState { config },
+            state: ConfigState { snapshot },
         }
     }
 
     async fn config_handler(State(state): State<ConfigState>) -> impl IntoResponse {
-        match state.config.as_typed::<Value>() {
+        match (state.snapshot)() {
             Ok(config) => (StatusCode::OK, serde_json::to_string(&config).unwrap()).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -74,10 +78,10 @@ pub struct ConfigWorker {
 }
 
 impl ConfigWorker {
-    /// Creates a new [`ConfigWorker`] with the given configuration.
-    pub fn new(config: GenericConfiguration) -> Self {
+    /// Creates a new [`ConfigWorker`] that serves the snapshots produced by the given closure.
+    pub fn new(snapshot: ConfigSnapshotFn) -> Self {
         Self {
-            handler: ConfigAPIHandler::new(config),
+            handler: ConfigAPIHandler::new(snapshot),
         }
     }
 }
@@ -91,7 +95,7 @@ impl Supervisable for ConfigWorker {
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let config_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
-        let config = self.handler.state.config.clone();
+        let snapshot = self.handler.state.snapshot.clone();
 
         Ok(Box::pin(async move {
             let dataspace =
@@ -102,8 +106,7 @@ impl Supervisable for ConfigWorker {
             let diagnostics =
                 DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["config-api"]), dataspace);
             diagnostics.register_collector("runtime_config_dump.yaml", move || {
-                config
-                    .as_typed::<serde_json::Value>()
+                snapshot()
                     .map(|v| serde_json::to_vec_pretty(&v).unwrap_or_default())
                     .unwrap_or_default()
             });
@@ -111,5 +114,53 @@ impl Supervisable for ConfigWorker {
             process_shutdown.await;
             Ok(())
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use http_body_util::BodyExt as _;
+    use saluki_error::generic_error;
+    use serde_json::json;
+
+    use super::*;
+
+    async fn response_parts(handler: &ConfigAPIHandler) -> (StatusCode, String) {
+        let response = ConfigAPIHandler::config_handler(State(handler.state.clone()))
+            .await
+            .into_response();
+        let status = response.status();
+        let body = response.into_body().collect().await.expect("body collects").to_bytes();
+
+        (status, String::from_utf8(body.to_vec()).expect("body is UTF-8"))
+    }
+
+    #[tokio::test]
+    async fn config_endpoint_serves_a_fresh_snapshot_per_request() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let snapshot_calls = Arc::clone(&calls);
+        let handler = ConfigAPIHandler::new(Arc::new(move || {
+            Ok(json!({ "revision": snapshot_calls.fetch_add(1, Ordering::Relaxed) }))
+        }));
+
+        let (status, body) = response_parts(&handler).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, r#"{"revision":0}"#);
+
+        let (status, body) = response_parts(&handler).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, r#"{"revision":1}"#);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn config_endpoint_reports_a_failed_snapshot() {
+        let handler = ConfigAPIHandler::new(Arc::new(|| Err(generic_error!("cannot serialize"))));
+
+        let (status, body) = response_parts(&handler).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.contains("cannot serialize"), "unexpected body: {body}");
     }
 }
