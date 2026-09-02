@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -15,7 +14,6 @@ use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
-use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
@@ -56,7 +54,7 @@ use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use stringtheory::MetaString;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     components::{
@@ -169,7 +167,9 @@ pub async fn handle_run_command(
         return Ok(());
     }
 
-    check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
+    config_sys
+        .check_compatibility(&active_pipelines)
+        .error_context("Incompatible configuration detected.")?;
 
     let remote_agent_client_config = if standalone {
         None
@@ -299,98 +299,6 @@ pub async fn handle_run_command(
             Ok(())
         }
         Err(e) => Err(e.into()),
-    }
-}
-
-/// Check the resolved configuration against the config registry for incompatibilities.
-///
-/// Classifies each flattened key in `config` with the config registry `Classifier`. Returns an
-/// `Error` if one or more high severity incompatibility is discovered. Emits warnings for less
-/// severe incompatibilities. Keys are only considered incompatible when they have non-default
-/// values and the pipelines they affect are active.
-///
-/// # Input
-///
-/// - `config`: the state of our configuration which we will flatten and consider all keys from.
-/// - `active_pipelines`: the list of pipelines that are enabled based on the configuration.
-///
-/// # Error
-///
-/// To provide a better debugging experience in the presence of multiple high-severity incompatible
-/// keys, all keys are checked before returning. The error reports the count of incompatible keys;
-/// individual keys are logged at error level during iteration.
-///
-fn check_and_warn_config(
-    config: &ConfigurationSystem, active_pipelines: &HashSet<Pipeline>,
-) -> Result<(), GenericError> {
-    let classifier = ConfigClassifier::new();
-    let mut high_severity_incompatibilities = 0u32;
-    debug!("Analyzing configuration.");
-    // TODO: transfer this functionality to the config system
-    let config = config.raw_map();
-    for (key, val) in config
-        .flattened_keys()
-        .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
-    {
-        // Get the classification. The classifier returns None if the config key is invalid or not-applicable to ADP.
-        let Some(classification) = classifier.classify(&key, &val) else {
-            continue;
-        };
-
-        // Ignore it if none of the affected pipelines are active.
-        if !is_a_pipeline_affected(active_pipelines, &classification.pipeline_affinity) {
-            continue;
-        }
-
-        // The Agent populates default values into the config, so we do not consider keys with default values.
-        if classification.is_default {
-            trace!(key = %key, "Configuration key has a default value.");
-            continue;
-        }
-
-        match classification.support_level {
-            SupportLevel::Incompatible(Severity::Low) => debug!("Low-severity incompatible key detected. Proceeding."),
-            SupportLevel::Partial => {
-                warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")
-            }
-            SupportLevel::Incompatible(Severity::Medium) => {
-                warn!(key = %key, "Unsupported configuration key. Proceeding.")
-            }
-            SupportLevel::Incompatible(Severity::High) => {
-                error!(key = %key, "Unsupported configuration key with non-default value. ADP cannot run safely with \
-                this setting.");
-                high_severity_incompatibilities += 1;
-            }
-            SupportLevel::Ignored | SupportLevel::Unrecognized => {
-                trace!(key = %key, "Configuration key not-applicable. Silently ignoring.")
-            }
-        }
-    }
-
-    if high_severity_incompatibilities > 0 {
-        return Err(generic_error!(
-            "{high_severity_incompatibilities} incompatible configuration detected. ADP cannot start. Review error \
-            logs for details."
-        ));
-    }
-
-    Ok(())
-}
-
-/// Returns `true` if at least one of the `active_pipelines` is affected based on `pipeline_affinity`.
-fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinity: &PipelineAffinity) -> bool {
-    match pipeline_affinity {
-        PipelineAffinity::Pipelines(affected_pipelines) => {
-            for affected_pipeline in *affected_pipelines {
-                if active_pipelines.contains(affected_pipeline) {
-                    // We found an active pipeline that is in the affected list. Early return true.
-                    return true;
-                }
-            }
-            // We checked all affected pipelines against those that are active and none matched.
-            false
-        }
-        PipelineAffinity::CrossCutting => true,
     }
 }
 
