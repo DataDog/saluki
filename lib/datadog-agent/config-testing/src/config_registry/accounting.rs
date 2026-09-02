@@ -4,12 +4,28 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
+static ENABLE_GLOBAL_LIMITER_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "enable_global_limiter",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("true"),
+};
+
 static MEMORY_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "memory_limit",
     env_vars: &[],
     value_type: ValueType::String,
     default: None,
+};
+
+static MEMORY_MODE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "memory_mode",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("disabled"),
 };
 
 static MEMORY_SLOP_FACTOR_SCHEMA: SchemaEntry = SchemaEntry {
@@ -21,13 +37,35 @@ static MEMORY_SLOP_FACTOR_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
+    /// `enable_global_limiter`
+    ENABLE_GLOBAL_LIMITER = SalukiAnnotation {
+        schema: &ENABLE_GLOBAL_LIMITER_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `memory_limit`
     MEMORY_LIMIT = SalukiAnnotation {
         schema: &MEMORY_LIMIT_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `memory_mode`
+    MEMORY_MODE = SalukiAnnotation {
+        schema: &MEMORY_MODE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -38,7 +76,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,

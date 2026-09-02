@@ -89,8 +89,7 @@ async fn main() -> Result<(), GenericError> {
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
     // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
-    let bootstrapper = AppBootstrapper::from_configuration(&local_config.raw_config())
-        .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
+    let bootstrapper = AppBootstrapper::new()
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
         .with_logging_configuration(bootstrap_logging_config);

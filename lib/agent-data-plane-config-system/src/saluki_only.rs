@@ -73,8 +73,10 @@ use std::{
     time::Duration,
 };
 
+use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
-    DEFAULT_METRICS_LEVEL, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
+    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -157,6 +159,10 @@ pub struct SalukiOnly {
     pub memory_limit: Option<ByteSize>,
     /// Memory-accounting slop fraction (`memory_slop_factor`).
     pub memory_slop_factor: Option<f64>,
+    /// Whether the global memory limiter is enabled (`enable_global_limiter`).
+    pub enable_global_limiter: Option<bool>,
+    /// Memory bounds validation and global limiter behavior (`memory_mode`).
+    pub memory_mode: MemoryModeSource,
     /// Encoder flush timeout, in seconds (`flush_timeout_secs`).
     pub flush_timeout_secs: Option<u64>,
     /// Maximum metrics per payload (`serializer_max_metrics_per_payload`).
@@ -472,6 +478,29 @@ pub enum OttlErrorModeSource {
     Propagate,
 }
 
+/// Memory bounds behavior as written at `memory_mode`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryModeSource {
+    /// Skip bounds validation and apply no memory limiting.
+    #[default]
+    Disabled,
+    /// Log bounds validation failures and continue.
+    Permissive,
+    /// Treat bounds validation failures as fatal.
+    Strict,
+}
+
+impl From<MemoryModeSource> for MemoryMode {
+    fn from(mode: MemoryModeSource) -> Self {
+        match mode {
+            MemoryModeSource::Disabled => MemoryMode::Disabled,
+            MemoryModeSource::Permissive => MemoryMode::Permissive,
+            MemoryModeSource::Strict => MemoryMode::Strict,
+        }
+    }
+}
+
 impl From<OttlErrorModeSource> for OttlErrorMode {
     fn from(mode: OttlErrorModeSource) -> Self {
         match mode {
@@ -496,12 +525,10 @@ impl SalukiOnly {
         if let Some(v) = self.data_plane.checks.enabled {
             config.control.checks = v;
         }
-        if let Some(v) = self.memory_limit {
-            config.control.memory_limit = v.as_u64();
-        }
-        if let Some(v) = self.memory_slop_factor {
-            config.control.memory_slop_factor = v;
-        }
+        config.control.memory_limit = self.memory_limit.map(|v| v.as_u64());
+        config.control.memory_slop_factor = self.memory_slop_factor.unwrap_or(DEFAULT_MEMORY_SLOP_FACTOR);
+        config.control.enable_global_limiter = self.enable_global_limiter.unwrap_or(DEFAULT_ENABLE_GLOBAL_LIMITER);
+        config.control.memory_mode = self.memory_mode.into();
         if let Some(v) = self.remote_agent_string_interner_size_bytes {
             config.control.ipc.remote_agent_string_interner_size_bytes = v;
         }
@@ -692,6 +719,8 @@ mod tests {
             "checks_ipc_endpoint": "localhost:5006",
             "memory_limit": "512MB",
             "memory_slop_factor": 0.3,
+            "enable_global_limiter": false,
+            "memory_mode": "strict",
             "flush_timeout_secs": 7,
             "serializer_max_metrics_per_payload": 999,
             // dogstatsd listener/context/mapper
@@ -773,8 +802,10 @@ mod tests {
         assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
-        assert_eq!(config.control.memory_limit, ByteSize::mb(512).as_u64());
+        assert_eq!(config.control.memory_limit, Some(ByteSize::mb(512).as_u64()));
         assert_eq!(config.control.memory_slop_factor, 0.3);
+        assert!(!config.control.enable_global_limiter);
+        assert_eq!(config.control.memory_mode, MemoryMode::Strict);
         assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes, 4096);
 
         // shared
@@ -860,8 +891,56 @@ mod tests {
             let saluki_only: SalukiOnly = serde_json::from_value(value).expect("memory_limit deserializes");
             let mut config = SalukiConfiguration::default();
             saluki_only.seed(&mut config);
+            assert_eq!(config.control.memory_limit, Some(expected));
+        }
+    }
+
+    #[test]
+    fn memory_limit_distinguishes_absence_from_an_explicit_zero() {
+        for (value, expected) in [(json!({}), None), (json!({ "memory_limit": 0 }), Some(0))] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("memory_limit deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
             assert_eq!(config.control.memory_limit, expected);
         }
+    }
+
+    #[test]
+    fn memory_accounting_defaults_resolve_and_explicit_values_seed() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.memory_slop_factor, DEFAULT_MEMORY_SLOP_FACTOR);
+        assert_eq!(config.control.enable_global_limiter, DEFAULT_ENABLE_GLOBAL_LIMITER);
+        assert_eq!(config.control.memory_mode, MemoryMode::Disabled);
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "memory_slop_factor": 0.0, "enable_global_limiter": false }))
+                .expect("explicit memory accounting values deserialize");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.memory_slop_factor, 0.0);
+        assert!(!config.control.enable_global_limiter);
+    }
+
+    #[test]
+    fn memory_mode_values_round_trip_and_reject_unknown_spellings() {
+        for (source, expected) in [
+            ("disabled", MemoryMode::Disabled),
+            ("permissive", MemoryMode::Permissive),
+            ("strict", MemoryMode::Strict),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(json!({ "memory_mode": source })).expect("valid memory_mode deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.control.memory_mode, expected, "memory_mode={source}");
+        }
+
+        assert!(
+            serde_json::from_value::<SalukiOnly>(json!({ "memory_mode": "disabeld" })).is_err(),
+            "an unrecognized memory_mode should fail the load"
+        );
     }
 
     /// An unrecognized `error_mode` must fail deserialization rather than silently resolving to

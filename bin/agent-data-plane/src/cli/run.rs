@@ -6,6 +6,7 @@ use std::{
 };
 
 use agent_data_plane_config::{
+    control::MemoryMode,
     domains::{dogstatsd, multi_region_failover},
     shared::SharedConfiguration,
     SalukiConfiguration,
@@ -16,7 +17,7 @@ use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
-    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
     util::wait_for_shutdown_signal,
@@ -212,7 +213,19 @@ pub async fn handle_run_command(
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config_sys.raw_map())?;
+    let bounds_config = {
+        let control = &config_sys.config().control;
+        MemoryBoundsConfiguration {
+            memory_limit: control.memory_limit.map(ByteSize::b),
+            memory_slop_factor: control.memory_slop_factor,
+            enable_global_limiter: control.enable_global_limiter,
+            memory_mode: match control.memory_mode {
+                MemoryMode::Disabled => AppMemoryMode::Disabled,
+                MemoryMode::Permissive => AppMemoryMode::Permissive,
+                MemoryMode::Strict => AppMemoryMode::Strict,
+            },
+        }
+    };
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {

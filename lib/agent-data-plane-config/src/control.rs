@@ -58,12 +58,32 @@ pub struct ControlConfiguration {
     /// `aggregator_stop_timeout` and `forwarder_stop_timeout`.
     pub stop_timeout: Option<Duration>,
 
-    /// Process memory ceiling, in bytes. (not in Datadog Agent config schema)
-    pub memory_limit: u64,
+    /// Process memory ceiling in bytes. `None` defers to cgroup detection.
+    pub memory_limit: Option<u64>,
 
-    /// Fraction of the memory limit held back as headroom during memory accounting. (not in Datadog
-    /// Agent config schema)
+    /// Fraction of the memory limit held back as headroom. Defaults to `DEFAULT_MEMORY_SLOP_FACTOR`.
     pub memory_slop_factor: f64,
+
+    /// Whether the global memory limiter exerts backpressure. Defaults to `DEFAULT_ENABLE_GLOBAL_LIMITER`.
+    pub enable_global_limiter: bool,
+
+    /// Memory bounds validation and limiter behavior.
+    pub memory_mode: MemoryMode,
+}
+
+/// Memory bounds validation and limiter behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryMode {
+    /// Bounds validation is skipped and no memory limiting is applied.
+    #[default]
+    Disabled,
+
+    /// Bounds validation failures are logged and startup continues.
+    Permissive,
+
+    /// Bounds validation failures are fatal.
+    Strict,
 }
 
 impl ControlConfiguration {

@@ -646,8 +646,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
 | `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP  | 0              |
+| `enable_global_limiter`                                         | Global memory limiter toggle               | true           |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
+| `memory_mode`                                                   | Memory bounds validation mode              | disabled       |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
 | `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list            | []             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
@@ -718,6 +720,14 @@ ADP uses an explicit process memory limit (`memory_limit`) rather than relying o
 ### `memory_slop_factor`
 
 See `memory_limit` above.
+
+### `enable_global_limiter`
+
+Controls whether the global memory limiter exerts backpressure as memory usage approaches `memory_limit`. The default is `true`. When set to `false`, the limiter becomes a no-op and only the memory bounds of the running components influence memory usage.
+
+### `memory_mode`
+
+Controls how the calculated memory bounds are reconciled against `memory_limit`. The default is `disabled`. Accepted values: `disabled` skips bounds validation and applies no memory limiting; `permissive` logs a warning when the bounds do not fit within the limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, the global memory limiter is active only when a limit is in effect (configured or detected from cgroups) and `enable_global_limiter` is `true`.
 
 
 ## Transparent Settings
