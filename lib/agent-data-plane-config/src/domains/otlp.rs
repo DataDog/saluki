@@ -279,7 +279,7 @@ pub struct Receiver {
 /// Default gRPC maximum inbound message size, in MiB.
 ///
 /// The Datadog schema default for `max_recv_msg_size_mib` is `0`, which grpc-go treats as "apply the
-/// built-in 4 MiB limit". Translation substitutes this constant for a configured `0` so the model
+/// built-in 4 MiB limit." Translation substitutes this constant for a configured `0` so the model
 /// always carries an effective limit.
 pub const DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
 

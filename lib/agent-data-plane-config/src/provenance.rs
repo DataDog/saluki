@@ -51,7 +51,7 @@ pub enum Provenance {
 ///
 /// Prefer `ConfigValue<T>` over `ConfigValue<Option<T>>`. Reaching for the inner `Option` usually
 /// means it is duplicating the provenance: a `T` with [`Provenance::Default`] already expresses "no
-/// one configured this", and the nested form leaves two different ways to say so.
+/// one configured this," and the nested form leaves two different ways to say so.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConfigValue<T> {
     /// The effective value.
