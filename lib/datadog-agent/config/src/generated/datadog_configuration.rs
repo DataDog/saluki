@@ -89,6 +89,14 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cmd_port: i64,
 
+    #[serde(default = "defaults::datadog_configuration_container_cgroup_root")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub container_cgroup_root: String,
+
+    #[serde(default = "defaults::datadog_configuration_container_proc_root")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub container_proc_root: String,
+
     #[serde(default = "defaults::default_u64::<i64, 1>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cri_connection_timeout: i64,
@@ -96,6 +104,10 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::default_u64::<i64, 5>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cri_query_timeout: i64,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub cri_socket_path: String,
 
     #[serde(default)]
     pub data_plane: DataPlane,
@@ -366,6 +378,10 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub hostname: String,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub ipc_cert_file_path: String,
 
     #[serde(default)]
@@ -583,8 +599,11 @@ impl Default for DatadogConfiguration {
             cluster_agent: Default::default(),
             cluster_name: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
+            container_cgroup_root: defaults::datadog_configuration_container_cgroup_root(),
+            container_proc_root: defaults::datadog_configuration_container_proc_root(),
             cri_connection_timeout: defaults::default_u64::<i64, 1>(),
             cri_query_timeout: defaults::default_u64::<i64, 5>(),
+            cri_socket_path: Default::default(),
             data_plane: Default::default(),
             dd_url: defaults::datadog_configuration_dd_url(),
             disable_file_logging: Default::default(),
@@ -656,6 +675,7 @@ impl Default for DatadogConfiguration {
             histogram_copy_to_distribution: Default::default(),
             histogram_copy_to_distribution_prefix: Default::default(),
             histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
+            hostname: Default::default(),
             ipc_cert_file_path: Default::default(),
             kubernetes_kubelet_nodename: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
@@ -2090,6 +2110,12 @@ pub mod defaults {
         <T as ::std::convert::TryFrom<u64>>::Error: ::std::fmt::Debug,
     {
         T::try_from(V).unwrap()
+    }
+    pub(super) fn datadog_configuration_container_cgroup_root() -> String {
+        "/host/sys/fs/cgroup/".to_string()
+    }
+    pub(super) fn datadog_configuration_container_proc_root() -> String {
+        "/host/proc".to_string()
     }
     pub(super) fn datadog_configuration_dd_url() -> String {
         "https://app.datadoghq.com".to_string()

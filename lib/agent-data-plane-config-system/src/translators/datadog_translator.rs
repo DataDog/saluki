@@ -96,6 +96,16 @@ impl<'a> DatadogTranslator<'a> {
             }
         }
     }
+
+    fn parse_timeout_secs(&mut self, key: &'static str, value: i64) -> Option<Duration> {
+        match u64::try_from(value) {
+            Ok(secs) => Some(Duration::from_secs(secs)),
+            Err(_) => {
+                self.record_error(TranslateError::new_with_message(key, "timeout must not be negative"));
+                None
+            }
+        }
+    }
 }
 
 /// Resolves the keepalive ping interval, applying the default for unset values.
@@ -442,12 +452,31 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_container_cgroup_root(&mut self, value: String) {
+        let provenance = self.sources.provenance("container_cgroup_root");
+        self.config.shared.environment.container_roots.cgroup_root = ConfigValue::new(PathBuf::from(value), provenance);
+    }
+
+    fn consume_container_proc_root(&mut self, value: String) {
+        let provenance = self.sources.provenance("container_proc_root");
+        self.config.shared.environment.container_roots.proc_root = ConfigValue::new(PathBuf::from(value), provenance);
+    }
+
     fn consume_cri_connection_timeout(&mut self, value: i64) {
-        self.config.control.ipc.cri_connection_timeout = value;
+        if let Some(timeout) = self.parse_timeout_secs("cri_connection_timeout", value) {
+            self.config.shared.environment.containerd.connection_timeout = timeout;
+        }
     }
 
     fn consume_cri_query_timeout(&mut self, value: i64) {
-        self.config.control.ipc.cri_query_timeout = value;
+        if let Some(timeout) = self.parse_timeout_secs("cri_query_timeout", value) {
+            self.config.shared.environment.containerd.query_timeout = timeout;
+        }
+    }
+
+    fn consume_cri_socket_path(&mut self, value: String) {
+        let provenance = self.sources.provenance("cri_socket_path");
+        self.config.shared.environment.containerd.socket_path = ConfigValue::new(PathBuf::from(value), provenance);
     }
 
     fn consume_data_plane_api_listen_address(&mut self, value: String) {
@@ -869,6 +898,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_histogram_percentiles(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.histogram.percentiles = value;
+    }
+
+    fn consume_hostname(&mut self, value: String) {
+        let provenance = self.sources.provenance("hostname");
+        self.config.shared.environment.hostname = ConfigValue::new(value, provenance);
     }
 
     fn consume_ipc_cert_file_path(&mut self, value: String) {
@@ -1884,6 +1918,66 @@ mod tests {
         assert!(config.shared.metrics_encoding.v3_series_endpoint_modes.is_empty());
         let errors = errors.expect("a compound mode should record a translation error");
         assert!(errors.to_string().contains("use_v3_api.series.endpoints"));
+    }
+
+    #[test]
+    fn defaulted_environment_settings_stay_distinguishable_from_configured_ones() {
+        let (config, errors) = translate_stream(&[
+            ("hostname", json!(""), StreamProvenance::Default),
+            ("cri_socket_path", json!(""), StreamProvenance::Default),
+            ("container_proc_root", json!("/host/proc"), StreamProvenance::Default),
+            (
+                "container_cgroup_root",
+                json!("/host/sys/fs/cgroup/"),
+                StreamProvenance::Default,
+            ),
+        ]);
+
+        assert!(errors.is_none());
+        let environment = &config.shared.environment;
+        assert_defaulted(&environment.hostname, "");
+        assert_defaulted(&environment.containerd.socket_path, PathBuf::from(""));
+        assert_defaulted(&environment.container_roots.proc_root, PathBuf::from("/host/proc"));
+        assert_defaulted(
+            &environment.container_roots.cgroup_root,
+            PathBuf::from("/host/sys/fs/cgroup/"),
+        );
+    }
+
+    #[test]
+    fn explicit_environment_settings_are_carried_verbatim() {
+        let (config, errors) = translate_stream(&[
+            ("hostname", json!("my-host"), StreamProvenance::Explicit),
+            ("cri_socket_path", json!(""), StreamProvenance::Explicit),
+            ("container_proc_root", json!("/proc"), StreamProvenance::Explicit),
+        ]);
+
+        assert!(errors.is_none());
+        let environment = &config.shared.environment;
+        assert_explicit(&environment.hostname, "my-host");
+        assert_explicit(&environment.containerd.socket_path, PathBuf::from(""));
+        assert_explicit(&environment.container_roots.proc_root, PathBuf::from("/proc"));
+    }
+
+    #[test]
+    fn cri_timeouts_become_durations_and_reject_negative_values() {
+        let (config, errors) = translate_explicit(json!({ "cri_connection_timeout": 2, "cri_query_timeout": 7 }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.shared.environment.containerd.connection_timeout,
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            config.shared.environment.containerd.query_timeout,
+            Duration::from_secs(7)
+        );
+
+        let (config, errors) = translate_explicit(json!({ "cri_query_timeout": -1 }));
+
+        let errors = errors.expect("a negative timeout should record a translation error");
+        assert!(errors.to_string().contains("cri_query_timeout"));
+        assert_eq!(config.shared.environment.containerd.query_timeout, Duration::ZERO);
     }
 
     // Issue #1965: the Core Agent streams `dd_url` at its schema default even when the operator

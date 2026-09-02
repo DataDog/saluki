@@ -1,4 +1,7 @@
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use containerd_protos::services::{
     containers::v1::{containers_client::ContainersClient, Container, ListContainersRequest},
@@ -8,9 +11,7 @@ use containerd_protos::services::{
 };
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use hyper_util::rt::TokioIo;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
-use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::UnixStream;
 use tonic::{
@@ -26,45 +27,20 @@ use self::events::{decode_envelope_to_event, ContainerdEvent, ContainerdTopic};
 
 const MAX_LIST_CONTAINERS_RESPONSE_SIZE: usize = 16 * 1024 * 1024;
 
-const fn default_connection_timeout_secs() -> u64 {
-    1
-}
-
-const fn default_query_timeout_secs() -> u64 {
-    5
-}
-
 /// Containerd gRPC client configuration.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct ContainerdConfiguration {
-    /// Timeout for establishing the gRPC connection to the containerd socket.
-    ///
-    /// Defaults to 1 second. Increase this for hosts where containerd may accept socket connections slowly.
-    #[serde(default = "default_connection_timeout_secs", rename = "cri_connection_timeout")]
-    connection_timeout_secs: u64,
-
-    /// Per-RPC timeout for containerd API calls.
-    ///
-    /// Defaults to 5 seconds. Each containerd RPC receives this deadline independently.
-    #[serde(default = "default_query_timeout_secs", rename = "cri_query_timeout")]
-    query_timeout_secs: u64,
+    connection_timeout: Duration,
+    query_timeout: Duration,
 }
 
 impl ContainerdConfiguration {
-    /// Creates a new `ContainerdConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed::<Self>()?)
-    }
-
-    /// Returns the timeout for establishing the gRPC connection to the containerd socket.
-    pub const fn connection_timeout(&self) -> Duration {
-        Duration::from_secs(self.connection_timeout_secs)
-    }
-
-    /// Returns the per-RPC timeout for containerd API calls.
-    pub const fn query_timeout(&self) -> Duration {
-        Duration::from_secs(self.query_timeout_secs)
+    /// Creates a client configuration with connection and query timeouts.
+    pub const fn new(connection_timeout: Duration, query_timeout: Duration) -> Self {
+        Self {
+            connection_timeout,
+            query_timeout,
+        }
     }
 }
 
@@ -99,14 +75,16 @@ pub struct ContainerdClient {
 }
 
 impl ContainerdClient {
-    /// Creates a new `ContainerdClient` from the given configuration.
+    /// Creates a client using an optional socket override and client configuration.
     ///
     /// ## Errors
     ///
-    /// If the containerd socket path wasn't present in the configuration or couldn't be detected, or if the gRPC
-    /// transport to containerd couldn't be created, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let socket_path = ContainerdDetector::detect_grpc_socket_path(config)
+    /// If the containerd socket path wasn't configured or couldn't be detected, or if the gRPC transport to containerd
+    /// couldn't be created, an error will be returned.
+    pub async fn new(
+        configured_socket_path: Option<PathBuf>, containerd_config: &ContainerdConfiguration,
+    ) -> Result<Self, GenericError> {
+        let socket_path = ContainerdDetector::detect_grpc_socket_path(configured_socket_path)
             .ok_or(generic_error!(
                 "failed to detect containerd socket path; not available at default path and not specified in configuration (`cri_socket_path`)"
             ))?;
@@ -118,10 +96,9 @@ impl ContainerdClient {
             ));
         }
 
-        let containerd_config = ContainerdConfiguration::from_configuration(config)?;
         let channel = Endpoint::try_from("https://[::]")
             .unwrap()
-            .connect_timeout(containerd_config.connection_timeout())
+            .connect_timeout(containerd_config.connection_timeout)
             .connect_with_connector(service_fn(move |_| {
                 let socket_path = socket_path.clone();
                 async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
@@ -130,7 +107,7 @@ impl ContainerdClient {
 
         Ok(Self {
             channel,
-            query_timeout: containerd_config.query_timeout(),
+            query_timeout: containerd_config.query_timeout,
         })
     }
 
@@ -259,36 +236,7 @@ async fn path_exists(path: &Path) -> bool {
 mod tests {
     use std::time::Duration;
 
-    use saluki_config::ConfigurationLoader;
-
     use super::*;
-
-    #[tokio::test]
-    async fn configuration_uses_core_agent_cri_timeout_defaults() {
-        let (config, _updates_tx) = ConfigurationLoader::for_tests(None, None, false).await;
-        let containerd_config =
-            ContainerdConfiguration::from_configuration(&config).expect("configuration should load");
-
-        assert_eq!(Duration::from_secs(1), containerd_config.connection_timeout());
-        assert_eq!(Duration::from_secs(5), containerd_config.query_timeout());
-    }
-
-    #[tokio::test]
-    async fn configuration_reads_cri_timeout_overrides() {
-        let raw_config = serde_yaml::from_str(
-            r#"
-            cri_connection_timeout: 2
-            cri_query_timeout: 7
-            "#,
-        )
-        .expect("config should parse");
-        let (config, _updates_tx) = ConfigurationLoader::for_tests(Some(raw_config), None, false).await;
-        let containerd_config =
-            ContainerdConfiguration::from_configuration(&config).expect("configuration should load");
-
-        assert_eq!(Duration::from_secs(2), containerd_config.connection_timeout());
-        assert_eq!(Duration::from_secs(7), containerd_config.query_timeout());
-    }
 
     #[test]
     fn create_timed_request_sets_grpc_timeout() {

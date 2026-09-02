@@ -37,6 +37,9 @@ pub struct SharedConfiguration {
     /// Secrets management, read by the Datadog intake forwarders.
     pub secrets: Secrets,
 
+    /// Host and container runtime discovery, read by the environment providers.
+    pub environment: Environment,
+
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
@@ -47,6 +50,42 @@ pub struct SharedConfiguration {
     /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
     /// `run_path`.
     pub run_path: Option<PathBuf>,
+}
+
+/// Host identity and container runtime discovery inputs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Environment {
+    /// Hostname override, with provenance to distinguish the schema default.
+    pub hostname: ConfigValue<String>,
+
+    /// containerd runtime discovery and client timeouts.
+    pub containerd: Containerd,
+
+    /// Filesystem roots describing container workloads.
+    pub container_roots: ContainerRoots,
+}
+
+/// containerd runtime discovery and client timeouts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Containerd {
+    /// containerd gRPC socket, with provenance to control path detection.
+    pub socket_path: ConfigValue<PathBuf>,
+
+    /// Timeout for establishing a containerd gRPC connection.
+    pub connection_timeout: Duration,
+
+    /// Per-RPC timeout for containerd API calls.
+    pub query_timeout: Duration,
+}
+
+/// Filesystem roots describing container workloads.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ContainerRoots {
+    /// procfs root, with provenance for host-mount detection.
+    pub proc_root: ConfigValue<PathBuf>,
+
+    /// cgroupfs root, with provenance for host-mount detection.
+    pub cgroup_root: ConfigValue<PathBuf>,
 }
 
 /// Inputs used to derive deployment-wide static tags.

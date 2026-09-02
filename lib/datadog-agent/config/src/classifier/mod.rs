@@ -36,8 +36,6 @@ pub use classifier::{Classification, ConfigClassifier};
 ///
 /// Used as values in annotation `used_by` fields to declare which consumers incorporate a key.
 pub mod structs {
-    /// Identifier for `ContainerdConfiguration`.
-    pub const CONTAINERD_CONFIGURATION: &str = "ContainerdConfiguration";
     /// Identifier for `AggregateConfiguration`.
     pub const AGGREGATE_CONFIGURATION: &str = "AggregateConfiguration";
     /// Identifier for `DogStatsDMapperConfiguration`.

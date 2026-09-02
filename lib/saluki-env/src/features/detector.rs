@@ -1,4 +1,5 @@
-use saluki_config::GenericConfiguration;
+use std::path::PathBuf;
+
 use tracing::info;
 
 use super::{has_host_mapped_cgroupfs, has_host_mapped_procfs, ContainerdDetector, Feature};
@@ -18,16 +19,16 @@ pub struct FeatureDetector {
 }
 
 impl FeatureDetector {
-    /// Creates a new `FeatureDetector` that checks for all possible features.
-    pub fn automatic(config: &GenericConfiguration) -> Self {
-        Self::for_feature(config, Feature::all_bits())
+    /// Creates a detector for all features and an optional containerd socket override.
+    pub fn automatic(configured_containerd_socket_path: Option<PathBuf>) -> Self {
+        Self::for_feature(configured_containerd_socket_path, Feature::all_bits())
     }
 
     /// Creates a new `FeatureDetector` that checks for the given features.
     ///
     /// Multiple features can be checked for by combining the feature variants in a bitwise OR fashion.
-    pub fn for_feature(config: &GenericConfiguration, feature_mask: Feature) -> Self {
-        let detected_features = Self::detect_features(config, feature_mask);
+    pub fn for_feature(configured_containerd_socket_path: Option<PathBuf>, feature_mask: Feature) -> Self {
+        let detected_features = Self::detect_features(configured_containerd_socket_path, feature_mask);
 
         Self { detected_features }
     }
@@ -37,7 +38,7 @@ impl FeatureDetector {
         self.detected_features.contains(feature)
     }
 
-    fn detect_features(config: &GenericConfiguration, feature_mask: Feature) -> Feature {
+    fn detect_features(configured_containerd_socket_path: Option<PathBuf>, feature_mask: Feature) -> Feature {
         let mut detected_features = Feature::none();
 
         if feature_mask.contains(Feature::HostMappedProcfs) && has_host_mapped_procfs() {
@@ -50,7 +51,9 @@ impl FeatureDetector {
             detected_features |= Feature::HostMappedCgroupfs;
         }
 
-        if feature_mask.contains(Feature::Containerd) && ContainerdDetector::detect_grpc_socket_path(config).is_some() {
+        if feature_mask.contains(Feature::Containerd)
+            && ContainerdDetector::detect_grpc_socket_path(configured_containerd_socket_path).is_some()
+        {
             info!("Detected presence of containerd.");
             detected_features |= Feature::Containerd;
         }
