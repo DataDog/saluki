@@ -94,6 +94,7 @@ dependencies = [
  "datadog-agent-config-overlay-model",
  "figment",
  "saluki-config",
+ "saluki-error",
  "serde",
  "serde_json",
  "serde_yaml",
