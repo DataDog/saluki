@@ -15,6 +15,10 @@
 //! Nodes are shared rather than copied, so a handle taken before a supervisor starts observes every subsequent
 //! generation of that supervisor, including one running on a dedicated runtime on another OS thread.
 //!
+//! Note that this module owns more than an observer's view: [`Roster`] holds the supervisor's own live child roster,
+//! not a mirror of it. That is deliberate -- it is what makes the two impossible to drift apart -- but it means
+//! changes here affect supervision itself and not only what is reported about it.
+//!
 //! # Consistency
 //!
 //! A snapshot is assembled by locking one node at a time, so it is not a globally atomic view: a child may start or
@@ -41,6 +45,17 @@ use super::{
     supervisor::AutoShutdown,
     ProcessId,
 };
+
+mod api;
+pub use self::api::{SupervisionTreeAPIHandler, SupervisionTreeState};
+
+mod worker;
+pub use self::worker::SupervisionTreeWorker;
+
+/// API route serving a snapshot of a supervision tree.
+///
+/// Exported so that a client can address the route without restating the path.
+pub const SUPERVISION_TREE_ROUTE: &str = "/runtime/processes";
 
 /// Maximum depth the snapshot walk descends before it stops and reports the subtree as truncated.
 ///
@@ -78,13 +93,14 @@ impl Stamp {
     fn wall_millis(&self) -> UnixMillis {
         // A pre-epoch clock makes `duration_since` fail rather than return a negative duration; report it as the
         // epoch rather than panicking inside a diagnostics path.
-        let millis = self.wall.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
-        UnixMillis(millis.min(u128::from(u64::MAX)) as u64)
+        UnixMillis(duration_millis(
+            self.wall.duration_since(UNIX_EPOCH).unwrap_or_default(),
+        ))
     }
 
     /// Returns how long ago this instant was, in milliseconds, per the monotonic clock.
     fn elapsed_millis(&self) -> u64 {
-        self.mono.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+        duration_millis(self.mono.elapsed())
     }
 }
 
@@ -94,7 +110,7 @@ impl Stamp {
 /// [`OneForAll`][super::RestartMode::OneForAll] restart discards the whole roster and re-registers every eligible
 /// child under a *fresh* id. Facts that must outlive that -- when the child was first created, how many times it has
 /// been restarted -- therefore can't be keyed by roster id.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum ChildKey {
     /// A child declared before the run, identified by its index in the supervisor's static child list.
     ///
@@ -104,6 +120,7 @@ pub(super) enum ChildKey {
     /// A dynamically spawned child, identified by its roster id.
     ///
     /// A dynamic child is never restored across generations, so its roster id is as stable an identity as it needs.
+    /// Ids come from a monotonic counter, so ordering by one is ordering by spawn.
     Dynamic(u64),
 }
 
@@ -118,26 +135,20 @@ impl ChildKey {
 ///
 /// Produced by the supervisor's worker bookkeeping at the moment a child's task is spawned, which is the only place
 /// the child's [`Process`] exists and therefore the only place its identity can be captured.
+#[derive(Clone)]
 pub(super) struct StartedChild {
     process_id: ProcessId,
     process_name: Arc<str>,
     at: Stamp,
-    /// The slot this incarnation of the child publishes an internally driven supervisor through.
-    ///
-    /// Created when the child's task is spawned rather than here, because that is where the task-local holding it is
-    /// installed. A restart brings a fresh slot with it, which is what discards whatever the previous incarnation
-    /// had published.
-    slot: TreeSlot,
 }
 
 impl StartedChild {
     /// Records the process a child was just started under.
-    pub(super) fn new(process: &Process, process_name: Arc<str>, slot: TreeSlot) -> Self {
+    pub(super) fn new(process: &Process, process_name: Arc<str>) -> Self {
         Self {
             process_id: *process.id(),
             process_name,
             at: Stamp::now(),
-            slot,
         }
     }
 }
@@ -212,19 +223,22 @@ struct RunIdentity {
     /// The supervisor's own fully qualified process name.
     ///
     /// Recorded by the supervisor itself rather than by its parent, because the two can differ: a supervisor on a
-    /// dedicated runtime re-roots its process name when it starts, so only the supervisor knows what it actually
-    /// runs as -- and only that name matches the resource group its allocations are attributed to.
+    /// dedicated runtime re-roots its process name when it starts (a known defect), so only the supervisor knows what
+    /// it actually runs as -- and only that name matches the resource group its allocations are attributed to.
     process_name: Arc<str>,
     started: Stamp,
 }
 
-/// A supervisor's configuration, as it affects how the tree reads.
+/// A supervisor's configuration.
+///
+/// Owned by the supervisor's node rather than by the [`Supervisor`][super::Supervisor] itself, so that there is one
+/// copy rather than two that have to be kept in step, and so that it can be read before the supervisor has ever run.
 #[derive(Clone, Copy)]
-struct NodeConfig {
-    restart_strategy: RestartStrategy,
-    auto_shutdown: AutoShutdown,
-    shutdown_budget: Option<Duration>,
-    dedicated_threads: Option<usize>,
+pub(super) struct NodeConfig {
+    pub(super) restart_strategy: RestartStrategy,
+    pub(super) auto_shutdown: AutoShutdown,
+    pub(super) shutdown_budget: Option<Duration>,
+    pub(super) dedicated_threads: Option<usize>,
 }
 
 /// The mutable half of a [`SupervisorNode`].
@@ -234,7 +248,6 @@ struct NodeInner {
     run: Option<RunIdentity>,
     generation: u64,
     restarts_performed: u64,
-    failed_starts: u64,
     /// Children of the current generation, in declaration order.
     ///
     /// Ordered rather than hashed so the rendered tree and the serialized JSON come out in the order children were
@@ -242,13 +255,12 @@ struct NodeInner {
     children: FastIndexMap<u64, ChildRecord>,
     /// Per-child facts that outlive a generation, keyed by an identity that survives a group restart.
     history: FastHashMap<ChildKey, ChildHistory>,
-    /// Slots through which a worker child that internally drives its own supervisor publishes that supervisor's
-    /// node, keyed by the worker's roster id.
+    /// Supervisors that a worker child drives internally, keyed by that worker's roster id.
     ///
     /// Some workers own a supervisor rather than being one -- they build it after initialization and run it inside
     /// their own future -- so the parent has no supervisor value to record at registration time and the subtree would
-    /// otherwise be invisible. The worker fills its slot in when its supervisor starts.
-    adopted: FastHashMap<u64, TreeSlot>,
+    /// otherwise be invisible. Such a supervisor registers itself here when it starts.
+    adopted: FastHashMap<u64, Arc<SupervisorNode>>,
 }
 
 impl NodeInner {
@@ -267,18 +279,27 @@ impl NodeInner {
     }
 }
 
-/// A slot through which a worker publishes the supervisor it drives internally.
+/// The supervised child slot a worker is running as.
 ///
-/// Held by the worker's parent and by the worker's own task, so that a supervisor started inside a worker's future
-/// can attach itself to the tree without the worker needing to know anything about introspection.
-pub(super) type TreeSlot = Arc<Mutex<Option<Arc<SupervisorNode>>>>;
+/// Installed around every supervised worker task so that a supervisor a worker builds and runs inside its own future
+/// can attach itself to the tree, which it could not otherwise do: the parent has no supervisor value to record at
+/// registration time, because the supervisor does not exist until the worker is already running.
+#[derive(Clone)]
+pub(super) struct TreeParent {
+    node: Arc<SupervisorNode>,
+    child_id: u64,
+}
+
+impl TreeParent {
+    /// Identifies the child slot `child_id` of the supervisor tracked by `node`.
+    pub(super) fn new(node: Arc<SupervisorNode>, child_id: u64) -> Self {
+        Self { node, child_id }
+    }
+}
 
 tokio::task_local! {
-    /// The slot the currently running worker should publish its own supervisor into, if it drives one.
-    ///
-    /// Installed around every supervised worker task. A supervisor started within such a task claims the slot when it
-    /// begins running and releases it when it stops.
-    pub(super) static CURRENT_TREE_SLOT: TreeSlot;
+    /// The child slot the currently running worker occupies in its supervisor.
+    pub(super) static CURRENT_TREE_PARENT: TreeParent;
 }
 
 /// Shared bookkeeping for one supervisor.
@@ -307,7 +328,6 @@ impl SupervisorNode {
                 run: None,
                 generation: 0,
                 restarts_performed: 0,
-                failed_starts: 0,
                 children: FastIndexMap::default(),
                 history: FastHashMap::default(),
                 adopted: FastHashMap::default(),
@@ -324,24 +344,14 @@ impl SupervisorNode {
         self.state.lock().expect("supervision-tree node lock poisoned")
     }
 
-    /// Records the supervisor's restart strategy.
-    pub(super) fn set_restart_strategy(&self, strategy: RestartStrategy) {
-        self.state().config.restart_strategy = strategy;
+    /// Returns the supervisor's configuration.
+    pub(super) fn config(&self) -> NodeConfig {
+        self.state().config
     }
 
-    /// Records the supervisor's automatic-shutdown policy.
-    pub(super) fn set_auto_shutdown(&self, auto_shutdown: AutoShutdown) {
-        self.state().config.auto_shutdown = auto_shutdown;
-    }
-
-    /// Records the supervisor's shutdown budget.
-    pub(super) fn set_shutdown_budget(&self, budget: Duration) {
-        self.state().config.shutdown_budget = Some(budget);
-    }
-
-    /// Records that the supervisor runs on a dedicated runtime with the given number of worker threads.
-    pub(super) fn set_dedicated_threads(&self, threads: usize) {
-        self.state().config.dedicated_threads = Some(threads);
+    /// Updates the supervisor's configuration.
+    pub(super) fn update_config(&self, f: impl FnOnce(&mut NodeConfig)) {
+        f(&mut self.state().config);
     }
 
     /// Records that the supervisor has begun a run under `process`.
@@ -382,8 +392,8 @@ impl SupervisorNode {
         // supervisor built and run inside a worker's future -- rather than handed to a parent as a child -- becomes
         // visible. Absent when the supervisor is a root, or is running on a dedicated runtime (whose thread has no
         // task-locals), and in the latter case the parent already recorded us directly.
-        let _ = CURRENT_TREE_SLOT.try_with(|slot| {
-            *slot.lock().expect("supervision-tree slot lock poisoned") = Some(Arc::clone(self));
+        let _ = CURRENT_TREE_PARENT.try_with(|parent| {
+            parent.node.state().adopted.insert(parent.child_id, Arc::clone(self));
         });
     }
 
@@ -398,17 +408,9 @@ impl SupervisorNode {
         state.clear_generation();
         drop(state);
 
-        let _ = CURRENT_TREE_SLOT.try_with(|slot| {
-            *slot.lock().expect("supervision-tree slot lock poisoned") = None;
+        let _ = CURRENT_TREE_PARENT.try_with(|parent| {
+            parent.node.state().adopted.remove(&parent.child_id);
         });
-    }
-
-    /// Records that a dynamic child could not be started.
-    ///
-    /// Spawning a dynamic child is infallible from the caller's point of view, so a failure to start one has no
-    /// caller left to report to. This counter is the only lasting evidence that it happened.
-    pub(super) fn record_failed_start(&self) {
-        self.state().failed_starts += 1;
     }
 }
 
@@ -457,14 +459,9 @@ impl<E> Roster<E> {
         });
         history.exited = None;
 
-        // Only a worker needs its slot retained: a nested supervisor has already been recorded directly, so anything
-        // it publishes through its slot would just duplicate that.
         let kind = match facts.node {
             Some(node) => RecordKind::Supervisor(node),
-            None => {
-                state.adopted.insert(id, Arc::clone(&started.slot));
-                RecordKind::Worker
-            }
+            None => RecordKind::Worker,
         };
 
         state.children.insert(
@@ -489,11 +486,9 @@ impl<E> Roster<E> {
         let mut state = self.node.state();
         state.restarts_performed += 1;
 
-        // A restarted worker runs as a new task with a new slot, so adopting the new one is also what discards
-        // whatever the previous incarnation had published -- that referred to a supervisor which has since stopped.
-        if state.adopted.contains_key(&id) {
-            state.adopted.insert(id, Arc::clone(&started.slot));
-        }
+        // Whatever the previous incarnation adopted refers to a supervisor that has since stopped. The new
+        // incarnation re-registers if it drives one of its own.
+        state.adopted.remove(&id);
 
         if let Some(record) = state.children.get_mut(&id) {
             let key = record.key;
@@ -519,22 +514,22 @@ impl<E> Roster<E> {
         let entry = self.live.remove(&id);
 
         let mut state = self.node.state();
-        let exited = Stamp::now();
+        state.adopted.remove(&id);
         match state.children.get(&id).map(|record| record.key) {
+            // Order is restored by sorting on `ChildKey` when a snapshot is taken, so the roster itself doesn't need
+            // to preserve it -- which lets a dynamic child, of which there may be one per unit of work, leave in
+            // constant time rather than shifting every entry behind it.
             Some(key) if key.is_dynamic() => {
-                state.children.shift_remove(&id);
+                state.children.swap_remove(&id);
                 state.history.remove(&key);
-                state.adopted.remove(&id);
             }
             Some(key) => {
+                let exited = Stamp::now();
                 if let Some(record) = state.children.get_mut(&id) {
                     record.state = LiveState::Exited;
                 }
                 if let Some(history) = state.history.get_mut(&key) {
                     history.exited = Some(exited);
-                }
-                if let Some(slot) = state.adopted.get(&id) {
-                    *slot.lock().expect("supervision-tree slot lock poisoned") = None;
                 }
             }
             None => {}
@@ -557,14 +552,9 @@ impl<E> Roster<E> {
         let mut state = self.node.state();
         state.restarts_performed += 1;
 
-        let restarted: Vec<ChildKey> = state
-            .children
-            .values()
-            .filter(|record| record.state == LiveState::Running)
-            .map(|record| record.key)
-            .collect();
-        for key in restarted {
-            if let Some(history) = state.history.get_mut(&key) {
+        let NodeInner { children, history, .. } = &mut *state;
+        for record in children.values().filter(|r| r.state == LiveState::Running) {
+            if let Some(history) = history.get_mut(&record.key) {
                 history.restarts += 1;
             }
         }
@@ -641,6 +631,30 @@ impl SupervisionTreeHandle {
         &self.node.id
     }
 
+    /// Renders the current state of the supervision tree as pretty-printed JSON.
+    ///
+    /// Returns a JSON object describing the failure if the tree can't be serialized, so that a caller writing a
+    /// diagnostic artifact always has something to write.
+    pub fn snapshot_json(&self) -> String {
+        match serde_json::to_string_pretty(&self.snapshot()) {
+            Ok(json) => json,
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize supervision tree.");
+                String::from(r#"{"error": "failed to serialize supervision tree"}"#)
+            }
+        }
+    }
+
+    /// Creates a [`SupervisionTreeAPIHandler`] serving snapshots of this tree.
+    pub fn api_handler(&self) -> SupervisionTreeAPIHandler {
+        SupervisionTreeAPIHandler::from_handle(self.clone())
+    }
+
+    /// Creates a [`SupervisionTreeWorker`] that publishes this tree over the control plane.
+    pub fn worker(&self) -> SupervisionTreeWorker {
+        SupervisionTreeWorker::new(self.clone())
+    }
+
     /// Captures the current state of the supervision tree.
     ///
     /// Descends from this handle's supervisor through every child, nesting each child's own children beneath it.
@@ -663,7 +677,7 @@ impl SupervisionTreeHandle {
             totals: TreeTotals::default(),
             counted_groups: FastHashSet::default(),
         };
-        let root = walk.supervisor(&self.node, ChildView::Root, 1);
+        let root = walk.supervisor(&self.node, ParentFacts::root(&self.node), 1);
 
         TreeSnapshot {
             captured_at: Stamp::now().wall_millis(),
@@ -683,15 +697,12 @@ fn collect_resource_groups() -> FastHashMap<Arc<str>, ResourceUsage> {
         groups.insert(
             Arc::<str>::from(name),
             ResourceUsage {
-                group: name.to_string(),
                 allocated_bytes: stats.allocated_bytes as u64,
                 allocated_objects: stats.allocated_objects as u64,
                 deallocated_bytes: stats.deallocated_bytes as u64,
                 deallocated_objects: stats.deallocated_objects as u64,
-                // Saturating, because the allocation and deallocation counters are read independently: a deallocation
-                // landing between the two reads makes the difference momentarily negative.
-                live_bytes: stats.allocated_bytes.saturating_sub(stats.deallocated_bytes) as u64,
-                live_objects: stats.allocated_objects.saturating_sub(stats.deallocated_objects) as u64,
+                live_bytes: stats.live_bytes() as u64,
+                live_objects: stats.live_objects() as u64,
                 cpu_time_nanos: stats.cpu_time_nanos,
             },
         );
@@ -705,19 +716,52 @@ fn collect_resource_groups() -> FastHashMap<Arc<str>, ResourceUsage> {
 /// A node's own bookkeeping knows what it is doing; its parent knows how it was configured, when it was created, and
 /// how many times it has been restarted. Both halves are needed, and only the parent has the second one -- except at
 /// the root, which has no parent.
-enum ChildView<'a> {
-    /// The node is the root of the walk, or a supervisor a worker attached to the tree itself.
-    Root,
-    /// The node is a child of the supervisor being walked.
-    Child {
-        name: &'a Arc<str>,
-        restart: RestartType,
-        significant: bool,
-        created: Stamp,
-        restarts: u32,
-        exited: Option<Stamp>,
-        parent_saw_exit: bool,
-    },
+#[derive(Clone)]
+struct ParentFacts {
+    name: Arc<str>,
+    restart: RestartType,
+    significant: bool,
+    created: Stamp,
+    restarts: u32,
+    exited: Option<Stamp>,
+}
+
+impl ParentFacts {
+    /// Facts for a node with no parent: the root of the walk, or a supervisor a worker attached to the tree itself.
+    fn root(node: &SupervisorNode) -> Self {
+        Self {
+            name: Arc::clone(&node.id),
+            restart: RestartType::default(),
+            significant: false,
+            created: node.created,
+            restarts: 0,
+            exited: None,
+        }
+    }
+}
+
+/// What a node's own run contributes to its snapshot.
+struct RunFacts {
+    process_id: Option<ProcessId>,
+    process_name: Option<Arc<str>>,
+    started: Option<Stamp>,
+    state: NodeState,
+    /// The group this node's allocations are attributed to, which for a worker is its supervisor's rather than its
+    /// own.
+    resource_group: Option<Arc<str>>,
+    resources: Option<ResourceUsage>,
+}
+
+/// Derives a node's lifecycle state.
+///
+/// A node its parent has seen exit is stopped whatever else is true; otherwise it is running exactly when it has a
+/// process.
+fn node_state(exited: Option<Stamp>, running: bool) -> NodeState {
+    match (exited, running) {
+        (Some(_), _) => NodeState::Exited,
+        (None, true) => NodeState::Running,
+        (None, false) => NodeState::Registered,
+    }
 }
 
 /// State carried through a single snapshot walk.
@@ -733,87 +777,73 @@ struct Walk {
 
 impl Walk {
     /// Builds the snapshot of a supervisor and everything beneath it.
-    fn supervisor(&mut self, node: &Arc<SupervisorNode>, view: ChildView<'_>, depth: usize) -> NodeSnapshot {
-        self.totals.max_depth = self.totals.max_depth.max(depth);
-
+    fn supervisor(&mut self, node: &Arc<SupervisorNode>, parent: ParentFacts, depth: usize) -> NodeSnapshot {
         // Copy out everything needed, then release the lock before descending: holding a parent's lock while taking a
         // child's is the only way this walk could ever deadlock against a running supervisor, and not doing it is
         // simpler to guarantee than any ordering rule.
-        let (run, config, generation, restarts_performed, failed_starts, children) = {
+        let (run, config, generation, restarts_performed, children) = {
             let state = node.state();
-            let run = state
-                .run
-                .as_ref()
-                .map(|run| (run.process_id, Arc::clone(&run.process_name), run.started));
 
             let mut children = state
                 .children
                 .iter()
-                .enumerate()
-                .map(|(position, (id, record))| {
+                .map(|(id, record)| {
                     let history = state.history.get(&record.key);
                     PendingChild {
-                        order: match record.key {
-                            ChildKey::Static(index) => (0, index),
-                            ChildKey::Dynamic(_) => (1, position),
+                        key: record.key,
+                        facts: ParentFacts {
+                            name: Arc::clone(&record.name),
+                            restart: record.restart,
+                            significant: record.significant,
+                            created: history
+                                .map(|h| h.created)
+                                .or_else(|| record.start.as_ref().map(|start| start.at))
+                                .unwrap_or_else(Stamp::now),
+                            restarts: history.map(|h| h.restarts).unwrap_or(0),
+                            exited: history.and_then(|h| h.exited),
                         },
-                        name: Arc::clone(&record.name),
-                        node: match &record.kind {
-                            RecordKind::Supervisor(node) => Some(Arc::clone(node)),
-                            RecordKind::Worker => state
-                                .adopted
-                                .get(id)
-                                .and_then(|slot| slot.lock().expect("supervision-tree slot lock poisoned").clone()),
+                        kind: match &record.kind {
+                            RecordKind::Supervisor(node) => PendingKind::Supervisor(Arc::clone(node)),
+                            RecordKind::Worker => match state.adopted.get(id) {
+                                Some(adopted) => PendingKind::WorkerDriving(Arc::clone(adopted)),
+                                None => PendingKind::Worker,
+                            },
                         },
-                        is_supervisor: matches!(record.kind, RecordKind::Supervisor(_)),
-                        restart: record.restart,
-                        significant: record.significant,
-                        created: history.map(|h| h.created),
-                        restarts: history.map(|h| h.restarts).unwrap_or(0),
-                        exited: history.and_then(|h| h.exited),
-                        state: record.state,
-                        start: record
-                            .start
-                            .as_ref()
-                            .map(|start| (start.process_id, Arc::clone(&start.process_name), start.at)),
+                        start: record.start.clone(),
                     }
                 })
                 .collect::<Vec<_>>();
-            children.sort_by_key(|child| child.order);
+
+            // A restart re-registers a child under a fresh id, so insertion order stops matching declaration order as
+            // soon as anything restarts. `ChildKey` orders statics by declaration and dynamics by spawn, which keeps
+            // successive snapshots diffable.
+            children.sort_by_key(|child| child.key);
 
             (
-                run,
+                run_identity(&state),
                 state.config,
                 state.generation,
                 state.restarts_performed,
-                state.failed_starts,
                 children,
             )
         };
 
-        let running = run.is_some();
-        let (process_id, process_name, started) = match &run {
-            Some((id, name, started)) => (Some(*id), Some(Arc::clone(name)), Some(*started)),
-            None => (None, None, None),
-        };
+        let (process_id, process_name, started) = split_run(run.as_ref());
+        let state = node_state(parent.exited, process_id.is_some());
+        let resources = process_name.as_ref().and_then(|name| self.groups.get(name).cloned());
 
-        let state = match &view {
-            ChildView::Child { parent_saw_exit, .. } if *parent_saw_exit => NodeState::Exited,
-            _ if running => NodeState::Running,
-            _ => NodeState::Registered,
-        };
-
-        let resources = process_name.as_ref().and_then(|name| self.usage(name));
         let mut snapshot = self.node_snapshot(
-            &view,
             NodeKind::Supervisor,
-            node.id.clone(),
-            node.created,
-            process_id,
-            process_name.clone(),
-            started,
-            state,
-            resources,
+            parent,
+            RunFacts {
+                process_id,
+                // A supervisor owns its resource group, and it is named by the process it actually runs as.
+                resource_group: process_name.clone(),
+                process_name,
+                started,
+                state,
+                resources,
+            },
         );
 
         snapshot.supervision = Some(SupervisionSettings {
@@ -824,26 +854,21 @@ impl Walk {
             shutdown_budget_ms: config.shutdown_budget.map(duration_millis),
             dedicated_threads: config.dedicated_threads,
             restarts_performed,
-            failed_starts,
             generation,
         });
 
-        if depth >= MAX_TREE_DEPTH {
-            if !children.is_empty() {
-                warn!(
-                    supervisor_id = %node.id,
-                    depth,
-                    "Supervision tree is deeper than the snapshot walk descends; subtree omitted."
-                );
-                snapshot.children_truncated = true;
-            }
+        if children.is_empty() {
+            return snapshot;
+        }
+        if !self.may_descend(&node.id, depth) {
             return snapshot;
         }
 
-        // The supervisor's own process name is the resource group its workers' allocations are attributed to, since a
-        // worker inherits its supervisor's group rather than owning one.
-        let worker_group = process_name;
+        // A worker inherits its supervisor's resource group rather than owning one, so this is what its children are
+        // attributed to.
+        let worker_group = snapshot.resource_group.as_deref().map(Arc::<str>::from);
 
+        snapshot.children.reserve(children.len());
         for child in children {
             snapshot
                 .children
@@ -855,116 +880,68 @@ impl Walk {
 
     /// Builds the snapshot of one child of the supervisor currently being walked.
     fn child(&mut self, child: PendingChild, worker_group: Option<&Arc<str>>, depth: usize) -> NodeSnapshot {
-        let created = child
-            .created
-            .unwrap_or_else(|| child.start.as_ref().map(|(_, _, at)| *at).unwrap_or_else(Stamp::now));
-        let parent_saw_exit = child.state == LiveState::Exited;
-        let view = ChildView::Child {
-            name: &child.name,
-            restart: child.restart,
-            significant: child.significant,
-            created,
-            restarts: child.restarts,
-            exited: child.exited,
-            parent_saw_exit,
-        };
-
-        match (child.is_supervisor, &child.node) {
+        match child.kind {
             // A nested supervisor reports its own process and its own children; its parent only contributes how it
             // was configured and how it has fared.
-            (true, Some(node)) => {
-                let node = Arc::clone(node);
-                self.supervisor(&node, view, depth)
-            }
+            PendingKind::Supervisor(node) => self.supervisor(&node, child.facts, depth),
+
             // A worker that turned out to be driving a supervisor of its own. The worker is what the parent
             // supervises, so it stays the node; the supervisor it drives hangs beneath it.
-            (false, Some(adopted)) => {
-                let adopted = Arc::clone(adopted);
-                let mut snapshot = self.worker(&child, &view, worker_group, depth);
-                if depth < MAX_TREE_DEPTH {
-                    let nested = self.supervisor(&adopted, ChildView::Root, depth + 1);
+            PendingKind::WorkerDriving(adopted) => {
+                let mut snapshot = self.worker(child.facts, child.start, worker_group, depth);
+                if self.may_descend(&adopted.id, depth) {
+                    let nested = self.supervisor(&adopted, ParentFacts::root(&adopted), depth + 1);
                     snapshot.children.push(nested);
-                } else {
-                    snapshot.children_truncated = true;
                 }
                 snapshot
             }
-            _ => self.worker(&child, &view, worker_group, depth),
+
+            PendingKind::Worker => self.worker(child.facts, child.start, worker_group, depth),
         }
     }
 
     /// Builds the snapshot of a leaf worker.
     fn worker(
-        &mut self, child: &PendingChild, view: &ChildView<'_>, worker_group: Option<&Arc<str>>, depth: usize,
+        &mut self, facts: ParentFacts, start: Option<StartedChild>, worker_group: Option<&Arc<str>>, depth: usize,
     ) -> NodeSnapshot {
         self.totals.max_depth = self.totals.max_depth.max(depth);
 
-        let (process_id, process_name, started) = match &child.start {
-            Some((id, name, at)) => (Some(*id), Some(Arc::clone(name)), Some(*at)),
-            None => (None, None, None),
-        };
-
-        let state = match child.state {
-            LiveState::Exited => NodeState::Exited,
-            LiveState::Running if process_id.is_some() => NodeState::Running,
-            LiveState::Running => NodeState::Registered,
-        };
+        let (process_id, process_name, started) = split_run(start.as_ref());
+        let state = node_state(facts.exited, process_id.is_some());
 
         self.node_snapshot(
-            view,
             NodeKind::Worker,
-            Arc::clone(&child.name),
-            child.created.unwrap_or_else(Stamp::now),
-            process_id,
-            process_name,
-            started,
-            state,
-            // A worker has no resource group of its own: it is attributed to its supervisor's, which the caller
-            // supplies. Reporting the supervisor's totals against each of its workers would multiply-count them.
-            None,
+            facts,
+            RunFacts {
+                process_id,
+                process_name,
+                started,
+                state,
+                resource_group: worker_group.cloned(),
+                // A worker owns no resource group: its allocations are counted against the supervisor named above.
+                // Reporting the supervisor's totals against each of its workers would count them many times over.
+                resources: None,
+            },
         )
-        .with_resource_group(worker_group.map(|group| group.to_string()))
     }
 
-    /// Assembles the fields common to every node, and folds the node into the tree totals.
-    #[allow(clippy::too_many_arguments)]
-    fn node_snapshot(
-        &mut self, view: &ChildView<'_>, kind: NodeKind, fallback_name: Arc<str>, fallback_created: Stamp,
-        process_id: Option<ProcessId>, process_name: Option<Arc<str>>, started: Option<Stamp>, state: NodeState,
-        resources: Option<ResourceUsage>,
-    ) -> NodeSnapshot {
-        let (name, restart, significant, created, restarts, exited) = match view {
-            ChildView::Root => (
-                fallback_name.to_string(),
-                RestartType::default(),
-                false,
-                fallback_created,
-                0,
-                None,
-            ),
-            ChildView::Child {
-                name,
-                restart,
-                significant,
-                created,
-                restarts,
-                exited,
-                ..
-            } => (name.to_string(), *restart, *significant, *created, *restarts, *exited),
-        };
+    /// Assembles a node from its two halves, and folds it into the tree totals.
+    fn node_snapshot(&mut self, kind: NodeKind, parent: ParentFacts, run: RunFacts) -> NodeSnapshot {
+        self.totals.max_depth = self.totals.max_depth.max(1);
 
         match kind {
             NodeKind::Supervisor => self.totals.supervisors += 1,
             NodeKind::Worker => self.totals.workers += 1,
         }
-        match state {
+        match run.state {
             NodeState::Running => self.totals.running += 1,
             NodeState::Exited => self.totals.exited += 1,
             NodeState::Registered => self.totals.registered += 1,
         }
-        self.totals.restarts += u64::from(restarts);
+        self.totals.restarts += u64::from(parent.restarts);
 
-        if let (Some(usage), Some(group)) = (&resources, &process_name) {
+        // Several nodes can share one resource group, so fold each group in once rather than once per node.
+        if let (Some(usage), Some(group)) = (&run.resources, &run.process_name) {
             if self.counted_groups.insert(Arc::clone(group)) {
                 self.totals.live_bytes += usage.live_bytes;
                 self.totals.cpu_time_nanos += usage.cpu_time_nanos;
@@ -972,54 +949,79 @@ impl Walk {
         }
 
         NodeSnapshot {
-            name,
+            name: parent.name.to_string(),
             kind,
-            process_name: process_name.as_ref().map(|name| name.to_string()),
-            process_id: process_id.map(|id| id.as_usize() as u64),
-            state,
-            restart,
-            significant,
-            created_at: created.wall_millis(),
-            started_at: started.map(|started| started.wall_millis()),
-            uptime_ms: match state {
-                NodeState::Running => started.map(|started| started.elapsed_millis()),
+            process_name: run.process_name.as_deref().map(str::to_string),
+            process_id: run.process_id.map(|id| id.as_usize() as u64),
+            state: run.state,
+            restart: parent.restart,
+            significant: parent.significant,
+            created_at: parent.created.wall_millis(),
+            started_at: run.started.map(|started| started.wall_millis()),
+            uptime_ms: match run.state {
+                NodeState::Running => run.started.map(|started| started.elapsed_millis()),
                 _ => None,
             },
-            restart_count: restarts,
-            exited_at: exited.map(|exited| exited.wall_millis()),
-            resource_group: process_name.as_ref().map(|name| name.to_string()),
-            resources,
+            restart_count: parent.restarts,
+            exited_at: parent.exited.map(|exited| exited.wall_millis()),
+            resource_group: run.resource_group.as_deref().map(str::to_string),
+            resources: run.resources,
             supervision: None,
             children: Vec::new(),
-            children_truncated: false,
         }
     }
 
-    /// Returns the usage recorded for `group`, if the group exists.
-    fn usage(&self, group: &Arc<str>) -> Option<ResourceUsage> {
-        self.groups.get(group).cloned()
+    /// Returns whether the walk may descend below `depth`, warning once if it may not.
+    fn may_descend(&self, supervisor_id: &str, depth: usize) -> bool {
+        if depth < MAX_TREE_DEPTH {
+            return true;
+        }
+
+        warn!(
+            supervisor_id,
+            depth, "Supervision tree is deeper than the snapshot walk descends; subtree omitted."
+        );
+        false
+    }
+}
+
+/// Reads the identity of a supervisor's current run, if it has one.
+fn run_identity(state: &NodeInner) -> Option<StartedChild> {
+    state.run.as_ref().map(|run| StartedChild {
+        process_id: run.process_id,
+        process_name: Arc::clone(&run.process_name),
+        at: run.started,
+    })
+}
+
+/// Splits a started process into the three optional fields a snapshot reports it as.
+fn split_run(started: Option<&StartedChild>) -> (Option<ProcessId>, Option<Arc<str>>, Option<Stamp>) {
+    match started {
+        Some(start) => (
+            Some(start.process_id),
+            Some(Arc::clone(&start.process_name)),
+            Some(start.at),
+        ),
+        None => (None, None, None),
     }
 }
 
 /// A child copied out from under its supervisor's lock, ready to be walked.
 struct PendingChild {
-    /// Sort key placing statically declared children in declaration order, ahead of dynamic ones in the order they
-    /// were spawned.
-    ///
-    /// Needed because a restart re-registers a child under a fresh id, so insertion order alone stops matching
-    /// declaration order once anything has restarted -- and a tree that reorders itself between snapshots is
-    /// miserable to read or diff.
-    order: (u8, usize),
-    name: Arc<str>,
-    node: Option<Arc<SupervisorNode>>,
-    is_supervisor: bool,
-    restart: RestartType,
-    significant: bool,
-    created: Option<Stamp>,
-    restarts: u32,
-    exited: Option<Stamp>,
-    state: LiveState,
-    start: Option<(ProcessId, Arc<str>, Stamp)>,
+    key: ChildKey,
+    facts: ParentFacts,
+    kind: PendingKind,
+    start: Option<StartedChild>,
+}
+
+/// What a pending child turned out to be.
+enum PendingKind {
+    /// A leaf worker.
+    Worker,
+    /// A worker that drives a supervisor of its own, which hangs beneath it.
+    WorkerDriving(Arc<SupervisorNode>),
+    /// A nested supervisor.
+    Supervisor(Arc<SupervisorNode>),
 }
 
 /// Converts a duration to whole milliseconds, saturating rather than overflowing.
@@ -1183,23 +1185,6 @@ pub struct NodeSnapshot {
 
     /// The node's children. Empty for a worker.
     pub children: Vec<NodeSnapshot>,
-
-    /// Whether the node's children were omitted because the tree is deeper than the snapshot walk descends.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub children_truncated: bool,
-}
-
-impl NodeSnapshot {
-    /// Sets the resource group this node's usage is attributed to.
-    fn with_resource_group(mut self, group: Option<String>) -> Self {
-        self.resource_group = group;
-        self
-    }
-}
-
-/// Returns whether `value` is false, for use in skipping a serialized field.
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Cumulative resource usage for one resource group.
@@ -1208,9 +1193,6 @@ fn is_false(value: &bool) -> bool {
 /// may not be available: see [`TreeSnapshot::resource_tracking_enabled`].
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ResourceUsage {
-    /// Name of the resource group these figures came from.
-    pub group: String,
-
     /// Bytes allocated.
     pub allocated_bytes: u64,
 
@@ -1261,9 +1243,6 @@ pub struct SupervisionSettings {
     /// A group restart counts once here however many children it brought back, which is what distinguishes a
     /// supervisor restarting its whole group repeatedly from a single child restarting repeatedly.
     pub restarts_performed: u64,
-
-    /// How many dynamic children the supervisor failed to start.
-    pub failed_starts: u64,
 
     /// How many times the supervisor has started running.
     pub generation: u64,

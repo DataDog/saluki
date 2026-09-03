@@ -108,8 +108,9 @@ pub use self::supervisor::{
 
 mod tree;
 pub use self::tree::{
-    NodeKind, NodeSnapshot, NodeState, ResourceUsage, SupervisionSettings, SupervisionTreeHandle, TreeSnapshot,
-    TreeTotals, UnixMillis,
+    NodeKind, NodeSnapshot, NodeState, ResourceUsage, SupervisionSettings, SupervisionTreeAPIHandler,
+    SupervisionTreeHandle, SupervisionTreeState, SupervisionTreeWorker, TreeSnapshot, TreeTotals, UnixMillis,
+    SUPERVISION_TREE_ROUTE,
 };
 
 mod spawn;

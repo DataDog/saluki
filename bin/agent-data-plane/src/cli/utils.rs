@@ -385,7 +385,7 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or the server responds with an unexpected status code, an error is returned.
     pub async fn runtime_processes(&mut self) -> Result<String, GenericError> {
-        let uri = self.build_uri(crate::runtime_introspection::RUNTIME_PROCESSES_ROUTE, None);
+        let uri = self.build_uri(saluki_core::runtime::SUPERVISION_TREE_ROUTE, None);
         let req = Request::get(uri).body(String::new()).expect("valid request");
         self.client
             .send(req)

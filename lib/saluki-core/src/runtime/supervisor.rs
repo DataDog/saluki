@@ -19,7 +19,7 @@ use tracing::{debug, error, warn};
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
-    tree::{ChildFacts, ChildKey, Roster, SupervisionTreeHandle, SupervisorNode},
+    tree::{ChildFacts, ChildKey, NodeConfig, Roster, SupervisionTreeHandle, SupervisorNode},
     worker_state::WorkerState,
 };
 use crate::runtime::{
@@ -598,6 +598,12 @@ impl SupervisedChild {
                     RuntimeMode::Dedicated(config) => {
                         // Spawn in a dedicated runtime on a new OS thread, passing the parent's
                         // dataspace so the nested supervisor inherits it across the thread boundary.
+                        //
+                        // TODO: Only the dataspace is carried across, so the supervisor re-roots its own process name
+                        // when it starts (`run_with_shutdown_inner` passes no parent) rather than staying scoped
+                        // under us. That also leaves the process we build here registered as a resource group that
+                        // nothing ever enters, so it reads zero forever. Threading this process through instead would
+                        // fix both, at the cost of renaming the affected resource groups and their metric labels.
                         let child_name = sup.supervisor_id.to_string();
                         let dataspace = process.dataspace().clone();
                         let handle =
@@ -862,9 +868,6 @@ impl SupervisorHandle {
 pub struct Supervisor {
     supervisor_id: Arc<str>,
     child_specs: Vec<ChildEntry>,
-    restart_strategy: RestartStrategy,
-    auto_shutdown: AutoShutdown,
-    shutdown_budget: Option<Duration>,
     runtime_mode: RuntimeMode,
     // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. While a run is
     // active it holds that run's spawn queue so handles can reach the live supervisor; it's `None` whenever no run is
@@ -896,9 +899,6 @@ impl Supervisor {
             node: Arc::new(SupervisorNode::new(Arc::clone(&supervisor_id))),
             supervisor_id,
             child_specs: Vec::new(),
-            restart_strategy: RestartStrategy::default(),
-            auto_shutdown: AutoShutdown::default(),
-            shutdown_budget: None,
             runtime_mode: RuntimeMode::default(),
             current_tx: Arc::new(Mutex::new(None)),
             id_counter: Arc::new(AtomicU64::new(0)),
@@ -912,9 +912,8 @@ impl Supervisor {
     }
 
     /// Sets the restart strategy for the supervisor.
-    pub fn with_restart_strategy(mut self, strategy: RestartStrategy) -> Self {
-        self.restart_strategy = strategy;
-        self.node.set_restart_strategy(strategy);
+    pub fn with_restart_strategy(self, strategy: RestartStrategy) -> Self {
+        self.node.update_config(|config| config.restart_strategy = strategy);
         self
     }
 
@@ -922,9 +921,8 @@ impl Supervisor {
     ///
     /// Controls whether the termination of _significant_ children (see [`ChildBuilder::with_significant`][crate::runtime::ChildBuilder::with_significant]) drives the
     /// supervisor to shut down. Defaults to [`AutoShutdown::Never`].
-    pub fn with_auto_shutdown(mut self, auto_shutdown: AutoShutdown) -> Self {
-        self.auto_shutdown = auto_shutdown;
-        self.node.set_auto_shutdown(auto_shutdown);
+    pub fn with_auto_shutdown(self, auto_shutdown: AutoShutdown) -> Self {
+        self.node.update_config(|config| config.auto_shutdown = auto_shutdown);
         self
     }
 
@@ -951,9 +949,8 @@ impl Supervisor {
     /// component and its background tasks, for instance, where what matters is that the component as a whole stops in
     /// time.
     #[must_use]
-    pub fn with_shutdown_budget(mut self, budget: Duration) -> Self {
-        self.shutdown_budget = Some(budget);
-        self.node.set_shutdown_budget(budget);
+    pub fn with_shutdown_budget(self, budget: Duration) -> Self {
+        self.node.update_config(|config| config.shutdown_budget = Some(budget));
         self
     }
 
@@ -989,7 +986,9 @@ impl Supervisor {
     /// - Isolating failures in one part of the system
     /// - Using different runtime configurations (for example, single-threaded vs multi-threaded)
     pub fn with_dedicated_runtime(mut self, config: RuntimeConfiguration) -> Self {
-        self.node.set_dedicated_threads(config.worker_threads());
+        let worker_threads = config.worker_threads();
+        self.node
+            .update_config(|node_config| node_config.dedicated_threads = Some(worker_threads));
         self.runtime_mode = RuntimeMode::Dedicated(config);
         self
     }
@@ -1034,7 +1033,7 @@ impl Supervisor {
     /// afterwards. Checking at registration time would flag that -- entirely correct -- ordering as a mistake.
     ///
     /// Warn-only: the child still starts, since an inert flag is useless rather than unsafe.
-    fn warn_if_significance_is_inert(&self, config: &ChildConfig, child_name: &str) {
+    fn warn_if_significance_is_inert(&self, config: &ChildConfig, child_name: &str, auto_shutdown: AutoShutdown) {
         if !config.significant {
             return;
         }
@@ -1047,7 +1046,7 @@ impl Supervisor {
             );
         }
 
-        if self.auto_shutdown == AutoShutdown::Never {
+        if auto_shutdown == AutoShutdown::Never {
             warn!(
                 supervisor_id = %self.supervisor_id,
                 child_name,
@@ -1096,11 +1095,11 @@ impl Supervisor {
     }
 
     fn spawn_static_children(
-        &self, roster: &mut Roster<ChildEntry>, worker_state: &mut WorkerState,
+        &self, roster: &mut Roster<ChildEntry>, worker_state: &mut WorkerState, auto_shutdown: AutoShutdown,
     ) -> Result<(), SupervisorError> {
         debug!(supervisor_id = %self.supervisor_id, "Spawning all static child processes.");
         for (index, entry) in self.child_specs.iter().enumerate() {
-            self.warn_if_significance_is_inert(&entry.config, entry.spec.name());
+            self.warn_if_significance_is_inert(&entry.config, entry.spec.name(), auto_shutdown);
 
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
             let started = worker_state.add_worker(id, &entry.spec, &entry.config)?;
@@ -1142,7 +1141,7 @@ impl Supervisor {
     /// Registers one dynamic child into the running supervisor's worker set and roster.
     fn spawn_dynamic_child(
         &self, spawn: PendingSpawn, worker_state: &mut WorkerState, roster: &mut Roster<ChildEntry>,
-        significant_remaining: &mut usize,
+        significant_remaining: &mut usize, auto_shutdown: AutoShutdown,
     ) {
         let PendingSpawn { id, spec, config } = spawn;
         let entry = ChildEntry {
@@ -1150,7 +1149,7 @@ impl Supervisor {
             config,
             dynamic: true,
         };
-        self.warn_if_significance_is_inert(&entry.config, entry.spec.name());
+        self.warn_if_significance_is_inert(&entry.config, entry.spec.name(), auto_shutdown);
 
         match worker_state.add_worker(id, &entry.spec, &entry.config) {
             Ok(started) => {
@@ -1162,7 +1161,6 @@ impl Supervisor {
                 roster.insert(id, entry, facts, started);
             }
             Err(e) => {
-                self.node.record_failed_start();
                 // The only way registration fails now that child names always resolve is a nested supervisor on a
                 // dedicated runtime failing to get an OS thread. There's no caller left to report it to -- spawning is
                 // infallible -- so the child is dropped and the failure is logged here.
@@ -1205,8 +1203,17 @@ impl Supervisor {
     async fn supervise(
         &self, process: Process, process_shutdown: ShutdownHandle, mut cmd_rx: mpsc::UnboundedReceiver<PendingSpawn>,
     ) -> Result<(), SupervisorError> {
-        let mut restart_state = RestartState::new(self.restart_strategy);
-        let mut worker_state = WorkerState::new(process, self.handle(), self.shutdown_budget);
+        // Read once: configuration can't change while a run is in flight, and this keeps the reap and spawn arms
+        // below off the node's lock entirely.
+        let NodeConfig {
+            restart_strategy,
+            auto_shutdown,
+            shutdown_budget,
+            ..
+        } = self.node.config();
+
+        let mut restart_state = RestartState::new(restart_strategy);
+        let mut worker_state = WorkerState::new(process, self.handle(), shutdown_budget, Arc::clone(&self.node));
 
         // The live roster of children -- both static (seeded below) and dynamic (added via the handle) -- keyed by a
         // stable id. A restart re-runs a child by id; a child that isn't restarted is removed from the roster.
@@ -1217,7 +1224,7 @@ impl Supervisor {
 
         // Spawn the static children. Initialization is folded into each worker's task, so this returns immediately --
         // children initialize concurrently in the background.
-        self.spawn_static_children(&mut roster, &mut worker_state)?;
+        self.spawn_static_children(&mut roster, &mut worker_state, auto_shutdown)?;
 
         // Track how many significant children are still running, for `AutoShutdown` evaluation.
         let mut significant_remaining = roster.values().filter(|entry| entry.config.significant).count();
@@ -1301,7 +1308,7 @@ impl Supervisor {
                         // supervisor stopping and propagating up the tree.
                         if config.significant {
                             significant_remaining = significant_remaining.saturating_sub(1);
-                            let auto_shutdown = match self.auto_shutdown {
+                            let auto_shutdown = match auto_shutdown {
                                 AutoShutdown::Never => false,
                                 AutoShutdown::AnySignificant => true,
                                 AutoShutdown::AllSignificant => significant_remaining == 0,
@@ -1354,7 +1361,13 @@ impl Supervisor {
                 // keeps a burst of spawns to a single wake-up.
                 _ = cmd_rx.recv_many(&mut spawn_batch, SPAWN_DRAIN_BATCH) => {
                     for spawn in spawn_batch.drain(..) {
-                        self.spawn_dynamic_child(spawn, &mut worker_state, &mut roster, &mut significant_remaining);
+                        self.spawn_dynamic_child(
+                            spawn,
+                            &mut worker_state,
+                            &mut roster,
+                            &mut significant_remaining,
+                            auto_shutdown,
+                        );
                     }
                 }
             }
@@ -1484,9 +1497,6 @@ impl Supervisor {
         Self {
             supervisor_id: Arc::clone(&self.supervisor_id),
             child_specs: self.child_specs.clone(),
-            restart_strategy: self.restart_strategy,
-            auto_shutdown: self.auto_shutdown,
-            shutdown_budget: self.shutdown_budget,
             runtime_mode: self.runtime_mode.clone(),
             current_tx: Arc::clone(&self.current_tx),
             id_counter: Arc::clone(&self.id_counter),
@@ -4029,9 +4039,10 @@ mod tests {
         assert_eq!(nested.children.len(), 1);
 
         // A supervisor on a dedicated runtime re-roots its process name when it starts, so it is *not* scoped under
-        // its parent. This is why a node's name has to come from its own run rather than from the process its parent
-        // created for it -- and why the resource group its allocations land in is named this way too. Asserted so
-        // that changing it is a deliberate act rather than a silent regression.
+        // its parent. That is a known defect (see the `Dedicated` branch of `create_worker_future`), not a design
+        // choice -- but it is also why a node's name has to come from its own run rather than from the process its
+        // parent created for it, since only the former names the resource group its allocations land in. Pinned here
+        // so that fixing the defect is a deliberate act rather than a silent regression.
         assert_eq!(nested.process_name.as_deref(), Some("child_sup"));
         assert_eq!(
             nested.children[0].process_name.as_deref(),
@@ -4177,8 +4188,11 @@ mod tests {
         assert!(!snapshot.resource_tracking_enabled);
 
         let nested = find_node(&snapshot.root.children, "child-sup");
-        let usage = nested.resources.as_ref().expect("a supervisor owns a resource group");
-        assert_eq!(Some(usage.group.as_str()), nested.process_name.as_deref());
+        assert!(
+            nested.resources.is_some(),
+            "a supervisor owns the resource group named by its own process"
+        );
+        assert_eq!(nested.resource_group.as_deref(), nested.process_name.as_deref());
 
         // A worker inherits its supervisor's group rather than owning one, so it names the group but carries no
         // figures of its own -- reporting the supervisor's totals against each of its workers would count them twice.

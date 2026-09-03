@@ -62,7 +62,6 @@ impl ResourceStats {
 }
 
 /// Snapshot of allocation statistics for a group.
-#[derive(Clone, Copy, Debug, Default)]
 pub struct ResourceStatsSnapshot {
     /// Number of allocated bytes since the last snapshot.
     pub allocated_bytes: usize,

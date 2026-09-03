@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use argh::FromArgs;
+use argh::{FromArgValue, FromArgs};
 use async_trait::async_trait;
 use saluki_core::runtime::TreeSnapshot;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -29,18 +29,31 @@ enum RuntimeSubcommand {
 #[argh(subcommand, name = "show-processes")]
 pub struct ShowProcessesCommand {
     /// output format: `tree` (default), `json`, or `dot` (Graphviz)
-    #[argh(option, short = 'f', long = "format", default = "String::from(\"tree\")")]
-    format: String,
+    #[argh(option, short = 'f', long = "format", default = "OutputFormat::Tree")]
+    format: OutputFormat,
 
     /// output in JSON format, equivalent to `--format json`
     #[argh(switch, short = 'j', long = "json")]
     json: bool,
 }
 
+impl ShowProcessesCommand {
+    /// Resolves the requested output format.
+    fn output_format(&self) -> OutputFormat {
+        // `--json` is how the sibling `debug` commands spell it, so it stays supported and simply wins.
+        if self.json {
+            OutputFormat::Json
+        } else {
+            self.format
+        }
+    }
+}
+
 /// How to render the supervision tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum OutputFormat {
     /// An indented tree, for reading in a terminal.
+    #[default]
     Tree,
     /// The endpoint's payload, passed through unchanged.
     Json,
@@ -48,24 +61,14 @@ enum OutputFormat {
     Dot,
 }
 
-impl ShowProcessesCommand {
-    /// Resolves the requested output format.
-    ///
-    /// # Errors
-    ///
-    /// If the format isn't one of the supported values, an error is returned.
-    fn output_format(&self) -> Result<OutputFormat, GenericError> {
-        // `--json` is the spelling used by the other commands here, so it stays supported and simply wins.
-        if self.json {
-            return Ok(OutputFormat::Json);
-        }
-
-        match self.format.as_str() {
-            "tree" => Ok(OutputFormat::Tree),
-            "json" => Ok(OutputFormat::Json),
-            "dot" => Ok(OutputFormat::Dot),
-            other => Err(saluki_error::generic_error!(
-                "Unknown output format '{}'. Supported formats are `tree`, `json`, and `dot`.",
+impl FromArgValue for OutputFormat {
+    fn from_arg_value(value: &str) -> Result<Self, String> {
+        match value.to_lowercase().as_str() {
+            "tree" => Ok(Self::Tree),
+            "json" => Ok(Self::Json),
+            "dot" => Ok(Self::Dot),
+            other => Err(format!(
+                "invalid output format '{}': expected 'tree', 'json' or 'dot'",
                 other
             )),
         }
@@ -104,26 +107,17 @@ pub async fn handle_runtime_command(api_client: &mut DataPlaneAPIClient, cmd: Ru
 pub(super) async fn handle_show_processes(
     requester: &mut dyn SupervisionTreeRequester, cmd: ShowProcessesCommand, output: &mut dyn Write,
 ) -> Result<(), GenericError> {
-    let format = cmd.output_format()?;
-
     let body = requester
         .request_supervision_tree()
         .await
         .error_context("Failed to request the supervision tree.")?;
 
-    let rendered = match format {
+    let rendered = match cmd.output_format() {
         // Passed through verbatim rather than re-serialized, so the output is exactly what the endpoint reported and
         // a future field the CLI doesn't know about still reaches whatever is consuming it.
         OutputFormat::Json => body,
-        OutputFormat::Tree | OutputFormat::Dot => {
-            let snapshot: TreeSnapshot =
-                serde_json::from_str(&body).error_context("Failed to decode the supervision tree.")?;
-            match format {
-                OutputFormat::Tree => render_tree(&snapshot),
-                OutputFormat::Dot => render_dot(&snapshot),
-                OutputFormat::Json => unreachable!("handled above"),
-            }
-        }
+        OutputFormat::Tree => render_tree(&decode(&body)?),
+        OutputFormat::Dot => render_dot(&decode(&body)?),
     };
 
     output
@@ -137,4 +131,129 @@ pub(super) async fn handle_show_processes(
     output.flush().error_context("Failed to flush the supervision tree.")?;
 
     Ok(())
+}
+
+/// Decodes an endpoint payload into a snapshot.
+fn decode(body: &str) -> Result<TreeSnapshot, GenericError> {
+    serde_json::from_str(body).error_context("Failed to decode the supervision tree.")
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_error::generic_error;
+
+    use super::*;
+
+    /// A requester that returns a canned payload, so the command can be driven with no process to talk to.
+    struct FakeRequester(Result<String, &'static str>);
+
+    #[async_trait(?Send)]
+    impl SupervisionTreeRequester for FakeRequester {
+        async fn request_supervision_tree(&mut self) -> Result<String, GenericError> {
+            self.0.clone().map_err(|e| generic_error!("{}", e))
+        }
+    }
+
+    /// The smallest payload the endpoint can produce: a root that has been declared but never run.
+    fn payload() -> String {
+        serde_json::json!({
+            "captured_at": 1_700_000_000_000u64,
+            "resource_tracking_enabled": false,
+            "totals": {
+                "supervisors": 1, "workers": 0, "running": 0, "exited": 0, "registered": 1,
+                "restarts": 0, "live_bytes": 0, "cpu_time_nanos": 0, "max_depth": 1
+            },
+            "root": {
+                "name": "adp-root",
+                "kind": "supervisor",
+                "process_name": null,
+                "process_id": null,
+                "state": "registered",
+                "restart": "permanent",
+                "significant": false,
+                "created_at": 1_700_000_000_000u64,
+                "started_at": null,
+                "uptime_ms": null,
+                "restart_count": 0,
+                "exited_at": null,
+                "resource_group": null,
+                "children": []
+            }
+        })
+        .to_string()
+    }
+
+    async fn run(cmd: ShowProcessesCommand, body: Result<String, &'static str>) -> Result<String, GenericError> {
+        let mut requester = FakeRequester(body);
+        let mut output = Vec::new();
+        handle_show_processes(&mut requester, cmd, &mut output).await?;
+        Ok(String::from_utf8(output).expect("output is valid UTF-8"))
+    }
+
+    fn command(format: OutputFormat, json: bool) -> ShowProcessesCommand {
+        ShowProcessesCommand { format, json }
+    }
+
+    #[tokio::test]
+    async fn renders_a_tree_by_default() {
+        let out = run(command(OutputFormat::Tree, false), Ok(payload())).await.unwrap();
+        assert!(out.contains("Supervision tree for 'adp-root'"), "{out}");
+        assert!(out.contains("adp-root  [sup] registered"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn json_is_passed_through_verbatim() {
+        // Not re-serialized, so a field this CLI doesn't know about still reaches whatever consumes the output.
+        let body = payload();
+        let out = run(command(OutputFormat::Tree, true), Ok(body.clone())).await.unwrap();
+        assert_eq!(out.trim_end(), body);
+
+        let out = run(command(OutputFormat::Json, false), Ok(body.clone())).await.unwrap();
+        assert_eq!(out.trim_end(), body);
+    }
+
+    #[tokio::test]
+    async fn renders_a_graphviz_graph() {
+        let out = run(command(OutputFormat::Dot, false), Ok(payload())).await.unwrap();
+        assert!(out.starts_with("digraph supervision_tree {"), "{out}");
+        assert!(out.contains(r#"n0 [label="adp-root\nsupervisor""#), "{out}");
+    }
+
+    #[tokio::test]
+    async fn json_wins_over_an_explicit_format() {
+        let body = payload();
+        let out = run(command(OutputFormat::Dot, true), Ok(body.clone())).await.unwrap();
+        assert_eq!(out.trim_end(), body);
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_is_reported_with_context() {
+        let err = run(command(OutputFormat::Tree, false), Err("connection refused"))
+            .await
+            .expect_err("the request failed");
+        let rendered = format!("{:#}", err);
+        assert!(
+            rendered.contains("Failed to request the supervision tree."),
+            "{rendered}"
+        );
+        assert!(rendered.contains("connection refused"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn an_undecodable_payload_is_reported_rather_than_panicking() {
+        let err = run(command(OutputFormat::Tree, false), Ok(String::from("not json")))
+            .await
+            .expect_err("the payload did not decode");
+        assert!(
+            format!("{:#}", err).contains("Failed to decode the supervision tree."),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn output_format_rejects_an_unknown_value() {
+        assert_eq!(OutputFormat::from_arg_value("tree"), Ok(OutputFormat::Tree));
+        assert_eq!(OutputFormat::from_arg_value("DOT"), Ok(OutputFormat::Dot));
+        assert!(OutputFormat::from_arg_value("svg").is_err());
+    }
 }

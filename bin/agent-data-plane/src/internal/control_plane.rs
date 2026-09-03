@@ -21,7 +21,6 @@ use crate::{
         config_runtime::ConfigRuntimeWorker, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap,
         telemetry::InternalTelemetryAPIWorker, TopologyControlSurfaces,
     },
-    runtime_introspection::RuntimeProcessesWorker,
 };
 
 /// Creates the control plane supervisor.
@@ -53,7 +52,7 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(DynamicLogLevelWorker::new(&raw_map, logging_controller));
     supervisor.add_worker(ConfigWorker::new(raw_map.clone()));
     supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
-    supervisor.add_worker(RuntimeProcessesWorker::new(root_tree));
+    supervisor.add_worker(root_tree.worker());
 
     let api_listen_address = dp.api_listen_address()?;
     let secure_api_listen_address = dp.secure_api_listen_address()?;

@@ -24,7 +24,7 @@ use super::supervisor::{
     ChildConfig, ChildShutdown, ProcessError, ShutdownStrategy, SupervisedChild, SupervisorError, SupervisorHandle,
     WorkerError,
 };
-use super::tree::{StartedChild, TreeSlot, CURRENT_TREE_SLOT};
+use super::tree::{StartedChild, SupervisorNode, TreeParent, CURRENT_TREE_PARENT};
 
 /// Per-worker bookkeeping held by a [`WorkerState`].
 struct ProcessState {
@@ -66,16 +66,23 @@ pub(super) struct WorkerState {
     /// Applied on top of each child's own strategy, so a child with no finite deadline of its own is still bounded,
     /// and one that has a shorter deadline still exits first.
     shutdown_budget: Option<Duration>,
+    /// Supervision-tree bookkeeping for the supervisor these workers belong to.
+    ///
+    /// Named as each worker's parent so that a supervisor a worker drives internally can attach itself to the tree.
+    node: Arc<SupervisorNode>,
     worker_tasks: JoinSet<Result<(), WorkerError>>,
     worker_map: FastIndexMap<Id, ProcessState>,
 }
 
 impl WorkerState {
-    pub(super) fn new(process: Process, handle: SupervisorHandle, shutdown_budget: Option<Duration>) -> Self {
+    pub(super) fn new(
+        process: Process, handle: SupervisorHandle, shutdown_budget: Option<Duration>, node: Arc<SupervisorNode>,
+    ) -> Self {
         Self {
             process,
             handle,
             shutdown_budget,
+            node,
             worker_tasks: JoinSet::new(),
             worker_map: FastIndexMap::default(),
         }
@@ -94,11 +101,7 @@ impl WorkerState {
         let process = child_spec.create_process(&self.process);
         let worker_name: Arc<str> = process.name().into();
 
-        // Every worker gets a slot through which a supervisor it drives internally -- built after initialization and
-        // run inside its own future, rather than handed to us as a child -- can attach itself to the supervision
-        // tree. Captured before the process is consumed below.
-        let tree_slot = TreeSlot::default();
-        let started = StartedChild::new(&process, Arc::clone(&worker_name), Arc::clone(&tree_slot));
+        let started = StartedChild::new(&process, Arc::clone(&worker_name));
 
         // Only create a coordinator for a child that actually observes the signal. Most workers don't: they run until
         // their own terminal condition and ignore whatever we fire at them, so a coordinator for them is an
@@ -138,8 +141,9 @@ impl WorkerState {
         // can spawn siblings without being handed a handle.
         let task = CURRENT_SUPERVISOR.scope(self.handle.clone(), task);
 
-        // Put the worker's tree slot in scope for the same span, so a supervisor the worker starts can find it.
-        let task = CURRENT_TREE_SLOT.scope(tree_slot, task);
+        // Name the child slot this worker occupies for the same span, so a supervisor it builds and runs inside its
+        // own future -- rather than handing it to us as a child -- can attach itself to the tree there.
+        let task = CURRENT_TREE_PARENT.scope(TreeParent::new(Arc::clone(&self.node), worker_id), task);
 
         let abort_handle = match config.runtime() {
             Some(handle) => self.worker_tasks.spawn_on(task, handle),

@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use bytesize::ByteSize;
 use chrono::{DateTime, SecondsFormat};
-use saluki_core::runtime::{NodeKind, NodeSnapshot, NodeState, TreeSnapshot};
+use saluki_core::runtime::{NodeKind, NodeSnapshot, NodeState, RestartMode, TreeSnapshot};
 
 /// Renders a snapshot as an indented tree.
 pub(super) fn render_tree(snapshot: &TreeSnapshot) -> String {
@@ -80,14 +80,6 @@ fn render_node(node: &NodeSnapshot, prefix: &str, child_prefix: &str, out: &mut 
             out,
         );
     }
-
-    if node.children_truncated {
-        let _ = writeln!(
-            out,
-            "{}`-- <subtree omitted: tree is deeper than the snapshot walk>",
-            child_prefix
-        );
-    }
 }
 
 /// Formats a single node's line: its name, then the facts worth scanning down a column.
@@ -124,8 +116,8 @@ fn format_node(node: &NodeSnapshot) -> String {
             line,
             "  {}({}/{})",
             match supervision.restart_mode {
-                saluki_core::runtime::RestartMode::OneForOne => "one_for_one",
-                saluki_core::runtime::RestartMode::OneForAll => "one_for_all",
+                RestartMode::OneForOne => "one_for_one",
+                RestartMode::OneForAll => "one_for_all",
             },
             supervision.restart_intensity,
             format_duration(supervision.restart_period_ms)
@@ -251,9 +243,7 @@ fn format_timestamp(millis: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::runtime::{
-        AutoShutdown, ResourceUsage, RestartMode, RestartType, SupervisionSettings, TreeTotals, UnixMillis,
-    };
+    use saluki_core::runtime::{AutoShutdown, ResourceUsage, RestartType, SupervisionSettings, TreeTotals, UnixMillis};
 
     use super::*;
 
@@ -276,7 +266,6 @@ mod tests {
             resources: None,
             supervision: None,
             children: Vec::new(),
-            children_truncated: false,
         }
     }
 
@@ -290,7 +279,6 @@ mod tests {
             shutdown_budget_ms: None,
             dedicated_threads: None,
             restarts_performed: 0,
-            failed_starts: 0,
             generation: 1,
         }
     }
@@ -308,7 +296,6 @@ mod tests {
             ..supervision()
         });
         nested.resources = Some(ResourceUsage {
-            group: "root.child-sup".to_string(),
             live_bytes: 2_097_152,
             cpu_time_nanos: 1_500_000_000,
             ..Default::default()
@@ -399,15 +386,6 @@ mod tests {
         let rendered = render_tree(&snapshot);
         assert!(rendered.contains("resource tracking off"), "{rendered}");
         assert!(!rendered.contains("live, "), "{rendered}");
-    }
-
-    #[test]
-    fn tree_render_flags_a_truncated_subtree() {
-        let mut snapshot = fixture();
-        snapshot.root.children_truncated = true;
-
-        let rendered = render_tree(&snapshot);
-        assert!(rendered.contains("<subtree omitted"), "{rendered}");
     }
 
     #[test]

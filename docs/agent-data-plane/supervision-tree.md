@@ -102,5 +102,11 @@ accounting, so it is authenticated the same way as the other state dumps such as
 The same snapshot is collected into support flares as `supervision_tree.json`.
 
 > [!TIP]
-> Process names are byte-identical across ADP's registries, so a snapshot joins directly against `/memory/status`,
-> `/ready`, and `resources.json` on the `process_name` field with no translation.
+> Process names are shared across ADP's registries, so a snapshot joins against `/memory/status`, `/ready`, and
+> `resources.json` on the `process_name` field with no translation.
+
+> [!NOTE]
+> A supervisor running on its own runtime, such as `ctrl-pln`, reports an unscoped process name (`ctrl_pln` rather
+> than `adp_root.internal_sup.ctrl_pln`), because it re-roots its name when it starts. `/memory/status` additionally
+> lists a scoped entry for such a supervisor that always reads zero. Both are known defects; the tree reports the
+> name that the supervisor's allocations are actually attributed to.
