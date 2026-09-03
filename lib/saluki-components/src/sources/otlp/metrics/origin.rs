@@ -8,14 +8,10 @@ const COLLECTOR_RECEIVER_PREFIX: &str = "github.com/open-telemetry/opentelemetry
 
 /// Returns the origin product detail for the given instrumentation scope name.
 ///
-/// Returns `0` (unknown) when the scope name is empty or does not begin with the Collector receiver prefix.
-/// Otherwise, extracts the receiver name—the first path segment after the prefix—and looks it up in the
-/// known-receiver table.
+/// Returns `0` (unknown) when the scope name is empty or does not begin with the Collector receiver
+/// prefix. Otherwise, extracts the receiver name—the first path segment after the prefix—and
+/// looks it up in the known-receiver table.
 pub fn product_detail_from_scope(scope_name: &str) -> u32 {
-    product_detail_from_scope_name(scope_name)
-}
-
-fn product_detail_from_scope_name(scope_name: &str) -> u32 {
     // Strip the Collector receiver prefix, then take the first remaining path segment as the receiver name:
     //
     //   .../receiver/kubeletstatsreceiver          -> kubeletstatsreceiver
@@ -80,31 +76,31 @@ mod tests {
     #[test]
     fn known_receiver_scope_names_map_to_their_product_detail() {
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver"
             ),
             224
         );
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kubeletstatsreceiver"
             ),
             229
         );
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver"
             ),
             238
         );
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver"
             ),
             217
         );
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/podmanreceiver"
             ),
             521
@@ -114,7 +110,7 @@ mod tests {
     #[test]
     fn sub_signal_segments_after_the_receiver_name_are_ignored() {
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/disk"
             ),
             224
@@ -124,7 +120,7 @@ mod tests {
     #[test]
     fn unknown_receiver_name_falls_back_to_zero() {
         assert_eq!(
-            product_detail_from_scope_name(
+            product_detail_from_scope(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/unknownreceiver"
             ),
             0
@@ -133,8 +129,8 @@ mod tests {
 
     #[test]
     fn scope_name_without_collector_prefix_falls_back_to_zero() {
-        assert_eq!(product_detail_from_scope_name("io.opentelemetry.myapp"), 0);
-        assert_eq!(product_detail_from_scope_name(""), 0);
+        assert_eq!(product_detail_from_scope("io.opentelemetry.myapp"), 0);
+        assert_eq!(product_detail_from_scope(""), 0);
     }
 
     #[test]
