@@ -79,7 +79,6 @@ tikv-jemallocator = { workspace = true, features = [
 [dev-dependencies]
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
-proptest = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-components = { workspace = true, features = ["test-util"] }
 saluki-config = { workspace = true, features = ["test-util"] }

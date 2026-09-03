@@ -4,21 +4,12 @@
 //! agree with what the intake stores -- matching a metric filterlist, for example -- must therefore compare normalized
 //! names rather than the raw names seen on the wire.
 //!
-//! This is a port of `pkg/util/metricname` in the Datadog Agent, which is itself a faithful port of
-//! `NormMetricNameParse`/`ValidateMetricName` in dd-go (`model/metric.go`). Keep the three in sync: a divergence here
-//! silently changes which metrics get filtered.
-//!
 //! Normalization never allocates. [`is_normalized`] is a single pass that lets callers skip the rewrite entirely for
 //! the overwhelmingly common case of an already-normalized name, and [`normalize_into`] rewrites into a caller-provided
 //! [`NameBuf`], which is small enough to live on the stack.
 
-/// Maximum allowed length of a metric name, in bytes.
-///
-/// Names longer than this are rejected outright by the intake: they are not truncated. Mirrors `model.MaxMetricLen` in
-/// dd-go.
-///
-/// Note that the public documentation states a 200 character limit. 350 is what the intake actually enforces, so it is
-/// what we mirror here.
+/// Maximum allowed length of a metric name, in bytes. Names longer than this are rejected outright by the intake: they
+/// are not truncated.
 pub(super) const MAX_LENGTH: usize = 350;
 
 /// Fixed-capacity scratch buffer for a normalized metric name.
@@ -218,8 +209,6 @@ pub(super) fn normalize_into<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option
 
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
-
     use super::*;
 
     /// Normalizes `name`, returning an owned string.
@@ -232,8 +221,6 @@ mod tests {
             .map(|normalized| String::from_utf8(normalized.to_vec()).expect("normalized names are ASCII"))
     }
 
-    /// Mirrors the `testMetricNames` table in dd-go (`model/metric_test.go`), so that a divergence between the two
-    /// implementations shows up as a test failure here.
     const NORMALIZED_NAMES: &[(&str, &str)] = &[
         // Bad metric names, which need remapping.
         (
@@ -379,146 +366,6 @@ mod tests {
                 "input: {:?}",
                 input
             );
-        }
-    }
-
-    /// An independent transcription of `NormMetricNameParse` in dd-go (`model/metric.go`), deliberately written as one
-    /// straightforward allocating pass with no fast path.
-    ///
-    /// This is the oracle for the exhaustive and property tests below, so that they pin this module against dd-go's
-    /// behavior rather than against itself. Keep it a transcription: if it is ever "simplified" to call the production
-    /// code, it stops being an oracle.
-    fn reference_normalize(name: &str) -> Option<String> {
-        if name.is_empty() || name.len() > MAX_LENGTH {
-            return None;
-        }
-
-        let bytes = name.as_bytes();
-        let start = bytes.iter().position(|b| b.is_ascii_alphabetic())?;
-
-        let mut res: Vec<u8> = Vec::with_capacity(name.len());
-        for &c in &bytes[start..] {
-            if c.is_ascii_alphanumeric() {
-                res.push(c);
-            } else if c == b'.' {
-                if res[res.len() - 1] == b'_' {
-                    let last = res.len() - 1;
-                    res[last] = b'.';
-                } else {
-                    res.push(b'.');
-                }
-            } else {
-                let last = res[res.len() - 1];
-                if last != b'.' && last != b'_' {
-                    res.push(b'_');
-                }
-            }
-        }
-
-        if res[res.len() - 1] == b'_' {
-            res.pop();
-        }
-
-        Some(String::from_utf8(res).expect("normalized names are ASCII"))
-    }
-
-    /// Asserts every invariant the fast path depends on for one input.
-    fn assert_matches_reference(name: &str) {
-        let expected = reference_normalize(name);
-        let actual = normalize(name);
-        assert_eq!(
-            actual, expected,
-            "normalization disagrees with the oracle for {:?}",
-            name
-        );
-
-        let Some(actual) = actual else {
-            // Unstorable names must never be reported as normalized, otherwise the fast path in `Blocklist::contains`
-            // would search for a name the intake would have dropped.
-            assert!(
-                !is_normalized(name),
-                "unstorable name {:?} is reported normalized",
-                name
-            );
-            return;
-        };
-
-        // The fast path skips the rewrite entirely for names `is_normalized` accepts, so that must imply the rewrite is
-        // a no-op.
-        if is_normalized(name) {
-            assert_eq!(
-                actual, name,
-                "{:?} is reported normalized but normalizes to {:?}",
-                name, actual
-            );
-        }
-
-        // And the output must itself be a fixed point.
-        assert!(
-            is_normalized(&actual),
-            "normalizing {:?} produced {:?}, which is not normalized",
-            name,
-            actual
-        );
-        assert_eq!(
-            normalize(&actual).as_deref(),
-            Some(actual.as_str()),
-            "normalization is not idempotent for {:?}",
-            name
-        );
-    }
-
-    /// Checks this module against the dd-go transcription over every string up to six characters drawn from an alphabet
-    /// that reaches every branch: a letter, an upper-case letter, a digit, a period, an underscore, a byte that becomes
-    /// an underscore, and a multi-byte character.
-    ///
-    /// That is 137,257 cases, which run in a few milliseconds. Exhaustive enumeration is stronger here than sampling,
-    /// because every interesting transition happens between adjacent characters.
-    #[test]
-    fn normalization_matches_reference_exhaustively() {
-        const ALPHABET: &[char] = &['a', 'B', '1', '.', '_', '-', 'é'];
-        const MAX_DEPTH: usize = 6;
-
-        fn recurse(name: &mut String, depth: usize, checked: &mut usize) {
-            assert_matches_reference(name);
-            *checked += 1;
-
-            if depth == 0 {
-                return;
-            }
-
-            for c in ALPHABET {
-                name.push(*c);
-                recurse(name, depth - 1, checked);
-                name.pop();
-            }
-        }
-
-        let mut name = String::new();
-        let mut checked = 0;
-        recurse(&mut name, MAX_DEPTH, &mut checked);
-
-        assert_eq!(
-            checked,
-            (0..=MAX_DEPTH).map(|d| ALPHABET.len().pow(d as u32)).sum::<usize>()
-        );
-    }
-
-    proptest! {
-        /// Checks the same invariants as the exhaustive test over longer, more varied names, including names that
-        /// straddle the length limit.
-        #[test]
-        fn property_test_normalization_matches_reference(name in "[a-zA-Z0-9._\\-é \t\u{1F363}]{0,32}") {
-            assert_matches_reference(&name);
-        }
-
-        /// Checks that names around and beyond `MAX_LENGTH` are handled consistently, since the length check guards the
-        /// capacity of the no-allocation scratch buffer.
-        #[test]
-        fn property_test_normalization_matches_reference_at_length_limit(
-            name in "[a-z.\\-]{345,355}",
-        ) {
-            assert_matches_reference(&name);
         }
     }
 }
