@@ -2,10 +2,11 @@ type: correctness
 runtime: docker
 analysis_mode: traces
 otlp_direct_analysis_mode: true
-# ADP stores http.status_code as a string in meta only; the DD agent also emits it as a float in
-# metrics. Ignore the metrics variant so tests focus on the canonical meta representation.
+# ADP emits http.status_code as a numeric (float) metric, matching the DD agent. For
+# string-typed sources the agent additionally keeps a string copy in meta (separate
+# Meta/Metrics maps); ADP holds only the numeric value, so ignore the agent-only meta variant.
 additional_span_ignore_fields:
-  - metrics.http.status_code
+  - meta.http.status_code
 millstone:
   image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml
