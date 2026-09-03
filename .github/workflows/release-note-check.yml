@@ -27,7 +27,9 @@ jobs:
               (file) => file.filename.startsWith('releasenotes/notes/') && file.status !== 'removed',
             );
 
-            if (hasReleaseNote || labels.includes('changelog/no-changelog')) {
+            const explicitlyExcluded = labels.includes('changelog/no-changelog')
+            const isAutomatedPR = labels.includes('automated') || labels.includes('campaigner-automated-change')
+            if (hasReleaseNote || explicitlyExcluded || isAutomatedPR) {
               return;
             }
 
