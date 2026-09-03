@@ -5,7 +5,7 @@ pub mod accessor;
 pub mod lookup;
 pub mod registry;
 
-pub use accessor::{Accessor, OtelSpanAccessor, OtlpAttributesAccessor};
+pub use accessor::{Accessor, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
 pub use lookup::{lookup_float64, lookup_int64, lookup_string};
 pub use registry::{Registry, REGISTRY};
 
@@ -88,6 +88,15 @@ pub enum Concept {
     OtelTraceId,
     DdPTid,
     DdPartialVersion,
+    DdOrigin,
+
+    // ---- Datadog tags ----
+    DdEnv,
+    DdVersion,
+    DdHostname,
+    DdGitCommitSha,
+    DdDecisionMaker,
+    DdApmMode,
 }
 
 impl Concept {
@@ -160,6 +169,14 @@ impl Concept {
         Concept::OtelTraceId,
         Concept::DdPTid,
         Concept::DdPartialVersion,
+        Concept::DdOrigin,
+        // Datadog tags
+        Concept::DdEnv,
+        Concept::DdVersion,
+        Concept::DdHostname,
+        Concept::DdGitCommitSha,
+        Concept::DdDecisionMaker,
+        Concept::DdApmMode,
     ];
 
     /// Canonical string identifier as used in `mappings.json`.
@@ -231,6 +248,14 @@ impl Concept {
             Concept::OtelTraceId => "otel.trace_id",
             Concept::DdPTid => "_dd.p.tid",
             Concept::DdPartialVersion => "_dd.partial_version",
+            Concept::DdOrigin => "_dd.origin",
+            // Datadog tags
+            Concept::DdEnv => "env",
+            Concept::DdVersion => "version",
+            Concept::DdHostname => "_dd.hostname",
+            Concept::DdGitCommitSha => "_dd.git.commit.sha",
+            Concept::DdDecisionMaker => "_dd.p.dm",
+            Concept::DdApmMode => "_dd.apm_mode",
         }
     }
 
@@ -253,7 +278,7 @@ mod tests {
         // added without being added to ALL, this test should start failing
         // (once you add a matching test below). The primary guard is compiler:
         // `match` on Concept forces exhaustiveness in as_str().
-        assert_eq!(Concept::ALL.len(), 60);
+        assert_eq!(Concept::ALL.len(), 67);
     }
 
     #[test]
