@@ -28,6 +28,10 @@
     "schedule:weekly"
   ],
 
+  // Mark Renovate PRs as automated so various checks that only apply to
+  // non-automated changes will skip running for dependency update PRs.
+  "labels": ["automated"],
+
   // Maximum number of Renovate-authored PRs that may be open at once.
   "prConcurrentLimit": 5,
 
