@@ -32,6 +32,22 @@ pub enum ValueType {
     Float64,
 }
 
+/// A predicate that must match before a fallback tag can be used.
+///
+/// A condition reads an attribute by exact key—no fallback chaining—and
+/// holds up to two predicate fields, all of which must hold (logical AND). A
+/// condition with no predicates set always matches.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Condition {
+    pub attribute: String,
+    /// When set, requires the attribute's presence (or absence) to match.
+    #[serde(default)]
+    pub present: Option<bool>,
+    /// When set, requires the attribute's string value to equal this.
+    #[serde(default)]
+    pub eq: Option<String>,
+}
+
 /// One entry in a concept's fallback precedence list.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TagInfo {
@@ -41,6 +57,10 @@ pub struct TagInfo {
     pub version: String,
     #[serde(rename = "type")]
     pub value_type: ValueType,
+    /// Conditions that must all hold against the raw attribute store before
+    /// this fallback can be used.
+    #[serde(default)]
+    pub when: Vec<Condition>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +73,7 @@ struct ConceptMapping {
 
 #[derive(Debug, Deserialize)]
 struct RegistryData {
+    #[serde(default)]
     version: String,
     concepts: FastHashMap<String, ConceptMapping>,
 }
@@ -113,7 +134,42 @@ mod tests {
     fn embedded_mappings_load() {
         // Dereferencing the LazyLock forces parsing; any schema drift or unknown
         // concept would panic here.
-        assert!(!REGISTRY.version().is_empty());
+        let _ = &*REGISTRY;
+    }
+
+    #[test]
+    fn from_json_accepts_when_conditions() {
+        let with_when = r#"{
+            "concepts": {
+                "http.status_code": {
+                    "canonical": "http.status_code",
+                    "fallbacks": [
+                        {"name": "rpc.response.status_code", "provider": "otel", "type": "int64",
+                         "when": [{"attribute": "rpc.system", "eq": "grpc"}]}
+                    ]
+                }
+            }
+        }"#;
+        let registry = Registry::from_json(with_when).expect("registry with a `when` clause should parse");
+        let tags = registry
+            .get_attribute_precedence(Concept::HttpStatusCode)
+            .expect("concept missing");
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].when.len(), 1);
+        assert_eq!(tags[0].when[0].attribute, "rpc.system");
+        assert_eq!(tags[0].when[0].eq.as_deref(), Some("grpc"));
+        assert_eq!(tags[0].when[0].present, None);
+    }
+
+    #[test]
+    fn embedded_mappings_use_when_for_grpc_fallback() {
+        // The `rpc.response.status_code` fallbacks are gated on the span being a
+        // gRPC span; the registry must preserve those conditions.
+        let tags = REGISTRY
+            .get_attribute_precedence(Concept::RpcGrpcStatusCode)
+            .expect("rpc.grpc.status_code concept missing");
+        let gated = tags.iter().filter(|t| !t.when.is_empty()).count();
+        assert_eq!(gated, 4, "expected four when-gated fallbacks");
     }
 
     #[test]
