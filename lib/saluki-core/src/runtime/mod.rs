@@ -51,6 +51,11 @@
 //! only way to configure a child: [`ChildSpecification`] is the description it produces and carries no settings of its
 //! own, so a combination the builder declines to offer can't be assembled around it.
 //!
+//! A child that is itself a [`Supervisor`] can be handed to any of the above directly, which is all most callers need.
+//! [`nested_supervisor`] (and [`SupervisorHandle::nested_supervisor`]) exists for the two settings that aren't
+//! reachable that way -- the restart policy and significance. It matters most for a dynamically spawned subtree, which
+//! would otherwise be [`temporary`][RestartType::Temporary] and so quietly stay dead once it terminated.
+//!
 //! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
 //! supervisor that shuts down before it reaches the child never starts it at all.
 //!
@@ -97,7 +102,8 @@ pub use self::spawn::spawn;
 
 mod builder;
 pub use self::builder::{
-    supervisable, worker, BuilderState, CanTerminate, ChildBuilder, OneShot, Restartable, Terminable,
+    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
+    OneShot, Restartable, Terminable,
 };
 
 mod workers;

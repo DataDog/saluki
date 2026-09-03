@@ -91,6 +91,7 @@ http-body-util = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 rand_distr = { workspace = true }
+saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

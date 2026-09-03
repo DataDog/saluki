@@ -178,12 +178,11 @@ impl Destination for Prometheus {
 
         // The scrape endpoint runs as a supervised worker of its own rather than as part of this component: the
         // component's supervisor is what stops it, and drains its in-flight connections, once this component is done.
-        runtime::supervisable(build_scrape_server(
-            listen_addr,
-            Arc::clone(&payload),
-            additional_routes,
-        ))
-        .on_runtime(context.topology_context().global_thread_pool().clone())
+        runtime::nested_supervisor(
+            build_scrape_server(listen_addr, Arc::clone(&payload), additional_routes)
+                .with_worker_pool(context.topology_context().global_thread_pool().clone())
+                .into_supervisor(),
+        )
         .spawn();
 
         health.mark_ready();

@@ -115,11 +115,10 @@ impl Source for ChecksIPC {
                 default_hostname,
             }))
             .with_http2_only()
-            .with_http2_config(Http2Config::grpc_defaults());
+            .with_http2_config(Http2Config::grpc_defaults())
+            .with_worker_pool(context.topology_context().global_thread_pool().clone());
 
-        runtime::supervisable(grpc_server)
-            .on_runtime(context.topology_context().global_thread_pool().clone())
-            .spawn();
+        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
 
         health.mark_ready();
         debug!("Checks IPC source started.");

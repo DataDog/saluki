@@ -64,8 +64,8 @@ use std::{future::Future, marker::PhantomData, time::Duration};
 use tokio::runtime::Handle;
 
 use super::{
-    ChildId, ChildSpecification, FnWorker, IntoWorkerResult, RestartType, ShutdownStrategy, Supervisable,
-    SupervisorHandle, WorkerSpec,
+    ChildId, ChildSpecification, FnWorker, IntoWorkerResult, RestartType, ShutdownStrategy, Supervisable, Supervisor,
+    SupervisorHandle, SupervisorSpec, WorkerSpec,
 };
 
 /// Creates a builder for a child task on the ambient supervisor.
@@ -170,6 +170,33 @@ impl SupervisorHandle {
     {
         self.supervisable(worker).spawn()
     }
+
+    /// Creates a builder for a nested supervisor.
+    ///
+    /// A [`Supervisor`] can be handed to [`spawn`][Self::spawn] or [`Supervisor::add_worker`] directly, which is all
+    /// most callers need. This builder exists for the settings that aren't reachable that way: the restart policy and
+    /// significance. It matters most for a dynamically spawned subtree, which would otherwise be
+    /// [`temporary`][RestartType::Temporary] and so quietly stay dead once it terminated.
+    ///
+    /// Unlike [`supervisable`][Self::supervisable], there is no placement or shutdown setting. A nested supervisor
+    /// runs wherever its parent does and its children carry their own placement, and it bounds its own drain through
+    /// those children rather than through a deadline imposed from above.
+    ///
+    /// Nested supervisors are set to permanently restart by default.
+    pub fn nested_supervisor(&self, supervisor: Supervisor) -> NestedSupervisorBuilder<'_> {
+        NestedSupervisorBuilder::new(BuilderTarget::Handle(self), supervisor)
+    }
+}
+
+/// Creates a builder for a nested supervisor on the ambient supervisor.
+///
+/// The ambient counterpart to [`SupervisorHandle::nested_supervisor`], which documents what the builder is for.
+///
+/// # Panics
+///
+/// [`NestedSupervisorBuilder::spawn`] panics if there is no ambient supervisor. See [`spawn`][super::spawn].
+pub fn nested_supervisor(supervisor: Supervisor) -> NestedSupervisorBuilder<'static> {
+    NestedSupervisorBuilder::new(BuilderTarget::Ambient, supervisor)
 }
 
 mod sealed {
@@ -415,6 +442,106 @@ impl<'a> ChildBuilder<'a, Restartable> {
     /// termination the supervisor may want to act on.
     pub fn temporary(self) -> ChildBuilder<'a, Terminable> {
         self.map_spec_into(|spec| spec.with_restart_type(RestartType::Temporary))
+    }
+}
+
+/// Builder for a yet-to-be-started nested supervisor.
+///
+/// The counterpart to [`ChildBuilder`] for a child that is itself a [`Supervisor`], and deliberately a much smaller
+/// surface. A nested supervisor has no placement of its own (it runs wherever its parent does, and its children carry
+/// their own placement) and no shutdown deadline of its own (it bounds its own drain through its children), so what
+/// is left to configure is the restart policy and significance.
+///
+/// Uses the same typestate as [`ChildBuilder`]: significance is offered only once the restart policy has been
+/// narrowed to one that lets the child terminate for good, since a permanent child is always brought back and so
+/// never has a termination for the parent to act on.
+#[must_use = "a child is only described until `spawn` or `build` is called"]
+pub struct NestedSupervisorBuilder<'a, S = Restartable> {
+    target: BuilderTarget<'a>,
+    spec: ChildSpecification<SupervisorSpec>,
+    _state: PhantomData<S>,
+}
+
+impl<'a, S: BuilderState> NestedSupervisorBuilder<'a, S> {
+    fn from_parts(target: BuilderTarget<'a>, spec: ChildSpecification<SupervisorSpec>) -> Self {
+        Self {
+            target,
+            spec,
+            _state: PhantomData,
+        }
+    }
+
+    /// As [`map_spec`][ChildBuilder::map_spec], but for a transition that also moves the builder to a different state.
+    fn map_spec_into<F, S2>(self, f: F) -> NestedSupervisorBuilder<'a, S2>
+    where
+        F: FnOnce(ChildSpecification<SupervisorSpec>) -> ChildSpecification<SupervisorSpec>,
+        S2: BuilderState,
+    {
+        let Self { target, spec, .. } = self;
+
+        NestedSupervisorBuilder::from_parts(target, f(spec))
+    }
+
+    /// Finishes describing the child without starting it, for [`Supervisor::add_worker`].
+    ///
+    /// Use this to register a configured subtree on a supervisor that hasn't started yet; [`spawn`][Self::spawn] is
+    /// the counterpart for a supervisor that is already running.
+    ///
+    /// Whichever supervisor this builder was created against is irrelevant here -- the child belongs to whichever one
+    /// it is handed to.
+    pub fn build(self) -> ChildSpecification<SupervisorSpec> {
+        self.spec
+    }
+
+    /// Spawns the nested supervisor.
+    ///
+    /// Returns the child's [`ChildId`]. As with [`ChildBuilder::spawn`], the child is queued rather than started
+    /// synchronously.
+    ///
+    /// # Panics
+    ///
+    /// If this builder targets the ambient supervisor and there isn't one, this panics. See [`spawn`][super::spawn].
+    pub fn spawn(self) -> ChildId {
+        let Self { target, spec, .. } = self;
+
+        match target {
+            BuilderTarget::Ambient => super::spawn(spec),
+            BuilderTarget::Handle(supervisor) => supervisor.spawn(spec),
+        }
+    }
+}
+
+impl<'a> NestedSupervisorBuilder<'a, Restartable> {
+    fn new(target: BuilderTarget<'a>, supervisor: Supervisor) -> Self {
+        Self::from_parts(
+            target,
+            ChildSpecification::from(supervisor).with_restart_type(RestartType::Permanent),
+        )
+    }
+
+    /// Restarts this subtree only when it terminates abnormally.
+    ///
+    /// Narrows the restart policy to [`RestartType::Transient`], which makes
+    /// [`with_significant`][NestedSupervisorBuilder::with_significant] available.
+    pub fn transient(self) -> NestedSupervisorBuilder<'a, Terminable> {
+        self.map_spec_into(|spec| spec.with_restart_type(RestartType::Transient))
+    }
+
+    /// Never restarts this subtree.
+    ///
+    /// Narrows the restart policy to [`RestartType::Temporary`], which makes
+    /// [`with_significant`][NestedSupervisorBuilder::with_significant] available.
+    pub fn temporary(self) -> NestedSupervisorBuilder<'a, Terminable> {
+        self.map_spec_into(|spec| spec.with_restart_type(RestartType::Temporary))
+    }
+}
+
+impl<S: CanTerminate> NestedSupervisorBuilder<'_, S> {
+    /// Sets whether this subtree's termination should stop the parent supervisor.
+    ///
+    /// See [`ChildBuilder::with_significant`], which this mirrors.
+    pub fn with_significant(self, significant: bool) -> Self {
+        self.map_spec_into(|spec| spec.with_significant(significant))
     }
 }
 
