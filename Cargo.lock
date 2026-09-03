@@ -43,6 +43,7 @@ dependencies = [
  "metrics",
  "ottl",
  "process-memory",
+ "proptest",
  "prost",
  "prost-types",
  "rcgen",
