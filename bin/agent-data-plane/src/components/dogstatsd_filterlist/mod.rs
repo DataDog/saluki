@@ -46,14 +46,15 @@ impl Blocklist {
 
     /// Returns whether `name` matches a configured metric name.
     ///
-    /// The name is normalized before being compared. Metric names arrive exactly as they were submitted, but the intake
-    /// rewrites them on ingest, so a raw name such as `my metric-name` is stored -- and shown to users, and therefore
-    /// configured in filterlists -- as `my_metric_name`. Matching the raw name would let those metrics through the
-    /// filterlist and still have them show up in Datadog. Names the intake would reject never match.
+    /// The name is normalized before being compared. Metric names arrive exactly as they were submitted, but the
+    /// intake rewrites them on ingest: a raw name such as `my metric-name` is stored as `my_metric_name`, which is
+    /// also what users see in Datadog and therefore how they write a filterlist entry. Matching the raw name would
+    /// let those metrics through the filterlist and still have them show up in Datadog. Names the intake would
+    /// reject never match.
     ///
-    /// This never allocates. Names that are already normalized are compared as given, and the rest are normalized into a
-    /// stack buffer. Deployments with no filterlist configured pay nothing at all, since an empty list returns before any
-    /// of that.
+    /// This never allocates. Names that are already normalized are compared as given, and the rest are normalized
+    /// into a stack buffer. Deployments with no filterlist configured pay nothing at all, since an empty list
+    /// returns before any of that.
     pub(super) fn contains(&self, name: &str) -> bool {
         if self.data.is_empty() {
             return false;

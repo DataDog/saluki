@@ -23,8 +23,8 @@ pub(super) const MAX_LENGTH: usize = 350;
 
 /// Fixed-capacity scratch buffer for a normalized metric name.
 ///
-/// A normalized name is never longer than the name it came from, and names longer than [`MAX_LENGTH`] are unstorable, so
-/// this capacity is always enough. That is what lets [`normalize_into`] rewrite a name without allocating.
+/// A normalized name is never longer than the name it came from, and a name longer than [`MAX_LENGTH`] is rejected
+/// outright, so this capacity is always enough. That is what lets [`normalize_into`] rewrite a name without allocating.
 pub(super) struct NameBuf {
     buf: [u8; MAX_LENGTH],
     len: usize,
@@ -161,10 +161,11 @@ pub(super) fn is_normalized(name: &str) -> bool {
     true
 }
 
-/// Writes `name` into `buf` as the Datadog intake will store it, and returns the normalized name as ASCII bytes.
+/// Writes `name` into `buf` as the Datadog intake stores it, and returns the normalized name as ASCII bytes.
 ///
 /// Returns `None` when the intake would reject the name outright rather than rewrite it, which happens when the name is
-/// empty, longer than [`MAX_LENGTH`] bytes, or contains no ASCII letter. Callers should treat such a name as unstorable.
+/// empty, longer than [`MAX_LENGTH`] bytes, or contains no ASCII letter. Callers should treat such a name as one the
+/// intake never stores.
 ///
 /// The rules, applied byte-wise:
 ///
