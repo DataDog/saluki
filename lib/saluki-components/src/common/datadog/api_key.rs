@@ -61,13 +61,21 @@ impl ApiKeyCell {
     /// `api_key` is trimmed here so that a caller cannot install a key that differs from the
     /// configured one only by surrounding whitespace. A missing, blank, or header-invalid key leaves
     /// the cell alone, so the last usable key stays in place.
-    fn store(&self, api_key: Option<&str>) -> StoreOutcome {
-        let Some(api_key) = api_key.map(str::trim).filter(|key| !key.is_empty()) else {
-            return StoreOutcome::NoUsableKey;
+    fn store(&self, endpoint: &str, api_key: Option<&str>) -> StoreOutcome {
+        let Some(api_key) = api_key else {
+            warn!(endpoint, reason = "missing", "Ignoring an invalid API key update.");
+            return StoreOutcome::InvalidKey;
         };
 
-        if HeaderValue::try_from(api_key).is_err() {
-            return StoreOutcome::InvalidHeaderValue;
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            warn!(endpoint, reason = "blank", "Ignoring an invalid API key update.");
+            return StoreOutcome::InvalidKey;
+        }
+
+        if let Err(error) = HeaderValue::try_from(api_key) {
+            error!(endpoint, reason = %error, "Ignoring an invalid API key update.");
+            return StoreOutcome::InvalidKey;
         }
 
         if **self.current.load() == *api_key {
@@ -75,11 +83,12 @@ impl ApiKeyCell {
         }
 
         self.current.store(Arc::new(shared(api_key)));
+        debug!(endpoint, "Refreshed endpoint API key.");
         StoreOutcome::Replaced
     }
 }
 
-/// Returns `api_key` as a `MetaString` that clones without allocating, whatever its length.
+/// Creates a shared `MetaString`, allocating once so subsequent clones do not allocate.
 fn shared(api_key: &str) -> MetaString {
     MetaString::from(Arc::<str>::from(api_key))
 }
@@ -87,11 +96,8 @@ fn shared(api_key: &str) -> MetaString {
 /// What a store did to the cell.
 #[derive(Debug, Eq, PartialEq)]
 enum StoreOutcome {
-    /// Configuration supplied no key, or a blank one, and the cell keeps its key.
-    NoUsableKey,
-
-    /// Configuration supplied a key that cannot be used as an HTTP header value.
-    InvalidHeaderValue,
+    /// The cell rejected an invalid key.
+    InvalidKey,
 
     /// Configuration supplied the key the cell already holds.
     Unchanged,
@@ -251,13 +257,13 @@ impl ApiKeyRefresher {
         if let Some((view, targets)) = &primary {
             let api_key = view.current();
             for target in targets {
-                store(&target.cell, &target.endpoint, api_key);
+                target.cell.store(&target.endpoint, api_key);
             }
         }
 
         if let Some((view, targets)) = &additional {
             for target in targets {
-                store(&target.cell, &target.url, additional_api_key(view, target));
+                target.cell.store(&target.url, additional_api_key(view, target));
             }
         }
 
@@ -300,7 +306,7 @@ async fn refresh_primary(mut view: ApiKeyView, targets: Vec<PrimaryTarget>, chan
         let api_key = view.changed().await;
         let mut replaced = false;
         for target in &targets {
-            replaced |= store(&target.cell, &target.endpoint, api_key.as_deref());
+            replaced |= target.cell.store(&target.endpoint, api_key.as_deref()) == StoreOutcome::Replaced;
         }
 
         // Signalling after the writes is what lets a reader act on keys the endpoints already hold.
@@ -317,7 +323,8 @@ async fn refresh_additional(
         let configured = view.changed().await;
         let mut replaced = false;
         for target in &targets {
-            replaced |= store(&target.cell, &target.url, additional_api_key(&configured, target));
+            replaced |=
+                target.cell.store(&target.url, additional_api_key(&configured, target)) == StoreOutcome::Replaced;
         }
 
         if replaced {
@@ -332,27 +339,6 @@ fn additional_api_key<'a>(configured: &'a HashMap<String, Vec<String>>, target: 
         .get(&target.url)
         .and_then(|api_keys| api_keys.get(target.index))
         .map(String::as_str)
-}
-
-/// Stores `api_key` in `cell`, logging what it did, and returns whether the cell holds a new key.
-fn store(cell: &ApiKeyCell, endpoint: &str, api_key: Option<&str>) -> bool {
-    let outcome = cell.store(api_key);
-    match outcome {
-        StoreOutcome::NoUsableKey => warn!(
-            endpoint,
-            "Configuration no longer supplies a usable API key for this endpoint. Continuing with the previously \
-             configured API key."
-        ),
-        StoreOutcome::InvalidHeaderValue => error!(
-            endpoint,
-            "Configuration supplied an API key that cannot be used as an HTTP header value. Continuing with the \
-             previously configured API key."
-        ),
-        StoreOutcome::Unchanged => {}
-        StoreOutcome::Replaced => debug!(endpoint, "Refreshed endpoint API key."),
-    }
-
-    outcome == StoreOutcome::Replaced
 }
 
 #[cfg(test)]
@@ -456,35 +442,35 @@ mod tests {
     #[test]
     fn a_store_replaces_a_key_that_differs() {
         let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
-        assert_eq!(StoreOutcome::Replaced, cell.store(Some("key-2")));
+        assert_eq!(StoreOutcome::Replaced, cell.store("endpoint", Some("key-2")));
         assert_eq!("key-2", &*cell.load());
     }
 
     #[test]
     fn a_store_trims_the_key_before_comparing_it() {
         let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
-        assert_eq!(StoreOutcome::Unchanged, cell.store(Some("  key-1  ")));
+        assert_eq!(StoreOutcome::Unchanged, cell.store("endpoint", Some("  key-1  ")));
         assert_eq!("key-1", &*cell.load());
     }
 
     #[test]
     fn a_store_of_a_blank_key_leaves_the_last_usable_key() {
         let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
-        assert_eq!(StoreOutcome::NoUsableKey, cell.store(Some("   ")));
+        assert_eq!(StoreOutcome::InvalidKey, cell.store("endpoint", Some("   ")));
         assert_eq!("key-1", &*cell.load());
     }
 
     #[test]
     fn a_store_of_a_header_invalid_key_leaves_the_last_usable_key() {
         let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
-        assert_eq!(StoreOutcome::InvalidHeaderValue, cell.store(Some("key\nvalue")));
+        assert_eq!(StoreOutcome::InvalidKey, cell.store("endpoint", Some("key\nvalue")));
         assert_eq!("key-1", &*cell.load());
     }
 
     #[test]
     fn a_store_of_no_key_leaves_the_last_usable_key() {
         let cell = ApiKeyCell::new("key-1").expect("the key should be valid");
-        assert_eq!(StoreOutcome::NoUsableKey, cell.store(None));
+        assert_eq!(StoreOutcome::InvalidKey, cell.store("endpoint", None));
         assert_eq!("key-1", &*cell.load());
     }
 
