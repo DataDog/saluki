@@ -1,11 +1,10 @@
-//! HTTP servers.
+//! HTTP server.
 //!
-//! [`HttpServer`] is the supervised server, and is what new code should use: it runs as a child of whatever supervisor
-//! it is added to, binds its listener during initialization, and drains in-flight connections before it reports being
-//! done. [`UnsupervisedHttpServer`] is the older, self-spawning form, kept only until its remaining callers move over.
+//! [`HttpServer`] runs as a child of whatever supervisor it is added to: it binds its listener during initialization,
+//! and drains in-flight connections before it reports being done.
 //!
-//! Both forms speak HTTP/1.1 and HTTP/2, chosen per connection, which is what allows a single server to serve gRPC
-//! alongside REST-ful routes. See [`grpc`][crate::net::server::grpc] for the routing helpers that make that work, and
+//! It speaks HTTP/1.1 and HTTP/2, chosen per connection, which is what allows a single server to serve gRPC alongside
+//! REST-ful routes. See [`grpc`][crate::net::server::grpc] for the routing helpers that make that work, and
 //! [`Http2Config`] for the HTTP/2 knobs that gRPC deployments typically care about.
 
 use std::{
@@ -13,7 +12,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    task::{ready, Context, Poll},
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -33,7 +32,7 @@ use pin_project_lite::pin_project;
 use rustls::ServerConfig;
 use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
-    task::{spawn_traced_named, HandleExt as _},
+    task::HandleExt as _,
 };
 use saluki_core::runtime::{
     state::{DataspaceRegistry, Identifier},
@@ -46,7 +45,6 @@ use tokio::{
     pin,
     runtime::Handle,
     select,
-    sync::oneshot,
     time::{sleep, timeout, Sleep},
 };
 use tokio_rustls::TlsAcceptor;
@@ -372,104 +370,6 @@ impl Supervisable for HttpServer {
     }
 }
 
-/// An HTTP server that spawns and manages itself.
-///
-/// # Deprecated
-///
-/// Callers should generally prefer to use [`HttpServer`], as it is designed to run under supervision and play nicely
-/// with supervision trees: graceful shutdown, spawning of connection handlers in the right place, etc.
-pub struct UnsupervisedHttpServer<S> {
-    listener: ConnectionOrientedListener,
-    tls_config: Option<ServerConfig>,
-    conn_builder: Builder<TokioExecutor>,
-    executor: Handle,
-    service: S,
-}
-
-impl<S> UnsupervisedHttpServer<S> {
-    /// Creates a new `UnsupervisedHttpServer` from the given listener and service.
-    ///
-    /// # Panics
-    ///
-    /// This will panic if called outside the context of a Tokio runtime.
-    pub fn from_listener(listener: ConnectionOrientedListener, service: S) -> Self {
-        Self {
-            listener,
-            tls_config: None,
-            conn_builder: build_conn_builder(Http2Config::default(), false),
-            executor: Handle::current(),
-            service,
-        }
-    }
-
-    /// Sets the TLS configuration for the server.
-    ///
-    /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
-    ///
-    /// Defaults to TLS being disabled.
-    pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
-        self.tls_config = Some(config);
-        self
-    }
-
-    /// Sets the executor for the server.
-    ///
-    /// This executor will be used for spawning tasks to handle incoming connections, but _not_ for the spawn that accepts
-    /// new connections.
-    ///
-    /// Defaults to the current Tokio runtime at the time [`from_listener`][Self::from_listener] is called.
-    pub fn with_executor(mut self, executor: Handle) -> Self {
-        self.executor = executor;
-        self
-    }
-}
-
-impl<S, B> UnsupervisedHttpServer<S>
-where
-    S: Service<Request<Incoming>, Response = Response<B>> + Send + Clone + 'static,
-    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    S::Future: Send + 'static,
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: std::error::Error + Send + Sync,
-{
-    /// Starts the server and listens for incoming connections.
-    ///
-    /// Returns two handles: one for shutting down the server, and one for receiving any errors that occur while the
-    /// server is running.
-    pub fn listen(self) -> (ShutdownCoordinator, ErrorHandle) {
-        let (shutdown_coordinator, shutdown) = ShutdownHandle::paired();
-        let (error_tx, error_rx) = oneshot::channel();
-
-        let Self {
-            executor,
-            listener,
-            conn_builder,
-            service,
-            tls_config,
-        } = self;
-
-        spawn_traced_named("http-server-acceptor", async move {
-            let result = run_accept_loop(
-                listener,
-                conn_builder,
-                service,
-                tls_config,
-                executor,
-                shutdown,
-                None,
-                Http2Config::default(),
-            )
-            .await;
-            if let Err(e) = result {
-                let _ = error_tx.send(e);
-            }
-        });
-
-        (shutdown_coordinator, ErrorHandle(error_rx))
-    }
-}
-
 /// Accepts connections until shutdown is signalled or the listener fails.
 ///
 /// Returns once every connection it accepted has finished, so a caller that awaits this can be sure no request is still
@@ -688,20 +588,6 @@ impl ConnectionAge {
             }
 
             ConnectionAgePhase::Expired => std::future::pending().await,
-        }
-    }
-}
-
-/// A future that resolves when [`UnsupervisedHttpServer`] encounters an unrecoverable error.
-pub struct ErrorHandle(oneshot::Receiver<GenericError>);
-
-impl Future for ErrorHandle {
-    type Output = Option<GenericError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match ready!(Pin::new(&mut self.0).poll(cx)) {
-            Ok(err) => Poll::Ready(Some(err)),
-            Err(_) => Poll::Ready(None),
         }
     }
 }

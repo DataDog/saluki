@@ -1,8 +1,8 @@
-//! Dynamic API server.
+//! API server.
 //!
-//! Unlike [`APIBuilder`][crate::api::APIBuilder], which constructs its route set once at build time,
-//! `DynamicAPIBuilder` subscribes to runtime notifications via the dataspace registry and dynamically registers and
-//! unregisters routes as they're asserted and retracted.
+//! [`APIBuilder`] serves a set of statically registered handlers alongside routes that come and go at runtime: it
+//! subscribes to notifications from the dataspace registry and registers and unregisters routes as they're asserted
+//! and retracted.
 
 use std::{
     convert::Infallible,
@@ -29,8 +29,7 @@ use saluki_core::runtime::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
-    listener::ConnectionOrientedListener,
-    server::{grpc::unmatched_route, http::UnsupervisedHttpServer},
+    server::{grpc::unmatched_route, http::HttpServer},
     ListenAddress,
 };
 use saluki_tls::ensure_server_config_fips_compliant;
@@ -39,9 +38,9 @@ use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder
 use tower::Service;
 use tracing::{debug, info, warn};
 
-/// A dynamic API server that can add and remove routes at runtime.
+/// An API server whose routes can be added and removed at runtime.
 ///
-/// `DynamicAPIBuilder` serves HTTP and gRPC on a given address, on a single port. gRPC is HTTP/2 with a distinct route
+/// `APIBuilder` serves HTTP and gRPC on a given address, on a single port. gRPC is HTTP/2 with a distinct route
 /// naming convention, so both protocols share one router and one server. Route additions and removals are handled by
 /// subscribing to assertions/retractions of [`DynamicRoute`] in the [`DataspaceRegistry`].
 ///
@@ -51,7 +50,7 @@ use tracing::{debug, info, warn};
 /// [`DataspaceRegistry`]. Retracting the assertion will remove the route, either when retracted manually or when the
 /// process owning the route assertions exits.
 ///
-/// If the dynamic API server is restarted, it will re-register any routes that were previously asserted.
+/// If the API server is restarted, it will re-register any routes that were previously asserted.
 ///
 /// ## Static handlers and services
 ///
@@ -66,10 +65,9 @@ use tracing::{debug, info, warn};
 ///
 /// ## Assertions
 ///
-/// - [`BoundListenAddress`][saluki_io::net::BoundListenAddress]: the address the API server bound to. Identifier is
-///   `"dynamic-<type>-api"`, where `type` is the stringified value of `EndpointType::as_str` (for example,
-///   `"dynamic-privileged-api"`)
-pub struct DynamicAPIBuilder {
+/// See [`HttpServer`] for more information on available assertions. The server ID provided by `APIBuilder` to the
+/// underlying `HttpServer` will be `privileged-api` or `unprivileged-api`, depending on the configured endpoint type.
+pub struct APIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
     tls_config: Option<ServerConfig>,
@@ -77,8 +75,8 @@ pub struct DynamicAPIBuilder {
     grpc_router: RoutesBuilder,
 }
 
-impl DynamicAPIBuilder {
-    /// Creates a new `DynamicAPIBuilder` for the given endpoint type and listen address.
+impl APIBuilder {
+    /// Creates a new `APIBuilder` for the given endpoint type and listen address.
     pub fn new(endpoint_type: EndpointType, listen_address: ListenAddress) -> Self {
         Self {
             endpoint_type,
@@ -168,11 +166,11 @@ impl DynamicAPIBuilder {
 }
 
 #[async_trait]
-impl Supervisable for DynamicAPIBuilder {
+impl Supervisable for APIBuilder {
     fn name(&self) -> &str {
         match self.endpoint_type {
-            EndpointType::Unprivileged => "dynamic-unprivileged-api",
-            EndpointType::Privileged => "dynamic-privileged-api",
+            EndpointType::Unprivileged => "unprivileged-api",
+            EndpointType::Privileged => "privileged-api",
         }
     }
 
@@ -195,22 +193,18 @@ impl Supervisable for DynamicAPIBuilder {
 
         let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-        // Bind the HTTP listener immediately so we fail fast on bind errors.
-        let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
-            .await
-            .map_err(|e| InitializationError::Failed { source: e.into() })?;
-
-        // Get the listen address our listener is bound to and assert it.
+        // Hand the outer router to a supervised HTTP server, initializing it here so that binding the listen address
+        // -- and asserting the address we ended up bound to -- happens before this worker starts running.
         //
-        // This allows other processes to find out where we've bound to when the port isn't known ahead of time,
-        // such as during tests when binding to ephemeral ports.
-        dataspace.assert(listener.bound_listen_address(), Identifier::named(self.name()));
-
-        let mut http_server = UnsupervisedHttpServer::from_listener(listener, outer);
+        // The server is given no graceful shutdown timeout of its own: how long draining connections is allowed to take
+        // is bounded by the shutdown strategy this worker reports, and thus by whatever budget our supervisor sets.
+        let mut http_server = HttpServer::from_listen_address(self.listen_address.clone())
+            .with_routes(outer)
+            .with_server_id(format!("{}-api", self.endpoint_type.name()));
         if let Some(tls_config) = self.tls_config.clone() {
             http_server = http_server.with_tls_config(tls_config);
         }
-        let (server_shutdown_coordinator, error_handle) = http_server.listen();
+        let http_server = http_server.initialize(process_shutdown).await?;
 
         let endpoint_type = self.endpoint_type;
         let listen_address = self.listen_address.clone();
@@ -221,19 +215,10 @@ impl Supervisable for DynamicAPIBuilder {
             // Subscribe to all dynamic route assertions.
             let route_assertions = dataspace.subscribe::<DynamicRoute>(IdentifierFilter::All);
 
+            // The HTTP server owns the shutdown signal: when it fires, the server stops accepting connections and
+            // drains the ones still in flight, and only completes once it has, which is what ends this worker.
             select! {
-                _ = process_shutdown => {
-                    // Trigger the HTTP server to shut down and wait for it to do so gracefully.
-                    debug!(endpoint_type = endpoint_type.name(), "Triggering shutdown of dynamic API endpoint.");
-
-                    server_shutdown_coordinator.shutdown_and_wait().await;
-
-                    Ok(())
-                },
-                maybe_err = error_handle => match maybe_err {
-                    Some(e) => Err(GenericError::from(e)),
-                    None => Ok(()),
-                },
+                result = http_server => result,
                 result = run_event_loop(inner, base, route_assertions, endpoint_type) => result,
             }
         }))
@@ -455,10 +440,10 @@ mod tests {
                 let dataspace =
                     DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-                // Wait for the DynamicAPIBuilder to assert its bound address.
+                // Wait for the API server to assert its bound address.
                 let bound_addr_name = match endpoint_type {
-                    EndpointType::Unprivileged => "dynamic-unprivileged-api",
-                    EndpointType::Privileged => "dynamic-privileged-api",
+                    EndpointType::Unprivileged => "http-server-unprivileged-api",
+                    EndpointType::Privileged => "http-server-privileged-api",
                 };
                 let mut addr_sub = dataspace
                     .subscribe::<BoundListenAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
@@ -532,12 +517,12 @@ mod tests {
 
     async fn setup_test_harness_with<F>(endpoint_type: EndpointType, configure: F) -> TestHarness
     where
-        F: FnOnce(DynamicAPIBuilder) -> DynamicAPIBuilder,
+        F: FnOnce(APIBuilder) -> APIBuilder,
     {
         let (commands_tx, commands_rx) = mpsc::channel(16);
         let (addr_tx, addr_rx) = oneshot::channel();
 
-        let api_builder = configure(DynamicAPIBuilder::new(endpoint_type, ListenAddress::tcp_any(0)));
+        let api_builder = configure(APIBuilder::new(endpoint_type, ListenAddress::tcp_any(0)));
         let route_asserter = RouteAsserter {
             commands_rx: std::sync::Mutex::new(Some(commands_rx)),
             addr_tx: std::sync::Mutex::new(Some(addr_tx)),
