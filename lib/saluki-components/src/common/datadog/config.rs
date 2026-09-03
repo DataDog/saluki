@@ -1,7 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
 use agent_data_plane_config::shared::{self, Endpoints, SharedConfiguration, V3SeriesMode};
-use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
@@ -410,15 +409,14 @@ impl ForwarderConfiguration {
 
     /// Builds resolved endpoints with routing metadata.
     ///
-    /// The normal primary and OPW metrics primary endpoints share the same dynamic API key source.
-    pub(crate) fn build_routable_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
-    ) -> Result<Vec<RoutableEndpoint>, GenericError> {
+    /// Each endpoint starts with the key its configuration resolved to. A forwarder may bind it to a live
+    /// configuration view through [`ApiKeyRefresher`][super::api_key::ApiKeyRefresher].
+    pub(crate) fn build_routable_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
         // Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
         let mut endpoints = Vec::new();
         endpoints.push(RoutableEndpoint::new(
             EndpointRoute::Primary,
-            self.endpoint.build_primary_endpoint(configuration.clone())?,
+            self.endpoint.build_primary_endpoint()?,
         ));
 
         if let Some(selected) = self.opw_metrics.selected_endpoint() {
@@ -431,10 +429,7 @@ impl ForwarderConfiguration {
                      disabled. Continuing.",
                 );
             } else {
-                match self
-                    .endpoint
-                    .build_primary_endpoint_override(trimmed_url, configuration.clone())
-                {
+                match self.endpoint.build_primary_endpoint_override(trimmed_url) {
                     Ok(endpoint) => {
                         endpoints.push(RoutableEndpoint::new(EndpointRoute::MetricsPrimary, endpoint));
                     }
@@ -453,7 +448,7 @@ impl ForwarderConfiguration {
 
         endpoints.extend(
             self.endpoint
-                .build_additional_endpoints(configuration.clone())?
+                .build_additional_endpoints()?
                 .into_iter()
                 .map(|endpoint| RoutableEndpoint::new(EndpointRoute::Additional, endpoint)),
         );
@@ -544,7 +539,6 @@ mod tests {
         shared::{AltMetricsIntake, Proxy, Tls, V3ApiEncoding, V3SeriesMode},
         ConfigValue,
     };
-    use saluki_config::ConfigurationLoader;
 
     use super::*;
     use crate::common::datadog::test_util::shared_configuration;
@@ -561,18 +555,13 @@ mod tests {
     const ADDITIONAL_URI: &str = "http://additional.example.com/";
     const SSL_KEY_LOG_FILE_PATH: &str = "/tmp/saluki-sslkeylogfile";
 
-    async fn empty_config() -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        config
-    }
-
     async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
         ForwarderConfiguration::from_configuration(&shared)
     }
 
     fn endpoint_urls_by_route(config: &ForwarderConfiguration, route: EndpointRoute) -> Vec<String> {
         config
-            .build_routable_endpoints(None)
+            .build_routable_endpoints()
             .expect("endpoints should resolve")
             .into_iter()
             .filter_map(|endpoint| {
@@ -888,48 +877,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn primary_like_endpoints_keep_a_live_api_key_source() {
-        let mut shared = shared_configuration();
-        shared.endpoints.opw_intake = AltMetricsIntake {
-            enabled: true,
-            url: OPW_URL.to_string(),
-            use_v3_series: false,
-        };
-        shared.endpoints.additional_endpoints =
-            HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]);
-
-        let live_config = empty_config().await;
-        let config = ForwarderConfiguration::from_configuration(&shared);
-        let endpoints = config
-            .build_routable_endpoints(Some(live_config))
-            .expect("endpoints should resolve");
-
-        for route in [
-            EndpointRoute::Primary,
-            EndpointRoute::MetricsPrimary,
-            EndpointRoute::Additional,
-        ] {
-            let endpoint = endpoints
-                .iter()
-                .find(|endpoint| endpoint.route() == route)
-                .unwrap_or_else(|| panic!("{route:?} endpoint should exist"));
-            assert!(
-                endpoint.endpoint().has_configuration(),
-                "{route:?} endpoint should hold a live config reference"
-            );
-        }
-
-        let additional = endpoints
-            .iter()
-            .find(|endpoint| endpoint.route() == EndpointRoute::Additional)
-            .expect("additional endpoint should exist");
-        assert!(
-            additional.endpoint().has_api_key_index(),
-            "additional endpoint should have an api_key_index"
-        );
-    }
-
-    #[tokio::test]
     async fn a_single_destination_replaces_every_configured_endpoint() {
         // A destination override must survive construction: the configured primary endpoint, the
         // additional endpoints, and the alternate metrics intake all conflict with it here.
@@ -949,16 +896,15 @@ mod tests {
         let destination = SingleDestination {
             url: "https://only.example.com".to_string(),
             api_key: "destination-api-key".to_string(),
-            api_key_refresh_config_path: Some("multi_region_failover.api_key"),
             accepts_v3_series: false,
         };
         let config = ForwarderConfiguration::for_single_destination(&shared, &destination);
 
-        let endpoints = config.build_routable_endpoints(None).expect("endpoint should resolve");
+        let endpoints = config.build_routable_endpoints().expect("endpoint should resolve");
         assert_eq!(1, endpoints.len());
         assert_eq!(EndpointRoute::Primary, endpoints[0].route());
         assert_eq!("https://only.example.com/", endpoints[0].endpoint().endpoint().as_str());
-        assert_eq!("destination-api-key", endpoints[0].endpoint().cached_api_key());
+        assert_eq!("destination-api-key", &*endpoints[0].endpoint().api_key());
 
         // A destination that does not accept V3 series payloads gets none of the configured V3 routing.
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
@@ -973,7 +919,6 @@ mod tests {
         let destination = SingleDestination {
             url: "https://mrf.example.com".to_string(),
             api_key: "mrf-api-key".to_string(),
-            api_key_refresh_config_path: Some("multi_region_failover.api_key"),
             accepts_v3_series: true,
         };
         let config = ForwarderConfiguration::for_single_destination(&shared, &destination);
