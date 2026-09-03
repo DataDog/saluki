@@ -43,6 +43,10 @@ impl RuntimeConfiguration {
         Self { worker_threads }
     }
 
+    pub(crate) fn worker_threads(&self) -> usize {
+        self.worker_threads
+    }
+
     /// Builds the Tokio runtime from this configuration.
     pub(crate) fn build(&self, supervisor_id: &str) -> io::Result<tokio::runtime::Runtime> {
         let supervisor_id = supervisor_id.to_string();

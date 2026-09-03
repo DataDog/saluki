@@ -1,10 +1,12 @@
 use std::{collections::VecDeque, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tracing::debug;
 
 /// Restart mode for child processes.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RestartMode {
     /// Restarts the failed child process only.
     OneForOne,
@@ -27,7 +29,7 @@ pub enum RestartMode {
 /// Permanent failure bubbles up to the parent supervisor, until reaching the root supervisor. Once permanent failure
 /// reaches the root supervisor, and the root supervisor exceeds its own restart limits, the root supervisor will fail
 /// and cease execution.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct RestartStrategy {
     mode: RestartMode,
     intensity: usize,
@@ -66,6 +68,18 @@ impl RestartStrategy {
         self.period = period;
         self
     }
+
+    pub(super) fn mode(&self) -> RestartMode {
+        self.mode
+    }
+
+    pub(super) fn intensity(&self) -> usize {
+        self.intensity
+    }
+
+    pub(super) fn period(&self) -> Duration {
+        self.period
+    }
 }
 
 impl Default for RestartStrategy {
@@ -81,7 +95,8 @@ impl Default for RestartStrategy {
 /// all, based on how it exited.
 ///
 /// Defaults to [`Permanent`][Self::Permanent], which marks a child process to always be restarted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RestartType {
     /// The child is always restarted, whether it exits normally or abnormally.
     ///

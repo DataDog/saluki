@@ -12,3 +12,6 @@ is quickly and easily accessible.
 
 Use [Inspect retained DogStatsD contexts](dogstatsd-top.md) to snapshot retained aggregation contexts, investigate
 cardinality, and analyze sensitive dump artifacts offline.
+
+Use [Inspect the supervision tree](supervision-tree.md) to see which processes ADP is running, how they're nested,
+which have restarted, and what each accounts for in memory and CPU.
