@@ -3,6 +3,7 @@ target/
 .vscode/
 test/k8s/charts/
 test/build/
+test/output/
 test/ddprof
 test/lading
 test/one-off/__pycache__

@@ -46,6 +46,9 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
+# TODO: move this to test/output when everyone has it in their gitignore
+SALUKI_TEST_OUTPUT_DIR ?= $(CURDIR)/target/test-output
+export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
@@ -952,10 +955,15 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	./ci/tooling/update-protos.sh
 
 .PHONY: clean
-clean: check-rust-build-tools
+clean: check-rust-build-tools clean-test-logs
 clean: ## Clean all build artifacts (debug/release)
 	@echo "[*] Cleaning Rust build artifacts..."
 	@cargo clean
+
+.PHONY: clean-test-logs
+clean-test-logs: ## Deletes Panoramic test logs
+	@echo "[*] Cleaning Panoramic test logs..."
+	@rm -rf "$(SALUKI_TEST_OUTPUT_DIR)/panoramic"
 
 .PHONY: clean-docker
 clean-docker: ## Cleans up Docker build cache

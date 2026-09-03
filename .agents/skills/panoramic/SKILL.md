@@ -47,8 +47,10 @@ before selecting them.
 
 ## Run non-interactively
 
-Build with the current Make recipe, then use `--no-tui -o json` for an agent-readable run. Set
-`-l DIR` when the artifacts need a predictable base directory.
+The Panoramic test targets write artifacts beneath `{{saluki}}/target/test-output/panoramic/` by
+default. This in-tree path is visible to Docker on macOS. Set `SALUKI_TEST_OUTPUT_DIR` to relocate the
+shared test-output root or `PANORAMIC_LOG_DIR` to override Panoramic only. Use the same base for direct
+runs.
 
 ```bash
 make build-panoramic
@@ -56,11 +58,13 @@ target/release/panoramic run \
   -d "$(pwd)/test/integration/cases" \
   --runtime linux \
   -t <case-name> \
-  --no-tui -o json -l /tmp/panoramic-logs
+  --no-tui -o json -l "$(pwd)/target/test-output/panoramic"
 ```
 
 Use comma-separated names with `-t` and `-p 1` when one case needs attributable output. Each run
-creates a timestamped directory beneath `-l`; stdout and `run.json` identify that directory.
+creates a timestamped `panoramic-*` directory beneath the base. `make clean-test-logs` deletes the
+Panoramic directory under the shared test-output root; `make clean` includes that target. Stdout and
+`run.json` identify the directory for a run.
 
 ## Interpret the result
 
