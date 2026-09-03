@@ -7,9 +7,7 @@
 use std::{
     convert::Infallible,
     error::Error,
-    future::Future,
     panic::{catch_unwind, AssertUnwindSafe},
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -21,10 +19,9 @@ use http::{Request, Response};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
-use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
+use saluki_api::{APIHandler, DynamicRoute, EndpointType};
 use saluki_common::{collections::FastIndexMap, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{
-    self,
     state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter, Subscription},
     AutoShutdown, InitializationError, Supervisable, Supervisor, SupervisorFuture,
 };
