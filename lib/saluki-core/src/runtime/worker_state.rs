@@ -6,6 +6,7 @@
 //! worker exits.
 
 use std::future::pending;
+use std::sync::Arc;
 use std::time::Duration;
 
 use saluki_common::collections::FastIndexMap;
@@ -23,6 +24,7 @@ use super::supervisor::{
     ChildConfig, ChildShutdown, ProcessError, ShutdownStrategy, SupervisedChild, SupervisorError, SupervisorHandle,
     WorkerError,
 };
+use super::tree::{StartedChild, TreeSlot, CURRENT_TREE_SLOT};
 
 /// Per-worker bookkeeping held by a [`WorkerState`].
 struct ProcessState {
@@ -33,7 +35,7 @@ struct ProcessState {
     worker_id: u64,
     /// Fully qualified process name, retained so shutdown can name precisely which worker had to be forcefully
     /// aborted.
-    worker_name: String,
+    worker_name: Arc<str>,
     shutdown_strategy: ShutdownStrategy,
     /// Whether this child is subject to the supervisor's shutdown budget.
     ///
@@ -83,11 +85,20 @@ impl WorkerState {
     ///
     /// `config` supplies the per-child overrides chosen at registration time: which runtime to spawn the child's task
     /// on, and how the child's shutdown strategy is determined.
+    ///
+    /// Returns the identity of the process the child was started under, which is the only point at which that process
+    /// exists and so the only point at which it can be recorded.
     pub(super) fn add_worker(
         &mut self, worker_id: u64, child_spec: &SupervisedChild, config: &ChildConfig,
-    ) -> Result<(), SupervisorError> {
+    ) -> Result<StartedChild, SupervisorError> {
         let process = child_spec.create_process(&self.process);
-        let worker_name = process.name().to_string();
+        let worker_name: Arc<str> = process.name().into();
+
+        // Every worker gets a slot through which a supervisor it drives internally -- built after initialization and
+        // run inside its own future, rather than handed to us as a child -- can attach itself to the supervision
+        // tree. Captured before the process is consumed below.
+        let tree_slot = TreeSlot::default();
+        let started = StartedChild::new(&process, Arc::clone(&worker_name), Arc::clone(&tree_slot));
 
         // Only create a coordinator for a child that actually observes the signal. Most workers don't: they run until
         // their own terminal condition and ignore whatever we fire at them, so a coordinator for them is an
@@ -121,11 +132,14 @@ impl WorkerState {
         // amortized against whatever the poll actually does.
         let task = worker_future
             .into_process_future(process)
-            .with_task_instrumentation(worker_name.clone());
+            .with_task_instrumentation(worker_name.to_string());
 
         // Make ourselves the ambient supervisor for the worker's whole task, initialization included, so the worker
         // can spawn siblings without being handed a handle.
         let task = CURRENT_SUPERVISOR.scope(self.handle.clone(), task);
+
+        // Put the worker's tree slot in scope for the same span, so a supervisor the worker starts can find it.
+        let task = CURRENT_TREE_SLOT.scope(tree_slot, task);
 
         let abort_handle = match config.runtime() {
             Some(handle) => self.worker_tasks.spawn_on(task, handle),
@@ -142,7 +156,7 @@ impl WorkerState {
                 abort_handle,
             },
         );
-        Ok(())
+        Ok(started)
     }
 
     /// Awaits the next worker to finish, returning its `worker_id` and result.
@@ -223,7 +237,7 @@ impl WorkerState {
         // its own timeout rather than a single shared one.
         let now = tokio::time::Instant::now();
         let budget_deadline = resolve_budget_deadline(now, self.shutdown_budget);
-        let mut pending: FastIndexMap<Id, (u64, String, AbortHandle, Option<tokio::time::Instant>)> =
+        let mut pending: FastIndexMap<Id, (u64, Arc<str>, AbortHandle, Option<tokio::time::Instant>)> =
             FastIndexMap::default();
         for (task_id, process_state) in std::mem::take(&mut self.worker_map) {
             let ProcessState {

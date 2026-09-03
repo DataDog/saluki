@@ -72,6 +72,15 @@
 //! grouping and control over which set of workers must be restarted if a related worker fails, and how those failures
 //! propagate up and down the supervision tree.
 //!
+//! # Inspecting the tree
+//!
+//! A supervision tree is also a description of what a process is doing, which makes it worth being able to read at
+//! runtime. [`Supervisor::tree_handle`] returns a read-only handle whose [`snapshot`][SupervisionTreeHandle::snapshot]
+//! walks the tree from that supervisor downward, reporting each node's name, process, restart policy, restart count,
+//! lifetime, and resource usage, with its children nested beneath it. A handle can be taken before the supervisor
+//! starts and stays valid across every restart of it, which makes it suitable for handing to a worker that serves an
+//! operator-facing diagnostics endpoint.
+//!
 //! # Examples
 //!
 //! See the `basic_supervisor` example which shows how supervisors and workers are composed together, as well as how
@@ -95,6 +104,12 @@ mod supervisor;
 pub use self::supervisor::{
     AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, LoweredChild, ShutdownStrategy,
     Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec, WorkerSpec,
+};
+
+mod tree;
+pub use self::tree::{
+    NodeKind, NodeSnapshot, NodeState, ResourceUsage, SupervisionSettings, SupervisionTreeHandle, TreeSnapshot,
+    TreeTotals, UnixMillis,
 };
 
 mod spawn;

@@ -198,6 +198,11 @@ pub async fn handle_run_command(
     )
     .await?;
 
+    // Create the root supervisor up front so that a handle to the whole supervision tree can be handed to the
+    // control plane below, which serves it over the API. Nothing is added to it until the rest of the tree is built.
+    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
+    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
+
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
         &config_sys,
@@ -207,6 +212,7 @@ pub async fn handle_run_command(
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
         config_sys.current_handle(),
+        root_supervisor.tree_handle(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
@@ -240,9 +246,6 @@ pub async fn handle_run_command(
     // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
     // and potentially observing an empty/already-ready registry before the topology's components even exist.
     let topology_ready = blueprint.topology_ready();
-
-    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
-    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
 
     root_supervisor.add_worker(bootstrap_supervisor);
     internal_supervisor.add_worker(resource_registry.worker());

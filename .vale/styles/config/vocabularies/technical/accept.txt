@@ -274,3 +274,7 @@ configtls
 keyspace
 Kueue
 plaintext
+Graphviz
+renderer(s?)
+unscoped
+underflowing

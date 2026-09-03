@@ -40,6 +40,39 @@ procedure:
     args: ["debug", "reset-metric-level"]
     timeout: 30s
 
+  # The supervision tree is served from the privileged API and rendered by the CLI. Asserting on the root
+  # supervisor's name proves the whole path worked: the route was asserted, mTLS succeeded, a snapshot was taken, and
+  # it decoded into something renderable.
+  - action: adp_cli
+    args: ["debug", "runtime", "show-processes"]
+    output_contains: "Supervision tree for 'adp-root'"
+    timeout: 30s
+
+  # The topology runs inside a worker that drives its own supervisor, so its subtree is only reachable if that
+  # attachment works. Its absence is the difference between reporting the whole process and reporting a fraction of
+  # it, so assert on a process that can only appear through it.
+  - action: adp_cli
+    args: ["debug", "runtime", "show-processes"]
+    output_contains: "topology.primary"
+    timeout: 30s
+
+  # The dedicated-runtime control plane lives on its own OS thread, so it is only visible if the tree can be read
+  # across that boundary.
+  - action: adp_cli
+    args: ["debug", "runtime", "show-processes"]
+    output_contains: "ctrl-pln"
+    timeout: 30s
+
+  - action: adp_cli
+    args: ["debug", "runtime", "show-processes", "--json"]
+    output_contains: "\"resource_tracking_enabled\":true"
+    timeout: 30s
+
+  - action: adp_cli
+    args: ["debug", "runtime", "show-processes", "--format", "dot"]
+    output_contains: "digraph supervision_tree"
+    timeout: 30s
+
   - parallel:
       - assertion: process_stable_for
         duration: 10s

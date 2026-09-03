@@ -30,6 +30,7 @@ mod components;
 mod config;
 mod dogstatsd_contexts;
 mod internal;
+mod runtime_introspection;
 
 pub(crate) mod state;
 
