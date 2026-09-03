@@ -16,7 +16,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use axum::{body::Body as AxumBody, Router};
+use axum::{body::Body as AxumBody, routing::future::RouteFuture, Router};
 use http::{Request, Response};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
@@ -34,6 +34,7 @@ use saluki_io::net::{
     ListenAddress,
 };
 use saluki_tls::ensure_server_config_fips_compliant;
+use tokio::{pin, select};
 use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
 use tracing::{debug, info, warn};
@@ -44,7 +45,7 @@ use tracing::{debug, info, warn};
 /// naming convention, so both protocols share one router and one server. Route additions and removals are handled by
 /// subscribing to assertions/retractions of [`DynamicRoute`] in the [`DataspaceRegistry`].
 ///
-/// ## Adding and removing routes
+/// # Adding and removing routes
 ///
 /// Any process that wants to dynamically register API routes can simply assert a [`DynamicRoute`] in the
 /// [`DataspaceRegistry`]. Retracting the assertion will remove the route, either when retracted manually or when the
@@ -52,7 +53,7 @@ use tracing::{debug, info, warn};
 ///
 /// If the API server is restarted, it will re-register any routes that were previously asserted.
 ///
-/// ## Static handlers and services
+/// # Static handlers and services
 ///
 /// In addition to dynamic routes, callers can register static HTTP handlers and gRPC services up-front via
 /// [`with_handler`][Self::with_handler], [`with_optional_handler`][Self::with_optional_handler], and
@@ -60,15 +61,16 @@ use tracing::{debug, info, warn};
 /// with the currently asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
 /// and method overlap with a static route is skipped (with a warning) until the conflict clears.
 ///
-/// HTTP and gRPC routes share one path space, so a gRPC route can in principle collide with an HTTP one. In practice
-/// it can't: gRPC paths are `/<package>.<Service>/<Method>`, which no HTTP handler here registers.
+/// HTTP and gRPC routes share one path space, so a gRPC route can, _in principle_, collide with an HTTP one. In
+/// practice, this should never occur because the structure of gRPC routes includes programmatic aspects
+/// (`/<package>.<service>/<method>`) that don't collide with any typical HTTP routes registered by components.
 ///
-/// ## Assertions
+/// # Assertions
 ///
 /// See [`HttpServer`] for more information on available assertions. The server ID provided by `APIBuilder` to the
 /// underlying `HttpServer` will be `privileged-api` or `unprivileged-api`, depending on the configured endpoint type.
 ///
-/// ## Supervision
+/// # Supervision
 ///
 /// The API can't be run directly: [`into_supervisor`][Self::into_supervisor] turns it into the [`Supervisor`] that
 /// runs it, which is then added to another supervisor like any other child.
@@ -171,37 +173,25 @@ impl APIBuilder {
 }
 
 impl APIBuilder {
-    /// Converts this builder into the supervisor that runs the API.
+    /// Converts this builder into a supervisor.
     ///
-    /// The result is added to another supervisor like any other child. Two children run underneath it: the
-    /// [`HttpServer`] subtree that serves the routes, and a worker that keeps the dynamic routes up to date.
-    ///
-    /// The route worker is _significant_, and the supervisor uses [`AutoShutdown::AnySignificant`], so the API stops
-    /// as a unit if the route worker ever terminates. Serving stale routes indefinitely because the thing that
-    /// maintains them died is worse than not serving at all.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the supervisor can't be created, which can only happen for an empty name. The name comes from a
-    /// fixed set of non-empty constants, so this is unreachable.
+    /// The supervisor is configured to run the underlying HTTP/gRPC server, as well as a worker to manage
+    /// the dynamic route updates as routes are asserted and retracted.
     pub fn into_supervisor(self) -> Supervisor {
         // Build the static base router, folding the gRPC routes in alongside the HTTP ones.
         //
-        // Every router that goes into a merge has its fallback reset first: axum refuses to merge two routers that both
-        // define one, and Tonic's `Routes` always carries its own `unimplemented` fallback. The single fallback that
-        // does the right thing for both protocols is applied by `apply_fallback` once merging is finished, which is
-        // also why the base itself is kept fallback-free -- it gets re-merged on every rebuild.
+        // Every router that goes into a merge has its fallback reset first: `axum` refuses to merge two routers that
+        // both define one, and `tonic`'s `Routes` always carries its own `unimplemented` fallback. The single fallback
+        // that does the right thing for both protocols is applied by `apply_fallback` once merging is finished, which
+        // is also why the base itself is kept fallback-free -- it gets re-merged on every rebuild.
         let base = self
             .http_router
             .reset_fallback()
             .merge(self.grpc_router.routes().into_axum_router().reset_fallback());
 
-        // Create the dynamic inner router, seeded with the static base so that the static routes are served even before
-        // any dynamic routes are asserted.
+        // Create our dynamic router and then our HTTP server, which will be set to use it.
         let (inner, outer) = create_dynamic_router(apply_fallback(base.clone()));
 
-        // Hand the outer router to an HTTP server subtree. The server carries no shutdown timeout of its own, so it
-        // takes its default: how long a connection is given to drain, and the budget that bounds the subtree.
         let mut http_server = HttpServer::from_listen_address(self.listen_address.clone())
             .with_routes(outer)
             .with_server_id(format!("{}-api", self.endpoint_type.name()));
@@ -219,25 +209,20 @@ impl APIBuilder {
             .expect("API supervisor name is a non-empty constant")
             .with_auto_shutdown(AutoShutdown::AnySignificant);
 
-        supervisor.add_worker(runtime::nested_supervisor(http_server.into_supervisor()).build());
-        supervisor.add_worker(
-            runtime::supervisable(RouteWorker {
-                inner,
-                base,
-                endpoint_type,
-                listen_address: self.listen_address,
-            })
-            .temporary()
-            .with_significant(true)
-            .build(),
-        );
+        supervisor.add_worker(http_server.into_supervisor());
+        supervisor.add_worker(RouteUpdaterWorker {
+            inner,
+            base,
+            endpoint_type,
+            listen_address: self.listen_address,
+        });
 
         supervisor
     }
 }
 
 /// Keeps an [`APIBuilder`]'s router in step with the dynamic routes currently asserted.
-struct RouteWorker {
+struct RouteUpdaterWorker {
     inner: Arc<ArcSwap<Router>>,
     base: Router,
     endpoint_type: EndpointType,
@@ -245,18 +230,12 @@ struct RouteWorker {
 }
 
 #[async_trait]
-impl Supervisable for RouteWorker {
+impl Supervisable for RouteUpdaterWorker {
     fn name(&self) -> &str {
-        "routes"
+        "route_updater"
     }
 
-    fn wants_shutdown_signal(&self) -> bool {
-        // The subscription closing is what ends this worker, which happens when the dataspace goes away with the rest
-        // of the subtree.
-        false
-    }
-
-    async fn initialize(&self, _process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
         let inner = Arc::clone(&self.inner);
@@ -270,15 +249,15 @@ impl Supervisable for RouteWorker {
             // Subscribe to all dynamic route assertions.
             let route_assertions = dataspace.subscribe::<DynamicRoute>(IdentifierFilter::All);
 
-            run_event_loop(inner, base, route_assertions, endpoint_type).await
+            run_event_loop(process_shutdown, inner, base, route_assertions, endpoint_type).await
         }))
     }
 }
 
 /// A [`tower::Service`] that routes a request based on a dynamically updated [`Router`].
 ///
-/// When installed as the fallback service for a top-level [`Router`], `DynamicRouterService` dynamically routing
-/// requests based on the current defined "inner" router, which itself can be hot-swapped at runtime. This allows for
+/// When installed as the fallback service for a top-level [`Router`], `DynamicRouterService` dynamically routes
+/// requests based on the currently defined "inner" router, which itself can be hot-swapped at runtime. This allows for
 /// seamless updates to the API endpoint routing without requiring a restart of the HTTP listener or complicated
 /// configuration changes.
 #[derive(Clone)]
@@ -297,7 +276,7 @@ impl DynamicRouterService {
 impl Service<http::Request<AxumBody>> for DynamicRouterService {
     type Response = Response<AxumBody>;
     type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = RouteFuture<Infallible>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -305,45 +284,55 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
 
     fn call(&mut self, request: http::Request<AxumBody>) -> Self::Future {
         let mut router = Arc::unwrap_or_clone(self.inner_router.load_full());
-        Box::pin(async move { router.call(request).await })
+        router.call(request)
     }
 }
 
 /// Runs the event loop that listens for route assertions/retractions and hot-swaps the inner router.
 async fn run_event_loop(
-    inner: Arc<ArcSwap<Router>>, base: Router, mut route_assertions: Subscription<DynamicRoute>,
-    endpoint_type: EndpointType,
+    process_shutdown: ShutdownHandle, inner: Arc<ArcSwap<Router>>, base: Router,
+    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
 ) -> Result<(), GenericError> {
     // HTTP and gRPC handlers share a map because they share a router: a gRPC route is a route like any other, just
-    // one whose path follows the gRPC naming convention. The protocol is still worth naming in the logs.
+    // one whose path follows the gRPC naming convention.
     let mut handlers = FastIndexMap::default();
 
-    while let Some(update) = route_assertions.recv().await {
-        match update {
-            DataspaceUpdate::Asserted(id, route) => {
-                if route.endpoint_type() != endpoint_type {
-                    continue;
-                }
+    pin!(process_shutdown);
 
-                match route.endpoint_protocol() {
-                    EndpointProtocol::Http => debug!(?id, "Registering dynamic HTTP handler."),
-                    EndpointProtocol::Grpc => debug!(?id, "Registering dynamic gRPC handler."),
-                }
+    loop {
+        select! {
+            _ = &mut process_shutdown => break,
+            maybe_update = route_assertions.recv() => match maybe_update {
+                None => {
+                    debug!("Dataspace subscription ended unexpectedly.");
+                    break
+                },
+                Some(update) => {
+                    match update {
+                        DataspaceUpdate::Asserted(id, route) => {
+                            if route.endpoint_type() != endpoint_type {
+                                continue;
+                            }
 
-                handlers.insert(id, route.into_router());
+                            debug!(?id, "Registering dynamic {} handler.", route.endpoint_protocol().name());
+
+                            handlers.insert(id, route.into_router());
+                        }
+                        DataspaceUpdate::Retracted(id) => {
+                            if handlers.swap_remove(&id).is_none() {
+                                continue;
+                            }
+
+                            debug!(?id, "Withdrawing dynamic handler.");
+                        }
+                        // Routes are modeled as assertions; transient messages are not meaningful here.
+                        DataspaceUpdate::Message(..) => continue,
+                    }
+
+                    rebuild_router(&inner, &base, &handlers);
+                }
             }
-            DataspaceUpdate::Retracted(id) => {
-                if handlers.swap_remove(&id).is_none() {
-                    continue;
-                }
-
-                debug!(?id, "Withdrawing dynamic handler.");
-            }
-            // Routes are modeled as assertions; transient messages are not meaningful here.
-            DataspaceUpdate::Message(..) => continue,
         }
-
-        rebuild_router(&inner, &base, &handlers);
     }
 
     Ok(())

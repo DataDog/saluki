@@ -1,14 +1,4 @@
 //! HTTP server.
-//!
-//! [`HttpServer`] is a supervision subtree rather than a single worker.
-//! [`into_supervisor`][HttpServer::into_supervisor] turns a configured server into a [`Supervisor`] whose sole static
-//! child accepts connections, and whose dynamic children are the TLS handshakes, the connections themselves, and
-//! whatever `hyper` asks to have executed. The subtree binds its listener during initialization, and drains in-flight
-//! connections before it reports being done.
-//!
-//! It speaks HTTP/1.1 and HTTP/2, chosen per connection, which is what allows a single server to serve gRPC alongside
-//! REST-ful routes. See [`grpc`][crate::net::server::grpc] for the routing helpers that make that work, and
-//! [`Http2Config`] for the HTTP/2 knobs that gRPC deployments typically care about.
 
 use std::{
     convert::Infallible,
@@ -179,9 +169,7 @@ impl Http2Config {
 
 /// An HTTP server.
 ///
-/// Serves a set of routes over a connection-oriented listener, optionally with TLS. The server can't be run directly:
-/// [`into_supervisor`][Self::into_supervisor] turns it into the [`Supervisor`] that runs it, which is then added to
-/// another supervisor like any other child.
+/// Serves a set of routes (HTTP or gRPC) over a connection-oriented listener, optionally with TLS.
 ///
 /// # Routes
 ///
@@ -199,18 +187,15 @@ impl Http2Config {
 ///
 /// # Supervision
 ///
-/// The server runs as a subtree, not a single worker:
+/// The server must be run under supervision, and can be converted to a [`Supervisor`] to do so. A number of child workers
+/// handle various aspects of the server and connection lifecycle:
 ///
-/// - the **acceptor** is the sole static child. It binds the listen address during initialization, so a failure to
-///   bind is raised before anything starts serving, and a restart rebinds. That failure is an initialization error,
-///   which propagates out of the subtree without being retried.
-/// - a **TLS handshake** runs as its own dynamic child, so a slow or stalled handshake delays only itself rather than
-///   holding up every connection queued behind it on the listener.
-/// - a **connection** runs as its own dynamic child, and is drained rather than dropped when the subtree shuts down.
-/// - anything **`hyper` asks to execute** -- which for HTTP/2 is one future per stream, meaning per request -- runs as
-///   a dynamic child too. This is what makes per-request work visible in the process tree and in per-task metrics, at
-///   the cost of putting the supervisor's spawn queue on the per-request path. A stream `hyper` starts after the
-///   subtree has stopped accepting spawns, during a drain, is dropped rather than run.
+/// - A dedicated worker accepts new connections from the configured listener.
+/// - For TLS-enabled servers, an interstitial worker is spawned to handle the initial TLS handshake, which helps avoid
+///   head-of-line blocking when accepting subsequent connections due to the amount of time it can take to perform the TLS
+///   handshake.
+/// - Connections are driven on their own worker for isolation. - Background tasks (related to HTTP/2) may also be spawned
+///   as individual workers.
 ///
 /// # Shutdown
 ///
@@ -262,7 +247,7 @@ impl HttpServer {
     ///
     /// # Panics
     ///
-    /// Panics if `routes` defines a path that another route set already defines, which is [`Router::merge`]'s behavior.
+    /// Panics if `routes` defines the same path as an existing route on this server.
     pub fn add_routes(mut self, routes: Router) -> Self {
         self.http_routes = self.http_routes.merge(routes);
         self
@@ -394,16 +379,10 @@ impl HttpServer {
         self.server_id.clone().map(|sid| get_bound_address_id(&sid))
     }
 
-    /// Converts this server into the supervisor that runs it.
+    /// Converts this server into a supervisor.
     ///
-    /// The result is added to another supervisor like any other child, whether up front with
-    /// [`Supervisor::add_worker`] or while that supervisor runs, via
-    /// [`nested_supervisor`][saluki_core::runtime::nested_supervisor].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the supervisor can't be created, which can only happen for an empty name. The name is derived from a
-    /// non-empty constant, so this is unreachable.
+    /// The supervisor is configured to drive an accept loop on the configured listen address, and any resulting
+    /// connections will be spawned and handled on the supervisor.
     pub fn into_supervisor(self) -> Supervisor {
         let service = self.build_router();
         let bound_address_id = self.get_server_id();
