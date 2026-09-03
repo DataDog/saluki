@@ -28,8 +28,8 @@
 <a href=#28 id=28 data-nosnippet>28</a>//! # }
 <a href=#29 id=29 data-nosnippet>29</a>//! ```
 <a href=#30 id=30 data-nosnippet>30</a>//!
-<a href=#31 id=31 data-nosnippet>31</a>//! [`merge_grpc_routes`] is for callers that build and serve their own router, such as those still on
-<a href=#32 id=32 data-nosnippet>32</a>//! [`UnsupervisedHttpServer`][super::http::UnsupervisedHttpServer].
+<a href=#31 id=31 data-nosnippet>31</a>//! [`merge_grpc_routes`] is for callers that build their own router up-front and hand it over with
+<a href=#32 id=32 data-nosnippet>32</a>//! [`HttpServer::with_routes`][super::http::HttpServer::with_routes], rather than accumulating routes on the server.
 <a href=#33 id=33 data-nosnippet>33</a>
 <a href=#34 id=34 data-nosnippet>34</a></span><span class="kw">use </span>std::{
 <a href=#35 id=35 data-nosnippet>35</a>    convert::Infallible,

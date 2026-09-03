@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["accounting","api","bootstrap","config","dynamic_api","logging","metrics","util"]};
+window.SIDEBAR_ITEMS = {"mod":["accounting","api","bootstrap","config","logging","metrics","util"]};
