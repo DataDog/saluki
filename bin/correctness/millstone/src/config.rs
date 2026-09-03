@@ -32,6 +32,19 @@ pub enum TargetAddress {
     Grpc(String),
 }
 
+impl TargetAddress {
+    /// Returns the name of the transport this address uses.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
+            Self::UnixDatagram(_) => "unixgram",
+            Self::Unix(_) => "unix",
+            Self::Grpc(_) => "grpc",
+        }
+    }
+}
+
 impl TryFrom<String> for TargetAddress {
     type Error = String;
 

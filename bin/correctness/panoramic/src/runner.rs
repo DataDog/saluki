@@ -485,6 +485,8 @@ impl Runner {
         result.log_dir = Some(log_dir.clone());
 
         write_result_log(&result, &log_dir);
+        // Traffic retention runs before the report, so `result.json` lists the artifacts that are on disk.
+        crate::correctness::traffic::finalize(&log_dir, result.outcome);
         crate::machine_output::write_test_report(&result, &log_dir);
 
         if let Some(ref tx) = event_sender {

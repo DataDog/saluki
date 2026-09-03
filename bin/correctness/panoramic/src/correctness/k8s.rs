@@ -27,6 +27,7 @@ use crate::{
         analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
         config::{Config, TargetConfig},
         runner::make_error_result,
+        traffic::{self, Side},
     },
     reporter::TestResult,
     test::TestContext,
@@ -357,6 +358,22 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         }
         (Err(e), _) | (_, Err(e)) => return make_error_result(name, started, phases.completed(), e),
     };
+
+    // Persist what each side decoded before the analysis consumes it.
+    let traffic_dir = traffic::traffic_dir(tctx.log_dir());
+    for (side, data) in [(Side::Baseline, &baseline_data), (Side::Comparison, &comparison_data)] {
+        if let Err(e) = traffic::write_decoded(&traffic_dir, side, data) {
+            warn!(side = side.name(), error = %e, "Failed to write decoded telemetry capture.");
+        }
+    }
+
+    // The millstone container writes its input capture inside the pod, and the pod has already terminated by this
+    // point, so there is nothing left to read it out of. Say so in the manifest instead of leaving a silent gap.
+    traffic::record_input_unavailable(
+        &traffic_dir,
+        "This runtime does not capture millstone's input: the millstone pod exits when it finishes sending, so no \
+         running container is left to read the capture from.",
+    );
 
     let phase = phases.enter("analysis");
     let traces_options = match config.analysis_mode {

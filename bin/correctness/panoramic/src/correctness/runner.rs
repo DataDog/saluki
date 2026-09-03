@@ -16,12 +16,13 @@ use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, Instrument as _, Span};
+use tracing::{debug, error, info, info_span, warn, Instrument as _, Span};
 
 use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
     config::{Config, Runtime},
     sync::Coordinator,
+    traffic::{self, Side},
 };
 use crate::{
     assertions::AssertionResult,
@@ -36,6 +37,9 @@ const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
 const MILLSTONE_BASELINE_COMPLETION_FILE: &str = "/tmp/millstone-baseline-complete";
 const MILLSTONE_COMPARISON_COMPLETION_FILE: &str = "/tmp/millstone-comparison-complete";
 const MILLSTONE_COMPLETION_FILE: &str = "/tmp/millstone-complete";
+
+/// Where the test's traffic directory is mounted inside the shared millstone container.
+const MILLSTONE_TRAFFIC_INTERNAL: &str = "/traffic";
 const MILLSTONE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
 const MILLSTONE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
 const MILLSTONE_HEALTHCHECK_RETRIES: i64 = 3;
@@ -59,6 +63,8 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
 async fn run_docker_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
+    let log_dir = tctx.log_dir().to_path_buf();
+
     // Phases are marked on the shared tracker so the runner can name the one a test was in when a
     // deadline fires, and so their timings survive a test that never returns.
     let phases = tctx.phases.clone();
@@ -78,6 +84,14 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
         Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
     phase.finish();
+
+    // Persist what each side decoded before the analysis consumes it.
+    let traffic_dir = traffic::traffic_dir(&log_dir);
+    for (side, data) in [(Side::Baseline, &baseline_data), (Side::Comparison, &comparison_data)] {
+        if let Err(e) = traffic::write_decoded(&traffic_dir, side, data) {
+            warn!(side = side.name(), error = %e, "Failed to write decoded telemetry capture.");
+        }
+    }
 
     // Phase 3: analysis
     let phase = phases.enter("analysis");
@@ -257,6 +271,17 @@ impl CorrectnessRunner {
     ) -> Result<GroupRunner, GenericError> {
         debug!("Creating shared millstone group runner...");
 
+        // The capture lands in the test's log directory through a bind mount, so nothing has to be copied out of
+        // the container afterwards.
+        let host_traffic_dir = traffic::traffic_dir(self.tctx.log_dir());
+        let capture_args = match std::fs::create_dir_all(&host_traffic_dir) {
+            Ok(()) => format!(" --traffic-capture-dir {}", MILLSTONE_TRAFFIC_INTERNAL),
+            Err(e) => {
+                warn!(path = %host_traffic_dir.display(), error = %e, "Failed to create traffic capture directory. Continuing without an input capture.");
+                String::new()
+            }
+        };
+
         let millstone_binary = self
             .millstone_config
             .binary_path
@@ -269,7 +294,7 @@ impl CorrectnessRunner {
         let cmd = format!(
             "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml || exit 1; \
              sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml || exit 1; \
-             {bin} /tmp/millstone-baseline.toml --completion-file {baseline_complete} & P1=$!; \
+             {bin} /tmp/millstone-baseline.toml --completion-file {baseline_complete}{capture_args} & P1=$!; \
              {bin} /tmp/millstone-comparison.toml --completion-file {comparison_complete} & P2=$!; \
              trap 'trap - TERM INT; kill \"$P1\" \"$P2\" 2>/dev/null; \
                    wait \"$P1\" 2>/dev/null; wait \"$P2\" 2>/dev/null; exit 0' TERM INT; \
@@ -287,6 +312,7 @@ impl CorrectnessRunner {
             baseline_complete = MILLSTONE_BASELINE_COMPLETION_FILE,
             comparison_complete = MILLSTONE_COMPARISON_COMPLETION_FILE,
             complete = MILLSTONE_COMPLETION_FILE,
+            capture_args = capture_args,
         );
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
@@ -306,6 +332,8 @@ impl CorrectnessRunner {
             )
             // Bind-mount the original millstone.yaml—same as the single-millstone setup.
             .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
+            // Only the baseline run captures its input: both runs send byte-identical payloads from the same seed.
+            .with_bind_mount(&host_traffic_dir, MILLSTONE_TRAFFIC_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
             .with_volume_mount(
