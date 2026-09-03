@@ -51,57 +51,63 @@
 <a href=#51 id=51 data-nosnippet>51</a>//! only way to configure a child: [`ChildSpecification`] is the description it produces and carries no settings of its
 <a href=#52 id=52 data-nosnippet>52</a>//! own, so a combination the builder declines to offer can't be assembled around it.
 <a href=#53 id=53 data-nosnippet>53</a>//!
-<a href=#54 id=54 data-nosnippet>54</a>//! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
-<a href=#55 id=55 data-nosnippet>55</a>//! supervisor that shuts down before it reaches the child never starts it at all.
-<a href=#56 id=56 data-nosnippet>56</a>//!
-<a href=#57 id=57 data-nosnippet>57</a>//! # Supervision trees
+<a href=#54 id=54 data-nosnippet>54</a>//! A child that is itself a [`Supervisor`] can be handed to any of the above directly, which is all most callers need.
+<a href=#55 id=55 data-nosnippet>55</a>//! [`nested_supervisor`] (and [`SupervisorHandle::nested_supervisor`]) exists for the two settings that aren't
+<a href=#56 id=56 data-nosnippet>56</a>//! reachable that way -- the restart policy and significance. It matters most for a dynamically spawned subtree, which
+<a href=#57 id=57 data-nosnippet>57</a>//! would otherwise be [`temporary`][RestartType::Temporary] and so quietly stay dead once it terminated.
 <a href=#58 id=58 data-nosnippet>58</a>//!
-<a href=#59 id=59 data-nosnippet>59</a>//! As supervisors can be nested, this allows building a tree of supervisors (hence _supervision trees_) where leaf
-<a href=#60 id=60 data-nosnippet>60</a>//! supervisors manage workers specific to a certain area, and parent supervisors manage the leaf supervisors. For
-<a href=#61 id=61 data-nosnippet>61</a>//! example, for a server application serving multiple API endpoints, each endpoint might be managed by a separate
-<a href=#62 id=62 data-nosnippet>62</a>//! supervisor: a worker for accepting connections, a worker for each connection, and so on. Above those supervisors, a
-<a href=#63 id=63 data-nosnippet>63</a>//! parent supervisor manages each leaf supervisor, and potentially other workers that provide necessary services
-<a href=#64 id=64 data-nosnippet>64</a>//! utilized by each endpoint, such as logging, metrics, or other infrastructure services.
-<a href=#65 id=65 data-nosnippet>65</a>//!
-<a href=#66 id=66 data-nosnippet>66</a>//! As every supervisor can define its own specific restart strategy, and behavior, this allows for more granular
-<a href=#67 id=67 data-nosnippet>67</a>//! grouping and control over which set of workers must be restarted if a related worker fails, and how those failures
-<a href=#68 id=68 data-nosnippet>68</a>//! propagate up and down the supervision tree.
-<a href=#69 id=69 data-nosnippet>69</a>//!
-<a href=#70 id=70 data-nosnippet>70</a>//! # Examples
-<a href=#71 id=71 data-nosnippet>71</a>//!
-<a href=#72 id=72 data-nosnippet>72</a>//! See the `basic_supervisor` example which shows how supervisors and workers are composed together, as well as how
-<a href=#73 id=73 data-nosnippet>73</a>//! failed workers and supervisors are restarted.
-<a href=#74 id=74 data-nosnippet>74</a>
-<a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">mod </span>process;
-<a href=#76 id=76 data-nosnippet>76</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::process::get_sanitized_name;
-<a href=#77 id=77 data-nosnippet>77</a><span class="kw">pub use </span><span class="self">self</span>::process::Id <span class="kw">as </span>ProcessId;
-<a href=#78 id=78 data-nosnippet>78</a><span class="attr">#[cfg(test)]
-<a href=#79 id=79 data-nosnippet>79</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::process::Name;
-<a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a><span class="kw">pub mod </span>state;
-<a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a><span class="kw">mod </span>dedicated;
-<a href=#84 id=84 data-nosnippet>84</a><span class="kw">pub use </span><span class="self">self</span>::dedicated::{RuntimeConfiguration, RuntimeMode};
+<a href=#59 id=59 data-nosnippet>59</a>//! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
+<a href=#60 id=60 data-nosnippet>60</a>//! supervisor that shuts down before it reaches the child never starts it at all.
+<a href=#61 id=61 data-nosnippet>61</a>//!
+<a href=#62 id=62 data-nosnippet>62</a>//! # Supervision trees
+<a href=#63 id=63 data-nosnippet>63</a>//!
+<a href=#64 id=64 data-nosnippet>64</a>//! As supervisors can be nested, this allows building a tree of supervisors (hence _supervision trees_) where leaf
+<a href=#65 id=65 data-nosnippet>65</a>//! supervisors manage workers specific to a certain area, and parent supervisors manage the leaf supervisors. For
+<a href=#66 id=66 data-nosnippet>66</a>//! example, for a server application serving multiple API endpoints, each endpoint might be managed by a separate
+<a href=#67 id=67 data-nosnippet>67</a>//! supervisor: a worker for accepting connections, a worker for each connection, and so on. Above those supervisors, a
+<a href=#68 id=68 data-nosnippet>68</a>//! parent supervisor manages each leaf supervisor, and potentially other workers that provide necessary services
+<a href=#69 id=69 data-nosnippet>69</a>//! utilized by each endpoint, such as logging, metrics, or other infrastructure services.
+<a href=#70 id=70 data-nosnippet>70</a>//!
+<a href=#71 id=71 data-nosnippet>71</a>//! As every supervisor can define its own specific restart strategy, and behavior, this allows for more granular
+<a href=#72 id=72 data-nosnippet>72</a>//! grouping and control over which set of workers must be restarted if a related worker fails, and how those failures
+<a href=#73 id=73 data-nosnippet>73</a>//! propagate up and down the supervision tree.
+<a href=#74 id=74 data-nosnippet>74</a>//!
+<a href=#75 id=75 data-nosnippet>75</a>//! # Examples
+<a href=#76 id=76 data-nosnippet>76</a>//!
+<a href=#77 id=77 data-nosnippet>77</a>//! See the `basic_supervisor` example which shows how supervisors and workers are composed together, as well as how
+<a href=#78 id=78 data-nosnippet>78</a>//! failed workers and supervisors are restarted.
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a></span><span class="kw">mod </span>process;
+<a href=#81 id=81 data-nosnippet>81</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::process::get_sanitized_name;
+<a href=#82 id=82 data-nosnippet>82</a><span class="kw">pub use </span><span class="self">self</span>::process::Id <span class="kw">as </span>ProcessId;
+<a href=#83 id=83 data-nosnippet>83</a><span class="attr">#[cfg(test)]
+<a href=#84 id=84 data-nosnippet>84</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::process::Name;
 <a href=#85 id=85 data-nosnippet>85</a>
-<a href=#86 id=86 data-nosnippet>86</a><span class="kw">mod </span>restart;
-<a href=#87 id=87 data-nosnippet>87</a><span class="kw">pub use </span><span class="self">self</span>::restart::{RestartMode, RestartStrategy, RestartType};
-<a href=#88 id=88 data-nosnippet>88</a>
-<a href=#89 id=89 data-nosnippet>89</a><span class="kw">mod </span>supervisor;
-<a href=#90 id=90 data-nosnippet>90</a><span class="kw">pub use </span><span class="self">self</span>::supervisor::{
-<a href=#91 id=91 data-nosnippet>91</a>    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, LoweredChild, ShutdownStrategy,
-<a href=#92 id=92 data-nosnippet>92</a>    Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec, WorkerSpec,
-<a href=#93 id=93 data-nosnippet>93</a>};
-<a href=#94 id=94 data-nosnippet>94</a>
-<a href=#95 id=95 data-nosnippet>95</a><span class="kw">mod </span>spawn;
-<a href=#96 id=96 data-nosnippet>96</a><span class="kw">pub use </span><span class="self">self</span>::spawn::spawn;
-<a href=#97 id=97 data-nosnippet>97</a>
-<a href=#98 id=98 data-nosnippet>98</a><span class="kw">mod </span>builder;
-<a href=#99 id=99 data-nosnippet>99</a><span class="kw">pub use </span><span class="self">self</span>::builder::{
-<a href=#100 id=100 data-nosnippet>100</a>    supervisable, worker, BuilderState, CanTerminate, ChildBuilder, OneShot, Restartable, Terminable,
-<a href=#101 id=101 data-nosnippet>101</a>};
+<a href=#86 id=86 data-nosnippet>86</a><span class="kw">pub mod </span>state;
+<a href=#87 id=87 data-nosnippet>87</a>
+<a href=#88 id=88 data-nosnippet>88</a><span class="kw">mod </span>dedicated;
+<a href=#89 id=89 data-nosnippet>89</a><span class="kw">pub use </span><span class="self">self</span>::dedicated::{RuntimeConfiguration, RuntimeMode};
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a><span class="kw">mod </span>restart;
+<a href=#92 id=92 data-nosnippet>92</a><span class="kw">pub use </span><span class="self">self</span>::restart::{RestartMode, RestartStrategy, RestartType};
+<a href=#93 id=93 data-nosnippet>93</a>
+<a href=#94 id=94 data-nosnippet>94</a><span class="kw">mod </span>supervisor;
+<a href=#95 id=95 data-nosnippet>95</a><span class="kw">pub use </span><span class="self">self</span>::supervisor::{
+<a href=#96 id=96 data-nosnippet>96</a>    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, LoweredChild, ShutdownStrategy,
+<a href=#97 id=97 data-nosnippet>97</a>    Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec, WorkerSpec,
+<a href=#98 id=98 data-nosnippet>98</a>};
+<a href=#99 id=99 data-nosnippet>99</a>
+<a href=#100 id=100 data-nosnippet>100</a><span class="kw">mod </span>spawn;
+<a href=#101 id=101 data-nosnippet>101</a><span class="kw">pub use </span><span class="self">self</span>::spawn::spawn;
 <a href=#102 id=102 data-nosnippet>102</a>
-<a href=#103 id=103 data-nosnippet>103</a><span class="kw">mod </span>workers;
-<a href=#104 id=104 data-nosnippet>104</a><span class="kw">pub use </span><span class="self">self</span>::workers::{FnWorker, IntoWorkerResult};
-<a href=#105 id=105 data-nosnippet>105</a>
-<a href=#106 id=106 data-nosnippet>106</a><span class="kw">mod </span>worker_state;
+<a href=#103 id=103 data-nosnippet>103</a><span class="kw">mod </span>builder;
+<a href=#104 id=104 data-nosnippet>104</a><span class="kw">pub use </span><span class="self">self</span>::builder::{
+<a href=#105 id=105 data-nosnippet>105</a>    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
+<a href=#106 id=106 data-nosnippet>106</a>    OneShot, Restartable, Terminable,
+<a href=#107 id=107 data-nosnippet>107</a>};
+<a href=#108 id=108 data-nosnippet>108</a>
+<a href=#109 id=109 data-nosnippet>109</a><span class="kw">mod </span>workers;
+<a href=#110 id=110 data-nosnippet>110</a><span class="kw">pub use </span><span class="self">self</span>::workers::{FnWorker, IntoWorkerResult};
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a><span class="kw">mod </span>worker_state;
 </code></pre></div></section></main></body></html>
