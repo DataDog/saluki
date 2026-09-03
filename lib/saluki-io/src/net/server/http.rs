@@ -50,7 +50,7 @@ const DEFAULT_GRPC_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2 * 60 * 6
 /// Conventional gRPC keepalive timeout: how long the server waits for a PONG before closing the connection.
 const DEFAULT_GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Name a server reports when it has no identifier of its own.
+/// Default server name.
 const DEFAULT_SERVER_NAME: &str = "http_server";
 
 /// How long a connection is given to drain when no timeout is configured.
