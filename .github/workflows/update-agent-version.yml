@@ -180,7 +180,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: updatePR.data.number,
-              labels: [prLabel, 'automated', 'changelog/no-changelog']
+              labels: [prLabel, 'automated']
             });
 
             // Look for other open PRs for updating the Agent version, and close them out so this one takes precedence.
