@@ -4212,7 +4212,7 @@ mod supervision {
     use saluki_core::support::SubsystemIdentifier;
     use saluki_core::topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext};
     use saluki_io::net::listener::Listener;
-    use saluki_io::net::ListenAddress;
+    use saluki_io::net::{BoundListenAddress, ListenAddress};
     use stringtheory::MetaString;
     use tokio::net::UdpSocket;
     use tokio::runtime::Handle;
@@ -4274,16 +4274,13 @@ mod supervision {
     ) -> Harness {
         let component_context = ComponentContext::test_source("dogstatsd");
 
-        // Bind an ephemeral port and read back what we got, so parallel tests don't collide on a fixed one.
-        let probe = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("should bind a probe socket");
-        let listen_addr = probe.local_addr().expect("probe should have an address");
-        drop(probe);
-
-        let listener = Listener::from_listen_address(ListenAddress::Udp(listen_addr), None)
+        let listener = Listener::from_listen_address(ListenAddress::Udp("127.0.0.1:0".parse().unwrap()), None)
             .await
             .expect("listener should bind");
+        let listen_addr = match listener.bound_listen_address() {
+            BoundListenAddress::Udp(addr) => addr,
+            other => panic!("expected a bound UDP address, got {other:?}"),
+        };
 
         let (io_buffer_pool, io_buffer_pool_shrinker) = build_io_buffer_pool(
             io_buffer_count,
@@ -4513,16 +4510,16 @@ mod supervision {
         let health_registry = HealthRegistry::new();
 
         // A TCP listener, so there are real connections to accept.
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+        let tcp_listener = Listener::from_listen_address(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap()), None)
             .await
-            .expect("should bind a probe socket");
-        let listen_addr = probe.local_addr().expect("probe should have an address");
-        drop(probe);
+            .expect("listener should bind");
+        let listen_addr = match tcp_listener.bound_listen_address() {
+            BoundListenAddress::Tcp(addr) => addr,
+            other => panic!("expected a bound TCP address, got {other:?}"),
+        };
 
         let mut harness = build_source(&health_registry).await;
-        harness.source.listeners = vec![Listener::from_listen_address(ListenAddress::Tcp(listen_addr), None)
-            .await
-            .expect("listener should bind")];
+        harness.source.listeners = vec![tcp_listener];
 
         let Harness {
             source,
