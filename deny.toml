@@ -38,4 +38,8 @@ allow-git = [
 
   # Yet-to-be-published version of incremental Protocol Buffers encoding library.
   "https://github.com/tobz/piecemeal.git",
+
+  # Pinned to a specific revision so we can select our workspace's `rand` version, ahead of a crates.io release that
+  # supports it.
+  "https://github.com/antithesishq/antithesis-sdk-rust",
 ]
