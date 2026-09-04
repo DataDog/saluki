@@ -73,6 +73,9 @@ impl OnDemandPIDResolver {
 
     /// Resolves the current process's container entity from local cgroup membership.
     ///
+    /// The entity may be either a container ID or the inode of the process's cgroup controller, depending on which
+    /// could be established; the latter relies on the cgroups metadata collector having aliased it to the container.
+    ///
     /// On non-Linux platforms, or when the process is not in a recognizable container cgroup, this returns `None`.
     pub fn resolve_self_container(&self) -> Option<EntityId> {
         #[cfg(target_os = "linux")]

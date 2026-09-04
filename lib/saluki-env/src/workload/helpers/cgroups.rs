@@ -27,6 +27,7 @@ const DEFAULT_HOST_MAPPED_CGROUPFS_ROOT: &str = "/host/sys/fs/cgroup";
 const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
 const CGROUPS_V2_CONTROLLERS_FILE: &str = "cgroup.controllers";
 const SELF_CGROUP_PATH: &str = "/proc/self/cgroup";
+const SELF_CGROUPFS_PATH: &str = "/sys/fs/cgroup";
 
 /// Highest inode number that can't refer to a specific cgroup controller.
 ///
@@ -622,6 +623,43 @@ pub(crate) fn get_self_container_id(interner: &GenericMapInterner) -> Option<Met
     get_container_id_from_cgroup_lines(&lines, interner)
 }
 
+/// Gets the inode of the cgroup controller the current process is attached to.
+///
+/// When the process runs in its own cgroup namespace, the namespace's root *is* the process's own cgroup, so this
+/// identifies the container without needing a path that names it. Inodes are the same on both sides of a namespace
+/// boundary, so the value matches what a traversal of the host's hierarchy reports for the same cgroup.
+///
+/// Returns `None` when the process shares the host's cgroup namespace, since the namespace root is then the hierarchy
+/// root rather than any particular container, and its inode is rejected as reserved.
+///
+/// Like [`get_self_container_id`], this intentionally reads the process's own `/sys/fs/cgroup` rather than a configured
+/// cgroupfs root, which may refer to the host.
+pub(crate) fn get_self_cgroup_controller_inode() -> Option<u64> {
+    cgroup_controller_inode(Path::new(SELF_CGROUPFS_PATH))
+}
+
+fn cgroup_controller_inode(path: &Path) -> Option<u64> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            debug!(error = %e, path = %path.display(), "Failed to query metadata for own cgroup controller.");
+            return None;
+        }
+    };
+
+    let controller_inode = metadata.ino();
+    if !is_usable_controller_inode(controller_inode) {
+        debug!(
+            controller_inode,
+            path = %path.display(),
+            "Own cgroup controller reports a reserved inode, which can't identify a container.",
+        );
+        return None;
+    }
+
+    Some(controller_inode)
+}
+
 fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInterner) -> Option<MetaString> {
     lines
         .iter()
@@ -760,7 +798,7 @@ mod tests {
         collections::HashSet,
         fs, io,
         num::NonZeroUsize,
-        os::unix::fs::PermissionsExt as _,
+        os::unix::fs::{MetadataExt as _, PermissionsExt as _},
         path::{Path, PathBuf},
     };
 
@@ -771,9 +809,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
-        is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry, CgroupsReader, HierarchyReader,
-        TraversalResult, DEFAULT_PROCFS_ROOT,
+        cgroup_controller_inode, extract_container_id, extract_container_id_from_path,
+        get_container_id_from_cgroup_lines, is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry,
+        CgroupsReader, HierarchyReader, TraversalResult, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -1323,5 +1361,22 @@ mod tests {
         // collector reap every alias it holds.
         assert!(!traversal.is_complete());
         assert!(traversal.cgroups.is_empty());
+    }
+
+    #[test]
+    fn cgroup_controller_inode_reports_a_real_directory_inode() {
+        let root = tempdir().unwrap();
+
+        let inode = cgroup_controller_inode(root.path()).expect("a real directory has a usable inode");
+
+        assert_eq!(inode, fs::metadata(root.path()).unwrap().ino());
+        assert!(is_usable_controller_inode(inode));
+    }
+
+    #[test]
+    fn cgroup_controller_inode_returns_none_for_a_missing_path() {
+        let root = tempdir().unwrap();
+
+        assert_eq!(cgroup_controller_inode(&root.path().join("missing")), None);
     }
 }
