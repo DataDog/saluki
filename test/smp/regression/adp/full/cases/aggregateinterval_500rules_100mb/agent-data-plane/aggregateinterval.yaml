@@ -1,0 +1,1001 @@
+metric_aggregation_intervals:
+  - metric_prefix: tagvalue.metric.10000
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10001
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10002
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10003
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10004
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10005
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10006
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10007
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10008
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10009
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10010
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10011
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10012
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10013
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10014
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10015
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10016
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10017
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10018
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10019
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10020
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10021
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10022
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10023
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10024
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10025
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10026
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10027
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10028
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10029
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10030
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10031
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10032
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10033
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10034
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10035
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10036
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10037
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10038
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10039
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10040
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10041
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10042
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10043
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10044
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10045
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10046
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10047
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10048
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10049
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10050
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10051
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10052
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10053
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10054
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10055
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10056
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10057
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10058
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10059
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10060
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10061
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10062
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10063
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10064
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10065
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10066
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10067
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10068
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10069
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10070
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10071
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10072
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10073
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10074
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10075
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10076
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10077
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10078
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10079
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10080
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10081
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10082
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10083
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10084
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10085
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10086
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10087
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10088
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10089
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10090
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10091
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10092
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10093
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10094
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10095
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10096
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10097
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10098
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10099
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10100
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10101
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10102
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10103
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10104
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10105
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10106
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10107
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10108
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10109
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10110
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10111
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10112
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10113
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10114
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10115
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10116
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10117
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10118
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10119
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10120
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10121
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10122
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10123
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10124
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10125
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10126
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10127
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10128
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10129
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10130
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10131
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10132
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10133
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10134
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10135
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10136
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10137
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10138
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10139
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10140
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10141
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10142
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10143
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10144
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10145
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10146
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10147
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10148
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10149
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10150
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10151
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10152
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10153
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10154
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10155
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10156
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10157
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10158
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10159
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10160
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10161
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10162
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10163
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10164
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10165
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10166
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10167
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10168
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10169
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10170
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10171
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10172
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10173
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10174
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10175
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10176
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10177
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10178
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10179
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10180
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10181
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10182
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10183
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10184
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10185
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10186
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10187
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10188
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10189
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10190
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10191
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10192
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10193
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10194
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10195
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10196
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10197
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10198
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10199
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10200
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10201
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10202
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10203
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10204
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10205
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10206
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10207
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10208
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10209
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10210
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10211
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10212
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10213
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10214
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10215
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10216
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10217
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10218
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10219
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10220
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10221
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10222
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10223
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10224
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10225
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10226
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10227
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10228
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10229
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10230
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10231
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10232
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10233
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10234
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10235
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10236
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10237
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10238
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10239
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10240
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10241
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10242
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10243
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10244
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10245
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10246
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10247
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10248
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10249
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10250
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10251
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10252
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10253
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10254
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10255
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10256
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10257
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10258
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10259
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10260
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10261
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10262
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10263
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10264
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10265
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10266
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10267
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10268
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10269
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10270
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10271
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10272
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10273
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10274
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10275
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10276
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10277
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10278
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10279
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10280
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10281
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10282
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10283
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10284
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10285
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10286
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10287
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10288
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10289
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10290
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10291
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10292
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10293
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10294
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10295
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10296
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10297
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10298
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10299
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10300
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10301
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10302
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10303
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10304
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10305
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10306
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10307
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10308
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10309
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10310
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10311
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10312
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10313
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10314
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10315
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10316
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10317
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10318
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10319
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10320
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10321
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10322
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10323
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10324
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10325
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10326
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10327
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10328
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10329
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10330
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10331
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10332
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10333
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10334
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10335
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10336
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10337
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10338
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10339
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10340
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10341
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10342
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10343
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10344
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10345
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10346
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10347
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10348
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10349
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10350
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10351
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10352
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10353
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10354
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10355
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10356
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10357
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10358
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10359
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10360
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10361
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10362
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10363
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10364
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10365
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10366
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10367
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10368
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10369
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10370
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10371
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10372
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10373
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10374
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10375
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10376
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10377
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10378
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10379
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10380
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10381
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10382
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10383
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10384
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10385
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10386
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10387
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10388
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10389
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10390
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10391
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10392
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10393
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10394
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10395
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10396
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10397
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10398
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10399
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10400
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10401
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10402
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10403
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10404
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10405
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10406
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10407
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10408
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10409
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10410
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10411
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10412
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10413
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10414
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10415
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10416
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10417
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10418
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10419
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10420
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10421
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10422
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10423
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10424
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10425
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10426
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10427
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10428
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10429
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10430
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10431
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10432
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10433
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10434
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10435
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10436
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10437
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10438
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10439
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10440
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10441
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10442
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10443
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10444
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10445
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10446
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10447
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10448
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10449
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10450
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10451
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10452
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10453
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10454
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10455
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10456
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10457
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10458
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10459
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10460
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10461
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10462
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10463
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10464
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10465
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10466
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10467
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10468
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10469
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10470
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10471
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10472
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10473
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10474
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10475
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10476
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10477
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10478
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10479
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10480
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10481
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10482
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10483
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10484
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10485
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10486
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10487
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10488
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10489
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10490
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10491
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10492
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10493
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10494
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10495
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10496
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10497
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10498
+    interval_seconds: 5
+  - metric_prefix: tagvalue.metric.10499
+    interval_seconds: 5

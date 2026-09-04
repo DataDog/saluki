@@ -36,6 +36,22 @@ static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntr
     default: None,
 };
 
+static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "counter_expiry_seconds",
+    env_vars: &[],
+    value_type: ValueType::Integer,
+    default: None,
+};
+
+static METRIC_AGGREGATION_INTERVALS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "metric_aggregation_intervals",
+    env_vars: &["DD_METRIC_AGGREGATION_INTERVALS"],
+    value_type: ValueType::String,
+    default: Some("[]"),
+};
+
 crate::declare_annotations! {
     /// `aggregate_window_duration_seconds`
     AGGREGATE_WINDOW_DURATION_SECONDS = SalukiAnnotation {
@@ -74,7 +90,7 @@ crate::declare_annotations! {
     DOGSTATSD_FLUSH_INCOMPLETE_BUCKETS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_FLUSH_INCOMPLETE_BUCKETS,
         support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
+        additional_yaml_paths: &["aggregate_flush_open_windows"],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
@@ -136,11 +152,22 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
+    /// `counter_expiry_seconds`
+    COUNTER_EXPIRY_SECONDS = SalukiAnnotation {
+        schema: &COUNTER_EXPIRY_SECONDS_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
+    };
     /// `dogstatsd_expiry_seconds`-Counter value expiry (seconds)
     DOGSTATSD_EXPIRY_SECONDS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_EXPIRY_SECONDS,
         support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
+        additional_yaml_paths: &["counter_expiry_seconds"],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
@@ -157,5 +184,16 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: Some(r#"["0.95"]"#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
+    };
+    /// `metric_aggregation_intervals`
+    METRIC_AGGREGATION_INTERVALS = SalukiAnnotation {
+        schema: &METRIC_AGGREGATION_INTERVALS_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some(r#"[{"metric_prefix":"smoke.","interval_seconds":5}]"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }

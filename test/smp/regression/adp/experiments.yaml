@@ -341,6 +341,28 @@ templates:
                 tag_values:
                   - "{{ exp_vars.value_prefix }}{{ lading_range(0, exp_vars.value_pool) }}"
 
+  # Aggregation interval prefix lookup under the same fixed DogStatsD corpus as the tag value
+  # allow-list experiments. Only the ADP configuration file changes, which keeps the zero-rule
+  # case directly comparable to the existing DogStatsD path.
+  aggregateinterval_dsd_uds_100mb:
+    extends: tagvaluefilter_dsd_uds_100mb
+    variables:
+      rule_mode: none
+      rule_metric_first: 10000
+      rule_metrics: 0
+      interval_seconds: 5
+    target:
+      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/aggregateinterval.yaml run
+      files:
+        tagvaluefilter.yaml: null
+        aggregateinterval.yaml:
+          source: shared/aggregateinterval.yaml.j2
+
+  aggregateinterval_idle:
+    extends: aggregateinterval_dsd_uds_100mb
+    lading:
+      generator: []
+
   # Base template for OTLP experiments
   otlp_base:
     target:
@@ -885,3 +907,46 @@ experiments:
       rule_metric_first: 20000
       rule_metrics: 10000
       allowed_values: 12
+
+  # ============================================================================
+  # Metric aggregation interval experiments
+  # ============================================================================
+
+  # Idle variants isolate the retained configuration and compiled prefix table.
+  - name: aggregateinterval_0rules_idle
+    extends: aggregateinterval_idle
+    optimization_goal: memory
+
+  - name: aggregateinterval_10000rules_idle
+    extends: aggregateinterval_idle
+    optimization_goal: memory
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 10000
+
+  # Traffic variants compare the unchanged zero-rule path, table scaling, and a full-table miss.
+  - name: aggregateinterval_0rules_100mb
+    extends: aggregateinterval_dsd_uds_100mb
+    optimization_goal: cpu
+
+  - name: aggregateinterval_500rules_100mb
+    extends: aggregateinterval_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 500
+
+  - name: aggregateinterval_10000rules_100mb
+    extends: aggregateinterval_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 10000
+
+  - name: aggregateinterval_10000rules_miss_100mb
+    extends: aggregateinterval_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: per_metric
+      rule_metric_first: 20000
+      rule_metrics: 10000

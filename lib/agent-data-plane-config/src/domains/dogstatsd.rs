@@ -270,7 +270,13 @@ pub struct Aggregation {
     /// Length, in seconds, of each aggregation window. (not in Datadog Agent config schema)
     pub window_duration_seconds: NonZeroU64,
 
-    /// Maximum number of contexts held per aggregation window. (not in Datadog Agent config schema)
+    /// Metric-name prefix rules that override the default aggregation window. Defaults to an empty
+    /// list, which routes every metric to `window_duration_seconds`. Operators may add rules to
+    /// trade lower point volume for coarser granularity, or higher point volume for finer
+    /// granularity. (not in Datadog Agent config schema)
+    pub metric_intervals: Vec<MetricAggregationInterval>,
+
+    /// Maximum number of contexts held across all aggregation windows. (not in Datadog Agent config schema)
     pub context_limit: usize,
 
     /// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
@@ -304,9 +310,9 @@ pub struct Aggregation {
 impl Default for Aggregation {
     fn default() -> Self {
         Self {
-            // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
             // seeded only when set; absent that, these defaults stand.
             window_duration_seconds: DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+            metric_intervals: Vec::new(),
             context_limit: DEFAULT_AGGREGATE_CONTEXT_LIMIT,
             flush_interval: DEFAULT_AGGREGATE_FLUSH_INTERVAL,
             passthrough_idle_flush_timeout: DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT,
@@ -319,6 +325,18 @@ impl Default for Aggregation {
             aggregator_tag_filter_cache_capacity: 0,
         }
     }
+}
+
+/// An aggregation-window override selected by metric-name prefix.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MetricAggregationInterval {
+    /// Non-empty, case-sensitive metric-name prefix used for matching. Prefixes cannot overlap
+    /// another configured prefix. Whitespace is preserved and matched exactly.
+    pub metric_prefix: String,
+
+    /// Aggregation window length in whole seconds, from 1 through 60 inclusive. Shorter intervals
+    /// provide finer granularity at higher point, CPU, and memory cost.
+    pub interval_seconds: u64,
 }
 
 /// DogStatsD metric mapper.

@@ -589,45 +589,47 @@ ways that are not yet fully characterized.
 
 The following settings are specific to ADP and have no equivalent in the core agent.
 
-| Config Key                                                      | Description                                | Default        |
-| --------------------------------------------------------------- | ------------------------------------------ | -------------- |
-| `aggregate_context_limit`                                       | Max contexts per aggregation window        |                |
-| `aggregate_flush_interval`                                      | Aggregator flush period                    |                |
-| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay             |                |
-| `aggregate_window_duration_seconds`                             | Aggregation window size                    |                |
-| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect               |                |
-| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions       |                |
-| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation        |                |
-| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |                |
-| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
-| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
-| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
-| `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
-| `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived        |
-| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        | true           |
-| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT | false          |
-| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count               | 32768          |
-| `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
-| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 | 500000         |
-| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         | 500000         |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity       | 64KiB          |
-| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              | 0.000000003845 |
-| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
-| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
-| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP  | 0              |
-| `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
-| `memory_limit`                                                  | Process memory limit                       |                |
-| `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
-| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list            | []             |
-| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
-| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts            |                |
-| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                    |                |
-| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport               |                |
-| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind         |                |
-| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP      |                |
-| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |                |
-| `otlp_string_interner_size`                                     | OTLP context interner capacity             |                |
-| `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |                |
+| Config Key                                                      | Description                                   | Default        |
+| --------------------------------------------------------------- | --------------------------------------------- | -------------- |
+| `aggregate_context_limit`                                       | Max contexts across aggregation windows       |                |
+| `aggregate_flush_interval`                                      | Aggregator flush period                       |                |
+| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay                |                |
+| `aggregate_window_duration_seconds`                             | Aggregation window size                       |                |
+| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect                  |                |
+| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions          |                |
+| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation           |                |
+| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation             |                |
+| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation        |                |
+| `counter_expiry_seconds`                                        | Legacy idle counter keep-alive duration alias | 300            |
+| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                 | localhost:6317 |
+| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                 | localhost:6318 |
+| `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                    | 3              |
+| `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)             | derived        |
+| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts           | true           |
+| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT    | false          |
+| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                  | 32768          |
+| `dogstatsd_buffer_count`                                        | Baseline receive buffers                      | 128            |
+| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                    | 500000         |
+| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                            | 500000         |
+| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity          | 64KiB          |
+| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates                 | 0.000000003845 |
+| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                    | true           |
+| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner     |                |
+| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP     | 0              |
+| `flush_timeout_secs`                                            | Encoder flush timeout (secs)                  |                |
+| `memory_limit`                                                  | Process memory limit                          |                |
+| `memory_slop_factor`                                            | Memory accounting slop fraction               | 0.25           |
+| `metric_aggregation_intervals`                                  | Per-prefix DogStatsD aggregation windows      | []             |
+| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list               | []             |
+| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts      |                |
+| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts               |                |
+| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                       |                |
+| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport                  |                |
+| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind            |                |
+| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP         |                |
+| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity           |                |
+| `otlp_string_interner_size`                                     | OTLP context interner capacity                |                |
+| `serializer_max_metrics_per_payload`                            | Max metrics per payload                       |                |
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 
@@ -675,6 +677,28 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `metric_aggregation_intervals`
+
+Each entry selects an aggregation window from 1 through 60 whole seconds, inclusive, for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Whitespace is preserved and matched exactly. Rules apply after mapper rewrites and metric namespace prefixing.
+
+```yaml
+metric_aggregation_intervals:
+  - metric_prefix: high_resolution.
+    interval_seconds: 1
+  - metric_prefix: archival.
+    interval_seconds: 60
+```
+
+Set `DD_METRIC_AGGREGATION_INTERVALS` to the equivalent JSON array when configuring ADP through the environment:
+
+```shell
+DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_seconds":1}]'
+```
+
+### `counter_expiry_seconds`
+
+Legacy ADP spelling for `dogstatsd_expiry_seconds`. If both spellings are set, configuration loading fails rather than choosing one.
 
 ### `dogstatsd_mapper_string_interner_size`
 
