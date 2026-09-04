@@ -66,13 +66,12 @@ impl CgroupsConfiguration {
         let cgroupfs_root = match config.try_get_typed::<PathBuf>("container_cgroup_root")? {
             Some(path) => path,
             None => {
-                if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
+                // Detected separately from procfs: the two are independent mounts, and a deployment can map one
+                // without the other. Keying this off the procfs feature would point us at a cgroupfs path that isn't
+                // there, or make us miss the host's hierarchy in favor of our own container's.
+                if feature_detector.is_feature_available(Feature::HostMappedCgroupfs) {
                     PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
                 } else {
-                    // TODO: Consider if we need to do anything specific for Amazon Linux [1] or does the referenced code only
-                    // matter for cgroups v1?
-                    //
-                    // [1]: https://github.com/DataDog/datadog-agent/blob/fe75b815c2f135f0d2ea85d7a57a8fc8cbf56bd9/pkg/config/setup/config.go#L1172-L1173
                     PathBuf::from(DEFAULT_CGROUPFS_ROOT)
                 }
             }
@@ -764,6 +763,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use saluki_config::ConfigurationLoader;
     use stringtheory::{
         interning::{GenericMapInterner, InternedString, Interner as _},
         MetaString,
@@ -772,8 +772,9 @@ mod tests {
 
     use super::{
         extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
-        is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry, CgroupsReader, HierarchyReader,
-        TraversalResult, DEFAULT_PROCFS_ROOT,
+        is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry, CgroupsConfiguration, CgroupsReader,
+        Feature, FeatureDetector, HierarchyReader, TraversalResult, DEFAULT_CGROUPFS_ROOT,
+        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -1323,5 +1324,44 @@ mod tests {
         // collector reap every alias it holds.
         assert!(!traversal.is_complete());
         assert!(traversal.cgroups.is_empty());
+    }
+
+    async fn cgroups_config_with(detected: Feature) -> CgroupsConfiguration {
+        let (config, _updates_tx) = ConfigurationLoader::for_tests(None, None, false).await;
+
+        CgroupsConfiguration::from_configuration(&config, FeatureDetector::from_detected_features(detected))
+            .expect("configuration should load")
+    }
+
+    #[tokio::test]
+    async fn cgroupfs_root_defaults_to_local_when_nothing_is_host_mapped() {
+        let config = cgroups_config_with(Feature::none()).await;
+
+        assert_eq!(config.procfs_path(), Path::new(DEFAULT_PROCFS_ROOT));
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_CGROUPFS_ROOT));
+    }
+
+    #[tokio::test]
+    async fn cgroupfs_root_follows_host_mapped_cgroupfs() {
+        let config = cgroups_config_with(Feature::HostMappedCgroupfs).await;
+
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT));
+    }
+
+    #[tokio::test]
+    async fn cgroupfs_root_ignores_host_mapped_procfs() {
+        // procfs and cgroupfs are independent mounts. A deployment that maps one without the other used to get the
+        // host cgroupfs path off the back of the procfs mount, pointing the reader at a path that isn't there.
+        let config = cgroups_config_with(Feature::HostMappedProcfs).await;
+
+        assert_eq!(config.procfs_path(), Path::new(DEFAULT_HOST_MAPPED_PROCFS_ROOT));
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_CGROUPFS_ROOT));
+    }
+
+    #[tokio::test]
+    async fn procfs_root_ignores_host_mapped_cgroupfs() {
+        let config = cgroups_config_with(Feature::HostMappedCgroupfs).await;
+
+        assert_eq!(config.procfs_path(), Path::new(DEFAULT_PROCFS_ROOT));
     }
 }
