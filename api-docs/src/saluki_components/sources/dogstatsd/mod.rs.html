@@ -4212,7 +4212,7 @@
 <a href=#4212 id=4212 data-nosnippet>4212</a>    <span class="kw">use </span>saluki_core::support::SubsystemIdentifier;
 <a href=#4213 id=4213 data-nosnippet>4213</a>    <span class="kw">use </span>saluki_core::topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext};
 <a href=#4214 id=4214 data-nosnippet>4214</a>    <span class="kw">use </span>saluki_io::net::listener::Listener;
-<a href=#4215 id=4215 data-nosnippet>4215</a>    <span class="kw">use </span>saluki_io::net::ListenAddress;
+<a href=#4215 id=4215 data-nosnippet>4215</a>    <span class="kw">use </span>saluki_io::net::{BoundListenAddress, ListenAddress};
 <a href=#4216 id=4216 data-nosnippet>4216</a>    <span class="kw">use </span>stringtheory::MetaString;
 <a href=#4217 id=4217 data-nosnippet>4217</a>    <span class="kw">use </span>tokio::net::UdpSocket;
 <a href=#4218 id=4218 data-nosnippet>4218</a>    <span class="kw">use </span>tokio::runtime::Handle;
@@ -4274,285 +4274,282 @@
 <a href=#4274 id=4274 data-nosnippet>4274</a>    ) -&gt; Harness {
 <a href=#4275 id=4275 data-nosnippet>4275</a>        <span class="kw">let </span>component_context = ComponentContext::test_source(<span class="string">"dogstatsd"</span>);
 <a href=#4276 id=4276 data-nosnippet>4276</a>
-<a href=#4277 id=4277 data-nosnippet>4277</a>        <span class="comment">// Bind an ephemeral port and read back what we got, so parallel tests don't collide on a fixed one.
-<a href=#4278 id=4278 data-nosnippet>4278</a>        </span><span class="kw">let </span>probe = UdpSocket::bind(<span class="string">"127.0.0.1:0"</span>)
-<a href=#4279 id=4279 data-nosnippet>4279</a>            .<span class="kw">await
-<a href=#4280 id=4280 data-nosnippet>4280</a>            </span>.expect(<span class="string">"should bind a probe socket"</span>);
-<a href=#4281 id=4281 data-nosnippet>4281</a>        <span class="kw">let </span>listen_addr = probe.local_addr().expect(<span class="string">"probe should have an address"</span>);
-<a href=#4282 id=4282 data-nosnippet>4282</a>        drop(probe);
-<a href=#4283 id=4283 data-nosnippet>4283</a>
-<a href=#4284 id=4284 data-nosnippet>4284</a>        <span class="kw">let </span>listener = Listener::from_listen_address(ListenAddress::Udp(listen_addr), <span class="prelude-val">None</span>)
-<a href=#4285 id=4285 data-nosnippet>4285</a>            .<span class="kw">await
-<a href=#4286 id=4286 data-nosnippet>4286</a>            </span>.expect(<span class="string">"listener should bind"</span>);
-<a href=#4287 id=4287 data-nosnippet>4287</a>
-<a href=#4288 id=4288 data-nosnippet>4288</a>        <span class="kw">let </span>(io_buffer_pool, io_buffer_pool_shrinker) = build_io_buffer_pool(
-<a href=#4289 id=4289 data-nosnippet>4289</a>            io_buffer_count,
-<a href=#4290 id=4290 data-nosnippet>4290</a>            io_buffer_count,
-<a href=#4291 id=4291 data-nosnippet>4291</a>            DogStatsDConfiguration::for_test().buffer_size,
-<a href=#4292 id=4292 data-nosnippet>4292</a>        );
-<a href=#4293 id=4293 data-nosnippet>4293</a>
-<a href=#4294 id=4294 data-nosnippet>4294</a>        <span class="kw">let </span>tags_resolver = TagsResolverBuilder::for_tests().build();
-<a href=#4295 id=4295 data-nosnippet>4295</a>        <span class="kw">let </span>context_resolver = ContextResolverBuilder::for_tests()
-<a href=#4296 id=4296 data-nosnippet>4296</a>            .with_tags_resolver(<span class="prelude-val">Some</span>(tags_resolver.clone()))
-<a href=#4297 id=4297 data-nosnippet>4297</a>            .build();
-<a href=#4298 id=4298 data-nosnippet>4298</a>
-<a href=#4299 id=4299 data-nosnippet>4299</a>        <span class="kw">let </span>source = Box::new(DogStatsD {
-<a href=#4300 id=4300 data-nosnippet>4300</a>            listeners: <span class="macro">vec!</span>[listener],
-<a href=#4301 id=4301 data-nosnippet>4301</a>            decoder_worker_count: NonZeroUsize::new(DECODER_WORKERS).expect(<span class="string">"decoder count should be non-zero"</span>),
-<a href=#4302 id=4302 data-nosnippet>4302</a>            io_buffer_pool,
-<a href=#4303 id=4303 data-nosnippet>4303</a>            io_buffer_queue_capacity: <span class="number">16</span>,
-<a href=#4304 id=4304 data-nosnippet>4304</a>            io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
-<a href=#4305 id=4305 data-nosnippet>4305</a>            codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
-<a href=#4306 id=4306 data-nosnippet>4306</a>            context_resolvers: ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver),
-<a href=#4307 id=4307 data-nosnippet>4307</a>            default_hostname: MetaString::from_static(<span class="string">"test-host"</span>),
-<a href=#4308 id=4308 data-nosnippet>4308</a>            enabled_filter: EnablePayloadsFilter::default(),
-<a href=#4309 id=4309 data-nosnippet>4309</a>            origin_detection_enabled: <span class="bool-val">false</span>,
-<a href=#4310 id=4310 data-nosnippet>4310</a>            origin_telemetry_enabled: <span class="bool-val">false</span>,
-<a href=#4311 id=4311 data-nosnippet>4311</a>            stream_log_too_big: <span class="bool-val">false</span>,
-<a href=#4312 id=4312 data-nosnippet>4312</a>            disable_verbose_logs: <span class="bool-val">false</span>,
-<a href=#4313 id=4313 data-nosnippet>4313</a>            eol_required: EolRequired::default(),
-<a href=#4314 id=4314 data-nosnippet>4314</a>            additional_tags: Vec::&lt;String&gt;::new().into(),
-<a href=#4315 id=4315 data-nosnippet>4315</a>            capture_entity_resolver: <span class="prelude-val">None</span>,
-<a href=#4316 id=4316 data-nosnippet>4316</a>            traffic_capture: TrafficCapture::new(PathBuf::new(), <span class="number">1</span>),
-<a href=#4317 id=4317 data-nosnippet>4317</a>            packet_forwarder_target: <span class="prelude-val">None</span>,
-<a href=#4318 id=4318 data-nosnippet>4318</a>        });
-<a href=#4319 id=4319 data-nosnippet>4319</a>
-<a href=#4320 id=4320 data-nosnippet>4320</a>        <span class="comment">// Only the `metrics` output is wired up: these tests feed counters, so nothing reaches the other two.
-<a href=#4321 id=4321 data-nosnippet>4321</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>dispatcher = EventsDispatcher::new(component_context.clone());
-<a href=#4322 id=4322 data-nosnippet>4322</a>        <span class="kw">let </span>metrics_output = OutputName::Given(<span class="string">"metrics"</span>.into());
-<a href=#4323 id=4323 data-nosnippet>4323</a>        dispatcher
-<a href=#4324 id=4324 data-nosnippet>4324</a>            .add_output(metrics_output.clone())
-<a href=#4325 id=4325 data-nosnippet>4325</a>            .expect(<span class="string">"metrics output should be added"</span>);
-<a href=#4326 id=4326 data-nosnippet>4326</a>        <span class="kw">let </span>(metrics_tx, metrics_rx) = mpsc::channel(output_capacity);
-<a href=#4327 id=4327 data-nosnippet>4327</a>        dispatcher
-<a href=#4328 id=4328 data-nosnippet>4328</a>            .attach_sender_to_output(<span class="kw-2">&amp;</span>metrics_output, metrics_tx)
-<a href=#4329 id=4329 data-nosnippet>4329</a>            .expect(<span class="string">"metrics output should accept a sender"</span>);
-<a href=#4330 id=4330 data-nosnippet>4330</a>
-<a href=#4331 id=4331 data-nosnippet>4331</a>        <span class="kw">let </span>topology_context = TopologyContext::new(
-<a href=#4332 id=4332 data-nosnippet>4332</a>            Arc::from(<span class="string">"test"</span>),
-<a href=#4333 id=4333 data-nosnippet>4333</a>            MemoryLimiter::noop(),
-<a href=#4334 id=4334 data-nosnippet>4334</a>            health_registry.clone(),
-<a href=#4335 id=4335 data-nosnippet>4335</a>            Handle::current(),
-<a href=#4336 id=4336 data-nosnippet>4336</a>            DataspaceRegistry::new(),
-<a href=#4337 id=4337 data-nosnippet>4337</a>        );
-<a href=#4338 id=4338 data-nosnippet>4338</a>        <span class="kw">let </span>health = health_registry
-<a href=#4339 id=4339 data-nosnippet>4339</a>            .register_component(<span class="kw-2">&amp;</span>SubsystemIdentifier::from_dotted(<span class="string">"test.dogstatsd"</span>))
-<a href=#4340 id=4340 data-nosnippet>4340</a>            .expect(<span class="string">"component was not previously registered"</span>);
-<a href=#4341 id=4341 data-nosnippet>4341</a>
-<a href=#4342 id=4342 data-nosnippet>4342</a>        <span class="kw">let </span><span class="kw-2">mut </span>context = SourceContext::new(
-<a href=#4343 id=4343 data-nosnippet>4343</a>            <span class="kw-2">&amp;</span>topology_context,
-<a href=#4344 id=4344 data-nosnippet>4344</a>            <span class="kw-2">&amp;</span>component_context,
-<a href=#4345 id=4345 data-nosnippet>4345</a>            ComponentRegistry::default(),
-<a href=#4346 id=4346 data-nosnippet>4346</a>            health,
-<a href=#4347 id=4347 data-nosnippet>4347</a>            dispatcher,
-<a href=#4348 id=4348 data-nosnippet>4348</a>        );
+<a href=#4277 id=4277 data-nosnippet>4277</a>        <span class="kw">let </span>listener = Listener::from_listen_address(ListenAddress::Udp(<span class="string">"127.0.0.1:0"</span>.parse().unwrap()), <span class="prelude-val">None</span>)
+<a href=#4278 id=4278 data-nosnippet>4278</a>            .<span class="kw">await
+<a href=#4279 id=4279 data-nosnippet>4279</a>            </span>.expect(<span class="string">"listener should bind"</span>);
+<a href=#4280 id=4280 data-nosnippet>4280</a>        <span class="kw">let </span>listen_addr = <span class="kw">match </span>listener.bound_listen_address() {
+<a href=#4281 id=4281 data-nosnippet>4281</a>            BoundListenAddress::Udp(addr) =&gt; addr,
+<a href=#4282 id=4282 data-nosnippet>4282</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected a bound UDP address, got {other:?}"</span>),
+<a href=#4283 id=4283 data-nosnippet>4283</a>        };
+<a href=#4284 id=4284 data-nosnippet>4284</a>
+<a href=#4285 id=4285 data-nosnippet>4285</a>        <span class="kw">let </span>(io_buffer_pool, io_buffer_pool_shrinker) = build_io_buffer_pool(
+<a href=#4286 id=4286 data-nosnippet>4286</a>            io_buffer_count,
+<a href=#4287 id=4287 data-nosnippet>4287</a>            io_buffer_count,
+<a href=#4288 id=4288 data-nosnippet>4288</a>            DogStatsDConfiguration::for_test().buffer_size,
+<a href=#4289 id=4289 data-nosnippet>4289</a>        );
+<a href=#4290 id=4290 data-nosnippet>4290</a>
+<a href=#4291 id=4291 data-nosnippet>4291</a>        <span class="kw">let </span>tags_resolver = TagsResolverBuilder::for_tests().build();
+<a href=#4292 id=4292 data-nosnippet>4292</a>        <span class="kw">let </span>context_resolver = ContextResolverBuilder::for_tests()
+<a href=#4293 id=4293 data-nosnippet>4293</a>            .with_tags_resolver(<span class="prelude-val">Some</span>(tags_resolver.clone()))
+<a href=#4294 id=4294 data-nosnippet>4294</a>            .build();
+<a href=#4295 id=4295 data-nosnippet>4295</a>
+<a href=#4296 id=4296 data-nosnippet>4296</a>        <span class="kw">let </span>source = Box::new(DogStatsD {
+<a href=#4297 id=4297 data-nosnippet>4297</a>            listeners: <span class="macro">vec!</span>[listener],
+<a href=#4298 id=4298 data-nosnippet>4298</a>            decoder_worker_count: NonZeroUsize::new(DECODER_WORKERS).expect(<span class="string">"decoder count should be non-zero"</span>),
+<a href=#4299 id=4299 data-nosnippet>4299</a>            io_buffer_pool,
+<a href=#4300 id=4300 data-nosnippet>4300</a>            io_buffer_queue_capacity: <span class="number">16</span>,
+<a href=#4301 id=4301 data-nosnippet>4301</a>            io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
+<a href=#4302 id=4302 data-nosnippet>4302</a>            codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
+<a href=#4303 id=4303 data-nosnippet>4303</a>            context_resolvers: ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver),
+<a href=#4304 id=4304 data-nosnippet>4304</a>            default_hostname: MetaString::from_static(<span class="string">"test-host"</span>),
+<a href=#4305 id=4305 data-nosnippet>4305</a>            enabled_filter: EnablePayloadsFilter::default(),
+<a href=#4306 id=4306 data-nosnippet>4306</a>            origin_detection_enabled: <span class="bool-val">false</span>,
+<a href=#4307 id=4307 data-nosnippet>4307</a>            origin_telemetry_enabled: <span class="bool-val">false</span>,
+<a href=#4308 id=4308 data-nosnippet>4308</a>            stream_log_too_big: <span class="bool-val">false</span>,
+<a href=#4309 id=4309 data-nosnippet>4309</a>            disable_verbose_logs: <span class="bool-val">false</span>,
+<a href=#4310 id=4310 data-nosnippet>4310</a>            eol_required: EolRequired::default(),
+<a href=#4311 id=4311 data-nosnippet>4311</a>            additional_tags: Vec::&lt;String&gt;::new().into(),
+<a href=#4312 id=4312 data-nosnippet>4312</a>            capture_entity_resolver: <span class="prelude-val">None</span>,
+<a href=#4313 id=4313 data-nosnippet>4313</a>            traffic_capture: TrafficCapture::new(PathBuf::new(), <span class="number">1</span>),
+<a href=#4314 id=4314 data-nosnippet>4314</a>            packet_forwarder_target: <span class="prelude-val">None</span>,
+<a href=#4315 id=4315 data-nosnippet>4315</a>        });
+<a href=#4316 id=4316 data-nosnippet>4316</a>
+<a href=#4317 id=4317 data-nosnippet>4317</a>        <span class="comment">// Only the `metrics` output is wired up: these tests feed counters, so nothing reaches the other two.
+<a href=#4318 id=4318 data-nosnippet>4318</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>dispatcher = EventsDispatcher::new(component_context.clone());
+<a href=#4319 id=4319 data-nosnippet>4319</a>        <span class="kw">let </span>metrics_output = OutputName::Given(<span class="string">"metrics"</span>.into());
+<a href=#4320 id=4320 data-nosnippet>4320</a>        dispatcher
+<a href=#4321 id=4321 data-nosnippet>4321</a>            .add_output(metrics_output.clone())
+<a href=#4322 id=4322 data-nosnippet>4322</a>            .expect(<span class="string">"metrics output should be added"</span>);
+<a href=#4323 id=4323 data-nosnippet>4323</a>        <span class="kw">let </span>(metrics_tx, metrics_rx) = mpsc::channel(output_capacity);
+<a href=#4324 id=4324 data-nosnippet>4324</a>        dispatcher
+<a href=#4325 id=4325 data-nosnippet>4325</a>            .attach_sender_to_output(<span class="kw-2">&amp;</span>metrics_output, metrics_tx)
+<a href=#4326 id=4326 data-nosnippet>4326</a>            .expect(<span class="string">"metrics output should accept a sender"</span>);
+<a href=#4327 id=4327 data-nosnippet>4327</a>
+<a href=#4328 id=4328 data-nosnippet>4328</a>        <span class="kw">let </span>topology_context = TopologyContext::new(
+<a href=#4329 id=4329 data-nosnippet>4329</a>            Arc::from(<span class="string">"test"</span>),
+<a href=#4330 id=4330 data-nosnippet>4330</a>            MemoryLimiter::noop(),
+<a href=#4331 id=4331 data-nosnippet>4331</a>            health_registry.clone(),
+<a href=#4332 id=4332 data-nosnippet>4332</a>            Handle::current(),
+<a href=#4333 id=4333 data-nosnippet>4333</a>            DataspaceRegistry::new(),
+<a href=#4334 id=4334 data-nosnippet>4334</a>        );
+<a href=#4335 id=4335 data-nosnippet>4335</a>        <span class="kw">let </span>health = health_registry
+<a href=#4336 id=4336 data-nosnippet>4336</a>            .register_component(<span class="kw-2">&amp;</span>SubsystemIdentifier::from_dotted(<span class="string">"test.dogstatsd"</span>))
+<a href=#4337 id=4337 data-nosnippet>4337</a>            .expect(<span class="string">"component was not previously registered"</span>);
+<a href=#4338 id=4338 data-nosnippet>4338</a>
+<a href=#4339 id=4339 data-nosnippet>4339</a>        <span class="kw">let </span><span class="kw-2">mut </span>context = SourceContext::new(
+<a href=#4340 id=4340 data-nosnippet>4340</a>            <span class="kw-2">&amp;</span>topology_context,
+<a href=#4341 id=4341 data-nosnippet>4341</a>            <span class="kw-2">&amp;</span>component_context,
+<a href=#4342 id=4342 data-nosnippet>4342</a>            ComponentRegistry::default(),
+<a href=#4343 id=4343 data-nosnippet>4343</a>            health,
+<a href=#4344 id=4344 data-nosnippet>4344</a>            dispatcher,
+<a href=#4345 id=4345 data-nosnippet>4345</a>        );
+<a href=#4346 id=4346 data-nosnippet>4346</a>
+<a href=#4347 id=4347 data-nosnippet>4347</a>        <span class="kw">let </span><span class="kw-2">mut </span>shutdown_coordinator = ShutdownCoordinator::default();
+<a href=#4348 id=4348 data-nosnippet>4348</a>        context.set_shutdown_handle_for_test(shutdown_coordinator.register());
 <a href=#4349 id=4349 data-nosnippet>4349</a>
-<a href=#4350 id=4350 data-nosnippet>4350</a>        <span class="kw">let </span><span class="kw-2">mut </span>shutdown_coordinator = ShutdownCoordinator::default();
-<a href=#4351 id=4351 data-nosnippet>4351</a>        context.set_shutdown_handle_for_test(shutdown_coordinator.register());
-<a href=#4352 id=4352 data-nosnippet>4352</a>
-<a href=#4353 id=4353 data-nosnippet>4353</a>        Harness {
-<a href=#4354 id=4354 data-nosnippet>4354</a>            source,
-<a href=#4355 id=4355 data-nosnippet>4355</a>            context,
-<a href=#4356 id=4356 data-nosnippet>4356</a>            shutdown_coordinator,
-<a href=#4357 id=4357 data-nosnippet>4357</a>            metrics_rx,
-<a href=#4358 id=4358 data-nosnippet>4358</a>            listen_addr,
-<a href=#4359 id=4359 data-nosnippet>4359</a>        }
-<a href=#4360 id=4360 data-nosnippet>4360</a>    }
-<a href=#4361 id=4361 data-nosnippet>4361</a>
-<a href=#4362 id=4362 data-nosnippet>4362</a>    <span class="attr">#[tokio::test]
-<a href=#4363 id=4363 data-nosnippet>4363</a>    </span><span class="kw">async fn </span>background_work_runs_as_supervised_children() {
-<a href=#4364 id=4364 data-nosnippet>4364</a>        <span class="comment">// The pool shrinker, each datagram decoder, and each listener are supervised children rather than detached
-<a href=#4365 id=4365 data-nosnippet>4365</a>        // tasks, so they are all accounted for while the source runs and all gone once it stops.
-<a href=#4366 id=4366 data-nosnippet>4366</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
-<a href=#4367 id=4367 data-nosnippet>4367</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
-<a href=#4368 id=4368 data-nosnippet>4368</a>        <span class="kw">let </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
-<a href=#4369 id=4369 data-nosnippet>4369</a>        <span class="kw">let </span>Harness {
-<a href=#4370 id=4370 data-nosnippet>4370</a>            source,
-<a href=#4371 id=4371 data-nosnippet>4371</a>            context,
-<a href=#4372 id=4372 data-nosnippet>4372</a>            shutdown_coordinator,
-<a href=#4373 id=4373 data-nosnippet>4373</a>            ..
-<a href=#4374 id=4374 data-nosnippet>4374</a>        } = harness;
-<a href=#4375 id=4375 data-nosnippet>4375</a>
-<a href=#4376 id=4376 data-nosnippet>4376</a>        <span class="kw">let </span>run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
-<a href=#4377 id=4377 data-nosnippet>4377</a>
-<a href=#4378 id=4378 data-nosnippet>4378</a>        supervisor.wait_for_children(udp_child_count()).<span class="kw">await</span>;
-<a href=#4379 id=4379 data-nosnippet>4379</a>
-<a href=#4380 id=4380 data-nosnippet>4380</a>        shutdown_coordinator.shutdown();
-<a href=#4381 id=4381 data-nosnippet>4381</a>        timeout(RUN_TIMEOUT, run)
-<a href=#4382 id=4382 data-nosnippet>4382</a>            .<span class="kw">await
-<a href=#4383 id=4383 data-nosnippet>4383</a>            </span>.expect(<span class="string">"source should stop on shutdown"</span>)
-<a href=#4384 id=4384 data-nosnippet>4384</a>            .expect(<span class="string">"source task should not panic"</span>)
-<a href=#4385 id=4385 data-nosnippet>4385</a>            .expect(<span class="string">"source should stop cleanly"</span>);
-<a href=#4386 id=4386 data-nosnippet>4386</a>
-<a href=#4387 id=4387 data-nosnippet>4387</a>        <span class="comment">// Everything the source drains explicitly -- listener, stream handler, decoders -- is gone by the time `run`
-<a href=#4388 id=4388 data-nosnippet>4388</a>        // returns. The pool shrinker is the one exception, and deliberately so: it is brutally stopped, so it runs until
-<a href=#4389 id=4389 data-nosnippet>4389</a>        // the supervisor drops it rather than being waited on.
-<a href=#4390 id=4390 data-nosnippet>4390</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
-<a href=#4391 id=4391 data-nosnippet>4391</a>
-<a href=#4392 id=4392 data-nosnippet>4392</a>        <span class="comment">// A clean result is the assertion: `ShutdownTimedOut` would mean a child ignored shutdown and was aborted.
-<a href=#4393 id=4393 data-nosnippet>4393</a>        </span><span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#4394 id=4394 data-nosnippet>4394</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"every child should have stopped on its own: {result:?}"</span>);
-<a href=#4395 id=4395 data-nosnippet>4395</a>    }
-<a href=#4396 id=4396 data-nosnippet>4396</a>
-<a href=#4397 id=4397 data-nosnippet>4397</a>    <span class="attr">#[tokio::test]
-<a href=#4398 id=4398 data-nosnippet>4398</a>    </span><span class="kw">async fn </span>run_does_not_return_until_the_decoders_have_drained() {
-<a href=#4399 id=4399 data-nosnippet>4399</a>        <span class="comment">// The drain guarantee that matters: work already queued when shutdown is signalled must still be decoded and
-<a href=#4400 id=4400 data-nosnippet>4400</a>        // dispatched. The decoders deliberately ignore shutdown for exactly this reason, exiting only once the
-<a href=#4401 id=4401 data-nosnippet>4401</a>        // listeners have dropped their senders and the queue is empty -- and `run` waits for that.
-<a href=#4402 id=4402 data-nosnippet>4402</a>        //
-<a href=#4403 id=4403 data-nosnippet>4403</a>        // Rather than race a datagram against shutdown, this pins a decoder open: the metrics output holds a single
-<a href=#4404 id=4404 data-nosnippet>4404</a>        // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. `run` must not return
-<a href=#4405 id=4405 data-nosnippet>4405</a>        // while that is true, no matter that shutdown has been signalled.
-<a href=#4406 id=4406 data-nosnippet>4406</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
-<a href=#4407 id=4407 data-nosnippet>4407</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
-<a href=#4408 id=4408 data-nosnippet>4408</a>        <span class="kw">let </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
-<a href=#4409 id=4409 data-nosnippet>4409</a>        <span class="kw">let </span>Harness {
-<a href=#4410 id=4410 data-nosnippet>4410</a>            source,
-<a href=#4411 id=4411 data-nosnippet>4411</a>            context,
-<a href=#4412 id=4412 data-nosnippet>4412</a>            shutdown_coordinator,
-<a href=#4413 id=4413 data-nosnippet>4413</a>            <span class="kw-2">mut </span>metrics_rx,
-<a href=#4414 id=4414 data-nosnippet>4414</a>            listen_addr,
-<a href=#4415 id=4415 data-nosnippet>4415</a>        } = harness;
+<a href=#4350 id=4350 data-nosnippet>4350</a>        Harness {
+<a href=#4351 id=4351 data-nosnippet>4351</a>            source,
+<a href=#4352 id=4352 data-nosnippet>4352</a>            context,
+<a href=#4353 id=4353 data-nosnippet>4353</a>            shutdown_coordinator,
+<a href=#4354 id=4354 data-nosnippet>4354</a>            metrics_rx,
+<a href=#4355 id=4355 data-nosnippet>4355</a>            listen_addr,
+<a href=#4356 id=4356 data-nosnippet>4356</a>        }
+<a href=#4357 id=4357 data-nosnippet>4357</a>    }
+<a href=#4358 id=4358 data-nosnippet>4358</a>
+<a href=#4359 id=4359 data-nosnippet>4359</a>    <span class="attr">#[tokio::test]
+<a href=#4360 id=4360 data-nosnippet>4360</a>    </span><span class="kw">async fn </span>background_work_runs_as_supervised_children() {
+<a href=#4361 id=4361 data-nosnippet>4361</a>        <span class="comment">// The pool shrinker, each datagram decoder, and each listener are supervised children rather than detached
+<a href=#4362 id=4362 data-nosnippet>4362</a>        // tasks, so they are all accounted for while the source runs and all gone once it stops.
+<a href=#4363 id=4363 data-nosnippet>4363</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
+<a href=#4364 id=4364 data-nosnippet>4364</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
+<a href=#4365 id=4365 data-nosnippet>4365</a>        <span class="kw">let </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
+<a href=#4366 id=4366 data-nosnippet>4366</a>        <span class="kw">let </span>Harness {
+<a href=#4367 id=4367 data-nosnippet>4367</a>            source,
+<a href=#4368 id=4368 data-nosnippet>4368</a>            context,
+<a href=#4369 id=4369 data-nosnippet>4369</a>            shutdown_coordinator,
+<a href=#4370 id=4370 data-nosnippet>4370</a>            ..
+<a href=#4371 id=4371 data-nosnippet>4371</a>        } = harness;
+<a href=#4372 id=4372 data-nosnippet>4372</a>
+<a href=#4373 id=4373 data-nosnippet>4373</a>        <span class="kw">let </span>run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
+<a href=#4374 id=4374 data-nosnippet>4374</a>
+<a href=#4375 id=4375 data-nosnippet>4375</a>        supervisor.wait_for_children(udp_child_count()).<span class="kw">await</span>;
+<a href=#4376 id=4376 data-nosnippet>4376</a>
+<a href=#4377 id=4377 data-nosnippet>4377</a>        shutdown_coordinator.shutdown();
+<a href=#4378 id=4378 data-nosnippet>4378</a>        timeout(RUN_TIMEOUT, run)
+<a href=#4379 id=4379 data-nosnippet>4379</a>            .<span class="kw">await
+<a href=#4380 id=4380 data-nosnippet>4380</a>            </span>.expect(<span class="string">"source should stop on shutdown"</span>)
+<a href=#4381 id=4381 data-nosnippet>4381</a>            .expect(<span class="string">"source task should not panic"</span>)
+<a href=#4382 id=4382 data-nosnippet>4382</a>            .expect(<span class="string">"source should stop cleanly"</span>);
+<a href=#4383 id=4383 data-nosnippet>4383</a>
+<a href=#4384 id=4384 data-nosnippet>4384</a>        <span class="comment">// Everything the source drains explicitly -- listener, stream handler, decoders -- is gone by the time `run`
+<a href=#4385 id=4385 data-nosnippet>4385</a>        // returns. The pool shrinker is the one exception, and deliberately so: it is brutally stopped, so it runs until
+<a href=#4386 id=4386 data-nosnippet>4386</a>        // the supervisor drops it rather than being waited on.
+<a href=#4387 id=4387 data-nosnippet>4387</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
+<a href=#4388 id=4388 data-nosnippet>4388</a>
+<a href=#4389 id=4389 data-nosnippet>4389</a>        <span class="comment">// A clean result is the assertion: `ShutdownTimedOut` would mean a child ignored shutdown and was aborted.
+<a href=#4390 id=4390 data-nosnippet>4390</a>        </span><span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#4391 id=4391 data-nosnippet>4391</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"every child should have stopped on its own: {result:?}"</span>);
+<a href=#4392 id=4392 data-nosnippet>4392</a>    }
+<a href=#4393 id=4393 data-nosnippet>4393</a>
+<a href=#4394 id=4394 data-nosnippet>4394</a>    <span class="attr">#[tokio::test]
+<a href=#4395 id=4395 data-nosnippet>4395</a>    </span><span class="kw">async fn </span>run_does_not_return_until_the_decoders_have_drained() {
+<a href=#4396 id=4396 data-nosnippet>4396</a>        <span class="comment">// The drain guarantee that matters: work already queued when shutdown is signalled must still be decoded and
+<a href=#4397 id=4397 data-nosnippet>4397</a>        // dispatched. The decoders deliberately ignore shutdown for exactly this reason, exiting only once the
+<a href=#4398 id=4398 data-nosnippet>4398</a>        // listeners have dropped their senders and the queue is empty -- and `run` waits for that.
+<a href=#4399 id=4399 data-nosnippet>4399</a>        //
+<a href=#4400 id=4400 data-nosnippet>4400</a>        // Rather than race a datagram against shutdown, this pins a decoder open: the metrics output holds a single
+<a href=#4401 id=4401 data-nosnippet>4401</a>        // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. `run` must not return
+<a href=#4402 id=4402 data-nosnippet>4402</a>        // while that is true, no matter that shutdown has been signalled.
+<a href=#4403 id=4403 data-nosnippet>4403</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
+<a href=#4404 id=4404 data-nosnippet>4404</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
+<a href=#4405 id=4405 data-nosnippet>4405</a>        <span class="kw">let </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
+<a href=#4406 id=4406 data-nosnippet>4406</a>        <span class="kw">let </span>Harness {
+<a href=#4407 id=4407 data-nosnippet>4407</a>            source,
+<a href=#4408 id=4408 data-nosnippet>4408</a>            context,
+<a href=#4409 id=4409 data-nosnippet>4409</a>            shutdown_coordinator,
+<a href=#4410 id=4410 data-nosnippet>4410</a>            <span class="kw-2">mut </span>metrics_rx,
+<a href=#4411 id=4411 data-nosnippet>4411</a>            listen_addr,
+<a href=#4412 id=4412 data-nosnippet>4412</a>        } = harness;
+<a href=#4413 id=4413 data-nosnippet>4413</a>
+<a href=#4414 id=4414 data-nosnippet>4414</a>        <span class="kw">let </span><span class="kw-2">mut </span>run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
+<a href=#4415 id=4415 data-nosnippet>4415</a>        supervisor.wait_for_children(udp_child_count()).<span class="kw">await</span>;
 <a href=#4416 id=4416 data-nosnippet>4416</a>
-<a href=#4417 id=4417 data-nosnippet>4417</a>        <span class="kw">let </span><span class="kw-2">mut </span>run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
-<a href=#4418 id=4418 data-nosnippet>4418</a>        supervisor.wait_for_children(udp_child_count()).<span class="kw">await</span>;
-<a href=#4419 id=4419 data-nosnippet>4419</a>
-<a href=#4420 id=4420 data-nosnippet>4420</a>        <span class="kw">let </span>client = UdpSocket::bind(<span class="string">"127.0.0.1:0"</span>).<span class="kw">await</span>.expect(<span class="string">"client should bind"</span>);
-<a href=#4421 id=4421 data-nosnippet>4421</a>
-<a href=#4422 id=4422 data-nosnippet>4422</a>        <span class="comment">// Establish that the pipeline works, and leave the output empty again.
-<a href=#4423 id=4423 data-nosnippet>4423</a>        </span>client
-<a href=#4424 id=4424 data-nosnippet>4424</a>            .send_to(<span class="string">b"first.metric:1|c"</span>, listen_addr)
+<a href=#4417 id=4417 data-nosnippet>4417</a>        <span class="kw">let </span>client = UdpSocket::bind(<span class="string">"127.0.0.1:0"</span>).<span class="kw">await</span>.expect(<span class="string">"client should bind"</span>);
+<a href=#4418 id=4418 data-nosnippet>4418</a>
+<a href=#4419 id=4419 data-nosnippet>4419</a>        <span class="comment">// Establish that the pipeline works, and leave the output empty again.
+<a href=#4420 id=4420 data-nosnippet>4420</a>        </span>client
+<a href=#4421 id=4421 data-nosnippet>4421</a>            .send_to(<span class="string">b"first.metric:1|c"</span>, listen_addr)
+<a href=#4422 id=4422 data-nosnippet>4422</a>            .<span class="kw">await
+<a href=#4423 id=4423 data-nosnippet>4423</a>            </span>.expect(<span class="string">"client should send"</span>);
+<a href=#4424 id=4424 data-nosnippet>4424</a>        <span class="kw">let </span>buffer = timeout(RUN_TIMEOUT, metrics_rx.recv())
 <a href=#4425 id=4425 data-nosnippet>4425</a>            .<span class="kw">await
-<a href=#4426 id=4426 data-nosnippet>4426</a>            </span>.expect(<span class="string">"client should send"</span>);
-<a href=#4427 id=4427 data-nosnippet>4427</a>        <span class="kw">let </span>buffer = timeout(RUN_TIMEOUT, metrics_rx.recv())
-<a href=#4428 id=4428 data-nosnippet>4428</a>            .<span class="kw">await
-<a href=#4429 id=4429 data-nosnippet>4429</a>            </span>.expect(<span class="string">"the first datagram should be decoded and dispatched"</span>)
-<a href=#4430 id=4430 data-nosnippet>4430</a>            .expect(<span class="string">"the metrics output should stay open"</span>);
-<a href=#4431 id=4431 data-nosnippet>4431</a>        <span class="macro">assert_eq!</span>(buffer.len(), <span class="number">1</span>);
-<a href=#4432 id=4432 data-nosnippet>4432</a>
-<a href=#4433 id=4433 data-nosnippet>4433</a>        <span class="comment">// Now back the output up: the first of these fills the single slot, the second blocks a decoder.
-<a href=#4434 id=4434 data-nosnippet>4434</a>        </span><span class="kw">for </span>payload <span class="kw">in </span>[<span class="string">b"second.metric:1|c"</span>.as_slice(), <span class="string">b"third.metric:1|c"</span>.as_slice()] {
-<a href=#4435 id=4435 data-nosnippet>4435</a>            client.send_to(payload, listen_addr).<span class="kw">await</span>.expect(<span class="string">"client should send"</span>);
-<a href=#4436 id=4436 data-nosnippet>4436</a>        }
-<a href=#4437 id=4437 data-nosnippet>4437</a>        tokio::time::sleep(BACKPRESSURE_SETTLE).<span class="kw">await</span>;
-<a href=#4438 id=4438 data-nosnippet>4438</a>
-<a href=#4439 id=4439 data-nosnippet>4439</a>        shutdown_coordinator.shutdown();
-<a href=#4440 id=4440 data-nosnippet>4440</a>
-<a href=#4441 id=4441 data-nosnippet>4441</a>        <span class="comment">// `run` must still be waiting on the blocked decoder. Without the drain it would return here.
-<a href=#4442 id=4442 data-nosnippet>4442</a>        </span>tokio::time::sleep(BACKPRESSURE_SETTLE).<span class="kw">await</span>;
-<a href=#4443 id=4443 data-nosnippet>4443</a>        <span class="macro">assert!</span>(
-<a href=#4444 id=4444 data-nosnippet>4444</a>            !run.is_finished(),
-<a href=#4445 id=4445 data-nosnippet>4445</a>            <span class="string">"`run` returned while a decoder was still mid-dispatch"
-<a href=#4446 id=4446 data-nosnippet>4446</a>        </span>);
-<a href=#4447 id=4447 data-nosnippet>4447</a>
-<a href=#4448 id=4448 data-nosnippet>4448</a>        <span class="comment">// Draining the output unblocks the decoder, which lets the drain -- and so `run` -- complete.
-<a href=#4449 id=4449 data-nosnippet>4449</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>drained = <span class="number">1</span>;
-<a href=#4450 id=4450 data-nosnippet>4450</a>        <span class="kw">let </span>result = <span class="kw">loop </span>{
-<a href=#4451 id=4451 data-nosnippet>4451</a>            <span class="macro">select!</span> {
-<a href=#4452 id=4452 data-nosnippet>4452</a>                run_result = <span class="kw-2">&amp;mut </span>run =&gt; <span class="kw">break </span>run_result,
-<a href=#4453 id=4453 data-nosnippet>4453</a>                maybe_buffer = metrics_rx.recv() =&gt; <span class="kw">match </span>maybe_buffer {
-<a href=#4454 id=4454 data-nosnippet>4454</a>                    <span class="prelude-val">Some</span>(buffer) =&gt; drained += buffer.len(),
-<a href=#4455 id=4455 data-nosnippet>4455</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break </span>(<span class="kw-2">&amp;mut </span>run).<span class="kw">await</span>,
-<a href=#4456 id=4456 data-nosnippet>4456</a>                },
-<a href=#4457 id=4457 data-nosnippet>4457</a>            }
-<a href=#4458 id=4458 data-nosnippet>4458</a>        };
-<a href=#4459 id=4459 data-nosnippet>4459</a>        result
-<a href=#4460 id=4460 data-nosnippet>4460</a>            .expect(<span class="string">"source task should not panic"</span>)
-<a href=#4461 id=4461 data-nosnippet>4461</a>            .expect(<span class="string">"source should stop cleanly"</span>);
-<a href=#4462 id=4462 data-nosnippet>4462</a>
-<a href=#4463 id=4463 data-nosnippet>4463</a>        <span class="comment">// `run` returning and the last buffer arriving are concurrent, so collect whatever is still queued. The
-<a href=#4464 id=4464 data-nosnippet>4464</a>        // source's dispatcher is gone by now, so this terminates as soon as the channel is empty.
-<a href=#4465 id=4465 data-nosnippet>4465</a>        </span><span class="kw">while let </span><span class="prelude-val">Some</span>(buffer) = metrics_rx.recv().<span class="kw">await </span>{
-<a href=#4466 id=4466 data-nosnippet>4466</a>            drained += buffer.len();
-<a href=#4467 id=4467 data-nosnippet>4467</a>        }
+<a href=#4426 id=4426 data-nosnippet>4426</a>            </span>.expect(<span class="string">"the first datagram should be decoded and dispatched"</span>)
+<a href=#4427 id=4427 data-nosnippet>4427</a>            .expect(<span class="string">"the metrics output should stay open"</span>);
+<a href=#4428 id=4428 data-nosnippet>4428</a>        <span class="macro">assert_eq!</span>(buffer.len(), <span class="number">1</span>);
+<a href=#4429 id=4429 data-nosnippet>4429</a>
+<a href=#4430 id=4430 data-nosnippet>4430</a>        <span class="comment">// Now back the output up: the first of these fills the single slot, the second blocks a decoder.
+<a href=#4431 id=4431 data-nosnippet>4431</a>        </span><span class="kw">for </span>payload <span class="kw">in </span>[<span class="string">b"second.metric:1|c"</span>.as_slice(), <span class="string">b"third.metric:1|c"</span>.as_slice()] {
+<a href=#4432 id=4432 data-nosnippet>4432</a>            client.send_to(payload, listen_addr).<span class="kw">await</span>.expect(<span class="string">"client should send"</span>);
+<a href=#4433 id=4433 data-nosnippet>4433</a>        }
+<a href=#4434 id=4434 data-nosnippet>4434</a>        tokio::time::sleep(BACKPRESSURE_SETTLE).<span class="kw">await</span>;
+<a href=#4435 id=4435 data-nosnippet>4435</a>
+<a href=#4436 id=4436 data-nosnippet>4436</a>        shutdown_coordinator.shutdown();
+<a href=#4437 id=4437 data-nosnippet>4437</a>
+<a href=#4438 id=4438 data-nosnippet>4438</a>        <span class="comment">// `run` must still be waiting on the blocked decoder. Without the drain it would return here.
+<a href=#4439 id=4439 data-nosnippet>4439</a>        </span>tokio::time::sleep(BACKPRESSURE_SETTLE).<span class="kw">await</span>;
+<a href=#4440 id=4440 data-nosnippet>4440</a>        <span class="macro">assert!</span>(
+<a href=#4441 id=4441 data-nosnippet>4441</a>            !run.is_finished(),
+<a href=#4442 id=4442 data-nosnippet>4442</a>            <span class="string">"`run` returned while a decoder was still mid-dispatch"
+<a href=#4443 id=4443 data-nosnippet>4443</a>        </span>);
+<a href=#4444 id=4444 data-nosnippet>4444</a>
+<a href=#4445 id=4445 data-nosnippet>4445</a>        <span class="comment">// Draining the output unblocks the decoder, which lets the drain -- and so `run` -- complete.
+<a href=#4446 id=4446 data-nosnippet>4446</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>drained = <span class="number">1</span>;
+<a href=#4447 id=4447 data-nosnippet>4447</a>        <span class="kw">let </span>result = <span class="kw">loop </span>{
+<a href=#4448 id=4448 data-nosnippet>4448</a>            <span class="macro">select!</span> {
+<a href=#4449 id=4449 data-nosnippet>4449</a>                run_result = <span class="kw-2">&amp;mut </span>run =&gt; <span class="kw">break </span>run_result,
+<a href=#4450 id=4450 data-nosnippet>4450</a>                maybe_buffer = metrics_rx.recv() =&gt; <span class="kw">match </span>maybe_buffer {
+<a href=#4451 id=4451 data-nosnippet>4451</a>                    <span class="prelude-val">Some</span>(buffer) =&gt; drained += buffer.len(),
+<a href=#4452 id=4452 data-nosnippet>4452</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break </span>(<span class="kw-2">&amp;mut </span>run).<span class="kw">await</span>,
+<a href=#4453 id=4453 data-nosnippet>4453</a>                },
+<a href=#4454 id=4454 data-nosnippet>4454</a>            }
+<a href=#4455 id=4455 data-nosnippet>4455</a>        };
+<a href=#4456 id=4456 data-nosnippet>4456</a>        result
+<a href=#4457 id=4457 data-nosnippet>4457</a>            .expect(<span class="string">"source task should not panic"</span>)
+<a href=#4458 id=4458 data-nosnippet>4458</a>            .expect(<span class="string">"source should stop cleanly"</span>);
+<a href=#4459 id=4459 data-nosnippet>4459</a>
+<a href=#4460 id=4460 data-nosnippet>4460</a>        <span class="comment">// `run` returning and the last buffer arriving are concurrent, so collect whatever is still queued. The
+<a href=#4461 id=4461 data-nosnippet>4461</a>        // source's dispatcher is gone by now, so this terminates as soon as the channel is empty.
+<a href=#4462 id=4462 data-nosnippet>4462</a>        </span><span class="kw">while let </span><span class="prelude-val">Some</span>(buffer) = metrics_rx.recv().<span class="kw">await </span>{
+<a href=#4463 id=4463 data-nosnippet>4463</a>            drained += buffer.len();
+<a href=#4464 id=4464 data-nosnippet>4464</a>        }
+<a href=#4465 id=4465 data-nosnippet>4465</a>
+<a href=#4466 id=4466 data-nosnippet>4466</a>        <span class="comment">// Nothing accepted before shutdown should have been dropped on the way out.
+<a href=#4467 id=4467 data-nosnippet>4467</a>        </span><span class="macro">assert_eq!</span>(drained, <span class="number">3</span>, <span class="string">"every queued datagram should have been dispatched"</span>);
 <a href=#4468 id=4468 data-nosnippet>4468</a>
-<a href=#4469 id=4469 data-nosnippet>4469</a>        <span class="comment">// Nothing accepted before shutdown should have been dropped on the way out.
-<a href=#4470 id=4470 data-nosnippet>4470</a>        </span><span class="macro">assert_eq!</span>(drained, <span class="number">3</span>, <span class="string">"every queued datagram should have been dispatched"</span>);
-<a href=#4471 id=4471 data-nosnippet>4471</a>
-<a href=#4472 id=4472 data-nosnippet>4472</a>        <span class="kw">let </span>supervisor_result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#4473 id=4473 data-nosnippet>4473</a>        <span class="macro">assert!</span>(
-<a href=#4474 id=4474 data-nosnippet>4474</a>            supervisor_result.is_ok(),
-<a href=#4475 id=4475 data-nosnippet>4475</a>            <span class="string">"every child should have stopped on its own: {supervisor_result:?}"
-<a href=#4476 id=4476 data-nosnippet>4476</a>        </span>);
-<a href=#4477 id=4477 data-nosnippet>4477</a>    }
-<a href=#4478 id=4478 data-nosnippet>4478</a>
-<a href=#4479 id=4479 data-nosnippet>4479</a>    <span class="attr">#[tokio::test]
-<a href=#4480 id=4480 data-nosnippet>4480</a>    </span><span class="kw">async fn </span>supervisor_shutdown_stops_the_subtree_without_the_source_driving_it() {
-<a href=#4481 id=4481 data-nosnippet>4481</a>        <span class="comment">// The orderly path is the source's own `run` signalling its coordinators. This is the other one: the
-<a href=#4482 id=4482 data-nosnippet>4482</a>        // supervisor tears the component down while `run` is still going, so nothing is driving those coordinators.
-<a href=#4483 id=4483 data-nosnippet>4483</a>        //
-<a href=#4484 id=4484 data-nosnippet>4484</a>        // The listener has to observe the supervisor's own signal for this to terminate. If it only watched the
-<a href=#4485 id=4485 data-nosnippet>4485</a>        // source's coordinator it would keep accepting, keep holding a datagram sender, and so keep the decoders
-<a href=#4486 id=4486 data-nosnippet>4486</a>        // waiting on a queue that never closes -- until the shutdown budget elapsed and aborted the lot.
-<a href=#4487 id=4487 data-nosnippet>4487</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
-<a href=#4488 id=4488 data-nosnippet>4488</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
-<a href=#4489 id=4489 data-nosnippet>4489</a>        <span class="kw">let </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
-<a href=#4490 id=4490 data-nosnippet>4490</a>        <span class="kw">let </span>Harness {
-<a href=#4491 id=4491 data-nosnippet>4491</a>            source,
-<a href=#4492 id=4492 data-nosnippet>4492</a>            context,
-<a href=#4493 id=4493 data-nosnippet>4493</a>            <span class="comment">// Deliberately held, not signalled: `run` stays in its loop for the whole test.
-<a href=#4494 id=4494 data-nosnippet>4494</a>            </span>shutdown_coordinator: _shutdown_coordinator,
-<a href=#4495 id=4495 data-nosnippet>4495</a>            ..
-<a href=#4496 id=4496 data-nosnippet>4496</a>        } = harness;
+<a href=#4469 id=4469 data-nosnippet>4469</a>        <span class="kw">let </span>supervisor_result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#4470 id=4470 data-nosnippet>4470</a>        <span class="macro">assert!</span>(
+<a href=#4471 id=4471 data-nosnippet>4471</a>            supervisor_result.is_ok(),
+<a href=#4472 id=4472 data-nosnippet>4472</a>            <span class="string">"every child should have stopped on its own: {supervisor_result:?}"
+<a href=#4473 id=4473 data-nosnippet>4473</a>        </span>);
+<a href=#4474 id=4474 data-nosnippet>4474</a>    }
+<a href=#4475 id=4475 data-nosnippet>4475</a>
+<a href=#4476 id=4476 data-nosnippet>4476</a>    <span class="attr">#[tokio::test]
+<a href=#4477 id=4477 data-nosnippet>4477</a>    </span><span class="kw">async fn </span>supervisor_shutdown_stops_the_subtree_without_the_source_driving_it() {
+<a href=#4478 id=4478 data-nosnippet>4478</a>        <span class="comment">// The orderly path is the source's own `run` signalling its coordinators. This is the other one: the
+<a href=#4479 id=4479 data-nosnippet>4479</a>        // supervisor tears the component down while `run` is still going, so nothing is driving those coordinators.
+<a href=#4480 id=4480 data-nosnippet>4480</a>        //
+<a href=#4481 id=4481 data-nosnippet>4481</a>        // The listener has to observe the supervisor's own signal for this to terminate. If it only watched the
+<a href=#4482 id=4482 data-nosnippet>4482</a>        // source's coordinator it would keep accepting, keep holding a datagram sender, and so keep the decoders
+<a href=#4483 id=4483 data-nosnippet>4483</a>        // waiting on a queue that never closes -- until the shutdown budget elapsed and aborted the lot.
+<a href=#4484 id=4484 data-nosnippet>4484</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
+<a href=#4485 id=4485 data-nosnippet>4485</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
+<a href=#4486 id=4486 data-nosnippet>4486</a>        <span class="kw">let </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
+<a href=#4487 id=4487 data-nosnippet>4487</a>        <span class="kw">let </span>Harness {
+<a href=#4488 id=4488 data-nosnippet>4488</a>            source,
+<a href=#4489 id=4489 data-nosnippet>4489</a>            context,
+<a href=#4490 id=4490 data-nosnippet>4490</a>            <span class="comment">// Deliberately held, not signalled: `run` stays in its loop for the whole test.
+<a href=#4491 id=4491 data-nosnippet>4491</a>            </span>shutdown_coordinator: _shutdown_coordinator,
+<a href=#4492 id=4492 data-nosnippet>4492</a>            ..
+<a href=#4493 id=4493 data-nosnippet>4493</a>        } = harness;
+<a href=#4494 id=4494 data-nosnippet>4494</a>
+<a href=#4495 id=4495 data-nosnippet>4495</a>        <span class="kw">let </span>_run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
+<a href=#4496 id=4496 data-nosnippet>4496</a>        supervisor.wait_for_children(udp_child_count()).<span class="kw">await</span>;
 <a href=#4497 id=4497 data-nosnippet>4497</a>
-<a href=#4498 id=4498 data-nosnippet>4498</a>        <span class="kw">let </span>_run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
-<a href=#4499 id=4499 data-nosnippet>4499</a>        supervisor.wait_for_children(udp_child_count()).<span class="kw">await</span>;
-<a href=#4500 id=4500 data-nosnippet>4500</a>
-<a href=#4501 id=4501 data-nosnippet>4501</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#4502 id=4502 data-nosnippet>4502</a>        <span class="macro">assert!</span>(
-<a href=#4503 id=4503 data-nosnippet>4503</a>            result.is_ok(),
-<a href=#4504 id=4504 data-nosnippet>4504</a>            <span class="string">"the subtree should have stopped on the supervisor's signal alone: {result:?}"
-<a href=#4505 id=4505 data-nosnippet>4505</a>        </span>);
-<a href=#4506 id=4506 data-nosnippet>4506</a>    }
-<a href=#4507 id=4507 data-nosnippet>4507</a>
-<a href=#4508 id=4508 data-nosnippet>4508</a>    <span class="attr">#[tokio::test]
-<a href=#4509 id=4509 data-nosnippet>4509</a>    </span><span class="kw">async fn </span>stream_handlers_are_supervised_children() {
-<a href=#4510 id=4510 data-nosnippet>4510</a>        <span class="comment">// Per-connection handlers are supervised too, under one fixed name per listener type. Accepting a connection
-<a href=#4511 id=4511 data-nosnippet>4511</a>        // adds a child, and tearing the source down takes it with everything else.
-<a href=#4512 id=4512 data-nosnippet>4512</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
-<a href=#4513 id=4513 data-nosnippet>4513</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
-<a href=#4514 id=4514 data-nosnippet>4514</a>
-<a href=#4515 id=4515 data-nosnippet>4515</a>        <span class="comment">// A TCP listener, so there are real connections to accept.
-<a href=#4516 id=4516 data-nosnippet>4516</a>        </span><span class="kw">let </span>probe = tokio::net::TcpListener::bind(<span class="string">"127.0.0.1:0"</span>)
-<a href=#4517 id=4517 data-nosnippet>4517</a>            .<span class="kw">await
-<a href=#4518 id=4518 data-nosnippet>4518</a>            </span>.expect(<span class="string">"should bind a probe socket"</span>);
-<a href=#4519 id=4519 data-nosnippet>4519</a>        <span class="kw">let </span>listen_addr = probe.local_addr().expect(<span class="string">"probe should have an address"</span>);
-<a href=#4520 id=4520 data-nosnippet>4520</a>        drop(probe);
-<a href=#4521 id=4521 data-nosnippet>4521</a>
-<a href=#4522 id=4522 data-nosnippet>4522</a>        <span class="kw">let </span><span class="kw-2">mut </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
-<a href=#4523 id=4523 data-nosnippet>4523</a>        harness.source.listeners = <span class="macro">vec!</span>[Listener::from_listen_address(ListenAddress::Tcp(listen_addr), <span class="prelude-val">None</span>)
-<a href=#4524 id=4524 data-nosnippet>4524</a>            .<span class="kw">await
-<a href=#4525 id=4525 data-nosnippet>4525</a>            </span>.expect(<span class="string">"listener should bind"</span>)];
-<a href=#4526 id=4526 data-nosnippet>4526</a>
-<a href=#4527 id=4527 data-nosnippet>4527</a>        <span class="kw">let </span>Harness {
-<a href=#4528 id=4528 data-nosnippet>4528</a>            source,
-<a href=#4529 id=4529 data-nosnippet>4529</a>            context,
-<a href=#4530 id=4530 data-nosnippet>4530</a>            shutdown_coordinator,
-<a href=#4531 id=4531 data-nosnippet>4531</a>            ..
-<a href=#4532 id=4532 data-nosnippet>4532</a>        } = harness;
-<a href=#4533 id=4533 data-nosnippet>4533</a>
-<a href=#4534 id=4534 data-nosnippet>4534</a>        <span class="kw">let </span>run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
+<a href=#4498 id=4498 data-nosnippet>4498</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#4499 id=4499 data-nosnippet>4499</a>        <span class="macro">assert!</span>(
+<a href=#4500 id=4500 data-nosnippet>4500</a>            result.is_ok(),
+<a href=#4501 id=4501 data-nosnippet>4501</a>            <span class="string">"the subtree should have stopped on the supervisor's signal alone: {result:?}"
+<a href=#4502 id=4502 data-nosnippet>4502</a>        </span>);
+<a href=#4503 id=4503 data-nosnippet>4503</a>    }
+<a href=#4504 id=4504 data-nosnippet>4504</a>
+<a href=#4505 id=4505 data-nosnippet>4505</a>    <span class="attr">#[tokio::test]
+<a href=#4506 id=4506 data-nosnippet>4506</a>    </span><span class="kw">async fn </span>stream_handlers_are_supervised_children() {
+<a href=#4507 id=4507 data-nosnippet>4507</a>        <span class="comment">// Per-connection handlers are supervised too, under one fixed name per listener type. Accepting a connection
+<a href=#4508 id=4508 data-nosnippet>4508</a>        // adds a child, and tearing the source down takes it with everything else.
+<a href=#4509 id=4509 data-nosnippet>4509</a>        </span><span class="kw">let </span>supervisor = TestComponentSupervisor::start(<span class="string">"dogstatsd"</span>).<span class="kw">await</span>;
+<a href=#4510 id=4510 data-nosnippet>4510</a>        <span class="kw">let </span>health_registry = HealthRegistry::new();
+<a href=#4511 id=4511 data-nosnippet>4511</a>
+<a href=#4512 id=4512 data-nosnippet>4512</a>        <span class="comment">// A TCP listener, so there are real connections to accept.
+<a href=#4513 id=4513 data-nosnippet>4513</a>        </span><span class="kw">let </span>tcp_listener = Listener::from_listen_address(ListenAddress::Tcp(<span class="string">"127.0.0.1:0"</span>.parse().unwrap()), <span class="prelude-val">None</span>)
+<a href=#4514 id=4514 data-nosnippet>4514</a>            .<span class="kw">await
+<a href=#4515 id=4515 data-nosnippet>4515</a>            </span>.expect(<span class="string">"listener should bind"</span>);
+<a href=#4516 id=4516 data-nosnippet>4516</a>        <span class="kw">let </span>listen_addr = <span class="kw">match </span>tcp_listener.bound_listen_address() {
+<a href=#4517 id=4517 data-nosnippet>4517</a>            BoundListenAddress::Tcp(addr) =&gt; addr,
+<a href=#4518 id=4518 data-nosnippet>4518</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected a bound TCP address, got {other:?}"</span>),
+<a href=#4519 id=4519 data-nosnippet>4519</a>        };
+<a href=#4520 id=4520 data-nosnippet>4520</a>
+<a href=#4521 id=4521 data-nosnippet>4521</a>        <span class="kw">let </span><span class="kw-2">mut </span>harness = build_source(<span class="kw-2">&amp;</span>health_registry).<span class="kw">await</span>;
+<a href=#4522 id=4522 data-nosnippet>4522</a>        harness.source.listeners = <span class="macro">vec!</span>[tcp_listener];
+<a href=#4523 id=4523 data-nosnippet>4523</a>
+<a href=#4524 id=4524 data-nosnippet>4524</a>        <span class="kw">let </span>Harness {
+<a href=#4525 id=4525 data-nosnippet>4525</a>            source,
+<a href=#4526 id=4526 data-nosnippet>4526</a>            context,
+<a href=#4527 id=4527 data-nosnippet>4527</a>            shutdown_coordinator,
+<a href=#4528 id=4528 data-nosnippet>4528</a>            ..
+<a href=#4529 id=4529 data-nosnippet>4529</a>        } = harness;
+<a href=#4530 id=4530 data-nosnippet>4530</a>
+<a href=#4531 id=4531 data-nosnippet>4531</a>        <span class="kw">let </span>run = tokio::spawn(supervisor.handle().scope(<span class="kw">async move </span>{ source.run(context).<span class="kw">await </span>}));
+<a href=#4532 id=4532 data-nosnippet>4532</a>
+<a href=#4533 id=4533 data-nosnippet>4533</a>        <span class="kw">let </span>baseline = <span class="number">1 </span>+ DECODER_WORKERS + <span class="number">1</span>;
+<a href=#4534 id=4534 data-nosnippet>4534</a>        supervisor.wait_for_children(baseline).<span class="kw">await</span>;
 <a href=#4535 id=4535 data-nosnippet>4535</a>
-<a href=#4536 id=4536 data-nosnippet>4536</a>        <span class="kw">let </span>baseline = <span class="number">1 </span>+ DECODER_WORKERS + <span class="number">1</span>;
-<a href=#4537 id=4537 data-nosnippet>4537</a>        supervisor.wait_for_children(baseline).<span class="kw">await</span>;
-<a href=#4538 id=4538 data-nosnippet>4538</a>
-<a href=#4539 id=4539 data-nosnippet>4539</a>        <span class="kw">let </span>_client = tokio::net::TcpStream::connect(listen_addr)
-<a href=#4540 id=4540 data-nosnippet>4540</a>            .<span class="kw">await
-<a href=#4541 id=4541 data-nosnippet>4541</a>            </span>.expect(<span class="string">"client should connect"</span>);
-<a href=#4542 id=4542 data-nosnippet>4542</a>        supervisor.wait_for_children(baseline + <span class="number">1</span>).<span class="kw">await</span>;
-<a href=#4543 id=4543 data-nosnippet>4543</a>
-<a href=#4544 id=4544 data-nosnippet>4544</a>        shutdown_coordinator.shutdown();
-<a href=#4545 id=4545 data-nosnippet>4545</a>        timeout(RUN_TIMEOUT, run)
-<a href=#4546 id=4546 data-nosnippet>4546</a>            .<span class="kw">await
-<a href=#4547 id=4547 data-nosnippet>4547</a>            </span>.expect(<span class="string">"source should stop on shutdown"</span>)
-<a href=#4548 id=4548 data-nosnippet>4548</a>            .expect(<span class="string">"source task should not panic"</span>)
-<a href=#4549 id=4549 data-nosnippet>4549</a>            .expect(<span class="string">"source should stop cleanly"</span>);
+<a href=#4536 id=4536 data-nosnippet>4536</a>        <span class="kw">let </span>_client = tokio::net::TcpStream::connect(listen_addr)
+<a href=#4537 id=4537 data-nosnippet>4537</a>            .<span class="kw">await
+<a href=#4538 id=4538 data-nosnippet>4538</a>            </span>.expect(<span class="string">"client should connect"</span>);
+<a href=#4539 id=4539 data-nosnippet>4539</a>        supervisor.wait_for_children(baseline + <span class="number">1</span>).<span class="kw">await</span>;
+<a href=#4540 id=4540 data-nosnippet>4540</a>
+<a href=#4541 id=4541 data-nosnippet>4541</a>        shutdown_coordinator.shutdown();
+<a href=#4542 id=4542 data-nosnippet>4542</a>        timeout(RUN_TIMEOUT, run)
+<a href=#4543 id=4543 data-nosnippet>4543</a>            .<span class="kw">await
+<a href=#4544 id=4544 data-nosnippet>4544</a>            </span>.expect(<span class="string">"source should stop on shutdown"</span>)
+<a href=#4545 id=4545 data-nosnippet>4545</a>            .expect(<span class="string">"source task should not panic"</span>)
+<a href=#4546 id=4546 data-nosnippet>4546</a>            .expect(<span class="string">"source should stop cleanly"</span>);
+<a href=#4547 id=4547 data-nosnippet>4547</a>
+<a href=#4548 id=4548 data-nosnippet>4548</a>        <span class="comment">// As above, only the brutally-stopped pool shrinker is left for the supervisor to drop.
+<a href=#4549 id=4549 data-nosnippet>4549</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
 <a href=#4550 id=4550 data-nosnippet>4550</a>
-<a href=#4551 id=4551 data-nosnippet>4551</a>        <span class="comment">// As above, only the brutally-stopped pool shrinker is left for the supervisor to drop.
-<a href=#4552 id=4552 data-nosnippet>4552</a>        </span>supervisor.wait_for_children(<span class="number">1</span>).<span class="kw">await</span>;
-<a href=#4553 id=4553 data-nosnippet>4553</a>
-<a href=#4554 id=4554 data-nosnippet>4554</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
-<a href=#4555 id=4555 data-nosnippet>4555</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"every child should have stopped on its own: {result:?}"</span>);
-<a href=#4556 id=4556 data-nosnippet>4556</a>    }
-<a href=#4557 id=4557 data-nosnippet>4557</a>}
+<a href=#4551 id=4551 data-nosnippet>4551</a>        <span class="kw">let </span>result = supervisor.shutdown().<span class="kw">await</span>;
+<a href=#4552 id=4552 data-nosnippet>4552</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"every child should have stopped on its own: {result:?}"</span>);
+<a href=#4553 id=4553 data-nosnippet>4553</a>    }
+<a href=#4554 id=4554 data-nosnippet>4554</a>}
 </code></pre></div></section></main></body></html>
