@@ -909,37 +909,18 @@ mod tests {
         // Exercises the full OtlpServerConfiguration wiring: a configured `max_request_body_size` must
         // flow through the builder into the axum `DefaultBodyLimit` layer and reject oversized
         // requests. See issue #2068 and PR #2494 review.
-        use saluki_core::runtime::Supervisor;
+        let supervisor = TestComponentSupervisor::start("otlp-test").await;
 
-        // Grab an ephemeral port for the HTTP endpoint.
-        let http_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
-        let http_addr = http_listener.local_addr().expect("local addr should be available");
-        drop(http_listener);
-
-        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
-        let http_endpoint = ListenAddress::Tcp(http_addr);
-
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
-        let supervisor_handle = supervisor.handle();
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let supervisor_task = tokio::spawn(async move {
-            supervisor
-                .run_with_shutdown(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        tokio::task::yield_now().await;
+        let http_server_id = "http-body-limit-rejects-oversized-request";
+        let grpc_endpoint = ListenAddress::tcp_loopback(0);
+        let http_endpoint = ListenAddress::tcp_loopback(0);
 
         // Build with a small body limit (64 bytes) through the builder.
         let max_body_size: usize = 64;
-        supervisor_handle
+        supervisor
             .scope(
                 OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                    .with_server_ids(http_server_id, "grpc-body-limit-rejects-oversized-request")
                     .with_http_max_request_body_size(max_body_size as u64)
                     .build(
                         NoopHandler,
@@ -951,21 +932,12 @@ mod tests {
             .await
             .expect("build should succeed");
 
-        // Wait for the HTTP server to accept connections.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if std::time::Instant::now() > deadline {
-                panic!("HTTP server did not start within 5s");
-            }
-            if tokio::net::TcpStream::connect(&http_addr).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        let http_port = bound_port(&supervisor, http_server_id).await;
+        wait_for_port(http_port).await;
 
         // Send an oversized request and verify it is rejected.
         let oversized_body = vec![0u8; max_body_size + 1];
-        let mut stream = tokio::net::TcpStream::connect(&http_addr)
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{http_port}"))
             .await
             .expect("should connect to HTTP server");
 
@@ -989,68 +961,45 @@ mod tests {
             response_str.lines().next().unwrap_or("<empty>")
         );
 
-        let _ = shutdown_tx.send(());
-        let _ = supervisor_task.await;
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
     }
 
     #[tokio::test]
     async fn http_body_default_limit_rejects_oversized_request() {
         // When `max_request_body_size` is `0` (the default), the receiver applies a 20 MiB limit.
         // A request body exceeding 20 MiB must be rejected with 413.
-        use saluki_core::runtime::Supervisor;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let http_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
-        let http_addr = http_listener.local_addr().expect("local addr should be available");
-        drop(http_listener);
+        let supervisor = TestComponentSupervisor::start("otlp-test").await;
 
-        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
-        let http_endpoint = ListenAddress::Tcp(http_addr);
-
-        let mut supervisor = Supervisor::new("otlp-test")
-            .expect("test supervisor name should be valid")
-            .with_shutdown_budget(Duration::from_secs(5));
-        let supervisor_handle = supervisor.handle();
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let supervisor_task = tokio::spawn(async move {
-            supervisor
-                .run_with_shutdown(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        tokio::task::yield_now().await;
+        let http_server_id = "http-body-default-limit-rejects-oversized-request";
+        let grpc_endpoint = ListenAddress::tcp_loopback(0);
+        let http_endpoint = ListenAddress::tcp_loopback(0);
 
         // Build with the default (`max_request_body_size=0` → 20 MiB limit) — no explicit limit set.
-        supervisor_handle
+        supervisor
             .scope(
-                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
-                    NoopHandler,
-                    MemoryLimiter::noop(),
-                    Metrics::for_tests(),
-                    &tokio::runtime::Handle::current(),
-                ),
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                    .with_server_ids(http_server_id, "grpc-body-default-limit-rejects-oversized-request")
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
             )
             .await
             .expect("build should succeed");
 
-        // Wait for the HTTP server to accept connections.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if std::time::Instant::now() > deadline {
-                panic!("HTTP server did not start within 5s");
-            }
-            if tokio::net::TcpStream::connect(&http_addr).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        let http_port = bound_port(&supervisor, http_server_id).await;
+        wait_for_port(http_port).await;
 
         // Send a body of 20 MiB + 1 byte — one byte over the default limit.
         let oversized_body = vec![0u8; HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE + 1];
-        let mut stream = tokio::net::TcpStream::connect(&http_addr)
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{http_port}"))
             .await
             .expect("should connect to HTTP server");
 
@@ -1071,8 +1020,10 @@ mod tests {
             response_str.lines().next().unwrap_or("<empty>")
         );
 
-        let _ = shutdown_tx.send(());
-        let _ = supervisor_task.await;
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
     }
 
     /// Polls `port` until something accepts a connection on it.
