@@ -96,13 +96,23 @@ impl Driver {
 
         let send_delay = (self.config.send_delay_us > 0).then(|| Duration::from_micros(self.config.send_delay_us));
 
+        // A send failure breaks the loop instead of returning immediately, so the prefix that did make it onto the
+        // wire is still captured below before the error is reported.
+        let mut send_error = None;
+
         loop {
             if payloads_sent >= max_payloads {
                 break;
             }
 
             let payload = borrowed_payloads.next().unwrap();
-            let bytes_sent = self.sender.send(payload)?;
+            let bytes_sent = match self.sender.send(payload) {
+                Ok(bytes_sent) => bytes_sent,
+                Err(e) => {
+                    send_error = Some(e);
+                    break;
+                }
+            };
 
             trace!(payload_len = payload.len(), bytes_sent, "Payload sent.");
 
@@ -118,21 +128,24 @@ impl Driver {
         }
 
         let send_duration = start.elapsed();
-        let throughput_bps = ByteSize((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
 
-        let payload_bytes_sent_human = ByteSize(payload_bytes_sent);
-        let pct_partial_sends = (partial_sends as f64 / payloads_sent as f64) * 100.0;
-        info!(
-            "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
-            payloads_sent,
-            payload_bytes_sent_human.display().si(),
-            partial_sends,
-            pct_partial_sends,
-            send_duration,
-            throughput_bps.display().si()
-        );
+        if send_error.is_none() {
+            let throughput_bps = ByteSize((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
+            let payload_bytes_sent_human = ByteSize(payload_bytes_sent);
+            let pct_partial_sends = (partial_sends as f64 / payloads_sent as f64) * 100.0;
+            info!(
+                "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
+                payloads_sent,
+                payload_bytes_sent_human.display().si(),
+                partial_sends,
+                pct_partial_sends,
+                send_duration,
+                throughput_bps.display().si()
+            );
+        }
 
-        // Written after the run is measured, so the capture stays out of the reported send timing.
+        // Written after the run is measured, so the capture stays out of the reported send timing. Written on a send
+        // error too: the payloads already sent are exactly the input this diagnostic exists to preserve.
         if let Some(dir) = self.traffic_capture_dir.as_deref() {
             let facts = RunFacts {
                 seed: self.config.seed.iter().map(|b| format!("{:02x}", b)).collect(),
@@ -143,6 +156,7 @@ impl Driver {
                 payloads_sent,
                 wire_bytes: payload_bytes_sent,
                 partial_sends,
+                complete: send_error.is_none(),
             };
 
             // A lost capture is a lost diagnostic, not a failed run.
@@ -151,6 +165,9 @@ impl Driver {
             }
         }
 
-        Ok(())
+        match send_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }

@@ -9,6 +9,9 @@
 //!   transport. That is not packet order: a datagram transport may reorder or drop what it was given, and a
 //!   partially written payload still appears at its full length.
 //! - `input-manifest.json`: the facts a reader needs to interpret the records.
+//!
+//! A capture is also written when the send loop fails partway through: it holds exactly the payloads that made it
+//! onto the wire before the error, and the manifest's `complete` field is `false`.
 
 use std::{
     borrow::Cow,
@@ -115,6 +118,10 @@ struct InputManifest {
     /// the payloads captured here.
     partial_sends: usize,
 
+    /// `false` when the run stopped on a send error rather than reaching its configured volume. The records still
+    /// present are exactly the payloads that made it onto the wire before the failure.
+    complete: bool,
+
     digest: Digest,
 }
 
@@ -141,6 +148,9 @@ pub(crate) struct RunFacts {
     /// Bytes the transport reported as written.
     pub wire_bytes: u64,
     pub partial_sends: usize,
+
+    /// `false` when the run stopped on a send error rather than reaching its configured volume.
+    pub complete: bool,
 }
 
 /// Writes the capture for a finished run into `dir`, creating it if necessary.
@@ -182,6 +192,7 @@ pub(crate) fn write_input_capture(dir: &Path, payloads: &[Bytes], facts: RunFact
         logical_bytes: summary.logical_bytes,
         wire_bytes: facts.wire_bytes,
         partial_sends: facts.partial_sends,
+        complete: facts.complete,
         digest: Digest {
             algorithm: "fnv1a64",
             value: format!("{:016x}", summary.digest),
@@ -394,6 +405,7 @@ mod tests {
                 payloads_sent: 5,
                 wire_bytes: 14,
                 partial_sends: 1,
+                complete: true,
             },
         )
         .expect("capture should be written");
@@ -414,6 +426,7 @@ mod tests {
         assert_eq!(manifest["logical_bytes"], 15);
         assert_eq!(manifest["wire_bytes"], 14);
         assert_eq!(manifest["partial_sends"], 1);
+        assert_eq!(manifest["complete"], true);
         assert_eq!(manifest["digest"]["algorithm"], "fnv1a64");
         assert_eq!(manifest["target_kind"], "unixgram");
         assert_eq!(manifest["send_delay_us"], 500);
@@ -423,6 +436,40 @@ mod tests {
         let decompressed = zstd::stream::decode_all(&compressed[..]).expect("records should decompress");
         let text = String::from_utf8(decompressed).expect("records should be valid UTF-8");
         assert_eq!(text.lines().count(), 5);
+    }
+
+    #[test]
+    fn a_send_error_writes_the_sent_prefix_as_incomplete() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let payloads = corpus(&[b"one", b"two", b"three"]);
+
+        // Volume was 5, but the send loop only got through 2 before the transport failed.
+        write_input_capture(
+            dir.path(),
+            &payloads,
+            RunFacts {
+                seed: "00".repeat(32),
+                payload_kind: "DogStatsD",
+                target_kind: "unixgram",
+                send_delay_us: 0,
+                volume: 5,
+                payloads_sent: 2,
+                wire_bytes: 6,
+                partial_sends: 0,
+                complete: false,
+            },
+        )
+        .expect("capture should be written");
+
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(INPUT_MANIFEST_FILE_NAME)).expect("manifest should be readable"),
+        )
+        .expect("manifest should be valid JSON");
+
+        assert_eq!(manifest["complete"], false);
+        assert_eq!(manifest["volume"], 5);
+        // Only the prefix that was actually sent is recorded.
+        assert_eq!(manifest["records"], 2);
     }
 
     #[test]
@@ -443,6 +490,7 @@ mod tests {
                 payloads_sent: 1,
                 wire_bytes: 3,
                 partial_sends: 0,
+                complete: true,
             },
         );
 
