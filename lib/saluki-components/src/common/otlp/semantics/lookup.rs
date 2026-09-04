@@ -57,9 +57,12 @@ pub fn lookup_int64<A: Accessor>(registry: &Registry, accessor: &A, concept: Con
             }
             ValueType::Float64 => {
                 if let Some(v) = accessor.get_float64(&tag.name) {
-                    let i = v as i64;
-                    if i as f64 == v {
-                        return Some(i);
+                    //Protect against values greater than i64::MAX and less than i64::MIN
+                    if (-9223372036854775808.0..9223372036854775808.0).contains(&v) {
+                        let i = v as i64;
+                        if i as f64 == v {
+                            return Some(i);
+                        }
                     }
                 }
             }
@@ -270,6 +273,25 @@ mod tests {
         let attrs = vec![kv("_dd.top_level", Value::DoubleValue(1.0))];
         let a = OtlpAttributesAccessor::new(&attrs);
         assert_eq!(lookup_float64(&REGISTRY, &a, Concept::DdTopLevel), Some(1.0));
+    }
+
+    #[test]
+    fn int64_float_out_of_range_returns_none() {
+        // `2^63` saturates to `i64::MAX` under a plain cast, and `i64::MAX as f64`
+        // rounds back to exactly `2^63` — the round-trip check alone would wrongly
+        // accept it. The bounds check must reject it first.
+        let attrs = vec![kv("_dd.top_level", Value::DoubleValue(9223372036854775808.0))];
+        let a = OtlpAttributesAccessor::new(&attrs);
+        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::DdTopLevel), None);
+
+        let attrs = vec![kv("_dd.top_level", Value::DoubleValue(1.0e19))];
+        let a = OtlpAttributesAccessor::new(&attrs);
+        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::DdTopLevel), None);
+
+        // `-2^63` is exactly `i64::MIN` and must be accepted.
+        let attrs = vec![kv("_dd.top_level", Value::DoubleValue(-9223372036854775808.0))];
+        let a = OtlpAttributesAccessor::new(&attrs);
+        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::DdTopLevel), Some(i64::MIN));
     }
 
     #[test]
