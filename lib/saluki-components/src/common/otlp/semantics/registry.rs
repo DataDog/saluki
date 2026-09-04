@@ -58,8 +58,10 @@ struct RegistryData {
 }
 
 /// Semantic attribute registry.
+#[derive(Clone)]
 pub struct Registry {
     version: String,
+    content_hash: u64,
     mappings: FastHashMap<Concept, Vec<TagInfo>>,
 }
 
@@ -81,8 +83,22 @@ impl Registry {
 
         Ok(Self {
             version: data.version,
+            content_hash: content_hash_for(json),
             mappings,
         })
+    }
+
+    /// Content hash of the mappings this registry was loaded from.
+    ///
+    /// The hash covers the raw JSON document, so any change to the loaded
+    /// content (embedded updates, remotely shipped semantic updates) yields
+    /// a different value. Consumers that derive data from the registry can
+    /// compare this hash against a snapshotted value to detect when their
+    /// derivation is stale. Hash collisions are possible but astronomically
+    /// unlikely; the failure mode is a missed or spurious rebuild, never
+    /// incorrect keys.
+    pub fn content_hash(&self) -> u64 {
+        self.content_hash
     }
 
     /// Returns the ordered list of attribute fallbacks for a concept, or
@@ -98,6 +114,15 @@ impl Registry {
 }
 
 const MAPPINGS_JSON: &str = include_str!("mappings.json");
+
+/// Hashes a raw registry document for change detection.
+fn content_hash_for(json: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// The default registry, loaded from the embedded `mappings.json`.
 ///
