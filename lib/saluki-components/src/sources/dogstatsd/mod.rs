@@ -4274,10 +4274,6 @@ mod supervision {
     ) -> Harness {
         let component_context = ComponentContext::test_source("dogstatsd");
 
-        // Bind directly to an ephemeral port and read back what the OS assigned. Binding a probe socket to learn a
-        // free port and then dropping it before rebinding leaves a window where another socket -- in this process or
-        // elsewhere on the host -- can claim that port first, which is exactly the kind of bind race that made this
-        // flaky under parallel test execution.
         let listener = Listener::from_listen_address(ListenAddress::Udp("127.0.0.1:0".parse().unwrap()), None)
             .await
             .expect("listener should bind");
@@ -4513,9 +4509,7 @@ mod supervision {
         let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
 
-        // A TCP listener, so there are real connections to accept. Bind directly to an ephemeral port and read back
-        // what the OS assigned, rather than probing a port and dropping the probe before rebinding -- that leaves a
-        // window for another socket to claim the port first.
+        // A TCP listener, so there are real connections to accept.
         let tcp_listener = Listener::from_listen_address(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap()), None)
             .await
             .expect("listener should bind");
