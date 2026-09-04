@@ -944,12 +944,13 @@ fn get_bound_address_id(server_id: &str) -> Identifier {
 #[cfg(test)]
 mod tests {
     use std::net::{SocketAddr, TcpListener as StdTcpListener};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use http::{Response, StatusCode, Version};
     use http_body_util::{Empty, Full};
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
+    use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_core::runtime::SupervisorError;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
@@ -964,13 +965,15 @@ mod tests {
     use crate::net::addr::BoundListenAddress;
     #[cfg(unix)]
     use crate::net::server::test_util::connect_unix;
-    use crate::net::server::test_util::{connect_tcp, ServerTestHarness};
+    use crate::net::server::test_util::{connect_tcp, DataspaceCapture, ServerTestHarness};
 
     /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// A running server subtree, together with the trigger that stops it.
     struct RunningServer {
+        dataspace: DataspaceRegistry,
+        bound_address_id: Identifier,
         shutdown_tx: Option<oneshot::Sender<()>>,
         task: JoinHandle<Result<(), SupervisorError>>,
     }
@@ -980,14 +983,46 @@ mod tests {
         ///
         /// A server can't be driven by hand any more: its connections are children of its supervisor, so there has to
         /// be one running for anything to be served at all.
-        fn start(server: HttpServer) -> Self {
+        async fn start(server: HttpServer) -> Self {
+            // A server ID is what makes the bound address observable through the dataspace, so give it one when the
+            // caller hasn't already set one for their own purposes (e.g. to check a per-server metric tag).
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            let server_id = server.server_id.clone().unwrap_or_else(|| {
+                MetaString::from(format!("running-server-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)))
+            });
+            let server = server.with_server_id(server_id.clone());
+
+            let (capture, dataspace_rx) = DataspaceCapture::new();
             let mut supervisor = server.into_supervisor();
+            supervisor.add_worker(capture);
+
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
             let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+            let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
+                .await
+                .expect("should capture the supervisor dataspace")
+                .expect("dataspace capture worker should send the registry");
 
             Self {
+                dataspace,
+                bound_address_id: get_bound_address_id(&server_id),
                 shutdown_tx: Some(shutdown_tx),
                 task,
+            }
+        }
+
+        /// Looks up the address the server actually bound, once it has finished initializing.
+        async fn bound_tcp_address(&self) -> SocketAddr {
+            let mut subscription = self
+                .dataspace
+                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
+
+            match timeout(TEST_TIMEOUT, subscription.recv()).await {
+                Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(addr)))) => addr,
+                update => panic!(
+                    "expected a bound TCP address assertion for '{:?}', got {update:?}",
+                    self.bound_address_id
+                ),
             }
         }
 
@@ -1010,14 +1045,6 @@ mod tests {
             let result = self.join().await;
             assert!(result.is_ok(), "server should stop cleanly: {result:?}");
         }
-    }
-
-    /// Waits until `addr` is actually being served.
-    ///
-    /// Connecting is the only safe way to probe this. Trying to bind the address to see whether the server has taken
-    /// it would race the server for that address and could win, which is a bind failure the test itself caused.
-    async fn wait_until_listening(addr: SocketAddr) {
-        drop(connect_tcp(addr).await);
     }
 
     /// Builds a connection builder for the tests that only inspect its configuration.
@@ -1408,10 +1435,9 @@ mod tests {
         // executes are all placed through the same call, so covering the handler covers the arrangement.
         let pool = named_pool("http-pool-test");
 
-        let addr = free_local_addr();
-        let (server, handler_thread) = thread_recording_server(ListenAddress::Tcp(addr));
-        let server = RunningServer::start(server.with_worker_pool(pool.handle().clone()));
-        wait_until_listening(addr).await;
+        let (server, handler_thread) = thread_recording_server(ListenAddress::tcp_loopback(0));
+        let server = RunningServer::start(server.with_worker_pool(pool.handle().clone())).await;
+        let addr = server.bound_tcp_address().await;
 
         let client = Client::builder(TokioExecutor::new()).build_http::<Empty<bytes::Bytes>>();
         let uri = format!("http://{addr}/").parse().expect("should be a valid URI");
@@ -1440,14 +1466,14 @@ mod tests {
         let tls_config = server_tls_config(&cert);
         let pool = named_pool("http-tls-pool-test");
 
-        let addr = free_local_addr();
-        let (server, handler_thread) = thread_recording_server(ListenAddress::Tcp(addr));
+        let (server, handler_thread) = thread_recording_server(ListenAddress::tcp_loopback(0));
         let server = RunningServer::start(
             server
                 .with_tls_config(tls_config)
                 .with_worker_pool(pool.handle().clone()),
-        );
-        wait_until_listening(addr).await;
+        )
+        .await;
+        let addr = server.bound_tcp_address().await;
 
         let negotiated = timeout(TEST_TIMEOUT, negotiate_alpn(addr, cert.cert_chain(), &[b"http/1.1"]))
             .await
@@ -1575,10 +1601,9 @@ mod tests {
         // The listener is bound by the acceptor's `initialize`, not by its run future, which is what makes a bind
         // failure a non-restartable initialization error rather than something retried forever. Observed here by
         // connecting: probing with a bind of our own would race the server for the address and could win.
-        let addr = free_local_addr();
-        let server = RunningServer::start(server_with(ListenAddress::Tcp(addr), ok_response));
+        let server = RunningServer::start(server_with(ListenAddress::tcp_loopback(0), ok_response)).await;
 
-        wait_until_listening(addr).await;
+        server.bound_tcp_address().await;
 
         server.shutdown().await;
     }
@@ -1592,7 +1617,7 @@ mod tests {
         let addr = free_local_addr();
         let _held = StdTcpListener::bind(addr).expect("should hold the address");
 
-        let server = RunningServer::start(server_with(ListenAddress::Tcp(addr), ok_response));
+        let server = RunningServer::start(server_with(ListenAddress::Tcp(addr), ok_response)).await;
 
         // Returning at all (before the timeout in `join`) is half the assertion: a retry loop would never get here.
         match server.join().await {
@@ -1609,9 +1634,8 @@ mod tests {
     async fn releases_its_port_once_the_subtree_finishes() {
         // The whole reason for supervising the server: when its subtree stops, the socket is gone. Previously the
         // acceptor was a detached task that outlived whatever spawned it.
-        let addr = free_local_addr();
-        let server = RunningServer::start(server_with(ListenAddress::Tcp(addr), ok_response));
-        wait_until_listening(addr).await;
+        let server = RunningServer::start(server_with(ListenAddress::tcp_loopback(0), ok_response)).await;
+        let addr = server.bound_tcp_address().await;
 
         server.shutdown().await;
 
@@ -1630,11 +1654,12 @@ mod tests {
         //
         // A clean result is the assertion that matters: the connection bounds its own drain and exits, rather than
         // being force-aborted by the subtree's budget, which would surface as `ShutdownTimedOut` all the way up.
-        let addr = free_local_addr();
         let server = RunningServer::start(
-            server_with(ListenAddress::Tcp(addr), ok_response).with_graceful_shutdown_timeout(Duration::from_secs(1)),
-        );
-        wait_until_listening(addr).await;
+            server_with(ListenAddress::tcp_loopback(0), ok_response)
+                .with_graceful_shutdown_timeout(Duration::from_secs(1)),
+        )
+        .await;
+        let addr = server.bound_tcp_address().await;
 
         let mut stream = TcpStream::connect(addr).await.expect("should connect");
         stream
@@ -1654,19 +1679,18 @@ mod tests {
         // Shutdown stops the server accepting, but a request already being served has to complete first. The
         // connection is a supervised child, so the subtree's drain is what waits for it; without that the subtree
         // would return as soon as the acceptor stopped and the response would be lost.
-        let addr = free_local_addr();
-
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
-        let mut server = RunningServer::start(server_with(ListenAddress::Tcp(addr), move || {
+        let mut server = RunningServer::start(server_with(ListenAddress::tcp_loopback(0), move || {
             let started = Arc::clone(&started);
             async move {
                 started.store(true, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 ok_response().await
             }
-        }));
-        wait_until_listening(addr).await;
+        }))
+        .await;
+        let addr = server.bound_tcp_address().await;
 
         // Issue a request by hand rather than pulling in a client: all we need is for the handler to be running.
         let mut stream = TcpStream::connect(addr).await.expect("should connect");
@@ -1741,11 +1765,11 @@ mod tests {
         let _guard = metrics::set_default_local_recorder(&recorder);
 
         // The recorder must be installed before anything is spawned: metric handles are resolved once, at spawn.
-        let addr = free_local_addr();
         let server = RunningServer::start(
-            server_with(ListenAddress::Tcp(addr), ok_response).with_server_id("supervised-stream"),
-        );
-        wait_until_listening(addr).await;
+            server_with(ListenAddress::tcp_loopback(0), ok_response).with_server_id("supervised-stream"),
+        )
+        .await;
+        let addr = server.bound_tcp_address().await;
 
         let client = Client::builder(TokioExecutor::new())
             .http2_only(true)
@@ -1773,9 +1797,9 @@ mod tests {
     async fn http2_only_server_rejects_http1_requests() {
         // An endpoint that only serves gRPC has no use for HTTP/1.1, and rejecting it at the protocol level tells the
         // caller more than routing the request and answering with a 404 would.
-        let addr = free_local_addr();
-        let server = RunningServer::start(server_with(ListenAddress::Tcp(addr), ok_response).with_http2_only());
-        wait_until_listening(addr).await;
+        let server =
+            RunningServer::start(server_with(ListenAddress::tcp_loopback(0), ok_response).with_http2_only()).await;
+        let addr = server.bound_tcp_address().await;
 
         let mut stream = TcpStream::connect(addr).await.expect("should connect");
         stream
@@ -1803,11 +1827,12 @@ mod tests {
     async fn an_idle_http2_peer_does_not_wedge_the_drain() {
         // The HTTP/2 counterpart of the half-sent request case: a peer that writes part of the connection preface and
         // then stalls never becomes idle, so `graceful_shutdown` alone will not close it.
-        let addr = free_local_addr();
         let server = RunningServer::start(
-            server_with(ListenAddress::Tcp(addr), ok_response).with_graceful_shutdown_timeout(Duration::from_secs(1)),
-        );
-        wait_until_listening(addr).await;
+            server_with(ListenAddress::tcp_loopback(0), ok_response)
+                .with_graceful_shutdown_timeout(Duration::from_secs(1)),
+        )
+        .await;
+        let addr = server.bound_tcp_address().await;
 
         let mut stream = TcpStream::connect(addr).await.expect("should connect");
         stream
@@ -1824,13 +1849,13 @@ mod tests {
     async fn retires_connections_that_reach_their_maximum_age() {
         // Nothing in the connection builder knows about connection age, so the server enforces the deadline itself.
         // Without it, a long-lived HTTP/2 client pins itself to whichever backend it first reached and stays there.
-        let addr = free_local_addr();
         let max_age = Duration::from_millis(300);
         let server = RunningServer::start(
-            server_with(ListenAddress::Tcp(addr), ok_response)
+            server_with(ListenAddress::tcp_loopback(0), ok_response)
                 .with_http2_config(Http2Config::default().with_max_connection_age(max_age, None)),
-        );
-        wait_until_listening(addr).await;
+        )
+        .await;
+        let addr = server.bound_tcp_address().await;
 
         // Issue a request without asking for the connection to be closed, so what gets retired is a genuinely idle
         // keep-alive connection rather than one the client was finished with anyway.
