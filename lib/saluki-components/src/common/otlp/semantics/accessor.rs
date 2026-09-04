@@ -70,6 +70,12 @@ impl<'a> Accessor for OtlpAttributesAccessor<'a> {
 /// - `get_int64` returns a value for integer-valued attributes, and for
 ///   float-valued attributes only when the value is exactly representable as an
 ///   integer (for example: `14.0` yes, `13.5` no).
+///
+/// Promoted span fields (`env`, `version`, `component`) are
+/// deliberately not consulted here: they live in dedicated fields on the span
+/// rather than in the attribute map, and callers that need them should read the
+/// span fields directly. A concept lookup for these keys may therefore resolve
+/// to `None` on spans where the value was promoted out of the attribute map.
 #[derive(Clone, Copy)]
 pub struct DdSpanAccessor<'a> {
     span: &'a DdSpan,
@@ -93,11 +99,14 @@ impl<'a> Accessor for DdSpanAccessor<'a> {
     fn get_int64(&self, key: &str) -> Option<i64> {
         match self.span.attributes.get(key)? {
             AttributeValue::Int(i) => Some(*i),
-            // Exact-integer check, mirroring upstream: a float is only usable as
-            // an integer when converting it back to a float round-trips.
             AttributeValue::Float(f) => {
-                let i = *f as i64;
-                (i as f64 == *f).then_some(i)
+                let f = *f;
+                //Protect against values greater than i64::MAX and less than i64::MIN
+                if !(-9223372036854775808.0..9223372036854775808.0).contains(&f) {
+                    return None;
+                }
+                let i = f as i64;
+                (i as f64 == f).then_some(i)
             }
             _ => None,
         }
@@ -265,6 +274,22 @@ mod tests {
 
         assert_eq!(DdSpanAccessor::new(&exact).get_int64("grpc.code"), Some(14));
         assert_eq!(DdSpanAccessor::new(&fractional).get_int64("grpc.code"), None);
+    }
+
+    #[test]
+    fn dd_span_accessor_rejects_out_of_range_floats() {
+        // `2^63` is outside the i64 range. Rust's saturating cast produces `i64::MAX`,
+        // and `i64::MAX as f64` rounds back up to exactly `2^63`, so the round-trip
+        // check alone would wrongly accept it. The bounds check must reject it first.
+        let too_large = converted_span_with(&[("grpc.code", AttributeValue::Float(9223372036854775808.0))]);
+        let slightly_larger = converted_span_with(&[("grpc.code", AttributeValue::Float(1.0e19))]);
+
+        assert_eq!(DdSpanAccessor::new(&too_large).get_int64("grpc.code"), None);
+        assert_eq!(DdSpanAccessor::new(&slightly_larger).get_int64("grpc.code"), None);
+
+        // `-2^63` is exactly `i64::MIN` and must be accepted.
+        let min_value = converted_span_with(&[("grpc.code", AttributeValue::Float(-9223372036854775808.0))]);
+        assert_eq!(DdSpanAccessor::new(&min_value).get_int64("grpc.code"), Some(i64::MIN));
     }
 
     #[test]
