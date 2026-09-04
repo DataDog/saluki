@@ -59,7 +59,7 @@ impl FeatureDetector {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 impl FeatureDetector {
     /// Creates a `FeatureDetector` that reports exactly the given features.
     ///
