@@ -9,9 +9,9 @@ use std::{
 };
 
 use async_trait::async_trait;
-use saluki_common::collections::FastHashMap;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::GenericError;
+use serde::{Deserialize, Serialize};
 use snafu::{OptionExt as _, Snafu};
 use tokio::{pin, runtime::Handle, select, sync::mpsc};
 use tracing::{debug, error, warn};
@@ -19,6 +19,7 @@ use tracing::{debug, error, warn};
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
+    tree::{ChildFacts, ChildKey, NodeConfig, Roster, SupervisionTreeHandle, SupervisorNode},
     worker_state::WorkerState,
 };
 use crate::runtime::{
@@ -146,7 +147,8 @@ pub enum ShutdownStrategy {
 /// drive the supervisor to shut down. This mirrors Erlang/OTP's `auto_shutdown` supervisor flag, and is how an
 /// unexpected (or intentional) child exit cascades into the supervisor stopping, and thus propagating up the tree,
 /// without that child being restarted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AutoShutdown {
     /// Never shut down automatically; significant children have no special effect. This is the default.
     #[default]
@@ -493,6 +495,17 @@ impl SupervisedChild {
         matches!(self, Self::Supervisor(_))
     }
 
+    /// Returns the child's own supervision-tree bookkeeping, if the child is a nested supervisor.
+    ///
+    /// This is the link that makes the tree walkable: a parent records its child's node alongside its own, so an
+    /// observer holding the parent's node can descend into the child's.
+    pub(super) fn node(&self) -> Option<Arc<SupervisorNode>> {
+        match self {
+            Self::Worker(_) => None,
+            Self::Supervisor(supervisor) => Some(Arc::clone(&supervisor.node)),
+        }
+    }
+
     fn process_type(&self) -> &'static str {
         match self {
             Self::Worker(_) => "worker",
@@ -585,6 +598,12 @@ impl SupervisedChild {
                     RuntimeMode::Dedicated(config) => {
                         // Spawn in a dedicated runtime on a new OS thread, passing the parent's
                         // dataspace so the nested supervisor inherits it across the thread boundary.
+                        //
+                        // TODO: Only the dataspace is carried across, so the supervisor re-roots its own process name
+                        // when it starts (`run_with_shutdown_inner` passes no parent) rather than staying scoped
+                        // under us. That also leaves the process we build here registered as a resource group that
+                        // nothing ever enters, so it reads zero forever. Threading this process through instead would
+                        // fix both, at the cost of renaming the affected resource groups and their metric labels.
                         let child_name = sup.supervisor_id.to_string();
                         let dataspace = process.dataspace().clone();
                         let handle =
@@ -849,9 +868,6 @@ impl SupervisorHandle {
 pub struct Supervisor {
     supervisor_id: Arc<str>,
     child_specs: Vec<ChildEntry>,
-    restart_strategy: RestartStrategy,
-    auto_shutdown: AutoShutdown,
-    shutdown_budget: Option<Duration>,
     runtime_mode: RuntimeMode,
     // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. While a run is
     // active it holds that run's spawn queue so handles can reach the live supervisor; it's `None` whenever no run is
@@ -860,6 +876,9 @@ pub struct Supervisor {
     id_counter: Arc<AtomicU64>,
     // Number of dynamic children currently running, shared with handles so it can be surfaced as a gauge.
     active: Arc<AtomicUsize>,
+    // Observable bookkeeping for this supervisor, shared with clones (so every generation writes to the same place),
+    // with this supervisor's parent (so the tree can be walked downward), and with any tree handle.
+    node: Arc<SupervisorNode>,
 }
 
 impl Supervisor {
@@ -874,12 +893,12 @@ impl Supervisor {
             });
         }
 
+        let supervisor_id: Arc<str> = supervisor_id.as_ref().into();
+
         Ok(Self {
-            supervisor_id: supervisor_id.as_ref().into(),
+            node: Arc::new(SupervisorNode::new(Arc::clone(&supervisor_id))),
+            supervisor_id,
             child_specs: Vec::new(),
-            restart_strategy: RestartStrategy::default(),
-            auto_shutdown: AutoShutdown::default(),
-            shutdown_budget: None,
             runtime_mode: RuntimeMode::default(),
             current_tx: Arc::new(Mutex::new(None)),
             id_counter: Arc::new(AtomicU64::new(0)),
@@ -893,8 +912,8 @@ impl Supervisor {
     }
 
     /// Sets the restart strategy for the supervisor.
-    pub fn with_restart_strategy(mut self, strategy: RestartStrategy) -> Self {
-        self.restart_strategy = strategy;
+    pub fn with_restart_strategy(self, strategy: RestartStrategy) -> Self {
+        self.node.update_config(|config| config.restart_strategy = strategy);
         self
     }
 
@@ -902,8 +921,8 @@ impl Supervisor {
     ///
     /// Controls whether the termination of _significant_ children (see [`ChildBuilder::with_significant`][crate::runtime::ChildBuilder::with_significant]) drives the
     /// supervisor to shut down. Defaults to [`AutoShutdown::Never`].
-    pub fn with_auto_shutdown(mut self, auto_shutdown: AutoShutdown) -> Self {
-        self.auto_shutdown = auto_shutdown;
+    pub fn with_auto_shutdown(self, auto_shutdown: AutoShutdown) -> Self {
+        self.node.update_config(|config| config.auto_shutdown = auto_shutdown);
         self
     }
 
@@ -930,8 +949,8 @@ impl Supervisor {
     /// component and its background tasks, for instance, where what matters is that the component as a whole stops in
     /// time.
     #[must_use]
-    pub fn with_shutdown_budget(mut self, budget: Duration) -> Self {
-        self.shutdown_budget = Some(budget);
+    pub fn with_shutdown_budget(self, budget: Duration) -> Self {
+        self.node.update_config(|config| config.shutdown_budget = Some(budget));
         self
     }
 
@@ -949,6 +968,14 @@ impl Supervisor {
         }
     }
 
+    /// Returns a read-only handle for taking snapshots of this supervisor and the subtree beneath it.
+    ///
+    /// The handle can be created before the supervisor starts and remains valid across every restart of it. Unlike
+    /// [`handle`][Self::handle], it grants no ability to affect the supervisor -- only to observe it.
+    pub fn tree_handle(&self) -> SupervisionTreeHandle {
+        SupervisionTreeHandle::new(Arc::clone(&self.node))
+    }
+
     /// Configures this supervisor to run in a dedicated runtime.
     ///
     /// When this supervisor is added as a child to another supervisor, it will spawn its own OS threads and Tokio
@@ -959,6 +986,9 @@ impl Supervisor {
     /// - Isolating failures in one part of the system
     /// - Using different runtime configurations (for example, single-threaded vs multi-threaded)
     pub fn with_dedicated_runtime(mut self, config: RuntimeConfiguration) -> Self {
+        let worker_threads = config.worker_threads();
+        self.node
+            .update_config(|node_config| node_config.dedicated_threads = Some(worker_threads));
         self.runtime_mode = RuntimeMode::Dedicated(config);
         self
     }
@@ -1003,7 +1033,7 @@ impl Supervisor {
     /// afterwards. Checking at registration time would flag that -- entirely correct -- ordering as a mistake.
     ///
     /// Warn-only: the child still starts, since an inert flag is useless rather than unsafe.
-    fn warn_if_significance_is_inert(&self, config: &ChildConfig, child_name: &str) {
+    fn warn_if_significance_is_inert(&self, config: &ChildConfig, child_name: &str, auto_shutdown: AutoShutdown) {
         if !config.significant {
             return;
         }
@@ -1016,7 +1046,7 @@ impl Supervisor {
             );
         }
 
-        if self.auto_shutdown == AutoShutdown::Never {
+        if auto_shutdown == AutoShutdown::Never {
             warn!(
                 supervisor_id = %self.supervisor_id,
                 child_name,
@@ -1050,16 +1080,31 @@ impl Supervisor {
         self.child_specs.push(entry);
     }
 
+    /// Describes a child for the supervision-tree bookkeeping.
+    ///
+    /// Assembled here rather than inside the roster because only the supervisor can see a child's specification and
+    /// resolved configuration.
+    fn child_facts(entry: &ChildEntry, key: ChildKey) -> ChildFacts {
+        ChildFacts {
+            key,
+            name: entry.spec.name().into(),
+            node: entry.spec.node(),
+            restart: entry.config.restart,
+            significant: entry.config.significant,
+        }
+    }
+
     fn spawn_static_children(
-        &self, children: &mut FastHashMap<u64, ChildEntry>, worker_state: &mut WorkerState,
+        &self, roster: &mut Roster<ChildEntry>, worker_state: &mut WorkerState, auto_shutdown: AutoShutdown,
     ) -> Result<(), SupervisorError> {
         debug!(supervisor_id = %self.supervisor_id, "Spawning all static child processes.");
-        for entry in &self.child_specs {
-            self.warn_if_significance_is_inert(&entry.config, entry.spec.name());
+        for (index, entry) in self.child_specs.iter().enumerate() {
+            self.warn_if_significance_is_inert(&entry.config, entry.spec.name(), auto_shutdown);
 
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-            worker_state.add_worker(id, &entry.spec, &entry.config)?;
-            children.insert(id, entry.clone());
+            let started = worker_state.add_worker(id, &entry.spec, &entry.config)?;
+            let facts = Self::child_facts(entry, ChildKey::Static(index));
+            roster.insert(id, entry.clone(), facts, started);
         }
 
         Ok(())
@@ -1073,18 +1118,21 @@ impl Supervisor {
     /// A transient child's "restart only on abnormal exit" rule governs its _own_ termination, not a group restart
     /// driven by a sibling. Dynamic children are not restored (they are lost on a supervisor-level restart).
     fn respawn_children_one_for_all(
-        &self, children: &mut FastHashMap<u64, ChildEntry>, worker_state: &mut WorkerState,
+        &self, roster: &mut Roster<ChildEntry>, worker_state: &mut WorkerState,
     ) -> Result<(), SupervisorError> {
         debug!(supervisor_id = %self.supervisor_id, "Restarting all eligible static child processes.");
-        for entry in &self.child_specs {
+        for (index, entry) in self.child_specs.iter().enumerate() {
             // Temporary children are never restarted by a group restart (matching OTP): they are shut down with the
             // group but not brought back.
             if entry.config.restart == RestartType::Temporary {
                 continue;
             }
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-            worker_state.add_worker(id, &entry.spec, &entry.config)?;
-            children.insert(id, entry.clone());
+            let started = worker_state.add_worker(id, &entry.spec, &entry.config)?;
+            // Keyed by position in the static child list rather than by roster id: a group restart hands out fresh
+            // ids, and the child's creation time and restart count have to survive that.
+            let facts = Self::child_facts(entry, ChildKey::Static(index));
+            roster.insert(id, entry.clone(), facts, started);
         }
 
         Ok(())
@@ -1092,8 +1140,8 @@ impl Supervisor {
 
     /// Registers one dynamic child into the running supervisor's worker set and roster.
     fn spawn_dynamic_child(
-        &self, spawn: PendingSpawn, worker_state: &mut WorkerState, children: &mut FastHashMap<u64, ChildEntry>,
-        significant_remaining: &mut usize,
+        &self, spawn: PendingSpawn, worker_state: &mut WorkerState, roster: &mut Roster<ChildEntry>,
+        significant_remaining: &mut usize, auto_shutdown: AutoShutdown,
     ) {
         let PendingSpawn { id, spec, config } = spawn;
         let entry = ChildEntry {
@@ -1101,15 +1149,16 @@ impl Supervisor {
             config,
             dynamic: true,
         };
-        self.warn_if_significance_is_inert(&entry.config, entry.spec.name());
+        self.warn_if_significance_is_inert(&entry.config, entry.spec.name(), auto_shutdown);
 
         match worker_state.add_worker(id, &entry.spec, &entry.config) {
-            Ok(()) => {
+            Ok(started) => {
                 if entry.config.significant {
                     *significant_remaining += 1;
                 }
                 self.active.fetch_add(1, Ordering::Relaxed);
-                children.insert(id, entry);
+                let facts = Self::child_facts(&entry, ChildKey::Dynamic(id));
+                roster.insert(id, entry, facts, started);
             }
             Err(e) => {
                 // The only way registration fails now that child names always resolve is a nested supervisor on a
@@ -1131,31 +1180,54 @@ impl Supervisor {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         *self.current_tx.lock().unwrap() = Some(cmd_tx);
 
+        // Record the process we're actually running under. It has to come from here rather than from whatever our
+        // parent created for us, because a supervisor on a dedicated runtime re-roots its process name when it
+        // starts, and only the resulting name matches the resource group its allocations land in.
+        self.node.begin_run(&process);
+
         let result = self.supervise(process, process_shutdown, cmd_rx).await;
 
         // The run is over. Clear the sender so later spawns are dropped rather than queued, and reset the
         // dynamic-children gauge. Dropping the receiver (owned by `supervise`) already discarded anything in flight.
         *self.current_tx.lock().unwrap() = None;
         self.active.store(0, Ordering::Relaxed);
+
+        // Report as stopped rather than presenting the children of a generation that has ended. Every way out of
+        // `supervise` -- clean shutdown, a child failing to initialize, the restart limit being exceeded, a
+        // significant child exiting -- returns through here, so this covers all of them.
+        self.node.end_run();
+
         result
     }
 
     async fn supervise(
         &self, process: Process, process_shutdown: ShutdownHandle, mut cmd_rx: mpsc::UnboundedReceiver<PendingSpawn>,
     ) -> Result<(), SupervisorError> {
-        let mut restart_state = RestartState::new(self.restart_strategy);
-        let mut worker_state = WorkerState::new(process, self.handle(), self.shutdown_budget);
+        // Read once: configuration can't change while a run is in flight, and this keeps the reap and spawn arms
+        // below off the node's lock entirely.
+        let NodeConfig {
+            restart_strategy,
+            auto_shutdown,
+            shutdown_budget,
+            ..
+        } = self.node.config();
+
+        let mut restart_state = RestartState::new(restart_strategy);
+        let mut worker_state = WorkerState::new(process, self.handle(), shutdown_budget, Arc::clone(&self.node));
 
         // The live roster of children -- both static (seeded below) and dynamic (added via the handle) -- keyed by a
         // stable id. A restart re-runs a child by id; a child that isn't restarted is removed from the roster.
-        let mut children: FastHashMap<u64, ChildEntry> = FastHashMap::default();
+        //
+        // Every change also lands in this supervisor's supervision-tree bookkeeping, which is what makes the tree
+        // observable. Going through the roster for all of it is what keeps the two from drifting apart.
+        let mut roster = Roster::new(Arc::clone(&self.node));
 
         // Spawn the static children. Initialization is folded into each worker's task, so this returns immediately --
         // children initialize concurrently in the background.
-        self.spawn_static_children(&mut children, &mut worker_state)?;
+        self.spawn_static_children(&mut roster, &mut worker_state, auto_shutdown)?;
 
         // Track how many significant children are still running, for `AutoShutdown` evaluation.
-        let mut significant_remaining = children.values().filter(|entry| entry.config.significant).count();
+        let mut significant_remaining = roster.values().filter(|entry| entry.config.significant).count();
 
         // Scratch space reused across every batched drain of the spawn queue.
         let mut spawn_batch = Vec::with_capacity(SPAWN_DRAIN_BATCH);
@@ -1180,7 +1252,7 @@ impl Supervisor {
                 (child_id, worker_result) = worker_state.wait_for_next_worker() => {
                     // Pull out what we need from the roster before we mutate it.
                     let (child_name, config, dynamic) = {
-                        let entry = children.get(&child_id).expect("completed worker must be present in the roster");
+                        let entry = roster.get(child_id).expect("completed worker must be present in the roster");
                         (entry.spec.name().to_string(), entry.config.clone(), entry.dynamic)
                     };
 
@@ -1226,7 +1298,7 @@ impl Supervisor {
                         } else {
                             debug!(supervisor_id = %self.supervisor_id, worker_name = %child_name, restart = ?config.restart, "Child process exited and is not eligible for restart.");
                         }
-                        children.remove(&child_id);
+                        roster.remove(child_id);
                         if dynamic {
                             self.active.fetch_sub(1, Ordering::Relaxed);
                         }
@@ -1236,7 +1308,7 @@ impl Supervisor {
                         // supervisor stopping and propagating up the tree.
                         if config.significant {
                             significant_remaining = significant_remaining.saturating_sub(1);
-                            let auto_shutdown = match self.auto_shutdown {
+                            let auto_shutdown = match auto_shutdown {
                                 AutoShutdown::Never => false,
                                 AutoShutdown::AnySignificant => true,
                                 AutoShutdown::AllSignificant => significant_remaining == 0,
@@ -1251,9 +1323,10 @@ impl Supervisor {
                             RestartAction::Restart(mode) => match mode {
                                 RestartMode::OneForOne => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting.");
-                                    let spec = children.get(&child_id).expect("present for restart").spec.clone();
-                                    if let Err(e) = worker_state.add_worker(child_id, &spec, &config) {
-                                        break Err(e);
+                                    let spec = roster.get(child_id).expect("present for restart").spec.clone();
+                                    match worker_state.add_worker(child_id, &spec, &config) {
+                                        Ok(started) => roster.restart_in_place(child_id, started),
+                                        Err(e) => break Err(e),
                                     }
                                 }
                                 RestartMode::OneForAll => {
@@ -1265,14 +1338,14 @@ impl Supervisor {
                                     // A one-for-all restart resets to the static roster; dynamic children are not
                                     // restored (they're lost on a supervisor-level restart, matching Erlang/OTP), and
                                     // temporary children are not restarted.
-                                    children.clear();
+                                    roster.clear_for_group_restart();
                                     self.active.store(0, Ordering::Relaxed);
-                                    let respawn = self.respawn_children_one_for_all(&mut children, &mut worker_state);
+                                    let respawn = self.respawn_children_one_for_all(&mut roster, &mut worker_state);
                                     if let Err(e) = respawn {
                                         break Err(e);
                                     }
                                     significant_remaining =
-                                        children.values().filter(|entry| entry.config.significant).count();
+                                        roster.values().filter(|entry| entry.config.significant).count();
                                 }
                             },
                             RestartAction::Shutdown => {
@@ -1288,7 +1361,13 @@ impl Supervisor {
                 // keeps a burst of spawns to a single wake-up.
                 _ = cmd_rx.recv_many(&mut spawn_batch, SPAWN_DRAIN_BATCH) => {
                     for spawn in spawn_batch.drain(..) {
-                        self.spawn_dynamic_child(spawn, &mut worker_state, &mut children, &mut significant_remaining);
+                        self.spawn_dynamic_child(
+                            spawn,
+                            &mut worker_state,
+                            &mut roster,
+                            &mut significant_remaining,
+                            auto_shutdown,
+                        );
                     }
                 }
             }
@@ -1418,13 +1497,11 @@ impl Supervisor {
         Self {
             supervisor_id: Arc::clone(&self.supervisor_id),
             child_specs: self.child_specs.clone(),
-            restart_strategy: self.restart_strategy,
-            auto_shutdown: self.auto_shutdown,
-            shutdown_budget: self.shutdown_budget,
             runtime_mode: self.runtime_mode.clone(),
             current_tx: Arc::clone(&self.current_tx),
             id_counter: Arc::clone(&self.id_counter),
             active: Arc::clone(&self.active),
+            node: Arc::clone(&self.node),
         }
     }
 }
@@ -1446,7 +1523,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::runtime::{self, FnWorker};
+    use crate::runtime::{self, FnWorker, NodeKind, NodeSnapshot, NodeState};
     use crate::test_support::wait_until;
 
     /// Behavior for a mock worker during initialization.
@@ -3605,5 +3682,676 @@ mod tests {
             result.is_ok(),
             "the nested drain finished in time, so shutdown was clean: {result:?}"
         );
+    }
+    // -- Supervision tree snapshot tests ---------------------------------------------------
+
+    /// Finds a node among `nodes` by its bare name.
+    fn find_node<'a>(nodes: &'a [NodeSnapshot], name: &str) -> &'a NodeSnapshot {
+        nodes.iter().find(|node| node.name == name).unwrap_or_else(|| {
+            panic!(
+                "no node named '{name}' among {:?}",
+                nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    #[tokio::test]
+    async fn snapshot_before_run_reports_a_registered_root() {
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_for_all().with_intensity_and_period(7, Duration::from_secs(11)))
+            .with_auto_shutdown(AutoShutdown::AnySignificant)
+            .with_shutdown_budget(Duration::from_secs(3));
+        sup.add_worker(MockWorker::long_running("worker1"));
+
+        // A tree that hasn't started still has a declared shape, and configuration is known from the moment it is
+        // set, so all of it should be readable without running anything.
+        let snapshot = sup.tree_handle().snapshot();
+
+        assert_eq!(snapshot.root.name, "test-sup");
+        assert_eq!(snapshot.root.kind, NodeKind::Supervisor);
+        assert_eq!(snapshot.root.state, NodeState::Registered);
+        assert_eq!(snapshot.root.process_id, None);
+        assert_eq!(snapshot.root.process_name, None);
+        assert_eq!(snapshot.root.started_at, None);
+        assert_eq!(snapshot.root.uptime_ms, None);
+        assert!(snapshot.root.children.is_empty(), "no children have been started yet");
+
+        let supervision = snapshot.root.supervision.expect("a supervisor reports its settings");
+        assert_eq!(supervision.restart_mode, RestartMode::OneForAll);
+        assert_eq!(supervision.restart_intensity, 7);
+        assert_eq!(supervision.restart_period_ms, 11_000);
+        assert_eq!(supervision.auto_shutdown, AutoShutdown::AnySignificant);
+        assert_eq!(supervision.shutdown_budget_ms, Some(3_000));
+        assert_eq!(supervision.dedicated_threads, None);
+        assert_eq!(supervision.generation, 0);
+
+        assert_eq!(snapshot.totals.supervisors, 1);
+        assert_eq!(snapshot.totals.workers, 0);
+        assert_eq!(snapshot.totals.registered, 1);
+        assert_eq!(snapshot.totals.max_depth, 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_static_children_in_declaration_order() {
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::long_running("worker1"));
+        sup.add_worker(MockWorker::long_running("worker2"));
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        wait_until("both children appear in the snapshot", || {
+            tree.snapshot().root.children.len() == 2
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+        assert_eq!(snapshot.root.state, NodeState::Running);
+        assert!(snapshot.root.process_id.is_some());
+        assert_eq!(snapshot.root.process_name.as_deref(), Some("test_sup"));
+        assert_eq!(snapshot.root.supervision.expect("supervisor settings").generation, 1);
+
+        // Declaration order, not hash order: it is how the tree is written, so it is how it should read.
+        let names: Vec<&str> = snapshot.root.children.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["worker1", "worker2"]);
+
+        for (child, expected_process) in snapshot
+            .root
+            .children
+            .iter()
+            .zip(["test_sup.worker1", "test_sup.worker2"])
+        {
+            assert_eq!(child.kind, NodeKind::Worker);
+            assert_eq!(child.state, NodeState::Running);
+            assert_eq!(child.restart, RestartType::Permanent);
+            assert_eq!(child.restart_count, 0);
+            assert_eq!(child.process_name.as_deref(), Some(expected_process));
+            assert!(child.process_id.is_some(), "a running child has a process");
+            assert!(child.children.is_empty(), "a worker has no children");
+            assert!(child.supervision.is_none(), "a worker has no supervision settings");
+            assert!(
+                child.created_at <= child.started_at.expect("a running child has a start time"),
+                "a child cannot start before it is created"
+            );
+        }
+
+        let first = snapshot.root.children[0].process_id;
+        let second = snapshot.root.children[1].process_id;
+        assert_ne!(first, second, "each child runs as its own process");
+
+        assert_eq!(snapshot.totals.supervisors, 1);
+        assert_eq!(snapshot.totals.workers, 2);
+        assert_eq!(snapshot.totals.running, 3);
+        assert_eq!(snapshot.totals.max_depth, 2);
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn one_for_one_restart_increments_only_the_failing_child() {
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(5, Duration::from_secs(5)));
+        sup.add_worker(MockWorker::failing("flapper", Duration::from_millis(20)));
+        sup.add_worker(MockWorker::long_running("stable"));
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        wait_until("the failing child has appeared", || {
+            tree.snapshot().root.children.len() == 2
+        })
+        .await;
+        let before = tree.snapshot();
+        let created_before = find_node(&before.root.children, "flapper").created_at;
+        let process_before = find_node(&before.root.children, "flapper").process_id;
+
+        wait_until("the failing child has been restarted", || {
+            find_node(&tree.snapshot().root.children, "flapper").restart_count >= 1
+        })
+        .await;
+
+        let after = tree.snapshot();
+        let flapper = find_node(&after.root.children, "flapper");
+        let stable = find_node(&after.root.children, "stable");
+
+        assert_eq!(stable.restart_count, 0, "a one-for-one restart leaves siblings alone");
+        assert_ne!(flapper.process_id, process_before, "a restart is a new process");
+        assert_eq!(
+            flapper.created_at, created_before,
+            "creation time is a property of the child, not of the incarnation"
+        );
+
+        // A single child flapping is distinguishable from the supervisor restarting its whole group.
+        assert!(after.root.supervision.expect("supervisor settings").restarts_performed >= 1);
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn one_for_all_restart_increments_every_restarted_child() {
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_for_all().with_intensity_and_period(5, Duration::from_secs(5)));
+        sup.add_worker(MockWorker::failing("flapper", Duration::from_millis(20)));
+        sup.add_worker(MockWorker::long_running("sibling"));
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        wait_until("both children have appeared", || {
+            tree.snapshot().root.children.len() == 2
+        })
+        .await;
+        let before = tree.snapshot();
+        let sibling_created = find_node(&before.root.children, "sibling").created_at;
+        let sibling_process = find_node(&before.root.children, "sibling").process_id;
+
+        // The whole group is brought back, so every child's count moves -- which is what keeps each child's count
+        // consistent with the new process and start time in the same record.
+        wait_until("the group has been restarted", || {
+            let snapshot = tree.snapshot();
+            snapshot.root.children.len() == 2 && snapshot.root.children.iter().all(|child| child.restart_count >= 1)
+        })
+        .await;
+
+        let after = tree.snapshot();
+        let sibling = find_node(&after.root.children, "sibling");
+        assert_ne!(sibling.process_id, sibling_process, "a group restart is a new process");
+        assert_eq!(
+            sibling.created_at, sibling_created,
+            "creation time survives a group restart"
+        );
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn temporary_child_survives_a_group_restart_as_a_tombstone() {
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_for_all().with_intensity_and_period(5, Duration::from_secs(5)));
+        sup.add_worker(
+            runtime::supervisable(MockWorker::completing("one-shot", Duration::from_millis(10)))
+                .temporary()
+                .build(),
+        );
+        sup.add_worker(MockWorker::failing("flapper", Duration::from_millis(30)));
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        // A temporary child is not brought back by a group restart, but it was declared, so it stays visible as a
+        // tombstone rather than vanishing -- "declared, ran, stopped for good" is the useful answer.
+        wait_until("the temporary child has exited and the group has restarted", || {
+            let snapshot = tree.snapshot();
+            snapshot
+                .root
+                .children
+                .iter()
+                .any(|child| child.name == "one-shot" && child.state == NodeState::Exited)
+                && snapshot
+                    .root
+                    .children
+                    .iter()
+                    .any(|child| child.name == "flapper" && child.restart_count >= 1)
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+        let one_shot = find_node(&snapshot.root.children, "one-shot");
+        assert_eq!(one_shot.state, NodeState::Exited);
+        assert_eq!(one_shot.restart, RestartType::Temporary);
+        assert_eq!(one_shot.restart_count, 0, "a temporary child is never brought back");
+        assert!(one_shot.exited_at.is_some(), "a tombstone records when it exited");
+        assert_eq!(one_shot.uptime_ms, None, "a node that isn't running has no uptime");
+        assert!(snapshot.totals.exited >= 1);
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_children_leave_no_tombstones() {
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::long_running("static-worker"));
+
+        let tree = sup.tree_handle();
+        let sup_handle = sup.handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        wait_until("the static child is running", || {
+            tree.snapshot().root.children.len() == 1
+        })
+        .await;
+
+        // The canonical dynamic child is one short-lived task per unit of work, so retaining every one that has ever
+        // finished would grow without bound. Spawn far more than a tree should ever hold and require the count to
+        // come back to the static baseline.
+        for _ in 0..500 {
+            sup_handle.spawn(MockWorker::completing("ephemeral", Duration::from_millis(1)));
+        }
+
+        wait_until("every dynamic child has been reaped", || {
+            sup_handle.active_children() == 0 && tree.snapshot().root.children.len() == 1
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+        assert_eq!(snapshot.root.children.len(), 1, "only the static child remains");
+        assert_eq!(snapshot.root.children[0].name, "static-worker");
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_nests_child_supervisors() {
+        let mut child_sup = Supervisor::new("child-sup").unwrap();
+        child_sup.add_worker(MockWorker::long_running("inner-worker"));
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(MockWorker::long_running("outer-worker"));
+        parent_sup.add_worker(child_sup);
+
+        let tree = parent_sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+
+        wait_until("the nested subtree is populated", || {
+            let snapshot = tree.snapshot();
+            snapshot
+                .root
+                .children
+                .iter()
+                .any(|child| child.name == "child-sup" && !child.children.is_empty())
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+        let nested = find_node(&snapshot.root.children, "child-sup");
+        assert_eq!(nested.kind, NodeKind::Supervisor);
+        assert!(nested.supervision.is_some(), "a nested supervisor reports its settings");
+        assert_eq!(nested.process_name.as_deref(), Some("parent_sup.child_sup"));
+        assert_eq!(nested.children.len(), 1);
+
+        let grandchild = &nested.children[0];
+        assert_eq!(grandchild.name, "inner-worker");
+        assert_eq!(grandchild.kind, NodeKind::Worker);
+        assert_eq!(
+            grandchild.process_name.as_deref(),
+            Some("parent_sup.child_sup.inner_worker")
+        );
+
+        assert_eq!(snapshot.totals.supervisors, 2);
+        assert_eq!(snapshot.totals.workers, 2);
+        assert_eq!(snapshot.totals.max_depth, 3);
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dedicated_runtime_subtree_is_visible_across_the_thread_boundary() {
+        let mut child_sup = Supervisor::new("child-sup")
+            .unwrap()
+            .with_dedicated_runtime(RuntimeConfiguration::single_threaded());
+        child_sup.add_worker(MockWorker::long_running("inner-worker"));
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(child_sup);
+
+        // Taken from the parent, before the child is running on an OS thread of its own.
+        let tree = parent_sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+
+        // Read the tree from a thread that is neither the parent's nor the dedicated runtime's.
+        let probe = tree.clone();
+        let snapshot = tokio::task::spawn_blocking(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let snapshot = probe.snapshot();
+                let populated = snapshot
+                    .root
+                    .children
+                    .iter()
+                    .any(|child| child.name == "child-sup" && !child.children.is_empty());
+                if populated {
+                    return snapshot;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "dedicated-runtime subtree never became visible"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+        .await
+        .expect("probe should not panic");
+
+        let nested = find_node(&snapshot.root.children, "child-sup");
+        assert_eq!(nested.state, NodeState::Running);
+        assert_eq!(
+            nested.supervision.expect("supervisor settings").dedicated_threads,
+            Some(1)
+        );
+        assert_eq!(nested.children.len(), 1);
+
+        // A supervisor on a dedicated runtime re-roots its process name when it starts, so it is *not* scoped under
+        // its parent. That is a known defect (see the `Dedicated` branch of `create_worker_future`), not a design
+        // choice -- but it is also why a node's name has to come from its own run rather than from the process its
+        // parent created for it, since only the former names the resource group its allocations land in. Pinned here
+        // so that fixing the defect is a deliberate act rather than a silent regression.
+        assert_eq!(nested.process_name.as_deref(), Some("child_sup"));
+        assert_eq!(
+            nested.children[0].process_name.as_deref(),
+            Some("child_sup.inner_worker")
+        );
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn a_running_node_always_has_a_process() {
+        // A nested supervisor being restarted is briefly stopped, and a snapshot taken in that window must not
+        // present the previous generation's processes as if they were alive. Sampling exactly inside the window is
+        // inherently racy, so assert the invariant that has to hold at every instant instead.
+        let mut child_sup = Supervisor::new("child-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)));
+        child_sup.add_worker(MockWorker::failing("inner", Duration::from_millis(10)));
+
+        let mut parent_sup = Supervisor::new("parent-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(50, Duration::from_secs(5)));
+        parent_sup.add_worker(child_sup);
+
+        let tree = parent_sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+
+        for _ in 0..60 {
+            let snapshot = tree.snapshot();
+            assert_running_nodes_have_processes(&snapshot.root);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        wait_until("the nested supervisor has been restarted", || {
+            find_node(&tree.snapshot().root.children, "child-sup").restart_count >= 1
+        })
+        .await;
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    /// Asserts that every running node in the subtree reports the process it is running as.
+    fn assert_running_nodes_have_processes(node: &NodeSnapshot) {
+        if node.state == NodeState::Running {
+            assert!(
+                node.process_id.is_some() && node.process_name.is_some(),
+                "node '{}' reports as running but names no process",
+                node.name
+            );
+            assert!(
+                node.uptime_ms.is_some(),
+                "node '{}' is running but has no uptime",
+                node.name
+            );
+        } else {
+            assert!(
+                node.uptime_ms.is_none(),
+                "node '{}' is not running but reports an uptime",
+                node.name
+            );
+        }
+
+        for child in &node.children {
+            assert_running_nodes_have_processes(child);
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_after_the_run_reports_a_stopped_tree() {
+        fn assert_send_sync<T: Send + Sync + 'static>() {}
+        assert_send_sync::<SupervisionTreeHandle>();
+
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::long_running("worker1"));
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        wait_until("the child is running", || tree.snapshot().root.children.len() == 1).await;
+
+        tx.send(()).unwrap();
+        join_supervisor(handle).await.unwrap();
+
+        // A stopped supervisor reports as stopped rather than presenting a subtree of processes that no longer exist.
+        let snapshot = tree.snapshot();
+        assert_eq!(snapshot.root.state, NodeState::Registered);
+        assert_eq!(snapshot.root.process_id, None);
+        assert!(snapshot.root.children.is_empty());
+        assert_eq!(
+            snapshot.root.supervision.expect("supervisor settings").generation,
+            1,
+            "the generation count outlives the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialization_failure_leaves_nothing_running() {
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::init_failure("broken"));
+
+        let tree = sup.tree_handle();
+
+        // Run directly rather than through the readiness barrier: this supervisor fails almost immediately, so it may
+        // never be observed running at all.
+        let mut sup = sup;
+        let (_tx, rx) = oneshot::channel::<()>();
+        let result = timeout(Duration::from_secs(2), sup.run_with_shutdown(rx))
+            .await
+            .expect("supervisor should exit promptly");
+        assert!(matches!(result, Err(SupervisorError::FailedToInitialize { .. })));
+
+        // The failure path returns through `run_inner` like every other, so the tree is cleaned up either way.
+        let snapshot = tree.snapshot();
+        assert_eq!(snapshot.root.state, NodeState::Registered);
+        assert_eq!(snapshot.totals.running, 0);
+    }
+
+    #[tokio::test]
+    async fn resources_are_attributed_to_supervisors_not_workers() {
+        let mut child_sup = Supervisor::new("child-sup").unwrap();
+        child_sup.add_worker(MockWorker::long_running("inner-worker"));
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(child_sup);
+
+        let tree = parent_sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+        wait_until("the nested subtree is populated", || {
+            tree.snapshot()
+                .root
+                .children
+                .iter()
+                .any(|child| !child.children.is_empty())
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+
+        // The tracking allocator is a process-wide facility that the test binary doesn't install, so every byte count
+        // here reads zero. That is exactly why the snapshot reports whether tracking is on at all: without it, zero
+        // bytes is indistinguishable from nothing being measured.
+        assert!(!snapshot.resource_tracking_enabled);
+
+        let nested = find_node(&snapshot.root.children, "child-sup");
+        assert!(
+            nested.resources.is_some(),
+            "a supervisor owns the resource group named by its own process"
+        );
+        assert_eq!(nested.resource_group.as_deref(), nested.process_name.as_deref());
+
+        // A worker inherits its supervisor's group rather than owning one, so it names the group but carries no
+        // figures of its own -- reporting the supervisor's totals against each of its workers would count them twice.
+        let worker = &nested.children[0];
+        assert!(worker.resources.is_none(), "a worker owns no resource group");
+        assert_eq!(worker.resource_group.as_deref(), nested.process_name.as_deref());
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_serializes_to_the_expected_shape() {
+        let mut child_sup = Supervisor::new("child-sup").unwrap();
+        child_sup.add_worker(MockWorker::long_running("inner-worker"));
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(child_sup);
+
+        let tree = parent_sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+        wait_until("the nested subtree is populated", || {
+            tree.snapshot()
+                .root
+                .children
+                .iter()
+                .any(|child| !child.children.is_empty())
+        })
+        .await;
+
+        let value = serde_json::to_value(tree.snapshot()).expect("snapshot should serialize");
+
+        // This is the wire contract an HTTP consumer reads, so pin its shape rather than just its serializability.
+        assert!(value["captured_at"].is_u64(), "a timestamp is a plain integer");
+        assert_eq!(value["root"]["kind"], "supervisor");
+        assert_eq!(value["root"]["state"], "running");
+        assert_eq!(value["root"]["restart"], "permanent");
+        assert_eq!(value["root"]["supervision"]["restart_mode"], "one_for_one");
+        assert_eq!(value["root"]["supervision"]["auto_shutdown"], "never");
+
+        let nested = &value["root"]["children"][0];
+        assert_eq!(nested["kind"], "supervisor");
+        let worker = &nested["children"][0];
+        assert_eq!(worker["kind"], "worker");
+        assert!(
+            worker["children"]
+                .as_array()
+                .expect("children is always an array")
+                .is_empty(),
+            "children is present and empty for a worker, so consumers can recurse unconditionally"
+        );
+        assert!(worker.get("resources").is_none(), "a worker reports no resource usage");
+        assert!(
+            worker.get("supervision").is_none(),
+            "a worker reports no supervision settings"
+        );
+        assert!(
+            worker.get("children_truncated").is_none(),
+            "an untruncated node omits the truncation flag"
+        );
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_drives_its_own_supervisor_is_shown_as_its_parent() {
+        // Some workers own a supervisor rather than being one: they build it after initialization and run it inside
+        // their own future, so their parent has no supervisor value to record and the subtree would otherwise be
+        // invisible. This is how the largest subtrees in a real process are shaped.
+        struct SupervisorDrivingWorker;
+
+        #[async_trait]
+        impl Supervisable for SupervisorDrivingWorker {
+            fn name(&self) -> &str {
+                "driver"
+            }
+
+            fn shutdown_strategy(&self) -> ShutdownStrategy {
+                ShutdownStrategy::Graceful(Duration::MAX)
+            }
+
+            async fn initialize(
+                &self, process_shutdown: ShutdownHandle,
+            ) -> Result<SupervisorFuture, InitializationError> {
+                Ok(Box::pin(async move {
+                    let mut inner = Supervisor::new("inner-sup").expect("valid name");
+                    inner.add_worker(MockWorker::long_running("inner-worker"));
+                    inner
+                        .run_with_shutdown_inner(process_shutdown, None)
+                        .await
+                        .map_err(Into::into)
+                }))
+            }
+        }
+
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(SupervisorDrivingWorker);
+
+        let tree = sup.tree_handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        wait_until("the worker's own supervisor has attached itself", || {
+            let snapshot = tree.snapshot();
+            snapshot
+                .root
+                .children
+                .first()
+                .is_some_and(|child| !child.children.is_empty())
+        })
+        .await;
+
+        let snapshot = tree.snapshot();
+        let driver = find_node(&snapshot.root.children, "driver");
+        assert_eq!(
+            driver.kind,
+            NodeKind::Worker,
+            "the worker is what its parent supervises"
+        );
+
+        let inner_sup = find_node(&driver.children, "inner-sup");
+        assert_eq!(inner_sup.kind, NodeKind::Supervisor);
+        assert_eq!(inner_sup.children.len(), 1);
+        assert_eq!(inner_sup.children[0].name, "inner-worker");
+        assert_eq!(snapshot.totals.max_depth, 4);
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
+    }
+
+    #[tokio::test]
+    async fn mixed_child_traffic_keeps_the_roster_consistent() {
+        // Exercises every path that mutates the roster in one run -- static spawn, dynamic spawn, restart in place,
+        // and removal without restart. It asserts little itself: the drift check inside the roster is what is under
+        // test, and it runs on every mutation.
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(100, Duration::from_secs(5)),
+        );
+        sup.add_worker(MockWorker::long_running("stable"));
+        sup.add_worker(MockWorker::failing("flapper", Duration::from_millis(5)));
+
+        let tree = sup.tree_handle();
+        let sup_handle = sup.handle();
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        for _ in 0..25 {
+            sup_handle.spawn(MockWorker::completing("ephemeral", Duration::from_millis(2)));
+            sup_handle.spawn(MockWorker::long_running("lingering"));
+            let snapshot = tree.snapshot();
+            assert_running_nodes_have_processes(&snapshot.root);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        wait_until("the flapping child has restarted several times", || {
+            find_node(&tree.snapshot().root.children, "flapper").restart_count >= 3
+        })
+        .await;
+
+        tx.send(()).unwrap();
+        let _ = join_supervisor(handle).await;
     }
 }

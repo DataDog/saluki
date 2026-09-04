@@ -11,7 +11,7 @@ use saluki_app::{
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::{
     health::HealthRegistry,
-    runtime::{RestartStrategy, RuntimeConfiguration, Supervisor},
+    runtime::{RestartStrategy, RuntimeConfiguration, SupervisionTreeHandle, Supervisor},
 };
 use saluki_error::GenericError;
 
@@ -37,6 +37,7 @@ pub async fn create_control_plane_supervisor(
     config_system: &ConfigurationSystem, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
     control_surfaces: TopologyControlSurfaces, ra_bootstrap: Option<RemoteAgentBootstrap>,
     logging_controller: LoggingOverrideController, current_config: Arc<ArcSwap<SalukiConfiguration>>,
+    root_tree: SupervisionTreeHandle,
 ) -> Result<Supervisor, GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -51,6 +52,7 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(DynamicLogLevelWorker::new(&raw_map, logging_controller));
     supervisor.add_worker(ConfigWorker::new(raw_map.clone()));
     supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
+    supervisor.add_worker(root_tree.worker());
 
     let api_listen_address = dp.api_listen_address()?;
     let secure_api_listen_address = dp.secure_api_listen_address()?;

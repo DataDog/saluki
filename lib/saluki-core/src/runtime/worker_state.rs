@@ -6,6 +6,7 @@
 //! worker exits.
 
 use std::future::pending;
+use std::sync::Arc;
 use std::time::Duration;
 
 use saluki_common::collections::FastIndexMap;
@@ -23,6 +24,7 @@ use super::supervisor::{
     ChildConfig, ChildShutdown, ProcessError, ShutdownStrategy, SupervisedChild, SupervisorError, SupervisorHandle,
     WorkerError,
 };
+use super::tree::{StartedChild, SupervisorNode, TreeParent, CURRENT_TREE_PARENT};
 
 /// Per-worker bookkeeping held by a [`WorkerState`].
 struct ProcessState {
@@ -33,7 +35,7 @@ struct ProcessState {
     worker_id: u64,
     /// Fully qualified process name, retained so shutdown can name precisely which worker had to be forcefully
     /// aborted.
-    worker_name: String,
+    worker_name: Arc<str>,
     shutdown_strategy: ShutdownStrategy,
     /// Whether this child is subject to the supervisor's shutdown budget.
     ///
@@ -64,16 +66,23 @@ pub(super) struct WorkerState {
     /// Applied on top of each child's own strategy, so a child with no finite deadline of its own is still bounded,
     /// and one that has a shorter deadline still exits first.
     shutdown_budget: Option<Duration>,
+    /// Supervision-tree bookkeeping for the supervisor these workers belong to.
+    ///
+    /// Named as each worker's parent so that a supervisor a worker drives internally can attach itself to the tree.
+    node: Arc<SupervisorNode>,
     worker_tasks: JoinSet<Result<(), WorkerError>>,
     worker_map: FastIndexMap<Id, ProcessState>,
 }
 
 impl WorkerState {
-    pub(super) fn new(process: Process, handle: SupervisorHandle, shutdown_budget: Option<Duration>) -> Self {
+    pub(super) fn new(
+        process: Process, handle: SupervisorHandle, shutdown_budget: Option<Duration>, node: Arc<SupervisorNode>,
+    ) -> Self {
         Self {
             process,
             handle,
             shutdown_budget,
+            node,
             worker_tasks: JoinSet::new(),
             worker_map: FastIndexMap::default(),
         }
@@ -83,11 +92,16 @@ impl WorkerState {
     ///
     /// `config` supplies the per-child overrides chosen at registration time: which runtime to spawn the child's task
     /// on, and how the child's shutdown strategy is determined.
+    ///
+    /// Returns the identity of the process the child was started under, which is the only point at which that process
+    /// exists and so the only point at which it can be recorded.
     pub(super) fn add_worker(
         &mut self, worker_id: u64, child_spec: &SupervisedChild, config: &ChildConfig,
-    ) -> Result<(), SupervisorError> {
+    ) -> Result<StartedChild, SupervisorError> {
         let process = child_spec.create_process(&self.process);
-        let worker_name = process.name().to_string();
+        let worker_name: Arc<str> = process.name().into();
+
+        let started = StartedChild::new(&process, Arc::clone(&worker_name));
 
         // Only create a coordinator for a child that actually observes the signal. Most workers don't: they run until
         // their own terminal condition and ignore whatever we fire at them, so a coordinator for them is an
@@ -121,11 +135,15 @@ impl WorkerState {
         // amortized against whatever the poll actually does.
         let task = worker_future
             .into_process_future(process)
-            .with_task_instrumentation(worker_name.clone());
+            .with_task_instrumentation(worker_name.to_string());
 
         // Make ourselves the ambient supervisor for the worker's whole task, initialization included, so the worker
         // can spawn siblings without being handed a handle.
         let task = CURRENT_SUPERVISOR.scope(self.handle.clone(), task);
+
+        // Name the child slot this worker occupies for the same span, so a supervisor it builds and runs inside its
+        // own future -- rather than handing it to us as a child -- can attach itself to the tree there.
+        let task = CURRENT_TREE_PARENT.scope(TreeParent::new(Arc::clone(&self.node), worker_id), task);
 
         let abort_handle = match config.runtime() {
             Some(handle) => self.worker_tasks.spawn_on(task, handle),
@@ -142,7 +160,7 @@ impl WorkerState {
                 abort_handle,
             },
         );
-        Ok(())
+        Ok(started)
     }
 
     /// Awaits the next worker to finish, returning its `worker_id` and result.
@@ -223,7 +241,7 @@ impl WorkerState {
         // its own timeout rather than a single shared one.
         let now = tokio::time::Instant::now();
         let budget_deadline = resolve_budget_deadline(now, self.shutdown_budget);
-        let mut pending: FastIndexMap<Id, (u64, String, AbortHandle, Option<tokio::time::Instant>)> =
+        let mut pending: FastIndexMap<Id, (u64, Arc<str>, AbortHandle, Option<tokio::time::Instant>)> =
             FastIndexMap::default();
         for (task_id, process_state) in std::mem::take(&mut self.worker_map) {
             let ProcessState {

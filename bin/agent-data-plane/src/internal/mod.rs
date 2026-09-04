@@ -6,7 +6,7 @@ use arc_swap::ArcSwap;
 use saluki_app::logging::LoggingOverrideController;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::Supervisor;
+use saluki_core::runtime::{SupervisionTreeHandle, Supervisor};
 use saluki_error::GenericError;
 
 mod config_runtime;
@@ -42,6 +42,7 @@ pub async fn create_internal_supervisor(
     config: &ConfigurationSystem, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
     control_surfaces: TopologyControlSurfaces, ra_bootstrap: Option<RemoteAgentBootstrap>,
     logging_controller: LoggingOverrideController, current_config: Arc<ArcSwap<SalukiConfiguration>>,
+    root_tree: SupervisionTreeHandle,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -58,6 +59,7 @@ pub async fn create_internal_supervisor(
             ra_bootstrap,
             logging_controller,
             current_config,
+            root_tree,
         )
         .await?,
     );

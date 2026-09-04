@@ -376,6 +376,24 @@ impl DataPlaneAPIClient {
         body_when_success(resp)
     }
 
+    /// Retrieves a snapshot of the supervision tree.
+    ///
+    /// The response body is returned as a plain string, for the caller to decode into
+    /// [`TreeSnapshot`][saluki_core::runtime::TreeSnapshot] or pass through as-is.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or the server responds with an unexpected status code, an error is returned.
+    pub async fn runtime_processes(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri(saluki_core::runtime::SUPERVISION_TREE_ROUTE, None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
+    }
+
     /// Retrieves the External Data entries from the workload provider.
     ///
     /// The response body is returned as a plain string with no decoding or modification performed.
