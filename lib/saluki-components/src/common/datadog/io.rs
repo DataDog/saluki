@@ -45,6 +45,7 @@ use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
 
 use super::{
+    api_key::{ApiKeyRefresher, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
@@ -55,7 +56,7 @@ use super::{
     },
     transaction::{Metadata, Transaction, TransactionBody},
     validation::ApiKeyValidator,
-    METRIC_INTAKE_PATHS,
+    METRICS_SERIES_V3_PATH, METRIC_INTAKE_PATHS,
 };
 
 type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
@@ -236,6 +237,7 @@ pub struct TransactionForwarder<B> {
     client: HttpClient,
     endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
+    api_key_refresher: Option<ApiKeyRefresher>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     emitter: DiagnosticsEmitter,
     _marker: PhantomData<B>,
@@ -297,9 +299,13 @@ where
     B::Error: std::error::Error + Send + Sync,
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
+    ///
+    /// Two configuration inputs arrive here, and they are not interchangeable: `api_keys` holds the typed live views
+    /// the endpoints take their API keys from, while `live_config` is the raw map that the retry policy's secrets gate
+    /// still reads.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -308,6 +314,7 @@ where
             context,
             config,
             live_config,
+            api_keys,
             endpoint_name,
             telemetry,
             metrics_builder,
@@ -318,13 +325,14 @@ where
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
         endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let endpoints = config.build_routable_endpoints(live_config.clone())?;
+        let endpoints = config.build_routable_endpoints()?;
+        let api_key_refresher = ApiKeyRefresher::new(&endpoints, api_keys);
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
         let endpoint_name_for_client = Arc::clone(&endpoint_name);
         let mut client_builder = HttpClient::builder()
@@ -363,6 +371,7 @@ where
             client,
             endpoint_name,
             endpoints,
+            api_key_refresher,
             endpoint_request_mapper_factory,
             emitter,
             _marker: PhantomData,
@@ -387,10 +396,17 @@ where
             client,
             endpoint_name,
             endpoints,
+            api_key_refresher,
             endpoint_request_mapper_factory,
             emitter,
             _marker,
         } = self;
+
+        // The endpoints already hold the keys configuration reports, stored when the refresher was
+        // built; this task carries the changes that come after that.
+        if let Some(api_key_refresher) = api_key_refresher {
+            api_key_refresher.spawn();
+        }
 
         spawn_traced_named(
             "dd-txn-forwarder-io-loop",
@@ -425,7 +441,7 @@ where
         ApiKeyValidator::new(
             self.endpoints.clone(),
             self.client.clone(),
-            self.live_config.clone(),
+            self.api_key_refresher.as_ref().map(ApiKeyRefresher::changes),
             self.config.api_key_validation_interval(),
             self.emitter.clone(),
         )
@@ -495,8 +511,7 @@ async fn run_io_loop<B>(
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request =
-            is_metrics_request_uri(transaction.request_uri(), config.v3_api().series.beta_route.as_str());
+        let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -601,15 +616,11 @@ async fn run_endpoint_io_loop<B>(
     } else {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: &configured_endpoint,
-            resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint,
             series_config: config.use_v3_api_series(),
             metrics_primary_v3_override,
             serializer_v3_series_endpoints: &v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
-            series_validate: v3_api.series.validate,
-            sketches_validate: v3_api.sketches.validate,
-            series_shadow_sites: &v3_api.series.shadow_sites,
         })
     };
     debug!(
@@ -706,11 +717,6 @@ async fn run_endpoint_io_loop<B>(
                         );
                         continue;
                     }
-                    let txn = if endpoint_v3_settings.should_receive_validation_headers(payload_info) {
-                        txn
-                    } else {
-                        strip_metrics_validation_headers(txn)
-                    };
                     let transaction_size = txn.size_bytes();
                     let resolved = endpoint_name(txn.request_uri());
                     let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
@@ -806,18 +812,6 @@ async fn run_endpoint_io_loop<B>(
     task_barrier.wait().await;
 }
 
-fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
-where
-    B: Buf + Clone,
-{
-    let (metadata, mut request) = txn.into_parts();
-    let headers = request.headers_mut();
-    headers.remove("X-Metrics-Request-ID");
-    headers.remove("X-Metrics-Request-Seq");
-    headers.remove("X-Metrics-Request-Len");
-    Transaction::reassemble(metadata, request)
-}
-
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
     // For additional endpoints we hash over the api_key_index (the stable position of this key in
     // the additional_endpoints config list) rather than the raw API key value. This means the queue
@@ -911,6 +905,14 @@ fn build_diagnostics_layer(emitter: DiagnosticsEmitter, endpoint_url: String) ->
             format!("Datadog API key rejected as invalid (HTTP 403) when forwarding to '{endpoint_url}'."),
             DiagnosticDetails::InvalidApiKey,
         ));
+
+        // The message text here is kept in sync with an equivalent log emitted by another implementation of
+        // this forwarder, so that log-based alerting on this condition matches regardless of which implementation
+        // is deployed.
+        error!(
+            endpoint_url,
+            "API Key invalid (403 response), dropping transaction for {endpoint_url}."
+        );
     };
 
     HttpInspectionLayer::new().with_inspector(StatusCode::FORBIDDEN, forbidden_inspector)
@@ -1135,13 +1137,13 @@ mod tests {
         },
     };
 
-    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
+    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue, SalukiConfiguration};
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::{config_from, ConfigurationLoader};
+    use saluki_config::config_from;
     use saluki_core::{
         observability::ComponentMetricsExt as _,
         runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
@@ -1161,7 +1163,10 @@ mod tests {
 
     use super::*;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
-    use crate::common::datadog::{endpoints::resolve_additional_endpoints, test_util::shared_configuration};
+    use crate::common::datadog::{
+        endpoints::resolve_additional_endpoints,
+        test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
+    };
     use crate::common::datadog::{
         METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
@@ -1180,8 +1185,7 @@ mod tests {
     }
 
     async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        ForwarderConfiguration::from_configuration(&shared, &config)
+        ForwarderConfiguration::from_configuration(&shared)
     }
 
     #[test]
@@ -1236,7 +1240,7 @@ mod tests {
             ("app.datadoghq.com".to_string(), vec!["key-a".to_string()]),
             ("https://app.datadoghq.com".to_string(), vec!["key-b".to_string()]),
         ]);
-        let mut endpoints = resolve_additional_endpoints(&additional, None).expect("endpoints should resolve");
+        let mut endpoints = resolve_additional_endpoints(&additional).expect("endpoints should resolve");
         // The configured endpoints are a map, so fix an order to compare queue IDs against.
         endpoints.sort_by(|left, right| left.configured_endpoint().cmp(right.configured_endpoint()));
 
@@ -1256,7 +1260,7 @@ mod tests {
             "app.datadoghq.com".to_string(),
             vec!["key-a".to_string(), "key-b".to_string()],
         )]);
-        let endpoints = resolve_additional_endpoints(&additional, None).expect("endpoints should resolve");
+        let endpoints = resolve_additional_endpoints(&additional).expect("endpoints should resolve");
 
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].endpoint(), endpoints[1].endpoint());
@@ -1970,12 +1974,23 @@ mod tests {
     /// accepted/processed connection (one connection per request, since the server replies with
     /// `Connection: close`).
     async fn start_recording_http_server(statuses: Vec<StatusCode>) -> (String, Arc<AtomicUsize>) {
+        let (url, counter, _requests) = start_recording_http_server_with_requests(statuses).await;
+
+        (url, counter)
+    }
+
+    /// Starts the same server as [`start_recording_http_server`], additionally handing back the text
+    /// of each request it accepted, for a test that has to inspect what the forwarder sent.
+    async fn start_recording_http_server_with_requests(
+        statuses: Vec<StatusCode>,
+    ) -> (String, Arc<AtomicUsize>, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let counter = Arc::new(AtomicUsize::new(0));
 
         let statuses = Arc::new(statuses);
         let counter_for_task = Arc::clone(&counter);
+        let (request_tx, request_rx) = mpsc::channel(16);
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = match listener.accept().await {
@@ -1984,6 +1999,7 @@ mod tests {
                 };
                 let statuses = Arc::clone(&statuses);
                 let counter = Arc::clone(&counter_for_task);
+                let request_tx = request_tx.clone();
 
                 tokio::spawn(async move {
                     let mut request = Vec::new();
@@ -2019,6 +2035,9 @@ mod tests {
                         }
                     }
 
+                    // A test that does not read the requests drops the receiver, so never block here.
+                    let _ = request_tx.try_send(request_str);
+
                     let nth = counter.fetch_add(1, Ordering::SeqCst);
                     let idx = nth.min(statuses.len() - 1);
                     let status = statuses[idx];
@@ -2034,7 +2053,7 @@ mod tests {
             }
         });
 
-        (format!("http://127.0.0.1:{port}/"), counter)
+        (format!("http://127.0.0.1:{port}/"), counter, request_rx)
     }
 
     fn parse_content_length(request: &str) -> Option<usize> {
@@ -2051,6 +2070,14 @@ mod tests {
 
     async fn build_test_forwarder(
         forwarder_url: &str, live_config: Option<GenericConfiguration>,
+    ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
+        build_test_forwarder_with_api_keys(forwarder_url, live_config, &LiveApiKeys::default()).await
+    }
+
+    /// Builds a forwarder pointed at `forwarder_url`, with `api_keys` as the live views its endpoints
+    /// take their API keys from.
+    async fn build_test_forwarder_with_api_keys(
+        forwarder_url: &str, live_config: Option<GenericConfiguration>, api_keys: &LiveApiKeys,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
@@ -2082,6 +2109,7 @@ mod tests {
                     context,
                     forwarder_config,
                     live_config,
+                    api_keys,
                     test_logical_endpoint,
                     telemetry,
                     metrics_builder,
@@ -2107,6 +2135,22 @@ mod tests {
 
     async fn config_with(values: serde_json::Value) -> GenericConfiguration {
         config_from(values).await
+    }
+
+    /// Returns a configuration whose primary API key is `api_key`.
+    fn config_with_api_key(api_key: &str) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.api_key = api_key.to_string();
+
+        config
+    }
+
+    /// Returns the API key a recorded request presented.
+    fn recorded_api_key(request: &str) -> Option<&str> {
+        request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("dd-api-key").then_some(value.trim())
+        })
     }
 
     async fn wait_for_count_at_least(counter: &Arc<AtomicUsize>, target: usize, deadline: Duration) -> usize {
@@ -2167,6 +2211,46 @@ mod tests {
             recorder.counter(retry_metric_key("network_http_requests_requeued_total")),
             Some(0)
         );
+    }
+
+    #[tokio::test]
+    async fn a_rotated_api_key_reaches_the_requests_a_spawned_forwarder_sends() {
+        let (server_url, _counter, mut requests) =
+            start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
+        let live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
+        let (_, forwarder) = build_test_forwarder_with_api_keys(&server_url, None, &live.api_keys()).await;
+
+        // Spawning the forwarder is what starts key refreshing in production.
+        let handle = forwarder.spawn().await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+        let request = timeout(Duration::from_secs(3), requests.recv())
+            .await
+            .expect("the server should record the request")
+            .expect("the server should be running");
+        assert_eq!(Some(TEST_API_KEY), recorded_api_key(&request));
+
+        live.store(config_with_api_key("rotated-api-key"));
+
+        // A key is installed by a task of its own, so keep sending until a request carries the new one.
+        let rotated = timeout(Duration::from_secs(3), async {
+            loop {
+                handle
+                    .send_transaction(build_test_transaction())
+                    .await
+                    .expect("send should succeed");
+                let request = requests.recv().await.expect("the server should be running");
+                if recorded_api_key(&request) == Some("rotated-api-key") {
+                    return;
+                }
+            }
+        })
+        .await;
+
+        handle.shutdown().await;
+        assert!(rotated.is_ok(), "a rotated API key should reach the request path");
     }
 
     #[tokio::test]

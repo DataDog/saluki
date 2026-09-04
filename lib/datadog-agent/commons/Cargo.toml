@@ -12,12 +12,10 @@ futures = { workspace = true }
 pin-project-lite = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-tls = { workspace = true }
-serde = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 tracing = { workspace = true }
@@ -27,8 +25,6 @@ windows-registry = "0.6.1"
 
 [dev-dependencies]
 rcgen = { workspace = true, features = ["crypto", "pem"] }
-saluki-config = { workspace = true, features = ["test-util"] }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio-rustls = { workspace = true }
 

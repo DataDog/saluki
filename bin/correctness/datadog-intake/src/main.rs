@@ -4,6 +4,7 @@
 #![deny(missing_docs)]
 
 use saluki_error::{ErrorContext as _, GenericError};
+use socket2::SockRef;
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::mpsc,
@@ -50,6 +51,10 @@ async fn run() -> Result<(), GenericError> {
     let dogstatsd_forwarding_socket = UdpSocket::bind(DOGSTATSD_FORWARDING_LISTEN_ADDR)
         .await
         .error_context("Failed to bind DogStatsD forwarding capture socket.")?;
+
+    if let Err(e) = SockRef::from(&dogstatsd_forwarding_socket).set_recv_buffer_size(1_677_720) {
+        warn!(error = %e, "Failed to set UDP receive buffer size for forwarding capture socket.");
+    }
     let _dogstatsd_forwarding_task = tokio::spawn(capture_dogstatsd_forwarded_packets(
         dogstatsd_forwarding_socket,
         dogstatsd_forwarding_state.clone(),

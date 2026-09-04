@@ -1,13 +1,19 @@
 use std::{
     collections::HashSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config::{domains::multi_region_failover, shared::SharedConfiguration};
+use agent_data_plane_config::{
+    domains::{dogstatsd, multi_region_failover},
+    shared::SharedConfiguration,
+    SalukiConfiguration,
+};
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
-use datadog_agent_commons::platform::PlatformSettings;
+use bytesize::ByteSize;
+use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -28,21 +34,27 @@ use saluki_components::{
     },
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
+    sources::{
+        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
+        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
+        OtlpConfiguration,
+    },
     transforms::{
-        AggregateConfiguration, AggregateContextSnapshotHandle, ApmStatsTransformConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
         AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
-        TraceSamplerConfiguration,
+        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
+        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
-use saluki_config::GenericConfiguration;
+use saluki_context::origin::OriginTagCardinality;
 use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
+use saluki_core::runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::ListenAddress;
+use stringtheory::MetaString;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
@@ -60,7 +72,10 @@ use crate::{
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
-use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
+use crate::{
+    config::{remote_agent_client_configuration, DataPlaneConfiguration},
+    internal::env::ADPEnvironmentProvider,
+};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -102,7 +117,8 @@ pub async fn handle_run_command(
         (config_sys, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&local_config.raw_config(), &bootstrap_dp_config)
+        let client_config = remote_agent_client_configuration(local_config.local())?;
+        let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
 
@@ -154,19 +170,33 @@ pub async fn handle_run_command(
 
     check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
+    let remote_agent_client_config = if standalone {
+        None
+    } else {
+        Some(remote_agent_client_configuration(&config_sys.config())?)
+    };
+
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
+    let resource_registry = ResourceRegistry::new();
     let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
         standalone,
         &config_sys.raw_map(),
+        remote_agent_client_config.as_ref(),
         &component_registry,
         &health_registry,
     )
     .await?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) = create_topology(&config_sys, &env_provider, &component_registry).await?;
+    let (mut blueprint, control_surfaces) = create_topology(
+        &config_sys,
+        remote_agent_client_config.as_ref(),
+        &env_provider,
+        &component_registry,
+    )
+    .await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -203,6 +233,7 @@ pub async fn handle_run_command(
     blueprint
         .with_health_registry(health_registry.clone())
         .with_memory_limiter(memory_limiter)
+        .with_resource_registry(resource_registry.clone())
         .with_environment_readiness(env_provider.wait_for_ready());
 
     // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
@@ -214,6 +245,7 @@ pub async fn handle_run_command(
     let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
 
     root_supervisor.add_worker(bootstrap_supervisor);
+    internal_supervisor.add_worker(resource_registry.worker());
     if let Some(env_supervisor) = maybe_env_supervisor {
         internal_supervisor.add_worker(env_supervisor);
     }
@@ -349,7 +381,8 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
+    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -380,24 +413,36 @@ async fn create_topology(
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(&shared, &config_system.raw_map());
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
+            &shared,
+            &config_system.raw_map(),
+            config_system.live(|config| &config.shared.endpoints.api_key),
+            config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+        );
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
     if dp.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config_system, &shared, env_provider).await?;
+        add_baseline_metrics_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            remote_agent_client_config,
+            &shared,
+            env_provider,
+        )
+        .await?;
     }
 
     if dp.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
     if dp.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
     if dp.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
     if dp.traces_pipeline_required() {
@@ -413,13 +458,11 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp.checks_enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
     }
 
     if dp.dogstatsd_enabled() {
-        let dsd_control_surface =
-            add_dsd_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), config_system, env_provider)
-                .await?;
+        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
@@ -446,14 +489,16 @@ async fn add_liveness_source_to_blueprint(
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
+    let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
+        .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
     let default_hostname = env_provider
         .host()
         .get_hostname()
         .await
         .error_context("Failed to get default hostname for Checks IPC source.")?;
-    let checks_config = ChecksIPCConfiguration::from_configuration(config)?.with_default_hostname(default_hostname);
+    let checks_config = ChecksIPCConfiguration::new(grpc_endpoint, default_hostname);
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
@@ -466,7 +511,8 @@ async fn add_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
@@ -477,7 +523,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
     if !dp.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(&config_system.raw_map())?;
+        let client_config = remote_agent_client_config
+            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
+        let host_tags_config = HostTagsConfiguration::new(client_config.clone(), shared.tags.expected_tags_duration);
         if host_tags_config.enabled() {
             metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
         }
@@ -492,19 +540,14 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(
-        blueprint,
-        &config_system.raw_map(),
-        shared,
-        &config.domains.multi_region_failover,
-    )?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), shared)?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
     mrf: &multi_region_failover::Domain,
 ) -> Result<(), GenericError> {
     let mrf_config = MrfConfiguration::from_configuration(mrf);
@@ -522,16 +565,19 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(
+        mrf_config.is_enabled(),
+        config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
+    );
     let mrf_metrics_config =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
-        config,
+        &config_system.raw_map(),
         mrf_dd_url,
         mrf_api_key,
-        "multi_region_failover.api_key",
+        config_system.live(|config| &config.domains.multi_region_failover.api_key),
     );
 
     blueprint
@@ -549,12 +595,19 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
-    let ca_config = ClusterAgentConfiguration::from_configuration(config)
-        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
+    let af_config = AutoscalingFailoverConfiguration::new(
+        shared.autoscaling_failover.enabled,
+        shared.autoscaling_failover.metrics.clone(),
+    );
+    let cluster_agent = &shared.cluster_agent;
+    let ca_config = ClusterAgentConfiguration {
+        enabled: cluster_agent.enabled,
+        url: cluster_agent.url.clone(),
+        auth_token: cluster_agent.auth_token.clone(),
+        kubernetes_service_name: cluster_agent.kubernetes_service_name.clone(),
+    };
 
     let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
         if af_config.is_branch_requested() {
@@ -576,7 +629,7 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
     let af_metrics_config = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
     let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(shared, config, ca_url, ca_token)
+        ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
             .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     blueprint
@@ -593,13 +646,15 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+fn add_baseline_logs_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
-    let dd_logs_config = DatadogLogsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Logs encoder.")?;
+    let compression = &shared.endpoints.compression;
+    let dd_logs_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::new(
+        &compression.compressor_kind,
+        compression.effective_zstd_level(),
+    ));
 
     blueprint
         // Components.
@@ -610,12 +665,18 @@ async fn add_baseline_logs_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_events_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+fn add_baseline_events_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
+    let metrics_encoding = &shared.metrics_encoding;
+    let compression = &shared.endpoints.compression;
+    let dd_events_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogEventsConfiguration {
+        max_payload_size: metrics_encoding.max_payload_size,
+        max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
+        compressor_kind: compression.compressor_kind.clone(),
+        zstd_level: compression.effective_zstd_level(),
+        log_payloads: metrics_encoding.log_payloads,
+    });
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
@@ -624,12 +685,19 @@ async fn add_baseline_events_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_service_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+fn add_baseline_service_checks_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let metrics_encoding = &shared.metrics_encoding;
+    let compression = &shared.endpoints.compression;
+    let dd_service_checks_config =
+        BufferedIncrementalConfiguration::from_encoder_builder(DatadogServiceChecksConfiguration {
+            max_payload_size: metrics_encoding.max_payload_size,
+            max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
+            compressor_kind: compression.compressor_kind.clone(),
+            zstd_level: compression.effective_zstd_level(),
+            log_payloads: metrics_encoding.log_payloads,
+        });
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
@@ -685,23 +753,120 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     Ok(())
 }
 
-fn build_dogstatsd_context_dump_api_handler(
-    config: &GenericConfiguration, snapshot_handle: AggregateContextSnapshotHandle,
-) -> Result<DogStatsDContextDumpAPIHandler, GenericError> {
-    let run_path = config
-        .try_get_typed::<PathBuf>("run_path")
-        .error_context("Failed to read configured `run_path` for DogStatsD context dumps.")?
-        .unwrap_or_default();
+/// Subdirectory of `run_path` that holds DogStatsD capture files when no capture path is configured.
+const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 
-    Ok(DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_path))
+/// Resolves the directory that DogStatsD capture files are written to by default.
+///
+/// An unset capture path falls back to `run_path` plus `dsd_capture`. When neither is available, the source starts
+/// without a default and a capture session must name its own path.
+fn dogstatsd_capture_path(capture_path: &Path, run_path: &Option<PathBuf>) -> PathBuf {
+    if capture_path.parent().is_some() {
+        return capture_path.to_path_buf();
+    }
+
+    match run_path {
+        Some(run_path) => run_path.join(DOGSTATSD_CAPTURE_DIR),
+        None => {
+            debug!(
+                "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
+            );
+            PathBuf::new()
+        }
+    }
+}
+
+/// Maps the configured tag cardinality onto the cardinality the context resolver understands.
+fn origin_tag_cardinality(cardinality: dogstatsd::OriginTagCardinality) -> OriginTagCardinality {
+    match cardinality {
+        dogstatsd::OriginTagCardinality::None => OriginTagCardinality::None,
+        dogstatsd::OriginTagCardinality::Low => OriginTagCardinality::Low,
+        dogstatsd::OriginTagCardinality::Orchestrator => OriginTagCardinality::Orchestrator,
+        dogstatsd::OriginTagCardinality::High => OriginTagCardinality::High,
+    }
+}
+
+/// Builds the DogStatsD source configuration from the typed model and the running environment.
+///
+/// The caller creates `capture_control` and `replay_control` so that it keeps the handles the source binds to, which is
+/// how the capture and replay API surfaces reach the running source.
+fn dogstatsd_source_configuration(
+    config: &SalukiConfiguration, env_provider: &ADPEnvironmentProvider, default_hostname: MetaString,
+    capture_control: DogStatsDCaptureControl, replay_control: DogStatsDReplayControl,
+) -> DogStatsDConfiguration {
+    let dogstatsd = &config.domains.dogstatsd;
+    let listeners = &dogstatsd.listeners;
+    let contexts = &dogstatsd.contexts;
+    let origin = &dogstatsd.origin;
+
+    let mut additional_tags = dogstatsd.tags.clone();
+    additional_tags.extend(resolve_static_tags(
+        &config.shared.static_tags,
+        &config.shared.tags,
+        features::is_ecs_fargate(),
+    ));
+
+    // One provider serves both roles: the full workload lookup used for origin enrichment, and the narrow live-PID
+    // lookup used to pin a sender entity before packet processing is deferred.
+    let workload_provider = Arc::new(env_provider.workload().clone());
+
+    DogStatsDConfiguration {
+        default_hostname,
+        buffer_size: listeners.buffer_size,
+        buffer_count: listeners.buffer_count,
+        buffer_count_max: listeners.buffer_count_max,
+        workers_count: listeners.workers_count,
+        port: listeners.port,
+        socket_receive_buffer_size: listeners.so_rcvbuf,
+        tcp_port: listeners.tcp_port,
+        statsd_forward_host: listeners.forward_host.as_deref().map(MetaString::from),
+        statsd_forward_port: listeners.forward_port,
+        socket_path: listeners.socket.clone(),
+        socket_stream_path: listeners.stream_socket.clone(),
+        stream_log_too_big: listeners.stream_log_too_big,
+        pipe_name: listeners.pipe_name.clone(),
+        windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
+        disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
+        eol_required: listeners.eol_required.clone(),
+        bind_host: listeners.bind_host.clone(),
+        non_local_traffic: listeners.non_local_traffic,
+        autoscale_udp_listeners: listeners.autoscale_udp_listeners,
+        allow_context_heap_allocations: contexts.allow_context_heap_allocs,
+        no_aggregation_pipeline_support: dogstatsd.aggregation.no_aggregation_pipeline,
+        context_string_interner_entry_count: contexts.string_interner_size,
+        context_string_interner_size_bytes: contexts.string_interner_size_bytes.map(ByteSize::b),
+        cached_contexts_limit: contexts.cached_contexts_limit,
+        cached_tagsets_limit: contexts.cached_tagsets_limit,
+        context_expiry_seconds: dogstatsd.aggregation.context_expiry_seconds,
+        permissive_decoding: listeners.permissive_decoding,
+        minimum_sample_rate: contexts.minimum_sample_rate,
+        enable_payloads: EnablePayloadsConfiguration {
+            series: dogstatsd.enable_payloads.series,
+            sketches: dogstatsd.enable_payloads.sketches,
+            events: dogstatsd.enable_payloads.events,
+            service_checks: dogstatsd.enable_payloads.service_checks,
+        },
+        origin_enrichment: OriginEnrichmentConfiguration {
+            enabled: origin.detection,
+            entity_id_precedence: origin.entity_id_precedence,
+            tag_cardinality: origin_tag_cardinality(origin.tag_cardinality),
+            origin_detection_unified: origin.unified,
+            origin_detection_optout: origin.optout_enabled,
+            origin_detection_client: origin.detection_client,
+        },
+        origin_telemetry_enabled: dogstatsd.telemetry.origin_breakdown,
+        workload_provider: Some(workload_provider.clone()),
+        capture_entity_resolver: Some(workload_provider),
+        additional_tags,
+        capture_path: dogstatsd_capture_path(&listeners.capture_path, &config.shared.run_path),
+        capture_depth: listeners.capture_depth,
+        capture_control,
+        replay_control,
+    }
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint,
-    config: &GenericConfiguration,
-    // Supplies the typed configuration used to resolve source-wide static tags.
-    config_system: &ConfigurationSystem,
-    env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -744,28 +909,77 @@ async fn add_dsd_pipeline_to_blueprint(
         .await
         .error_context("Failed to get default hostname for DogStatsD source.")?;
     let typed = config_system.config();
-    let static_tags = resolve_static_tags(
-        &typed.shared.static_tags,
-        &typed.shared.tags,
-        features::is_ecs_fargate(),
+    let dsd_capture_control = DogStatsDCaptureControl::default();
+    let dsd_replay_control = DogStatsDReplayControl::default();
+    let dsd_config = dogstatsd_source_configuration(
+        &typed,
+        env_provider,
+        default_hostname.into(),
+        dsd_capture_control.clone(),
+        dsd_replay_control.clone(),
     );
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD source.")?
-        .with_static_tags(static_tags)
-        .with_default_hostname(default_hostname)
-        .with_workload_provider(env_provider.workload().clone())
-        .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
-    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
+    let prefix_filter = &typed.domains.dogstatsd.prefix_filter;
+    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::new(
+        prefix_filter.metric_namespace.clone(),
+        prefix_filter.metric_namespace_blocklist.clone(),
+        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
+    );
+    let mapper = &typed.domains.dogstatsd.mapper;
+    let mapper_profiles = mapper
+        .profiles
+        .iter()
+        .map(|profile| DogStatsDMapperProfile {
+            name: profile.name.clone(),
+            prefix: profile.prefix.clone(),
+            mappings: profile
+                .mappings
+                .iter()
+                .map(|mapping| DogStatsDMetricMapping {
+                    metric_match: mapping.metric_match.clone(),
+                    match_type: mapping.match_type.clone(),
+                    name: mapping.name.clone(),
+                    tags: mapping.tags.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    let dsd_mapper_config =
+        DogStatsDMapperConfiguration::new(mapper.string_interner_size_bytes, mapper.cache_size, mapper_profiles);
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
-        .error_context("Failed to configure metric tag filterlist transform.")?;
-    let dsd_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dsd_context_snapshot_handle = dsd_agg_config.context_snapshot_handle();
-    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::new(
+        config_system.live(|config| &config.domains.dogstatsd.tag_filterlist),
+        &typed.domains.dogstatsd.tag_value_allowlist,
+        typed.domains.dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
+    )
+    .error_context("Failed to configure metric tag filterlist transform.")?;
+    let aggregation = &typed.domains.dogstatsd.aggregation;
+    let histogram = &typed.shared.metrics_encoding.histogram;
+    let dsd_hist_config = HistogramConfiguration::try_new(
+        &histogram.aggregates,
+        &histogram.percentiles,
+        histogram.copy_to_distribution,
+        histogram.copy_to_distribution_prefix.clone(),
+    )
+    .error_context("Failed to configure histogram aggregation.")?;
+    let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
+    let dsd_agg_config = AggregateConfiguration {
+        window_duration_seconds: aggregation.window_duration_seconds,
+        primary_flush_interval: aggregation.flush_interval,
+        context_limit: aggregation.context_limit,
+        flush_open_windows: aggregation.flush_open_windows,
+        counter_expiry_seconds: aggregation.counter_expiry_seconds,
+        passthrough_timestamped_metrics: aggregation.no_aggregation_pipeline,
+        passthrough_idle_flush_timeout: aggregation.passthrough_idle_flush_timeout,
+        hist_config: dsd_hist_config,
+        context_snapshot_receiver: dsd_context_snapshot_receiver,
+    };
+    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
+        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
+        &histogram.aggregates,
+        &histogram.percentiles,
+    )
+    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
@@ -774,17 +988,35 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
-        config,
-        PlatformSettings::get_default_dogstatsd_log_file_path(),
-    )
-    .error_context("Failed to configure DogStatsD debug log destination.")?;
+
+    // Resolve the platform default log path when unset.
+    let debug_log = &typed.domains.dogstatsd.debug_log;
+    let debug_log_file = debug_log
+        .log_file
+        .clone()
+        .unwrap_or_else(PlatformSettings::get_default_dogstatsd_log_file_path);
+    if debug_log_file.to_str().is_none() {
+        return Err(generic_error!(
+            "dogstatsd_log_file must be valid UTF-8, got '{}'",
+            debug_log_file.display()
+        ));
+    }
+
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration {
+        metrics_stats_enabled: config_system.live(|config| &config.domains.dogstatsd.debug_log.metrics_stats_enable),
+        log_file: debug_log_file,
+        log_file_max_size: debug_log.log_file_max_size,
+        log_file_max_rolls: debug_log.log_file_max_rolls,
+    };
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();
-    let capture_api_handler = dsd_config.capture_api_handler();
-    let replay_api_handler = dsd_config.replay_api_handler();
-    let context_dump_api_handler = build_dogstatsd_context_dump_api_handler(config, dsd_context_snapshot_handle)?;
+    let capture_api_handler = DogStatsDCaptureAPIHandler::new(dsd_capture_control);
+    let replay_api_handler = DogStatsDReplayAPIHandler::new(dsd_replay_control);
+    let context_dump_api_handler = DogStatsDContextDumpAPIHandler::new(
+        vec![dsd_context_snapshot_handle],
+        typed.shared.run_path.clone().unwrap_or_default(),
+    );
 
     blueprint
         // Components.
@@ -821,7 +1053,7 @@ async fn add_dsd_pipeline_to_blueprint(
         // Post-aggregation client telemetry for RAR/COAT.
         .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
 
-    if dsd_debug_log_config.enabled() {
+    if debug_log.logging_enabled {
         blueprint
             // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
@@ -932,38 +1164,47 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Mutex, time::Duration};
+    use std::{
+        num::{NonZeroU64, NonZeroUsize},
+        path::{Path, PathBuf},
+        sync::Mutex,
+        time::Duration,
+    };
 
+    use agent_data_plane_config::{
+        domains::dogstatsd::{
+            FilterAction, MetricFilter, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction,
+        },
+        Live,
+    };
     use async_trait::async_trait;
     use http::{Request, StatusCode};
     use http_body_util::{BodyExt as _, Empty};
     use hyper::body::Bytes;
     use saluki_api::{response::Response, APIHandler as _};
     use saluki_components::transforms::{
-        aggregate_context_snapshot_channel_for_test, AggregateConfiguration, AggregateContextSnapshotEntry,
-        AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
+        aggregate_context_snapshot_channel, aggregate_context_snapshot_channel_for_test, AggregateConfiguration,
+        AggregateContextSnapshotEntry, AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
+        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
     };
-    use saluki_config::{config_from, GenericConfiguration};
     use saluki_context::Context;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
         components::{
             destinations::{Destination, DestinationBuilder, DestinationContext},
             sources::{Source, SourceBuilder, SourceContext},
-            ComponentContext,
+            BuildContext,
         },
         data_model::event::{metric::Metric, Event, EventType},
         health::HealthRegistry,
-        runtime::Supervisor,
+        runtime::{state::ResourceRegistry, Supervisor},
         topology::{OutputDefinition, TopologyBlueprint},
     };
     use saluki_error::{generic_error, GenericError};
-    use serde_json::json;
     use stringtheory::MetaString;
     use tokio::sync::{mpsc, oneshot};
     use tower::ServiceExt as _;
 
-    use super::build_dogstatsd_context_dump_api_handler;
     use crate::{
         components::{
             dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
@@ -974,42 +1215,98 @@ mod tests {
     const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
     const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
+    #[test]
+    fn dogstatsd_capture_path_falls_back_to_run_path() {
+        let run_path = PathBuf::from("/my/little/run_path");
+
+        assert_eq!(
+            super::dogstatsd_capture_path(Path::new(""), &Some(run_path.clone())),
+            run_path.join("dsd_capture")
+        );
+    }
+
+    #[test]
+    fn dogstatsd_capture_path_keeps_an_explicit_path() {
+        let capture_path = PathBuf::from("/custom/path/to/capture");
+
+        assert_eq!(
+            super::dogstatsd_capture_path(&capture_path, &Some(PathBuf::from("/my/little/run_path"))),
+            capture_path
+        );
+    }
+
+    #[test]
+    fn dogstatsd_capture_path_is_empty_without_a_run_path() {
+        assert_eq!(super::dogstatsd_capture_path(Path::new(""), &None), PathBuf::new());
+    }
+
     #[tokio::test]
     async fn retained_context_identity_follows_dogstatsd_post_processing() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let config = config_from(json!({
-                "dogstatsd_mapper_profiles": [{
-                    "name": "retained-context-test",
-                    "prefix": "raw.requests.",
-                    "mappings": [{
-                        "match": "raw.requests.*",
-                        "name": "mapped.requests",
-                        "tags": { "route": "$1" }
-                    }]
+            let mapper = DogStatsDMapperConfiguration::new(
+                NonZeroUsize::new(64 * 1024).expect("not zero"),
+                1_000,
+                vec![DogStatsDMapperProfile {
+                    name: "retained-context-test".to_string(),
+                    prefix: "raw.requests.".to_string(),
+                    mappings: vec![DogStatsDMetricMapping {
+                        metric_match: "raw.requests.*".to_string(),
+                        match_type: String::new(),
+                        name: "mapped.requests".to_string(),
+                        tags: [("route".to_string(), "$1".to_string())].into(),
+                    }],
                 }],
-                "statsd_metric_namespace": "tenant",
-                "statsd_metric_namespace_blocklist": [],
-                "metric_filterlist": ["tenant.raw.blocked"],
-                "metric_filterlist_match_prefix": false,
-                "metric_tag_filterlist": [{
-                    "metric_name": "tenant.mapped.requests",
-                    "action": "exclude",
-                    "tags": ["remove"]
-                }],
-                "aggregate_flush_interval": { "secs": 60, "nanos": 0 }
-            }))
-            .await;
-
-            let mapper =
-                DogStatsDMapperConfiguration::from_configuration(&config).expect("mapper configuration should parse");
+            );
             let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
-            let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
-                .expect("prefix filter configuration should parse");
-            let tag_filter =
-                TagFilterlistConfiguration::from_configuration(&config).expect("tag filter configuration should parse");
-            let aggregate =
-                AggregateConfiguration::from_configuration(&config).expect("aggregate configuration should parse");
-            let snapshot_handle = aggregate.context_snapshot_handle();
+            let prefix_filter = DogStatsDPrefixFilterConfiguration::new(
+                "tenant".to_string(),
+                Vec::new(),
+                Live::new_fixed(MetricFilter {
+                    values: vec!["tenant.raw.blocked".to_string()],
+                    match_prefix: false,
+                }),
+            );
+            let tag_filter = TagFilterlistConfiguration::new(
+                Live::new_fixed(vec![MetricTagFilterEntry {
+                    metric_name: "tenant.mapped.requests".to_string(),
+                    action: FilterAction::Exclude,
+                    tags: vec!["remove".to_string()],
+                }]),
+                &[MetricTagValueAllowlistEntry {
+                    metric_prefix: "tenant.mapped.".to_string(),
+                    tag_name: "customer_id".to_string(),
+                    values: vec!["top-1".to_string()],
+                    on_miss: TagValueMismatchAction::Remove,
+                    replacement: "other".to_string(),
+                }],
+                0,
+            )
+            .expect("tag filter configuration should be valid");
+            let hist_config = HistogramConfiguration::try_new(
+                &[
+                    "max".to_string(),
+                    "median".to_string(),
+                    "avg".to_string(),
+                    "count".to_string(),
+                ],
+                &["0.95".to_string()],
+                false,
+                String::new(),
+            )
+            .expect("histogram settings should be valid");
+            let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+            let aggregate = AggregateConfiguration {
+                window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                // Longer than the test, so the window stays open and contexts stay retained.
+                primary_flush_interval: Duration::from_secs(60),
+                context_limit: 1_000_000,
+                flush_open_windows: false,
+                counter_expiry_seconds: Some(300),
+                passthrough_timestamped_metrics: true,
+                passthrough_idle_flush_timeout: Duration::from_secs(1),
+                hist_config,
+                context_snapshot_receiver,
+            };
 
             let (events_tx, events_rx) = mpsc::channel(2);
             let source = ControlledMetricSourceBuilder {
@@ -1044,6 +1341,7 @@ mod tests {
             blueprint
                 .with_health_registry(HealthRegistry::new())
                 .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new())
                 .with_ambient_worker_pool();
 
             let mut supervisor =
@@ -1056,14 +1354,24 @@ mod tests {
                 .send(Event::Metric(Metric::counter("raw.blocked", 1.0)))
                 .await
                 .expect("controlled source should accept the blocked metric");
-            let input_context = Context::from_static_parts("raw.requests.checkout", &["keep:client", "remove:secret"]);
+            let input_context = Context::from_static_parts(
+                "raw.requests.checkout",
+                &[
+                    "customer_id:top-1",
+                    "customer_id:long-tail",
+                    "keep:client",
+                    "remove:secret",
+                ],
+            );
             events_tx
                 .send(Event::Metric(Metric::counter(input_context.clone(), 1.0)))
                 .await
                 .expect("controlled source should accept the retained metric");
 
-            let expected_context =
-                Context::from_static_parts("tenant.mapped.requests", &["keep:client", "route:checkout"]);
+            let expected_context = Context::from_static_parts(
+                "tenant.mapped.requests",
+                &["customer_id:top-1", "keep:client", "route:checkout"],
+            );
             let snapshot = loop {
                 let snapshot = snapshot_handle
                     .snapshot()
@@ -1078,7 +1386,15 @@ mod tests {
             assert_eq!(snapshot.len(), 1);
             assert_eq!(snapshot[0].context(), &expected_context);
             assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Counter);
-            assert_eq!(snapshot[0].context().tags().len(), 2);
+            assert_eq!(snapshot[0].context().tags().len(), 3);
+            assert_eq!(
+                snapshot[0]
+                    .context()
+                    .tags()
+                    .get_single_tag("customer_id")
+                    .and_then(|tag| tag.value()),
+                Some("top-1")
+            );
             assert_eq!(
                 snapshot[0]
                     .context()
@@ -1115,13 +1431,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dump_handler_reads_configured_run_path_and_uses_supplied_owner() {
+    async fn context_dump_handler_uses_supplied_run_path_and_owner() {
         let run_directory = tempfile::tempdir().expect("run directory should be created");
-        let config = context_dump_config(Some(run_directory.path())).await;
         let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
 
-        let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-            .expect("configured handler should build");
+        let handler = DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_directory.path());
         let owner = tokio::spawn(async move {
             snapshot_responder
                 .respond(vec![snapshot_entry("from.supplied.aggregate")])
@@ -1141,15 +1455,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dump_handler_keeps_missing_and_empty_run_path_empty_until_publication() {
+    async fn context_dump_handler_keeps_empty_run_path_empty_until_publication() {
         let cwd_artifact = std::env::current_dir().unwrap().join(CONTEXT_DUMP_FILENAME);
         assert!(!cwd_artifact.exists(), "test requires no pre-existing cwd artifact");
 
         for run_path in [None, Some(Path::new(""))] {
-            let config = context_dump_config(run_path).await;
+            let run_path = run_path.map(Path::to_path_buf).unwrap_or_default();
             let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
-            let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-                .expect("empty run path should reach publication");
+            let handler = DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_path);
             let owner = tokio::spawn(async move { snapshot_responder.respond(Vec::new()).await });
 
             let response = send(&handler, context_dump_post()).await;
@@ -1195,7 +1508,7 @@ mod tests {
             &self.outputs
         }
 
-        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
             let events = self
                 .events
                 .lock()
@@ -1228,21 +1541,13 @@ mod tests {
             EventType::Metric
         }
 
-        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
             Ok(Box::new(DrainingMetricDestination))
         }
     }
 
     impl MemoryBounds for DrainingMetricDestinationBuilder {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
-    }
-
-    async fn context_dump_config(run_path: Option<&Path>) -> GenericConfiguration {
-        let mut values = json!({});
-        if let Some(run_path) = run_path {
-            values["run_path"] = json!(run_path);
-        }
-        config_from(values).await
     }
 
     fn context_dump_post() -> Request<Empty<Bytes>> {

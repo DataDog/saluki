@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::{destinations::*, ComponentContext};
+use saluki_core::components::{destinations::*, BuildContext};
 use saluki_core::data_model::event::EventType;
 use saluki_error::GenericError;
 use tokio::select;
@@ -21,7 +21,7 @@ impl DestinationBuilder for BlackholeConfiguration {
         EventType::all_bits()
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Blackhole))
     }
 }

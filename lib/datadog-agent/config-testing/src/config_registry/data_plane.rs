@@ -37,6 +37,28 @@ static DATA_PLANE_STOP_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
+    /// `agent_ipc.grpc_max_message_size`-Max inbound gRPC message size for IPC client
+    AGENT_IPC_GRPC_MAX_MESSAGE_SIZE = SalukiAnnotation {
+        schema: &schema::AGENT_IPC_GRPC_MAX_MESSAGE_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some("4194304"),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `auth_token_file_path`-Agent authentication token file path
+    AUTH_TOKEN_FILE_PATH = SalukiAnnotation {
+        schema: &schema::AUTH_TOKEN_FILE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `basic_telemetry_add_container_tags`-Add container tags to basic telemetry signals
     BASIC_TELEMETRY_ADD_CONTAINER_TAGS = SalukiAnnotation {
         schema: &schema::BASIC_TELEMETRY_ADD_CONTAINER_TAGS,
@@ -46,6 +68,17 @@ crate::declare_annotations! {
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `cmd_port`-Core Agent CMD API port for ADP gRPC IPC
+    CMD_PORT = SalukiAnnotation {
+        schema: &schema::CMD_PORT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some("5101"),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
     /// `data_plane.api_listen_address`-Unprivileged API listen address
@@ -153,7 +186,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -178,6 +211,28 @@ crate::declare_annotations! {
         used_by: &[structs::GET_TYPED],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `ipc_cert_file_path`-Agent IPC certificate file path
+    IPC_CERT_FILE_PATH = SalukiAnnotation {
+        schema: &schema::IPC_CERT_FILE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `vsock_addr`-vsock address for Agent IPC endpoint
+    VSOCK_ADDR = SalukiAnnotation {
+        schema: &schema::VSOCK_ADDR,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some(r#""host""#),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 }

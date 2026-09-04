@@ -335,6 +335,75 @@ mod tests {
     }
 
     #[test]
+    fn a_structured_saluki_only_environment_variable_reaches_the_model() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_saluki_structured_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var(
+            "DD_METRIC_TAG_VALUE_ALLOWLIST",
+            r#"[{"metric_prefix":"requests.","tag_name":"customer_id","values":["customer-1"],"on_miss":"replace","replacement":"other"}]"#,
+        );
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_METRIC_TAG_VALUE_ALLOWLIST");
+        std::fs::remove_file(&path).ok();
+        let entries = &loaded.local().domains.dogstatsd.tag_value_allowlist;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metric_prefix, "requests.");
+        assert_eq!(entries[0].tag_name, "customer_id");
+        assert_eq!(entries[0].values, ["customer-1"]);
+        assert_eq!(
+            entries[0].on_miss,
+            agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction::Replace
+        );
+        assert_eq!(entries[0].replacement, "other");
+    }
+
+    #[test]
+    fn metric_tag_value_allowlist_from_file_preserves_whitespace() {
+        let path = std::env::temp_dir().join(format!("adp_tag_value_allowlist_{}.yaml", std::process::id()));
+        std::fs::write(
+            &path,
+            "metric_tag_value_allowlist:\n  - metric_prefix: ' requests. '\n    tag_name: ' customer_id '\n    values: [' customer-1 ']\n    on_miss: replace\n    replacement: ' other '\n",
+        )
+        .unwrap();
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::Disabled))
+            .expect("allow-list strings containing whitespace should load");
+
+        std::fs::remove_file(&path).ok();
+        let entries = &loaded.local().domains.dogstatsd.tag_value_allowlist;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metric_prefix, " requests. ");
+        assert_eq!(entries[0].tag_name, " customer_id ");
+        assert_eq!(entries[0].values, [" customer-1 "]);
+        assert_eq!(entries[0].replacement, " other ");
+    }
+
+    #[test]
+    fn invalid_metric_tag_value_allowlist_from_environment_fails_load() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_bad_tag_value_allowlist_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var(
+            "DD_METRIC_TAG_VALUE_ALLOWLIST",
+            r#"[{"metric_prefix":"requests.","tag_name":"customer_id"},{"metric_prefix":"requests.api.","tag_name":"customer_id"}]"#,
+        );
+
+        let result = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile));
+
+        std::env::remove_var("DD_METRIC_TAG_VALUE_ALLOWLIST");
+        std::fs::remove_file(&path).ok();
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("overlapping environment allow-list should fail loading"),
+        };
+        assert!(matches!(error, Error::Deserialize { .. }));
+        assert!(error.to_string().contains("overlapping metric prefixes"));
+    }
+
+    #[test]
     fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
         // `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
         // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
@@ -356,9 +425,8 @@ mod tests {
 
     #[test]
     fn the_adp_zstd_override_reaches_both_views_from_the_environment() {
-        // `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` names a nested Saluki-only key that the
-        // prefix scan flattens to `data_plane_serializer_zstd_compressor_level`. The five payload
-        // encoders read it from the by-key view, so cover that view alongside the typed model.
+        // The documented environment variable must produce the same canonical nested path in the
+        // by-key view and the typed model.
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_zstd_env_{}.yaml", std::process::id()));
         std::fs::write(&path, "{}\n").unwrap();
@@ -369,17 +437,12 @@ mod tests {
             .raw_config()
             .try_get_typed::<i32>("data_plane.serializer_zstd_compressor_level")
             .expect("key reads");
-        let from_typed = loaded
-            .local()
-            .shared
-            .endpoints
-            .compression
-            .zstd_compressor_level_override;
+        let from_typed = loaded.local().shared.endpoints.compression.effective_zstd_level();
 
         std::env::remove_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL");
         std::fs::remove_file(&path).ok();
         assert_eq!(from_by_key, Some(7));
-        assert_eq!(from_typed, Some(7));
+        assert_eq!(from_typed, 7);
     }
 
     #[test]

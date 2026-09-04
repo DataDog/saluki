@@ -11,8 +11,6 @@ use datadog_protos::checks::{
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
-use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -21,45 +19,37 @@ use saluki_core::data_model::event::log::Log;
 use saluki_core::data_model::event::metric::Metric;
 use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
 use saluki_core::data_model::event::{Event, EventType};
+use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_core::{
-    components::{sources::*, ComponentContext},
+    components::{sources::*, BuildContext},
     data_model::event::log::LogStatus,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::ListenAddress;
-use serde::Deserialize;
+use saluki_io::net::{
+    server::http::{Http2Config, HttpServer},
+    ListenAddress,
+};
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
-use tonic::transport::Server;
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
 
-const fn default_grpc_endpoint() -> ListenAddress {
-    ListenAddress::any_tcp(5105)
-}
-
 /// Checks IPC source.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ChecksIPCConfiguration {
-    #[serde(skip)]
     default_hostname: MetaString,
-
-    #[serde(rename = "checks_ipc_endpoint", default = "default_grpc_endpoint")]
     grpc_endpoint: ListenAddress,
 }
 
 impl ChecksIPCConfiguration {
-    /// Creates a new `ChecksIPCConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Sets the default hostname used when check metrics do not carry an explicit hostname.
-    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
-        self.default_hostname = hostname.into();
-        self
+    /// Creates a new `ChecksIPCConfiguration` from the resolved endpoint and default hostname.
+    pub fn new(grpc_endpoint: ListenAddress, default_hostname: impl Into<MetaString>) -> Self {
+        Self {
+            default_hostname: default_hostname.into(),
+            grpc_endpoint,
+        }
     }
 }
 
@@ -78,7 +68,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(ChecksIPC {
             grpc_endpoint: self.grpc_endpoint.clone(),
             default_hostname: self.default_hostname.clone(),
@@ -113,19 +103,22 @@ impl Source for ChecksIPC {
 
         let (events_tx, mut events_rx) = mpsc::channel(16);
 
-        let grpc_server = Server::builder().add_service(ChecksServer::new(ChecksService {
-            events_tx,
-            default_hostname,
-        }));
-
-        let grpc_socket_addr = match grpc_endpoint {
-            ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
+        let ListenAddress::Tcp(grpc_socket_addr) = grpc_endpoint else {
+            return Err(generic_error!("Checks IPC gRPC endpoint must be a TCP address."));
         };
-        context
-            .topology_context()
-            .global_thread_pool()
-            .spawn_traced_named("checks-ipc-grpc-server", grpc_server.serve(grpc_socket_addr));
+
+        // This endpoint only ever speaks gRPC, so it is restricted to HTTP/2: an HTTP/1.1 caller here is a client bug,
+        // and rejecting it at the protocol level says so more clearly than routing it and answering with a 404.
+        let grpc_server = HttpServer::from_listen_address(ListenAddress::Tcp(grpc_socket_addr))
+            .add_grpc_service(ChecksServer::new(ChecksService {
+                events_tx,
+                default_hostname,
+            }))
+            .with_http2_only()
+            .with_http2_config(Http2Config::grpc_defaults())
+            .with_worker_pool(context.topology_context().global_thread_pool().clone());
+
+        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
 
         health.mark_ready();
         debug!("Checks IPC source started.");

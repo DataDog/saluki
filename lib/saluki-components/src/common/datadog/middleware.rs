@@ -14,7 +14,7 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 ///
 /// The request's URI must already container a relative path component. Any existing scheme, host, and port components
 /// will be overridden by the resolved endpoint's URI.
-pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
+pub fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
@@ -45,7 +45,7 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
             .build()
             .expect("should not fail to construct new URI");
         let api_key = endpoint.api_key();
-        let api_key_value = HeaderValue::from_str(api_key).expect("should not fail to construct API key header value");
+        let api_key_value = HeaderValue::from_str(&api_key).expect("should not fail to construct API key header value");
         *request.uri_mut() = new_uri;
 
         // Add the API key as a header.

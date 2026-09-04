@@ -3,11 +3,10 @@ use std::sync::Arc;
 use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
-use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
+use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
 use saluki_api::EndpointType;
 use saluki_app::{
-    accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
-    logging::LoggingOverrideController,
+    accounting::ResourceTelemetryWorker, api::APIBuilder, config::ConfigWorker, logging::LoggingOverrideController,
 };
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::{
@@ -56,12 +55,12 @@ pub async fn create_control_plane_supervisor(
     let api_listen_address = dp.api_listen_address()?;
     let secure_api_listen_address = dp.secure_api_listen_address()?;
 
-    supervisor.add_worker(DynamicAPIBuilder::new(EndpointType::Unprivileged, api_listen_address));
-    let ipc_config = IpcAuthConfiguration::from_configuration(&raw_map)?;
+    supervisor.add_worker(APIBuilder::new(EndpointType::Unprivileged, api_listen_address).into_supervisor());
+    let ipc_config = dp.ipc_auth_configuration();
     let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
 
     let mut privileged_api =
-        DynamicAPIBuilder::new(EndpointType::Privileged, secure_api_listen_address).with_tls_config(tls_config);
+        APIBuilder::new(EndpointType::Privileged, secure_api_listen_address).with_tls_config(tls_config);
 
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
@@ -74,7 +73,7 @@ pub async fn create_control_plane_supervisor(
             .with_grpc_service(ra_bootstrap.create_telemetry_service());
     }
 
-    supervisor.add_worker(privileged_api);
+    supervisor.add_worker(privileged_api.into_supervisor());
 
     Ok(supervisor)
 }

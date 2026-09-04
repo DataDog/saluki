@@ -5,8 +5,7 @@ use super::OutputDefinition;
 use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::{
     components::{
-        decoders::*, destinations::*, encoders::*, forwarders::*, relays::*, sources::*, transforms::*,
-        ComponentContext,
+        decoders::*, destinations::*, encoders::*, forwarders::*, relays::*, sources::*, transforms::*, BuildContext,
     },
     data_model::{event::EventType, payload::PayloadType},
 };
@@ -38,7 +37,7 @@ impl SourceBuilder for TestSourceBuilder {
         &self.outputs
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(TestSource))
     }
 }
@@ -85,7 +84,7 @@ impl RelayBuilder for TestRelayBuilder {
         &self.outputs
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
         Ok(Box::new(TestRelay))
     }
 }
@@ -127,7 +126,7 @@ impl DecoderBuilder for TestDecoderBuilder {
         self.output_event_ty
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         Ok(Box::new(TestDecoder))
     }
 }
@@ -183,7 +182,7 @@ impl TransformBuilder for TestTransformBuilder {
         &self.outputs
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(TestTransform))
     }
 }
@@ -225,7 +224,7 @@ impl EncoderBuilder for TestEncoderBuilder {
         self.output_payload_ty
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         Ok(Box::new(TestEncoder))
     }
 }
@@ -259,7 +258,7 @@ impl ForwarderBuilder for TestForwarderBuilder {
         self.input_payload_ty
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
         Ok(Box::new(TestForwarder))
     }
 }
@@ -293,7 +292,7 @@ impl DestinationBuilder for TestDestinationBuilder {
         self.input_event_ty
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(TestDestination))
     }
 }

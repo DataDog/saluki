@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "sessionId": "01a03ee4-7c0e-798f-8419-1099177e7a77",
+  "root": "/Users/lucas.tembras/saluki/keepalive",
+  "files": {
+    "/Users/lucas.tembras/saluki/keepalive/lib/agent-data-plane-config/src/domains/otlp.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/agent-data-plane-config/src/domains/otlp.rs",
+      "baseline": "baselines/d86998d2fcbb10a9bc6e02bd.before",
+      "existed": true,
+      "capturedAt": "2026-08-26T16:32:23.609Z",
+      "toolCallId": "chatcmpl-tool-dce1e95ffa024c71bda72857d4dbfa50"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/relays/otlp/mod.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/relays/otlp/mod.rs",
+      "baseline": "baselines/43af7f80cc3088a321779948.before",
+      "existed": true,
+      "capturedAt": "2026-08-26T16:35:26.219Z",
+      "toolCallId": "chatcmpl-tool-9892441245154ef9ba02423450360811"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/common/otlp/mod.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/common/otlp/mod.rs",
+      "baseline": "baselines/ae05958362da182e4d24542d.before",
+      "existed": true,
+      "capturedAt": "2026-08-26T16:43:00.210Z",
+      "toolCallId": "chatcmpl-tool-3c5bb5b5290b4d2db619954bd818e9ba"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/sources/otlp/mod.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/sources/otlp/mod.rs",
+      "baseline": "baselines/d9f994826409ca87975f0a61.before",
+      "existed": true,
+      "capturedAt": "2026-08-26T16:43:06.837Z",
+      "toolCallId": "chatcmpl-tool-d1638379e76d47cc91817a3abf601f2f"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-io/src/net/server/grpc.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-io/src/net/server/grpc.rs",
+      "baseline": "baselines/cb530f026c18e66efe800af7.before",
+      "existed": true,
+      "capturedAt": "2026-08-26T16:43:19.759Z",
+      "toolCallId": "chatcmpl-tool-395e7892ef0b46b88214a0785ca89166"
+    }
+  }
+}

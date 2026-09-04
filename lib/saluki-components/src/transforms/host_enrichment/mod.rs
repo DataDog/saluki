@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{
-    components::ComponentContext,
+    components::BuildContext,
     data_model::event::{eventd::EventD, service_check::ServiceCheck},
 };
-use saluki_env::{EnvironmentProvider, HostProvider};
+use saluki_env::{EnvironmentProvider, HostProvider as _};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
@@ -28,9 +28,8 @@ impl<E> HostEnrichmentConfiguration<E> {
 impl<E> SynchronousTransformBuilder for HostEnrichmentConfiguration<E>
 where
     E: EnvironmentProvider + Send + Sync + 'static,
-    <E::Host as HostProvider>::Error: Into<GenericError>,
 {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(
             HostEnrichment::from_environment_provider(&self.env_provider).await?,
         ))
@@ -60,7 +59,6 @@ impl HostEnrichment {
     pub async fn from_environment_provider<E>(env_provider: &E) -> Result<Self, GenericError>
     where
         E: EnvironmentProvider + Send + Sync + 'static,
-        <E::Host as HostProvider>::Error: Into<GenericError>,
     {
         Ok(Self {
             hostname: env_provider

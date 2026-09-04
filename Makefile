@@ -11,9 +11,6 @@ export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
 # ADP-specific settings used during builds.
-export ADP_APP_FULL_NAME := Agent Data Plane
-export ADP_APP_SHORT_NAME := data-plane
-export ADP_APP_IDENTIFIER := adp
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
@@ -41,7 +38,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.82.1
+MACOS_TEST_AGENT_VERSION ?= 7.83.0
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -75,7 +72,7 @@ export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
 export DDPROF_VERSION ?= 0.20.0
-export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
+export LADING_VERSION ?= 0.33.0
 
 # Windows cross-compilation settings. These targets currently assume a local macOS host.
 export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
@@ -125,12 +122,8 @@ help:
 build-adp-base: check-rust-build-tools
 build-adp-base:
 	@echo "[*] Building ADP locally (profile: $(BUILD_PROFILE))"
-	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
-	APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
-	APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
-	APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-	APP_VERSION="$(ADP_APP_VERSION)" \
-	APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+	APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
 	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
 
 .PHONY: build-adp
@@ -166,10 +159,6 @@ build-adp-image-base:
 		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
 		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
-		--build-arg "APP_FULL_NAME=$(ADP_APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(ADP_APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(ADP_APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(ADP_APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(ADP_APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
@@ -641,12 +630,8 @@ build-adp-host: check-rust-build-tools
 build-adp-host: $(if $(filter true,$(CI)),cargo-install-cargo-auditable)
 build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
 	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
-	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
-		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
-		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
-		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-		APP_VERSION="$(ADP_APP_VERSION)" \
-		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+		APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: build-adp-aix
@@ -885,11 +870,7 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 
 .PHONY: emit-adp-build-metadata
 emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
-	@echo "APP_FULL_NAME=${ADP_APP_FULL_NAME}"
-	@echo "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}"
-	@echo "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}"
 	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
-	@echo "APP_VERSION=${ADP_APP_VERSION}"
 	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
 .PHONY: bump-adp-version
@@ -941,6 +922,19 @@ VENV_DIR := .venv
 VENV_PYTHON := $(VENV_DIR)/bin/python
 PYTHON_REQUIREMENTS := requirements.txt
 PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
+
+.PHONY: test-release-notes
+test-release-notes: ## Runs unit tests for release-note tooling
+	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
+
+.PHONY: check-release-notes
+check-release-notes: ## Validates committed Reno release-note files
+	@$(PYTHON) ci/tooling/release_notes.py check $$(find releasenotes/notes -type f -name '*.yaml' 2>/dev/null)
+
+.PHONY: render-release-notes
+render-release-notes: ## Renders VERSION=X.Y.Z Reno notes as GitHub-flavored Markdown
+	@test -n "$(VERSION)" || { echo "Set VERSION=X.Y.Z" >&2; exit 2; }
+	@$(PYTHON) ci/tooling/release_notes.py render --version "$(VERSION)" --output -
 
 .PHONY: ensure-python-venv
 ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one

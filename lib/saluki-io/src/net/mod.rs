@@ -1,6 +1,7 @@
 mod addr;
 pub use self::addr::{
-    ConnectionAddress, GrpcTargetAddress, ListenAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity,
+    BoundListenAddress, ConnectionAddress, GrpcTargetAddress, ListenAddress, ProcessCredentials,
+    ProcessCredentialsError, ProcessIdentity,
 };
 
 pub mod client;

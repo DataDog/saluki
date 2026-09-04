@@ -4,6 +4,14 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
+static METRIC_TAG_VALUE_ALLOWLIST_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "metric_tag_value_allowlist",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("[]"),
+};
+
 crate::declare_annotations! {
     /// `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`-Tag-filter deduplication cache size
     DATA_PLANE_DOGSTATSD_AGGREGATOR_TAG_FILTER_CACHE_CAPACITY = SalukiAnnotation {
@@ -11,7 +19,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::TAG_FILTERLIST_CONFIGURATION],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
@@ -22,9 +30,20 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::TAG_FILTERLIST_CONFIGURATION],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_tag_value_allowlist`
+    METRIC_TAG_VALUE_ALLOWLIST = SalukiAnnotation {
+        schema: &METRIC_TAG_VALUE_ALLOWLIST_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&[]),
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some(r#"[{"metric_prefix":"smoke.","tag_name":"customer_id","values":["customer-1"],"on_miss":"replace","replacement":"other"}]"#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }

@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use protobuf::descriptor::field_descriptor_proto::Type;
 use protobuf::reflect::FieldDescriptor;
 use protobuf::reflect::MessageDescriptor;
@@ -9,11 +12,24 @@ struct SerdeCapableStructs;
 
 impl CustomizeCallback for SerdeCapableStructs {
     fn message(&self, message: &MessageDescriptor) -> Customize {
+        if message.full_name().starts_with("datadog.trace.idx.") {
+            return Customize::default();
+        }
+
         println!("Customizing message type '{}'.", message.name());
         Customize::default().before("#[derive(::serde::Serialize, ::serde::Deserialize)]")
     }
 
     fn field(&self, field: &FieldDescriptor) -> Customize {
+        if field.full_name().starts_with("datadog.trace.idx.") {
+            return Customize::default();
+        }
+        if field.full_name() == "datadog.trace.AgentPayload.idxTracerPayloads" {
+            // The source field is excluded from the Agent's MessagePack representation with `msg:"-"`. Skipping it
+            // here preserves that behavior and avoids requiring Serde implementations for the indexed wire types.
+            return Customize::default().before("#[serde(skip)]");
+        }
+
         println!(
             "Customizing field '{}': type={:?} type_name={} label={:?}",
             field.name(),
@@ -37,9 +53,75 @@ impl CustomizeCallback for SerdeCapableStructs {
         Customize::default().before(before_value.as_str())
     }
 
-    fn special_field(&self, _message: &MessageDescriptor, _field: &str) -> Customize {
+    fn special_field(&self, message: &MessageDescriptor, _field: &str) -> Customize {
+        if message.full_name().starts_with("datadog.trace.idx.") {
+            return Customize::default();
+        }
+
         Customize::default().before("#[serde(skip)]")
     }
+}
+
+fn stage_proto(source: impl AsRef<Path>, destination: impl AsRef<Path>, replacements: &[(&str, &str)]) {
+    let mut contents = fs::read_to_string(source).expect("failed to read vendored trace proto");
+    for (from, to) in replacements {
+        contents = contents.replace(from, to);
+    }
+
+    let destination = destination.as_ref();
+    fs::create_dir_all(destination.parent().expect("staged proto must have a parent directory"))
+        .expect("failed to create staged trace proto directory");
+    fs::write(destination, contents).expect("failed to write staged trace proto");
+}
+
+fn stage_trace_protos() -> PathBuf {
+    const VENDORED_TRACE_ROOT: &str = "proto/datadog-agent/datadog/trace";
+
+    let stage_root =
+        PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR must be set")).join("trace_proto_staging");
+    let staged_trace_root = stage_root.join("datadog/trace");
+
+    stage_proto(
+        format!("{VENDORED_TRACE_ROOT}/span.proto"),
+        staged_trace_root.join("classic_span.proto"),
+        &[],
+    );
+    stage_proto(
+        format!("{VENDORED_TRACE_ROOT}/tracer_payload.proto"),
+        staged_trace_root.join("classic_tracer_payload.proto"),
+        &[("datadog/trace/span.proto", "datadog/trace/classic_span.proto")],
+    );
+    stage_proto(
+        format!("{VENDORED_TRACE_ROOT}/idx/span.proto"),
+        staged_trace_root.join("idx/idx_span.proto"),
+        &[],
+    );
+    stage_proto(
+        format!("{VENDORED_TRACE_ROOT}/idx/tracer_payload.proto"),
+        staged_trace_root.join("idx/idx_tracer_payload.proto"),
+        &[("datadog/trace/idx/span.proto", "datadog/trace/idx/idx_span.proto")],
+    );
+    stage_proto(
+        format!("{VENDORED_TRACE_ROOT}/agent_payload.proto"),
+        staged_trace_root.join("agent_payload.proto"),
+        &[
+            (
+                "datadog/trace/tracer_payload.proto",
+                "datadog/trace/classic_tracer_payload.proto",
+            ),
+            (
+                "datadog/trace/idx/tracer_payload.proto",
+                "datadog/trace/idx/idx_tracer_payload.proto",
+            ),
+        ],
+    );
+    stage_proto(
+        format!("{VENDORED_TRACE_ROOT}/stats.proto"),
+        staged_trace_root.join("stats.proto"),
+        &[],
+    );
+
+    stage_root
 }
 
 fn get_field_serde_annotation(field: &FieldDescriptor, serde_custom_fn_suffix: Option<&str>) -> String {
@@ -71,10 +153,22 @@ fn field_name_to_go_case(field_name: &str) -> String {
         .join("")
 }
 
+fn protobuf_codegen() -> protobuf_codegen::Codegen {
+    let mut codegen = protobuf_codegen::Codegen::new();
+    codegen.protoc();
+
+    if let Some(protoc) = std::env::var_os("PROTOC") {
+        codegen.protoc_path(Path::new(&protoc));
+    }
+
+    codegen
+}
+
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=proto");
+    println!("cargo:rerun-if-env-changed=PROTOC");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
@@ -85,8 +179,7 @@ fn main() {
     // Two separate invocations are required here because the filename of the trace payload is identical,
     // and `protobuf_codegen` ends up trying to generate code to the same output filename, which
     // means that whichever of the two files that gets processed last overwrites the other.
-    protobuf_codegen::Codegen::new()
-        .protoc()
+    protobuf_codegen()
         .includes(["proto", "proto/datadog-agent"])
         .inputs([
             "proto/agent-payload/agent_payload.proto",
@@ -96,22 +189,23 @@ fn main() {
         .customize(codegen_customize.clone())
         .run_from_script();
 
-    protobuf_codegen::Codegen::new()
-        .protoc()
-        .includes(["proto/datadog-agent"])
+    let staged_trace_root = stage_trace_protos();
+    protobuf_codegen()
+        .includes([&staged_trace_root])
         .inputs([
-            "proto/datadog-agent/datadog/trace/stats.proto",
-            "proto/datadog-agent/datadog/trace/span.proto",
-            "proto/datadog-agent/datadog/trace/tracer_payload.proto",
-            "proto/datadog-agent/datadog/trace/agent_payload.proto",
+            staged_trace_root.join("datadog/trace/stats.proto"),
+            staged_trace_root.join("datadog/trace/classic_span.proto"),
+            staged_trace_root.join("datadog/trace/classic_tracer_payload.proto"),
+            staged_trace_root.join("datadog/trace/idx/idx_span.proto"),
+            staged_trace_root.join("datadog/trace/idx/idx_tracer_payload.proto"),
+            staged_trace_root.join("datadog/trace/agent_payload.proto"),
         ])
         .cargo_out_dir("trace_protos")
         .customize(codegen_customize.clone())
         .customize_callback(SerdeCapableStructs)
         .run_from_script();
 
-    protobuf_codegen::Codegen::new()
-        .protoc()
+    protobuf_codegen()
         .includes(["proto/sketches-go"])
         .inputs(["proto/sketches-go/ddsketch/pb/ddsketch.proto"])
         .cargo_out_dir("sketch_protos")

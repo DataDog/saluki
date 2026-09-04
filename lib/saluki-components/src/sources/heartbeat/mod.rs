@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::{sources::*, ComponentContext};
+use saluki_core::components::{sources::*, BuildContext};
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::GenericError;
@@ -75,7 +75,7 @@ impl Source for Heartbeat {
 
 #[async_trait]
 impl SourceBuilder for HeartbeatConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(Heartbeat {
             heartbeat_interval_secs: self.heartbeat_interval_secs,
         }))

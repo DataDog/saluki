@@ -52,8 +52,13 @@ pub enum ListenAddress {
 
 impl ListenAddress {
     /// Creates a TCP address for the given port that listens on all interfaces.
-    pub const fn any_tcp(port: u16) -> Self {
+    pub const fn tcp_any(port: u16) -> Self {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
+    }
+
+    /// Creates a TCP address for the given port that listens on the loopback interface.
+    pub const fn tcp_loopback(port: u16) -> Self {
+        Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)))
     }
 
     /// Creates a Windows named pipe listen address.
@@ -238,6 +243,43 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                 Ok(Self::named_pipe(name, String::new()))
             }
             scheme => Err(format!("unknown/unsupported address scheme '{}'", scheme)),
+        }
+    }
+}
+
+/// A bound listen address.
+///
+/// This represents the "local" address of a listener (whether [`Listener`][crate::net::listener::Listener] or
+/// [`ConnectionOrientedListener`][crate::net::listener::ConnectionOrientedListener]), and is reciprocal to
+/// [`ListenAddress`], containing the same exact variants. This type is meant to be published as a dataspace assertion
+/// when a server binds to a particular [`ListenAddress`], providing the resolved address, such as the exact port used
+/// for a TCP/UDP socket when an ephemeral port was originally specified, and so on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoundListenAddress {
+    /// A TCP listen address.
+    Tcp(SocketAddr),
+
+    /// A UDP listen address.
+    Udp(SocketAddr),
+
+    /// A Unix datagram listen address.
+    Unixgram(PathBuf),
+
+    /// A Unix stream listen address.
+    Unix(PathBuf),
+
+    /// A Windows named pipe listen address.
+    NamedPipe(String),
+}
+
+impl fmt::Display for BoundListenAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp(addr) => write!(f, "tcp://{}", addr),
+            Self::Udp(addr) => write!(f, "udp://{}", addr),
+            Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
+            Self::Unix(path) => write!(f, "unix://{}", path.display()),
+            Self::NamedPipe(name) => write!(f, "npipe://{}", name),
         }
     }
 }
@@ -546,6 +588,17 @@ mod tests {
         assert_eq!(
             udp_private_addr.as_local_connect_addr(),
             Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 10, 2), 6789)))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_scheme_parses_as_unix() {
+        let address = ListenAddress::try_from("unix:///tmp/otlp.sock").unwrap();
+        assert_eq!(address.listener_type(), "unix");
+        assert_eq!(
+            address.as_unix_stream_path(),
+            Some(std::path::Path::new("/tmp/otlp.sock"))
         );
     }
 }

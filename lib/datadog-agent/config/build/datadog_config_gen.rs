@@ -15,11 +15,10 @@
 //! cannot render it faithfully. Parsing the duration once, at the deserialization boundary, keeps a
 //! bare number from reaching the translator as an ambiguous unit.
 //!
-//! String-list fields also get shape-tolerant decoders. A standalone `Vec<String>` may arrive
-//! as a real sequence or a space-separated environment string, while a `HashMap<String,
-//! Vec<String>>` may carry each map value as either one scalar string or a sequence. Handling those
-//! shapes at the deserialization boundary keeps downstream types consistent; see `stringlistize`
-//! and `crate::list_de`.
+//! List fields also get shape-tolerant decoders. String lists accept the Agent's scalar forms, and
+//! free-form object arrays accept either sequences or JSON-encoded strings. Handling these shapes at
+//! the deserialization boundary keeps downstream types consistent; see `listize` and
+//! `crate::list_de`.
 //!
 //! Scalar leaves get the Agent's own type coercion for the same reason: the Agent reads every
 //! setting through a cast against its declared type, so each leaf must accept the spellings that
@@ -236,7 +235,7 @@ fn render(pruned_schema: Value, aliases: &HashMap<String, Vec<String>>, duration
     shortener.visit_file_mut(&mut file);
 
     materialize_sections(&mut file);
-    stringlistize(&mut file);
+    listize(&mut file);
     strip_section_prefixes(&mut file);
     durationize(&mut file, durations);
     permissivize(&mut file);
@@ -381,21 +380,21 @@ fn duration_defaults_module(durations: &BTreeMap<String, u64>) -> String {
     module
 }
 
-/// Give string-list leaves shape-tolerant decoders.
+/// Give list leaves shape-tolerant decoders.
 ///
 /// String lists arrive as a real sequence from a file or the remote Agent stream, but as a single
 /// space-separated string from an environment variable (`DD_DOGSTATSD_TAGS="a b"`), so each field
 /// must accept both. Map values containing string lists may likewise arrive as either one scalar or
-/// a sequence and are normalized into vectors.
+/// a sequence. Free-form object arrays also accept a JSON-encoded string.
 ///
 /// We push an extra `#[serde(deserialize_with = ...)]` attribute rather than replacing the field's
 /// existing serde attributes: serde merges multiple `#[serde(...)]`, so the field keeps its
 /// `default`/`skip_serializing_if`/`alias` and only gains the tolerant reader (the same additive
 /// technique as `inject_serde_aliases`).
 ///
-/// Fields are matched by their Rust type, not by name. Runs after `PathShortener`, so the types read
-/// as `Vec<String>` and `HashMap<String, Vec<String>>` rather than fully qualified prelude paths.
-fn stringlistize(file: &mut syn::File) {
+/// Fields are matched by their Rust type, not by name. Runs after `PathShortener`, so prelude types
+/// use their short names.
+fn listize(file: &mut syn::File) {
     for item in &mut file.items {
         let Item::Struct(s) = item else { continue };
         let syn::Fields::Named(fields) = &mut s.fields else {
@@ -409,6 +408,10 @@ fn stringlistize(file: &mut syn::File) {
             } else if is_string_map_vec_string(&field.ty) {
                 field.attrs.push(parse_quote!(
                     #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
+                ));
+            } else if is_vec_json_value(&field.ty) {
+                field.attrs.push(parse_quote!(
+                    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
                 ));
             }
         }
@@ -432,6 +435,29 @@ fn is_vec_string(ty: &syn::Type) -> bool {
         return false;
     };
     inner.path.segments.last().is_some_and(|seg| seg.ident == "String")
+}
+
+/// Returns whether `ty` is exactly `Vec<serde_json::Value>`.
+fn is_vec_json_value(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    let Some(last) = tp.path.segments.last() else {
+        return false;
+    };
+    if last.ident != "Vec" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(syn::Type::Path(inner))) = args.args.first() else {
+        return false;
+    };
+    inner.path.segments.iter().any(|segment| segment.ident == "serde_json")
+        && inner
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Value")
 }
 
 /// Returns whether `ty` is exactly `HashMap<String, Vec<String>>`.
@@ -555,7 +581,7 @@ fn option_section_inner(ty: &syn::Type) -> Option<syn::Type> {
 ///
 /// Every field is classified, and an unrecognized shape fails the build. A schema change that
 /// introduces a new leaf type must then decide how that type coerces instead of silently shipping a
-/// leaf that rejects input the Agent accepts. Runs after `durationize` and `stringlistize`, whose
+/// leaf that rejects input the Agent accepts. Runs after `durationize` and `listize`, whose
 /// leaves carry their own shape-tolerant readers.
 // TODO: a leaf the Agent reads through an accessor of a different type than the schema declares
 // cannot be resolved from the schema type alone, and would need per-key overlay metadata. Add it back
@@ -583,6 +609,7 @@ fn permissivize(file: &mut syn::File) {
                 LeafKind::Number => "crate::cast_de::deserialize_f64",
                 LeafKind::Text => "crate::cast_de::deserialize_string",
                 LeafKind::OptionalText => "crate::cast_de::deserialize_optional_string",
+                LeafKind::OptionalInteger => "crate::cast_de::deserialize_optional_i64",
                 LeafKind::Exempt => continue,
                 LeafKind::Unknown => panic!(
                     "field `{}.{name}` has no declared coercion; classify its type in `leaf_kind` and \
@@ -604,6 +631,7 @@ enum LeafKind {
     Number,
     Text,
     OptionalText,
+    OptionalInteger,
     /// A nested section, or a leaf whose shape another pass or its own consumer handles.
     Exempt,
     Unknown,
@@ -619,6 +647,14 @@ fn leaf_kind(ty: &syn::Type, struct_names: &HashSet<String>) -> LeafKind {
     }
     if option_inner(ty).is_some_and(is_plain_string) {
         return LeafKind::OptionalText;
+    }
+    // An optional `integer` leaf uses the same permissive coercion as a plain `i64`, while an
+    // absent or null value stays `None`.
+    if option_inner(ty)
+        .and_then(plain_ident)
+        .is_some_and(|ident| ident == "i64")
+    {
+        return LeafKind::OptionalInteger;
     }
     if is_vec_string(ty) || is_string_map_vec_string(ty) || is_json_container(ty) || is_duration(ty) {
         return LeafKind::Exempt;

@@ -50,7 +50,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
     test_support:
-      used_by: [get_typed, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -60,10 +60,10 @@ inventory:
     pipelines: [cross_cutting]
     description: "Max inbound gRPC message size for IPC client"
     test_support:
-      used_by: [RemoteAgentClientConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "4194304"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: data_plane.rs
 
   aggregator_buffer_size:
     support: none
@@ -147,8 +147,7 @@ inventory:
       Support is partial because ADP does not apply this timeout only to an aggregator component.
       Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
       and the aggregate transform performs its final flush when its input stream ends. Whether open
-      aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
-      as `dogstatsd_flush_incomplete_buckets`.
+      aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
     test_support:
       used_by: [get_typed]
@@ -193,7 +192,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
     test_support:
-      used_by: [get_typed, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -447,25 +446,34 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  auth_token_file_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Agent authentication token file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable autoscaling failover metric routing"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   autoscaling.failover.metrics:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Metric names forwarded to DCA for failover"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '["container.memory.usage"]'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   basic_telemetry_add_container_tags:
     support: full
@@ -482,7 +490,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Global listen host fallback"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -491,40 +499,40 @@ inventory:
     pipelines: [checks, dogstatsd, otlp]
     description: "Bearer token for Cluster Agent requests"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '"cluster-agent-token"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable Cluster Agent communication"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.kubernetes_service_name:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent Kubernetes service name"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '"datadog-cluster-agent"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.url:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Cluster Agent HTTPS endpoint"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '"https://cluster-agent.example.com"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   cluster_name:
     support: full
@@ -540,10 +548,10 @@ inventory:
     pipelines: [cross_cutting]
     description: "Core Agent CMD API port for ADP gRPC IPC"
     test_support:
-      used_by: [RemoteAgentClientConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "5101"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: data_plane.rs
 
   config_id:
     support: none
@@ -589,7 +597,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Tag-filter deduplication cache size"
     test_support:
-      used_by: [TagFilterlistConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
@@ -760,7 +768,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Receive buffer size (bytes)"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -771,7 +779,7 @@ inventory:
     description: "Traffic capture channel depth"
     issue: "#1381"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -782,7 +790,7 @@ inventory:
     description: "Traffic capture file location"
     issue: "#1381"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -791,7 +799,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Context cache TTL (seconds)"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -802,7 +810,7 @@ inventory:
     description: "Suppress noisy parse error logs"
     issue: "#1350"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -811,7 +819,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -821,43 +829,26 @@ inventory:
     pipelines: [dogstatsd]
     description: "Require newline-terminated messages"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '["udp"]'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
-  dogstatsd_experimental_http.enabled:
-    support: none
-    severity: high
-    planned: true
-    pipelines: [dogstatsd]
-    description: "Enable experimental HTTP/H2C DSD listener"
-    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
-    issue: "#1682"
-
-  dogstatsd_experimental_http.listen_address:
-    support: none
-    severity: high
-    planned: true
-    pipelines: [dogstatsd]
-    description: "Bind address for experimental HTTP DSD listener"
-    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
-    issue: "#1682"
-
   dogstatsd_expiry_seconds:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [dogstatsd, checks]
     description: "Counter value expiry (seconds)"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
 
   dogstatsd_flush_incomplete_buckets:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Flush open buckets on shutdown"
     test_support:
-      used_by: [AggregateConfiguration]
-      additional_yaml_paths: [aggregate_flush_open_windows]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -874,7 +865,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -883,7 +874,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max roll count"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -893,7 +884,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max size"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"42MB"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -924,7 +915,7 @@ inventory:
       decoded metric summaries after DogStatsD parsing. The capture settings record raw
       DogStatsD traffic for packet-level investigation.
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -948,7 +939,7 @@ inventory:
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
     test_support:
-      used_by: [DogStatsDMapperConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -958,7 +949,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
     test_support:
-      used_by: [DogStatsDMapperConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -1068,7 +1059,7 @@ inventory:
     documentation: "See `dogstatsd_stats_enable`"
     issue: "#1352"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1077,7 +1068,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
     test_support:
-      used_by: [AggregateConfiguration, DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1094,7 +1085,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Accept non-localhost UDP/TCP"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1103,7 +1094,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Enable UDS origin detection"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1113,7 +1104,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Honor client origin proto fields"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1123,7 +1114,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow clients to opt out origin"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1149,7 +1140,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Windows named pipe path"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1174,7 +1165,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP listen port"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1192,7 +1183,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Socket receive buffer size"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1202,7 +1193,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDS datagram socket path"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1265,7 +1256,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Log oversized UDS stream frames"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1274,7 +1265,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDS stream socket path"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1283,7 +1274,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "String interner capacity"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1293,7 +1284,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Default tag cardinality level"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_TAG_CARDINALITY]
       test_json: '"high"'
       additional_attributes:
@@ -1304,7 +1295,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Extra tags added to all DSD data"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1321,7 +1312,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1340,7 +1331,7 @@ inventory:
       workers. Connection-oriented listeners continue to use one decoder per connection.
     issue: "#2079"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1367,7 +1358,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending event payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1376,7 +1367,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending series payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1385,7 +1376,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending service check payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1394,7 +1385,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending sketch payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1421,7 +1412,9 @@ inventory:
     pipelines: [cross_cutting]
     description: "How long startup host tags are attached"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: shared.rs
 
   extra_tags:
     support: full
@@ -1727,7 +1720,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Histogram aggregate statistics"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '["count"]'
       additional_attributes:
         config_registry_filename: aggregate.rs
@@ -1737,7 +1730,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Copy histograms to distributions"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1746,7 +1739,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Prefix for hist-to-dist copies"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1755,7 +1748,19 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Histogram percentile aggregates"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      test_json: '["0.95"]'
+      additional_attributes:
+        config_registry_filename: aggregate.rs
+
+  ipc_cert_file_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Agent IPC certificate file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   kubernetes_kubelet_nodename:
     support: full
@@ -1837,7 +1842,7 @@ inventory:
       ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
       log compressed wire payload bytes.
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -1868,7 +1873,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric name blocklist"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -1877,7 +1882,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Blocklist uses prefix matching"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -1886,7 +1891,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
     test_support:
-      used_by: [TagFilterlistConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
 
@@ -2045,7 +2050,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_ORIGIN_DETECTION_UNIFIED]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -2090,6 +2095,22 @@ inventory:
       The core Agent batches OTLP metric input before translation through its serializer exporter queue.
       ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
+  otlp_config.metrics.delta_ttl:
+    support: full
+    pipelines: [otlp]
+    description: "TTL (seconds) for cached delta-conversion points"
+    documentation: |-
+      Controls how long previously-seen data points are kept in memory when converting cumulative
+      monotonic sums to deltas. Once a series' cached prior value is older than this TTL, it is
+      evicted and the next value is treated as an initial value again. Defaults to `3600` seconds.
+      Raise this for high-cardinality or low-frequency series that report infrequently enough to
+      trip spurious "initial value" resets; lower it to bound memory use when many short-lived
+      series are seen.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
@@ -2116,6 +2137,15 @@ inventory:
     test_support:
       used_by: [TypedConfigSystem]
       test_json: "true"
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.instrumentation_scope_metadata_as_tags:
+    support: full
+    pipelines: [otlp]
+    description: "Add instrumentation scope metadata as metric tags."
+    test_support:
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2205,40 +2235,148 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.include_metadata:
-    support: unknown
-    description: "gRPC include metadata in context"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "gRPC metadata propagation (not supported)"
+    documentation: |-
+      The Datadog Agent uses `include_metadata` to control whether incoming gRPC request metadata
+      (headers) is propagated to downstream consumers in the OpenTelemetry Collector pipeline
+      context. ADP does not support this setting.
+
+      ADP's OTLP receiver does not propagate request metadata to downstream components. The gRPC
+      and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+      setting has no effect in ADP.
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time:
-    support: unknown
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
     description: "gRPC keepalive: min time between pings"
+    documentation: |-
+      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to rate-limit client keepalive PINGs:
+      a client that pings more often than `min_time` receives a GOAWAY with `ENHANCE_YOUR_CALM` and
+      the connection is closed. The default is `5m`.
+
+      These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
+      server, including public-facing ones with untrusted or malicious clients. It therefore ships
+      conservative defaults that protect against ping-spam and resource-exhaustion attacks. These
+      defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog Agent
+      config schema; they are not a considered decision for ADP's deployment model.
+
+      ADP's clients are trusted OpenTelemetry SDKs on the same host, not adversarial actors, so the
+      threat model this policy defends against does not apply. Additionally, ADP uses tonic/h2 for its
+      HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every inbound PING
+      unconditionally, with no observation point to rate-limit or send GOAWAY.
+
+      Setting `min_time` has no effect in ADP. The default (`5m`) is accepted silently; a non-default
+      value emits a warning.
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream:
-    support: unknown
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
     description: "gRPC keepalive: allow no-stream pings"
+    documentation: |-
+      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to control whether clients may send
+      keepalive PINGs when no stream (RPC) is active. When `false` (the grpc-go default), a client
+      that pings without an active stream receives a GOAWAY and the connection is closed.
+
+      These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
+      server, including public-facing ones with untrusted or malicious clients. It therefore ships
+      conservative defaults that protect against idle-connection squatting and resource exhaustion.
+      These defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog
+      Agent config schema; they are not a considered decision for ADP's deployment model.
+
+      ADP's clients are trusted OpenTelemetry SDKs on the same host that benefit from warm idle
+      connections, so the threat model this policy defends against does not apply. Additionally, ADP
+      uses tonic/h2 for its HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every
+      inbound PING regardless of active streams, with no observation point to reject no-stream pings.
+
+      Setting `permit_without_stream` has no effect in ADP. ADP always permits PINGs without an active
+      stream.
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: max connection age"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: max conn age grace"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle:
-    support: unknown
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
     description: "gRPC keepalive: max connection idle"
+    documentation: |-
+      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to close connections that have had zero
+      active RPC streams for the given duration, by sending GOAWAY and draining the connection.
+      Idleness is based on RPC stream count, not on traffic: a connection with no active RPCs is
+      considered idle even if the client is sending keepalive PINGs to keep it warm. The default is
+      infinity (never close idle connections).
+
+      This is a stricter form of idle reclamation than `server_parameters.time`/`timeout`, which only
+      closes connections that are fully silent (no frames at all for the idle period). A warm idle
+      connection (no RPCs, but the client is pinging) is closed by `max_connection_idle` but is not
+      closed by `time`/`timeout`, because the client PINGs count as read activity. So `time`/`timeout`
+      is not a full substitute: it covers the dead-connection case, while `max_connection_idle` covers
+      the warm-but-no-RPCs resource-reclamation case.
+
+      ADP uses tonic/h2 for its HTTP/2 stack, which has no `max_connection_idle` equivalent. tonic,
+      hyper, and hyper-util expose no idle-connection-close builder, and h2 does not expose the
+      per-connection hooks (active stream count, GOAWAY trigger) through tonic's server loop. The raw
+      `h2::server::Connection` has the primitives (`has_streams`, `graceful_shutdown`), but tonic
+      owns the connection lifecycle and does not hand the `h2` connection back to caller code.
+
+      The grpc-go default is infinity, so the Core Agent at its default does not reclaim warm-idle
+      connections either: it relies on `time`/`timeout` for dead-connection detection, which ADP
+      supports. At the default configuration, ADP's behavior matches the Core Agent on this axis.
+
+      Setting `max_connection_idle` has no effect in ADP. The default (infinity) is accepted silently;
+      a non-default value emits a warning.
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: ping time"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: ping timeout"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_concurrent_streams:
-    support: unknown
-    description: "gRPC max concurrent streams"
+    support: full
+    pipelines: [otlp]
+    description: "HTTP/2 max concurrent streams (0 = unlimited)"
+    test_support:
+      used_by: [TypedConfigSystem]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
     support: full
@@ -2251,79 +2389,168 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.read_buffer_size:
-    support: unknown
-    description: "gRPC read buffer size"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "gRPC read buffer size (not supported)"
+    documentation: |-
+      The Datadog Agent uses `read_buffer_size` to set the gRPC server's per-connection read buffer
+      size in bytes (default `524288`). ADP does not support this setting.
+
+      Tonic (the gRPC library ADP uses) does not expose a fixed read buffer size. Its I/O stack
+      (hyper → h2 → tokio) uses a expandable `BytesMut` buffer that starts at 8 KiB and expands
+      dynamically to accommodate incoming frames, then retains the larger size for subsequent
+      reads. This auto-tunes to the typical message size per connection without configuration.
+
+      Setting `read_buffer_size` has no effect in ADP.
 
   otlp_config.receiver.protocols.grpc.tls.ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS CA file path"
+    documentation: |-
+      Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
+      When set, the server requests client certificates and verifies them if presented, but does not require them.
+      Defaults to empty (no client certificate verification).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS CA PEM"
+    documentation: |-
+      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cert_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS cert file path"
+    documentation: |-
+      Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
+      `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS cert PEM"
+    documentation: |-
+      Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cipher_suites:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS cipher suites"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS client CA file"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS client CA reload"
 
   otlp_config.receiver.protocols.grpc.tls.curve_preferences:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS curve preferences"
 
   otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS include system CA pool"
 
   otlp_config.receiver.protocols.grpc.tls.key_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS key file path"
+    documentation: |-
+      Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
+      certificate in `cert_file`. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS key PEM"
+    documentation: |-
+      Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.max_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS max version"
 
   otlp_config.receiver.protocols.grpc.tls.min_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS min version"
 
   otlp_config.receiver.protocols.grpc.tls.reload_interval:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS reload interval"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.enabled:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM enabled"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM owner auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.path:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM path"
 
   otlp_config.receiver.protocols.grpc.transport:
@@ -2336,28 +2563,62 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.write_buffer_size:
-    support: unknown
-    description: "gRPC write buffer size"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "gRPC write buffer size (not supported)"
+    documentation: |-
+      The Datadog Agent uses `write_buffer_size` to set the gRPC server's per-connection write buffer
+      size in bytes (default `0`, which selects grpc-go's built-in default). ADP does not support this
+      setting.
+
+      Tonic (the gRPC library ADP uses) does not expose a fixed write buffer size. Its I/O stack
+      (hyper → h2 → tokio) manages write buffering internally with adaptive defaults. The closest
+      available knob, h2's `max_send_buffer_size`, controls backpressure rather than per-syscall write
+      sizing and is not surfaced by Tonic.
+
+      Setting `write_buffer_size` has no effect in ADP.
 
   otlp_config.receiver.protocols.http.compression_algorithms:
     support: unknown
     description: "HTTP compression algorithms"
 
   otlp_config.receiver.protocols.http.cors.allowed_headers:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS allowed headers"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.allowed_origins:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS allowed origins"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.exposed_headers:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS exposed headers"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.max_age:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS max age"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.endpoint:
     support: full
@@ -2373,8 +2634,19 @@ inventory:
     description: "HTTP idle timeout"
 
   otlp_config.receiver.protocols.http.include_metadata:
-    support: unknown
-    description: "HTTP include metadata in context"
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
+    description: "HTTP metadata propagation (not supported)"
+    documentation: |-
+      The Datadog Agent uses `include_metadata` to control whether incoming HTTP request headers
+      are propagated to downstream consumers in the OpenTelemetry Collector pipeline context. ADP
+      does not support this setting.
+
+      ADP's OTLP receiver does not propagate request headers to downstream components. The gRPC
+      and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+      setting has no effect in ADP.
 
   otlp_config.receiver.protocols.http.keep_alives_enabled:
     support: unknown
@@ -2385,8 +2657,14 @@ inventory:
     description: "HTTP logs URL path"
 
   otlp_config.receiver.protocols.http.max_request_body_size:
-    support: unknown
-    description: "HTTP max request body size"
+    support: full
+    pipelines: [otlp]
+    description: "HTTP max request body size in bytes (0 = 20 MiB)"
+    test_support:
+      used_by: [TypedConfigSystem]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.metrics_url_path:
     support: unknown
@@ -2405,75 +2683,151 @@ inventory:
     description: "HTTP response headers"
 
   otlp_config.receiver.protocols.http.tls.ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS CA file path"
+    documentation: |-
+      Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
+      When set, the server requests client certificates and verifies them if presented, but does not require them.
+      Defaults to empty (no client certificate verification).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS CA PEM"
+    documentation: |-
+      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cert_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS cert file path"
+    documentation: |-
+      Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
+      `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS cert PEM"
+    documentation: |-
+      Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cipher_suites:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS cipher suites"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS client CA file"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file_reload:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS client CA reload"
 
   otlp_config.receiver.protocols.http.tls.curve_preferences:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS curve preferences"
 
   otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS include system CA pool"
 
   otlp_config.receiver.protocols.http.tls.key_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS key file path"
+    documentation: |-
+      Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
+      certificate in `cert_file`. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS key PEM"
+    documentation: |-
+      Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.max_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS max version"
 
   otlp_config.receiver.protocols.http.tls.min_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS min version"
 
   otlp_config.receiver.protocols.http.tls.reload_interval:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS reload interval"
 
   otlp_config.receiver.protocols.http.tls.tpm.auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.enabled:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM enabled"
 
   otlp_config.receiver.protocols.http.tls.tpm.owner_auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM owner auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.path:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM path"
 
   otlp_config.receiver.protocols.http.traces_url_path:
@@ -2552,18 +2906,21 @@ inventory:
       additional_attributes:
         config_registry_filename: proxy.rs
 
+  run_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Runtime state directory"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: shared.rs
+
   serializer_compressor_kind:
     support: full
     pipelines: [cross_cutting]
     description: "Payload compression algorithm"
     test_support:
-      used_by:
-        [
-          DatadogEventsConfiguration,
-          DatadogLogsConfiguration,
-          DatadogServiceChecksConfiguration,
-          TypedConfigSystem,
-        ]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2571,15 +2928,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "V3 API zstd compression level"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.beta_route:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Beta V3 series API route"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -2594,55 +2942,10 @@ inventory:
       additional_attributes:
         config_registry_filename: encoders.rs
 
-  serializer_experimental_use_v3_api.series.shadow_sample_rate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "V3 series shadow mode sample rate"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.shadow_sites:
-    support: full
-    pipelines: [dogstatsd]
-    description: "V3 series shadow mode enabled sites"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.use_beta:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Use the beta V3 series API route"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.validate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Dual-send v2+v3 series for validation"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
     pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.sketches.validate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Dual-send v2+v3 sketches for validation"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -2653,7 +2956,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max compressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2693,7 +2996,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2704,16 +3007,10 @@ inventory:
     description: "Zstd compression level (Agent)"
     documentation: >
       The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
-      when that is unset, ADP applies this value if it has been changed from the Agent default of 1,
-      otherwise it uses its own default of 3.
+      when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own
+      default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
     test_support:
-      used_by:
-        [
-          DatadogEventsConfiguration,
-          DatadogLogsConfiguration,
-          DatadogServiceChecksConfiguration,
-          TypedConfigSystem,
-        ]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2773,7 +3070,7 @@ inventory:
       be split differently while carrying the same DogStatsD messages. ADP logs setup failures
       and tracks send failures through telemetry.
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"127.0.0.1"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -2783,7 +3080,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP packet forwarding destination port"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       test_json: "9125"
       additional_attributes:
@@ -2794,7 +3091,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "List of metric names to block/drop"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2803,7 +3100,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Treat blocklist entries as prefixes"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2812,7 +3109,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Prefix prepended to all metric names"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2821,7 +3118,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Prefixes exempt from namespace"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [statsd_metric_namespace_blocklist]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
@@ -2885,7 +3182,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Per-origin processed-metrics telemetry"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -2987,10 +3284,10 @@ inventory:
     pipelines: [cross_cutting]
     description: "vsock address for Agent IPC endpoint"
     test_support:
-      used_by: [RemoteAgentClientConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"host"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: data_plane.rs
 
 excluded:
   GUI_host: "ignored in initial audit 2026-04-23"
@@ -3270,7 +3567,6 @@ excluded:
   appsec.proxy.processor.port: "ignored in initial audit 2026-04-23"
   appsec.proxy.proxies: "ignored in initial audit 2026-04-23"
   auth_init_timeout: "ignored in initial audit 2026-04-23"
-  auth_token_file_path: "ignored in second bulk edit 2026-05-06"
   auto_exit.noprocess.enabled: "ignored in initial audit 2026-04-23"
   auto_exit.noprocess.excluded_processes: "ignored in initial audit 2026-04-23"
   auto_exit.validation_period: "ignored in initial audit 2026-04-23"
@@ -3648,6 +3944,8 @@ excluded:
   docker_env_as_tags: "ignored in initial audit 2026-04-23"
   docker_labels_as_tags: "ignored in initial audit 2026-04-23"
   docker_query_timeout: "ignored in initial audit 2026-04-23"
+  dogstatsd_experimental_http.enabled: "served entirely by the core Agent (comp/dogstatsd/http); never reaches ADP"
+  dogstatsd_experimental_http.listen_address: "served entirely by the core Agent (comp/dogstatsd/http); never reaches ADP"
   ec2_imdsv2_transition_payload_enabled: "ignored in initial audit 2026-04-23"
   ec2_metadata_timeout: "ignored in initial audit 2026-04-23"
   ec2_metadata_token_lifetime: "ignored in initial audit 2026-04-23"
@@ -3861,7 +4159,6 @@ excluded:
   inventories_min_interval: "ignored in initial audit 2026-04-23"
   iot_host: "ignored in initial audit 2026-04-23"
   ipc_address: "ignored in initial audit 2026-04-23"
-  ipc_cert_file_path: "ignored in second bulk edit 2026-05-06"
   jmx_check_period: "ignored in initial audit 2026-04-23"
   jmx_collection_timeout: "ignored in initial audit 2026-04-23"
   jmx_custom_jars: "ignored in initial audit 2026-04-23"
@@ -4324,9 +4621,7 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
-  otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"
@@ -4449,7 +4744,6 @@ excluded:
   reverse_dns_enrichment.rate_limiter.recovery_intervals: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.rate_limiter.throttle_error_threshold: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.workers: "ignored in initial audit 2026-04-23"
-  run_path: "ignored in second bulk edit 2026-05-06"
   runtime_security_config.activity_dump.remote_storage.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"

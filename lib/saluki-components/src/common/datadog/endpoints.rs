@@ -7,22 +7,18 @@ use std::{
 use agent_data_plane_config::shared::{self, V3SeriesMode};
 use http::uri::Authority;
 use regex::Regex;
-use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
-use serde::Deserialize;
-use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
-use tracing::debug;
+use stringtheory::MetaString;
+use tracing::{debug, error};
 use url::Url;
 
+use super::api_key::ApiKeyCell;
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
 
 static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
-});
-static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)\.?$").unwrap()
 });
 
 /// Per-endpoint V3 protocol settings.
@@ -37,23 +33,12 @@ pub struct EndpointV3Settings {
 
     /// Whether this endpoint accepts V3 sketches payloads.
     pub use_v3_sketches: bool,
-
-    /// Whether validation mode is enabled for series (send both V2 and V3).
-    pub series_validation_mode: bool,
-
-    /// Whether validation mode is enabled for sketches (send both V2 and V3).
-    pub sketches_validation_mode: bool,
-
-    /// Whether this endpoint accepts sampled V3 beta series shadow payloads.
-    pub series_shadow_mode: bool,
 }
 
 /// Inputs used to derive V3 settings for one endpoint.
 pub(crate) struct V3EndpointConfig<'a> {
     /// Endpoint string as it appeared in configuration for this routed endpoint.
     pub(crate) configured_endpoint: &'a str,
-    /// Resolved endpoint URL.
-    pub(crate) resolved_endpoint: &'a Url,
     /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
     pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
     /// Agent-compatible V3 series config.
@@ -64,12 +49,6 @@ pub(crate) struct V3EndpointConfig<'a> {
     pub(crate) serializer_v3_series_endpoints: &'a [String],
     /// Serializer V3 sketches endpoint list.
     pub(crate) serializer_v3_sketches_endpoints: &'a [String],
-    /// Whether series validation mode is enabled.
-    pub(crate) series_validate: bool,
-    /// Whether sketches validation mode is enabled.
-    pub(crate) sketches_validate: bool,
-    /// Sites eligible for V3 series shadow traffic.
-    pub(crate) series_shadow_sites: &'a [String],
 }
 
 impl EndpointV3Settings {
@@ -78,9 +57,6 @@ impl EndpointV3Settings {
         Self {
             use_v3_series: false,
             use_v3_sketches: false,
-            series_validation_mode: false,
-            sketches_validation_mode: false,
-            series_shadow_mode: false,
         }
     }
 
@@ -90,22 +66,15 @@ impl EndpointV3Settings {
     /// If the endpoint name matches any entry, V3 is enabled for that metric type.
     #[cfg(test)]
     pub fn from_endpoint_url(
-        configured_endpoint: &str, resolved_endpoint: &Url, v3_series_endpoints: &[String],
-        v3_sketches_endpoints: &[String], series_validate: bool, sketches_validate: bool,
-        series_shadow_sites: &[String],
+        configured_endpoint: &str, _resolved_endpoint: &Url, v3_series_endpoints: &[String],
+        v3_sketches_endpoints: &[String],
     ) -> Self {
         let use_v3_series = serializer_v3_config_matches_endpoint(configured_endpoint, v3_series_endpoints);
         let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| configured_endpoint == e);
-        let series_shadow_mode = !use_v3_series
-            && extract_site_from_url(resolved_endpoint.as_str())
-                .is_some_and(|site| series_shadow_sites.iter().any(|shadow_site| shadow_site == &site));
 
         Self {
             use_v3_series,
             use_v3_sketches,
-            series_validation_mode: use_v3_series && series_validate,
-            sketches_validation_mode: use_v3_sketches && sketches_validate,
-            series_shadow_mode,
         }
     }
 
@@ -134,20 +103,10 @@ impl EndpointV3Settings {
             .serializer_v3_sketches_endpoints
             .iter()
             .any(|e| config.configured_endpoint == e);
-        let series_shadow_mode = !use_v3_series
-            && extract_site_from_url(config.resolved_endpoint.as_str()).is_some_and(|site| {
-                config
-                    .series_shadow_sites
-                    .iter()
-                    .any(|shadow_site| shadow_site == &site)
-            });
 
         Self {
             use_v3_series,
             use_v3_sketches,
-            series_validation_mode: use_v3_series && config.series_validate,
-            sketches_validation_mode: use_v3_sketches && config.sketches_validate,
-            series_shadow_mode,
         }
     }
 
@@ -156,8 +115,8 @@ impl EndpointV3Settings {
     /// Returns `true` if the endpoint should receive the payload, `false` otherwise.
     ///
     /// The logic is:
-    /// - V2 series payload: accept if series V3 is disabled OR series validation mode is enabled
-    /// - V2 sketches payload: accept if sketches V3 is disabled OR sketches validation mode is enabled
+    /// - V2 series payload: accept if series V3 is disabled
+    /// - V2 sketches payload: accept if sketches V3 is disabled
     /// - V3 series payload: accept if series V3 is enabled
     /// - V3 sketches payload: accept if sketches V3 is enabled
     /// - Non-metrics payloads (None): always accept
@@ -172,44 +131,23 @@ impl EndpointV3Settings {
         match info.version {
             MetricsProtocolVersion::V2 => {
                 if is_sketch {
-                    // V2 sketches: accept if V3 sketches is disabled OR validation mode is enabled
-                    !self.use_v3_sketches || self.sketches_validation_mode
+                    // V2 sketches: accept if V3 sketches is disabled.
+                    !self.use_v3_sketches
                 } else {
-                    // V2 series: accept if V3 series is disabled OR validation mode is enabled
-                    !self.use_v3_series || self.series_validation_mode
+                    // V2 series: accept if V3 series is disabled.
+                    !self.use_v3_series
                 }
             }
 
             MetricsProtocolVersion::V3 => {
                 if is_sketch {
-                    // V3 sketches: accept if V3 sketches is enabled
+                    // V3 sketches: accept if V3 sketches is enabled.
                     self.use_v3_sketches
-                } else if info.is_shadow() {
-                    // V3 shadow series: accept only when this V2-authoritative endpoint is shadow-enabled.
-                    self.series_shadow_mode
                 } else {
                     // V3 series: accept if V3 series is enabled.
                     self.use_v3_series
                 }
             }
-        }
-    }
-
-    /// Determines if this endpoint should receive metrics validation headers.
-    ///
-    /// Validation headers are endpoint-scoped: they should only be sent to endpoints that are
-    /// receiving both V2 and V3 payloads for the payload's metric family.
-    pub fn should_receive_validation_headers(&self, payload_info: Option<MetricsPayloadInfo>) -> bool {
-        let Some(info) = payload_info else {
-            return false;
-        };
-
-        if info.is_shadow() {
-            self.series_shadow_mode
-        } else if info.is_sketch() {
-            self.sketches_validation_mode
-        } else {
-            self.series_validation_mode
         }
     }
 }
@@ -264,64 +202,18 @@ pub(crate) fn is_datadog_url(url: &Url) -> bool {
     url.host_str().is_some_and(is_datadog_host)
 }
 
-pub(crate) fn extract_site_from_url(raw_url: &str) -> Option<String> {
-    let url = Url::parse(raw_url).ok()?;
-    let hostname = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
-    let captures = DD_SITE_FROM_HOSTNAME_REGEX.captures(&hostname)?;
-    let datacenter = captures.get(1).map_or("", |m| m.as_str());
-    let domain = captures.get(2)?.as_str();
-    Some(format!("{datacenter}{domain}"))
-}
-
 /// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub(crate) enum EndpointError {
-    Parse { source: url::ParseError, endpoint: String },
+    Parse {
+        source: url::ParseError,
+        endpoint: String,
+    },
+
+    #[snafu(display("API key contains characters that are invalid in HTTP headers."))]
+    InvalidApiKey,
 }
-
-#[serde_as]
-#[derive(Clone, Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-struct MappedAPIKeys(HashMap<String, APIKeys>);
-
-#[cfg(test)]
-impl MappedAPIKeys {
-    fn mappings(&self) -> impl Iterator<Item = (&str, &APIKeys)> {
-        self.0.iter().map(|(k, v)| (k.as_str(), v))
-    }
-}
-
-impl FromStr for MappedAPIKeys {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let inner = serde_json::from_str(s)?;
-        Ok(Self(inner))
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Display for MappedAPIKeys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
-    }
-}
-
-/// A set of additional API endpoints to forward metrics to, as the raw configuration map spells them.
-///
-/// Each endpoint can be associated with multiple API keys. This type exists only to look an API key
-/// up in live configuration, which is value-only and still carries the source encoding: a
-/// JSON-encoded string or a native mapping, either of which may hold one key or a list of keys per
-/// endpoint. Static endpoint construction reads the resolved map instead.
-#[serde_as]
-#[derive(Clone, Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 /// Returns the resolved endpoints for each configured additional endpoint and API key.
 ///
@@ -332,10 +224,9 @@ pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr
 ///
 /// # Errors
 ///
-/// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
-/// the necessary normalization / modifications, an error will be returned.
+/// Returns an error if an endpoint URL is invalid.
 pub(crate) fn resolve_additional_endpoints(
-    additional_endpoints: &HashMap<String, Vec<String>>, configuration: Option<GenericConfiguration>,
+    additional_endpoints: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
     let mut resolved = Vec::new();
 
@@ -354,12 +245,22 @@ pub(crate) fn resolve_additional_endpoints(
             }
 
             seen.insert(trimmed_api_key);
+            let api_key = match ApiKeyCell::new(trimmed_api_key) {
+                Ok(api_key) => api_key,
+                Err(_) => {
+                    error!(
+                        config_key = "additional_endpoints",
+                        endpoint = raw_endpoint,
+                        api_key_index = index,
+                        "Skipping API key because it cannot be used as an HTTP header value."
+                    );
+                    continue;
+                }
+            };
             resolved.push(ResolvedEndpoint {
                 endpoint: endpoint.clone(),
                 configured_endpoint: raw_endpoint.to_string(),
-                api_key: trimmed_api_key.to_string(),
-                config: configuration.clone(),
-                api_key_refresh_config_path: None,
+                api_key,
                 api_key_index: Some(index),
                 raw_additional_url: Some(raw_endpoint.to_string()),
                 logs_authority: logs_authority.clone(),
@@ -385,11 +286,6 @@ pub(crate) struct SingleDestination {
     /// API key or token presented to the destination.
     pub(crate) api_key: String,
 
-    /// Configuration path the API key refreshes from, when the destination has its own key.
-    ///
-    /// `None` refreshes from the primary `api_key` path.
-    pub(crate) api_key_refresh_config_path: Option<&'static str>,
-
     /// Whether the destination accepts V3 series payloads.
     pub(crate) accepts_v3_series: bool,
 }
@@ -400,9 +296,6 @@ pub(crate) struct SingleDestination {
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
-
-    /// Config path used to refresh the API key for primary-like endpoints.
-    api_key_refresh_config_path: Option<&'static str>,
 
     /// The primary endpoint to send payloads to, as configured and not altered in any way.
     primary_endpoint: String,
@@ -416,7 +309,6 @@ impl EndpointConfiguration {
     pub(crate) fn from_configuration(endpoints: &shared::Endpoints) -> Self {
         Self {
             api_key: endpoints.api_key.clone(),
-            api_key_refresh_config_path: None,
             primary_endpoint: endpoints.primary_endpoint(),
             additional_endpoints: endpoints.additional_endpoints.clone(),
         }
@@ -428,7 +320,6 @@ impl EndpointConfiguration {
     pub(crate) fn for_single_destination(destination: &SingleDestination) -> Self {
         Self {
             api_key: destination.api_key.clone(),
-            api_key_refresh_config_path: destination.api_key_refresh_config_path,
             primary_endpoint: destination.url.clone(),
             additional_endpoints: HashMap::new(),
         }
@@ -440,13 +331,9 @@ impl EndpointConfiguration {
     ///
     /// If the primary endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to the endpoint, an error will be returned.
-    pub(crate) fn build_primary_endpoint(
-        &self, configuration: Option<GenericConfiguration>,
-    ) -> Result<ResolvedEndpoint, GenericError> {
+    pub(crate) fn build_primary_endpoint(&self) -> Result<ResolvedEndpoint, GenericError> {
         ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Returns the configured primary endpoint string without resolving or version-prefixing it.
@@ -455,27 +342,18 @@ impl EndpointConfiguration {
     }
 
     /// Builds the resolved primary endpoint from a URL override.
-    pub(crate) fn build_primary_endpoint_override(
-        &self, url: &str, configuration: Option<GenericConfiguration>,
-    ) -> Result<ResolvedEndpoint, EndpointError> {
+    pub(crate) fn build_primary_endpoint_override(&self, url: &str) -> Result<ResolvedEndpoint, EndpointError> {
         ResolvedEndpoint::from_raw_endpoint(url, &self.api_key)
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Builds the resolved additional endpoints.
-    ///
-    /// If a [`GenericConfiguration`] is supplied, each additional endpoint will hold a live
-    /// reference to it and refresh its API key on every request via [`ResolvedEndpoint::api_key`].
     ///
     /// # Errors
     ///
     /// If any additional endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to a particular endpoint, an error will be returned.
-    pub(crate) fn build_additional_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
-    ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
-        resolve_additional_endpoints(&self.additional_endpoints, configuration)
+    pub(crate) fn build_additional_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, GenericError> {
+        resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
@@ -488,10 +366,8 @@ impl EndpointConfiguration {
 pub struct ResolvedEndpoint {
     endpoint: Url,
     configured_endpoint: String,
-    api_key: String,
-    config: Option<GenericConfiguration>,
-    /// Config path used to refresh the API key for primary-like endpoints. `None` uses `api_key`.
-    api_key_refresh_config_path: Option<&'static str>,
+    /// The key this endpoint presents. A forwarder may bind it to a live view through `ApiKeyRefresher`.
+    api_key: ApiKeyCell,
     /// Position of this key in the `additional_endpoints` config key list for its URL (raw
     /// `enumerate()` index, not a post-dedup counter). `None` for primary and OPW endpoints.
     api_key_index: Option<usize>,
@@ -536,14 +412,8 @@ impl RoutableEndpoint {
     }
 
     /// Returns the resolved endpoint.
-    #[cfg(test)]
     pub(crate) const fn endpoint(&self) -> &ResolvedEndpoint {
         &self.endpoint
-    }
-
-    /// Returns the resolved endpoint mutably.
-    pub(crate) const fn endpoint_mut(&mut self) -> &mut ResolvedEndpoint {
-        &mut self.endpoint
     }
 
     /// Consumes the routable endpoint and returns its parts.
@@ -558,8 +428,7 @@ impl ResolvedEndpoint {
     ///
     /// # Errors
     ///
-    /// If the given endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the necessary
-    /// normalization / modifications, an error will be returned.
+    /// Returns an error if the endpoint URL is invalid or the API key cannot be used as an HTTP header value.
     pub(crate) fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
         let logs_authority = compute_logs_authority(&endpoint);
@@ -567,28 +436,12 @@ impl ResolvedEndpoint {
         Ok(Self {
             endpoint,
             configured_endpoint: raw_endpoint.to_string(),
-            api_key: api_key.to_string(),
-            config: None,
-            api_key_refresh_config_path: None,
+            api_key: ApiKeyCell::new(api_key).map_err(|_| EndpointError::InvalidApiKey)?,
             api_key_index: None,
             raw_additional_url: None,
             logs_authority,
             traces_authority,
         })
-    }
-
-    /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `GenericConfiguration` which can be used to fetch the up-to-date API key.
-    pub fn with_configuration(mut self, config: Option<GenericConfiguration>) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Sets the config path used to refresh the API key for primary-like endpoints.
-    pub(crate) fn with_api_key_refresh_config_path(
-        mut self, api_key_refresh_config_path: Option<&'static str>,
-    ) -> Self {
-        self.api_key_refresh_config_path = api_key_refresh_config_path;
-        self
     }
 
     /// Returns the endpoint of the resolver.
@@ -605,58 +458,17 @@ impl ResolvedEndpoint {
 
     /// Returns the API key associated with the endpoint.
     ///
-    /// If a [`GenericConfiguration`] has been configured, the API key will be queried from the configuration and
-    /// stored if it has been updated since the last time `api_key` was called.
-    ///
-    /// For additional endpoints (those with an [`api_key_index`][Self::api_key_index]), the key is
-    /// looked up by position in the `additional_endpoints` config value. For the primary endpoint,
-    /// the `api_key` config key is used directly.
-    pub fn api_key(&mut self) -> &str {
-        if let Some(config) = &self.config {
-            if let (Some(index), Some(raw_url)) = (self.api_key_index, self.raw_additional_url.as_deref()) {
-                // Additional endpoint: look up current key by raw index in this URL's key list.
-                match lookup_additional_key(config, raw_url, index) {
-                    Some(key) if key != self.api_key => {
-                        debug!(endpoint = %self.endpoint, index, "Refreshed additional endpoint API key.");
-                        self.api_key = key;
-                    }
-                    None => {
-                        debug!(
-                            endpoint = %self.endpoint,
-                            index,
-                            "Could not refresh additional endpoint key from config (index out of range or \
-                             parse error). Continuing with last known valid API key."
-                        );
-                    }
-                    _ => {}
-                }
-            } else {
-                // Primary / OPW endpoint: refresh from the configured API key source.
-                let api_key_refresh_config_path = self.api_key_refresh_config_path.unwrap_or("api_key");
-                match config.try_get_typed::<String>(api_key_refresh_config_path) {
-                    Ok(Some(api_key)) => {
-                        if !api_key.is_empty() && self.api_key != api_key {
-                            debug!(endpoint = %self.endpoint, key = api_key_refresh_config_path, "Refreshed API key.");
-                            self.api_key = api_key;
-                        }
-                    }
-                    Ok(None) | Err(_) => {
-                        debug!(
-                            key = api_key_refresh_config_path,
-                            "Failed to retrieve API key from remote source (missing or wrong type). Continuing with \
-                             last known valid API key."
-                        );
-                    }
-                }
-            }
-        }
-        self.api_key.as_str()
+    /// The returned key is the one stored for this endpoint. After an
+    /// [`ApiKeyRefresher`][super::api_key::ApiKeyRefresher] processes a configuration change, it replaces
+    /// the stored key. An endpoint not bound to a refresher, such as one presenting a token that
+    /// configuration does not own, keeps the key it was built with.
+    pub fn api_key(&self) -> MetaString {
+        self.api_key.load()
     }
 
-    /// Returns the API key associated with the endpoint without refreshing it.
-    #[cfg(test)]
-    pub fn cached_api_key(&self) -> &str {
-        self.api_key.as_str()
+    /// Returns the cell holding this endpoint's API key, for a refresher to write.
+    pub(crate) const fn api_key_cell(&self) -> &ApiKeyCell {
+        &self.api_key
     }
 
     /// Returns the position of this endpoint's API key in the `additional_endpoints` config list for
@@ -676,18 +488,6 @@ impl ResolvedEndpoint {
             (Some(raw_url), Some(index)) => Some((raw_url, index)),
             _ => None,
         }
-    }
-
-    /// Returns whether this endpoint can refresh its API key from dynamic configuration.
-    #[cfg(test)]
-    pub(crate) fn has_configuration(&self) -> bool {
-        self.config.is_some()
-    }
-
-    /// Returns whether this endpoint has an `api_key_index` (that is, is an additional endpoint).
-    #[cfg(test)]
-    pub(crate) fn has_api_key_index(&self) -> bool {
-        self.api_key_index.is_some()
     }
 
     /// Returns the pre-computed logs intake authority, if available.
@@ -785,27 +585,6 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
     Ok(endpoint)
 }
 
-/// Returns the API key at position `index` in `raw_url`'s key list from the live config.
-///
-/// `raw_url` is the pre-normalization URL string (for example `"app.datadoghq.eu"`) as it appears as a
-/// key in the `additional_endpoints` config value. `index` is the raw `enumerate()` position of
-/// the key in that URLs list (not a post-dedup counter).
-///
-/// Returns `None` if the URL is not present in the current config, if `index` is out of range, or
-/// if the key at that position is empty.
-fn lookup_additional_key(config: &GenericConfiguration, raw_url: &str, index: usize) -> Option<String> {
-    let additional = config
-        .try_get_typed::<AdditionalEndpoints>("additional_endpoints")
-        .ok()??
-        .0;
-    let key = additional.0.get(raw_url)?.0.get(index)?.trim();
-    if key.is_empty() {
-        None
-    } else {
-        Some(key.to_string())
-    }
-}
-
 /// Computes the logs intake authority from a resolved endpoint URL.
 ///
 /// If the endpoint host contains the `.agent.` marker (for example, `7-52-0-adp.agent.datadoghq.com`),
@@ -840,10 +619,6 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::ConfigValue;
-    use saluki_config::{
-        dynamic::{ConfigSetting, ConfigUpdate},
-        ConfigurationLoader,
-    };
 
     use super::*;
 
@@ -864,61 +639,6 @@ mod tests {
             .collect()
     }
 
-    fn additional_endpoints_to_sorted_strings(endpoints: &AdditionalEndpoints) -> Vec<String> {
-        let mut flattened = endpoints
-            .0
-            .mappings()
-            .flat_map(|(domain, api_keys)| api_keys.0.iter().map(move |api_key| format!("{}:{}", domain, api_key)))
-            .collect::<Vec<String>>();
-        flattened.sort();
-        flattened
-    }
-
-    #[test]
-    fn deser_additional_endpoints_accepts_json_string_and_native_yaml_forms() {
-        // `AdditionalEndpoints` accepts either a JSON-encoded string (what the Core Agent emits) or a
-        // native YAML mapping, and each endpoint may map to a single API key or a list of keys.
-        let single = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let multiple = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
-        ];
-        let cases: [(&str, &str, &[&str]); 4] = [
-            (
-                "JSON string, single key per endpoint",
-                r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#,
-                &single,
-            ),
-            (
-                "JSON string, multiple keys per endpoint",
-                r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#,
-                &multiple,
-            ),
-            (
-                "native YAML mapping, single key per endpoint",
-                "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2",
-                &single,
-            ),
-            (
-                "native YAML mapping, multiple keys per endpoint",
-                "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b",
-                &multiple,
-            ),
-        ];
-
-        for (name, raw_input, expected) in cases {
-            let result =
-                serde_yaml::from_str::<AdditionalEndpoints>(raw_input).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(
-                expected,
-                additional_endpoints_to_sorted_strings(&result).as_slice(),
-                "{name}"
-            );
-        }
-    }
-
     #[test]
     fn additional_endpoints_api_key_index_uses_raw_config_position() {
         // Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
@@ -926,18 +646,18 @@ mod tests {
         // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
         let endpoints = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key-b", "", "key-a", "key-c"])]);
 
-        let resolved = resolve_additional_endpoints(&endpoints, None).expect("should resolve");
+        let resolved = resolve_additional_endpoints(&endpoints).expect("should resolve");
 
         assert_eq!(
             resolved.len(),
             3,
             "should have 3 endpoints (skipping empty and duplicate)"
         );
-        assert_eq!(resolved[0].cached_api_key(), "key-a");
+        assert_eq!(&*resolved[0].api_key(), "key-a");
         assert_eq!(resolved[0].api_key_index(), Some(0));
-        assert_eq!(resolved[1].cached_api_key(), "key-b");
+        assert_eq!(&*resolved[1].api_key(), "key-b");
         assert_eq!(resolved[1].api_key_index(), Some(1));
-        assert_eq!(resolved[2].cached_api_key(), "key-c");
+        assert_eq!(&*resolved[2].api_key(), "key-c");
         assert_eq!(
             resolved[2].api_key_index(),
             Some(4),
@@ -946,61 +666,22 @@ mod tests {
 
         // Two URLs have independent index spaces (both start from 0).
         let endpoints2 = additional_endpoints(&[("app.datadoghq.eu", &["eu-key-a", "eu-key-b"])]);
-        let resolved2 = resolve_additional_endpoints(&endpoints2, None).expect("should resolve");
+        let resolved2 = resolve_additional_endpoints(&endpoints2).expect("should resolve");
         assert_eq!(resolved2[0].api_key_index(), Some(0));
         assert_eq!(resolved2[1].api_key_index(), Some(1));
     }
 
-    #[tokio::test]
-    async fn api_key_dynamically_refreshes_from_additional_endpoints_config() {
-        use std::time::{Duration, Instant};
+    #[test]
+    fn header_invalid_additional_api_keys_are_skipped() {
+        let endpoints = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key\nvalue", "key-b"])]);
 
-        // No static initial values for additional_endpoints — all from dynamic config only.
-        // This avoids figment's admerge concatenating the static array with the dynamic array,
-        // which would leave the old key-1 in position 0.
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic configuration sender should be present");
+        let resolved = resolve_additional_endpoints(&endpoints).expect("should resolve");
 
-        // Apply an initial snapshot with key-1 and wait for readiness.
-        sender
-            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
-                "additional_endpoints",
-                serde_json::json!({ "http://extra.example.com": ["key-1"] }),
-            )]))
-            .await
-            .expect("should send initial snapshot");
-        config.ready().await;
-
-        // Build the additional endpoint with a live config reference.
-        let additional = additional_endpoints(&[("http://extra.example.com", &["key-1"])]);
-        let mut endpoints = resolve_additional_endpoints(&additional, Some(config.clone())).expect("should resolve");
-        let endpoint = &mut endpoints[0];
-
-        // Before the update, api_key() returns the original key.
-        assert_eq!(endpoint.api_key(), "key-1");
-
-        // Push a snapshot that rotates the key.
-        sender
-            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
-                "additional_endpoints",
-                serde_json::json!({ "http://extra.example.com": ["key-2"] }),
-            )]))
-            .await
-            .expect("should send rotation snapshot");
-
-        // Poll api_key() until it reflects the new value; api_key() re-reads from live config on
-        // every call so no watcher or rebuild is needed.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if endpoint.api_key() == "key-2" {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out — api_key() did not refresh after additional_endpoints rotation"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(&*resolved[0].api_key(), "key-a");
+        assert_eq!(resolved[0].api_key_index(), Some(0));
+        assert_eq!(&*resolved[1].api_key(), "key-b");
+        assert_eq!(resolved[1].api_key_index(), Some(2));
     }
 
     #[test]
@@ -1089,9 +770,9 @@ mod tests {
             };
             let config = EndpointConfiguration::from_configuration(&endpoints);
 
-            let resolved = config.build_primary_endpoint(None).expect(name);
+            let resolved = config.build_primary_endpoint().expect(name);
             assert_eq!(expected_endpoint, resolved.endpoint().to_string(), "{name}");
-            assert_eq!("fake-api-key", resolved.cached_api_key(), "{name}");
+            assert_eq!("fake-api-key", &*resolved.api_key(), "{name}");
         }
     }
 
@@ -1100,7 +781,6 @@ mod tests {
         let destination = SingleDestination {
             url: "https://cluster-agent.example.com:5005".to_string(),
             api_key: "secret-token".to_string(),
-            api_key_refresh_config_path: None,
             accepts_v3_series: false,
         };
         let config = EndpointConfiguration::for_single_destination(&destination);
@@ -1110,37 +790,20 @@ mod tests {
             config.configured_primary_endpoint()
         );
         assert!(config
-            .build_additional_endpoints(None)
+            .build_additional_endpoints()
             .expect("additional endpoints should resolve")
             .is_empty());
     }
 
     #[test]
-    fn validation_headers_are_scoped_to_payload_family() {
-        let settings = EndpointV3Settings {
-            use_v3_series: true,
-            use_v3_sketches: false,
-            series_validation_mode: true,
-            sketches_validation_mode: false,
-            series_shadow_mode: false,
-        };
-
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_series())));
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_series())));
-        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
-        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
-        assert!(!settings.should_receive_validation_headers(None));
-    }
-
-    #[test]
     fn should_receive_payload_covers_all_documented_branches() {
         // Walks every branch enumerated in `should_receive_payload`'s doc comment:
-        // - V2 series: accept if series V3 is disabled OR series validation mode is enabled
-        // - V2 sketches: accept if sketches V3 is disabled OR sketches validation mode is enabled
+        // - V2 series: accept if series V3 is disabled
+        // - V2 sketches: accept if sketches V3 is disabled
         // - V3 series: accept if series V3 is enabled
         // - V3 sketches: accept if sketches V3 is enabled
         // - Non-metrics payloads (None): always accept
-        let cases: [(&str, EndpointV3Settings, Option<MetricsPayloadInfo>, bool); 11] = [
+        let cases: [(&str, EndpointV3Settings, Option<MetricsPayloadInfo>, bool); 9] = [
             (
                 "v2 series accepted when series v3 disabled",
                 EndpointV3Settings::disabled(),
@@ -1148,23 +811,13 @@ mod tests {
                 true,
             ),
             (
-                "v2 series rejected when series v3 enabled without validation",
+                "v2 series rejected when series v3 enabled",
                 EndpointV3Settings {
                     use_v3_series: true,
                     ..EndpointV3Settings::disabled()
                 },
                 Some(MetricsPayloadInfo::v2_series()),
                 false,
-            ),
-            (
-                "v2 series accepted when series validation mode duplicates to v2",
-                EndpointV3Settings {
-                    use_v3_series: true,
-                    series_validation_mode: true,
-                    ..EndpointV3Settings::disabled()
-                },
-                Some(MetricsPayloadInfo::v2_series()),
-                true,
             ),
             (
                 "v2 sketches accepted when sketches v3 disabled",
@@ -1173,23 +826,13 @@ mod tests {
                 true,
             ),
             (
-                "v2 sketches rejected when sketches v3 enabled without validation",
+                "v2 sketches rejected when sketches v3 enabled",
                 EndpointV3Settings {
                     use_v3_sketches: true,
                     ..EndpointV3Settings::disabled()
                 },
                 Some(MetricsPayloadInfo::v2_sketches()),
                 false,
-            ),
-            (
-                "v2 sketches accepted when sketches validation mode duplicates to v2",
-                EndpointV3Settings {
-                    use_v3_sketches: true,
-                    sketches_validation_mode: true,
-                    ..EndpointV3Settings::disabled()
-                },
-                Some(MetricsPayloadInfo::v2_sketches()),
-                true,
             ),
             (
                 "v3 series accepted when series v3 enabled",
@@ -1226,7 +869,6 @@ mod tests {
                 EndpointV3Settings {
                     use_v3_series: true,
                     use_v3_sketches: true,
-                    ..EndpointV3Settings::disabled()
                 },
                 None,
                 true,
@@ -1236,79 +878,6 @@ mod tests {
         for (name, settings, payload_info, expected) in cases {
             assert_eq!(settings.should_receive_payload(payload_info), expected, "{name}");
         }
-    }
-
-    #[test]
-    fn extract_site_from_url_matches_datadog_domains() {
-        assert_eq!(
-            Some("datadoghq.com".to_string()),
-            extract_site_from_url("https://1-2-3-agent.datadoghq.com/api/v2/series")
-        );
-        assert_eq!(
-            Some("us3.datadoghq.com".to_string()),
-            extract_site_from_url("https://intake.profile.us3.datadoghq.com/v1/input")
-        );
-        assert_eq!(None, extract_site_from_url("https://vector.example.test/api/v2/series"));
-    }
-
-    #[test]
-    fn shadow_payloads_are_endpoint_scoped() {
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let settings = EndpointV3Settings::from_endpoint_url(
-            resolved.configured_endpoint(),
-            resolved.endpoint(),
-            &[],
-            &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
-        );
-
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v2_shadow_series())));
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_shadow_series())));
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_shadow_series())));
-    }
-
-    #[test]
-    fn shadow_payloads_require_allowed_site_and_v2_authoritative_endpoint() {
-        let us3 = ResolvedEndpoint::from_raw_endpoint("https://app.us3.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let settings = EndpointV3Settings::from_endpoint_url(
-            us3.configured_endpoint(),
-            us3.endpoint(),
-            &[],
-            &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
-        );
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-
-        let settings = EndpointV3Settings::from_endpoint_url(
-            us3.configured_endpoint(),
-            us3.endpoint(),
-            &[],
-            &[],
-            false,
-            false,
-            &["us3.datadoghq.com".to_string()],
-        );
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-
-        let v3_series_endpoints = vec![us3.configured_endpoint().to_string()];
-        let settings = EndpointV3Settings::from_endpoint_url(
-            us3.configured_endpoint(),
-            us3.endpoint(),
-            &v3_series_endpoints,
-            &[],
-            false,
-            false,
-            &["us3.datadoghq.com".to_string()],
-        );
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
     }
 
     #[test]
@@ -1325,9 +894,6 @@ mod tests {
             resolved.endpoint(),
             &v3_series_endpoints,
             &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
         );
 
         assert!(settings.use_v3_series);
@@ -1338,15 +904,11 @@ mod tests {
     ) -> V3EndpointConfig<'a> {
         V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
-            resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint: None,
             series_config,
             metrics_primary_v3_override: None,
             serializer_v3_series_endpoints: &[],
             serializer_v3_sketches_endpoints: &[],
-            series_validate: false,
-            sketches_validate: false,
-            series_shadow_sites: &[],
         }
     }
 
@@ -1356,12 +918,8 @@ mod tests {
             .expect("endpoint should resolve");
         let series_config = agent_series_config();
 
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
         assert!(settings.use_v3_series);
-        assert!(!settings.series_shadow_mode);
     }
 
     #[test]
@@ -1373,10 +931,7 @@ mod tests {
             .endpoints
             .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Disabled);
 
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
         assert!(!settings.use_v3_series);
 
         series_config = UseV3ApiSeriesConfig {
@@ -1387,10 +942,7 @@ mod tests {
             .endpoints
             .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Enabled);
 
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
         assert!(settings.use_v3_series);
     }
 
@@ -1517,9 +1069,6 @@ mod tests {
             resolved.endpoint(),
             &v3_series_endpoints,
             &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
         );
 
         assert!(!settings.use_v3_series);
@@ -1535,9 +1084,6 @@ mod tests {
             resolved.endpoint(),
             &v3_series_endpoints,
             &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
         );
 
         assert!(!settings.use_v3_series);
@@ -1558,7 +1104,7 @@ mod tests {
         assert_eq!(
             "https://app.datadoghq.com",
             config
-                .build_primary_endpoint(None)
+                .build_primary_endpoint()
                 .expect("endpoint should resolve")
                 .configured_endpoint()
         );

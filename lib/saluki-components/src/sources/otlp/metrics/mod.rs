@@ -6,4 +6,5 @@ pub mod dimensions;
 pub mod internal;
 pub mod remap;
 pub mod runtime_metrics;
+pub mod telemetry;
 pub mod translator;

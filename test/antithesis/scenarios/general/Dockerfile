@@ -45,10 +45,7 @@ RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml
 # into SIGABRT, caught as a hard crash.
 # ---------------------------------------------------------------------------
 FROM build-base AS adp-builder
-ENV APP_FULL_NAME="Agent Data Plane" \
-    APP_SHORT_NAME="data-plane" \
-    APP_IDENTIFIER="adp" \
-    CARGO_PROFILE_RELEASE_LTO=off
+ENV CARGO_PROFILE_RELEASE_LTO=off
 WORKDIR /adp
 COPY . /adp
 # The sancov RUSTFLAGS are passed via `--config target.<triple>.rustflags` with an explicit
@@ -126,7 +123,7 @@ ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
 # ---------------------------------------------------------------------------
 FROM build-base AS agent-symbols
 # Version bumped by .github/workflows/update-agent-version.yml alongside .datadog-agent-version.
-ARG DD_AGENT_VERSION=7.82.1
+ARG DD_AGENT_VERSION=7.83.0
 ARG TARGETARCH=amd64
 RUN curl -fsSL -o /tmp/agent-dbg.deb \
         "https://s3.amazonaws.com/apt.datadoghq.com/pool/d/da/datadog-agent-dbg_${DD_AGENT_VERSION}-1_${TARGETARCH}.deb" && \

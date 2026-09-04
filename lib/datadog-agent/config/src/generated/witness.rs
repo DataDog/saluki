@@ -47,6 +47,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool);
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
+    fn consume_auth_token_file_path(&mut self, value: String);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
     fn consume_basic_telemetry_add_container_tags(&mut self, value: bool);
@@ -140,6 +141,7 @@ pub trait DatadogConfigWitness {
     fn consume_histogram_copy_to_distribution(&mut self, value: bool);
     fn consume_histogram_copy_to_distribution_prefix(&mut self, value: String);
     fn consume_histogram_percentiles(&mut self, value: Vec<String>);
+    fn consume_ipc_cert_file_path(&mut self, value: String);
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String);
     fn consume_log_file_max_rolls(&mut self, value: i64);
     fn consume_log_file_max_size(&mut self, value: String);
@@ -165,9 +167,11 @@ pub trait DatadogConfigWitness {
     fn consume_observability_pipelines_worker_metrics_use_v3_api_series(&mut self, value: bool);
     fn consume_origin_detection_unified(&mut self, value: bool);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
+    fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_histograms_send_aggregation_metrics(&mut self, value: bool);
+    fn consume_otlp_config_metrics_instrumentation_scope_metadata_as_tags(&mut self, value: bool);
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool);
     fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String);
@@ -175,9 +179,33 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String);
     fn consume_otlp_config_metrics_tags(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
+    fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_grpc_tls_cert_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_grpc_tls_key_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_cors_allowed_headers(&mut self, value: Vec<String>);
+    fn consume_otlp_config_receiver_protocols_http_cors_allowed_origins(&mut self, value: Vec<String>);
+    fn consume_otlp_config_receiver_protocols_http_cors_exposed_headers(&mut self, value: Vec<String>);
+    fn consume_otlp_config_receiver_protocols_http_cors_max_age(&mut self, value: Option<i64>);
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_max_request_body_size(&mut self, value: i64);
+    fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_http_tls_cert_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_http_tls_key_file(&mut self, value: Option<String>);
     fn consume_otlp_config_traces_enabled(&mut self, value: bool);
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64);
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
@@ -185,16 +213,11 @@ pub trait DatadogConfigWitness {
     fn consume_proxy_http(&mut self, value: String);
     fn consume_proxy_https(&mut self, value: String);
     fn consume_proxy_no_proxy(&mut self, value: Vec<String>);
+    fn consume_run_path(&mut self, value: String);
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
-    fn consume_serializer_experimental_use_v3_api_series_beta_route(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>);
-    fn consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(&mut self, value: f64);
-    fn consume_serializer_experimental_use_v3_api_series_shadow_sites(&mut self, value: Vec<String>);
-    fn consume_serializer_experimental_use_v3_api_series_use_beta(&mut self, value: bool);
-    fn consume_serializer_experimental_use_v3_api_series_validate(&mut self, value: bool);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
-    fn consume_serializer_experimental_use_v3_api_sketches_validate(&mut self, value: bool);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_points_per_payload(&mut self, value: i64);
@@ -303,6 +326,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
         config.apm_config.probabilistic_sampler.sampling_percentage.clone(),
     );
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
+    consumer.consume_auth_token_file_path(config.auth_token_file_path.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());
     consumer.consume_basic_telemetry_add_container_tags(config.basic_telemetry_add_container_tags.clone());
@@ -404,6 +428,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_histogram_copy_to_distribution(config.histogram_copy_to_distribution.clone());
     consumer.consume_histogram_copy_to_distribution_prefix(config.histogram_copy_to_distribution_prefix.clone());
     consumer.consume_histogram_percentiles(config.histogram_percentiles.clone());
+    consumer.consume_ipc_cert_file_path(config.ipc_cert_file_path.clone());
     consumer.consume_kubernetes_kubelet_nodename(config.kubernetes_kubelet_nodename.clone());
     consumer.consume_log_file_max_rolls(config.log_file_max_rolls.clone());
     consumer.consume_log_file_max_size(config.log_file_max_size.clone());
@@ -434,10 +459,18 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
+    consumer.consume_otlp_config_metrics_delta_ttl(config.otlp_config.metrics.delta_ttl.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());
     consumer.consume_otlp_config_metrics_histograms_mode(config.otlp_config.metrics.histograms.mode.clone());
     consumer.consume_otlp_config_metrics_histograms_send_aggregation_metrics(
         config.otlp_config.metrics.histograms.send_aggregation_metrics.clone(),
+    );
+    consumer.consume_otlp_config_metrics_instrumentation_scope_metadata_as_tags(
+        config
+            .otlp_config
+            .metrics
+            .instrumentation_scope_metadata_as_tags
+            .clone(),
     );
     consumer.consume_otlp_config_metrics_resource_attributes_as_tags(
         config.otlp_config.metrics.resource_attributes_as_tags.clone(),
@@ -459,14 +492,100 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(
         config.otlp_config.receiver.protocols.grpc.endpoint.clone(),
     );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .max_connection_age
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .max_connection_age_grace
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .time
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .timeout
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .max_concurrent_streams
+            .clone(),
+    );
     consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(
         config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_tls_ca_file(
+        config.otlp_config.receiver.protocols.grpc.tls.ca_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_tls_cert_file(
+        config.otlp_config.receiver.protocols.grpc.tls.cert_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_tls_key_file(
+        config.otlp_config.receiver.protocols.grpc.tls.key_file.clone(),
     );
     consumer.consume_otlp_config_receiver_protocols_grpc_transport(
         config.otlp_config.receiver.protocols.grpc.transport.clone(),
     );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_allowed_headers(
+        config.otlp_config.receiver.protocols.http.cors.allowed_headers.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_allowed_origins(
+        config.otlp_config.receiver.protocols.http.cors.allowed_origins.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_exposed_headers(
+        config.otlp_config.receiver.protocols.http.cors.exposed_headers.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_max_age(
+        config.otlp_config.receiver.protocols.http.cors.max_age.clone(),
+    );
     consumer.consume_otlp_config_receiver_protocols_http_endpoint(
         config.otlp_config.receiver.protocols.http.endpoint.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_max_request_body_size(
+        config.otlp_config.receiver.protocols.http.max_request_body_size.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_tls_ca_file(
+        config.otlp_config.receiver.protocols.http.tls.ca_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_tls_cert_file(
+        config.otlp_config.receiver.protocols.http.tls.cert_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_tls_key_file(
+        config.otlp_config.receiver.protocols.http.tls.key_file.clone(),
     );
     consumer.consume_otlp_config_traces_enabled(config.otlp_config.traces.enabled.clone());
     consumer.consume_otlp_config_traces_internal_port(config.otlp_config.traces.internal_port.clone());
@@ -482,37 +601,16 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_proxy_http(config.proxy.http.clone());
     consumer.consume_proxy_https(config.proxy.https.clone());
     consumer.consume_proxy_no_proxy(config.proxy.no_proxy.clone());
+    consumer.consume_run_path(config.run_path.clone());
     consumer.consume_serializer_compressor_kind(config.serializer_compressor_kind.clone());
     consumer.consume_serializer_experimental_use_v3_api_compression_level(
         config.serializer_experimental_use_v3_api.compression_level.clone(),
     );
-    consumer.consume_serializer_experimental_use_v3_api_series_beta_route(
-        config.serializer_experimental_use_v3_api.series.beta_route.clone(),
-    );
     consumer.consume_serializer_experimental_use_v3_api_series_endpoints(
         config.serializer_experimental_use_v3_api.series.endpoints.clone(),
     );
-    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(
-        config
-            .serializer_experimental_use_v3_api
-            .series
-            .shadow_sample_rate
-            .clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sites(
-        config.serializer_experimental_use_v3_api.series.shadow_sites.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_use_beta(
-        config.serializer_experimental_use_v3_api.series.use_beta.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_validate(
-        config.serializer_experimental_use_v3_api.series.validate.clone(),
-    );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_sketches_validate(
-        config.serializer_experimental_use_v3_api.sketches.validate.clone(),
     );
     consumer.consume_serializer_max_payload_size(config.serializer_max_payload_size.clone());
     consumer.consume_serializer_max_series_payload_size(config.serializer_max_series_payload_size.clone());

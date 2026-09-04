@@ -2,13 +2,13 @@
 
 use std::collections::HashSet;
 
+use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
@@ -17,31 +17,34 @@ use saluki_error::GenericError;
 use tokio::select;
 use tracing::{debug, error};
 
-use crate::config::MrfConfiguration;
-
-/// MRF metrics gateway transform configuration.
+/// Configuration for the MRF metrics gateway transform.
 ///
-/// This transform sits between the enrichment stage and the MRF-specific encoder/forwarder. It owns
-/// all routing and filtering decisions for the MRF metrics pipeline:
+/// This transform sits between the enrichment stage and the MRF-specific encoder/forwarder, and owns all routing and
+/// filtering decisions for the MRF metrics pipeline:
 ///
-/// - When MRF is disabled, all events are dropped.
-/// - When MRF is enabled with no allowlist, all events are forwarded.
-/// - When MRF is enabled with an allowlist, only matching events are forwarded.
-///
-/// The transform reads static MRF configuration from a snapshot taken at build time, and watches
-/// `multi_region_failover.failover_metrics` and `multi_region_failover.metric_allowlist` for
-/// dynamic updates.
+/// - When multi-region failover is off, or metric mirroring is off, all events are dropped.
+/// - When both are on and no allowlist is configured, all events are forwarded.
+/// - When both are on and an allowlist is configured, only events whose metric name is in the allowlist are forwarded.
 pub struct MrfMetricsGatewayConfiguration {
-    mrf_config: MrfConfiguration,
-    configuration: GenericConfiguration,
+    enabled: bool,
+    metric_mirroring: Live<MetricMirroring>,
 }
 
 impl MrfMetricsGatewayConfiguration {
-    /// Creates a new `MrfMetricsGatewayConfiguration` from the given [`MrfConfiguration`].
-    pub fn new(mrf_config: MrfConfiguration, configuration: GenericConfiguration) -> Self {
+    /// Creates a new `MrfMetricsGatewayConfiguration`.
+    ///
+    /// `enabled` is whether multi-region failover is on. It defaults to off in configuration and is read once, when
+    /// the topology is built, because the failover forwarder this transform feeds is wired at that point or not at all.
+    ///
+    /// `metric_mirroring` is whether metrics are mirrored to the failover region and which metric names are allowed to
+    /// be mirrored, defaulting to off and empty respectively. It is a live view: an operator can turn mirroring on, or
+    /// change the allowlist, without restarting, and the transform rebuilds its routing state from the new value. The
+    /// two settings arrive as one value, from one configuration version, so a rebuild cannot mix a fresh setting with a
+    /// stale one.
+    pub fn new(enabled: bool, metric_mirroring: Live<MetricMirroring>) -> Self {
         Self {
-            mrf_config,
-            configuration,
+            enabled,
+            metric_mirroring,
         }
     }
 }
@@ -49,52 +52,53 @@ impl MrfMetricsGatewayConfiguration {
 /// Routing and filtering state for the MRF metrics gateway.
 #[derive(Debug)]
 enum GatewayMode {
-    /// MRF is disabled or improperly configured; drop all events.
+    /// Multi-region failover is off, or metric mirroring is off; drop all events.
     Inactive,
-    /// MRF is active and no allowlist is configured; forward all events.
+    /// Mirroring is on and no allowlist is configured; forward all events.
     ForwardAll,
-    /// MRF is active and an allowlist is configured; forward only matching events.
+    /// Mirroring is on and an allowlist is configured; forward only matching events.
     FilteredForward { allowlist: HashSet<String> },
 }
 
-/// MRF metrics gateway transform.
-pub struct MrfMetricsGateway {
-    mrf_config: MrfConfiguration,
+/// The current settings, and the routing state they imply.
+///
+/// This holds the mirroring settings by value rather than as a view. The transform's run loop awaits the view and hands
+/// the new value here, so the routing state is always rebuilt from one configuration version: the two settings the mode
+/// is derived from cannot be a fresh value and a stale one.
+struct Routing {
+    enabled: bool,
+    metric_mirroring: MetricMirroring,
     mode: GatewayMode,
-    configuration: GenericConfiguration,
 }
 
-impl MrfMetricsGateway {
-    fn new(mrf_config: MrfConfiguration, configuration: GenericConfiguration) -> Self {
-        let mode = Self::mode_for_config(&mrf_config);
+impl Routing {
+    fn new(enabled: bool, metric_mirroring: MetricMirroring) -> Self {
+        let mut routing = Self {
+            enabled,
+            metric_mirroring,
+            mode: GatewayMode::Inactive,
+        };
+        routing.rebuild_mode();
 
-        Self {
-            mrf_config,
-            mode,
-            configuration,
-        }
+        routing
     }
 
-    fn mode_for_config(mrf_config: &MrfConfiguration) -> GatewayMode {
-        if !mrf_config.is_metrics_forwarding_requested() {
+    fn set_metric_mirroring(&mut self, metric_mirroring: MetricMirroring) {
+        self.metric_mirroring = metric_mirroring;
+        self.rebuild_mode();
+        debug!(mode = ?self.mode, "MRF metrics gateway routing state rebuilt.");
+    }
+
+    fn rebuild_mode(&mut self) {
+        self.mode = if !(self.enabled && self.metric_mirroring.enabled) {
             GatewayMode::Inactive
-        } else if mrf_config.metric_allowlist().is_empty() {
+        } else if self.metric_mirroring.allowlist.is_empty() {
             GatewayMode::ForwardAll
         } else {
             GatewayMode::FilteredForward {
-                allowlist: mrf_config.metric_allowlist().iter().cloned().collect(),
+                allowlist: self.metric_mirroring.allowlist.iter().cloned().collect(),
             }
-        }
-    }
-
-    fn update_failover_metrics(&mut self, failover_metrics: bool) {
-        self.mrf_config.set_failover_metrics(failover_metrics);
-        self.mode = Self::mode_for_config(&self.mrf_config);
-    }
-
-    fn update_metric_allowlist(&mut self, metric_allowlist: Vec<String>) {
-        self.mrf_config.set_metric_allowlist(metric_allowlist);
-        self.mode = Self::mode_for_config(&self.mrf_config);
+        };
     }
 
     fn should_forward(&self, event: &Event) -> bool {
@@ -129,13 +133,28 @@ impl MrfMetricsGateway {
     }
 }
 
+/// MRF metrics gateway transform.
+///
+/// Forwards the metrics permitted to reach the failover region and drops the rest, following the live mirroring
+/// settings it holds. It carries the view rather than a snapshot so that the run loop can await it.
+pub struct MrfMetricsGateway {
+    enabled: bool,
+    metric_mirroring: Live<MetricMirroring>,
+}
+
+impl MrfMetricsGateway {
+    fn new(config: &MrfMetricsGatewayConfiguration) -> Self {
+        Self {
+            enabled: config.enabled,
+            metric_mirroring: config.metric_mirroring.clone(),
+        }
+    }
+}
+
 #[async_trait]
 impl TransformBuilder for MrfMetricsGatewayConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        Ok(Box::new(MrfMetricsGateway::new(
-            self.mrf_config.clone(),
-            self.configuration.clone(),
-        )))
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        Ok(Box::new(MrfMetricsGateway::new(self)))
     }
 
     fn input_event_type(&self) -> EventType {
@@ -150,17 +169,19 @@ impl TransformBuilder for MrfMetricsGatewayConfiguration {
 
 impl MemoryBounds for MrfMetricsGatewayConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let allowlist = self.mrf_config.metric_allowlist();
+        let allowlist = &self.metric_mirroring.allowlist;
         builder
             .minimum()
             .with_single_value::<MrfMetricsGateway>("component struct")
             .with_fixed_amount("hashset overhead", std::mem::size_of::<HashSet<String>>())
             .with_fixed_amount(
+                // Three copies: the live view's snapshot, routing state, and hash set.
                 "allowlist strings",
                 allowlist
                     .iter()
                     .map(|name| name.len() + std::mem::size_of::<String>())
-                    .sum::<usize>(),
+                    .sum::<usize>()
+                    * 3,
             )
             .with_fixed_amount(
                 "hashset buckets",
@@ -171,24 +192,25 @@ impl MemoryBounds for MrfMetricsGatewayConfiguration {
 
 #[async_trait]
 impl Transform for MrfMetricsGateway {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+    async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
-        let mut failover_metrics_watcher = self
-            .configuration
-            .watch_for_updates("multi_region_failover.failover_metrics");
-        let mut metric_allowlist_watcher = self
-            .configuration
-            .watch_for_updates("multi_region_failover.metric_allowlist");
+        // The view is moved out of the transform because `select!` awaits it while an arm body updates the routing
+        // state; keeping the two apart is what lets both happen without borrowing the same value.
+        let Self {
+            enabled,
+            mut metric_mirroring,
+        } = *self;
+        let mut routing = Routing::new(enabled, (*metric_mirroring).clone());
 
         health.mark_ready();
-        debug!(mode = ?self.mode, "MRF metrics gateway transform started.");
+        debug!(mode = ?routing.mode, "MRF metrics gateway transform started.");
 
         loop {
             select! {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        if let Err(e) = self.process_event_batch(events, &mut context).await {
+                        if let Err(e) = routing.process_event_batch(events, &mut context).await {
                             error!(error = %e, "MRF metrics gateway failed to process event batch.");
                         }
                     }
@@ -197,15 +219,8 @@ impl Transform for MrfMetricsGateway {
                         break;
                     }
                 },
-                (_, maybe_failover_metrics) = failover_metrics_watcher.changed::<bool>() => {
-                    if let Some(failover_metrics) = maybe_failover_metrics {
-                        self.update_failover_metrics(failover_metrics);
-                    }
-                },
-                (_, maybe_metric_allowlist) = metric_allowlist_watcher.changed::<Vec<String>>() => {
-                    if let Some(metric_allowlist) = maybe_metric_allowlist {
-                        self.update_metric_allowlist(metric_allowlist);
-                    }
+                new_metric_mirroring = metric_mirroring.changed() => {
+                    routing.set_metric_mirroring(new_metric_mirroring);
                 },
             }
         }
@@ -217,133 +232,169 @@ impl Transform for MrfMetricsGateway {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::domains::multi_region_failover;
-    use saluki_config::{
-        dynamic::{ConfigSetting, ConfigUpdate},
-        ConfigurationLoader,
+    use std::{mem::size_of, sync::Arc};
+
+    use agent_data_plane_config::SalukiConfiguration;
+    use arc_swap::ArcSwap;
+    use saluki_core::{
+        accounting::ComponentRegistry,
+        data_model::event::{metric::Metric, Event},
+        support::SubsystemIdentifier,
     };
-    use saluki_core::data_model::event::{metric::Metric, Event};
-    use serde_json::json;
+    use tokio::sync::watch;
 
     use super::*;
 
-    /// Builds a gateway from resolved failover configuration, plus the live configuration it watches.
+    /// A configuration the tests can replace, plus the live view projected out of it.
     ///
-    /// The gateway tracks `multi_region_failover.failover_metrics` and
-    /// `multi_region_failover.metric_allowlist` through the live configuration, so a test that exercises
-    /// an update needs both views to describe the same starting state.
-    async fn dynamic_gateway_from_config(
-        mrf: multi_region_failover::Domain, value: serde_json::Value,
-    ) -> (MrfMetricsGateway, tokio::sync::mpsc::Sender<ConfigUpdate>) {
-        let (config, sender) = ConfigurationLoader::for_tests(Some(value), None, true).await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(ConfigUpdate::snapshot([]))
-            .await
-            .expect("initial dynamic snapshot should be sent");
-        config.ready().await;
+    /// This stands in for the configuration system: replacing the configuration and ticking the notification is what
+    /// the system does once it has translated an update.
+    struct LiveSource {
+        cell: Arc<ArcSwap<SalukiConfiguration>>,
+        tick: watch::Sender<()>,
+    }
 
-        let mrf_config = MrfConfiguration::from_configuration(&mrf);
-        (MrfMetricsGateway::new(mrf_config, config), sender)
+    impl LiveSource {
+        fn new(failover_metrics: bool, metric_allowlist: &[&str]) -> Self {
+            let (tick, _) = watch::channel(());
+
+            Self {
+                cell: Arc::new(ArcSwap::from_pointee(configuration(failover_metrics, metric_allowlist))),
+                tick,
+            }
+        }
+
+        fn metric_mirroring(&self) -> Live<MetricMirroring> {
+            Live::new_dynamic(Arc::clone(&self.cell), self.tick.subscribe(), |config| {
+                &config.domains.multi_region_failover.metric_mirroring
+            })
+        }
+
+        fn publish(&self, failover_metrics: bool, metric_allowlist: &[&str]) {
+            self.cell
+                .store(Arc::new(configuration(failover_metrics, metric_allowlist)));
+            self.tick.send(()).expect("a view still holds the receiver");
+        }
+    }
+
+    fn configuration(failover_metrics: bool, metric_allowlist: &[&str]) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        let mirroring = &mut config.domains.multi_region_failover.metric_mirroring;
+        mirroring.enabled = failover_metrics;
+        mirroring.allowlist = metric_allowlist.iter().map(|name| (*name).to_string()).collect();
+
+        config
+    }
+
+    /// Builds the routing state the transform starts from, the way `run` does.
+    fn routing(enabled: bool, source: &LiveSource) -> Routing {
+        let config = MrfMetricsGatewayConfiguration::new(enabled, source.metric_mirroring());
+        let gateway = MrfMetricsGateway::new(&config);
+
+        Routing::new(gateway.enabled, (*gateway.metric_mirroring).clone())
+    }
+
+    fn counter(name: &'static str) -> Event {
+        Event::Metric(Metric::counter(name, 1.0))
+    }
+
+    /// Waits for `view` to process the published update, failing the test rather than hanging.
+    async fn await_update<T>(view: &mut Live<T>) -> T
+    where
+        T: Clone + PartialEq + 'static,
+    {
+        tokio::time::timeout(std::time::Duration::from_secs(2), view.changed())
+            .await
+            .expect("the published update should reach the view")
+    }
+
+    #[test]
+    fn memory_bounds_include_all_allowlist_copies() {
+        let allowlist = ["allowed.metric", "also.allowed"];
+        let source = LiveSource::new(true, &allowlist);
+        let config = MrfMetricsGatewayConfiguration::new(true, source.metric_mirroring());
+
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        let allowlist_strings = allowlist
+            .iter()
+            .map(|name| name.len() + size_of::<String>())
+            .sum::<usize>();
+        let expected = size_of::<MrfMetricsGateway>()
+            + size_of::<HashSet<String>>()
+            + allowlist_strings * 3
+            + allowlist.len() * size_of::<Option<String>>() * 2;
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected);
     }
 
     #[tokio::test]
-    async fn failover_metrics_dynamic_update_toggles_forwarding() {
-        let (mut gw, sender) = dynamic_gateway_from_config(
-            multi_region_failover::Domain {
-                enabled: true,
-                failover_metrics: false,
-                api_key: Some("mrf-api-key".to_string()),
-                dd_url: Some("https://mrf.example.com".to_string()),
-                ..Default::default()
-            },
-            json!({
-                "multi_region_failover": {
-                    "enabled": true,
-                    "failover_metrics": false,
-                    "api_key": "mrf-api-key",
-                    "dd_url": "https://mrf.example.com"
-                }
-            }),
-        )
-        .await;
-        let mut watcher = gw
-            .configuration
-            .watch_for_updates("multi_region_failover.failover_metrics");
+    async fn failover_that_is_off_drops_everything() {
+        let source = LiveSource::new(true, &[]);
+        let routing = routing(false, &source);
 
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
-
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "multi_region_failover.failover_metrics",
-                json!(true),
-            )))
-            .await
-            .expect("dynamic update should be sent");
-        let (_, maybe_failover_metrics) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<bool>())
-                .await
-                .expect("failover metrics update should be received");
-        gw.update_failover_metrics(maybe_failover_metrics.expect("update should have a new value"));
-        assert!(gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
-
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "multi_region_failover.failover_metrics",
-                json!(false),
-            )))
-            .await
-            .expect("dynamic update should be sent");
-        let (_, maybe_failover_metrics) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<bool>())
-                .await
-                .expect("failover metrics update should be received");
-        gw.update_failover_metrics(maybe_failover_metrics.expect("update should have a new value"));
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
+        assert!(!routing.should_forward(&counter("any.metric")));
     }
 
     #[tokio::test]
-    async fn metric_allowlist_dynamic_update_changes_filtering() {
-        let (mut gw, sender) = dynamic_gateway_from_config(
-            multi_region_failover::Domain {
-                enabled: true,
-                failover_metrics: true,
-                api_key: Some("mrf-api-key".to_string()),
-                dd_url: Some("https://mrf.example.com".to_string()),
-                ..Default::default()
-            },
-            json!({
-                "multi_region_failover": {
-                    "enabled": true,
-                    "failover_metrics": true,
-                    "api_key": "mrf-api-key",
-                    "dd_url": "https://mrf.example.com"
-                }
-            }),
-        )
-        .await;
-        let mut watcher = gw
-            .configuration
-            .watch_for_updates("multi_region_failover.metric_allowlist");
+    async fn mirroring_that_is_off_drops_everything() {
+        let source = LiveSource::new(false, &[]);
+        let routing = routing(true, &source);
 
-        assert!(gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
-        assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));
+        assert!(!routing.should_forward(&counter("any.metric")));
+    }
 
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "multi_region_failover.metric_allowlist",
-                json!(["also.allowed"]),
-            )))
-            .await
-            .expect("dynamic update should be sent");
-        let (_, maybe_metric_allowlist) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<Vec<String>>())
-                .await
-                .expect("metric allowlist update should be received");
-        gw.update_metric_allowlist(maybe_metric_allowlist.expect("update should have a new value"));
+    #[tokio::test]
+    async fn an_empty_allowlist_forwards_everything() {
+        let source = LiveSource::new(true, &[]);
+        let routing = routing(true, &source);
 
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
-        assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));
-        assert!(!gw.should_forward(&Event::Metric(Metric::counter("blocked.metric", 1.0))));
+        assert!(routing.should_forward(&counter("any.metric")));
+    }
+
+    #[tokio::test]
+    async fn an_allowlist_forwards_only_matching_metrics() {
+        let source = LiveSource::new(true, &["allowed.metric"]);
+        let routing = routing(true, &source);
+
+        assert!(routing.should_forward(&counter("allowed.metric")));
+        assert!(!routing.should_forward(&counter("blocked.metric")));
+    }
+
+    #[tokio::test]
+    async fn a_mirroring_update_toggles_forwarding() {
+        let source = LiveSource::new(false, &[]);
+        let mut routing = routing(true, &source);
+        let mut view = source.metric_mirroring();
+
+        assert!(!routing.should_forward(&counter("any.metric")));
+
+        source.publish(true, &[]);
+        routing.set_metric_mirroring(await_update(&mut view).await);
+        assert!(routing.should_forward(&counter("any.metric")));
+
+        source.publish(false, &[]);
+        routing.set_metric_mirroring(await_update(&mut view).await);
+        assert!(!routing.should_forward(&counter("any.metric")));
+    }
+
+    #[tokio::test]
+    async fn an_allowlist_update_changes_filtering() {
+        let source = LiveSource::new(true, &[]);
+        let mut routing = routing(true, &source);
+        let mut view = source.metric_mirroring();
+
+        assert!(routing.should_forward(&counter("allowed.metric")));
+        assert!(routing.should_forward(&counter("also.allowed")));
+
+        source.publish(true, &["also.allowed"]);
+        routing.set_metric_mirroring(await_update(&mut view).await);
+
+        assert!(!routing.should_forward(&counter("allowed.metric")));
+        assert!(routing.should_forward(&counter("also.allowed")));
+        assert!(!routing.should_forward(&counter("blocked.metric")));
     }
 }

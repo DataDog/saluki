@@ -64,6 +64,10 @@ pub struct DatadogConfiguration {
     pub apm_config: ApmConfig,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub auth_token_file_path: String,
+
+    #[serde(default)]
     pub autoscaling: Autoscaling,
 
     #[serde(default)]
@@ -137,8 +141,6 @@ pub struct DatadogConfiguration {
     pub dogstatsd_expiry_seconds: i64,
 
     #[serde(default)]
-    /// Alias defined in schema overlay.
-    #[serde(alias = "aggregate_flush_open_windows")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_flush_incomplete_buckets: bool,
 
@@ -163,6 +165,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_mapper_cache_size: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub dogstatsd_mapper_profiles: Vec<::serde_json::Value>,
 
     #[serde(default)]
@@ -363,6 +366,10 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub ipc_cert_file_path: String,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub kubernetes_kubelet_nodename: String,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
@@ -406,6 +413,7 @@ pub struct DatadogConfiguration {
     pub metric_filterlist_match_prefix: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub metric_tag_filterlist: Vec<::serde_json::Value>,
 
     #[serde(default = "defaults::datadog_configuration_min_tls_version")]
@@ -435,6 +443,10 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     pub proxy: Proxy,
+
+    #[serde(default = "defaults::datadog_configuration_run_path")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub run_path: String,
 
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
@@ -556,6 +568,7 @@ impl Default for DatadogConfiguration {
             allow_arbitrary_tags: Default::default(),
             api_key: Default::default(),
             apm_config: Default::default(),
+            auth_token_file_path: Default::default(),
             autoscaling: Default::default(),
             basic_telemetry_add_container_tags: Default::default(),
             bind_host: Default::default(),
@@ -635,6 +648,7 @@ impl Default for DatadogConfiguration {
             histogram_copy_to_distribution: Default::default(),
             histogram_copy_to_distribution_prefix: Default::default(),
             histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
+            ipc_cert_file_path: Default::default(),
             kubernetes_kubelet_nodename: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
             log_file_max_size: defaults::datadog_configuration_log_file_max_size(),
@@ -655,6 +669,7 @@ impl Default for DatadogConfiguration {
             otlp_config: Default::default(),
             provider_kind: Default::default(),
             proxy: Default::default(),
+            run_path: defaults::datadog_configuration_run_path(),
             serializer_compressor_kind: defaults::datadog_configuration_serializer_compressor_kind(),
             serializer_experimental_use_v3_api: Default::default(),
             serializer_max_payload_size: defaults::default_u64::<i64, 2621440>(),
@@ -1461,12 +1476,20 @@ impl Default for OtlpConfigLogs {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigMetrics {
+    #[serde(default = "defaults::default_u64::<i64, 3600>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub delta_ttl: i64,
+
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
     pub histograms: OtlpConfigMetricsHistograms,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub instrumentation_scope_metadata_as_tags: bool,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
@@ -1492,8 +1515,10 @@ pub struct OtlpConfigMetrics {
 impl Default for OtlpConfigMetrics {
     fn default() -> Self {
         Self {
+            delta_ttl: defaults::default_u64::<i64, 3600>(),
             enabled: defaults::default_bool::<true>(),
             histograms: Default::default(),
+            instrumentation_scope_metadata_as_tags: defaults::default_bool::<true>(),
             resource_attributes_as_tags: Default::default(),
             summaries: Default::default(),
             sums: Default::default(),
@@ -1607,8 +1632,18 @@ pub struct OtlpConfigReceiverProtocolsGrpc {
     pub endpoint: String,
 
     #[serde(default)]
+    pub keepalive: OtlpConfigReceiverProtocolsGrpcKeepalive,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_concurrent_streams: i64,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_recv_msg_size_mib: i64,
+
+    #[serde(default)]
+    pub tls: OtlpConfigReceiverProtocolsGrpcTls,
 
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport"
@@ -1621,25 +1656,177 @@ impl Default for OtlpConfigReceiverProtocolsGrpc {
     fn default() -> Self {
         Self {
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint(),
+            keepalive: Default::default(),
+            max_concurrent_streams: Default::default(),
             max_recv_msg_size_mib: Default::default(),
+            tls: Default::default(),
             transport: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport(),
         }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcKeepalive {
+    #[serde(default)]
+    pub server_parameters: OtlpConfigReceiverProtocolsGrpcKeepaliveServerParameters,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcKeepalive {
+    fn default() -> Self {
+        Self {
+            server_parameters: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcKeepaliveServerParameters {
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub max_connection_age: std::time::Duration,
+
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub max_connection_age_grace: std::time::Duration,
+
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub time: std::time::Duration,
+
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub timeout: std::time::Duration,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcKeepaliveServerParameters {
+    fn default() -> Self {
+        Self {
+            max_connection_age: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(),
+            max_connection_age_grace: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(),
+            time: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(),
+            timeout: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcTls {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub ca_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub cert_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub key_file: Option<String>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcTls {
+    fn default() -> Self {
+        Self {
+            ca_file: Default::default(),
+            cert_file: Default::default(),
+            key_file: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigReceiverProtocolsHttp {
+    #[serde(default)]
+    pub cors: OtlpConfigReceiverProtocolsHttpCors,
+
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint"
     )]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub endpoint: String,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_request_body_size: i64,
+
+    #[serde(default)]
+    pub tls: OtlpConfigReceiverProtocolsHttpTls,
 }
 
 impl Default for OtlpConfigReceiverProtocolsHttp {
     fn default() -> Self {
         Self {
+            cors: Default::default(),
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
+            max_request_body_size: Default::default(),
+            tls: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsHttpCors {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub allowed_headers: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub allowed_origins: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub exposed_headers: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_i64")]
+    pub max_age: Option<i64>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsHttpCors {
+    fn default() -> Self {
+        Self {
+            allowed_headers: Default::default(),
+            allowed_origins: Default::default(),
+            exposed_headers: Default::default(),
+            max_age: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsHttpTls {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub ca_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub cert_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub key_file: Option<String>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsHttpTls {
+    fn default() -> Self {
+        Self {
+            ca_file: Default::default(),
+            cert_file: Default::default(),
+            key_file: Default::default(),
         }
     }
 }
@@ -1735,46 +1922,15 @@ impl Default for SerializerExperimentalUseV3Api {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3ApiSeries {
-    #[serde(
-        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route"
-    )]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
-    pub beta_route: String,
-
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
-
-    #[serde(
-        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate"
-    )]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
-    pub shadow_sample_rate: f64,
-
-    #[serde(
-        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites"
-    )]
-    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
-    pub shadow_sites: Vec<String>,
-
-    #[serde(default)]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub use_beta: bool,
-
-    #[serde(default)]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub validate: bool,
 }
 
 impl Default for SerializerExperimentalUseV3ApiSeries {
     fn default() -> Self {
         Self {
-            beta_route: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route(),
             endpoints: Default::default(),
-            shadow_sample_rate: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate(),
-            shadow_sites: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites(),
-            use_beta: Default::default(),
-            validate: Default::default(),
         }
     }
 }
@@ -1784,17 +1940,12 @@ pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
-
-    #[serde(default)]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
-    pub validate: bool,
 }
 
 impl Default for SerializerExperimentalUseV3ApiSketches {
     fn default() -> Self {
         Self {
             endpoints: Default::default(),
-            validate: Default::default(),
         }
     }
 }
@@ -1971,6 +2122,9 @@ pub mod defaults {
     pub(super) fn datadog_configuration_min_tls_version() -> String {
         "tlsv1.2".to_string()
     }
+    pub(super) fn datadog_configuration_run_path() -> String {
+        "${run_path}".to_string()
+    }
     pub(super) fn datadog_configuration_serializer_compressor_kind() -> String {
         "zstd".to_string()
     }
@@ -2058,17 +2212,6 @@ pub mod defaults {
     pub(super) fn datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage() -> f64 {
         100_f64
     }
-    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_series_beta_route() -> String {
-        "/api/intake/metrics/v3beta/series".to_string()
-    }
-    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate() -> f64 {
-        0_f64
-    }
-    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites() -> Vec<
-        String,
-    > {
-        vec!["datadoghq.com".to_string()]
-    }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
         "datadog_only".to_string()
     }
@@ -2076,6 +2219,18 @@ pub mod defaults {
 
 mod duration_defaults {
     pub(super) fn expected_tags_duration() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout() -> std::time::Duration {
         std::time::Duration::from_nanos(0)
     }
     pub(super) fn tls_handshake_timeout() -> std::time::Duration {

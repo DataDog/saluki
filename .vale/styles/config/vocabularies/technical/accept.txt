@@ -54,6 +54,7 @@ tagset(s?)
 noop
 bitset(s?)
 uuid(s?)
+temporality
 fargate
 mysql
 sqlite
@@ -245,6 +246,8 @@ OTP
 respawn(s|ed|ing)?
 validator
 varint
+fixint
+fixstr
 serializer
 backreference(s)?
 Miri
@@ -261,9 +264,13 @@ subprocess(es)?
 PR
 uninterrupible
 keepalive
+SDK(s?)
+untrusted
 recurse
 recurses
 otlpreceiver
 configgrpc
 configtls
 keyspace
+Kueue
+plaintext

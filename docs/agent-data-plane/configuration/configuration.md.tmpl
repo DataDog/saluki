@@ -19,14 +19,14 @@ If you find an error on this page, please [open an issue].
 
 ## Unsupported Settings
 
-<!-- section:unsupported-in-progress -->
+{{ if working_on_table }}<!-- section:unsupported-in-progress -->
 ### Being Worked On
 
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
 { working_on_table }
-<!-- section:unsupported-not-planned -->
+{{ endif }}<!-- section:unsupported-not-planned -->
 ### Not Planned
 
 The following settings exist in the core agent but are not planned for ADP, typically because ADP's
@@ -70,6 +70,22 @@ To enable syslog logging, set `log_to_syslog: true`. Console logging remains con
 while syslog logging is enabled, ADP uses the platform default local syslog socket:
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
+
+### DogStatsD metric blocklists
+
+A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
+uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
+restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
+
+Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
+changes to any of these settings update filtering.
+
+Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+matched as written, so an entry that is not itself a normalized name matches nothing. Metric names
+the intake rejects outright, meaning empty names, names longer than 350 bytes, and names containing
+no ASCII letter, never match.
 
 ### UDS origin detection on macOS
 

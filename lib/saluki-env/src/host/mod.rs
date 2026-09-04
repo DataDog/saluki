@@ -7,12 +7,13 @@
 pub mod providers;
 
 use async_trait::async_trait;
+use saluki_error::GenericError;
 
 /// Provides information about the process host itself.
 #[async_trait]
 pub trait HostProvider {
     /// Errors produced by the provider.
-    type Error;
+    type Error: Into<GenericError>;
 
     /// Gets the hostname of the process host.
     ///

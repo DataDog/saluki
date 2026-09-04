@@ -8,7 +8,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         decoders::{Decoder, DecoderBuilder, DecoderContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
@@ -49,8 +49,8 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
         EventType::Trace
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
-        let metrics = build_metrics(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
+        let metrics = build_metrics(context.component_context());
         let traces_translator = OtlpTracesTranslator::new(self.traces.clone());
 
         Ok(Box::new(OtlpDecoder {

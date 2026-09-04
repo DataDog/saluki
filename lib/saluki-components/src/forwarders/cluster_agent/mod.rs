@@ -8,10 +8,9 @@ use http::{
     HeaderName, HeaderValue, Request, Uri,
 };
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
-    components::{forwarders::*, ComponentContext},
+    components::{forwarders::*, BuildContext},
     data_model::payload::PayloadType,
     observability::ComponentMetricsExt as _,
 };
@@ -22,6 +21,7 @@ use tokio::select;
 use tracing::debug;
 
 use crate::common::datadog::{
+    api_key::LiveApiKeys,
     config::ForwarderConfiguration,
     endpoints::{ResolvedEndpoint, SingleDestination},
     io::{EndpointRequestMapper, EndpointRequestMapperFactory, TransactionForwarder},
@@ -55,17 +55,16 @@ impl ClusterAgentForwarderConfiguration {
     ///
     /// Returns an error if the bearer token cannot be represented in an HTTP header.
     pub fn from_configuration(
-        shared: &SharedConfiguration, config: &GenericConfiguration, endpoint_url: String, auth_token: String,
+        shared: &SharedConfiguration, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
         let destination = SingleDestination {
             url: endpoint_url,
             api_key: auth_token,
-            api_key_refresh_config_path: None,
             accepts_v3_series: false,
         };
-        let forwarder_config = ForwarderConfiguration::for_single_destination(shared, config, &destination)
-            .with_allow_arbitrary_tags(false);
+        let forwarder_config =
+            ForwarderConfiguration::for_single_destination(shared, &destination).with_allow_arbitrary_tags(false);
 
         Ok(Self {
             forwarder_config,
@@ -80,14 +79,16 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let endpoint_request_mapper_factory = cluster_agent_request_mapper_factory(self.auth_header_value.clone());
         let forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
-            context,
+            context.component_context().clone(),
             self.forwarder_config.clone(),
             None,
+            // The bearer token is not a configured API key, so nothing refreshes it.
+            &LiveApiKeys::default(),
             get_cluster_agent_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -215,7 +216,6 @@ mod tests {
         ConfigValue,
     };
     use http::Method;
-    use saluki_config::ConfigurationLoader;
 
     use super::*;
     use crate::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
@@ -257,7 +257,6 @@ mod tests {
         // Every configured Datadog intake setting here conflicts with the Cluster Agent destination:
         // a different API key, an explicit `dd_url`, a `site`, an additional endpoint, an alternate
         // metrics intake, and V3 series routing. None of them may reach the built forwarder.
-        let (raw_config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let mut shared = shared_configuration();
         shared.endpoints.api_key = "primary-api-key".to_string();
         shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
@@ -274,26 +273,20 @@ mod tests {
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
         shared.metrics_encoding.v3_series_endpoint_modes =
             HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
-        shared.metrics_encoding.v3_api.series.shadow_sites = vec!["example.com".to_string()];
 
         // The same configuration drives a plain Datadog forwarder, which does honor all of it.
-        let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared, &raw_config);
+        let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared);
         assert_eq!(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
-        assert_eq!(
-            &["example.com".to_string()],
-            datadog_forwarder.v3_api().series.shadow_sites.as_slice()
-        );
 
         let config = ClusterAgentForwarderConfiguration::from_configuration(
             &shared,
-            &raw_config,
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )
         .expect("Cluster Agent forwarder configuration should parse");
         let endpoints = config
             .forwarder_config
-            .build_routable_endpoints(None)
+            .build_routable_endpoints()
             .expect("endpoint should resolve");
 
         assert_eq!(endpoints.len(), 1);
@@ -302,14 +295,13 @@ mod tests {
             endpoints[0].endpoint().endpoint().as_str(),
             "https://cluster-agent.example.com/"
         );
-        assert_eq!(endpoints[0].endpoint().cached_api_key(), "secret-token");
+        assert_eq!(&*endpoints[0].endpoint().api_key(), "secret-token");
         assert_eq!(
             V3SeriesMode::Disabled,
             config.forwarder_config.use_v3_api_series().enabled
         );
         assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
-        assert!(config.forwarder_config.v3_api().series.shadow_sites.is_empty());
         assert!(!config.forwarder_config.allow_arbitrary_tags());
     }
 }

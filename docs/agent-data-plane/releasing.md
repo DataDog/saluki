@@ -29,6 +29,10 @@ The release process for ADP roughly looks like this:
 - If there are any additional notes that should be included, add a new section, called `Additional Notes`, at the top of
   the release notes. (above the auto-generated `What's Changed` section)
 - Click `Publish release`.
+- Confirm that the GitHub `Release notes` workflow for the tag succeeds. It adds curated release notes above GitHub's
+  generated `What's Changed` pull request list. Do this before publishing release artifacts or announcing the release.
+  The workflow cannot repair releases whose tags predate `releasenotes/config.yaml`; these releases do not receive
+  curated notes for prior releases.
 - Go to the [GitLab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
   find the pipeline that was triggered for the newly created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
@@ -81,14 +85,16 @@ during the build process and is used to drive a number of behaviors:
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup
 - special constant identifiers that are used to populate things like HTTP request headers (user agent, etc)
 
-This build metadata is calculated with a Make target—`emit-build-metadata`—which populates it during local builds or
+This build metadata is calculated with a Make target—`emit-adp-build-metadata`—which populates it during local builds or
 regular CI builds. The relevant build arguments are all prefixed with `APP_` and are as follows:
 
-- `APP_FULL_NAME`: the full name of the application (hard-coded to `agent-data-plane`)
-- `APP_SHORT_NAME`: the short name of the application (hard-coded to `data-plane`)
-- `APP_IDENTIFIER`: a short identifier for the application (hard-coded to `adp`)
-- `APP_VERSION`: the version of the application (set to `version` field in `bin/agent-data-plane/Cargo.toml`)
-- `APP_BUILD_DATE`: the date the build was performed (set to the creation time of the GitLab CI pipeline)
+- `APP_GIT_HASH`: the Git commit the build was performed from (set to the GitLab CI commit SHA)
+- `APP_BUILD_TIME`: the time the build was performed (set to the creation time of the GitLab CI pipeline)
+- `APP_DEV_BUILD`: whether this is a development build (set to `false` only for tag pipelines)
+
+Note that `APP_DEV_BUILD` also acts as a safety check: when it is `false`, `saluki-metadata`'s build script fails the
+build if any of the values above are missing or still hold their placeholder defaults. This keeps a release binary from
+silently shipping metadata that reports `unknown`.
 
 This build metadata shouldn't need to be manually changed on a per-release basis, and so this section is mostly
 informational and not relevant to the release process itself.

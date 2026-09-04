@@ -57,11 +57,8 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 Invoke-Native docker version
 
 Write-Host "[*] Building Panoramic and Agent Data Plane for Windows..."
-# saluki-metadata reads these at build time. They must match the values that
-# the Linux Makefile passes through, otherwise ADP's log subagent prefix
-# renders as "UNKNOWN" instead of "DATAPLANE".
-$env:APP_FULL_NAME = "Agent Data Plane"
-$env:APP_SHORT_NAME = "data-plane"
+# Windows PowerShell 5.1 doesn't have Get-Date's -AsUTC switch (added in PS 7.1).
+$env:APP_BUILD_TIME = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 if (-not $env:APP_GIT_HASH) {
     $env:APP_GIT_HASH = if ($env:CI_COMMIT_SHA) {
         $env:CI_COMMIT_SHA.Substring(0, [Math]::Min(7, $env:CI_COMMIT_SHA.Length))

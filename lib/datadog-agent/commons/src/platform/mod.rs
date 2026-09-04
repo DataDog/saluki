@@ -61,7 +61,7 @@ impl PlatformSettings {
 
     /// Returns the default local syslog URI used by the Datadog Agent on this platform.
     pub const fn get_default_syslog_uri() -> &'static str {
-        DATADOG_AGENT_DEFAULT_SYSLOG_URI
+        get_default_syslog_uri()
     }
 
     fn get_log_dir_path() -> &'static Path {

@@ -66,14 +66,72 @@
 // TODO: consider separating these into their own namespace, SALUKI_* and saluki.yaml
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    fmt,
+    marker::PhantomData,
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 
 use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
+use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use bytesize::ByteSize;
 use saluki_config::DurationString;
+use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
+
+// The environment path recorder recognizes this serde newtype marker and decodes the leaf as JSON.
+pub(crate) const JSON_SEQUENCE_MARKER: &str = "SalukiJsonSequence";
+
+/// Marks a structured sequence that environment configuration encodes as JSON rather than a string list.
+#[derive(Clone, Debug)]
+struct JsonSequence<T>(Vec<T>);
+
+impl<'de, T> Deserialize<'de> for JsonSequence<T>
+where
+    T: Deserialize<'de> + ValidateJsonSequence,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_newtype_struct(JSON_SEQUENCE_MARKER, JsonSequenceVisitor(PhantomData))
+    }
+}
+
+struct JsonSequenceVisitor<T>(PhantomData<T>);
+
+impl<'de, T> Visitor<'de> for JsonSequenceVisitor<T>
+where
+    T: Deserialize<'de> + ValidateJsonSequence,
+{
+    type Value = JsonSequence<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a sequence")
+    }
+
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let entries = Vec::deserialize(deserializer)?;
+        T::validate_sequence(&entries).map_err(serde::de::Error::custom)?;
+        Ok(JsonSequence(entries))
+    }
+}
+
+trait ValidateJsonSequence: Sized {
+    fn validate_sequence(entries: &[Self]) -> Result<(), String>;
+}
+
+impl ValidateJsonSequence for MetricTagValueAllowlistEntry {
+    fn validate_sequence(entries: &[Self]) -> Result<(), String> {
+        validate_metric_tag_value_allowlists(entries).map_err(|error| error.to_string())
+    }
+}
 
 /// The parsed Saluki-schema-only configuration, shaped to mirror the source key hierarchy.
 ///
@@ -126,18 +184,21 @@ pub struct SalukiOnly {
     pub dogstatsd_allow_context_heap_allocs: Option<bool>,
     /// Floor for metric sample rates (`dogstatsd_minimum_sample_rate`).
     pub dogstatsd_minimum_sample_rate: Option<f64>,
-    /// Mapper string interner entry count (`dogstatsd_mapper_string_interner_size`).
-    pub dogstatsd_mapper_string_interner_size: Option<u64>,
+    /// Mapper string interner byte capacity (`dogstatsd_mapper_string_interner_size`).
+    #[serde(deserialize_with = "deserialize_optional_nonzero_byte_size")]
+    pub dogstatsd_mapper_string_interner_size: Option<NonZeroUsize>,
+    /// Per-metric tag value allow-list rules (`metric_tag_value_allowlist`).
+    metric_tag_value_allowlist: Option<JsonSequence<MetricTagValueAllowlistEntry>>,
 
     // ── aggregation keys (all top-level) ──────────────────────────────────────
     /// Aggregation window size, in seconds (`aggregate_window_duration_seconds`).
-    pub aggregate_window_duration_seconds: Option<u64>,
+    ///
+    /// A window of zero seconds cannot be aggregated into, so `0` is rejected here.
+    pub aggregate_window_duration_seconds: Option<NonZeroU64>,
     /// Maximum contexts per aggregation window (`aggregate_context_limit`).
     pub aggregate_context_limit: Option<usize>,
     /// Aggregator flush period (`aggregate_flush_interval`).
     pub aggregate_flush_interval: Option<DurationString>,
-    /// Whether open aggregation windows are flushed (`aggregate_flush_open_windows`).
-    pub aggregate_flush_open_windows: Option<bool>,
     /// Passthrough idle flush delay (`aggregate_passthrough_idle_flush_timeout`).
     pub aggregate_passthrough_idle_flush_timeout: Option<DurationString>,
 
@@ -304,21 +365,35 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     pub transport: Option<String>,
 }
 
-fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
+fn byte_size_to_bounded_nonzero_usize<E>(size: ByteSize) -> Result<NonZeroUsize, E>
 where
-    D: Deserializer<'de>,
+    E: serde::de::Error,
 {
-    let size = ByteSize::deserialize(deserializer)?;
-    let bytes = usize::try_from(size.as_u64()).map_err(serde::de::Error::custom)?;
-    let size =
-        NonZeroUsize::new(bytes).ok_or_else(|| serde::de::Error::custom("value of bytes must be greater than zero"))?;
+    let bytes = usize::try_from(size.as_u64()).map_err(E::custom)?;
+    let size = NonZeroUsize::new(bytes).ok_or_else(|| E::custom("value of bytes must be greater than zero"))?;
     if size > MAX_STRING_INTERNER_SIZE_BYTES {
-        return Err(serde::de::Error::custom(format!(
+        return Err(E::custom(format!(
             "value of bytes must not exceed {} bytes",
             MAX_STRING_INTERNER_SIZE_BYTES
         )));
     }
     Ok(size)
+}
+
+fn deserialize_optional_nonzero_byte_size<'de, D>(deserializer: D) -> Result<Option<NonZeroUsize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<ByteSize>::deserialize(deserializer)?
+        .map(byte_size_to_bounded_nonzero_usize)
+        .transpose()
+}
+
+fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    byte_size_to_bounded_nonzero_usize(ByteSize::deserialize(deserializer)?)
 }
 
 /// `otlp_config.traces.*`.
@@ -439,11 +514,11 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
-        // Carried as a separate field rather than folded into `zstd_compressor_level`: the encoders
-        // still resolve the two against each other, and keeping one copy of that precedence rule
-        // matters more than collapsing the fields early.
-        config.shared.endpoints.compression.zstd_compressor_level_override =
-            self.data_plane.serializer_zstd_compressor_level;
+        // Highest precedence of the three inputs `Compression::zstd_compressor_level` resolves, so it
+        // is explicit when set and keeps ADP's default otherwise.
+        if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
+            config.shared.endpoints.compression.adp_zstd_level = ConfigValue::explicit(v);
+        }
 
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
@@ -478,7 +553,10 @@ impl SalukiOnly {
             dsd.contexts.minimum_sample_rate = v;
         }
         if let Some(v) = self.dogstatsd_mapper_string_interner_size {
-            dsd.mapper.string_interner_size = v;
+            dsd.mapper.string_interner_size_bytes = v;
+        }
+        if let Some(entries) = &self.metric_tag_value_allowlist {
+            dsd.tag_value_allowlist.clone_from(&entries.0);
         }
         if let Some(v) = self.aggregate_window_duration_seconds {
             dsd.aggregation.window_duration_seconds = v;
@@ -488,9 +566,6 @@ impl SalukiOnly {
         }
         if let Some(v) = self.aggregate_flush_interval {
             dsd.aggregation.flush_interval = v.as_duration();
-        }
-        if let Some(v) = self.aggregate_flush_open_windows {
-            dsd.aggregation.flush_open_windows = v;
         }
         if let Some(v) = self.aggregate_passthrough_idle_flush_timeout {
             dsd.aggregation.passthrough_idle_flush_timeout = v.as_duration();
@@ -591,9 +666,12 @@ impl SalukiOnly {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::defaults::{
+        DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
         DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY,
         DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+        MAX_STRING_INTERNER_SIZE_BYTES,
     };
+    use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
     use serde_json::json;
 
     use super::*;
@@ -625,11 +703,17 @@ mod tests {
             "dogstatsd_allow_context_heap_allocs": true,
             "dogstatsd_minimum_sample_rate": 0.25,
             "dogstatsd_mapper_string_interner_size": 2048,
+            "metric_tag_value_allowlist": [{
+                "metric_prefix": "requests.",
+                "tag_name": "customer_id",
+                "values": ["customer-1", "customer-2"],
+                "on_miss": "replace",
+                "replacement": "other"
+            }],
             // aggregation
             "aggregate_window_duration_seconds": 30,
             "aggregate_context_limit": 250000,
             "aggregate_flush_interval": "20s",
-            "aggregate_flush_open_windows": true,
             "aggregate_passthrough_idle_flush_timeout": "2s",
             // otlp metric contexts
             "otlp_allow_context_heap_allocs": true,
@@ -694,10 +778,7 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert_eq!(
-            config.shared.endpoints.compression.zstd_compressor_level_override,
-            Some(9)
-        );
+        assert_eq!(config.shared.endpoints.compression.effective_zstd_level(), 9);
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
@@ -711,11 +792,17 @@ mod tests {
         assert_eq!(dsd.contexts.string_interner_size_bytes, Some(1_048_576));
         assert!(dsd.contexts.allow_context_heap_allocs);
         assert_eq!(dsd.contexts.minimum_sample_rate, 0.25);
-        assert_eq!(dsd.mapper.string_interner_size, 2048);
-        assert_eq!(dsd.aggregation.window_duration_seconds, 30);
+        assert_eq!(dsd.mapper.string_interner_size_bytes.get(), 2048);
+        assert_eq!(dsd.tag_value_allowlist.len(), 1);
+        let allowlist = &dsd.tag_value_allowlist[0];
+        assert_eq!(allowlist.metric_prefix, "requests.");
+        assert_eq!(allowlist.tag_name, "customer_id");
+        assert_eq!(allowlist.values, ["customer-1", "customer-2"]);
+        assert_eq!(allowlist.on_miss, TagValueMismatchAction::Replace);
+        assert_eq!(allowlist.replacement, "other");
+        assert_eq!(dsd.aggregation.window_duration_seconds, NonZeroU64::new(30).unwrap());
         assert_eq!(dsd.aggregation.context_limit, 250_000);
         assert_eq!(dsd.aggregation.flush_interval, Duration::from_secs(20));
-        assert!(dsd.aggregation.flush_open_windows);
         assert_eq!(dsd.aggregation.passthrough_idle_flush_timeout, Duration::from_secs(2));
 
         // domains.otlp
@@ -788,6 +875,47 @@ mod tests {
                 "an unrecognized error_mode value must be a deserialization error, not a silent default"
             );
         }
+    }
+
+    /// Nothing can be aggregated into a zero-length window, so the source rejects `0` rather than
+    /// seeding a window the aggregate transform cannot use.
+    #[test]
+    fn a_zero_aggregation_window_is_rejected() {
+        let result: Result<SalukiOnly, _> = serde_json::from_value(json!({ "aggregate_window_duration_seconds": 0 }));
+        assert!(
+            result.is_err(),
+            "a zero-length aggregation window must be a deserialization error"
+        );
+    }
+
+    #[test]
+    fn mapper_string_interner_size_accepts_bytes_or_a_byte_size_string() {
+        for (value, expected) in [(json!(2048), 2048), (json!("64KiB"), 64 * 1024)] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(json!({ "dogstatsd_mapper_string_interner_size": value }))
+                    .expect("mapper string interner size should deserialize");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.dogstatsd.mapper.string_interner_size_bytes.get(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_mapper_string_interner_size_is_rejected() {
+        let result: Result<SalukiOnly, _> =
+            serde_json::from_value(json!({ "dogstatsd_mapper_string_interner_size": 0 }));
+        assert!(result.is_err(), "a zero mapper string interner must be rejected");
+    }
+
+    #[test]
+    fn an_oversized_mapper_string_interner_size_is_rejected() {
+        let result: Result<SalukiOnly, _> = serde_json::from_value(json!({
+            "dogstatsd_mapper_string_interner_size": MAX_STRING_INTERNER_SIZE_BYTES.get() + 1
+        }));
+        assert!(result.is_err(), "an oversized mapper string interner must be rejected");
     }
 
     /// An unknown field under `ottl_filter_config` or `ottl_transform_config` must fail
@@ -867,10 +995,14 @@ mod tests {
         saluki_only.seed(&mut config);
 
         let agg = &config.domains.dogstatsd.aggregation;
-        assert_eq!(agg.window_duration_seconds, 10);
+        assert_eq!(agg.window_duration_seconds, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS);
         assert_eq!(agg.context_limit, 1_000_000);
         assert_eq!(agg.flush_interval, Duration::from_secs(15));
         assert_eq!(agg.passthrough_idle_flush_timeout, Duration::from_secs(1));
+        assert_eq!(
+            config.domains.dogstatsd.mapper.string_interner_size_bytes,
+            DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES
+        );
 
         // Temporary ADP defaults replace the witnessed schema values.
         //

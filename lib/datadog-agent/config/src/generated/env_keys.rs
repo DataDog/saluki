@@ -178,6 +178,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_AUTH_TOKEN_FILE_PATH"],
+        path: &["auth_token_file_path"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_AUTOSCALING_FAILOVER_ENABLED"],
         path: &["autoscaling", "failover", "enabled"],
         decode: EnvDecode::Bool,
@@ -651,6 +656,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::StringList,
     },
     EnvKey {
+        env_vars: &["DD_IPC_CERT_FILE_PATH"],
+        path: &["ipc_cert_file_path"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_KUBERNETES_KUBELET_NODENAME"],
         path: &["kubernetes_kubelet_nodename"],
         decode: EnvDecode::RawString,
@@ -776,6 +786,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_DELTA_TTL"],
+        path: &["otlp_config", "metrics", "delta_ttl"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_ENABLED"],
         path: &["otlp_config", "metrics", "enabled"],
         decode: EnvDecode::Bool,
@@ -788,6 +803,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS"],
         path: &["otlp_config", "metrics", "histograms", "send_aggregation_metrics"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_INSTRUMENTATION_SCOPE_METADATA_AS_TAGS"],
+        path: &["otlp_config", "metrics", "instrumentation_scope_metadata_as_tags"],
         decode: EnvDecode::Bool,
     },
     EnvKey {
@@ -826,9 +846,81 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "max_connection_age",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE_GRACE"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "max_connection_age_grace",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIME"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "time",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIMEOUT"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "timeout",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "max_concurrent_streams"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB"],
         path: &["otlp_config", "receiver", "protocols", "grpc", "max_recv_msg_size_mib"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "cert_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "key_file"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT"],
@@ -836,8 +928,69 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "http",
+            "cors",
+            "allowed_headers",
+        ],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "http",
+            "cors",
+            "allowed_origins",
+        ],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "http",
+            "cors",
+            "exposed_headers",
+        ],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "cors", "max_age"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"],
         path: &["otlp_config", "receiver", "protocols", "http", "endpoint"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "max_request_body_size"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "cert_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "key_file"],
         decode: EnvDecode::RawString,
     },
     EnvKey {
@@ -876,6 +1029,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::StringList,
     },
     EnvKey {
+        env_vars: &["DD_RUN_PATH"],
+        path: &["run_path"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_SERIALIZER_COMPRESSOR_KIND"],
         path: &["serializer_compressor_kind"],
         decode: EnvDecode::RawString,
@@ -886,44 +1044,14 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE"],
-        path: &["serializer_experimental_use_v3_api", "series", "beta_route"],
-        decode: EnvDecode::RawString,
-    },
-    EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "series", "endpoints"],
         decode: EnvDecode::StringList,
     },
     EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE"],
-        path: &["serializer_experimental_use_v3_api", "series", "shadow_sample_rate"],
-        decode: EnvDecode::Float,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES"],
-        path: &["serializer_experimental_use_v3_api", "series", "shadow_sites"],
-        decode: EnvDecode::StringList,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA"],
-        path: &["serializer_experimental_use_v3_api", "series", "use_beta"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE"],
-        path: &["serializer_experimental_use_v3_api", "series", "validate"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "sketches", "endpoints"],
         decode: EnvDecode::StringList,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE"],
-        path: &["serializer_experimental_use_v3_api", "sketches", "validate"],
-        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_MAX_PAYLOAD_SIZE"],

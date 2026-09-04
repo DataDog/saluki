@@ -42,7 +42,9 @@ hyper-http-proxy = { workspace = true }
 lru-slab = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
-opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
+opentelemetry-semantic-conventions = { workspace = true, features = [
+  "semconv_experimental",
+] }
 otlp-protos = { workspace = true }
 piecemeal = { workspace = true }
 pin-project = { workspace = true }
@@ -51,7 +53,11 @@ prost = { workspace = true }
 protobuf = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
+rmp = { workspace = true }
 rmp-serde = { workspace = true }
+
+# TLS dependencies used by the OTLP receiver to configure server-side TLS.
+rustls = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
@@ -63,10 +69,9 @@ saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
+saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_with = { workspace = true, features = ["alloc"] }
-serde_yaml = { workspace = true }
 simdutf8 = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
@@ -80,20 +85,18 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
-tonic = { workspace = true, features = ["router", "server"] }
+tokio-rustls = { workspace = true }
+tonic = { workspace = true, features = ["router", "server", "channel"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
+tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-rolling-file = { workspace = true }
 url = { workspace = true }
-uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
-datadog-agent-config-testing = { workspace = true }
-derive-where = { workspace = true }
 proptest = { workspace = true }
-rustls = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-env = { workspace = true, features = ["test-util"] }
@@ -101,5 +104,4 @@ saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
-tokio-rustls = { workspace = true }
+tokio = { workspace = true, features = ["time", "io-util", "net", "rt"] }

@@ -4,7 +4,7 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
@@ -109,17 +109,44 @@ pub struct Logging {
     pub file_max_size: u64,
 }
 
-/// Bootstrap IPC and remote-agent connection parameters, read before runtime authority exists.
+/// IPC and remote-agent connection parameters, read once at bootstrap before runtime authority
+/// exists and again from the authoritative configuration once it does.
+///
+/// The derived `Default` is all zeroes and serves only as the starting point for translation. The
+/// effective default of each field is the one the Datadog schema declares, noted per field below.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ControlIpc {
+    /// Path to the Agent authentication token file.
+    ///
+    /// ADP sends the file contents as a bearer token to the Core Agent. Override this path only when the Core Agent
+    /// uses a non-default token path, and configure both processes to use the same token.
+    ///
+    /// Defaults to an empty path, which selects the platform-specific Agent authentication token path.
+    pub auth_token_file_path: PathBuf,
+
+    /// Path to the shared Agent IPC mTLS identity file.
+    ///
+    /// The PEM file contains the certificate and private key used by ADP and its IPC peers. Every peer must use the
+    /// same identity because authentication requires an exact certificate match. Override this path only when the Core
+    /// Agent uses a non-default identity path.
+    ///
+    /// Defaults to an empty path, which selects `ipc_cert.pem` beside the resolved authentication token path.
+    pub ipc_cert_file_path: PathBuf,
+
     /// TCP port the command API listens on.
+    ///
+    /// Defaults to `5001`.
     pub cmd_port: u16,
 
     /// vsock address used for guest/host IPC.
+    ///
+    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
     pub vsock_addr: String,
 
     /// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
-    pub grpc_max_message_size: i64,
+    ///
+    /// Defaults to `134217728` (128 MiB).
+    pub grpc_max_message_size: usize,
 
     /// Timeout for establishing a connection to the container runtime interface.
     pub cri_connection_timeout: i64,

@@ -1,8 +1,4 @@
 //! Prometheus destination.
-//!
-//! # Missing
-//!
-//! - Use `ShutdownCoordinator::shutdown_and_wait` so shutdown can be triggered and all HTTP connections can drain.
 
 use std::{
     convert::Infallible,
@@ -11,30 +7,28 @@ use std::{
 };
 
 use async_trait::async_trait;
+use axum::{extract::Request, Router};
 use ddsketch::DDSketch;
-use http::{Request, Response, StatusCode};
-use hyper::{body::Incoming, service::service_fn};
+use http::{Response, StatusCode};
 use prometheus_exposition::{MetricType, PrometheusRenderer};
-use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
+use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
 use saluki_context::{tags::Tag, Context};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::{destinations::*, ComponentContext};
+use saluki_core::components::{destinations::*, BuildContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
     EventType,
 };
+use saluki_core::runtime;
 use saluki_error::GenericError;
-use saluki_io::net::{
-    listener::ConnectionOrientedListener,
-    server::http::{ErrorHandle, HttpServer},
-    ListenAddress,
-};
+use saluki_io::net::{server::http::HttpServer, ListenAddress};
 use serde::Deserialize;
 use stringtheory::{
     interning::{FixedSizeInterner, Interner as _},
     MetaString,
 };
 use tokio::{select, sync::RwLock};
+use tower::util::service_fn;
 use tracing::debug;
 
 const CONTEXT_LIMIT: usize = 10_000;
@@ -129,9 +123,9 @@ impl DestinationBuilder for PrometheusConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Prometheus {
-            listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
+            listen_addr: self.listen_addr.clone(),
             additional_routes: self.additional_routes.clone(),
             metrics: FastIndexMap::default(),
             payload: Arc::new(RwLock::new(String::new())),
@@ -160,7 +154,7 @@ impl MemoryBounds for PrometheusConfiguration {
 }
 
 struct Prometheus {
-    listener: ConnectionOrientedListener,
+    listen_addr: ListenAddress,
     additional_routes: Vec<PrometheusAdditionalRoute>,
     metrics: FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>,
     payload: Arc<RwLock<String>>,
@@ -172,7 +166,7 @@ struct Prometheus {
 impl Destination for Prometheus {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
-            listener,
+            listen_addr,
             additional_routes,
             mut metrics,
             payload,
@@ -182,8 +176,15 @@ impl Destination for Prometheus {
 
         let mut health = context.take_health_handle();
 
-        let (http_shutdown, mut http_error) =
-            spawn_prom_scrape_service(listener, Arc::clone(&payload), additional_routes);
+        // The scrape endpoint runs as a supervised worker of its own rather than as part of this component: the
+        // component's supervisor is what stops it, and drains its in-flight connections, once this component is done.
+        runtime::nested_supervisor(
+            build_scrape_server(listen_addr, Arc::clone(&payload), additional_routes)
+                .with_worker_pool(context.topology_context().global_thread_pool().clone())
+                .into_supervisor(),
+        )
+        .spawn();
+
         health.mark_ready();
 
         debug!("Prometheus destination started.");
@@ -235,18 +236,8 @@ impl Destination for Prometheus {
                     },
                     None => break,
                 },
-                error = &mut http_error => {
-                    if let Some(error) = error {
-                        debug!(%error, "HTTP server error.");
-                    }
-                    break;
-                },
             }
         }
-
-        // TODO: This should really use `ShutdownCoordinator::shutdown_and_wait` so we can trigger shutdown _and_ wait
-        // until all HTTP connections and the listener have finished.
-        http_shutdown.shutdown();
 
         debug!("Prometheus destination stopped.");
 
@@ -254,12 +245,15 @@ impl Destination for Prometheus {
     }
 }
 
-fn spawn_prom_scrape_service(
-    listener: ConnectionOrientedListener, payload: Arc<RwLock<String>>,
-    additional_routes: Vec<PrometheusAdditionalRoute>,
-) -> (ShutdownCoordinator, ErrorHandle) {
+/// Builds the server that answers scrape requests.
+///
+/// Every path is answered by the same service rather than being routed: the raw metrics paths take precedence over the
+/// additional routes, so a path claimed by both is answered with the raw payload rather than being a conflict.
+fn build_scrape_server(
+    listen_addr: ListenAddress, payload: Arc<RwLock<String>>, additional_routes: Vec<PrometheusAdditionalRoute>,
+) -> HttpServer {
     let additional_routes = Arc::new(additional_routes);
-    let service = service_fn(move |req: Request<Incoming>| {
+    let service = service_fn(move |req: Request| {
         let payload = Arc::clone(&payload);
         let additional_routes = Arc::clone(&additional_routes);
         async move {
@@ -267,8 +261,7 @@ fn spawn_prom_scrape_service(
         }
     });
 
-    let http_server = HttpServer::from_listener(listener, service);
-    http_server.listen()
+    HttpServer::from_listen_address(listen_addr).with_routes(Router::new().fallback_service(service))
 }
 
 async fn build_scrape_response(

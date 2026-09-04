@@ -8,13 +8,15 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderName, Method, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
@@ -28,21 +30,19 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
-use saluki_common::sync::shutdown::ShutdownCoordinator;
-use saluki_common::task::HandleExt as _;
 use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
-use saluki_error::{generic_error, GenericError};
-use saluki_io::net::listener::ConnectionOrientedListener;
-use saluki_io::net::server::http::{ErrorHandle, HttpServer};
-use saluki_io::net::util::hyper::TowerToHyperService;
+use saluki_core::runtime;
+use saluki_error::GenericError;
+use saluki_io::net::server::http::{Http2Config, HttpServer};
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
+use saluki_tls::ServerTLSConfigBuilder;
 use stringtheory::MetaString;
 use tokio::runtime::Handle;
-use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
 
 pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
@@ -51,6 +51,12 @@ pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.logs.v1.LogsService/Export");
 pub const OTLP_TRACES_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
+const IMPLICIT_HEADERS: [HeaderName; 4] = [
+    HeaderName::from_static("accept"),
+    HeaderName::from_static("accept-language"),
+    HeaderName::from_static("content-type"),
+    HeaderName::from_static("content-language"),
+];
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -58,6 +64,10 @@ pub struct Metrics {
     logs_received: Counter,
     bytes_received: Counter,
     spans_received: Counter,
+    metrics_errors_decode: Counter,
+    metrics_errors_channel: Counter,
+    metrics_errors_dispatch: Counter,
+    metrics_errors_flush: Counter,
 }
 
 impl Metrics {
@@ -77,6 +87,22 @@ impl Metrics {
         &self.bytes_received
     }
 
+    pub fn metrics_errors_decode(&self) -> &Counter {
+        &self.metrics_errors_decode
+    }
+
+    pub fn metrics_errors_channel(&self) -> &Counter {
+        &self.metrics_errors_channel
+    }
+
+    pub fn metrics_errors_dispatch(&self) -> &Counter {
+        &self.metrics_errors_dispatch
+    }
+
+    pub fn metrics_errors_flush(&self) -> &Counter {
+        &self.metrics_errors_flush
+    }
+
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_tests() -> Self {
@@ -85,6 +111,10 @@ impl Metrics {
             logs_received: Counter::noop(),
             bytes_received: Counter::noop(),
             spans_received: Counter::noop(),
+            metrics_errors_decode: Counter::noop(),
+            metrics_errors_channel: Counter::noop(),
+            metrics_errors_dispatch: Counter::noop(),
+            metrics_errors_flush: Counter::noop(),
         }
     }
 }
@@ -101,7 +131,33 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+        metrics_errors_decode: builder.register_counter_with_tags("component_errors_total", [("reason", "decode")]),
+        metrics_errors_channel: builder.register_counter_with_tags("component_errors_total", [("reason", "channel")]),
+        metrics_errors_dispatch: builder.register_counter_with_tags("component_errors_total", [("reason", "dispatch")]),
+        metrics_errors_flush: builder.register_counter_with_tags("component_errors_total", [("reason", "flush")]),
     }
+}
+
+/// Converts the gRPC receiver's connection settings into HTTP/2 server settings.
+///
+/// The keepalive interval and timeout are already resolved by the configuration layer, so they map across directly.
+/// The connection age limits and `max_concurrent_streams` use a zero value to mean "no limit," which is translated
+/// here into the absence of a limit.
+pub fn resolve_grpc_http2_config(
+    keepalive: &agent_data_plane_config::domains::otlp::KeepaliveServerParameters, max_concurrent_streams: u32,
+) -> Http2Config {
+    let mut config = Http2Config::default().with_keepalive(keepalive.time, keepalive.timeout);
+
+    if !keepalive.max_connection_age.is_zero() {
+        let grace = (!keepalive.max_connection_age_grace.is_zero()).then_some(keepalive.max_connection_age_grace);
+        config = config.with_max_connection_age(keepalive.max_connection_age, grace);
+    }
+
+    if max_concurrent_streams > 0 {
+        config = config.with_max_concurrent_streams(max_concurrent_streams);
+    }
+
+    config
 }
 
 /// Handler for OTLP data.
@@ -112,15 +168,93 @@ pub trait OtlpHandler: Send + Sync + 'static {
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError>;
 }
 
-/// OTLP server configuration and setup.
-pub struct OtlpServerBuilder {
+/// CORS settings for an OTLP HTTP server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CorsConfiguration {
+    /// Origins allowed to make cross-origin requests.
+    pub allowed_origins: Vec<String>,
+    /// Request headers allowed in cross-origin requests.
+    pub allowed_headers: Vec<String>,
+    /// Response headers exposed to browser clients.
+    pub exposed_headers: Vec<String>,
+    /// Seconds browsers may cache a preflight response.
+    pub max_age: u64,
+}
+
+/// TLS configuration for an OTLP receiver, loaded from file paths on disk.
+///
+/// Both `cert_file` and `key_file` are required to enable TLS. When `ca_file` is set, the server requests client
+/// certificates and verifies them if presented, but does not require them (optional verification).
+#[derive(Clone, Debug)]
+pub struct OtlpTlsConfiguration {
+    cert_file: PathBuf,
+    key_file: PathBuf,
+    ca_file: Option<PathBuf>,
+}
+
+impl OtlpTlsConfiguration {
+    /// Creates a new TLS configuration with the given certificate and key file paths.
+    pub fn new(cert_file: PathBuf, key_file: PathBuf) -> Self {
+        Self {
+            cert_file,
+            key_file,
+            ca_file: None,
+        }
+    }
+
+    /// Sets the CA certificate file for optional client certificate verification.
+    pub fn with_ca_file(mut self, ca_file: PathBuf) -> Self {
+        self.ca_file = Some(ca_file);
+        self
+    }
+
+    /// Builds a `rustls::ServerConfig` from the configured file paths.
+    ///
+    /// # Errors
+    ///
+    /// If the certificate or key files cannot be read or parsed, or if the resulting configuration isn't FIPS
+    /// compliant, an error will be returned.
+    fn build(self) -> Result<rustls::ServerConfig, GenericError> {
+        let mut builder = ServerTLSConfigBuilder::new()
+            .with_cert_file(self.cert_file)
+            .with_key_file(self.key_file);
+
+        if let Some(ca_file) = self.ca_file {
+            builder = builder.with_ca_file(ca_file);
+        }
+
+        builder.build()
+    }
+}
+
+/// The default HTTP request body size limit (20 MiB) applied when `max_request_body_size` is `0`.
+const HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 20 * 1024 * 1024;
+
+/// Server identifier of the OTLP HTTP endpoint.
+const HTTP_SERVER_ID: &str = "otlp-http";
+
+/// Server identifier of the OTLP gRPC endpoint.
+const GRPC_SERVER_ID: &str = "otlp-grpc";
+
+/// OTLP server configuration.
+///
+/// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
+/// validate the configuration and spawn the servers.
+pub struct OtlpServerConfiguration {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    grpc_http2_config: Http2Config,
+    http_max_request_body_size: u64,
+    cors: CorsConfiguration,
+    http_tls: Option<OtlpTlsConfiguration>,
+    grpc_tls: Option<OtlpTlsConfiguration>,
+    http_server_id: MetaString,
+    grpc_server_id: MetaString,
 }
 
-impl OtlpServerBuilder {
-    /// Creates a new OTLP server builder.
+impl OtlpServerConfiguration {
+    /// Creates a new OTLP server configuration.
     pub fn new(
         http_endpoint: ListenAddress, grpc_endpoint: ListenAddress, grpc_max_recv_msg_size_bytes: usize,
     ) -> Self {
@@ -128,75 +262,240 @@ impl OtlpServerBuilder {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            grpc_http2_config: Http2Config::grpc_defaults(),
+            http_max_request_body_size: 0,
+            cors: CorsConfiguration::default(),
+            http_tls: None,
+            grpc_tls: None,
+            http_server_id: MetaString::from_static(HTTP_SERVER_ID),
+            grpc_server_id: MetaString::from_static(GRPC_SERVER_ID),
         }
+    }
+
+    /// Sets the HTTP/2 settings used by the gRPC endpoint.
+    pub fn with_grpc_http2_config(mut self, config: Http2Config) -> Self {
+        self.grpc_http2_config = config;
+        self
+    }
+
+    /// Sets the maximum HTTP request body size in bytes for the HTTP receiver.
+    ///
+    /// A value of `0` (the default) applies the receiver's 20 MiB compatibility default. A positive
+    /// value sets the limit in bytes.
+    pub fn with_http_max_request_body_size(mut self, max_request_body_size: u64) -> Self {
+        self.http_max_request_body_size = max_request_body_size;
+        self
+    }
+
+    /// Overrides the identifiers used for the HTTP and gRPC servers.
+    ///
+    /// Tests give each server a unique identifier so that concurrently running tests can each find the ephemeral port
+    /// their own server bound to, without picking up another test's listen address assertion.
+    #[cfg(test)]
+    fn with_server_ids(mut self, http_id: impl Into<MetaString>, grpc_id: impl Into<MetaString>) -> Self {
+        self.http_server_id = http_id.into();
+        self.grpc_server_id = grpc_id.into();
+        self
+    }
+
+    /// Sets the CORS configuration for the HTTP receiver.
+    pub fn with_cors(mut self, cors: CorsConfiguration) -> Self {
+        self.cors = cors;
+        self
+    }
+
+    /// Sets the TLS configuration for the HTTP receiver.
+    ///
+    /// When set, the HTTP receiver only accepts encrypted TLS connections.
+    pub fn with_http_tls(mut self, tls: OtlpTlsConfiguration) -> Self {
+        self.http_tls = Some(tls);
+        self
+    }
+
+    /// Sets the TLS configuration for the gRPC receiver.
+    ///
+    /// When set, the gRPC receiver only accepts encrypted TLS connections.
+    pub fn with_grpc_tls(mut self, tls: OtlpTlsConfiguration) -> Self {
+        self.grpc_tls = Some(tls);
+        self
     }
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
     ///
-    /// Returns the HTTP server shutdown handle and error handle.
+    /// Both servers are spawned on the ambient supervisor -- the component's own -- so they stop with the component.
+    /// They run on `worker_pool` rather than the component's runtime, since request handling shouldn't contend with
+    /// the runtime driving the topology, and decoding can be compute-heavy for large requests.
+    ///
+    /// # Errors
+    ///
+    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, or the TLS
+    /// configuration is invalid, an error is returned.
     pub async fn build<H: OtlpHandler>(
-        self, handler: H, memory_limiter: MemoryLimiter, thread_pool_handle: Handle, metrics: Metrics,
-    ) -> Result<(ShutdownCoordinator, ErrorHandle), GenericError> {
+        self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
+    ) -> Result<(), GenericError> {
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
-        // Create and spawn the gRPC server.
-        let grpc_metrics_server = MetricsServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_logs_server = LogsServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_traces_server = TraceServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-
-        let grpc_server = Server::builder()
-            .add_service(grpc_metrics_server)
-            .add_service(grpc_logs_server)
-            .add_service(grpc_traces_server);
-
-        let grpc_socket_addr = match self.grpc_endpoint {
-            ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
+        // Validate TLS configurations before spawning.
+        let http_tls_config = match self.http_tls {
+            Some(tls) => Some(tls.build()?),
+            None => None,
+        };
+        let grpc_tls_config = match self.grpc_tls {
+            Some(tls) => Some(tls.build()?),
+            None => None,
         };
 
-        let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
-            .await
-            .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
-        let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
+        // Create and spawn the gRPC server.
+        let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
+
+        let grpc_metrics_server =
+            MetricsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+
+        let grpc_logs_server =
+            LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+
+        let grpc_traces_server =
+            TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+
+        // The gRPC endpoint is served by an HTTP server: gRPC is HTTP/2 with a distinct route naming convention, so
+        // the generated services are just another route set. It is restricted to HTTP/2 because the OTLP gRPC port
+        // only ever serves gRPC, and an HTTP/1.1 caller belongs on the HTTP endpoint instead.
+        let mut grpc_server = HttpServer::from_listen_address(self.grpc_endpoint.clone())
+            .add_grpc_service(grpc_metrics_server)
+            .add_grpc_service(grpc_logs_server)
+            .add_grpc_service(grpc_traces_server)
+            .with_http2_only()
+            .with_http2_config(self.grpc_http2_config)
+            .with_server_id(self.grpc_server_id)
+            .with_worker_pool(worker_pool.clone());
+
+        if let Some(tls_config) = grpc_tls_config {
+            grpc_server = grpc_server.with_tls_config(tls_config);
+        }
+
+        runtime::nested_supervisor(grpc_server.into_supervisor()).spawn();
 
         // Create and spawn the HTTP server.
-        let service = TowerToHyperService::new(
-            Router::new()
-                .route("/v1/metrics", post(http_metrics_handler::<H>))
-                .route("/v1/logs", post(http_logs_handler::<H>))
-                .route("/v1/traces", post(http_traces_handler::<H>))
-                .with_state((otlp_handler, memory_limiter, metrics)),
-        );
+        //
+        // Apply an explicit body-size limit. A configured `0` selects the receiver's 20 MiB compatibility default; a
+        // positive value is the limit in bytes. Axum's own default is not the receiver's default and must not be left
+        // implicit.
+        let max_body_size = if self.http_max_request_body_size == 0 {
+            HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
+        } else {
+            self.http_max_request_body_size as usize
+        };
 
-        let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
-            .await
-            .map_err(|e| generic_error!("Failed to create OTLP HTTP listener: {}", e))?;
+        let router = Router::new()
+            .route("/v1/metrics", post(http_metrics_handler::<H>))
+            .route("/v1/logs", post(http_logs_handler::<H>))
+            .route("/v1/traces", post(http_traces_handler::<H>))
+            .layer(DefaultBodyLimit::max(max_body_size))
+            .with_state((otlp_handler, memory_limiter, metrics));
 
-        let (http_shutdown_coordinator, http_error) = HttpServer::from_listener(http_listener, service)
-            .with_executor(thread_pool_handle)
-            .listen();
+        // Apply CORS middleware when origins are configured.
+        let router = if !self.cors.allowed_origins.is_empty() {
+            router.layer(build_cors_layer(&self.cors))
+        } else {
+            router
+        };
 
-        Ok((http_shutdown_coordinator, http_error))
+        let mut http_server = HttpServer::from_listen_address(self.http_endpoint)
+            .add_routes(router)
+            .with_server_id(self.http_server_id)
+            .with_worker_pool(worker_pool.clone());
+
+        if let Some(tls_config) = http_tls_config {
+            http_server = http_server.with_tls_config(tls_config);
+        }
+
+        runtime::nested_supervisor(http_server.into_supervisor()).spawn();
+
+        Ok(())
     }
+}
+
+/// Builds a CORS layer from the resolved CORS configuration.
+///
+/// A bare `*` in the list of allowed origins enables allow-all; otherwise the first `*` in an origin is a partial wildcard
+/// (for example, `http://*.domain.com` matches `http://foo.domain.com`).
+fn build_cors_layer(cors: &CorsConfiguration) -> CorsLayer {
+    let mut layer = CorsLayer::new();
+    let allowed_origins = cors
+        .allowed_origins
+        .iter()
+        .map(|origin| origin.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    let allows_any_origin = allowed_origins.iter().any(|origin| origin == "*");
+    if allows_any_origin {
+        layer = layer.allow_origin(Any);
+    } else {
+        layer = layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            let origin = origin.to_ascii_lowercase();
+
+            allowed_origins.iter().any(|pattern| origin_matches(pattern, &origin))
+        }));
+    }
+
+    // Preflight must permit the methods browser exporters use; without this the browser blocks
+    // the actual request even when the origin is allowed.
+    layer = layer.allow_methods([Method::GET, Method::POST, Method::HEAD]);
+
+    if cors.allowed_headers.iter().any(|h| h == "*") {
+        layer = layer.allow_headers(Any);
+    } else {
+        let mut headers: Vec<HeaderName> = cors
+            .allowed_headers
+            .iter()
+            .filter_map(|h| HeaderName::from_str(h).ok())
+            .collect();
+        headers.extend_from_slice(&IMPLICIT_HEADERS);
+        if cors.allowed_headers.is_empty() {
+            headers.push(HeaderName::from_static("x-requested-with"));
+        }
+        layer = layer.allow_headers(headers);
+    }
+
+    // Exposed headers.
+    if !cors.exposed_headers.is_empty() {
+        let headers: Vec<HeaderName> = cors
+            .exposed_headers
+            .iter()
+            .filter_map(|h| HeaderName::from_str(h).ok())
+            .collect();
+        layer = layer.expose_headers(headers);
+    }
+
+    // Max age.
+    if cors.max_age > 0 {
+        layer = layer.max_age(std::time::Duration::from_secs(cors.max_age));
+    }
+
+    // Wildcard CORS responses cannot permit browser credentials.
+    if !allows_any_origin
+        && !cors.allowed_headers.iter().any(|header| header == "*")
+        && !cors.exposed_headers.iter().any(|header| header == "*")
+    {
+        layer = layer.allow_credentials(true);
+    }
+
+    layer
+}
+
+/// Matches an Origin header against an allowed-origin pattern with first-`*` wildcard semantics.
+fn origin_matches(pattern: &str, origin: &str) -> bool {
+    let mut parts = pattern.splitn(2, '*');
+    let prefix = parts.next().unwrap_or("");
+    let Some(suffix) = parts.next() else {
+        return pattern == origin;
+    };
+
+    origin.starts_with(prefix) && origin.ends_with(suffix) && origin.len() >= prefix.len() + suffix.len()
 }
 
 /// HTTP handler for OTLP metrics requests.
@@ -339,10 +638,27 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
-    use saluki_core::{accounting::MemoryLimiter, components::ComponentContext};
+    use axum::{
+        body::Body,
+        http::{header, Request},
+        routing::post,
+    };
+    use rustls::pki_types::ServerName;
+    #[cfg(unix)]
+    use saluki_core::runtime::Supervisor;
+    use saluki_core::{
+        accounting::MemoryLimiter,
+        components::{test_util::TestComponentSupervisor, ComponentContext},
+        runtime::state::{DataspaceUpdate, IdentifierFilter},
+    };
+    use saluki_io::net::BoundListenAddress;
     use saluki_metrics::test::TestRecorder;
+    use saluki_tls::test_util::SelfSignedCert;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::TlsConnector;
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -434,5 +750,623 @@ mod tests {
             .unwrap();
 
         assert_bytes_received(&recorder, expected_size);
+    }
+
+    #[test]
+    fn origin_matcher_matches_rs_cors_patterns() {
+        assert!(origin_matches("http://*.example.com", "http://foo.example.com"));
+        assert!(origin_matches("http://*.example.com", "http://.example.com"));
+        assert!(!origin_matches(
+            "http://*.example.com",
+            "http://foo.example.com.evil.com"
+        ));
+        assert!(origin_matches("http://*.example.com/*", "http://foo.example.com/*"));
+        assert!(!origin_matches("http://*.example.com/*", "http://foo.example.com/bar"));
+        assert!(origin_matches("http://example.com", "http://example.com"));
+        assert!(!origin_matches("http://example.com", "http://other.com"));
+    }
+
+    #[tokio::test]
+    async fn cors_layer_matches_partial_wildcard_origin() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["HTTP://*.EXAMPLE.COM".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "http://api.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://api.example.com")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_layer_rejects_unrelated_partial_wildcard_origin() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["http://*.example.com".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
+    #[tokio::test]
+    async fn cors_layer_allows_any_origin_for_bare_wildcard() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_post_method() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/")
+                    .header(header::ORIGIN, "http://example.com")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let allowed_methods = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(allowed_methods.contains("POST"));
+    }
+
+    /// Waits for a Unix socket file to appear, retrying briefly to avoid races with async
+    /// server startup.
+    #[cfg(unix)]
+    async fn wait_for_socket(path: &std::path::Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("Unix socket at {} did not appear within 500ms", path.display());
+    }
+
+    #[tokio::test]
+    async fn http_body_limit_rejects_oversized_request() {
+        // Exercises the full OtlpServerConfiguration wiring: a configured `max_request_body_size` must
+        // flow through the builder into the axum `DefaultBodyLimit` layer and reject oversized
+        // requests. See issue #2068 and PR #2494 review.
+        use saluki_core::runtime::Supervisor;
+
+        // Grab an ephemeral port for the HTTP endpoint.
+        let http_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
+        let http_addr = http_listener.local_addr().expect("local addr should be available");
+        drop(http_listener);
+
+        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+        let http_endpoint = ListenAddress::Tcp(http_addr);
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let supervisor_handle = supervisor.handle();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::task::yield_now().await;
+
+        // Build with a small body limit (64 bytes) through the builder.
+        let max_body_size: usize = 64;
+        supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                    .with_http_max_request_body_size(max_body_size as u64)
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
+            .await
+            .expect("build should succeed");
+
+        // Wait for the HTTP server to accept connections.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::time::Instant::now() > deadline {
+                panic!("HTTP server did not start within 5s");
+            }
+            if tokio::net::TcpStream::connect(&http_addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        // Send an oversized request and verify it is rejected.
+        let oversized_body = vec![0u8; max_body_size + 1];
+        let mut stream = tokio::net::TcpStream::connect(&http_addr)
+            .await
+            .expect("should connect to HTTP server");
+
+        let request = format!(
+            "POST /v1/metrics HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\n\r\n",
+            oversized_body.len()
+        );
+        use tokio::io::AsyncWriteExt;
+        stream.write_all(request.as_bytes()).await.expect("write request line");
+        stream.write_all(&oversized_body).await.expect("write body");
+        stream.flush().await.expect("flush");
+
+        // Read the response status line.
+        use tokio::io::AsyncReadExt;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with("HTTP/1.1 413"),
+            "expected 413 PAYLOAD_TOO_LARGE, got: {}",
+            response_str.lines().next().unwrap_or("<empty>")
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
+    }
+
+    #[tokio::test]
+    async fn http_body_default_limit_rejects_oversized_request() {
+        // When `max_request_body_size` is `0` (the default), the receiver applies a 20 MiB limit.
+        // A request body exceeding 20 MiB must be rejected with 413.
+        use saluki_core::runtime::Supervisor;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let http_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
+        let http_addr = http_listener.local_addr().expect("local addr should be available");
+        drop(http_listener);
+
+        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+        let http_endpoint = ListenAddress::Tcp(http_addr);
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let supervisor_handle = supervisor.handle();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::task::yield_now().await;
+
+        // Build with the default (`max_request_body_size=0` → 20 MiB limit) — no explicit limit set.
+        supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                    NoopHandler,
+                    MemoryLimiter::noop(),
+                    Metrics::for_tests(),
+                    &tokio::runtime::Handle::current(),
+                ),
+            )
+            .await
+            .expect("build should succeed");
+
+        // Wait for the HTTP server to accept connections.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::time::Instant::now() > deadline {
+                panic!("HTTP server did not start within 5s");
+            }
+            if tokio::net::TcpStream::connect(&http_addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        // Send a body of 20 MiB + 1 byte — one byte over the default limit.
+        let oversized_body = vec![0u8; HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE + 1];
+        let mut stream = tokio::net::TcpStream::connect(&http_addr)
+            .await
+            .expect("should connect to HTTP server");
+
+        let request = format!(
+            "POST /v1/metrics HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\n\r\n",
+            oversized_body.len()
+        );
+        stream.write_all(request.as_bytes()).await.expect("write request line");
+        stream.write_all(&oversized_body).await.expect("write body");
+        stream.flush().await.expect("flush");
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with("HTTP/1.1 413"),
+            "expected 413 PAYLOAD_TOO_LARGE for body exceeding 20 MiB default, got: {}",
+            response_str.lines().next().unwrap_or("<empty>")
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
+    }
+
+    /// Polls `port` until something accepts a connection on it.
+    ///
+    /// Spawning only queues the servers for the supervisor, so their listeners come up a moment after `build` returns
+    /// rather than synchronously with it.
+    async fn wait_for_port(port: u16) {
+        let addr = format!("127.0.0.1:{}", port);
+        for _ in 0..200 {
+            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("nothing was listening on port {} within a second", port);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_succeeds_with_unix_grpc_endpoint() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let grpc_socket = dir.path().join("grpc.sock");
+        let grpc_endpoint = ListenAddress::try_from(format!("unix://{}", grpc_socket.display()).as_str())
+            .expect("Unix gRPC endpoint should parse");
+        // Use an ephemeral TCP port for HTTP since we are only testing the gRPC path here.
+        let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let supervisor_handle = supervisor.handle();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        // Give the supervisor time to start.
+        tokio::task::yield_now().await;
+
+        // The servers spawn on the ambient supervisor, so the build has to run under the one they belong to.
+        let result = supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                    NoopHandler,
+                    MemoryLimiter::noop(),
+                    Metrics::for_tests(),
+                    &tokio::runtime::Handle::current(),
+                ),
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "build should succeed with a Unix gRPC endpoint, got: {:?}",
+            result.err()
+        );
+
+        // Shut down cleanly.
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_export_works_over_unix_socket() {
+        use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let grpc_socket = dir.path().join("grpc.sock");
+        let grpc_endpoint = ListenAddress::try_from(format!("unix://{}", grpc_socket.display()).as_str())
+            .expect("Unix gRPC endpoint should parse");
+        let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let supervisor_handle = supervisor.handle();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        // Give the supervisor time to start.
+        tokio::task::yield_now().await;
+
+        supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                    NoopHandler,
+                    MemoryLimiter::noop(),
+                    Metrics::for_tests(),
+                    &tokio::runtime::Handle::current(),
+                ),
+            )
+            .await
+            .expect("build should succeed");
+
+        wait_for_socket(&grpc_socket).await;
+
+        // Connect a tonic gRPC client over the Unix socket and send a metrics export request.
+        let endpoint_str = format!("unix://{}", grpc_socket.display());
+        let channel = tonic::transport::Endpoint::from_shared(endpoint_str)
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to gRPC server over Unix socket");
+
+        let mut client = MetricsServiceClient::new(channel);
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics::default()],
+        };
+        let response = client.export(request).await.expect("export should succeed");
+
+        // A successful response has an empty partial_success (None).
+        assert_eq!(response.into_inner().partial_success, None);
+
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
+    }
+
+    /// Builds a `rustls::ClientConfig` that trusts the self-signed certificate.
+    fn self_signed_client_config(cert: &SelfSignedCert) -> rustls::ClientConfig {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert.cert_chain().into_iter().next().unwrap()).unwrap();
+        rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    }
+
+    /// Starts an `OtlpServerConfiguration` with TLS enabled on both HTTP and gRPC, returning the bound ports and
+    /// the self-signed certificate (so callers can build a matching client config).
+    async fn start_otlp_server_with_tls(server_id: &str) -> (u16, u16, SelfSignedCert, TestComponentSupervisor) {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let supervisor = TestComponentSupervisor::start("otlp-tls-test").await;
+
+        let cert = SelfSignedCert::localhost();
+        let http_endpoint = ListenAddress::tcp_loopback(0);
+        let grpc_endpoint = ListenAddress::tcp_loopback(0);
+
+        // Write the cert and key to temp files so OtlpTlsConfiguration can load them.
+        let tempdir = tempfile::tempdir().expect("temp dir should be created");
+        let cert_path = tempdir.path().join("cert.pem");
+        let key_path = tempdir.path().join("key.pem");
+        cert.write_cert_pem(&cert_path);
+        cert.write_key_pem(&key_path);
+
+        let http_server_id = format!("otlp-http-test-{}", server_id);
+        let grpc_server_id = format!("otlp-grpc-test-{}", server_id);
+
+        let tls_config = OtlpTlsConfiguration::new(cert_path, key_path);
+        let server_config = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+            .with_server_ids(&*http_server_id, &*grpc_server_id)
+            .with_http_tls(tls_config.clone())
+            .with_grpc_tls(tls_config);
+
+        supervisor
+            .scope(server_config.build(
+                NoopHandler,
+                MemoryLimiter::noop(),
+                Metrics::for_tests(),
+                &tokio::runtime::Handle::current(),
+            ))
+            .await
+            .expect("OTLP server with TLS should start");
+
+        let http_port = bound_port(&supervisor, &http_server_id).await;
+        let grpc_port = bound_port(&supervisor, &grpc_server_id).await;
+        wait_for_port(http_port).await;
+        wait_for_port(grpc_port).await;
+
+        (http_port, grpc_port, cert, supervisor)
+    }
+
+    async fn bound_port(supervisor: &TestComponentSupervisor, id: &str) -> u16 {
+        let id = format!("http-server-{}", id);
+        let mut subscription = supervisor
+            .dataspace()
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(id.clone()));
+
+        match tokio::time::timeout(Duration::from_secs(5), subscription.recv()).await {
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address.port(),
+            update => panic!("expected a bound address assertion for '{id}', got {update:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_tls_handshake_succeeds_with_trusted_cert() {
+        let (http_port, _grpc_port, cert, supervisor) = start_otlp_server_with_tls("http-tls-handshake-succeeds").await;
+
+        // Connect a TLS client to the HTTP port and verify the handshake completes.
+        let connector = TlsConnector::from(Arc::new(self_signed_client_config(&cert)));
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", http_port))
+            .await
+            .expect("should connect to HTTP port");
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let mut tls_stream = connector
+            .connect(server_name, stream)
+            .await
+            .expect("TLS handshake should succeed with trusted self-signed cert");
+
+        // Send a minimal HTTP request to confirm the server is serving over TLS.
+        tls_stream
+            .write_all(b"GET /v1/traces HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("should write HTTP request over TLS");
+
+        // Read the response — any HTTP response means TLS is working.
+        let mut buf = [0u8; 1024];
+        let n = tls_stream
+            .read(&mut buf)
+            .await
+            .expect("should read HTTP response over TLS");
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            response.starts_with("HTTP/"),
+            "expected an HTTP response, got: {response}"
+        );
+
+        // Close the connection before shutting down the supervisor so the server can drain cleanly.
+        let _ = tls_stream.shutdown().await;
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn grpc_tls_handshake_succeeds_with_trusted_cert() {
+        let (_http_port, grpc_port, cert, supervisor) = start_otlp_server_with_tls("grpc-tls-handshake-succeeds").await;
+
+        // Connect a TLS client to the gRPC port and verify the handshake completes.
+        // We use a raw TLS connection rather than a full gRPC client to keep the test simple — completing the
+        // handshake proves the server is serving TLS.
+        let connector = TlsConnector::from(Arc::new(self_signed_client_config(&cert)));
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", grpc_port))
+            .await
+            .expect("should connect to gRPC port");
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let mut tls_stream = connector
+            .connect(server_name, stream)
+            .await
+            .expect("TLS handshake should succeed with trusted self-signed cert");
+
+        // Send an HTTP/2 connection preface to confirm the gRPC server is speaking HTTP/2 over TLS.
+        tls_stream
+            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+            .await
+            .expect("should write HTTP/2 preface over TLS");
+
+        // Read any response — the server may send a settings frame or close. Either way, the handshake succeeded.
+        let mut buf = [0u8; 1024];
+        let _ = tls_stream.read(&mut buf).await;
+
+        // Close the connection before shutting down the supervisor so the server can drain cleanly.
+        let _ = tls_stream.shutdown().await;
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn http_tls_handshake_fails_without_trusted_cert() {
+        let (http_port, _grpc_port, _cert, supervisor) = start_otlp_server_with_tls("http-tls-handshake-fails").await;
+
+        // Connect a TLS client with an empty root store — the handshake should fail because the self-signed cert
+        // is not trusted.
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", http_port))
+            .await
+            .expect("should connect to HTTP port");
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let result = connector.connect(server_name, stream).await;
+
+        assert!(result.is_err(), "TLS handshake should fail without trusted cert");
+
+        supervisor
+            .shutdown()
+            .await
+            .expect("supervisor should shut down cleanly");
     }
 }

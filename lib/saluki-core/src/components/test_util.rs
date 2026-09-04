@@ -1,19 +1,22 @@
 //! Test helpers for exercising components that spawn supervised children.
 //!
-//! A [`ComponentSpawner`] is only useful while its supervisor is actually running: spawning against a supervisor that
-//! was built but never run fails with [`SpawnError::SupervisorGone`][crate::runtime::SpawnError::SupervisorGone]. That
-//! makes the obvious test fixture -- `Supervisor::new("test").handle()` -- a trap, because it looks right and fails
-//! only once the component under test tries to spawn something.
+//! Spawning only starts a child while its supervisor is actually running, and
+//! [`runtime::spawn`][crate::runtime::spawn] needs an ambient supervisor at all. Neither is true of the obvious test
+//! fixture -- `Supervisor::new("test").handle()` -- which looks right but silently drops every child the component
+//! under test spawns, or panics outright if the component spawns on the ambient supervisor.
 //!
-//! [`TestComponentSupervisor`] runs a supervisor configured the way the topology configures a component's supervisor,
-//! and hands out a [`ComponentSpawner`] bound to it.
+//! [`TestComponentSupervisor`] runs a supervisor configured the way the topology configures a component's supervisor.
+//! Pass its [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns
+//! on the ambient supervisor inside [`scope`][TestComponentSupervisor::scope].
 
+use std::future::Future;
 use std::time::Duration;
 
-use tokio::{runtime::Handle, sync::oneshot, task::JoinHandle};
+use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
+use tokio::task::futures::TaskLocalFuture;
+use tokio::task::JoinHandle;
 
-use crate::components::ComponentSpawner;
-use crate::runtime::{AutoShutdown, ShutdownMode, Supervisor, SupervisorError, SupervisorHandle};
+use crate::runtime::{state::DataspaceRegistry, AutoShutdown, Supervisor, SupervisorError, SupervisorHandle};
 
 /// Shutdown budget for the test supervisor.
 ///
@@ -31,11 +34,12 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// A running per-component supervisor for tests.
 ///
 /// Configured like the supervisor the topology builds for each component ([`AutoShutdown::AnySignificant`],
-/// [`ShutdownMode::Concurrent`], and a shutdown budget), minus the component worker itself -- the test drives the
+/// and a shutdown budget), minus the component worker itself -- the test drives the
 /// component directly.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    dataspace: DataspaceRegistry,
+    shutdown_coordinator: Option<ShutdownCoordinator>,
     task: JoinHandle<Result<(), SupervisorError>>,
 }
 
@@ -46,22 +50,41 @@ impl TestComponentSupervisor {
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub async fn start(id: &str) -> Self {
+        Self::start_with_budget(id, TEST_SHUTDOWN_BUDGET).await
+    }
+
+    /// Starts a supervisor named `id` with a specific shutdown budget.
+    ///
+    /// Use this to assert that a child is bounded by the budget rather than by a deadline of its own: pick a budget
+    /// shorter than the [`Supervisable`][crate::runtime::Supervisable] default of five seconds, and a child that had
+    /// silently acquired its own deadline will miss it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
+    pub async fn start_with_budget(id: &str, budget: Duration) -> Self {
+        let dataspace = DataspaceRegistry::default();
         let mut supervisor = Supervisor::new(id)
             .expect("test supervisor name should be valid")
             .with_auto_shutdown(AutoShutdown::AnySignificant)
-            .with_shutdown_mode(ShutdownMode::Concurrent)
-            .with_shutdown_budget(TEST_SHUTDOWN_BUDGET);
+            .with_shutdown_budget(budget);
 
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
         // is how we observe that it has.
         let handle = supervisor.handle();
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+        let task_dataspace = dataspace.clone();
+        let (shutdown_coordinator, process_shutdown) = ShutdownHandle::paired();
+        let task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown_inner(process_shutdown, Some(task_dataspace))
+                .await
+        });
 
         let supervisor = Self {
             handle,
-            shutdown_tx: Some(shutdown_tx),
+            dataspace,
+            shutdown_coordinator: Some(shutdown_coordinator),
             task,
         };
         supervisor
@@ -71,11 +94,26 @@ impl TestComponentSupervisor {
         supervisor
     }
 
-    /// Returns a spawner bound to this supervisor.
+    /// Returns a handle to this supervisor.
+    pub fn handle(&self) -> SupervisorHandle {
+        self.handle.clone()
+    }
+
+    /// Runs `fut` with this supervisor installed as the ambient supervisor.
     ///
-    /// The current runtime stands in for the shared worker pool.
-    pub fn spawner(&self) -> ComponentSpawner {
-        ComponentSpawner::new(self.handle.clone(), Handle::current())
+    /// Use this to drive code that spawns through [`runtime::spawn`][crate::runtime::spawn] (or the ambient builders
+    /// alongside it), which is how a component spawns children when it isn't holding a handle. Outside a scope, that
+    /// code would panic for want of an ambient supervisor.
+    pub fn scope<F>(&self, fut: F) -> TaskLocalFuture<SupervisorHandle, F>
+    where
+        F: Future,
+    {
+        self.handle.scope(fut)
+    }
+
+    /// Returns the dataspace shared by the supervisor and its children.
+    pub fn dataspace(&self) -> &DataspaceRegistry {
+        &self.dataspace
     }
 
     /// Returns the number of dynamic children currently running.
@@ -104,9 +142,8 @@ impl TestComponentSupervisor {
     ///
     /// Panics if the supervisor task panicked.
     pub async fn shutdown(mut self) -> Result<(), SupervisorError> {
-        // The receiver only goes away if the run already ended, in which case shutdown is moot.
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
+        if let Some(shutdown_coordinator) = self.shutdown_coordinator.take() {
+            shutdown_coordinator.shutdown();
         }
 
         (&mut self.task).await.expect("test supervisor task should not panic")
@@ -131,7 +168,7 @@ impl TestComponentSupervisor {
 impl Drop for TestComponentSupervisor {
     fn drop(&mut self) {
         // A test that returns (or panics) without calling `shutdown` shouldn't leak a supervisor and its children into
-        // the rest of the run. Dropping the sender signals shutdown; the task tears itself down from there.
-        self.shutdown_tx.take();
+        // the rest of the run. Dropping the coordinator signals shutdown; the task tears itself down from there.
+        self.shutdown_coordinator.take();
     }
 }

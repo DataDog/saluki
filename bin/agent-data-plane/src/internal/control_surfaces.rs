@@ -1,4 +1,4 @@
-use saluki_app::dynamic_api::DynamicAPIBuilder;
+use saluki_app::api::APIBuilder;
 use saluki_components::{
     destinations::DogStatsDStatsAPIHandler,
     sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
@@ -19,7 +19,7 @@ impl TopologyControlSurfaces {
     }
 
     /// Registers all configured control surfaces with the given API builder.
-    pub fn register_control_surfaces(self, mut builder: DynamicAPIBuilder) -> DynamicAPIBuilder {
+    pub fn register_control_surfaces(self, mut builder: APIBuilder) -> APIBuilder {
         if let Some(dogstatsd) = self.dogstatsd {
             builder = dogstatsd.register_control_surfaces(builder);
         }
@@ -41,7 +41,7 @@ pub struct DogStatsDControlSurface {
 }
 
 impl DogStatsDControlSurface {
-    fn register_control_surfaces(self, builder: DynamicAPIBuilder) -> DynamicAPIBuilder {
+    fn register_control_surfaces(self, builder: APIBuilder) -> APIBuilder {
         builder
             .with_handler(self.stats_api_handler)
             .with_handler(self.capture_api_handler)

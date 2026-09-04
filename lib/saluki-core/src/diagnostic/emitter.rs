@@ -43,6 +43,7 @@ pub enum DiagnosticsEmitterError {
 ///
 /// # Example
 ///
+/// <!-- vale off -->
 /// ```
 /// use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 /// use saluki_core::runtime::state::DataspaceRegistry;
@@ -60,6 +61,7 @@ pub enum DiagnosticsEmitterError {
 /// // Emit a point-in-time event:
 /// emitter.emit(DiagnosticEvent::new("credentials rejected", DiagnosticDetails::InvalidApiKey));
 /// ```
+/// <!-- vale on -->
 #[derive(Clone)]
 pub struct DiagnosticsEmitter {
     base_id: MetaString,

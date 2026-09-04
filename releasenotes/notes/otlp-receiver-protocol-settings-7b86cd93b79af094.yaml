@@ -1,0 +1,7 @@
+enhancements:
+  - |
+    Added support for ``otlp_config.receiver.protocols.grpc.max_concurrent_streams`` and
+    ``otlp_config.receiver.protocols.http.max_request_body_size``. The gRPC setting controls the
+    HTTP/2 maximum concurrent streams per connection (0 = unlimited, matching the OpenTelemetry
+    Collector default). The HTTP setting controls the maximum request body size in bytes (0 = 20 MiB
+    default, matching the Core Agent).

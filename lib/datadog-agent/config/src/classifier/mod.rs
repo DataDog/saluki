@@ -36,8 +36,6 @@ pub use classifier::{Classification, ConfigClassifier};
 ///
 /// Used as values in annotation `used_by` fields to declare which consumers incorporate a key.
 pub mod structs {
-    /// Identifier for `DogStatsDConfiguration`.
-    pub const DOGSTATSD_CONFIGURATION: &str = "DogStatsDConfiguration";
     /// Identifier for `ContainerdConfiguration`.
     pub const CONTAINERD_CONFIGURATION: &str = "ContainerdConfiguration";
     /// Identifier for `AggregateConfiguration`.
@@ -54,10 +52,6 @@ pub mod structs {
     pub const DATADOG_EVENTS_CONFIGURATION: &str = "DatadogEventsConfiguration";
     /// Identifier for `DatadogServiceChecksConfiguration`.
     pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
-    /// Identifier for `RemoteAgentClientConfiguration`.
-    pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
-    /// Identifier for `TagFilterlistConfiguration`.
-    pub const TAG_FILTERLIST_CONFIGURATION: &str = "TagFilterlistConfiguration";
     /// Keys consumed through the typed configuration translation system.
     pub const TYPED_CONFIG_SYSTEM: &str = "TypedConfigSystem";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.

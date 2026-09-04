@@ -267,6 +267,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.metrics.delta_ttl`-TTL (seconds) for cached delta-conversion points
+    OTLP_CONFIG_METRICS_DELTA_TTL = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_DELTA_TTL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.metrics.histograms.mode`-OTLP histogram bucket reporting mode
     OTLP_CONFIG_METRICS_HISTOGRAMS_MODE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_HISTOGRAMS_MODE,
@@ -287,6 +298,17 @@ crate::declare_annotations! {
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.instrumentation_scope_metadata_as_tags`-Add instrumentation scope metadata as metric tags.
+    OTLP_CONFIG_METRICS_INSTRUMENTATION_SCOPE_METADATA_AS_TAGS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_INSTRUMENTATION_SCOPE_METADATA_AS_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
     /// `otlp_config.metrics.resource_attributes_as_tags`-Add scalar resource attributes as raw tags.
@@ -347,6 +369,182 @@ crate::declare_annotations! {
     /// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.
     OTLP_CONFIG_METRICS_TAGS = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age`-gRPC keepalive: max connection age
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace`-gRPC keepalive: max conn age grace
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE_GRACE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE_GRACE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`-gRPC keepalive: ping time
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIME = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`-gRPC keepalive: ping timeout
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIMEOUT = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIMEOUT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.max_concurrent_streams`-HTTP/2 max concurrent streams (0 = unlimited)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.ca_file`-gRPC TLS CA file path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.cert_file`-gRPC TLS cert file path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.key_file`-gRPC TLS key file path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.cors.allowed_headers`-HTTP CORS allowed headers
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.cors.allowed_origins`-HTTP CORS allowed origins
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.cors.exposed_headers`-HTTP CORS exposed headers
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.cors.max_age`-HTTP CORS max age
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.max_request_body_size`-HTTP max request body size in bytes (0 = 20 MiB)
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.ca_file`-HTTP TLS CA file path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.cert_file`-HTTP TLS cert file path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.key_file`-HTTP TLS key file path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

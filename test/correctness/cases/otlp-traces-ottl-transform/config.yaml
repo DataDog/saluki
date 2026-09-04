@@ -11,7 +11,7 @@ additional_span_ignore_fields:
   - agent_metadata.target_tps
   - metrics._top_level
   - metrics._dd.measured
-  - metrics.http.status_code
+  - meta.http.status_code
   - meta.error.msg
 baseline:
   image: saluki-images/datadog-agent:testing-release

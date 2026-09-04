@@ -1,26 +1,34 @@
 //! Metric Tag Filterlist synchronous transform.
 //!
 //! Removes or retains specific tags from distribution and count metrics based on per-metric
-//! configuration. Supports both "exclude" (denylist) and "include" (allowlist) modes.
+//! configuration. Supports whole-tag filtering and value allow-listing.
 //!
-//! Configuration is read from the `metric_tag_filterlist` key and can be updated at runtime via
-//! Remote Config.
+//! Whole-tag configuration is read from `metric_tag_filterlist` and can be updated at runtime via
+//! Remote Config. Value allow-list configuration is read independently from the static
+//! `metric_tag_value_allowlist` key.
 
 mod telemetry;
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
 
+use agent_data_plane_config::{
+    domains::dogstatsd::{
+        validate_metric_tag_value_allowlists, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
+        TagValueMismatchAction,
+    },
+    Live,
+};
 use async_trait::async_trait;
-use foldhash::fast::RandomState as FoldHashState;
-use hashbrown::{HashMap, HashSet};
-use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_common::{
+    cache::{Cache, CacheBuilder},
+    collections::{FastHashMap, FastHashSet},
+};
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{
         metric::{Metric, MetricValues},
@@ -29,71 +37,80 @@ use saluki_core::{
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
-use serde::{de::Deserializer, Deserialize};
 use tokio::select;
-use tracing::{debug, error, warn};
-
-use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
+use tracing::{debug, error};
 
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
-fn default_context_cache_capacity() -> usize {
-    100_000
-}
-
 use self::telemetry::Telemetry;
 
-/// Action applied to the configured tag list: keep only listed tags, or remove listed tags.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum FilterAction {
-    /// Keep only the tags whose key appears in the configured list.
-    Include,
-    /// Remove the tags whose key appears in the configured list.
-    #[default]
-    Exclude,
+#[derive(Clone, Eq, PartialEq)]
+enum CompiledMismatchAction {
+    Remove,
+    Replace(Tag),
 }
 
-impl<'de> Deserialize<'de> for FilterAction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = Option::<String>::deserialize(deserializer)?;
+#[derive(Clone)]
+struct CompiledTagValueAllowlist {
+    allowed_values: FastHashSet<String>,
+    on_miss: CompiledMismatchAction,
+}
 
-        match raw.as_deref() {
-            Some("include") => Ok(Self::Include),
-            Some("exclude") | None | Some("") => Ok(Self::Exclude),
-            Some(other) => {
-                warn!(
-                    action = %other,
-                    "`metric_tag_filterlist.*.action` should be either `include` or `exclude`; defaulting to `exclude`."
-                );
-                Ok(Self::Exclude)
-            }
-        }
+struct CompiledKeyFilter {
+    is_exclude: bool,
+    tag_names: FastHashSet<String>,
+}
+
+#[derive(Clone)]
+struct CompiledValuePrefixFilter {
+    metric_prefix: String,
+    value_allowlists: FastHashMap<String, CompiledTagValueAllowlist>,
+}
+
+#[derive(Clone, Default)]
+struct CompiledValuePrefixFilters(Vec<CompiledValuePrefixFilter>);
+
+impl CompiledValuePrefixFilters {
+    fn sort(&mut self) {
+        self.0
+            .sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
+    }
+
+    fn get(&self, metric_name: &str) -> Option<&CompiledValuePrefixFilter> {
+        find_matching_prefix(&self.0, metric_name, |filter| filter.metric_prefix.as_str())
+    }
+
+    fn rule_count(&self) -> usize {
+        self.0.iter().map(|filter| filter.value_allowlists.len()).sum()
     }
 }
 
-/// A single metric tag filter entry.
-#[derive(Clone, Debug, Deserialize)]
-pub struct MetricTagFilterEntry {
-    /// The exact metric name this entry applies to.
-    pub metric_name: String,
-    /// Whether to include or exclude the listed tags.
-    #[serde(default)]
-    pub action: FilterAction,
-    /// Tag key names to include or exclude.
-    pub tags: Vec<String>,
+fn find_matching_prefix<'a, T>(entries: &'a [T], value: &str, prefix: impl Fn(&T) -> &str) -> Option<&'a T> {
+    match entries.binary_search_by(|candidate| prefix(candidate).cmp(value)) {
+        Ok(index) => Some(&entries[index]),
+        Err(index) if index > 0 && value.starts_with(prefix(&entries[index - 1])) => Some(&entries[index - 1]),
+        _ => None,
+    }
 }
 
-/// Compiled filter table: metric name → (`is_exclude`, set of tag key names).
-pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
+/// Compiled exact-name whole-tag filters and metric-prefix value filters.
+#[derive(Default)]
+pub struct CompiledFilters {
+    key_filters: FastHashMap<String, CompiledKeyFilter>,
+    value_prefix_filters: CompiledValuePrefixFilters,
+}
+
+impl CompiledFilters {
+    fn rule_count(&self) -> usize {
+        self.key_filters.len() + self.value_prefix_filters.rule_count()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
+/// Outcome of attempting to apply tag filter rules to a metric.
 pub enum FilterMetricTagsOutcome {
     /// No rule existed for the metric name.
     RuleMiss,
@@ -112,7 +129,7 @@ pub enum FilterMetricTagsOutcome {
 /// - Same metric name + same action → union of tag key sets.
 /// - Same metric name + conflicting actions → `exclude` wins.
 pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
-    let mut filters: CompiledFilters = HashMap::with_hasher(FoldHashState::default());
+    let mut filters = CompiledFilters::default();
 
     for entry in entries {
         if entry.metric_name.is_empty() {
@@ -120,20 +137,24 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
         }
 
         let is_exclude = entry.action == FilterAction::Exclude;
-        let mut tag_set = HashSet::with_capacity_and_hasher(entry.tags.len(), FoldHashState::default());
+        let mut tag_set = FastHashSet::default();
+        tag_set.reserve(entry.tags.len());
         tag_set.extend(entry.tags.iter().cloned());
 
-        match filters.entry(entry.metric_name.clone()) {
-            hashbrown::hash_map::Entry::Vacant(e) => {
-                e.insert((is_exclude, tag_set));
+        match filters.key_filters.entry(entry.metric_name.clone()) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(CompiledKeyFilter {
+                    is_exclude,
+                    tag_names: tag_set,
+                });
             }
-            hashbrown::hash_map::Entry::Occupied(mut e) => {
-                let (existing_is_exclude, existing_tags) = e.get_mut();
-                if *existing_is_exclude == is_exclude {
-                    existing_tags.extend(tag_set);
+            Entry::Occupied(mut occupied) => {
+                let existing = occupied.get_mut();
+                if existing.is_exclude == is_exclude {
+                    existing.tag_names.extend(tag_set);
                 } else if is_exclude {
-                    *existing_is_exclude = true;
-                    *existing_tags = tag_set;
+                    existing.is_exclude = true;
+                    existing.tag_names = tag_set;
                 }
             }
         }
@@ -142,14 +163,89 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
     filters
 }
 
+/// Adds value allow-list entries to a compiled filter table.
+///
+/// Distinct metric prefixes must not overlap, ensuring that each metric matches at most one prefix. Multiple rules may
+/// use the same prefix when they target different tags.
+///
+/// # Errors
+///
+/// Returns an error when an entry has invalid fields, distinct metric prefixes overlap, or the same prefix and tag are
+/// configured more than once.
+pub fn add_value_allowlists(
+    filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry],
+) -> Result<(), GenericError> {
+    validate_metric_tag_value_allowlists(entries).map_err(|error| generic_error!(error.to_string()))?;
+
+    for entry in entries {
+        let on_miss = match entry.on_miss {
+            TagValueMismatchAction::Remove => CompiledMismatchAction::Remove,
+            TagValueMismatchAction::Replace => {
+                CompiledMismatchAction::Replace(Tag::from(format!("{}:{}", entry.tag_name, entry.replacement)))
+            }
+        };
+
+        let mut allowed_values = FastHashSet::default();
+        allowed_values.reserve(entry.values.len());
+        allowed_values.extend(entry.values.iter().cloned());
+        let allowlist = CompiledTagValueAllowlist {
+            allowed_values,
+            on_miss,
+        };
+
+        if let Some(filter) = filters
+            .value_prefix_filters
+            .0
+            .iter_mut()
+            .find(|filter| filter.metric_prefix == entry.metric_prefix)
+        {
+            filter.value_allowlists.insert(entry.tag_name.clone(), allowlist);
+        } else {
+            let mut value_allowlists = FastHashMap::default();
+            value_allowlists.insert(entry.tag_name.clone(), allowlist);
+            filters.value_prefix_filters.0.push(CompiledValuePrefixFilter {
+                metric_prefix: entry.metric_prefix.clone(),
+                value_allowlists,
+            });
+        }
+    }
+
+    filters.value_prefix_filters.sort();
+    Ok(())
+}
+
+fn compile_all_filters(
+    entries: &[MetricTagFilterEntry], value_allowlists: &[MetricTagValueAllowlistEntry],
+) -> Result<CompiledFilters, GenericError> {
+    let mut filters = compile_filters(entries);
+    add_value_allowlists(&mut filters, value_allowlists)?;
+    Ok(filters)
+}
+
+fn compile_filters_with_values(
+    entries: &[MetricTagFilterEntry], value_prefix_filters: CompiledValuePrefixFilters,
+) -> CompiledFilters {
+    let mut filters = compile_filters(entries);
+    filters.value_prefix_filters = value_prefix_filters;
+    filters
+}
+
 /// Metric Tag Filterlist transform.
 ///
-/// Removes or retains specific tags from distribution metrics based on per-metric configuration.
-/// Configuration is read from `metric_tag_filterlist` and supports runtime updates via Remote Config.
-#[derive(Deserialize)]
+/// Removes, retains, or replaces tags on counter and sketch-backed metrics based on per-metric configuration. Gauges
+/// and other metric types pass through unchanged. Whole-tag rules are read from `metric_tag_filterlist` and support
+/// runtime updates via Remote Config. Value rules are read from the static `metric_tag_value_allowlist` key and match
+/// metric names after DogStatsD mapper rewrites and metric namespace prefixing.
 pub struct TagFilterlistConfiguration {
-    #[serde(default, rename = "metric_tag_filterlist")]
-    entries: Vec<MetricTagFilterEntry>,
+    entries: Live<Vec<MetricTagFilterEntry>>,
+
+    /// Compiled per-metric-prefix tag value allow-list rules.
+    ///
+    /// Configured independently from `metric_tag_filterlist` so a remotely configured whole-tag filter does not
+    /// replace locally configured value rules. This key is static in the initial implementation; changing it requires
+    /// restarting ADP. The configuration boundary rejects invalid rules, and construction compiles them once so
+    /// dynamic whole-tag updates cannot fail on unchanged static configuration.
+    value_prefix_filters: CompiledValuePrefixFilters,
 
     /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
     ///
@@ -158,22 +254,25 @@ pub struct TagFilterlistConfiguration {
     /// increasing this value to reduce cache churn.
     ///
     /// Defaults to 100,000.
-    #[serde(skip)]
     context_cache_capacity: usize,
-
-    #[serde(skip)]
-    configuration: Option<GenericConfiguration>,
 }
 
 impl TagFilterlistConfiguration {
-    /// Creates a new `TagFilterlistConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed: Self = config.as_typed()?;
-        typed.context_cache_capacity = config
-            .try_get_typed("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity")?
-            .unwrap_or_else(default_context_cache_capacity);
-        typed.configuration = Some(config.clone());
-        Ok(typed)
+    /// Creates a new `TagFilterlistConfiguration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the initial value allow-list rules are invalid.
+    pub fn new(
+        entries: Live<Vec<MetricTagFilterEntry>>, value_allowlists: &[MetricTagValueAllowlistEntry],
+        context_cache_capacity: usize,
+    ) -> Result<Self, GenericError> {
+        let value_prefix_filters = compile_all_filters(&[], value_allowlists)?.value_prefix_filters;
+        Ok(Self {
+            entries,
+            value_prefix_filters,
+            context_cache_capacity,
+        })
     }
 }
 
@@ -188,18 +287,16 @@ impl TransformBuilder for TagFilterlistConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
-        let filters = compile_filters(&self.entries);
-        telemetry.set_size(filters.len());
+        let filters = compile_filters_with_values(&self.entries, self.value_prefix_filters.clone());
+        telemetry.set_size(filters.rule_count());
 
         Ok(Box::new(TagFilterlist {
             filters,
-            configuration: self
-                .configuration
-                .clone()
-                .expect("configuration must be set via from_configuration"),
+            entries: self.entries.clone(),
+            value_prefix_filters: self.value_prefix_filters.clone(),
             telemetry,
             context_cache: build_context_cache(self.context_cache_capacity),
             context_cache_capacity: self.context_cache_capacity,
@@ -219,7 +316,8 @@ impl MemoryBounds for TagFilterlistConfiguration {
 
 struct TagFilterlist {
     filters: CompiledFilters,
-    configuration: GenericConfiguration,
+    entries: Live<Vec<MetricTagFilterEntry>>,
+    value_prefix_filters: CompiledValuePrefixFilters,
     telemetry: Telemetry,
     context_cache: Cache<Context, Option<(Context, usize)>>,
     context_cache_capacity: usize,
@@ -240,8 +338,6 @@ impl Transform for TagFilterlist {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
-
-        let mut watcher = self.configuration.watch_for_updates(METRIC_TAG_FILTERLIST_CONFIG_KEY);
 
         let mut view_state = TagSetMutViewState::default();
 
@@ -293,12 +389,13 @@ impl Transform for TagFilterlist {
                     }
                     None => break,
                 },
-                (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
-                    self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+                new_entries = self.entries.changed() => {
+                    self.filters = compile_filters_with_values(&new_entries, self.value_prefix_filters.clone());
                     self.context_cache = build_context_cache(self.context_cache_capacity);
-                    self.telemetry.set_size(self.filters.len());
+                    let rule_count = self.filters.rule_count();
+                    self.telemetry.set_size(rule_count);
                     self.telemetry.increment_updates();
-                    debug!(rules_loaded = self.filters.len(), "Updated metric tag filterlist.");
+                    debug!(rules_loaded = rule_count, "Updated metric tag filterlist.");
                 },
             }
         }
@@ -310,27 +407,81 @@ impl Transform for TagFilterlist {
 }
 
 #[inline]
-fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> bool {
+fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &FastHashSet<String>) -> bool {
     is_exclude != names.contains(tag.as_borrowed().name())
 }
 
-/// Filter the tags of a distribution metric according to the compiled filter table.
+#[inline]
+fn filter_tag(
+    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, value_filter: Option<&CompiledValuePrefixFilter>,
+    replacements: &mut Vec<Tag>,
+) -> bool {
+    if let Some(key_filter) = key_filter {
+        if !should_keep_tag(tag, key_filter.is_exclude, &key_filter.tag_names) {
+            return false;
+        }
+    }
+
+    let tag = tag.as_borrowed();
+
+    let Some(value) = tag.value() else {
+        return true;
+    };
+    let Some(allowlist) = value_filter.and_then(|filter| filter.value_allowlists.get(tag.name())) else {
+        return true;
+    };
+    if allowlist.allowed_values.contains(value) {
+        return true;
+    }
+
+    match &allowlist.on_miss {
+        CompiledMismatchAction::Remove => false,
+        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => true,
+        CompiledMismatchAction::Replace(replacement) => {
+            replacements.push(replacement.clone());
+            false
+        }
+    }
+}
+
+/// Filters the tags of a metric according to the compiled filter table.
 ///
-/// Both instrumented tags and origin tags are filtered using the same tag key list.
-/// If the metric name isn't present in `filters`, the metric is left unchanged.
-/// If filtering would not change any tags, the metric context is left untouched (zero allocations).
+/// Both instrumented tags and origin tags are filtered using the same key and value rules. Whole-tag filtering runs
+/// first, so an `include` rule must include a value-filtered tag key for its allow-list to apply. Configuration
+/// validation ensures that a metric and tag match at most one value rule. Value rules leave bare tags unchanged;
+/// empty-string values are processed and can be retained by including `""` in the configured values.
+///
+/// The caller applies this function only to counters and sketch-backed metrics. If the metric name doesn't have an
+/// exact whole-tag rule or a matching value-rule prefix, the metric is unchanged. If filtering would not change any
+/// tags, the metric context is left untouched (zero allocations).
 #[inline]
 pub fn filter_metric_tags(
     metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
 ) -> FilterMetricTagsOutcome {
-    let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
+    let metric_name = metric.context().name().clone();
+    let key_filter = filters.key_filters.get(metric_name.as_ref());
+    let value_filter = filters.value_prefix_filters.get(metric_name.as_ref());
+    if key_filter.is_none() && value_filter.is_none() {
         return FilterMetricTagsOutcome::RuleMiss;
-    };
+    }
 
+    let mut tag_replacements = Vec::new();
+    let mut origin_tag_replacements = Vec::new();
     let mut tag_set_view = metric.context_mut().tags_mut_view(state);
-    tag_set_view.retain_tags(|tag| should_keep_tag(tag, *is_exclude, tag_names));
-    tag_set_view.retain_origin_tags(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut tag_replacements));
+    tag_set_view.retain_origin_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut origin_tag_replacements));
     let total_removed = tag_set_view.finish();
+
+    if !tag_replacements.is_empty() || !origin_tag_replacements.is_empty() {
+        metric.context_mut().with_tag_sets_mut(|tags, origin_tags| {
+            for replacement in tag_replacements {
+                tags.insert_tag(replacement);
+            }
+            for replacement in origin_tag_replacements {
+                origin_tags.insert_tag(replacement);
+            }
+        });
+    }
 
     if total_removed == 0 {
         FilterMetricTagsOutcome::NoChange
@@ -345,30 +496,24 @@ pub fn filter_metric_tags(
 mod tests {
     use std::sync::Arc;
 
-    use saluki_config::{
-        dynamic::{ConfigSetting, ConfigUpdate},
-        ConfigurationLoader,
-    };
     use saluki_context::{
         tags::{Tag, TagSet},
         Context, TagSetMutViewState,
     };
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-    use saluki_core::components::ComponentSpawner;
     use saluki_core::components::{
         transforms::{TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext, ComponentContext,
     };
     use saluki_core::data_model::event::{
         metric::{Metric, MetricValues},
         Event,
     };
     use saluki_core::health::HealthRegistry;
-    use saluki_core::runtime::{state::DataspaceRegistry, Supervisor};
+    use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
     use saluki_core::topology::interconnect::{Consumer, Dispatcher};
     use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
-    use serde_json::json;
     use tokio::runtime::Handle;
     use tokio::sync::mpsc;
 
@@ -401,6 +546,18 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    fn value_allowlist(
+        metric_prefix: &str, tag_name: &str, values: &[&str], on_miss: TagValueMismatchAction, replacement: &str,
+    ) -> MetricTagValueAllowlistEntry {
+        MetricTagValueAllowlistEntry {
+            metric_prefix: metric_prefix.to_string(),
+            tag_name: tag_name.to_string(),
+            values: values.iter().map(|value| (*value).to_string()).collect(),
+            on_miss,
+            replacement: replacement.to_string(),
+        }
     }
 
     #[test]
@@ -480,6 +637,291 @@ mod tests {
                 assert_eq!(outcome, case.expected_outcome, "{kind}: {}", case.name);
             }
         }
+    }
+
+    #[test]
+    fn value_allowlist_matches_metric_prefix_and_filters_values() {
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.",
+                "customer_id",
+                &["top-1", "top-2"],
+                TagValueMismatchAction::Remove,
+                "other",
+            )],
+        )
+        .expect("valid value rules should compile");
+        let mut state = TagSetMutViewState::default();
+
+        let mut allowed = counter_metric("my.metric", &["customer_id:top-1", "service:web"]);
+        assert_eq!(
+            filter_metric_tags(&mut allowed, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+        assert_eq!(tag_names(&allowed), vec!["customer_id:top-1", "service:web"]);
+
+        let mut unlisted = counter_metric("my.metric", &["customer_id:long-tail", "service:web"]);
+        assert_eq!(
+            filter_metric_tags(&mut unlisted, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 1 }
+        );
+        assert_eq!(tag_names(&unlisted), vec!["service:web"]);
+
+        let mut unrelated = counter_metric("other.metric", &["customer_id:long-tail", "service:web"]);
+        assert_eq!(
+            filter_metric_tags(&mut unrelated, &mut state, &filters),
+            FilterMetricTagsOutcome::RuleMiss
+        );
+        assert_eq!(tag_names(&unrelated), vec!["customer_id:long-tail", "service:web"]);
+    }
+
+    #[test]
+    fn value_allowlist_replaces_and_deduplicates_unlisted_values() {
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.metric",
+                "customer_id",
+                &[],
+                TagValueMismatchAction::Replace,
+                "other",
+            )],
+        )
+        .expect("valid value rules should compile");
+        let mut metric = distribution_metric(
+            "my.metric",
+            &[
+                "customer_id:first",
+                "customer_id:second",
+                "customer_id:other",
+                "service:web",
+            ],
+        );
+        let mut state = TagSetMutViewState::default();
+
+        assert_eq!(
+            filter_metric_tags(&mut metric, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 2 }
+        );
+        assert_eq!(tag_names(&metric), vec!["customer_id:other", "service:web"]);
+    }
+
+    #[test]
+    fn value_allowlist_ignores_bare_tags_and_treats_empty_strings_as_values() {
+        let mut state = TagSetMutViewState::default();
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.metric",
+                "customer_id",
+                &["top-1"],
+                TagValueMismatchAction::Remove,
+                "other",
+            )],
+        )
+        .expect("valid value rules should compile");
+        let mut unlisted_empty = counter_metric("my.metric", &["customer_id", "customer_id:", "service:web"]);
+
+        assert_eq!(
+            filter_metric_tags(&mut unlisted_empty, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 1 }
+        );
+        assert_eq!(tag_names(&unlisted_empty), vec!["customer_id", "service:web"]);
+
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.metric",
+                "customer_id",
+                &[""],
+                TagValueMismatchAction::Remove,
+                "other",
+            )],
+        )
+        .expect("valid value rules should compile");
+        let mut listed_empty = counter_metric("my.metric", &["customer_id", "customer_id:", "service:web"]);
+
+        assert_eq!(
+            filter_metric_tags(&mut listed_empty, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+        assert_eq!(
+            tag_names(&listed_empty),
+            vec!["customer_id", "customer_id:", "service:web"]
+        );
+    }
+
+    #[test]
+    fn value_allowlist_applies_to_origin_tags() {
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my.metric",
+                "customer_id",
+                &["top-1"],
+                TagValueMismatchAction::Replace,
+                "other",
+            )],
+        )
+        .expect("valid value rules should compile");
+        let mut metric = distribution_metric_with_origin_tags(
+            "my.metric",
+            &[],
+            &["customer_id:top-1", "customer_id:long-tail", "service:web"],
+        );
+        let mut state = TagSetMutViewState::default();
+
+        assert_eq!(
+            filter_metric_tags(&mut metric, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 1 }
+        );
+        assert_eq!(
+            origin_tag_names(&metric),
+            vec!["customer_id:other", "customer_id:top-1", "service:web"]
+        );
+    }
+
+    #[test]
+    fn overlapping_value_allowlist_prefixes_are_rejected_across_tags() {
+        let broad = value_allowlist(
+            "my.",
+            "customer_id",
+            &["top-1"],
+            TagValueMismatchAction::Replace,
+            "other",
+        );
+        let narrow = value_allowlist(
+            "my.metric",
+            "region",
+            &["us-east-1"],
+            TagValueMismatchAction::Replace,
+            "other",
+        );
+
+        let error = compile_all_filters(&[], &[broad, narrow])
+            .err()
+            .expect("overlapping distinct prefixes must fail even for different tags");
+        assert!(error
+            .to_string()
+            .contains("overlapping metric prefixes 'my.' and 'my.metric' are configured"));
+
+        let duplicate = value_allowlist(
+            "my.",
+            "customer_id",
+            &["top-2"],
+            TagValueMismatchAction::Replace,
+            "other",
+        );
+        let error = compile_all_filters(
+            &[],
+            &[
+                value_allowlist("my.", "customer_id", &[], TagValueMismatchAction::Remove, "other"),
+                value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
+                duplicate,
+            ],
+        )
+        .err()
+        .expect("duplicate prefix and tag pairs must fail");
+        assert!(error
+            .to_string()
+            .contains("metric prefix 'my.' is configured more than once for tag 'customer_id'"));
+    }
+
+    #[test]
+    fn same_value_allowlist_prefix_for_different_tags_applies_both_rules() {
+        let filters = compile_all_filters(
+            &[],
+            &[
+                value_allowlist(
+                    "my.",
+                    "customer_id",
+                    &["top-1"],
+                    TagValueMismatchAction::Remove,
+                    "other",
+                ),
+                value_allowlist("my.", "region", &["us-east-1"], TagValueMismatchAction::Remove, "other"),
+            ],
+        )
+        .expect("different tags may use the same prefix");
+        let mut metric = distribution_metric("my.metric.requests", &["customer_id:long-tail", "region:us-west-2"]);
+        let mut state = TagSetMutViewState::default();
+
+        assert_eq!(
+            filter_metric_tags(&mut metric, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 2 }
+        );
+        assert!(tag_names(&metric).is_empty());
+    }
+
+    #[test]
+    fn empty_value_allowlist_prefixes_and_tag_names_are_rejected() {
+        let empty_prefix = value_allowlist("", "customer_id", &[], TagValueMismatchAction::Remove, "other");
+        let error = compile_all_filters(&[], &[empty_prefix])
+            .err()
+            .expect("an empty metric prefix must fail");
+        assert!(error.to_string().contains("empty `metric_prefix`"));
+
+        let empty_tag_name = value_allowlist("my.", "", &[], TagValueMismatchAction::Remove, "other");
+        let error = compile_all_filters(&[], &[empty_tag_name])
+            .err()
+            .expect("an empty tag name must fail");
+        assert!(error.to_string().contains("empty `tag_name`"));
+    }
+
+    #[test]
+    fn value_allowlist_rejects_tag_names_containing_a_colon() {
+        let entry = value_allowlist("my.", "customer:id", &[], TagValueMismatchAction::Remove, "other");
+        let error = compile_all_filters(&[], &[entry])
+            .err()
+            .expect("a tag name containing a colon must fail");
+        assert!(error.to_string().contains("tag name 'customer:id' contains ':'"));
+    }
+
+    #[test]
+    fn value_allowlist_preserves_whitespace_in_configured_strings() {
+        let filters = compile_all_filters(
+            &[],
+            &[value_allowlist(
+                "my. ",
+                "customer_id ",
+                &[" top-1 "],
+                TagValueMismatchAction::Replace,
+                " other ",
+            )],
+        )
+        .expect("valid value rules should compile");
+        let mut state = TagSetMutViewState::default();
+
+        let mut allowed = distribution_metric("my. requests", &["customer_id : top-1 "]);
+        assert_eq!(
+            filter_metric_tags(&mut allowed, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+        assert_eq!(tag_names(&allowed), vec!["customer_id : top-1 "]);
+
+        let mut replaced = distribution_metric("my. requests", &["customer_id :long-tail"]);
+        assert_eq!(
+            filter_metric_tags(&mut replaced, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 1 }
+        );
+        assert_eq!(tag_names(&replaced), vec!["customer_id : other "]);
+    }
+
+    #[test]
+    fn compiled_rule_count_counts_exact_rules_and_each_prefix_tag_rule() {
+        let key_entries = [MetricTagFilterEntry {
+            metric_name: "my.metric".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["host".to_string()],
+        }];
+        let value_entries = [
+            value_allowlist("my.", "customer_id", &[], TagValueMismatchAction::Remove, "other"),
+            value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
+        ];
+
+        let filters = compile_all_filters(&key_entries, &value_entries).expect("rules should compile");
+        assert_eq!(filters.rule_count(), 3);
     }
 
     #[test]
@@ -631,96 +1073,8 @@ mod tests {
         ];
         let filters = compile_filters(&entries);
 
-        assert!(!filters.contains_key(""));
-        assert!(filters.contains_key("my.dist"));
-    }
-
-    #[test]
-    fn filter_action_deserialize_maps_each_documented_branch() {
-        // `FilterAction`'s custom `Deserialize` recognizes exactly `"include"`; the empty string, an explicit
-        // null, and any unrecognized value all resolve to the documented `Exclude` default, and an omitted key
-        // falls back to `Exclude` via `#[serde(default)]`. One case per branch.
-        enum Action {
-            Missing,
-            Null,
-            Value(&'static str),
-        }
-
-        struct Case {
-            name: &'static str,
-            action: Action,
-            expected: FilterAction,
-        }
-
-        let cases = [
-            Case {
-                name: "explicit include",
-                action: Action::Value("include"),
-                expected: FilterAction::Include,
-            },
-            Case {
-                name: "explicit exclude",
-                action: Action::Value("exclude"),
-                expected: FilterAction::Exclude,
-            },
-            Case {
-                name: "empty string",
-                action: Action::Value(""),
-                expected: FilterAction::Exclude,
-            },
-            Case {
-                name: "unrecognized value",
-                action: Action::Value("invalid"),
-                expected: FilterAction::Exclude,
-            },
-            Case {
-                name: "explicit null",
-                action: Action::Null,
-                expected: FilterAction::Exclude,
-            },
-            Case {
-                name: "omitted key",
-                action: Action::Missing,
-                expected: FilterAction::Exclude,
-            },
-        ];
-
-        for case in cases {
-            let mut value = json!({ "metric_name": "my.dist", "tags": ["env"] });
-            match case.action {
-                Action::Missing => {}
-                Action::Null => value["action"] = serde_json::Value::Null,
-                Action::Value(action) => value["action"] = json!(action),
-            }
-
-            let entry: MetricTagFilterEntry =
-                serde_json::from_value(value).unwrap_or_else(|e| panic!("{}: deserialize failed: {e}", case.name));
-
-            assert_eq!(entry.action, case.expected, "{}", case.name);
-        }
-    }
-
-    #[tokio::test]
-    async fn context_cache_capacity_defaults_to_100k_and_can_be_overridden() {
-        // With no `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` key present, the capacity falls
-        // back to the documented default of 100,000.
-        let (default_config, _) = ConfigurationLoader::for_tests(Some(json!({})), None, false).await;
-        let default_builder =
-            TagFilterlistConfiguration::from_configuration(&default_config).expect("config should parse");
-        assert_eq!(default_builder.context_cache_capacity, 100_000);
-
-        // Setting the key overrides the default with the configured value.
-        let (override_config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "data_plane": { "dogstatsd": { "aggregator_tag_filter_cache_capacity": 512 } }
-            })),
-            None,
-            false,
-        )
-        .await;
-        let override_builder =
-            TagFilterlistConfiguration::from_configuration(&override_config).expect("config should parse");
-        assert_eq!(override_builder.context_cache_capacity, 512);
+        assert!(!filters.key_filters.contains_key(""));
+        assert!(filters.key_filters.contains_key("my.dist"));
     }
 
     #[test]
@@ -916,120 +1270,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamic_update_partial_replaces_filter() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
+    async fn typed_live_updates_replace_whole_tag_rules_without_replacing_static_value_rules() {
+        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(
+            agent_data_plane_config::SalukiConfiguration::default(),
+        ));
+        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
+        let mut entries = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
+            &config.domains.dogstatsd.tag_filterlist
+        });
+        let value_allowlists = [value_allowlist(
+            "my.",
+            "customer_id",
+            &["top-1"],
+            TagValueMismatchAction::Remove,
+            "other",
+        )];
+        let value_prefix_filters = compile_all_filters(&[], &value_allowlists)
+            .expect("static value rules should compile")
+            .value_prefix_filters;
 
-        let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
+        let mut updated = (*cell.load_full()).clone();
+        updated.domains.dogstatsd.tag_filterlist = vec![MetricTagFilterEntry {
+            metric_name: "my.metric".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["host".to_string()],
+        }];
+        cell.store(Arc::new(updated));
+        tick_tx.send_replace(());
 
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "metric_tag_filterlist",
-                serde_json::json!([
-                    { "metric_name": "my.dist", "action": "exclude", "tags": ["host"] }
-                ]),
-            )))
+        let new_entries = tokio::time::timeout(Duration::from_secs(2), entries.changed())
             .await
-            .unwrap();
-
-        let (_, new_entries) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for metric_tag_filterlist update");
-
-        let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-
-        let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-    }
-
-    #[tokio::test]
-    async fn dynamic_update_to_empty_clears_filter() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
-
-        let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
-
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "metric_tag_filterlist",
-                serde_json::json!([
-                    { "metric_name": "my.dist", "action": "exclude", "tags": ["env"] }
-                ]),
-            )))
-            .await
-            .unwrap();
-
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for initial metric_tag_filterlist update");
-
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "metric_tag_filterlist",
-                serde_json::json!([]),
-            )))
-            .await
-            .unwrap();
-
-        let (_, new_entries) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for cleared metric_tag_filterlist update");
-
-        let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-    }
-
-    #[tokio::test]
-    async fn dynamic_update_snapshot_applies_filter() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
-        cfg.ready().await;
-
-        let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
-
-        sender
-            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
-                "metric_tag_filterlist",
-                serde_json::json!([
-                    { "metric_name": "my.dist", "action": "include", "tags": ["service"] }
-                ]),
-            )]))
-            .await
-            .unwrap();
-
-        let (_, new_entries) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for metric_tag_filterlist update");
-
-        let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
+            .expect("timed out waiting for typed tag filter update");
+        let filters = compile_filters_with_values(&new_entries, value_prefix_filters.clone());
+        let mut metric = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
         let mut state = TagSetMutViewState::default();
         filter_metric_tags(&mut metric, &mut state, &filters);
         assert_eq!(tag_names(&metric), vec!["service:web"]);
+
+        let mut updated = (*cell.load_full()).clone();
+        updated.domains.dogstatsd.tag_filterlist.clear();
+        cell.store(Arc::new(updated));
+        tick_tx.send_replace(());
+
+        let new_entries = tokio::time::timeout(Duration::from_secs(2), entries.changed())
+            .await
+            .expect("timed out waiting for cleared typed tag filter update");
+        let filters = compile_filters_with_values(&new_entries, value_prefix_filters);
+        let mut metric = distribution_metric("my.metric", &["customer_id:long-tail", "host:h1", "service:web"]);
+        filter_metric_tags(&mut metric, &mut state, &filters);
+        assert_eq!(tag_names(&metric), vec!["host:h1", "service:web"]);
     }
 
     #[test]
@@ -1089,17 +1378,24 @@ mod tests {
         //      that share a (name, tags) context resolve to a single cache entry, and every metric sharing that
         //      context is filtered identically (the second and later occurrences take the cache-hit branch).
 
-        let cfg_json = json!({
-            "metric_tag_filterlist": [
-                { "metric_name": "svc.latency", "action": "exclude", "tags": ["host"] }
-            ]
-        });
-        let (config, _sender) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let builder = TagFilterlistConfiguration::from_configuration(&config).expect("config should parse");
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "svc.latency".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["host".to_string()],
+        }];
+        let value_allowlists = vec![value_allowlist(
+            "svc.",
+            "customer_id",
+            &[],
+            TagValueMismatchAction::Replace,
+            "other",
+        )];
+        let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000)
+            .expect("typed configuration should be valid");
 
         let component_context = ComponentContext::test_transform("tag_filterlist");
         let transform = builder
-            .build(component_context.clone())
+            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
             .await
             .expect("tag filterlist should build");
 
@@ -1114,7 +1410,7 @@ mod tests {
         // A distribution, a counter, and a gauge that all share the same (name, tags) context, followed by a repeat
         // of the distribution. The counter and the repeated distribution hit the cache entry created by the first
         // distribution.
-        let tags = &["host:h1", "env:prod"];
+        let tags = &["host:h1", "env:prod", "customer_id:long-tail"];
         let mut input = EventsBuffer::default();
         for event in [
             Event::Metric(Metric::distribution(
@@ -1146,11 +1442,6 @@ mod tests {
         let health = HealthRegistry::new()
             .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
             .expect("component was not previously registered");
-        // This component doesn't spawn supervised children yet, so a spawner over a never-run supervisor is
-        // sufficient. Anything that does spawn needs `TestComponentSupervisor` (saluki_core::components::test_util)
-        // instead, otherwise the spawn fails with `SupervisorGone`.
-        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
-        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
 
         let context = TransformContext::new(
             &topology_context,
@@ -1159,7 +1450,6 @@ mod tests {
             health,
             dispatcher,
             consumer,
-            spawner,
         );
 
         transform.run(context).await.expect("tag filterlist run should succeed");
@@ -1189,20 +1479,20 @@ mod tests {
 
         // Distribution (sketch) -> filtered on the cache-miss path.
         assert!(dispatched[0].values().is_sketch());
-        assert_eq!(sorted_tags(&dispatched[0]), vec!["env:prod"]);
+        assert_eq!(sorted_tags(&dispatched[0]), vec!["customer_id:other", "env:prod"]);
         // Counter (count metric) -> filtered via the cache-hit branch (shares the distribution's context entry).
         assert!(matches!(dispatched[1].values(), MetricValues::Counter(_)));
-        assert_eq!(sorted_tags(&dispatched[1]), vec!["env:prod"]);
+        assert_eq!(sorted_tags(&dispatched[1]), vec!["customer_id:other", "env:prod"]);
         // Gauge -> NOT a sketch and NOT a counter, so the type guard skips it and it passes through untouched.
         assert!(!dispatched[2].values().is_sketch());
         assert!(!matches!(dispatched[2].values(), MetricValues::Counter(_)));
         assert_eq!(
             sorted_tags(&dispatched[2]),
-            vec!["env:prod", "host:h1"],
+            vec!["customer_id:long-tail", "env:prod", "host:h1"],
             "gauge metrics must not be filtered by the type guard"
         );
         // Repeated distribution -> filtered via the cache-hit branch, identical to the first distribution.
         assert!(dispatched[3].values().is_sketch());
-        assert_eq!(sorted_tags(&dispatched[3]), vec!["env:prod"]);
+        assert_eq!(sorted_tags(&dispatched[3]), vec!["customer_id:other", "env:prod"]);
     }
 }

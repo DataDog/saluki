@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use backon::Retryable as _;
+use backon::{ConstantBuilder, Retryable as _};
 use datadog_protos::agent::v1::{
     RefreshRemoteAgentRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, ReportRemoteAgentEventRequest,
     ReportRemoteAgentEventResponse,
@@ -13,7 +13,6 @@ use datadog_protos::agent::{
     StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
     WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
 use tonic::{
@@ -31,6 +30,9 @@ use self::bearer_auth::BearerAuthInterceptor;
 mod streaming;
 pub use self::streaming::StreamingResponse;
 
+const CONNECT_RETRY_ATTEMPTS: usize = 10;
+const CONNECT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
 /// A client for interacting with the Datadog Agent's internal gRPC-based API.
 #[derive(Clone)]
 pub struct RemoteAgentClient {
@@ -40,24 +42,13 @@ pub struct RemoteAgentClient {
 }
 
 impl RemoteAgentClient {
-    /// Creates a new `RemoteAgentClient` from the given configuration.
+    /// Connects to the Core Agent's gRPC IPC endpoint using the given client configuration.
     ///
     /// # Errors
     ///
-    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
-    /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let config = RemoteAgentClientConfiguration::from_configuration(config)?;
-        Self::from_client_configuration(&config).await
-    }
-
-    /// Creates a new `RemoteAgentClient` from the given client configuration.
-    ///
-    /// # Errors
-    ///
-    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
-    /// authentication token is invalid, an error will be returned.
-    pub async fn from_client_configuration(config: &RemoteAgentClientConfiguration) -> Result<Self, GenericError> {
+    /// If the connection can't be established, the authentication token or IPC certificate can't be read, or the
+    /// initial health-check RPC fails, an error will be returned. Each of these is retried first.
+    pub async fn connect(config: &RemoteAgentClientConfiguration) -> Result<Self, GenericError> {
         // TODO: We need to write a Tower middleware service that allows applying a backoff between failed calls,
         // specifically so that we can throttle reconnection attempts.
         //
@@ -69,18 +60,18 @@ impl RemoteAgentClient {
         // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
-            let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth().auth_token_file_path()).await?;
-            let ipc_cert_file_path = config.auth().ipc_cert_file_path();
+            let auth_interceptor = BearerAuthInterceptor::from_file(config.auth.auth_token_file_path()).await?;
+            let ipc_cert_file_path = config.auth.ipc_cert_file_path();
             let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).await?;
             let connector_builder = HttpsCapableConnectorBuilder::default();
             #[cfg(target_os = "linux")]
-            let connector_builder = if let Some(addr) = config.vsock_addr()? {
+            let connector_builder = if let Some(addr) = config.vsock_addr() {
                 connector_builder.with_vsock_addr(addr)
             } else {
                 connector_builder
             };
             let https_connector = connector_builder.build(client_tls_config)?;
-            let endpoint = config.endpoint()?;
+            let endpoint = config.endpoint();
             let channel = Endpoint::from(endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
@@ -92,25 +83,29 @@ impl RemoteAgentClient {
             // Health check inside the retried region. A transient partition can let the TCP connect succeed but break
             // this first RPC stream, so retrying here keeps a boot-time blip from failing client construction.
             let mut secure_client =
-                AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
+                AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size);
             try_query_agent_api(&mut secure_client).await?;
 
             Ok::<_, GenericError>(service)
         };
 
         let service = service_builder
-            .retry(config)
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(CONNECT_RETRY_BACKOFF)
+                    .with_max_times(CONNECT_RETRY_ATTEMPTS),
+            )
             .notify(|e, delay| {
                 warn!(error = %e, "Failed to create Datadog Agent API client. Retrying in {:?}...", delay);
             })
             .await
             .error_context("Failed to create Datadog Agent API client.")?;
 
-        let client = AgentClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
+        let client = AgentClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size);
         let secure_client =
-            AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
+            AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size);
         let remote_agent_client =
-            RemoteAgentServiceClient::new(service).max_decoding_message_size(config.grpc_max_message_size());
+            RemoteAgentServiceClient::new(service).max_decoding_message_size(config.grpc_max_message_size);
 
         Ok(Self {
             client,
@@ -134,16 +129,23 @@ impl RemoteAgentClient {
         Ok(response.hostname)
     }
 
-    /// Gets a stream of tagger entities at the given cardinality.
+    /// Gets a stream of tagger entities at the given cardinality, optionally limited to a set of entity ID prefixes.
+    ///
+    /// When `prefixes` is given, the server only sends events for entities whose ID carries one of those prefixes,
+    /// which avoids paying the serialization and bandwidth cost of entities that the caller has no use for. Passing
+    /// `None` applies no filtering, and the server sends events for every prefix it knows about.
     ///
     /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
     /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
-    pub fn get_tagger_stream(&mut self, cardinality: TagCardinality) -> StreamingResponse<StreamTagsResponse> {
+    pub fn get_tagger_stream(
+        &mut self, cardinality: TagCardinality, prefixes: Option<Vec<String>>,
+    ) -> StreamingResponse<StreamTagsResponse> {
         let mut client = self.secure_client.clone();
         StreamingResponse::from_response_future(async move {
             client
                 .tagger_stream_entities(StreamTagsRequest {
                     cardinality: cardinality.into(),
+                    prefixes: prefixes.unwrap_or_default(),
                     ..Default::default()
                 })
                 .await

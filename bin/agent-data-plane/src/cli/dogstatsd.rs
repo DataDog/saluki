@@ -1,41 +1,30 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-#[cfg(target_os = "linux")]
-use std::path::Path;
-use std::path::PathBuf;
-use std::time::Duration;
-#[cfg(target_os = "linux")]
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
-#[cfg(target_os = "linux")]
 use saluki_app::util::wait_for_shutdown_signal;
-#[cfg(any(target_os = "linux", test))]
-use saluki_components::sources::TimestampResolution;
-#[cfg(target_os = "linux")]
-use saluki_components::sources::TrafficCaptureReader;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-use saluki_config::DurationString;
-// The Linux replay path resolves the DogStatsD socket through the by-key view. Its resolver is also
-// compiled for tests, so this import carries the same gate the resolver does.
-#[cfg(any(target_os = "linux", test))]
-use saluki_config::GenericConfiguration;
+use saluki_components::sources::{TimestampResolution, TrafficCaptureReader};
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+#[cfg(target_os = "windows")]
+use saluki_io::net::ListenAddress;
 #[cfg(target_os = "linux")]
 use saluki_io::net::{unix::uds_sendmsg_with_creds, ProcessCredentials};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "windows")]
+use tokio::net::windows::named_pipe::ClientOptions;
+#[cfg(unix)]
 use tokio::net::UnixDatagram;
-#[cfg(target_os = "linux")]
 use tokio_util::sync::CancellationToken;
-#[cfg(target_os = "linux")]
-use tracing::debug;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
@@ -199,24 +188,11 @@ async fn run_dogstatsd_command(local_config: &LoadedConfiguration, cmd: Dogstats
                 .error_context("Failed to start DogStatsD capture")
         }
         DogstatsdSubcommand::Replay(config) => {
-            #[cfg(target_os = "linux")]
-            {
-                let mut api_client = get_api_client_or_exit(local_config).await;
-                let raw_config = local_config.raw_config();
-                handle_dogstatsd_replay(&mut api_client, &raw_config, config)
-                    .await
-                    .error_context("Failed to replay DogStatsD traffic")
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                let ReplayCommand {
-                    replay_file_path,
-                    loops,
-                } = config;
-                let _ = (replay_file_path, loops);
-                Err(generic_error!("DogStatsD replay is only supported on Linux."))
-            }
+            let mut api_client = get_api_client_or_exit(local_config).await;
+            let raw_config = local_config.raw_config();
+            handle_dogstatsd_replay(&mut api_client, &raw_config, config)
+                .await
+                .error_context("Failed to replay DogStatsD traffic")
         }
         DogstatsdSubcommand::Top(config) => {
             let config = config.validate();
@@ -282,13 +258,18 @@ async fn handle_dogstatsd_capture(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 async fn handle_dogstatsd_replay(
     api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
 ) -> Result<(), GenericError> {
-    let socket_path = dogstatsd_socket_path(config)?;
+    let target = dogstatsd_replay_target(config)?;
 
     info!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display());
+
+    #[cfg(not(target_os = "linux"))]
+    tracing::warn!(
+        "DogStatsD replay cannot preserve captured PID-based origin tags on this platform. Replayed metrics may still \
+         receive origin tags from client-supplied metadata and the current live workload state."
+    );
 
     let reader = TrafficCaptureReader::from_path(&cmd.replay_file_path)?;
     let state = reader.read_state()?;
@@ -309,7 +290,7 @@ async fn handle_dogstatsd_replay(
         }
     });
 
-    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, &socket_path, cmd.loops, &cancel).await;
+    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, target, cmd.loops, &cancel).await;
     cancel_on_signal.abort();
 
     let finish_result = api_client.dogstatsd_replay_finish_session(&session_id).await;
@@ -332,7 +313,7 @@ async fn handle_dogstatsd_replay(
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(unix, test))]
 fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
     match config.try_get_typed::<String>("dogstatsd_socket")? {
         Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
@@ -342,15 +323,117 @@ fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, Gener
     }
 }
 
-#[cfg(target_os = "linux")]
-async fn run_dogstatsd_replay(
-    replay_file_path: &Path, socket_path: &Path, loops: u32, cancel: &CancellationToken,
-) -> Result<(), GenericError> {
-    let socket = UnixDatagram::unbound().map_err(|e| generic_error!("Failed to open UDS client for replay: {}", e))?;
-    socket
-        .connect(socket_path)
-        .map_err(|e| generic_error!("Failed to connect replay client to '{}': {}", socket_path.display(), e))?;
+#[derive(Debug)]
+enum ReplayTarget {
+    #[cfg(unix)]
+    UnixDatagram(PathBuf),
+    #[cfg(target_os = "windows")]
+    NamedPipe(String),
+}
 
+fn dogstatsd_replay_target(config: &GenericConfiguration) -> Result<ReplayTarget, GenericError> {
+    #[cfg(unix)]
+    {
+        Ok(ReplayTarget::UnixDatagram(dogstatsd_socket_path(config)?))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let pipe_name = match config.try_get_typed::<String>("dogstatsd_pipe_name")? {
+            Some(name) if !name.is_empty() => name,
+            _ => {
+                return Err(generic_error!(
+                    "DogStatsD replay requires `dogstatsd_pipe_name` to be configured."
+                ))
+            }
+        };
+        let pipe_path = ListenAddress::named_pipe(pipe_name, String::new())
+            .as_windows_named_pipe_path()
+            .expect("named pipe address should produce a named pipe path");
+        Ok(ReplayTarget::NamedPipe(pipe_path))
+    }
+}
+
+enum ReplaySender {
+    #[cfg(unix)]
+    UnixDatagram(UnixDatagram),
+    #[cfg(target_os = "windows")]
+    NamedPipe(tokio::net::windows::named_pipe::NamedPipeClient),
+}
+
+impl ReplaySender {
+    async fn connect(target: ReplayTarget) -> Result<Self, GenericError> {
+        match target {
+            #[cfg(unix)]
+            ReplayTarget::UnixDatagram(socket_path) => {
+                let socket = UnixDatagram::unbound()
+                    .map_err(|e| generic_error!("Failed to open UDS client for replay: {}", e))?;
+                socket.connect(&socket_path).map_err(|e| {
+                    generic_error!("Failed to connect replay client to '{}': {}", socket_path.display(), e)
+                })?;
+                Ok(Self::UnixDatagram(socket))
+            }
+            #[cfg(target_os = "windows")]
+            ReplayTarget::NamedPipe(pipe_path) => {
+                let mut options = ClientOptions::new();
+                options.read(false).write(true);
+                let pipe = options.open(&pipe_path).map_err(|e| {
+                    generic_error!("Failed to connect replay client to named pipe '{}': {}", pipe_path, e)
+                })?;
+                Ok(Self::NamedPipe(pipe))
+            }
+        }
+    }
+
+    async fn send(&mut self, payload: &[u8], captured_pid: i32) -> Result<(), GenericError> {
+        match self {
+            #[cfg(unix)]
+            Self::UnixDatagram(socket) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let credentials = ProcessCredentials {
+                        pid: std::process::id() as i32,
+                        uid: captured_pid as u32,
+                        gid: REPLAY_CREDENTIALS_GID,
+                    };
+                    uds_sendmsg_with_creds(socket, payload, &credentials)
+                        .await
+                        .map_err(|err| {
+                            generic_error!("Replay packet send failed (captured_pid={}): {}", captured_pid, err)
+                        })?;
+                }
+
+                #[cfg(not(target_os = "linux"))]
+                socket.send(payload).await.map_err(|err| {
+                    generic_error!("Replay packet send failed (captured_pid={}): {}", captured_pid, err)
+                })?;
+            }
+            #[cfg(target_os = "windows")]
+            Self::NamedPipe(pipe) => {
+                pipe.write_all(payload).await.map_err(|err| {
+                    generic_error!("Replay packet send failed (captured_pid={}): {}", captured_pid, err)
+                })?;
+                pipe.write_all(b"\n").await.map_err(|err| {
+                    generic_error!("Replay packet send failed (captured_pid={}): {}", captured_pid, err)
+                })?;
+                pipe.flush().await.map_err(|err| {
+                    generic_error!(
+                        "Failed to flush replay named pipe (captured_pid={}): {}",
+                        captured_pid,
+                        err
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+async fn run_dogstatsd_replay(
+    replay_file_path: &Path, target: ReplayTarget, loops: u32, cancel: &CancellationToken,
+) -> Result<(), GenericError> {
+    let mut sender = ReplaySender::connect(target).await?;
     let mut iteration: u32 = 0;
     loop {
         if cancel.is_cancelled() {
@@ -364,16 +447,15 @@ async fn run_dogstatsd_replay(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(()),
-            r = replay_one_iteration(replay_file_path, &socket, cancel) => {
+            r = replay_one_iteration(replay_file_path, &mut sender, cancel) => {
                 r?;
             }
         }
     }
 }
 
-#[cfg(target_os = "linux")]
 async fn replay_one_iteration(
-    replay_file_path: &Path, socket: &UnixDatagram, cancel: &CancellationToken,
+    replay_file_path: &Path, sender: &mut ReplaySender, cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
     let mut reader = TrafficCaptureReader::from_path(replay_file_path)?;
     let resolution = reader.timestamp_resolution();
@@ -400,7 +482,6 @@ async fn replay_one_iteration(
         let target_deadline = start + target_offset;
         let now = Instant::now();
         if target_deadline > now {
-            // Wait until the target deadline or cancellation, prioritizing cancellation.
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Ok(()),
@@ -408,20 +489,11 @@ async fn replay_one_iteration(
             }
         }
 
-        let credentials = ProcessCredentials {
-            pid: std::process::id() as i32,
-            uid: msg.pid as u32,
-            gid: REPLAY_CREDENTIALS_GID,
-        };
-
-        uds_sendmsg_with_creds(socket, &msg.payload, &credentials)
-            .await
-            .map_err(|err| generic_error!("Replay packet send failed (captured_pid={}): {}", msg.pid, err))?;
+        sender.send(&msg.payload, msg.pid).await?;
         packets_sent += 1;
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: TimestampResolution) -> Duration {
     let delta = timestamp.saturating_sub(first_timestamp).max(0) as u64;
     match resolution {
@@ -573,8 +645,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_socket_path,
-        TimestampResolution,
+        compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
+        dogstatsd_socket_path, ReplayTarget, TimestampResolution,
     };
 
     #[test]
@@ -612,5 +684,96 @@ mod tests {
             ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
         let path = dogstatsd_socket_path(&config).expect("socket should be configured");
         assert_eq!(path, std::path::PathBuf::from("/tmp/dsd.sock"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dogstatsd_replay_target_uses_configured_unix_datagram_socket() {
+        let (config, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
+
+        let target = dogstatsd_replay_target(&config).expect("socket should be configured");
+
+        assert!(
+            matches!(target, ReplayTarget::UnixDatagram(path) if path.as_path() == std::path::Path::new("/tmp/dsd.sock"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dogstatsd_replay_target_requires_configured_named_pipe() {
+        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_pipe_name": "" })), None, false).await;
+
+        let error = dogstatsd_replay_target(&config).expect_err("empty pipe name should fail");
+
+        assert!(error.to_string().contains("dogstatsd_pipe_name"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dogstatsd_replay_target_uses_configured_named_pipe() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "dogstatsd_pipe_name": r"\\.\pipe\datadog-dogstatsd" })),
+            None,
+            false,
+        )
+        .await;
+
+        let target = dogstatsd_replay_target(&config).expect("pipe should be configured");
+
+        assert!(matches!(target, ReplayTarget::NamedPipe(path) if path == r"\\.\pipe\datadog-dogstatsd"));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[tokio::test]
+    async fn non_linux_unix_replay_sender_delivers_the_capture_payload() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let socket_path = directory.path().join("replay.sock");
+        let receiver = tokio::net::UnixDatagram::bind(&socket_path).expect("receiver should bind");
+        let mut sender = super::ReplaySender::connect(ReplayTarget::UnixDatagram(socket_path))
+            .await
+            .expect("sender should connect");
+
+        sender
+            .send(b"replay.sender:1|c", 1234)
+            .await
+            .expect("sender should write payload");
+
+        let mut buffer = [0; 128];
+        let bytes_read = receiver.recv(&mut buffer).await.expect("receiver should read payload");
+        assert_eq!(&buffer[..bytes_read], b"replay.sender:1|c");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn named_pipe_replay_sender_delimits_each_capture_payload_with_a_newline() {
+        use tokio::io::AsyncReadExt as _;
+
+        let pipe_path = format!(r"\\.\pipe\saluki-replay-sender-{}", uuid::Uuid::new_v4());
+        let mut server = tokio::net::windows::named_pipe::ServerOptions::new()
+            .create(&pipe_path)
+            .expect("named pipe server should bind");
+        let receive = tokio::spawn(async move {
+            server.connect().await.expect("named pipe server should accept client");
+            let mut buffer = [0; b"replay.sender:1|c\n".len()];
+            server
+                .read_exact(&mut buffer)
+                .await
+                .expect("named pipe server should read payload");
+            buffer.to_vec()
+        });
+        let mut sender = super::ReplaySender::connect(ReplayTarget::NamedPipe(pipe_path))
+            .await
+            .expect("sender should connect");
+
+        sender
+            .send(b"replay.sender:1|c", 1234)
+            .await
+            .expect("sender should write payload");
+
+        assert_eq!(
+            receive.await.expect("receiver task should complete"),
+            b"replay.sender:1|c\n"
+        );
     }
 }

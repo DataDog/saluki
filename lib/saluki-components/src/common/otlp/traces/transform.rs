@@ -138,7 +138,9 @@ pub fn otel_span_to_dd_span(
             interner,
             string_builder,
         ) {
-            attrs.insert(MetaString::from_static(apm_key), AttributeValue::String(value));
+            attrs
+                .entry(MetaString::from_static(apm_key))
+                .or_insert(AttributeValue::String(value));
         }
     }
 
@@ -508,10 +510,12 @@ pub fn otel_to_dd_span_minimal(
         .with_duration(duration);
 
     if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
-        attrs.insert(
-            MetaString::from_static(HTTP_STATUS_CODE_KEY),
-            AttributeValue::String(MetaString::from(status_code.to_string())),
-        );
+        if status_code >= 0 {
+            attrs.insert(
+                MetaString::from_static(HTTP_STATUS_CODE_KEY),
+                AttributeValue::Float(status_code as f64),
+            );
+        }
     }
 
     // TODO: add peer key tags (unfinished in the agent as well)
@@ -1245,8 +1249,15 @@ fn status_to_error(
 
 fn get_first_from_attrs(attrs: &FastHashMap<MetaString, AttributeValue>, keys: &[&str]) -> Option<MetaString> {
     for key in keys {
-        if let Some(value) = attrs.get(*key).and_then(AttributeValue::as_string) {
-            return Some(value.clone());
+        if let Some(value) = attrs.get(*key) {
+            if let Some(s) = value.as_string() {
+                return Some(s.clone());
+            }
+            // `http.status_code` is emitted as a numeric (Float/Int) value; format it as an
+            // integer string so the error-message fallback can parse it as a status code.
+            if let Some(n) = value.as_num() {
+                return Some(MetaString::from((n as i64).to_string()));
+            }
         }
     }
     None
@@ -2872,6 +2883,81 @@ mod tests {
                 .and_then(AttributeValue::as_string)
                 .map(|s| s.as_ref()),
             Some("deadlock")
+        );
+    }
+
+    /// `http.status_code` must be emitted as a numeric (float) attribute, mirroring the Agent's
+    /// `Metrics[traceutil.TagStatusCode]`, so the encoded span carries a `DoubleValue` rather than
+    /// a string reference. See https://github.com/DataDog/saluki/issues/2379.
+    #[test]
+    fn otel_span_to_dd_span_emits_http_status_code_as_numeric() {
+        let dd_span = build_dd_span(
+            SpanKind::Server,
+            vec![
+                kv_str(SERVICE_NAME, "checkout"),
+                kv_str("http.request.method", "GET"),
+                kv_int(SEMCONV_HTTP_RESPONSE_STATUS_CODE, 200),
+            ],
+            None,
+            vec![],
+        );
+
+        let status_code = dd_span
+            .attributes
+            .get(HTTP_STATUS_CODE_KEY)
+            .expect("http.status_code should be present");
+        assert_eq!(status_code.as_num(), Some(200.0), "http.status_code must be numeric");
+        assert!(
+            status_code.as_string().is_none(),
+            "http.status_code must not be a string reference"
+        );
+    }
+
+    /// A negative resolved status code produces no `http.status_code` attribute, matching the
+    /// Agent's `code >= 0` guard.
+    #[test]
+    fn otel_to_dd_span_minimal_skips_negative_http_status_code() {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            attributes: vec![kv_int(SEMCONV_HTTP_STATUS_CODE, -1)],
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let (_dd_span, attrs) = otel_to_dd_span_minimal(&span, &resource, None, false, true, &interner, &mut sb);
+        assert!(
+            !attrs.contains_key(HTTP_STATUS_CODE_KEY),
+            "negative status code must not produce an http.status_code attribute"
+        );
+    }
+
+    /// The error-message fallback in `status_to_error` still derives `error.msg` from the HTTP
+    /// status code now that it is stored numerically (regression guard for lading-style string
+    /// status codes on error spans).
+    #[test]
+    fn status_to_error_builds_error_msg_from_numeric_http_status_code() {
+        let dd_span = build_dd_span(
+            SpanKind::Server,
+            vec![
+                kv_str(SERVICE_NAME, "checkout"),
+                kv_str("http.request.method", "GET"),
+                kv_str(SEMCONV_HTTP_RESPONSE_STATUS_CODE, "500"),
+            ],
+            Some(OtlpStatus {
+                code: StatusCode::Error as i32,
+                message: String::new(),
+            }),
+            vec![],
+        );
+
+        assert_eq!(dd_span.error(), 1);
+        assert_eq!(
+            dd_span
+                .attributes
+                .get("error.msg")
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some("500 Internal Server Error")
         );
     }
 }

@@ -253,6 +253,7 @@ tracing-appender = { version = "0.2", default-features = false }
 base64 = { version = "0.23.0", default-features = false, features = ["std"] }
 treediff = { version = "5", default-features = false }
 argh = { version = "0.1", default-features = false }
+rmp = { version = "0.8", default-features = false, features = ["std"] }
 rmp-serde = { version = "1.3", default-features = false }
 serde_bytes = { version = "0.11.19", default-features = false }
 num-traits = { version = "0.2", default-features = false }
@@ -262,6 +263,7 @@ lru-slab = { version = "0.1.2", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
 antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
 mime = "0.3"
+tokio-stream = "0.1"
 
 [profile.devel]
 inherits = "dev"

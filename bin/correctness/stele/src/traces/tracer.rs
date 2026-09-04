@@ -1,4 +1,5 @@
 use datadog_protos::traces as proto;
+use datadog_protos::traces::idx as etp_proto;
 use ordered_float::OrderedFloat;
 use saluki_common::collections::FastHashMap;
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,23 @@ impl From<&proto::TracerPayload> for TracerMetadata {
     }
 }
 
+impl TracerMetadata {
+    fn from_etp_payload(payload: &etp_proto::TracerPayload) -> Self {
+        let strings = &payload.strings;
+        Self {
+            container_id: resolve_ref(strings, payload.containerIDRef),
+            language_name: resolve_ref(strings, payload.languageNameRef),
+            language_version: resolve_ref(strings, payload.languageVersionRef),
+            tracer_version: resolve_ref(strings, payload.tracerVersionRef),
+            runtime_id: resolve_ref(strings, payload.runtimeIDRef),
+            tags: string_attrs_from_etp(&payload.attributes, strings),
+            env: resolve_ref(strings, payload.envRef),
+            hostname: resolve_ref(strings, payload.hostnameRef),
+            app_version: resolve_ref(strings, payload.appVersionRef),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TraceChunkMetadata {
     priority: i32,
@@ -101,6 +119,17 @@ impl From<&proto::TraceChunk> for TraceChunkMetadata {
             origin: (*value.origin).into(),
             tags: value.tags.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect(),
             dropped_trace: value.droppedTrace,
+        }
+    }
+}
+
+impl TraceChunkMetadata {
+    fn from_etp_chunk(chunk: &etp_proto::TraceChunk, strings: &[String]) -> Self {
+        Self {
+            priority: chunk.priority,
+            origin: resolve_ref(strings, chunk.originRef),
+            tags: string_attrs_from_etp(&chunk.attributes, strings),
+            dropped_trace: chunk.droppedTrace,
         }
     }
 }
@@ -144,7 +173,7 @@ impl Span {
         self.meta.get(meta_key).map(|s| &**s)
     }
 
-    /// Gets all spans from the given `AgentPayload`.
+    /// Gets all spans from the classic and indexed tracer payloads in the given `AgentPayload`.
     pub fn get_spans_from_agent_payload(payload: &proto::AgentPayload) -> Vec<Self> {
         let agent_metadata = AgentMetadata::from(payload);
 
@@ -163,6 +192,27 @@ impl Span {
                         span,
                     );
                     spans.push(span);
+                }
+            }
+        }
+
+        for tracer_payload in payload.idxTracerPayloads() {
+            let strings = &tracer_payload.strings;
+            let tracer_metadata = TracerMetadata::from_etp_payload(tracer_payload);
+
+            for chunk in &tracer_payload.chunks {
+                let trace_chunk_metadata = TraceChunkMetadata::from_etp_chunk(chunk, strings);
+                let trace_id = trace_id_low_from_bytes(&chunk.traceID);
+
+                for span in &chunk.spans {
+                    spans.push(Self::from_etp_proto(
+                        agent_metadata.clone(),
+                        tracer_metadata.clone(),
+                        trace_chunk_metadata.clone(),
+                        span,
+                        trace_id,
+                        strings,
+                    ));
                 }
             }
         }
@@ -205,6 +255,48 @@ impl Span {
             span_events,
         }
     }
+
+    fn from_etp_proto(
+        agent_metadata: AgentMetadata, tracer_metadata: TracerMetadata, trace_chunk_metadata: TraceChunkMetadata,
+        span: &etp_proto::Span, trace_id: u64, strings: &[String],
+    ) -> Self {
+        let (meta, metrics, meta_struct) = split_etp_span_attributes(&span.attributes, strings);
+
+        let mut span_links = span
+            .links
+            .iter()
+            .map(|l| SpanLink::from_etp(l, strings))
+            .collect::<Vec<_>>();
+        span_links.sort_by_key(|link| (link.trace_id, link.trace_id_high, link.span_id));
+
+        let mut span_events = span
+            .events
+            .iter()
+            .map(|e| SpanEvent::from_etp(e, strings))
+            .collect::<Vec<_>>();
+        span_events.sort_by_key(|event| event.time_unix_nano);
+
+        Self {
+            agent_metadata,
+            tracer_metadata,
+            trace_chunk_metadata,
+            service: resolve_ref(strings, span.serviceRef),
+            name: resolve_ref(strings, span.nameRef),
+            resource: resolve_ref(strings, span.resourceRef),
+            trace_id,
+            span_id: span.spanID,
+            parent_id: span.parentID,
+            start: span.start as i64,
+            duration: span.duration as i64,
+            error: i32::from(span.error),
+            meta,
+            metrics,
+            type_: resolve_ref(strings, span.typeRef),
+            meta_struct,
+            span_links,
+            span_events,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -234,6 +326,20 @@ impl From<&proto::SpanLink> for SpanLink {
     }
 }
 
+impl SpanLink {
+    fn from_etp(link: &etp_proto::SpanLink, strings: &[String]) -> Self {
+        let (trace_id, trace_id_high) = trace_id_parts_from_bytes(&link.traceID);
+        Self {
+            trace_id,
+            trace_id_high,
+            span_id: link.spanID,
+            attributes: string_attrs_from_etp(&link.attributes, strings),
+            tracestate: resolve_ref(strings, link.tracestateRef),
+            flags: link.flags,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct SpanEvent {
     time_unix_nano: u64,
@@ -250,6 +356,24 @@ impl From<&proto::SpanEvent> for SpanEvent {
                 .attributes
                 .iter()
                 .map(|(k, v)| ((**k).into(), AttributeAnyValue::from(v)))
+                .collect(),
+        }
+    }
+}
+
+impl SpanEvent {
+    fn from_etp(event: &etp_proto::SpanEvent, strings: &[String]) -> Self {
+        Self {
+            // The ETP proto renamed time_unix_nano to `time` (same semantics).
+            time_unix_nano: event.time,
+            name: resolve_ref(strings, event.nameRef),
+            attributes: event
+                .attributes
+                .iter()
+                .filter_map(|(k_ref, v)| {
+                    let attr = etp_anyvalue_to_event_attr(v, strings)?;
+                    Some((resolve_ref(strings, *k_ref), attr))
+                })
                 .collect(),
         }
     }
@@ -302,5 +426,130 @@ impl From<&proto::AttributeArrayValue> for AttributeArrayValue {
             proto::AttributeArrayValueType::INT_VALUE => AttributeArrayValue::Integer(value.int_value),
             proto::AttributeArrayValueType::DOUBLE_VALUE => AttributeArrayValue::Double(value.double_value.into()),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ETP (Efficient Trace Payload) helpers
+// ---------------------------------------------------------------------------
+
+/// Split return type for [`split_etp_span_attributes`]: (meta, metrics, meta struct).
+type SpanAttributeSplit = (
+    FastHashMap<MetaString, MetaString>,
+    FastHashMap<MetaString, WrappedFloat>,
+    FastHashMap<MetaString, Vec<u8>>,
+);
+
+/// Resolves a string table reference to a `MetaString`.
+fn resolve_ref(strings: &[String], r: u32) -> MetaString {
+    strings
+        .get(r as usize)
+        .map(|s| MetaString::from(s.as_str()))
+        .unwrap_or_default()
+}
+
+/// Extracts the low and high 64-bit halves from a 16-byte big-endian trace ID.
+///
+/// Returns `(trace_id_low, trace_id_high)`. Both are zero when the byte slice is not 16 bytes.
+fn trace_id_parts_from_bytes(bytes: &[u8]) -> (u64, u64) {
+    if bytes.len() == 16 {
+        let high = u64::from_be_bytes(bytes[..8].try_into().unwrap_or([0u8; 8]));
+        let low = u64::from_be_bytes(bytes[8..].try_into().unwrap_or([0u8; 8]));
+        (low, high)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Returns only the low 64 bits of a 16-byte big-endian trace ID.
+fn trace_id_low_from_bytes(bytes: &[u8]) -> u64 {
+    trace_id_parts_from_bytes(bytes).0
+}
+
+/// Collects only the string-valued entries from a string interned attribute map.
+fn string_attrs_from_etp(
+    attrs: &std::collections::HashMap<u32, etp_proto::AnyValue>, strings: &[String],
+) -> FastHashMap<MetaString, MetaString> {
+    attrs
+        .iter()
+        .filter_map(|(k_ref, v)| {
+            let val = match &v.value {
+                Some(etp_proto::any_value::Value::StringValueRef(r)) => resolve_ref(strings, *r),
+                _ => return None,
+            };
+            Some((resolve_ref(strings, *k_ref), val))
+        })
+        .collect()
+}
+
+/// Splits a string interned span attribute map into the three stele maps: meta (string), metrics (float),
+/// and `meta_struct` (bytes).
+fn split_etp_span_attributes(
+    attrs: &std::collections::HashMap<u32, etp_proto::AnyValue>, strings: &[String],
+) -> SpanAttributeSplit {
+    let mut meta = FastHashMap::default();
+    let mut metrics = FastHashMap::default();
+    let mut meta_struct = FastHashMap::default();
+
+    for (k_ref, v) in attrs {
+        let key = resolve_ref(strings, *k_ref);
+        match &v.value {
+            Some(etp_proto::any_value::Value::StringValueRef(r)) => {
+                meta.insert(key, resolve_ref(strings, *r));
+            }
+            Some(etp_proto::any_value::Value::DoubleValue(f)) => {
+                metrics.insert(key, WrappedFloat(OrderedFloat(*f)));
+            }
+            Some(etp_proto::any_value::Value::IntValue(i)) => {
+                metrics.insert(key, WrappedFloat(OrderedFloat(*i as f64)));
+            }
+            Some(etp_proto::any_value::Value::BoolValue(b)) => {
+                meta.insert(key, MetaString::from(if *b { "true" } else { "false" }));
+            }
+            Some(etp_proto::any_value::Value::BytesValue(b)) => {
+                meta_struct.insert(key, b.clone());
+            }
+            _ => {}
+        }
+    }
+    (meta, metrics, meta_struct)
+}
+
+/// Converts an `AnyValue` to a stele `AttributeAnyValue` for use in span events.
+fn etp_anyvalue_to_event_attr(v: &etp_proto::AnyValue, strings: &[String]) -> Option<AttributeAnyValue> {
+    match &v.value {
+        Some(etp_proto::any_value::Value::StringValueRef(r)) => {
+            Some(AttributeAnyValue::String(resolve_ref(strings, *r)))
+        }
+        Some(etp_proto::any_value::Value::BoolValue(b)) => Some(AttributeAnyValue::Boolean(*b)),
+        Some(etp_proto::any_value::Value::IntValue(i)) => Some(AttributeAnyValue::Integer(*i)),
+        Some(etp_proto::any_value::Value::DoubleValue(f)) => {
+            Some(AttributeAnyValue::Double(WrappedFloat(OrderedFloat(*f))))
+        }
+        Some(etp_proto::any_value::Value::ArrayValue(arr)) => {
+            let values = arr
+                .values
+                .iter()
+                .filter_map(|inner| etp_anyvalue_to_array_attr(inner, strings))
+                .collect();
+            Some(AttributeAnyValue::Array(values))
+        }
+        _ => None,
+    }
+}
+
+/// Converts an `AnyValue` to a stele `AttributeArrayValue` for use inside array-typed
+/// span event attributes.
+fn etp_anyvalue_to_array_attr(v: &etp_proto::AnyValue, strings: &[String]) -> Option<AttributeArrayValue> {
+    match &v.value {
+        Some(etp_proto::any_value::Value::StringValueRef(r)) => {
+            Some(AttributeArrayValue::String(resolve_ref(strings, *r)))
+        }
+        Some(etp_proto::any_value::Value::BoolValue(b)) => Some(AttributeArrayValue::Boolean(*b)),
+        Some(etp_proto::any_value::Value::IntValue(i)) => Some(AttributeArrayValue::Integer(*i)),
+        Some(etp_proto::any_value::Value::DoubleValue(f)) => {
+            Some(AttributeArrayValue::Double(WrappedFloat(OrderedFloat(*f))))
+        }
+        _ => None,
     }
 }

@@ -1,0 +1,49 @@
+type: integration
+name: "dogstatsd-replay-unix"
+description: "Verifies Unix DogStatsD capture and replay through a Unix datagram socket"
+timeout: 150s
+runtimes: [linux, mac]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd-replay-unix"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_PORT: "0"
+  DD_DOGSTATSD_SOCKET: "/tmp/saluki-dogstatsd-replay-unix.sock"
+
+procedure:
+  - assertion: log_contains
+    pattern: 'listen_addr:"unixgram:///tmp/saluki-dogstatsd-replay-unix.sock"'
+    timeout: 30s
+  - action: dogstatsd_replay
+    sender:
+      - "python3"
+      - "-c"
+      - |
+        import socket
+        import time
+
+        socket_path = "/tmp/saluki-dogstatsd-replay-unix.sock"
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            client.connect(socket_path)
+            client.send(b"integration.replay.unix.one:1|c")
+            time.sleep(1)
+            client.send(b"integration.replay.unix.two:1|c")
+        finally:
+            client.close()
+    capture_duration: 3s
+    stats_duration_secs: 3
+    expected_metrics:
+      - "integration.replay.unix.one"
+      - "integration.replay.unix.two"
+    timeout: 30s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

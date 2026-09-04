@@ -10,6 +10,12 @@ mod dataspace;
 pub(crate) use self::dataspace::CURRENT_DATASPACE;
 pub use self::dataspace::{DataspaceRegistry, DataspaceUpdate, Subscription};
 
+mod resources;
+pub use self::resources::{
+    AcquireError, ResourceKind, ResourceLease, ResourceRegistry, ResourceRegistryAPIHandler, ResourceRegistryState,
+    ResourceRegistryWorker, ResourceSpecification, ResourceStatus,
+};
+
 /// An identifier used to key values in a [`DataspaceRegistry`].
 ///
 /// Identifiers come in two flavors:
@@ -38,6 +44,12 @@ impl Identifier {
 
 impl From<&str> for Identifier {
     fn from(s: &str) -> Self {
+        Self::Named(MetaString::from(s))
+    }
+}
+
+impl From<String> for Identifier {
+    fn from(s: String) -> Self {
         Self::Named(MetaString::from(s))
     }
 }

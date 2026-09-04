@@ -1,5 +1,5 @@
 use saluki_core::data_model::event::metric::HistogramSummary;
-use serde::Deserialize;
+use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
 
 /// A histogram statistic to calculate.
@@ -73,57 +73,9 @@ impl HistogramStatistic {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(default)]
-struct RawHistogramConfiguration {
-    /// Aggregates to calculate over histograms.
-    ///
-    /// Available aggregates: `count`, `sum`, `min`, `max`, `average`, and `median`
-    ///
-    /// The metric name generated for each aggregate will be in the form of `<original metric name>.<aggregate>`.
-    histogram_aggregates: Vec<String>,
-
-    /// Percentiles to calculate over histograms.
-    ///
-    /// Percentiles are expressed in quantile form: 95% becomes 0.95, and so on. Any floating-point number between
-    /// 0.0 and 1.0 (inclusive) is allowed, but values that extend beyond two decimal places are rounded to the nearest
-    /// whole percentile to match the Datadog Agent.
-    ///
-    /// The metric name generated for each percentile will be in the form of `<original metric
-    /// name>.<stripped_q>percentile`, where `stripped_q` represents the quantile multiplied by 100. For example, a
-    /// percentile of 0.95 would be represented as `95percentile`, while a percentile of 0.05 would be represented as
-    /// `5percentile`.
-    histogram_percentiles: Vec<String>,
-
-    /// Whether to copy histograms to distributions.
-    ///
-    /// Emits a copy of each histogram as a distribution, potentially with
-    /// a prefixed version of the histogram's name, based on the value of
-    /// `copy_histogram_to_distribution_prefix`.
-    ///
-    /// Defaults to `false`.
-    histogram_copy_to_distribution: bool,
-
-    /// Prefix to append to the name of distributions copied from histograms.
-    ///
-    /// Defaults to an empty string (no prefixing).
-    histogram_copy_to_distribution_prefix: String,
-}
-
-impl Default for RawHistogramConfiguration {
-    fn default() -> Self {
-        Self {
-            histogram_aggregates: vec!["max".into(), "median".into(), "avg".into(), "count".into()],
-            histogram_percentiles: vec!["0.95".into()],
-            histogram_copy_to_distribution: false,
-            histogram_copy_to_distribution_prefix: "".into(),
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-#[serde(try_from = "RawHistogramConfiguration")]
+/// Statistics to calculate over histograms, and how to copy them to distributions.
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct HistogramConfiguration {
     statistics: Vec<HistogramStatistic>,
     copy_to_distribution: bool,
@@ -131,6 +83,56 @@ pub struct HistogramConfiguration {
 }
 
 impl HistogramConfiguration {
+    /// Creates a new `HistogramConfiguration` from the aggregates and percentiles to calculate.
+    ///
+    /// Aggregates name a statistic to compute over each histogram: `count`, `sum`, `min`, `max`, `avg`, or `median`.
+    /// Percentiles are expressed in quantile form, between `0.0` and `1.0` inclusive: 95% becomes `0.95`. Quantiles
+    /// that extend beyond two decimal places are rounded to the nearest whole percentile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an aggregate names an unsupported statistic, or if a percentile is not a number between
+    /// `0.0` and `1.0`.
+    pub fn try_new(
+        aggregates: &[String], percentiles: &[String], copy_to_distribution: bool, copy_to_distribution_prefix: String,
+    ) -> Result<Self, GenericError> {
+        let mut statistics = Vec::new();
+
+        for aggregate in aggregates {
+            match aggregate.as_str() {
+                "count" => statistics.push(HistogramStatistic::Count),
+                "sum" => statistics.push(HistogramStatistic::Sum),
+                "min" => statistics.push(HistogramStatistic::Minimum),
+                "max" => statistics.push(HistogramStatistic::Maximum),
+                "avg" => statistics.push(HistogramStatistic::Average),
+                "median" => statistics.push(HistogramStatistic::Median),
+                _ => return Err(generic_error!("Unknown histogram aggregate: {}", aggregate)),
+            }
+        }
+
+        for faux_percentile in percentiles {
+            let quantile = faux_percentile
+                .parse::<f64>()
+                .map_err(|_| generic_error!("Invalid percentile: {}", faux_percentile))?;
+            if !(0.0..=1.0).contains(&quantile) {
+                return Err(generic_error!("Percentile out of range: {}", faux_percentile));
+            }
+
+            let percentile = (quantile * 100.0 + 0.5) as u32;
+            let quantile = f64::from(percentile) / 100.0;
+            let suffix = format!("{}percentile", percentile).into();
+            statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
+        }
+
+        Ok(Self {
+            statistics,
+            copy_to_distribution,
+            copy_to_distribution_prefix,
+        })
+    }
+
+    /// Creates a configuration from already-parsed statistics, for tests that exercise histogram aggregation rather
+    /// than configuration.
     #[cfg(test)]
     pub fn from_statistics(
         statistics: &[HistogramStatistic], copy_to_distribution: bool, copy_to_distribution_prefix: String,
@@ -158,6 +160,8 @@ impl HistogramConfiguration {
     }
 }
 
+/// Fixture values for tests that exercise histogram aggregation rather than configuration.
+#[cfg(test)]
 impl Default for HistogramConfiguration {
     fn default() -> Self {
         Self {
@@ -177,60 +181,32 @@ impl Default for HistogramConfiguration {
     }
 }
 
-impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
-    type Error = String;
-
-    fn try_from(raw: RawHistogramConfiguration) -> Result<Self, Self::Error> {
-        let mut statistics = Vec::new();
-
-        for aggregate in raw.histogram_aggregates {
-            match aggregate.as_str() {
-                "count" => statistics.push(HistogramStatistic::Count),
-                "sum" => statistics.push(HistogramStatistic::Sum),
-                "min" => statistics.push(HistogramStatistic::Minimum),
-                "max" => statistics.push(HistogramStatistic::Maximum),
-                "avg" => statistics.push(HistogramStatistic::Average),
-                "median" => statistics.push(HistogramStatistic::Median),
-                _ => return Err(format!("Unknown histogram aggregate: {}", aggregate)),
-            }
-        }
-
-        for faux_percentile in raw.histogram_percentiles {
-            let quantile = faux_percentile
-                .parse::<f64>()
-                .map_err(|_| format!("Invalid percentile: {}", faux_percentile))?;
-            if !(0.0..=1.0).contains(&quantile) {
-                return Err(format!("Percentile out of range: {}", faux_percentile));
-            }
-
-            let percentile = (quantile * 100.0 + 0.5) as u32;
-            let quantile = f64::from(percentile) / 100.0;
-            let suffix = format!("{}percentile", percentile).into();
-            statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
-        }
-
-        Ok(Self {
-            statistics,
-            copy_to_distribution: raw.histogram_copy_to_distribution,
-            copy_to_distribution_prefix: raw.histogram_copy_to_distribution_prefix,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `try_new` documents two rejection branches: an aggregate that names no supported statistic, and a percentile
+    /// that is not a quantile between `0.0` and `1.0`.
+    #[test]
+    fn unsupported_aggregates_and_percentiles_are_rejected() {
+        let unknown_aggregate = HistogramConfiguration::try_new(&["p99".to_string()], &[], false, String::new());
+        assert!(unknown_aggregate.is_err());
+
+        let non_numeric = HistogramConfiguration::try_new(&[], &["abc".to_string()], false, String::new());
+        assert!(non_numeric.is_err());
+
+        let above_range = HistogramConfiguration::try_new(&[], &["1.1".to_string()], false, String::new());
+        assert!(above_range.is_err());
+
+        let below_range = HistogramConfiguration::try_new(&[], &["-0.1".to_string()], false, String::new());
+        assert!(below_range.is_err());
+    }
+
     #[test]
     fn percentile_suffixes_match_agent_rounding() {
-        let raw = RawHistogramConfiguration {
-            histogram_aggregates: Vec::new(),
-            histogram_percentiles: vec!["0.299".to_string(), "0.73".to_string()],
-            histogram_copy_to_distribution: false,
-            histogram_copy_to_distribution_prefix: String::new(),
-        };
-
-        let config = HistogramConfiguration::try_from(raw).unwrap();
+        let config =
+            HistogramConfiguration::try_new(&[], &["0.299".to_string(), "0.73".to_string()], false, String::new())
+                .unwrap();
 
         assert_eq!(
             config.statistics(),

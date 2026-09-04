@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "sessionId": "01a025b2-6775-7f3d-b5a0-d86ea088440d",
+  "root": "/Users/lucas.tembras/saluki/keepalive",
+  "files": {
+    "/Users/lucas.tembras/saluki/keepalive/lib/datadog-agent/config/schema/schema_overlay.yaml": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/datadog-agent/config/schema/schema_overlay.yaml",
+      "baseline": "baselines/1aefc98b74e705431104fc88.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T20:20:55.578Z",
+      "toolCallId": "chatcmpl-tool-2827fabe331a41a6b535dedb54a519e2"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/agent-data-plane-config/src/domains/otlp.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/agent-data-plane-config/src/domains/otlp.rs",
+      "baseline": "baselines/d86998d2fcbb10a9bc6e02bd.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:00:59.178Z",
+      "toolCallId": "chatcmpl-tool-0ccadf2ce8a74a9197ca5e29ecff55d2"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/agent-data-plane-config-system/src/translators/datadog_translator.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/agent-data-plane-config-system/src/translators/datadog_translator.rs",
+      "baseline": "baselines/227073278a7cbc01667f44ea.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:01:12.847Z",
+      "toolCallId": "chatcmpl-tool-d9aa110da68d4578a8082dd16e446534"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-io/src/net/server/grpc.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-io/src/net/server/grpc.rs",
+      "baseline": "baselines/cb530f026c18e66efe800af7.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:01:57.757Z",
+      "toolCallId": "chatcmpl-tool-e5a0d217bf12494e853e98f7445e4317"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/common/otlp/mod.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/common/otlp/mod.rs",
+      "baseline": "baselines/ae05958362da182e4d24542d.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:02:57.564Z",
+      "toolCallId": "chatcmpl-tool-042d8861b5dd45a0bcd34c7dce929aa7"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/sources/otlp/mod.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/sources/otlp/mod.rs",
+      "baseline": "baselines/d9f994826409ca87975f0a61.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:03:20.072Z",
+      "toolCallId": "chatcmpl-tool-4b7c5251f0124f9ea23a698384f476aa"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/relays/otlp/mod.rs": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/lib/saluki-components/src/relays/otlp/mod.rs",
+      "baseline": "baselines/43af7f80cc3088a321779948.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:03:56.912Z",
+      "toolCallId": "chatcmpl-tool-fbc4aa79ffc340edba424e96dff486c5"
+    },
+    "/Users/lucas.tembras/saluki/keepalive/.vale/styles/config/vocabularies/technical/accept.txt": {
+      "path": "/Users/lucas.tembras/saluki/keepalive/.vale/styles/config/vocabularies/technical/accept.txt",
+      "baseline": "baselines/519841ee8f93feada6767d8f.before",
+      "existed": true,
+      "capturedAt": "2026-08-21T21:07:51.803Z",
+      "toolCallId": "chatcmpl-tool-a150ae5bad124ab48e1038c4652bc665"
+    }
+  }
+}

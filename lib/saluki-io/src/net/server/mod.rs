@@ -1,2 +1,5 @@
+pub mod grpc;
 pub mod http;
-pub mod multiplex_service;
+
+#[cfg(test)]
+pub(crate) mod test_util;

@@ -145,7 +145,7 @@ mod tests {
         // Documented `# Errors`: an invalid (zero-byte) string interner size must be rejected.
         let config = DogStatsDConfiguration {
             context_string_interner_size_bytes: Some(ByteSize::b(0)),
-            ..Default::default()
+            ..DogStatsDConfiguration::for_test()
         };
 
         let err = ContextResolvers::new(&config, &test_context(), None)
@@ -165,12 +165,9 @@ mod tests {
         // usable primary and no-aggregation resolvers. The three resolvers share one interner, but that sharing isn't
         // observable through the public API, so we assert instead that both resolvers construct and resolve contexts
         // correctly from it.
-        //
-        // NOTE: `#[derive(Default)]` uses each field's own default (a zero interner size) rather than the serde config
-        // defaults, so we must set a non-zero interner size explicitly to reach the success path.
         let config = DogStatsDConfiguration {
             context_string_interner_size_bytes: Some(ByteSize::kib(64)),
-            ..Default::default()
+            ..DogStatsDConfiguration::for_test()
         };
         let mut resolvers =
             ContextResolvers::new(&config, &test_context(), None).expect("valid config should build resolvers");

@@ -28,6 +28,10 @@
     "schedule:weekly"
   ],
 
+  // Mark Renovate PRs as automated so various checks that only apply to
+  // non-automated changes will skip running for dependency update PRs.
+  "labels": ["automated"],
+
   // Maximum number of Renovate-authored PRs that may be open at once.
   "prConcurrentLimit": 5,
 
@@ -109,6 +113,17 @@
     {
       "matchManagers": ["rust-toolchain"],
       "enabled": false
+    },
+    // aws-lc-rs is intentionally pinned below 1.18 in Cargo.toml to stay on the
+    // NIST CMVP validated FIPS 140-3 module (AWS-LC-FIPS 3.x); 1.18.0 switches
+    // the `fips` feature to the not-yet-certified AWS-LC-FIPS 4.x module. Without
+    // this rule Renovate keeps proposing to widen the `<1.18` upper bound in the
+    // weekly non-major group PR. Remove once AWS-LC-FIPS 4.x is certified (see
+    // the pin comment next to the `aws-lc-rs` workspace dependency).
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["aws-lc-rs"],
+      "allowedVersions": "<1.18"
     }
   ],
 

@@ -36,7 +36,7 @@ pub struct PointsCache {
 impl PointsCache {
     pub fn from_config(config: OtlpMetricsTranslatorConfig) -> Self {
         let ttl = config.delta_ttl;
-        let interval = config.sweep_interval;
+        let interval = std::cmp::max(Duration::from_secs(1), ttl / 2);
 
         let number_points = CacheBuilder::from_identifier("otlp/metrics/number_points")
             .expect("identifier cannot be invalid")

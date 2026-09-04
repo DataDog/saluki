@@ -13,7 +13,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{Event, EventType},
 };
@@ -296,7 +296,7 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let rx = self.rx.clone().try_lock_owned()?;
         Ok(Box::new(DogStatsDStats { rx }))
     }
@@ -315,7 +315,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use saluki_context::tags::Tag;
-    use saluki_core::components::ComponentSpawner;
     use serde_json::json;
 
     use super::*;
@@ -390,8 +389,7 @@ mod tests {
         use saluki_core::components::ComponentContext;
         use saluki_core::data_model::event::metric::Metric;
         use saluki_core::health::HealthRegistry;
-        use saluki_core::runtime::state::DataspaceRegistry;
-        use saluki_core::runtime::Supervisor;
+        use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
         use saluki_core::topology::interconnect::Consumer;
         use saluki_core::topology::{EventsBuffer, TopologyContext};
         use tokio::runtime::Handle;
@@ -403,7 +401,7 @@ mod tests {
 
         let component_context = ComponentContext::test_destination("test");
         let destination = config
-            .build(component_context.clone())
+            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
             .await
             .expect("dsd_stats destination should build");
 
@@ -420,18 +418,12 @@ mod tests {
         let health = HealthRegistry::new()
             .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
             .expect("component was not previously registered");
-        // This component doesn't spawn supervised children yet, so a spawner over a never-run supervisor is
-        // sufficient. Anything that does spawn needs `TestComponentSupervisor` (saluki_core::components::test_util)
-        // instead, otherwise the spawn fails with `SupervisorGone`.
-        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
-        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
         let context = DestinationContext::new(
             &topology_context,
             &component_context,
             ComponentRegistry::default(),
             health,
             consumer,
-            spawner,
         );
 
         let run_handle = tokio::spawn(async move { destination.run(context).await });

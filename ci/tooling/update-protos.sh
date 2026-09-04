@@ -41,8 +41,14 @@ git -C ${TMP_DIR} -c advice.detachedHead=false clone --quiet --depth 1 --branch 
 echo "[*] Copying Protocol Buffers definitions to lib/protos/*..."
 
 ## Datadog Agent and Agent-related definitions.
+##
+## We drop all non-proto files afterwards: the Agent's tree carries `BUILD.bazel` files that are
+## meaningless here, and which break downstream Bazel builds of this crate by introducing extra
+## Bazel package boundaries that hide the definitions from the crate's own glob.
 mkdir -p lib/protos/datadog/proto/datadog-agent
 cp -R ${TMP_DIR}/datadog-agent/pkg/proto/datadog lib/protos/datadog/proto/datadog-agent/
+
+find lib/protos/datadog/proto/datadog-agent/datadog/ -type f ! -name "*.proto" -delete
 
 mkdir -p lib/protos/datadog/proto/agent-payload
 cp ${TMP_DIR}/agent-payload/proto/metrics/agent_payload.proto lib/protos/datadog/proto/agent-payload/

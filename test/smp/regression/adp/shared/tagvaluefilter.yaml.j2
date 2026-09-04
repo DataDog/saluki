@@ -1,0 +1,32 @@
+{# ADP configuration for the metric tag value allow-list experiments.
+
+   Rendered by generate_experiments.py with the experiment's `variables` in scope as `exp_vars`.
+   The generated copies under full/cases/ are outputs: edit this template, then run
+   `make generate-smp-experiments`. #}
+{% if exp_vars.rule_mode == "none" %}
+metric_tag_value_allowlist: []
+{% elif exp_vars.rule_mode == "broad" %}
+metric_tag_value_allowlist:
+  - metric_prefix: {{ exp_vars.metric_prefix }}
+    tag_name: {{ lading_names(exp_vars.tag_prefix, 0, exp_vars.tag_pool)[0] }}
+    values:
+{% for value in lading_names(exp_vars.value_prefix, 0, exp_vars.value_pool)[:exp_vars.allowed_values] %}
+      - {{ value }}
+{% endfor %}
+    on_miss: {{ exp_vars.mismatch_action }}
+    replacement: {{ exp_vars.replacement }}
+{% elif exp_vars.rule_mode == "per_metric" %}
+metric_tag_value_allowlist:
+{% for metric_name in lading_names(exp_vars.metric_prefix, exp_vars.rule_metric_first, exp_vars.rule_metrics) %}
+  - metric_prefix: {{ metric_name }}
+    tag_name: {{ lading_names(exp_vars.tag_prefix, 0, exp_vars.tag_pool)[0] }}
+    values:
+{% for value in lading_names(exp_vars.value_prefix, 0, exp_vars.value_pool)[:exp_vars.allowed_values] %}
+      - {{ value }}
+{% endfor %}
+    on_miss: {{ exp_vars.mismatch_action }}
+    replacement: {{ exp_vars.replacement }}
+{% endfor %}
+{% else %}
+{{ fail_unknown_rule_mode }}
+{% endif %}
