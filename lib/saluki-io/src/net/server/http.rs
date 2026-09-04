@@ -1015,7 +1015,7 @@ mod tests {
             let dataspace_rx = self
                 .dataspace_rx
                 .lock()
-                .unwrap()
+                .expect("dataspace receiver lock should not be poisoned")
                 .take()
                 .expect("the bound address should only be looked up once");
             let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
