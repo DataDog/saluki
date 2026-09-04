@@ -25,7 +25,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
 use saluki_common::collections::FastHashSet;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
-use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
+use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricOrigin, MetricValues};
 use saluki_core::data_model::event::Event;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
@@ -35,6 +35,7 @@ use super::cache::PointsCache;
 use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
+use super::origin;
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS, RUNTIME_METRIC_PREFIX_LANGUAGE_MAP};
 use super::telemetry::OtlpMetricsTranslatorMetrics;
@@ -92,6 +93,12 @@ enum MetricTypeOverrideWarningKind {
 struct TranslationContext<'a> {
     resource_attributes: &'a [OtlpKeyValue],
     metrics: &'a Metrics,
+    /// The `InstrumentationScope` name of the enclosing `ScopeMetrics`, or an empty string when no scope was
+    /// present.
+    ///
+    /// Used to derive the metric origin's product detail. An empty
+    /// name falls back to `0` (unknown).
+    scope_name: &'a str,
 }
 
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
@@ -562,6 +569,9 @@ impl OtlpMetricsTranslator {
             let mut tags = resource_tags.clone();
             tags.extend_from_shared(&scope_tags);
 
+            // Derive the metric origin's product detail from the instrumentation scope name.
+            let scope_name = scope_metrics.scope.as_ref().map_or("", |scope| scope.name.as_str());
+
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
             for mut metric in scope_metrics.metrics {
                 if let Some(mappings) = RUNTIME_METRICS_MAPPINGS.get(metric.name.as_str()) {
@@ -611,13 +621,13 @@ impl OtlpMetricsTranslator {
                 }
 
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, host.clone(), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, host.clone(), &resource.attributes, metrics, scope_name);
                 events.append(&mut translated_events);
             }
 
             for metric in new_metrics {
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, host.clone(), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, host.clone(), &resource.attributes, metrics, scope_name);
                 events.append(&mut translated_events);
             }
         }
@@ -716,7 +726,7 @@ impl OtlpMetricsTranslator {
     /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.
     fn map_to_dd_format(
         &mut self, metric: OtlpMetric, attribute_tags: &SharedTagSet, host: Option<MetaString>,
-        resource_attributes: &[OtlpKeyValue], metrics: &Metrics,
+        resource_attributes: &[OtlpKeyValue], metrics: &Metrics, scope_name: &str,
     ) -> Vec<Event> {
         let origin_id = self.attribute_translator.origin_id_from_attributes(resource_attributes);
         let base_dims = Dimensions {
@@ -729,6 +739,7 @@ impl OtlpMetricsTranslator {
         let context = TranslationContext {
             resource_attributes,
             metrics,
+            scope_name,
         };
 
         if let Some(data) = metric.data {
@@ -838,7 +849,10 @@ impl OtlpMetricsTranslator {
                     DataType::Rate => MetricValues::rate((timestamp_s, value), Duration::ZERO),
                 };
 
-                let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
+                let metadata = MetricMetadata::default().with_origin(Some(MetricOrigin::otlp(
+                    origin::product_detail_from_scope(context.scope_name),
+                )));
+                let metric = Metric::from_parts(resolved_context, values, metadata);
                 events.push(Event::Metric(metric));
             }
             None => {
@@ -1204,7 +1218,10 @@ impl OtlpMetricsTranslator {
                 }
                 let timestamp_s = timestamp_ns / 1_000_000_000;
                 let values = MetricValues::distribution((timestamp_s, sketch));
-                let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
+                let metadata = MetricMetadata::default().with_origin(Some(MetricOrigin::otlp(
+                    origin::product_detail_from_scope(context.scope_name),
+                )));
+                let metric = Metric::from_parts(resolved_context, values, metadata);
                 events.push(Event::Metric(metric));
             }
             None => {
@@ -1783,6 +1800,7 @@ mod tests {
         translator.config.hist_mode = mode;
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics: &metrics,
         };
         let dims = Dimensions {
@@ -1811,6 +1829,7 @@ mod tests {
         let metrics = Metrics::for_tests();
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics: &metrics,
         };
         let dims = Dimensions {
@@ -1878,6 +1897,7 @@ mod tests {
         let metrics = Metrics::for_tests();
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics: &metrics,
         };
         let dims = Dimensions {
@@ -1935,6 +1955,7 @@ mod tests {
         let metrics = Metrics::for_tests();
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics: &metrics,
         };
         let dims = Dimensions {
@@ -1993,6 +2014,7 @@ mod tests {
         };
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics,
         };
         translator.map_number_monotonic_metrics(dims, data_points, &context)
@@ -2006,6 +2028,7 @@ mod tests {
     ) -> Vec<Event> {
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics,
         };
         translator.map_number_metrics(dims, data_points, data_type, &context)
@@ -2139,6 +2162,187 @@ mod tests {
         assert_eq!(metric.context().host(), Some("resource-host"));
     }
 
+    fn single_gauge_resource_metrics_with_scope(scope_name: Option<&str>) -> OtlpResourceMetrics {
+        let scope = scope_name.map(
+            |name| otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope {
+                name: name.to_string(),
+                ..Default::default()
+            },
+        );
+
+        OtlpResourceMetrics {
+            resource: None,
+            scope_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ScopeMetrics {
+                scope,
+                metrics: vec![OtlpMetric {
+                    name: "otlp.host.metric".to_string(),
+                    data: Some(OtlpMetricData::Gauge(
+                        otlp_protos::opentelemetry::proto::metrics::v1::Gauge {
+                            data_points: vec![OtlpNumberDataPoint {
+                                value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                                time_unix_nano: nanos_from_seconds(1),
+                                ..Default::default()
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn translate_metrics_attaches_otlp_origin_for_known_receiver_scope() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // The hostmetricsreceiver is one of the known Collector receivers in the mapping table.
+        let scope = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver";
+        let (events, _) = translator
+            .translate_metrics(single_gauge_resource_metrics_with_scope(Some(scope)), &metrics)
+            .expect("translation should succeed");
+        let events = events.collect::<Vec<_>>();
+
+        let metric = events[0].try_as_metric().expect("metric event");
+        let origin = metric
+            .metadata()
+            .origin()
+            .expect("OTLP metrics should carry origin metadata");
+        assert_eq!(
+            *origin,
+            MetricOrigin::OriginMetadata {
+                product: 19,
+                subproduct: 0,
+                product_detail: 224,
+            }
+        );
+    }
+
+    #[test]
+    fn translate_metrics_attaches_otlp_origin_with_unknown_detail_for_absent_scope() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let (events, _) = translator
+            .translate_metrics(single_gauge_resource_metrics_with_scope(None), &metrics)
+            .expect("translation should succeed");
+        let events = events.collect::<Vec<_>>();
+
+        let metric = events[0].try_as_metric().expect("metric event");
+        // The Agent always sets product 10 and the OTLP subproduct 17, even when no scope is present; the product
+        // detail then falls back to 0 (unknown).
+        let origin = metric
+            .metadata()
+            .origin()
+            .expect("OTLP metrics should carry origin metadata even without a scope");
+        assert_eq!(
+            *origin,
+            MetricOrigin::OriginMetadata {
+                product: 19,
+                subproduct: 0,
+                product_detail: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn translate_metrics_attaches_otlp_origin_with_unknown_detail_for_unmapped_scope() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // A custom instrumentation library that does not use the Collector receiver prefix must not map to a known
+        // receiver; the product detail falls back to 0 (unknown).
+        let scope = "io.opentelemetry.myapp";
+        let (events, _) = translator
+            .translate_metrics(single_gauge_resource_metrics_with_scope(Some(scope)), &metrics)
+            .expect("translation should succeed");
+        let events = events.collect::<Vec<_>>();
+
+        let metric = events[0].try_as_metric().expect("metric event");
+        let origin = metric
+            .metadata()
+            .origin()
+            .expect("OTLP metrics should carry origin metadata");
+        assert_eq!(
+            *origin,
+            MetricOrigin::OriginMetadata {
+                product: 19,
+                subproduct: 0,
+                product_detail: 0,
+            }
+        );
+    }
+
+    fn single_histogram_resource_metrics_with_scope(scope_name: Option<&str>) -> OtlpResourceMetrics {
+        let scope = scope_name.map(
+            |name| otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope {
+                name: name.to_string(),
+                ..Default::default()
+            },
+        );
+
+        OtlpResourceMetrics {
+            resource: None,
+            scope_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ScopeMetrics {
+                scope,
+                metrics: vec![OtlpMetric {
+                    name: "otlp.histogram".to_string(),
+                    data: Some(OtlpMetricData::Histogram(
+                        otlp_protos::opentelemetry::proto::metrics::v1::Histogram {
+                            aggregation_temporality: AggregationTemporality::Delta as i32,
+                            data_points: vec![OtlpHistogramDataPoint {
+                                count: 6,
+                                sum: Some(10.0),
+                                bucket_counts: vec![1, 2, 3],
+                                explicit_bounds: vec![1.0, 2.0],
+                                time_unix_nano: nanos_from_seconds(1),
+                                ..Default::default()
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn translate_metrics_attaches_otlp_origin_to_sketch_events() {
+        let metrics = Metrics::for_tests();
+        // `for_tests` defaults to `HistogramMode::Distributions`, so a delta histogram emits a single sketch.
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let scope = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kubeletstatsreceiver";
+        let (events, _) = translator
+            .translate_metrics(single_histogram_resource_metrics_with_scope(Some(scope)), &metrics)
+            .expect("translation should succeed");
+        let events = events.collect::<Vec<_>>();
+
+        assert_eq!(events.len(), 1, "distributions mode emits a single sketch");
+        let metric = events[0].try_as_metric().expect("metric event");
+        assert!(
+            matches!(metric.values(), MetricValues::Distribution(_)),
+            "expected a sketch (distribution) metric"
+        );
+
+        let origin = metric
+            .metadata()
+            .origin()
+            .expect("OTLP sketch metrics should carry origin metadata");
+        assert_eq!(
+            *origin,
+            MetricOrigin::OriginMetadata {
+                product: 19,
+                subproduct: 0,
+                product_detail: 229, // kubeletstatsreceiver
+            }
+        );
+    }
+
     #[test]
     fn translate_metrics_leaves_fargate_resource_host_unset() {
         let metrics = Metrics::for_tests();
@@ -2268,6 +2472,7 @@ mod tests {
             None,
             &[],
             &metrics,
+            "",
         );
 
         assert_eq!(events.len(), 1);
@@ -2306,6 +2511,7 @@ mod tests {
             None,
             &[],
             metrics,
+            "",
         )
     }
 
@@ -2394,6 +2600,7 @@ mod tests {
             None,
             &[],
             &metrics,
+            "",
         );
 
         assert_eq!(events.len(), 1);
@@ -2418,7 +2625,7 @@ mod tests {
         };
         sum.data_points.push(sum.data_points[0].clone());
 
-        let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics);
+        let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics, "");
 
         assert_eq!(events.len(), 2);
         assert!(translator
@@ -2438,6 +2645,7 @@ mod tests {
                 None,
                 &[],
                 &metrics,
+                "",
             );
 
             assert_eq!(events.len(), 1, "expected one event for {as_type}");
@@ -2459,7 +2667,7 @@ mod tests {
         };
         sum.data_points.push(sum.data_points[0].clone());
 
-        let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics);
+        let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics, "");
 
         assert_eq!(events.len(), 2);
         assert!(translator
@@ -2490,6 +2698,7 @@ mod tests {
             None,
             &[],
             &metrics,
+            "",
         );
 
         assert_eq!(events.len(), 1);
@@ -2848,6 +3057,7 @@ mod tests {
         };
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics: &metrics,
         };
         let start_ts = translator.process_start_time_ns + 1;
@@ -4346,6 +4556,7 @@ mod tests {
         };
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics,
         };
         translator.map_histogram_metrics(dims, data_points, delta, &context)
@@ -4500,6 +4711,7 @@ mod tests {
         };
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics,
         };
         translator.map_summary_metrics(dims, data_points, &context)
@@ -4601,6 +4813,7 @@ mod tests {
         };
         let context = TranslationContext {
             resource_attributes: &[],
+            scope_name: "",
             metrics,
         };
         translator.map_exponential_histogram_metrics(dims, data_points, delta, &context)

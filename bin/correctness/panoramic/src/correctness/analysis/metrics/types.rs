@@ -4,7 +4,7 @@ use std::{
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::{Metric, MetricContext, MetricValue};
+use stele::{Metric, MetricContext, MetricOrigin, MetricValue};
 
 /// A metric context and type pair, used for comparing metrics between different sets.
 type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
@@ -101,16 +101,17 @@ pub struct NormalizedMetric {
     context: NormalizedMetricContext,
     raw_values: Vec<(u64, MetricValue)>,
     value: MetricValue,
+    origin: Option<MetricOrigin>,
 }
 
 impl NormalizedMetric {
-    /// Attempts to create `NormalizedMetric` from the given context and raw metric values.
+    /// Attempts to create `NormalizedMetric` from the given context, raw metric values, and origin.
     ///
     /// # Errors
     ///
     /// If the raw values are empty, or if the values can't be normalized, an error is returned.
     pub fn try_from_values(
-        context: NormalizedMetricContext, mut raw_values: Vec<(u64, MetricValue)>,
+        context: NormalizedMetricContext, mut raw_values: Vec<(u64, MetricValue)>, origin: Option<MetricOrigin>,
     ) -> Result<Self, GenericError> {
         // We need to first sort the raw values by timestamp, to ensure we have proper ordering semantics.
         raw_values.sort_by_key(|a| a.0);
@@ -121,6 +122,7 @@ impl NormalizedMetric {
             context,
             raw_values,
             value,
+            origin,
         })
     }
 
@@ -149,7 +151,15 @@ impl NormalizedMetric {
     pub fn normalized_value(&self) -> &MetricValue {
         &self.value
     }
+
+    /// Returns the origin metadata of the metric, if present.
+    pub fn origin(&self) -> Option<&MetricOrigin> {
+        self.origin.as_ref()
+    }
 }
+
+/// Aggregated values and origin for a single (context, type) group during normalization.
+type AggregatedMetric = (Vec<(u64, MetricValue)>, Option<MetricOrigin>);
 
 /// A set of normalized metrics.
 ///
@@ -183,19 +193,43 @@ impl NormalizedMetrics {
         //
         // We group by type because metrics with the same context but different types (for example, Count vs Rate) cannot be
         // merged together during normalization.
-        let mut aggregated_context_values = BTreeMap::new();
+        //
+        // We also track the origin for each group. Since the same metric may arrive via multiple wire formats (V2 and V3),
+        // we take the first non-`None` origin— V1 JSON carries no origin, while V2/V3 do.
+        let mut aggregated_context_values: BTreeMap<(NormalizedMetricContext, MetricType), AggregatedMetric> =
+            BTreeMap::new();
 
         for metric in metrics {
             let context = NormalizedMetricContext::from_stele_context(metric.context().clone());
             let metric_type = metric_value_type(metric.values());
+            let metric_origin = metric.origin().cloned();
             let key = (context, metric_type);
-            let context_values = aggregated_context_values.entry(key).or_insert_with(Vec::new);
+            let (context_values, origin) = aggregated_context_values
+                .entry(key)
+                .or_insert_with(|| (Vec::new(), None));
             context_values.extend_from_slice(metric.values());
+
+            // Track the origin for this group. The same metric may arrive via multiple wire formats
+            // (V1 JSON, V2 series/sketch, V3), and we take the first non-`None` origin. If a later
+            // metric in the same group has a different non-`None` origin, that indicates a wire-format
+            // discrepancy — we reject it rather than silently dropping the conflicting value.
+            match (&*origin, &metric_origin) {
+                (None, Some(new_origin)) => *origin = Some(new_origin.clone()),
+                (Some(existing), Some(new_origin)) if existing != new_origin => {
+                    return Err(generic_error!(
+                        "Conflicting origin metadata for metric '{}': {:?} vs {:?}",
+                        metric.context().name(),
+                        existing,
+                        new_origin
+                    ));
+                }
+                _ => {}
+            }
         }
 
         let metrics = aggregated_context_values
             .into_iter()
-            .map(|((context, _type), values)| NormalizedMetric::try_from_values(context, values))
+            .map(|((context, _type), (values, origin))| NormalizedMetric::try_from_values(context, values, origin))
             .try_fold(Vec::new(), |mut metrics, maybe_metric| {
                 metrics.push(maybe_metric?);
                 Ok::<_, GenericError>(metrics)

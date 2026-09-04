@@ -124,6 +124,27 @@ fn compare_metric_values(
                 samples.push(detail);
             }
         }
+
+        // Compare origin metadata. A mismatch here means the baseline and comparison disagree on the product,
+        // subproduct, or product detail of the metric— which affects billing attribution.
+        if baseline_metric.origin() != comparison_metric.origin() {
+            mismatched_count += 1;
+
+            error!("Found mismatched origin for metric '{}':", baseline_metric.context());
+            warn!("  Baseline:    {}", format_origin(baseline_metric.origin()));
+            warn!("  Comparison: {}", format_origin(comparison_metric.origin()));
+
+            let detail = format!(
+                "  {} (origin)\n    baseline:    {}\n    comparison:  {}",
+                baseline_metric.context(),
+                format_origin(baseline_metric.origin()),
+                format_origin(comparison_metric.origin()),
+            );
+            all_details.push(detail.clone());
+            if samples.len() < SAMPLE_MISMATCH_LIMIT {
+                samples.push(detail);
+            }
+        }
     }
 
     if mismatched_count == 0 {
@@ -190,5 +211,15 @@ fn get_formatted_metric_value(value: &MetricValue) -> String {
             sketch.count(),
             sketch.bin_count(),
         ),
+    }
+}
+
+fn format_origin(origin: Option<&stele::MetricOrigin>) -> String {
+    match origin {
+        Some(origin) => format!(
+            "product={} category={} service={}",
+            origin.product, origin.category, origin.service
+        ),
+        None => "none".to_string(),
     }
 }
