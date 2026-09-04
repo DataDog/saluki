@@ -11,59 +11,14 @@ use super::aggregation::{
     get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey, BUCKET_DURATION_NS,
     TAG_BASE_SERVICE, TAG_SPAN_KIND,
 };
+use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
+use crate::common::otlp::semantics::{Registry, REGISTRY};
 
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
 const METRIC_MEASURED: &str = "_dd.measured";
 pub const METRIC_PARTIAL_VERSION: &str = "_dd.partial_version";
-
-/// Base peer tags copied from `pkg/trace/config/peer_tags.ini`.
-const BASE_PEER_TAGS: &[&str] = &[
-    "_dd.base_service",
-    "active_record.db.vendor",
-    "amqp.destination",
-    "amqp.exchange",
-    "amqp.queue",
-    "aws.queue.name",
-    "aws.s3.bucket",
-    "bucketname",
-    "cassandra.keyspace",
-    "db.cassandra.contact.points",
-    "db.couchbase.seed.nodes",
-    "db.hostname",
-    "db.instance",
-    "db.name",
-    "db.namespace",
-    "db.system",
-    "db.type",
-    "dns.hostname",
-    "grpc.host",
-    "hostname",
-    "http.host",
-    "http.server_name",
-    "messaging.destination",
-    "messaging.destination.name",
-    "messaging.kafka.bootstrap.servers",
-    "messaging.rabbitmq.exchange",
-    "messaging.system",
-    "mongodb.db",
-    "msmq.queue.path",
-    "net.peer.name",
-    "network.destination.ip",
-    "network.destination.name",
-    "out.host",
-    "peer.hostname",
-    "peer.service",
-    "queuename",
-    "rpc.service",
-    "rpc.system",
-    "sequel.db.vendor",
-    "server.address",
-    "streamname",
-    "tablename",
-    "topicname",
-];
 
 #[derive(Clone, Default)]
 pub struct InfraTags {
@@ -117,8 +72,14 @@ pub struct SpanConcentrator {
     /// Whether peer tags aggregation is enabled
     peer_tags_aggregation: bool,
 
-    /// Configured peer tag keys for aggregation (base + custom)
-    peer_tag_keys: Vec<MetaString>,
+    /// Peer tag key set for aggregation, derived from the semantic registry (base + custom)
+    peer_tag_keys: PeerTagKeys,
+
+    /// Operator-configured peer tags, kept so the key set can be rebuilt when the registry changes
+    custom_peer_tags: Vec<MetaString>,
+
+    /// Semantic attribute registry the peer tag key set is derived from
+    registry: Registry,
 
     /// Bucket duration in nanoseconds (10 s)
     bsize: u64,
@@ -138,20 +99,36 @@ pub struct SpanConcentrator {
 }
 
 impl SpanConcentrator {
+    /// Creates a new concentrator deriving its peer tag keys from the embedded semantic registry.
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
-        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|s| MetaString::from_static(s)).collect();
-        for tag in custom_peer_tags {
-            if !peer_tag_keys.iter().any(|t| t == tag) {
-                peer_tag_keys.push(tag.clone());
-            }
-        }
+        Self::new_with_registry(
+            compute_stats_by_span_kind,
+            peer_tags_aggregation,
+            custom_peer_tags,
+            &REGISTRY,
+            now,
+        )
+    }
+
+    /// Creates a new concentrator deriving its peer tag keys from the given semantic registry.
+    ///
+    /// The key set is a snapshot pinned to the registry's content hash; [`Self::flush`] rebuilds it
+    /// whenever the live registry content hash changes, so remotely shipped semantic updates reach
+    /// stats aggregation without a restart.
+    pub fn new_with_registry(
+        compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString],
+        registry: &Registry, now: u64,
+    ) -> Self {
+        let peer_tag_keys = PeerTagKeys::build(registry, custom_peer_tags);
 
         Self {
             compute_stats_by_span_kind,
             peer_tags_aggregation,
             peer_tag_keys,
+            custom_peer_tags: custom_peer_tags.to_vec(),
+            registry: registry.clone(),
             bsize: BUCKET_DURATION_NS,
             oldest_ts: align_ts(now, BUCKET_DURATION_NS),
             buffer_len: DEFAULT_BUFFER_LEN,
@@ -172,6 +149,11 @@ impl SpanConcentrator {
     }
 
     pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
+        // Refresh the peer tag key snapshot if the registry content changed. This runs on the
+        // flush cycle, deliberately off the per-span hot path: the steady-state cost is a single
+        // `u64` comparison, and only an actual registry change pays the re-derivation cost.
+        self.peer_tag_keys.refresh(&self.registry, &self.custom_peer_tags);
+
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
         let mut container_tags_by_id = FastHashMap::<MetaString, TagSet>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
@@ -330,7 +312,7 @@ impl SpanConcentrator {
             || span_kind.eq_ignore_ascii_case("producer")
             || span_kind.eq_ignore_ascii_case("consumer")
         {
-            return &self.peer_tag_keys;
+            return self.peer_tag_keys.keys();
         }
 
         EMPTY_PEER_TAGS
