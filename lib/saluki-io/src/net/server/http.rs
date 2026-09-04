@@ -972,7 +972,10 @@ mod tests {
 
     /// A running server subtree, together with the trigger that stops it.
     struct RunningServer {
-        dataspace: DataspaceRegistry,
+        // Not resolved until `bound_tcp_address` is called: a server whose initialization is expected to fail (e.g.
+        // to hit an already-bound port) may tear down before the capture worker ever gets to send anything, and
+        // tests exercising that don't ask for the bound address at all.
+        dataspace_rx: Mutex<Option<oneshot::Receiver<DataspaceRegistry>>>,
         bound_address_id: Identifier,
         shutdown_tx: Option<oneshot::Sender<()>>,
         task: JoinHandle<Result<(), SupervisorError>>,
@@ -998,13 +1001,9 @@ mod tests {
 
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
             let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
-            let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
-                .await
-                .expect("should capture the supervisor dataspace")
-                .expect("dataspace capture worker should send the registry");
 
             Self {
-                dataspace,
+                dataspace_rx: Mutex::new(Some(dataspace_rx)),
                 bound_address_id: get_bound_address_id(&server_id),
                 shutdown_tx: Some(shutdown_tx),
                 task,
@@ -1013,9 +1012,19 @@ mod tests {
 
         /// Looks up the address the server actually bound, once it has finished initializing.
         async fn bound_tcp_address(&self) -> SocketAddr {
-            let mut subscription = self
-                .dataspace
-                .subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
+            let dataspace_rx = self
+                .dataspace_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("the bound address should only be looked up once");
+            let dataspace = timeout(TEST_TIMEOUT, dataspace_rx)
+                .await
+                .expect("should capture the supervisor dataspace")
+                .expect("dataspace capture worker should send the registry");
+
+            let mut subscription =
+                dataspace.subscribe::<BoundListenAddress>(IdentifierFilter::exact(self.bound_address_id.clone()));
 
             match timeout(TEST_TIMEOUT, subscription.recv()).await {
                 Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(addr)))) => addr,
