@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ContainerOs","ExitStatus"],"struct":["Driver","DriverConfig","DriverDetails"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_ALPINE_IMAGE"],"enum":["ContainerOs","ExitStatus"],"struct":["Driver","DriverConfig","DriverDetails"]};
