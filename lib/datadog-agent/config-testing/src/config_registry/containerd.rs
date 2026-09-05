@@ -52,7 +52,7 @@ crate::declare_annotations! {
     /// `cri_socket_path`-containerd/CRI socket path
     CRI_SOCKET_PATH = SalukiAnnotation {
         schema: &schema::CRI_SOCKET_PATH,
-        support_level: SupportLevel::Full,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
