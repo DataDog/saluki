@@ -606,13 +606,23 @@ inventory:
         config_registry_filename: containerd.rs
 
   cri_socket_path:
-    support: full
+    support: partial
     pipelines: [cross_cutting]
     description: "containerd/CRI socket path"
     documentation: |-
-      Setting this path enables the containerd integration against that socket. When the key is not
-      set explicitly, ADP probes the well-known containerd socket paths instead. An explicitly empty
-      path leaves containerd undetected.
+      The core Agent uses this key to enable both its CRI and containerd integrations, classifying
+      the socket by path: a path containing `containerd` selects containerd, a path containing
+      `crio` selects CRI-O, and any other reachable CRI socket is treated as a nonstandard CRI
+      runtime. When the key is unset, the core Agent probes well-known containerd and CRI-O paths.
+
+      ADP implements the containerd runtime only. Setting this path enables the containerd
+      integration against that socket, but only when the path contains `containerd`. A CRI-O or
+      otherwise nonstandard CRI socket path leaves containerd undetected, and ADP starts no
+      container runtime metadata collector for it. When the key is not set explicitly, ADP probes
+      the well-known containerd socket paths only. An explicitly empty path leaves containerd
+      undetected.
+
+      Container ID resolution through cgroups is independent of this key and is unaffected.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
