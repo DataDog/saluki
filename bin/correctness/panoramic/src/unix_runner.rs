@@ -18,12 +18,15 @@
 //!
 //! # Binary discovery
 //!
-//! - ADP: `ADP_BINARY_PATH` env var, default `target/release/agent-data-plane` (resolved
-//!   relative to the current working directory).
-//! - Core Agent (converged only): `CORE_AGENT_BINARY_PATH` env var, default
+//! Both binaries come from the command line by way of [`TestContext`]. This runner never consults the process
+//! environment for them.
+//!
+//! - ADP: `--adp-binary-path`, default `target/release/agent-data-plane` (resolved relative to the current working
+//!   directory).
+//! - Core Agent (converged only): `--core-agent-binary-path`, default
 //!   `/tmp/saluki-dda/datadog-agent/bin/agent/agent` (the sandbox install written by
-//!   `make provision-macos-test-env`). Set the env var explicitly to point at a different
-//!   install (for example, a system-wide `/opt/datadog-agent` on a developer host).
+//!   `make provision-macos-test-env`). Pass the flag to point at a different install (for example, a system-wide
+//!   `/opt/datadog-agent` on a developer host).
 
 use std::sync::RwLock;
 use std::{
@@ -47,12 +50,6 @@ use crate::{
     reporter::{PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
-
-const ADP_BINARY_ENV_VAR: &str = "ADP_BINARY_PATH";
-const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
-
-const CORE_AGENT_BINARY_ENV_VAR: &str = "CORE_AGENT_BINARY_PATH";
-const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/agent/agent";
 
 /// How long to wait for the Core Agent to write its `auth_token` and `ipc_cert.pem` before
 /// giving up and failing the test.
@@ -140,7 +137,7 @@ impl UnixIntegrationRunner {
         }
 
         // Phase: resolve binary path.
-        let binary_path = match resolve_adp_binary_path() {
+        let binary_path = match resolve_adp_binary_path(&self.tctx.settings.adp_binary_path) {
             Ok(p) => p,
             Err(e) => return make_error_result(test_name, started, "resolve_binary", e, phase_timings),
         };
@@ -187,7 +184,7 @@ impl UnixIntegrationRunner {
         // same for the Unix runner so mac tests keep the same fixture shape: standalone-mode
         // tests still configure ADP not to use the Agent, but the Agent process exists.
         let agent_spawn_start = Instant::now();
-        let agent_binary = match resolve_core_agent_binary_path() {
+        let agent_binary = match resolve_core_agent_binary_path(&self.tctx.settings.core_agent_binary_path) {
             Ok(p) => p,
             Err(e) => return make_error_result(test_name, started, "resolve_core_agent", e, phase_timings),
         };
@@ -397,32 +394,30 @@ impl UnixIntegrationRunner {
     }
 }
 
-fn resolve_adp_binary_path() -> Result<PathBuf, GenericError> {
-    let raw = std::env::var(ADP_BINARY_ENV_VAR)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ADP_BINARY_PATH));
-
-    raw.canonicalize().with_error_context(|| {
+/// Resolves the ADP binary path that the command line supplied to an absolute path.
+///
+/// # Errors
+///
+/// Returns an error if the path doesn't resolve to an existing file.
+fn resolve_adp_binary_path(configured: &Path) -> Result<PathBuf, GenericError> {
+    configured.canonicalize().with_error_context(|| {
         format!(
-            "ADP binary not found at '{}'. Set {} or run `cargo build --release --bin agent-data-plane`.",
-            raw.display(),
-            ADP_BINARY_ENV_VAR
+            "ADP binary not found at '{}'. Pass --adp-binary-path or run `cargo build --release --bin agent-data-plane`.",
+            configured.display()
         )
     })
 }
 
-fn resolve_core_agent_binary_path() -> Result<PathBuf, GenericError> {
-    let raw = std::env::var(CORE_AGENT_BINARY_ENV_VAR)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_AGENT_BINARY_PATH));
-
-    raw.canonicalize().with_error_context(|| {
+/// Resolves the Core Agent binary path that the command line supplied to an absolute path.
+///
+/// # Errors
+///
+/// Returns an error if the path doesn't resolve to an existing file.
+fn resolve_core_agent_binary_path(configured: &Path) -> Result<PathBuf, GenericError> {
+    configured.canonicalize().with_error_context(|| {
         format!(
-            "Core Agent binary not found at '{}'. Set {} or install the Datadog Agent (https://docs.datadoghq.com/agent/).",
-            raw.display(),
-            CORE_AGENT_BINARY_ENV_VAR
+            "Core Agent binary not found at '{}'. Pass --core-agent-binary-path or install the Datadog Agent (https://docs.datadoghq.com/agent/).",
+            configured.display()
         )
     })
 }

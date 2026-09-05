@@ -216,6 +216,7 @@ impl CorrectnessRunner {
             self.baseline_coordinator.clone(),
             // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
+            self.tctx.settings.alpine_image.clone(),
         );
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
@@ -241,6 +242,7 @@ impl CorrectnessRunner {
             self.comparison_coordinator.clone(),
             // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
+            self.tctx.settings.alpine_image.clone(),
         );
 
         group_runner
@@ -339,6 +341,7 @@ impl CorrectnessRunner {
             self.tctx.log_dir().to_path_buf(),
             self.millstone_coordinator.clone(),
             self.tctx.test_cancel_token().child_token(),
+            self.tctx.settings.alpine_image.clone(),
         );
         group_runner.with_driver(driver_config)?;
 
@@ -592,12 +595,13 @@ struct GroupRunner {
     drivers: Vec<Driver>,
     coordinator: Coordinator,
     cancel_token: CancellationToken,
+    alpine_image: String,
 }
 
 impl GroupRunner {
     fn new(
         isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, coordinator: Coordinator,
-        cancel_token: CancellationToken,
+        cancel_token: CancellationToken, alpine_image: String,
     ) -> Self {
         // Create a subdirectory for the isolation group's container logs.
         let group_log_dir = log_dir.join(group_name);
@@ -614,10 +618,12 @@ impl GroupRunner {
             drivers: Vec::new(),
             coordinator,
             cancel_token,
+            alpine_image,
         }
     }
 
     fn with_driver(&mut self, config: DriverConfig) -> Result<&mut Self, GenericError> {
+        let config = config.with_alpine_image(self.alpine_image.clone());
         let driver =
             Driver::from_config(self.isolation_group_id.clone(), config)?.with_logging(self.runner_log_dir.clone());
         self.drivers.push(driver);

@@ -76,21 +76,11 @@ impl TestSuiteResult {
 }
 
 /// Output format for test results.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
 pub enum OutputFormat {
     #[default]
     Text,
     Json,
-}
-
-impl OutputFormat {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "text" => Some(OutputFormat::Text),
-            "json" => Some(OutputFormat::Json),
-            _ => None,
-        }
-    }
 }
 
 /// Reporter for test results.

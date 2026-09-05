@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::test::{Test, TestContext};
+use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec, IntegrationConfig},
@@ -217,16 +217,16 @@ impl RunArgs {
 pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
     log_base_dir: PathBuf,
-    mounts_dir: PathBuf,
+    settings: RunnerSettings,
     kind_ready: Option<crate::test::KindReadyReceiver>,
 }
 
 impl Runner {
-    pub(crate) fn new(log_base_dir: impl Into<PathBuf>, mounts_dir: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(log_base_dir: impl Into<PathBuf>, settings: RunnerSettings) -> Self {
         Self {
             tests: Vec::new(),
             log_base_dir: log_base_dir.into(),
-            mounts_dir: mounts_dir.into(),
+            settings,
             kind_ready: None,
         }
     }
@@ -320,7 +320,7 @@ impl Runner {
                 event_sender,
                 cancel_all,
                 self.log_base_dir.clone(),
-                self.mounts_dir.clone(),
+                self.settings.clone(),
                 self.kind_ready.clone(),
             )
             .await;
@@ -346,7 +346,7 @@ impl Runner {
             let semaphore = semaphore.clone();
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
-            let mounts_dir = self.mounts_dir.clone();
+            let settings = self.settings.clone();
             let mut kind_ready = self.kind_ready.clone();
             futures.push(async move {
                 if cancel.is_cancelled() {
@@ -379,7 +379,7 @@ impl Runner {
                     return None;
                 }
 
-                Some(Self::run_one(*test, event_sender, &cancel, log_base_dir, mounts_dir, kind_ready).await)
+                Some(Self::run_one(*test, event_sender, &cancel, log_base_dir, settings, kind_ready).await)
             });
 
             while futures.len() >= parallelism {
@@ -399,7 +399,7 @@ impl Runner {
 
     async fn run_one(
         test: &dyn Test, event_sender: &Option<EventSender>, cancel_all: &CancellationToken, log_base_dir: PathBuf,
-        mounts_dir: PathBuf, kind_ready: Option<crate::test::KindReadyReceiver>,
+        settings: RunnerSettings, kind_ready: Option<crate::test::KindReadyReceiver>,
     ) -> TestResult {
         let name = test.name();
         let suite = test.suite();
@@ -420,7 +420,7 @@ impl Runner {
             );
         }
 
-        let mut tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), mounts_dir);
+        let mut tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), settings);
         if test.runtime() == "kubernetes_in_docker" {
             if let Some(rx) = kind_ready {
                 tctx = tctx.with_kind_ready(rx);
@@ -919,7 +919,9 @@ impl IntegrationRunner {
             host_cgroup_namespace: container.host_cgroup_namespace,
         };
 
-        let mut config = DriverConfig::target("target", target_config).await?;
+        let mut config = DriverConfig::target("target", target_config)
+            .await?
+            .with_alpine_image(&self.tctx.settings.alpine_image);
 
         // Apply panoramic's read-only file overlays before any test-specific bind mounts. The
         // overlays target Linux paths (such as /var/log/datadog) and don't apply to Windows
@@ -970,7 +972,8 @@ impl IntegrationRunner {
             binary_path: None,
         })
         .await?
-        .with_network_alias(crate::config::INTAKE_NETWORK_ALIAS);
+        .with_network_alias(crate::config::INTAKE_NETWORK_ALIAS)
+        .with_alpine_image(&self.tctx.settings.alpine_image);
 
         let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
             .with_logging(self.tctx.log_dir().to_path_buf());

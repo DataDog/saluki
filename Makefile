@@ -663,9 +663,9 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 test-integration-macos-run: BUILD_PROFILE ?= release
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
-	@ADP_BINARY_PATH="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
-		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
+		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 

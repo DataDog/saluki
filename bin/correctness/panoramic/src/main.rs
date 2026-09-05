@@ -6,9 +6,10 @@
 use std::collections::BTreeMap;
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
+use clap::Parser as _;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 
 use crate::runner::Runner;
@@ -20,7 +21,7 @@ mod actions;
 mod assertions;
 mod cli;
 mod correctness;
-use self::cli::{Cli, Command};
+use self::cli::{Cli, Command, LogLevel};
 
 mod config;
 mod dynamic_vars;
@@ -56,21 +57,21 @@ async fn main() -> ExitCode {
     // process-wide provider must be installed before any Rustls client configuration is built.
     let _ = default_crypto_provider().install_default();
 
-    let cli: Cli = argh::from_env();
+    let cli = Cli::parse();
 
     // See if we should use TUI mode.
     //
     // This influences how we configure things since some output gets redirected/rendered differently in TUI mode.
     let (use_tui, is_test_run) = match &cli.command {
         Command::Run(cmd) => (
-            !cmd.no_tui && cmd.output == "text" && std::io::stdout().is_terminal(),
+            !cmd.no_tui && matches!(cmd.output, OutputFormat::Text) && std::io::stdout().is_terminal(),
             true,
         ),
         Command::List(_) => (false, false),
     };
 
     if !use_tui {
-        initialize_logging();
+        initialize_logging(cli.log_level);
         if is_test_run {
             info!("Panoramic starting...");
         }
@@ -95,8 +96,12 @@ async fn main() -> ExitCode {
     result
 }
 
-fn initialize_logging() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+fn initialize_logging(log_level: LogLevel) {
+    let env_filter = if std::env::var_os(EnvFilter::DEFAULT_ENV).is_some() {
+        EnvFilter::from_default_env()
+    } else {
+        EnvFilter::new(log_level.filter_directives())
+    };
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -110,6 +115,15 @@ fn initialize_logging() {
 }
 
 async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
+    let settings = cmd.runner_settings();
+    debug!(
+        adp_binary_path = %settings.adp_binary_path.display(),
+        core_agent_binary_path = %settings.core_agent_binary_path.display(),
+        mounts_dir = %settings.mounts_dir.display(),
+        alpine_image = %settings.alpine_image,
+        "Resolved runner settings."
+    );
+
     if cmd.test_dirs.is_empty() {
         let msg = "No test directories specified. Use -d <path> to specify one or more directories.";
         if use_tui {
@@ -187,7 +201,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     };
 
     // Inject runtime config and build the test registry.
-    let mut registry = Runner::new(log_dir.clone(), cmd.mounts_dir.clone());
+    let mut registry = Runner::new(log_dir.clone(), settings);
     if let Some(ref rx) = kind_rx {
         registry = registry.with_kind_ready(rx.clone());
     }
@@ -312,15 +326,7 @@ async fn run_with_logging_consumer(
     rx: mpsc::UnboundedReceiver<TestEvent>, cmd: &cli::RunCommand, log_dir: Option<PathBuf>,
     runner_handle: tokio::task::JoinHandle<Vec<TestResult>>,
 ) -> bool {
-    let output_format = match OutputFormat::from_str(&cmd.output) {
-        Some(format) => format,
-        None => {
-            error!("Invalid output format '{}'. Use 'text' or 'json'.", cmd.output);
-            return false;
-        }
-    };
-
-    let reporter = Reporter::new(output_format, cmd.verbose);
+    let reporter = Reporter::new(cmd.output, cmd.verbose);
 
     info!("Starting test run with parallelism of {}...", cmd.parallelism);
 
@@ -447,4 +453,24 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_level_scopes_the_selected_level_to_first_party_crates() {
+        let directives = EnvFilter::new(LogLevel::Debug.filter_directives()).to_string();
+
+        // `EnvFilter` reorders directives, so check membership rather than the whole string.
+        assert!(
+            directives.contains("panoramic=debug"),
+            "directives were '{}'",
+            directives
+        );
+        assert!(directives.contains("airlock=debug"), "directives were '{}'", directives);
+        assert!(directives.contains("off"), "directives were '{}'", directives);
+        assert!(!directives.contains("hyper"), "directives were '{}'", directives);
+    }
 }

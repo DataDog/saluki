@@ -95,6 +95,14 @@ be configured to run in `parallel`.
 
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
+## Panoramic CLI and environment
+
+Both suites run through the same `panoramic` binary.
+
+```bash
+cargo run --release --bin panoramic -- --help
+```
+
 ## Benchmark tests: Single Machine Performance (SMP)
 
 SMP is a system that runs on internal, dedicated infrastructure to check the Agent for performance regressions. It runs
