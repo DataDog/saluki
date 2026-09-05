@@ -39,6 +39,9 @@ pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 /// The amount of time a test has to clean up after cancellation or timing out.
 const GRACE_TIME: Duration = Duration::from_secs(30);
 
+/// The amount of time the intake sidecar has to report healthy before the test fails.
+const INTAKE_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
 ///
 /// ADP reads its own configuration as a nested object: a key like `data_plane.enabled` maps to
@@ -517,6 +520,24 @@ impl IntegrationRunner {
             "Starting test case."
         );
 
+        // The intake sidecar is a Linux container, so it creates the isolation group's network with
+        // Docker's `bridge` driver. A Windows target needs a `nat` network and cannot join that one,
+        // so reject the combination up front instead of failing later inside Docker.
+        if self.test_case.intake.enabled && self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+            return TestResult {
+                name: test_name,
+                passed: false,
+                duration: started.elapsed(),
+                assertion_results: vec![],
+                error: Some(format!(
+                    "Intake sidecar is not supported on the '{}' runtime.",
+                    crate::config::WINDOWS_RUNTIME
+                )),
+                phase_timings,
+                assertion_details: vec![],
+            };
+        }
+
         // Build the driver configuration.
         debug!(test = %test_name, "Building driver configuration...");
         let phase_start = Instant::now();
@@ -544,6 +565,39 @@ impl IntegrationRunner {
             duration: phase_start.elapsed(),
         });
 
+        // Start the intake sidecar first, so the target can flush to it from the moment it runs.
+        let mut intake_host_port = None;
+        let mut _intake_driver = None;
+        if self.test_case.intake.enabled {
+            let phase_start = Instant::now();
+            info!(test = %test_name, "Starting intake sidecar...");
+            let outcome = self.start_intake().await;
+            phase_timings.push(PhaseTiming {
+                phase: "intake_start".to_string(),
+                duration: phase_start.elapsed(),
+            });
+
+            match outcome {
+                Ok((driver, host_port)) => {
+                    intake_host_port = Some(host_port);
+                    _intake_driver = Some(driver);
+                }
+                Err(e) => {
+                    error!(test = %test_name, error = %e, "Failed to start intake sidecar.");
+                    let _ = self.cleanup().await;
+                    return TestResult {
+                        name: test_name,
+                        passed: false,
+                        duration: started.elapsed(),
+                        assertion_results: vec![],
+                        error: Some(format!("Failed to start intake sidecar: {}", e)),
+                        phase_timings,
+                        assertion_details: vec![],
+                    };
+                }
+            }
+        }
+
         // Create and start the driver.
         let phase_start = Instant::now();
         debug!(test = %test_name, "Creating container driver...");
@@ -555,6 +609,9 @@ impl IntegrationRunner {
                     phase: "container_start".to_string(),
                     duration: phase_start.elapsed(),
                 });
+                // An intake sidecar started above already owns a container and the isolation group's
+                // network, so tear the group down before giving up on the test.
+                let _ = self.cleanup().await;
                 return TestResult {
                     name: test_name,
                     passed: false,
@@ -576,7 +633,7 @@ impl IntegrationRunner {
                     phase: "container_start".to_string(),
                     duration: phase_start.elapsed(),
                 });
-                let _ = self.cleanup(&driver).await;
+                let _ = self.cleanup().await;
                 return TestResult {
                     name: test_name,
                     passed: false,
@@ -660,7 +717,7 @@ impl IntegrationRunner {
                                 phase: "dynamic_vars".to_string(),
                                 duration: phase_start.elapsed(),
                             });
-                            let _ = self.cleanup(&driver).await;
+                            let _ = self.cleanup().await;
                             return TestResult {
                                 name: test_name,
                                 passed: false,
@@ -692,7 +749,7 @@ impl IntegrationRunner {
                             phase: "dynamic_vars".to_string(),
                             duration: phase_start.elapsed(),
                         });
-                        let _ = self.cleanup(&driver).await;
+                        let _ = self.cleanup().await;
                         return TestResult {
                             name: test_name,
                             passed: false,
@@ -714,7 +771,7 @@ impl IntegrationRunner {
                         phase: "dynamic_vars".to_string(),
                         duration: phase_start.elapsed(),
                     });
-                    let _ = self.cleanup(&driver).await;
+                    let _ = self.cleanup().await;
                     return TestResult {
                         name: test_name,
                         passed: false,
@@ -746,7 +803,7 @@ impl IntegrationRunner {
 
         // If we are canceled while running our assertions, we return early to respect cancellation.
         let assertion_results = tokio::select! {
-            results = self.run_assertions(&port_mappings, details.container_ip(), &container_name, &exit_token, docker_exit_code) => results,
+            results = self.run_assertions(&port_mappings, details.container_ip(), &container_name, &exit_token, docker_exit_code, intake_host_port) => results,
             _ = test_cancel.cancelled() => vec![AssertionResult {
                 name: "cancelled".to_string(),
                 passed: false,
@@ -796,7 +853,7 @@ impl IntegrationRunner {
         // Cleanup.
         let phase_start = Instant::now();
         debug!(test = %test_name, "Cleaning up container and resources...");
-        if let Err(e) = self.cleanup(&driver).await {
+        if let Err(e) = self.cleanup().await {
             warn!(test = %test_name, error = %e, "Failed to clean up resources.");
         }
         debug!(test = %test_name, "Cleanup complete.");
@@ -902,6 +959,46 @@ impl IntegrationRunner {
         Ok(config)
     }
 
+    /// Starts the Datadog intake sidecar in this test's isolation group.
+    ///
+    /// Sharing the isolation group puts the sidecar on the same Docker network as the target, which
+    /// reaches it by network alias. Returns the sidecar's driver and the host port that its HTTP
+    /// endpoint is published on.
+    async fn start_intake(&self) -> Result<(Driver, u16), GenericError> {
+        let config = DriverConfig::datadog_intake(airlock::config::DatadogIntakeConfig {
+            image: crate::config::DEFAULT_INTAKE_IMAGE.to_string(),
+            binary_path: None,
+        })
+        .await?
+        .with_network_alias(crate::config::INTAKE_NETWORK_ALIAS);
+
+        let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
+            .with_logging(self.tctx.log_dir().to_path_buf());
+        let details = driver.start().await?;
+
+        // The health wait polls until it gets an answer, so bound it and watch for cancellation. A sidecar that never
+        // reports healthy would otherwise hold the test past its teardown grace period, leaking the isolation group.
+        let test_cancel = self.tctx.test_cancel_token();
+        tokio::select! {
+            result = driver.wait_for_container_healthy() => {
+                result.error_context("Intake sidecar failed its health check.")?
+            }
+            _ = tokio::time::sleep(INTAKE_HEALTH_TIMEOUT) => return Err(generic_error!(
+                "Intake sidecar did not report healthy within {:?}.",
+                INTAKE_HEALTH_TIMEOUT
+            )),
+            _ = test_cancel.cancelled() => return Err(generic_error!(
+                "Canceled while waiting for the intake sidecar to report healthy."
+            )),
+        }
+
+        let host_port = details
+            .try_get_exposed_port("tcp", crate::config::INTAKE_HTTP_PORT)
+            .ok_or_else(|| generic_error!("Intake container did not publish its HTTP port."))?;
+
+        Ok((driver, host_port))
+    }
+
     fn build_port_mappings(&self, details: &DriverDetails) -> HashMap<String, u16> {
         build_port_mappings_for_runtime(
             &self.test_case.active_runtime,
@@ -961,6 +1058,7 @@ impl IntegrationRunner {
     async fn run_assertions(
         &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
         exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
+        intake_host_port: Option<u16>,
     ) -> Vec<AssertionResult> {
         let target_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
             ContainerOs::Windows
@@ -978,6 +1076,7 @@ impl IntegrationRunner {
             is_host_process: false,
             host_process_exit_code: None,
             docker_container_exit_code: Some(docker_exit_code),
+            intake_host_port,
             core_agent_auth_token_path: None,
             adp_cli_command: container_adp_cli_command(target_os),
             core_agent_cli_command: container_core_agent_cli_command(target_os),
@@ -985,7 +1084,7 @@ impl IntegrationRunner {
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
 
-    async fn cleanup(&self, _driver: &Driver) -> Result<(), GenericError> {
+    async fn cleanup(&self) -> Result<(), GenericError> {
         // Cancel any running operations holding children of cancel token.
         self.tctx.test_cancel_token().cancel();
 

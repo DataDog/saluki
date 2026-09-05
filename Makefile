@@ -225,6 +225,7 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		.
 
 
+# TODO: Use a suite-neutral name now that integration tests also use this image.
 .PHONY: build-correctness-tools-image
 build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
 	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."
@@ -606,7 +607,7 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@cargo build --profile release --package panoramic
 
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image
+test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))

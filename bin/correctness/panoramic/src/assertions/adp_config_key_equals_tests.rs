@@ -21,6 +21,7 @@ fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
         is_host_process: true,
         host_process_exit_code: None,
         docker_container_exit_code: None,
+        intake_host_port: None,
         core_agent_auth_token_path: None,
         adp_cli_command,
         core_agent_cli_command: TargetCommand::new(vec!["panoramic-wrong-cli-program".to_string()]),
