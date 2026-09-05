@@ -34,6 +34,9 @@ pub struct SharedConfiguration {
     /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.
     pub autoscaling_failover: AutoscalingFailover,
 
+    /// Secrets management, read by the Datadog intake forwarders.
+    pub secrets: Secrets,
+
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
@@ -553,6 +556,41 @@ pub struct ClusterAgent {
     /// Agent runs under a different service name, or set it to the empty string to turn the lookup off, which leaves
     /// `url` as the only way to reach the Cluster Agent.
     pub kubernetes_service_name: String,
+}
+
+/// Secrets management, as configured for the Core Agent.
+///
+/// ADP resolves no secrets itself; the Core Agent does. These settings mirror the Agent's own configuration, and ADP
+/// reads them for one purpose: to decide whether a rejected API key might be replaced. See
+/// [`in_use`](Self::in_use).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Secrets {
+    /// Path to the executable the Core Agent runs to fetch secrets.
+    ///
+    /// Defaults to unset, and a blank value is normalized to unset. ADP does not run it. A configured command makes
+    /// [`in_use`](Self::in_use) true, which makes an intake's `403 Forbidden` response retriable. Set this only to match
+    /// the Core Agent's own configuration.
+    pub backend_command: Option<String>,
+
+    /// Minutes between the secret refreshes the Core Agent triggers after an API key is rejected.
+    ///
+    /// Defaults to `0`, which turns those refreshes off. A negative value from the source means the same thing and is
+    /// clamped to `0`. A positive value makes [`in_use`](Self::in_use) true on its own, and `0` does not make it false
+    /// when [`backend_command`](Self::backend_command) is set. Set this only to match the Core Agent's own
+    /// configuration.
+    pub refresh_on_api_key_failure_interval: u64,
+}
+
+impl Secrets {
+    /// Returns whether secret resolution might replace a rejected API key.
+    ///
+    /// This is true when a [`backend_command`](Self::backend_command) is configured or
+    /// [`refresh_on_api_key_failure_interval`](Self::refresh_on_api_key_failure_interval) is positive. Either says the
+    /// key an intake just rejected may be a secret that gets re-resolved, so the same request is worth retrying. When
+    /// neither is configured, nothing is going to replace the key, and retrying the request only wastes it.
+    pub const fn in_use(&self) -> bool {
+        self.refresh_on_api_key_failure_interval > 0 || self.backend_command.is_some()
+    }
 }
 
 /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.

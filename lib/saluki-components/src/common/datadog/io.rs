@@ -14,6 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config::shared::Secrets;
+use agent_data_plane_config::Live;
 use bytes::Buf;
 use futures::FutureExt as _;
 use http::{Request, StatusCode, Uri};
@@ -23,7 +25,6 @@ use hyper::{body::Incoming, Response};
 use saluki_common::{
     collections::FastHashMap, hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp,
 };
-use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -49,6 +50,7 @@ use super::{
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
+    retry::{SecretsGate, SecretsGateRefresher},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     telemetry::{
         ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionInputTelemetry, TransactionQueueTelemetry,
@@ -227,11 +229,33 @@ where
 /// requests at a rate of more than one per second.
 const INVALID_API_KEY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The live configuration a forwarder follows while it runs.
+///
+/// These are the inputs that can change after the topology is built, and they are not interchangeable.
+#[derive(Clone)]
+pub(crate) struct LiveForwarderConfiguration {
+    /// The views the endpoints refresh their API keys from.
+    pub(crate) api_keys: LiveApiKeys,
+
+    /// The view the retry policy's gate reads to decide whether a rejected API key is worth retrying.
+    pub(crate) secrets: Live<Secrets>,
+}
+
+impl Default for LiveForwarderConfiguration {
+    /// Returns configuration that never changes: no key is refreshed and no secret can replace a rejected key.
+    fn default() -> Self {
+        Self {
+            api_keys: LiveApiKeys::default(),
+            secrets: Live::new_fixed(Secrets::default()),
+        }
+    }
+}
+
 /// Transaction forwarder for Datadog endpoints.
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
     config: ForwarderConfiguration,
-    live_config: Option<GenericConfiguration>,
+    live: LiveForwarderConfiguration,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
     client: HttpClient,
@@ -300,12 +324,16 @@ where
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
     ///
-    /// Two configuration inputs arrive here, and they are not interchangeable: `api_keys` holds the typed live views
-    /// the endpoints take their API keys from, while `live_config` is the raw map that the retry policy's secrets gate
-    /// still reads.
+    /// `live` carries the configuration the forwarder follows while it runs; see
+    /// [`LiveForwarderConfiguration`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an endpoint cannot be resolved, if the proxy or TLS settings cannot be applied to the HTTP
+    /// client, or if the diagnostics emitter cannot be created.
     pub fn from_config<F>(
-        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        context: ComponentContext, config: ForwarderConfiguration, live: LiveForwarderConfiguration, endpoint_name: F,
+        telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -313,8 +341,7 @@ where
         Self::from_config_with_endpoint_request_mapper(
             context,
             config,
-            live_config,
-            api_keys,
+            live,
             endpoint_name,
             telemetry,
             metrics_builder,
@@ -324,15 +351,15 @@ where
 
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
-        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        context: ComponentContext, config: ForwarderConfiguration, live: LiveForwarderConfiguration, endpoint_name: F,
+        telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
         endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
         let endpoints = config.build_routable_endpoints()?;
-        let api_key_refresher = ApiKeyRefresher::new(&endpoints, api_keys);
+        let api_key_refresher = ApiKeyRefresher::new(&endpoints, &live.api_keys);
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
         let endpoint_name_for_client = Arc::clone(&endpoint_name);
         let mut client_builder = HttpClient::builder()
@@ -365,7 +392,7 @@ where
         Ok(Self {
             context,
             config,
-            live_config,
+            live,
             telemetry,
             metrics_builder,
             client,
@@ -390,7 +417,7 @@ where
         let Self {
             context,
             config,
-            live_config,
+            live,
             telemetry,
             metrics_builder,
             client,
@@ -408,6 +435,11 @@ where
             api_key_refresher.spawn();
         }
 
+        // The retry classifiers cannot await, so a task carries secrets changes into the gate they read.
+        let secrets_refresher = SecretsGateRefresher::new(live.secrets);
+        let secrets = secrets_refresher.gate.clone();
+        secrets_refresher.spawn();
+
         spawn_traced_named(
             "dd-txn-forwarder-io-loop",
             run_io_loop(
@@ -415,7 +447,7 @@ where
                 io_shutdown_tx,
                 context,
                 config,
-                live_config,
+                secrets,
                 client,
                 telemetry,
                 metrics_builder,
@@ -451,10 +483,10 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
-    context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-    service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
+    context: ComponentContext, config: ForwarderConfiguration, secrets: SecretsGate, service: HttpClient,
+    telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
+    resolved_endpoints: Vec<RoutableEndpoint>, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -488,7 +520,7 @@ async fn run_io_loop<B>(
                 task_barrier,
                 context.clone(),
                 config.clone(),
-                live_config.clone(),
+                secrets.clone(),
                 service.clone(),
                 telemetry.clone(),
                 txnq_telemetry,
@@ -589,11 +621,10 @@ fn track_transaction_input_for_endpoint(
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
-    config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
-    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry,
-    mut retry_telemetry: TransactionRetryTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
-    endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    emitter: DiagnosticsEmitter,
+    config: ForwarderConfiguration, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
+    txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
+    endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute, endpoint: ResolvedEndpoint,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -662,7 +693,7 @@ async fn run_endpoint_io_loop<B>(
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
         .layer(RetryCircuitBreakerLayer::new(
-            config.retry().to_default_http_retry_policy(live_config),
+            config.retry().to_default_http_retry_policy(secrets),
         ))
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
@@ -1143,7 +1174,6 @@ mod tests {
     use http_body_util::Empty;
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::config_from;
     use saluki_core::{
         observability::ComponentMetricsExt as _,
         runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
@@ -1151,7 +1181,6 @@ mod tests {
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
-    use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -2069,15 +2098,19 @@ mod tests {
     }
 
     async fn build_test_forwarder(
-        forwarder_url: &str, live_config: Option<GenericConfiguration>,
+        forwarder_url: &str, secrets: Live<Secrets>,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
-        build_test_forwarder_with_api_keys(forwarder_url, live_config, &LiveApiKeys::default()).await
+        let live = LiveForwarderConfiguration {
+            secrets,
+            ..Default::default()
+        };
+
+        build_test_forwarder_following(forwarder_url, live).await
     }
 
-    /// Builds a forwarder pointed at `forwarder_url`, with `api_keys` as the live views its endpoints
-    /// take their API keys from.
-    async fn build_test_forwarder_with_api_keys(
-        forwarder_url: &str, live_config: Option<GenericConfiguration>, api_keys: &LiveApiKeys,
+    /// Builds a forwarder pointed at `forwarder_url` that follows `live` while it runs.
+    async fn build_test_forwarder_following(
+        forwarder_url: &str, live: LiveForwarderConfiguration,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
@@ -2108,8 +2141,7 @@ mod tests {
                 TransactionForwarder::<FrozenChunkedBytesBuffer>::from_config(
                     context,
                     forwarder_config,
-                    live_config,
-                    api_keys,
+                    live,
                     test_logical_endpoint,
                     telemetry,
                     metrics_builder,
@@ -2133,8 +2165,12 @@ mod tests {
         Transaction::from_original(TxnMetadata::from_event_and_data_point_count(1, 0), request)
     }
 
-    async fn config_with(values: serde_json::Value) -> GenericConfiguration {
-        config_from(values).await
+    /// Returns a live view of a configuration in which secret resolution can replace a rejected API key.
+    fn secrets_in_use() -> Live<Secrets> {
+        let mut config = SalukiConfiguration::default();
+        config.shared.secrets.backend_command = Some("/bin/true".to_string());
+
+        LiveConfiguration::new(config).live(|config| &config.shared.secrets)
     }
 
     /// Returns a configuration whose primary API key is `api_key`.
@@ -2177,7 +2213,7 @@ mod tests {
             StatusCode::OK,
         ])
         .await;
-        let (_, forwarder) = build_test_forwarder(&server_url, None).await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
 
         let handle = forwarder.spawn().await;
         handle
@@ -2218,7 +2254,11 @@ mod tests {
         let (server_url, _counter, mut requests) =
             start_recording_http_server_with_requests(vec![StatusCode::OK]).await;
         let live = LiveConfiguration::new(config_with_api_key(TEST_API_KEY));
-        let (_, forwarder) = build_test_forwarder_with_api_keys(&server_url, None, &live.api_keys()).await;
+        let following = LiveForwarderConfiguration {
+            api_keys: live.api_keys(),
+            ..Default::default()
+        };
+        let (_, forwarder) = build_test_forwarder_following(&server_url, following).await;
 
         // Spawning the forwarder is what starts key refreshing in production.
         let handle = forwarder.spawn().await;
@@ -2258,8 +2298,7 @@ mod tests {
         // The server returns 403 to the first request and 200 to every subsequent request; the forwarder must drive
         // at least one retry to observe the second request.
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
-        let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
-        let (_, forwarder) = build_test_forwarder(&server_url, Some(live_config)).await;
+        let (_, forwarder) = build_test_forwarder(&server_url, secrets_in_use()).await;
 
         let handle = forwarder.spawn().await;
         handle
@@ -2284,7 +2323,7 @@ mod tests {
         let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
 
         // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
-        let (dataspace, forwarder) = build_test_forwarder(&server_url, None).await;
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
         let handle = forwarder.spawn().await;
@@ -2311,10 +2350,10 @@ mod tests {
         // be emitted, because it is produced by the inspection layer sitting below the retry circuit breaker. Without
         // that layer, the rejected key would be retried indefinitely without ever notifying anyone.
         let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
-        let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
+        let secrets = secrets_in_use();
 
         // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
-        let (dataspace, forwarder) = build_test_forwarder(&server_url, Some(live_config)).await;
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, secrets).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
         let handle = forwarder.spawn().await;

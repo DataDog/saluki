@@ -415,9 +415,9 @@ async fn create_topology(
     {
         let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
             &shared,
-            &config_system.raw_map(),
             config_system.live(|config| &config.shared.endpoints.api_key),
             config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+            config_system.live(|config| &config.shared.secrets),
         );
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
@@ -574,10 +574,10 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
-        &config_system.raw_map(),
         mrf_dd_url,
         mrf_api_key,
         config_system.live(|config| &config.domains.multi_region_failover.api_key),
+        config_system.live(|config| &config.shared.secrets),
     );
 
     blueprint

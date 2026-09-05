@@ -1251,6 +1251,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_secret_backend_command(&mut self, value: String) {
+        self.config.shared.secrets.backend_command = non_empty_trimmed(value);
+    }
+
+    fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64) {
+        // A negative interval is not an error the Core Agent reports, and it means the same thing as
+        // no interval at all, so clamp rather than reporting an error.
+        if value < 0 {
+            warn!("`secret_refresh_on_api_key_failure_interval` is negative ({value}). Treating it as 0 (disabled).");
+        }
+
+        self.config.shared.secrets.refresh_on_api_key_failure_interval = value.max(0) as u64;
+    }
+
     fn consume_serializer_compressor_kind(&mut self, value: String) {
         self.config.shared.endpoints.compression.compressor_kind = value;
     }
@@ -2060,6 +2074,49 @@ mod tests {
         assert_eq!(None, mrf.site);
         assert_eq!(None, mrf.dd_url);
         assert_eq!(None, mrf.metrics_endpoint_url());
+    }
+
+    #[test]
+    fn secrets_settings_default_to_schema_values_when_unset() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let secrets = &config.shared.secrets;
+        assert_eq!(None, secrets.backend_command);
+        assert_eq!(0, secrets.refresh_on_api_key_failure_interval);
+        assert!(!secrets.in_use());
+    }
+
+    #[test]
+    fn secrets_settings_translate_and_normalize() {
+        let (config, errors) = translate_explicit(json!({
+            "secret_backend_command": "  /usr/bin/fetch-secrets  ",
+            "secret_refresh_on_api_key_failure_interval": 5
+        }));
+
+        assert!(errors.is_none());
+        let secrets = &config.shared.secrets;
+        assert_eq!(Some("/usr/bin/fetch-secrets"), secrets.backend_command.as_deref());
+        assert_eq!(5, secrets.refresh_on_api_key_failure_interval);
+        assert!(secrets.in_use());
+
+        // A blank command says no more than an absent one.
+        let (config, errors) = translate_explicit(json!({ "secret_backend_command": "   " }));
+
+        assert!(errors.is_none());
+        assert_eq!(None, config.shared.secrets.backend_command);
+        assert!(!config.shared.secrets.in_use());
+    }
+
+    #[test]
+    fn a_negative_secret_refresh_interval_is_clamped_rather_than_rejected() {
+        // The Core Agent accepts a negative interval without complaint, and it means the same thing as
+        // no interval, so translation must not fail and leave ADP unable to start.
+        let (config, errors) = translate_explicit(json!({ "secret_refresh_on_api_key_failure_interval": -1 }));
+
+        assert!(errors.is_none());
+        assert_eq!(0, config.shared.secrets.refresh_on_api_key_failure_interval);
+        assert!(!config.shared.secrets.in_use());
     }
 
     #[test]

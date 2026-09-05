@@ -448,6 +448,14 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub run_path: String,
 
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub secret_backend_command: String,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub secret_refresh_on_api_key_failure_interval: i64,
+
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub serializer_compressor_kind: String,
@@ -670,6 +678,8 @@ impl Default for DatadogConfiguration {
             provider_kind: Default::default(),
             proxy: Default::default(),
             run_path: defaults::datadog_configuration_run_path(),
+            secret_backend_command: Default::default(),
+            secret_refresh_on_api_key_failure_interval: Default::default(),
             serializer_compressor_kind: defaults::datadog_configuration_serializer_compressor_kind(),
             serializer_experimental_use_v3_api: Default::default(),
             serializer_max_payload_size: defaults::default_u64::<i64, 2621440>(),

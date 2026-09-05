@@ -377,22 +377,24 @@ setting has no effect in ADP.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                             | Description                               |
-| -------------------------------------- | ----------------------------------------- |
-| `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
-| `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
-| `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
-| `dogstatsd_workers_count`              | Number of DSD processing workers          |
-| `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
-| `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
-| `forwarder_num_workers`                | Concurrent forwarder workers              |
-| `forwarder_stop_timeout`               | Timeout (s) for forwarder graceful stop   |
-| `log_level`                            | Log verbosity directives                  |
-| `min_tls_version`                      | Minimum TLS version for HTTPS connections |
-| `multi_region_failover.enabled`        | Enable multi-region failover mode         |
-| `serializer_zstd_compressor_level`     | Zstd compression level (Agent)            |
-| `skip_ssl_validation`                  | Skip TLS cert validation                  |
-| `statsd_forward_host`                  | UDP packet forwarding destination host    |
+| Config Key                                   | Description                                  |
+| -------------------------------------------- | -------------------------------------------- |
+| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
+| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
+| `dogstatsd_workers_count`                    | Number of DSD processing workers             |
+| `forwarder_apikey_validation_interval`       | API key check interval (minutes)             |
+| `forwarder_high_prio_buffer_size`            | High-priority request queue size             |
+| `forwarder_num_workers`                      | Concurrent forwarder workers                 |
+| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop      |
+| `log_level`                                  | Log verbosity directives                     |
+| `min_tls_version`                            | Minimum TLS version for HTTPS connections    |
+| `multi_region_failover.enabled`              | Enable multi-region failover mode            |
+| `secret_backend_command`                     | Path to the Agent secret-fetch executable    |
+| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403 |
+| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)               |
+| `skip_ssl_validation`                        | Skip TLS cert validation                     |
+| `statsd_forward_host`                        | UDP packet forwarding destination host       |
 
 ### `aggregator_stop_timeout`
 
@@ -536,6 +538,35 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `secret_backend_command`
+
+ADP resolves no secrets of its own. The core Agent runs `secret_backend_command` to resolve `ENC[...]`
+handles, and ADP receives configuration the Agent has already resolved.
+
+ADP reads this key for exactly one purpose: deciding whether an API key that an intake rejected
+with `403 Forbidden` is worth retrying. A configured command means the rejected key may be a secret
+that the Agent can re-resolve, so ADP retries the request; with no command configured, nothing is
+going to replace the key, so the 403 stays non-retriable and the request is dropped.
+
+ADP never executes the command and never inspects the path, so the settings that govern how the
+Agent runs it (`secret_backend_arguments`, `secret_backend_timeout`, `secret_backend_type`, and the
+rest of the `secret_*` family) have no effect in ADP.
+
+### `secret_refresh_on_api_key_failure_interval`
+
+The core Agent uses `secret_refresh_on_api_key_failure_interval` to rate-limit the secret refresh it
+triggers when an intake rejects an API key: at most one refresh per interval, expressed in minutes,
+with `0` disabling those refreshes. Secret resolution and refresh both belong to the Agent; ADP
+defers to it and triggers nothing.
+
+ADP reads this key only as a second signal that secret resolution might replace a rejected API key. A
+positive value makes a `403 Forbidden` response retriable, exactly as a configured
+`secret_backend_command` does, and either signal alone is enough.
+
+ADP does not observe the interval itself: it does not pace, delay, or count retries by it, and retry
+timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
+clamped to `0` with a warning, matching the Agent's own tolerance of the value.
 
 ### `serializer_zstd_compressor_level`
 

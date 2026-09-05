@@ -1034,6 +1034,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_SECRET_BACKEND_COMMAND"],
+        path: &["secret_backend_command"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL"],
+        path: &["secret_refresh_on_api_key_failure_interval"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_SERIALIZER_COMPRESSOR_KIND"],
         path: &["serializer_compressor_kind"],
         decode: EnvDecode::RawString,
