@@ -379,16 +379,38 @@
 <a href=#379 id=379 data-nosnippet>379</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#380 id=380 data-nosnippet>380</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#381 id=381 data-nosnippet>381</a>    };
-<a href=#382 id=382 data-nosnippet>382</a>    <span class="doccomment">/// `vector.metrics.use_v3_api.series`-Use V3 series for Vector
-<a href=#383 id=383 data-nosnippet>383</a>    </span>VECTOR_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
-<a href=#384 id=384 data-nosnippet>384</a>        schema: <span class="kw-2">&amp;</span>schema::VECTOR_METRICS_USE_V3_API_SERIES,
-<a href=#385 id=385 data-nosnippet>385</a>        support_level: SupportLevel::Full,
+<a href=#382 id=382 data-nosnippet>382</a>    <span class="doccomment">/// `secret_backend_command`-Path to the Agent secret-fetch executable
+<a href=#383 id=383 data-nosnippet>383</a>    </span>SECRET_BACKEND_COMMAND = SalukiAnnotation {
+<a href=#384 id=384 data-nosnippet>384</a>        schema: <span class="kw-2">&amp;</span>schema::SECRET_BACKEND_COMMAND,
+<a href=#385 id=385 data-nosnippet>385</a>        support_level: SupportLevel::Partial,
 <a href=#386 id=386 data-nosnippet>386</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#387 id=387 data-nosnippet>387</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_USE_V3_API_SERIES"</span>]),
+<a href=#387 id=387 data-nosnippet>387</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#388 id=388 data-nosnippet>388</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#389 id=389 data-nosnippet>389</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#390 id=390 data-nosnippet>390</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#391 id=391 data-nosnippet>391</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#391 id=391 data-nosnippet>391</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#392 id=392 data-nosnippet>392</a>    };
-<a href=#393 id=393 data-nosnippet>393</a>}
+<a href=#393 id=393 data-nosnippet>393</a>    <span class="doccomment">/// `secret_refresh_on_api_key_failure_interval`-Minutes between secret refreshes after a 403
+<a href=#394 id=394 data-nosnippet>394</a>    </span>SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL = SalukiAnnotation {
+<a href=#395 id=395 data-nosnippet>395</a>        schema: <span class="kw-2">&amp;</span>schema::SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL,
+<a href=#396 id=396 data-nosnippet>396</a>        support_level: SupportLevel::Partial,
+<a href=#397 id=397 data-nosnippet>397</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#398 id=398 data-nosnippet>398</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#399 id=399 data-nosnippet>399</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#400 id=400 data-nosnippet>400</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#401 id=401 data-nosnippet>401</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#402 id=402 data-nosnippet>402</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#403 id=403 data-nosnippet>403</a>    };
+<a href=#404 id=404 data-nosnippet>404</a>    <span class="doccomment">/// `vector.metrics.use_v3_api.series`-Use V3 series for Vector
+<a href=#405 id=405 data-nosnippet>405</a>    </span>VECTOR_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
+<a href=#406 id=406 data-nosnippet>406</a>        schema: <span class="kw-2">&amp;</span>schema::VECTOR_METRICS_USE_V3_API_SERIES,
+<a href=#407 id=407 data-nosnippet>407</a>        support_level: SupportLevel::Full,
+<a href=#408 id=408 data-nosnippet>408</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#409 id=409 data-nosnippet>409</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_VECTOR_METRICS_USE_V3_API_SERIES"</span>]),
+<a href=#410 id=410 data-nosnippet>410</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#411 id=411 data-nosnippet>411</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#412 id=412 data-nosnippet>412</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#413 id=413 data-nosnippet>413</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#414 id=414 data-nosnippet>414</a>    };
+<a href=#415 id=415 data-nosnippet>415</a>}
 </code></pre></div></section></main></body></html>
