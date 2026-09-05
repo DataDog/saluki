@@ -561,12 +561,38 @@ inventory:
     description: "Fleet Automation config ID tag"
     documentation: "Core Agent uses this only on Agent HA telemetry metrics."
 
+  container_cgroup_root:
+    support: full
+    pipelines: [cross_cutting]
+    description: "cgroupfs root for container metadata"
+    documentation: |-
+      ADP reads the cgroups hierarchy from this root. When the key is not set explicitly, ADP
+      selects the root from detected features: the host-mapped `/host/sys/fs/cgroup` when a
+      host-mapped filesystem is detected, and `/sys/fs/cgroup` otherwise.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: containerd.rs
+
+  container_proc_root:
+    support: full
+    pipelines: [cross_cutting]
+    description: "procfs root for container metadata"
+    documentation: |-
+      ADP inspects container processes under this root. When the key is not set explicitly, ADP
+      selects the root from detected features: the host-mapped `/host/proc` when a host-mapped
+      procfs is detected, and `/proc` otherwise.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: containerd.rs
+
   cri_connection_timeout:
     support: full
     pipelines: [cross_cutting]
     description: "CRI container runtime connection timeout (s)"
     test_support:
-      used_by: [ContainerdConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: containerd.rs
 
@@ -575,7 +601,30 @@ inventory:
     pipelines: [cross_cutting]
     description: "CRI container runtime query timeout (s)"
     test_support:
-      used_by: [ContainerdConfiguration]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: containerd.rs
+
+  cri_socket_path:
+    support: partial
+    pipelines: [cross_cutting]
+    description: "containerd/CRI socket path"
+    documentation: |-
+      The core Agent uses this key to enable both its CRI and containerd integrations, classifying
+      the socket by path: a path containing `containerd` selects containerd, a path containing
+      `crio` selects CRI-O, and any other reachable CRI socket is treated as a nonstandard CRI
+      runtime. When the key is unset, the core Agent probes well-known containerd and CRI-O paths.
+
+      ADP implements the containerd runtime only. Setting this path enables the containerd
+      integration against that socket, but only when the path contains `containerd`. A CRI-O or
+      otherwise nonstandard CRI socket path leaves containerd undetected, and ADP starts no
+      container runtime metadata collector for it. When the key is not set explicitly, ADP probes
+      the well-known containerd socket paths only. An explicitly empty path leaves containerd
+      undetected.
+
+      Container ID resolution through cgroups is independent of this key and is unaffected.
+    test_support:
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: containerd.rs
 
@@ -1752,6 +1801,18 @@ inventory:
       test_json: '["0.95"]'
       additional_attributes:
         config_registry_filename: aggregate.rs
+
+  hostname:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Forced hostname for emitted data"
+    documentation: |-
+      ADP uses this only in standalone mode, where the fixed host provider requires a configured
+      hostname. In connected mode the hostname comes from the Datadog Agent.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: shared.rs
 
   ipc_cert_file_path:
     support: full
@@ -3791,7 +3852,6 @@ excluded:
   conf_path: "ignored in initial audit 2026-04-23"
   confd_path: "ignored in initial audit 2026-04-23"
   config_providers: "ignored in initial audit 2026-04-23"
-  container_cgroup_root: "ignored in second bulk edit 2026-05-06"
   container_env_as_tags: "ignored in initial audit 2026-04-23"
   container_exclude: "ignored in initial audit 2026-04-23"
   container_exclude_logs: "ignored in initial audit 2026-04-23"
@@ -3846,13 +3906,11 @@ excluded:
   container_lifecycle.use_v2_api: "ignored in initial audit 2026-04-23"
   container_lifecycle.zstd_compression_level: "ignored in initial audit 2026-04-23"
   container_pid_mapper: "ignored in initial audit 2026-04-23"
-  container_proc_root: "ignored in second bulk edit 2026-05-06"
   containerd_exclude_namespaces: "ignored in initial audit 2026-04-23"
   containerd_namespace: "ignored in initial audit 2026-04-23"
   containerd_namespaces: "ignored in initial audit 2026-04-23"
   convert_dd_site_fqdn.enabled: "ignored in initial audit 2026-04-23"
   core_agent.enabled: "ignored in initial audit 2026-04-23"
-  cri_socket_path: "ignored in second bulk edit 2026-05-06"
   csi.driver: "ignored in initial audit 2026-04-23"
   csi.enabled: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -4133,7 +4191,6 @@ excluded:
   health_platform.persist_on_kubernetes: "ignored in initial audit 2026-04-23"
   health_port: "ignored in initial audit 2026-04-23"
   host_aliases: "ignored in initial audit 2026-04-23"
-  hostname: "ignored in second bulk edit 2026-05-06"
   hostname_drift_initial_delay: "ignored in initial audit 2026-04-23"
   hostname_drift_recurring_interval: "ignored in initial audit 2026-04-23"
   hostname_file: "ignored in initial audit 2026-04-23"

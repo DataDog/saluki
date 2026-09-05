@@ -5323,7 +5323,6 @@ dependencies = [
  "prost",
  "regex",
  "saluki-common",
- "saluki-config",
  "saluki-context",
  "saluki-core",
  "saluki-error",

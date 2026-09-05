@@ -104,6 +104,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `hostname`-Forced hostname for emitted data
+    HOSTNAME = SalukiAnnotation {
+        schema: &schema::HOSTNAME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `kubernetes_kubelet_nodename`-Kubernetes node name for EKS Fargate static tags
     KUBERNETES_KUBELET_NODENAME = SalukiAnnotation {
         schema: &schema::KUBERNETES_KUBELET_NODENAME,

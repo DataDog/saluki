@@ -233,6 +233,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_CONTAINER_CGROUP_ROOT"],
+        path: &["container_cgroup_root"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_CONTAINER_PROC_ROOT"],
+        path: &["container_proc_root"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_CRI_CONNECTION_TIMEOUT"],
         path: &["cri_connection_timeout"],
         decode: EnvDecode::Integer,
@@ -241,6 +251,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_CRI_QUERY_TIMEOUT"],
         path: &["cri_query_timeout"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_CRI_SOCKET_PATH"],
+        path: &["cri_socket_path"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_DATA_PLANE_API_LISTEN_ADDRESS"],
@@ -654,6 +669,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_HISTOGRAM_PERCENTILES"],
         path: &["histogram_percentiles"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_HOSTNAME"],
+        path: &["hostname"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_IPC_CERT_FILE_PATH"],

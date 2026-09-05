@@ -10,7 +10,6 @@ use std::{
 };
 
 use regex::Regex;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
@@ -43,45 +42,39 @@ pub struct CgroupsConfiguration {
 }
 
 impl CgroupsConfiguration {
-    /// Creates a new `CgroupsConfiguration` from the given configuration.
+    /// Creates a new `CgroupsConfiguration` from the given filesystem roots.
     ///
-    /// # Errors
-    ///
-    /// If any of the paths in the configuration aren't valid, an error will be returned. This doesn't include,
-    /// however, if any of the configured paths don't _exist_.
-    pub fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector,
-    ) -> Result<Self, GenericError> {
-        let procfs_root = match config.try_get_typed::<PathBuf>("container_proc_root")? {
-            Some(path) => path,
-            None => {
-                if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
-                    PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
-                } else {
-                    PathBuf::from(DEFAULT_PROCFS_ROOT)
-                }
-            }
-        };
+    /// If a root is given, that path is used. Otherwise, both roots fall back to their host-mapped default when
+    /// host-mapped procfs is detected, and to their local default when it isn't.
+    pub fn new(
+        procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
+    ) -> Self {
+        let host_mapped_procfs = feature_detector.is_feature_available(Feature::HostMappedProcfs);
 
-        let cgroupfs_root = match config.try_get_typed::<PathBuf>("container_cgroup_root")? {
-            Some(path) => path,
-            None => {
-                if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
-                    PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
-                } else {
-                    // TODO: Consider if we need to do anything specific for Amazon Linux [1] or does the referenced code only
-                    // matter for cgroups v1?
-                    //
-                    // [1]: https://github.com/DataDog/datadog-agent/blob/fe75b815c2f135f0d2ea85d7a57a8fc8cbf56bd9/pkg/config/setup/config.go#L1172-L1173
-                    PathBuf::from(DEFAULT_CGROUPFS_ROOT)
-                }
+        let procfs_root = procfs_root.unwrap_or_else(|| {
+            if host_mapped_procfs {
+                PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
+            } else {
+                PathBuf::from(DEFAULT_PROCFS_ROOT)
             }
-        };
+        });
 
-        Ok(Self {
+        let cgroupfs_root = cgroupfs_root.unwrap_or_else(|| {
+            if host_mapped_procfs {
+                PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
+            } else {
+                // TODO: Consider if we need to do anything specific for Amazon Linux [1] or does the referenced
+                // code only matter for cgroups v1?
+                //
+                // [1]: https://github.com/DataDog/datadog-agent/blob/fe75b815c2f135f0d2ea85d7a57a8fc8cbf56bd9/pkg/config/setup/config.go#L1172-L1173
+                PathBuf::from(DEFAULT_CGROUPFS_ROOT)
+            }
+        });
+
+        Self {
             procfs_root,
             cgroupfs_root,
-        })
+        }
     }
 
     /// Returns the path to the "procfs" filesystem.

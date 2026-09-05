@@ -380,6 +380,7 @@ default values.
 | Config Key                                   | Description                                  |
 | -------------------------------------------- | -------------------------------------------- |
 | `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `cri_socket_path`                            | containerd/CRI socket path                   |
 | `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
 | `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
 | `dogstatsd_workers_count`                    | Number of DSD processing workers             |
@@ -412,6 +413,22 @@ Support is partial because ADP does not apply this timeout only to an aggregator
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
+
+### `cri_socket_path`
+
+The core Agent uses this key to enable both its CRI and containerd integrations, classifying
+the socket by path: a path containing `containerd` selects containerd, a path containing
+`crio` selects CRI-O, and any other reachable CRI socket is treated as a nonstandard CRI
+runtime. When the key is unset, the core Agent probes well-known containerd and CRI-O paths.
+
+ADP implements the containerd runtime only. Setting this path enables the containerd
+integration against that socket, but only when the path contains `containerd`. A CRI-O or
+otherwise nonstandard CRI socket path leaves containerd undetected, and ADP starts no
+container runtime metadata collector for it. When the key is not set explicitly, ADP probes
+the well-known containerd socket paths only. An explicitly empty path leaves containerd
+undetected.
+
+Container ID resolution through cgroups is independent of this key and is unaffected.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -891,6 +908,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
+| `container_cgroup_root`                                                                    | cgroupfs root for container metadata               |
+| `container_proc_root`                                                                      | procfs root for container metadata                 |
 | `cri_connection_timeout`                                                                   | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                                                        | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                                            | Unprivileged API listen address                    |
@@ -967,6 +986,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `histogram_copy_to_distribution`                                                           | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
+| `hostname`                                                                                 | Forced hostname for emitted data                   |
 | `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |

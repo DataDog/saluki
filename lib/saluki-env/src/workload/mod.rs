@@ -18,6 +18,11 @@ pub mod entity;
 pub use self::entity::EntityId;
 
 mod helpers;
+#[cfg(target_os = "linux")]
+pub use self::helpers::cgroups::CgroupsConfiguration;
+#[cfg(unix)]
+pub use self::helpers::containerd::ContainerdConfiguration;
+
 mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 

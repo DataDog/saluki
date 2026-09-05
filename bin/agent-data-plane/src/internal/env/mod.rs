@@ -1,5 +1,6 @@
 use std::future::Future;
 
+use agent_data_plane_config::shared::Environment;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::ComponentRegistry;
@@ -55,15 +56,23 @@ impl ADPEnvironmentProvider {
     /// In standalone mode, no supervisor is returned as all behavior/functionality is either provided via
     /// fixed configuration or operates in a no-op fashion.
     pub async fn from_configuration(
-        standalone: bool, raw_map: &GenericConfiguration, client_config: Option<&RemoteAgentClientConfiguration>,
-        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+        standalone: bool, raw_map: &GenericConfiguration, environment: &Environment,
+        client_config: Option<&RemoteAgentClientConfiguration>, component_registry: &ComponentRegistry,
+        health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
         // When we're in standalone mode, all of our functionality is either fixed or a no-op.
         if standalone {
             warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
 
+            let hostname = environment.hostname.value.clone();
+            if !environment.hostname.is_explicit() || hostname.is_empty() {
+                return Err(generic_error!(
+                    "A non-empty hostname must be configured (`hostname`) when running in standalone mode."
+                ));
+            }
+
             let env = Self {
-                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(raw_map)?),
+                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::new(hostname)),
                 workload_provider: None,
                 autodiscovery_provider: None,
                 health_registry: health_registry.clone(),
@@ -80,6 +89,7 @@ impl ADPEnvironmentProvider {
 
         let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
             raw_map,
+            environment,
             client_config,
             component_registry,
             health_registry,
