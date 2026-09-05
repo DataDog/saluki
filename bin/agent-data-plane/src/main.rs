@@ -16,7 +16,6 @@ use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
-use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metadata::AppDetails;
@@ -84,7 +83,7 @@ async fn main() -> Result<(), GenericError> {
         bootstrap_logging_config.log_to_console = false;
     }
 
-    let metrics_default_level = parse_metrics_level(&local_config.raw_config())?;
+    let metrics_default_level = parse_metrics_level(&local_config.local().shared.metrics_level)?;
 
     // Proceed with bootstrapping.
     //
@@ -173,16 +172,8 @@ async fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<LoadedCon
     loaded
 }
 
-fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericError> {
-    let raw = config
-        .try_get_typed::<String>("metrics_level")
-        .error_context("Failed to read `metrics_level`.")?;
-    match raw {
-        Some(value) => {
-            Level::try_from(value.as_str()).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
-        }
-        None => Ok(Level::INFO),
-    }
+fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
+    Level::try_from(level).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
 }
 
 async fn run_inner(
@@ -236,4 +227,24 @@ async fn run_inner(
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics::Level;
+
+    use super::parse_metrics_level;
+
+    #[test]
+    fn parse_metrics_level_accepts_only_a_known_level() {
+        assert_eq!(parse_metrics_level("debug").expect("known level parses"), Level::DEBUG);
+
+        for level in ["", "verbose"] {
+            let error = parse_metrics_level(level).expect_err("unrecognized level is rejected");
+            assert!(
+                error.to_string().contains("metrics_level"),
+                "error should name the setting: {error}"
+            );
+        }
+    }
 }

@@ -73,7 +73,9 @@ use std::{
     time::Duration,
 };
 
-use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
+use agent_data_plane_config::defaults::{
+    DEFAULT_METRICS_LEVEL, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+};
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -505,9 +507,10 @@ impl SalukiOnly {
         }
 
         // shared
-        if let Some(v) = self.metrics_level.clone() {
-            config.shared.metrics_level = v;
-        }
+        config.shared.metrics_level = self
+            .metrics_level
+            .clone()
+            .unwrap_or_else(|| DEFAULT_METRICS_LEVEL.to_string());
         if let Some(v) = self.flush_timeout_secs {
             config.shared.metrics_encoding.flush_timeout = Duration::from_secs(v);
         }
@@ -982,6 +985,19 @@ mod tests {
                 config.domains.dogstatsd.contexts.string_interner_size_bytes,
                 Some(expected)
             );
+        }
+    }
+
+    #[test]
+    fn metrics_level_resolves_to_the_canonical_default_when_absent() {
+        for (value, expected) in [
+            (json!({}), DEFAULT_METRICS_LEVEL),
+            (json!({ "metrics_level": "warn" }), "warn"),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("metrics level deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.shared.metrics_level, expected);
         }
     }
 

@@ -10,6 +10,9 @@ use std::{
     time::Duration,
 };
 
+/// Default internal telemetry verbosity.
+pub const DEFAULT_METRICS_LEVEL: &str = "info";
+
 /// Default Checks IPC endpoint.
 pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
 
