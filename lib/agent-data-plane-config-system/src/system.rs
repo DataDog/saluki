@@ -8,6 +8,7 @@ use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_config::{ConfigurationError, GenericConfiguration};
+use saluki_error::GenericError;
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::Snafu;
@@ -176,6 +177,12 @@ impl ConfigurationSystem {
     pub fn raw_map(&self) -> GenericConfiguration {
         self.raw_map.clone()
     }
+
+    /// Returns a callback that reads the current raw configuration as JSON.
+    pub fn raw_snapshot(&self) -> Arc<dyn Fn() -> std::result::Result<Value, GenericError> + Send + Sync> {
+        let raw_map = self.raw_map.clone();
+        Arc::new(move || raw_map.as_typed::<Value>().map_err(Into::into))
+    }
 }
 
 /// Owns the Datadog Agent config stream for the life of the process: validates each update against
@@ -337,6 +344,7 @@ fn translate(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
@@ -496,6 +504,31 @@ mod tests {
         assert!(opw.enabled);
         assert_eq!(opw.url, "https://opw.example.com");
         assert!(opw.use_v3_series);
+    }
+
+    #[tokio::test]
+    async fn raw_snapshot_reflects_streamed_updates() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let snapshot = system.raw_snapshot();
+        let cloned = Arc::clone(&snapshot);
+
+        assert_eq!(snapshot().expect("serializes").pointer("/dogstatsd_port"), None);
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_port",
+                json!(9125),
+            )))
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while cloned().expect("serializes").pointer("/dogstatsd_port") != Some(&json!(9125)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for the raw snapshot to reflect the update");
     }
 
     #[tokio::test]
