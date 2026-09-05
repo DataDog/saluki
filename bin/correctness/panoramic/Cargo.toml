@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[build-dependencies]
+vergen-gix = { workspace = true }
+
 [lints]
 workspace = true
 
@@ -51,3 +54,6 @@ rustls = { workspace = true, features = ["aws_lc_rs"] }
 
 [target.'cfg(windows)'.dependencies]
 rustls-cng-crypto = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

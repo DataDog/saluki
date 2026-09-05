@@ -103,6 +103,8 @@ Both suites run through the same `panoramic` binary.
 cargo run --release --bin panoramic -- --help
 ```
 
+`.agents/skills/panoramic/SKILL.md` documents panoramic usage for LLM agents.
+
 ## Benchmark tests: Single Machine Performance (SMP)
 
 SMP is a system that runs on internal, dedicated infrastructure to check the Agent for performance regressions. It runs

@@ -25,7 +25,7 @@ use crate::correctness::{
 };
 use crate::{
     assertions::AssertionResult,
-    reporter::{PhaseTiming, TestResult},
+    reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
 };
 
@@ -59,24 +59,28 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
 async fn run_docker_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
+    // Phases are marked on the shared tracker so the runner can name the one a test was in when a
+    // deadline fires, and so their timings survive a test that never returns.
+    let phases = tctx.phases.clone();
+
     // Phase 1: spawn containers
-    let spawn_start = Instant::now();
+    let phase = phases.enter("spawn_containers");
     let test_runner = match CorrectnessRunner::from_config(&config, tctx).await {
         Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
-    let spawn_duration = spawn_start.elapsed();
+    phase.finish();
 
     // Phase 2: collect data
-    let collect_start = Instant::now();
+    let phase = phases.enter("collect_data");
     let (baseline_data, comparison_data) = match test_runner.run().await {
         Ok(data) => data,
-        Err(e) => return make_error_result(name, started, "collect_data", e),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
-    let collect_duration = collect_start.elapsed();
+    phase.finish();
 
     // Phase 3: analysis
-    let analysis_start = Instant::now();
+    let phase = phases.enter("analysis");
     let traces_options = match config.analysis_mode {
         AnalysisMode::Traces => Some(TracesAnalysisOptions {
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
@@ -87,57 +91,37 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
     let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
         .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
-    let analysis_duration = analysis_start.elapsed();
+    let analysis_duration = phase.elapsed();
+    let phase_timings = phase.finish_and_collect();
 
     let total_duration = started.elapsed();
 
-    let phase_timings = vec![
-        PhaseTiming {
-            phase: "spawn_containers".to_string(),
-            duration: spawn_duration,
-        },
-        PhaseTiming {
-            phase: "collect_data".to_string(),
-            duration: collect_duration,
-        },
-        PhaseTiming {
-            phase: "analysis".to_string(),
-            duration: analysis_duration,
-        },
-    ];
-
     match analysis_result {
-        Ok(()) => TestResult {
+        Ok(()) => TestResult::from_assertions(
             name,
-            passed: true,
-            duration: total_duration,
-            assertion_results: vec![AssertionResult {
+            total_duration,
+            vec![AssertionResult {
                 name: "telemetry matches".to_string(),
                 passed: true,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
             }],
-            error: None,
             phase_timings,
-            assertion_details: vec![],
-        },
+        ),
         Err((e, details)) => {
             let full_message = format!("{:?}", e);
-            let summary = full_message.lines().next().unwrap_or(&full_message).to_string();
-            TestResult {
+            TestResult::from_assertions(
                 name,
-                passed: false,
-                duration: total_duration,
-                assertion_results: vec![AssertionResult {
+                total_duration,
+                vec![AssertionResult {
                     name: "telemetry matches".to_string(),
                     passed: false,
                     message: full_message,
                     duration: analysis_duration,
                 }],
-                error: Some(summary),
                 phase_timings,
-                assertion_details: vec![details],
-            }
+            )
+            .with_assertion_details(vec![details])
         }
     }
 }
@@ -155,19 +139,17 @@ async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &s
     }
 }
 
-pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
-    TestResult {
+/// Builds a setup-error result carrying the timings of the phases the test finished before failing.
+pub(crate) fn make_error_result(
+    name: String, started: Instant, phase_timings: Vec<PhaseTiming>, e: GenericError,
+) -> TestResult {
+    TestResult::errored(
         name,
-        passed: false,
-        duration: started.elapsed(),
-        assertion_results: vec![],
-        error: Some(format!("{:?}", e)),
-        phase_timings: vec![PhaseTiming {
-            phase: phase.to_string(),
-            duration: started.elapsed(),
-        }],
-        assertion_details: vec![],
-    }
+        ErrorKind::Setup,
+        format!("{:?}", e),
+        started.elapsed(),
+        phase_timings,
+    )
 }
 
 /// Manages the state and program flow of running a *correctness* test.

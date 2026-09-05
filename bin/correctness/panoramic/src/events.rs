@@ -27,7 +27,7 @@ pub enum TestEvent {
     /// A test has completed (passed or failed).
     TestCompleted {
         /// The result of the completed test.
-        result: TestResult,
+        result: Box<TestResult>,
 
         /// The directory where this test keeps its logs. Determined and created by the Runner object.
         log_dir: PathBuf,

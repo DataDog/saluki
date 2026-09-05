@@ -1,5 +1,6 @@
 //! Defines Panoramic's command-line interface.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use airlock::driver::DEFAULT_ALPINE_IMAGE;
@@ -163,7 +164,7 @@ pub struct RunCommand {
 
     /// Number of tests to run in parallel.
     #[arg(short = 'p', long, default_value = "4")]
-    pub parallelism: usize,
+    pub parallelism: NonZeroUsize,
 
     /// Output format.
     #[arg(short = 'o', long, value_enum, ignore_case = true, default_value = "text")]
@@ -237,8 +238,8 @@ impl RunCommand {
     pub fn log_dir(&self) -> PathBuf {
         let base = self.log_dir.clone().unwrap_or_else(std::env::temp_dir);
 
-        // Always append a timestamped subdirectory, even when the user provides a base dir.
-        // TODO: consider not adding a subdirectory when the user provides a desired log dir.
+        // Always append a timestamped subdirectory so artifacts from separate runs never mix. The
+        // reports name the directory they landed in.
         let timestamp = Local::now().format("%Y%m%d-%H%M%S");
         base.join(format!("panoramic-{}", timestamp))
     }
@@ -426,11 +427,19 @@ mod tests {
     }
 
     #[test]
+    fn zero_parallelism_is_rejected() {
+        // The runner would raise zero to one and run anyway, leaving the run report to describe a
+        // parallelism the run never used.
+        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "-p", "0"]).is_err());
+        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "-p", "1"]).is_ok());
+    }
+
+    #[test]
     fn defaults_match_the_pre_clap_parser() {
         let cli = Cli::try_parse_from(["panoramic", "run", "-d", "cases"]).expect("minimal run should parse");
         let cmd = run_command_of(&cli);
 
-        assert_eq!(cmd.parallelism, 4);
+        assert_eq!(cmd.parallelism.get(), 4);
         assert!(matches!(cmd.output, OutputFormat::Text));
         assert_eq!(cmd.mounts_dir, default_mounts_dir());
         assert_eq!(cmd.kind_cluster_name, crate::kind::DEFAULT_CLUSTER_NAME);
@@ -460,7 +469,7 @@ mod tests {
         let cmd = run_command_of(&cli);
         assert_eq!(cmd.test_dirs, vec![PathBuf::from("test/correctness/cases")]);
         assert!(cmd.no_tui);
-        assert_eq!(cmd.parallelism, 1);
+        assert_eq!(cmd.parallelism.get(), 1);
         assert!(cmd.log_dir().starts_with("integration-logs"));
 
         // `-d` accumulates; `-t` takes the last value, matching the previous parser.

@@ -4,6 +4,7 @@
 //! is used regardless of output mode (TUI or plain). Events are emitted to a channel
 //! and consumed by either a TUI renderer or logging consumer.
 
+use std::num::NonZeroUsize;
 use std::sync::RwLock;
 use std::{
     collections::HashMap,
@@ -27,7 +28,7 @@ use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec, IntegrationConfig},
     events::TestEvent,
-    reporter::{PhaseTiming, TestResult},
+    reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };
 
 /// A function that tells us whether to run a test. Used to filter for the desired test or tests.
@@ -159,7 +160,7 @@ fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) ->
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
-    parallelism: usize,
+    parallelism: NonZeroUsize,
 
     /// Whether to stop execution at the first failure.
     fail_fast: bool,
@@ -180,7 +181,7 @@ pub(crate) struct RunArgs {
 impl RunArgs {
     pub(crate) fn new(cancel_all: CancellationToken) -> Self {
         Self {
-            parallelism: 1,
+            parallelism: NonZeroUsize::MIN,
             fail_fast: false,
             filter: None,
             event_sender: None,
@@ -188,7 +189,7 @@ impl RunArgs {
         }
     }
 
-    pub(crate) fn with_parallelism(mut self, parallelism: usize) -> Self {
+    pub(crate) fn with_parallelism(mut self, parallelism: NonZeroUsize) -> Self {
         self.parallelism = parallelism;
         self
     }
@@ -272,7 +273,7 @@ impl Runner {
             });
         }
 
-        let parallelism = parallelism.max(1);
+        let parallelism = parallelism.get();
         let semaphore = Arc::new(Semaphore::new(parallelism));
 
         let results = if fail_fast {
@@ -324,7 +325,7 @@ impl Runner {
                 self.kind_ready.clone(),
             )
             .await;
-            let failed = !result.passed;
+            let failed = !result.outcome.is_passed();
             results.push(result);
 
             if failed {
@@ -413,11 +414,25 @@ impl Runner {
         // Create a directory for the test to write logs into and pass it into the test context.
         let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
-            return TestResult::setup_error(
-                name,
+            let mut result = TestResult::setup_error(
+                name.clone(),
                 started.elapsed(),
                 format!("Error creating log directory at {}: {e}", log_dir.display()),
             );
+            result.case_path = Some(test.case_path());
+
+            // There is no log directory, so this result has no artifacts to point at. It still has
+            // to reach the event stream: consumers that build the suite result from events would
+            // otherwise report a run that skipped the test and exited zero.
+            if let Some(ref tx) = event_sender {
+                let _ = tx.send(TestEvent::TestStarted { name });
+                let _ = tx.send(TestEvent::TestCompleted {
+                    result: Box::new(result.clone()),
+                    log_dir,
+                });
+            }
+
+            return result;
         }
 
         let mut tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), settings);
@@ -431,35 +446,50 @@ impl Runner {
             let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
         }
 
+        let phases = tctx.phases.clone();
+
         let run_fut = test.run(tctx);
         pin!(run_fut);
 
         // Run the test for the duration of 'timeout', then send a cancel request if it times out and wait GRACE_TIME
         // for teardown.
-        let result = tokio::select! {
+        let mut result = tokio::select! {
             r = &mut run_fut => r,
             _ = tokio::time::sleep(timeout) => {
+                // Read the active phase before cancelling, since teardown moves the test on from the
+                // phase the deadline interrupted.
+                let active_phase = phases.active();
                 test_cancel.cancel();
                 match tokio::time::timeout(GRACE_TIME, run_fut).await {
-                    Ok(r) => r,
-                    Err(_) => TestResult::hard_timeout(name, timeout, started.elapsed())
+                    // The test tore down in time, so it brings back its own phase timings and
+                    // whatever assertions it finished.
+                    Ok(r) => r
+                        .with_harness_error(ErrorKind::Timeout, format!("Test timed out after {:?}.", timeout))
+                        .with_timeout_attribution(TimeoutAttribution::test_deadline(timeout, active_phase)),
+                    Err(_) => TestResult::hard_timeout(name, timeout, started.elapsed(), active_phase, phases.completed())
                 }
             }
             // We received a request from above to kill all tests, so send the cancellation and wait GRACE_TIME.
             _ = cancel_all.cancelled() => {
                 test_cancel.cancel();
                 match tokio::time::timeout(GRACE_TIME, run_fut).await {
-                    Ok(r) => r,
+                    Ok(r) => r.with_harness_error(ErrorKind::Internal, "Test was cancelled."),
                     Err(_) => TestResult::cancellation_failure(name, GRACE_TIME, started.elapsed())
                 }
             }
         };
 
+        // The runner is the only place that knows both the test and where its artifacts landed, so
+        // it stamps that provenance onto the result before anything reports on it.
+        result.case_path = Some(test.case_path());
+        result.log_dir = Some(log_dir.clone());
+
         write_result_log(&result, &log_dir);
+        crate::machine_output::write_test_report(&result, &log_dir);
 
         if let Some(ref tx) = event_sender {
             let _ = tx.send(TestEvent::TestCompleted {
-                result: result.clone(),
+                result: Box::new(result.clone()),
                 log_dir,
             });
         }
@@ -524,58 +554,45 @@ impl IntegrationRunner {
         // Docker's `bridge` driver. A Windows target needs a `nat` network and cannot join that one,
         // so reject the combination up front instead of failing later inside Docker.
         if self.test_case.intake.enabled && self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-            return TestResult {
-                name: test_name,
-                passed: false,
-                duration: started.elapsed(),
-                assertion_results: vec![],
-                error: Some(format!(
+            return TestResult::errored(
+                test_name,
+                ErrorKind::Setup,
+                format!(
                     "Intake sidecar is not supported on the '{}' runtime.",
                     crate::config::WINDOWS_RUNTIME
-                )),
+                ),
+                started.elapsed(),
                 phase_timings,
-                assertion_details: vec![],
-            };
+            );
         }
 
         // Build the driver configuration.
         debug!(test = %test_name, "Building driver configuration...");
-        let phase_start = Instant::now();
+        let phase = self.tctx.phases.enter("driver_config_build");
         let driver_config = match self.build_driver_config().await {
             Ok(config) => config,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to build driver configuration.");
-                phase_timings.push(PhaseTiming {
-                    phase: "driver_config_build".to_string(),
-                    duration: phase_start.elapsed(),
-                });
-                return TestResult {
-                    name: test_name,
-                    passed: false,
-                    duration: started.elapsed(),
-                    assertion_results: vec![],
-                    error: Some(format!("Failed to build driver configuration: {}", e)),
+                phase_timings.push(phase.finish());
+                return TestResult::errored(
+                    test_name,
+                    ErrorKind::Setup,
+                    format!("Failed to build driver configuration: {}", e),
+                    started.elapsed(),
                     phase_timings,
-                    assertion_details: vec![],
-                };
+                );
             }
         };
-        phase_timings.push(PhaseTiming {
-            phase: "driver_config_build".to_string(),
-            duration: phase_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Start the intake sidecar first, so the target can flush to it from the moment it runs.
         let mut intake_host_port = None;
         let mut _intake_driver = None;
         if self.test_case.intake.enabled {
-            let phase_start = Instant::now();
+            let phase = self.tctx.phases.enter("intake_start");
             info!(test = %test_name, "Starting intake sidecar...");
             let outcome = self.start_intake().await;
-            phase_timings.push(PhaseTiming {
-                phase: "intake_start".to_string(),
-                duration: phase_start.elapsed(),
-            });
+            phase_timings.push(phase.finish());
 
             match outcome {
                 Ok((driver, host_port)) => {
@@ -585,42 +602,35 @@ impl IntegrationRunner {
                 Err(e) => {
                     error!(test = %test_name, error = %e, "Failed to start intake sidecar.");
                     let _ = self.cleanup().await;
-                    return TestResult {
-                        name: test_name,
-                        passed: false,
-                        duration: started.elapsed(),
-                        assertion_results: vec![],
-                        error: Some(format!("Failed to start intake sidecar: {}", e)),
+                    return TestResult::errored(
+                        test_name,
+                        ErrorKind::Setup,
+                        format!("Failed to start intake sidecar: {}", e),
+                        started.elapsed(),
                         phase_timings,
-                        assertion_details: vec![],
-                    };
+                    );
                 }
             }
         }
 
         // Create and start the driver.
-        let phase_start = Instant::now();
+        let phase = self.tctx.phases.enter("container_start");
         debug!(test = %test_name, "Creating container driver...");
         let mut driver = match Driver::from_config(self.isolation_group_id.clone(), driver_config) {
             Ok(driver) => driver,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to create container driver.");
-                phase_timings.push(PhaseTiming {
-                    phase: "container_start".to_string(),
-                    duration: phase_start.elapsed(),
-                });
+                phase_timings.push(phase.finish());
                 // An intake sidecar started above already owns a container and the isolation group's
                 // network, so tear the group down before giving up on the test.
                 let _ = self.cleanup().await;
-                return TestResult {
-                    name: test_name,
-                    passed: false,
-                    duration: started.elapsed(),
-                    assertion_results: vec![],
-                    error: Some(format!("Failed to create driver: {}", e)),
+                return TestResult::errored(
+                    test_name,
+                    ErrorKind::Setup,
+                    format!("Failed to create driver: {}", e),
+                    started.elapsed(),
                     phase_timings,
-                    assertion_details: vec![],
-                };
+                );
             }
         };
 
@@ -629,26 +639,18 @@ impl IntegrationRunner {
             Ok(details) => details,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to start container.");
-                phase_timings.push(PhaseTiming {
-                    phase: "container_start".to_string(),
-                    duration: phase_start.elapsed(),
-                });
+                phase_timings.push(phase.finish());
                 let _ = self.cleanup().await;
-                return TestResult {
-                    name: test_name,
-                    passed: false,
-                    duration: started.elapsed(),
-                    assertion_results: vec![],
-                    error: Some(format!("Failed to start container: {}", e)),
+                return TestResult::errored(
+                    test_name,
+                    ErrorKind::Setup,
+                    format!("Failed to start container: {}", e),
+                    started.elapsed(),
                     phase_timings,
-                    assertion_details: vec![],
-                };
+                );
             }
         };
-        phase_timings.push(PhaseTiming {
-            phase: "container_start".to_string(),
-            duration: phase_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         info!(
             test = %test_name,
@@ -698,7 +700,7 @@ impl IntegrationRunner {
 
         // Resolve dynamic variables if any PANORAMIC_DYNAMIC_* env vars are defined.
         if crate::dynamic_vars::has_dynamic_vars(&self.test_case) {
-            let phase_start = Instant::now();
+            let phase = self.tctx.phases.enter("dynamic_vars");
             debug!(test = %test_name, "Resolving dynamic variables...");
 
             let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
@@ -713,24 +715,19 @@ impl IntegrationRunner {
                     for (key, value) in &vars {
                         if value.is_empty() {
                             error!(test = %test_name, key = key, "Dynamic variable resolved to empty string.");
-                            phase_timings.push(PhaseTiming {
-                                phase: "dynamic_vars".to_string(),
-                                duration: phase_start.elapsed(),
-                            });
+                            phase_timings.push(phase.finish());
                             let _ = self.cleanup().await;
-                            return TestResult {
-                                name: test_name,
-                                passed: false,
-                                duration: started.elapsed(),
-                                assertion_results: vec![],
-                                error: Some(format!(
+                            return TestResult::errored(
+                                test_name,
+                                ErrorKind::Setup,
+                                format!(
                                     "Dynamic variable PANORAMIC_DYNAMIC_{} resolved to an empty string. \
                                      The shell command in the test config likely failed.",
                                     key
-                                )),
+                                ),
+                                started.elapsed(),
                                 phase_timings,
-                                assertion_details: vec![],
-                            };
+                            );
                         }
                     }
 
@@ -745,49 +742,36 @@ impl IntegrationRunner {
                     let unresolved = self.test_case.unresolved_placeholders();
                     if !unresolved.is_empty() {
                         error!(test = %test_name, unresolved = ?unresolved, "Unresolved dynamic variable placeholders.");
-                        phase_timings.push(PhaseTiming {
-                            phase: "dynamic_vars".to_string(),
-                            duration: phase_start.elapsed(),
-                        });
+                        phase_timings.push(phase.finish());
                         let _ = self.cleanup().await;
-                        return TestResult {
-                            name: test_name,
-                            passed: false,
-                            duration: started.elapsed(),
-                            assertion_results: vec![],
-                            error: Some(format!(
+                        return TestResult::errored(
+                            test_name,
+                            ErrorKind::Setup,
+                            format!(
                                 "Unresolved dynamic variable placeholders in assertions: {}. \
                                  Check that matching PANORAMIC_DYNAMIC_* env vars are defined.",
                                 unresolved.join(", ")
-                            )),
+                            ),
+                            started.elapsed(),
                             phase_timings,
-                            assertion_details: vec![],
-                        };
+                        );
                     }
                 }
                 Err(e) => {
                     error!(test = %test_name, error = %e, "Failed to resolve dynamic variables.");
-                    phase_timings.push(PhaseTiming {
-                        phase: "dynamic_vars".to_string(),
-                        duration: phase_start.elapsed(),
-                    });
+                    phase_timings.push(phase.finish());
                     let _ = self.cleanup().await;
-                    return TestResult {
-                        name: test_name,
-                        passed: false,
-                        duration: started.elapsed(),
-                        assertion_results: vec![],
-                        error: Some(format!("Failed to resolve dynamic variables: {}", e)),
+                    return TestResult::errored(
+                        test_name,
+                        ErrorKind::Setup,
+                        format!("Failed to resolve dynamic variables: {}", e),
+                        started.elapsed(),
                         phase_timings,
-                        assertion_details: vec![],
-                    };
+                    );
                 }
             }
 
-            phase_timings.push(PhaseTiming {
-                phase: "dynamic_vars".to_string(),
-                duration: phase_start.elapsed(),
-            });
+            phase_timings.push(phase.finish());
         }
 
         // Run assertions. Timeout is handled by the Runner, which calls cancel() on this test
@@ -798,7 +782,7 @@ impl IntegrationRunner {
             "Running assertions..."
         );
 
-        let phase_start = Instant::now();
+        let phase = self.tctx.phases.enter("assertions");
         let test_cancel = self.tctx.test_cancel_token();
 
         // If we are canceled while running our assertions, we return early to respect cancellation.
@@ -808,13 +792,10 @@ impl IntegrationRunner {
                 name: "cancelled".to_string(),
                 passed: false,
                 message: "Test was cancelled.".to_string(),
-                duration: phase_start.elapsed(),
+                duration: phase.elapsed(),
             }],
         };
-        phase_timings.push(PhaseTiming {
-            phase: "assertions".to_string(),
-            duration: phase_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Cancel the exit monitor.
         exit_handle.abort();
@@ -840,27 +821,21 @@ impl IntegrationRunner {
         }
 
         // Write logs to disk if configured.
-        let phase_start = Instant::now();
+        let phase = self.tctx.phases.enter("write_logs");
         if let Err(e) = self.write_logs(&test_name).await {
             warn!(test = %test_name, error = %e, "Failed to write container logs to disk.");
         }
         debug!(test = %test_name, "Wrote container logs to disk.");
-        phase_timings.push(PhaseTiming {
-            phase: "write_logs".to_string(),
-            duration: phase_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Cleanup.
-        let phase_start = Instant::now();
+        let phase = self.tctx.phases.enter("cleanup");
         debug!(test = %test_name, "Cleaning up container and resources...");
         if let Err(e) = self.cleanup().await {
             warn!(test = %test_name, error = %e, "Failed to clean up resources.");
         }
         debug!(test = %test_name, "Cleanup complete.");
-        phase_timings.push(PhaseTiming {
-            phase: "cleanup".to_string(),
-            duration: phase_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         info!(
             test = %test_name,
@@ -869,15 +844,7 @@ impl IntegrationRunner {
             "Test case completed."
         );
 
-        TestResult {
-            name: test_name,
-            passed,
-            duration: started.elapsed(),
-            assertion_results,
-            error: None,
-            phase_timings,
-            assertion_details: vec![],
-        }
+        TestResult::from_assertions(test_name, started.elapsed(), assertion_results, phase_timings)
     }
 
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
@@ -1146,11 +1113,11 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
         }
     };
 
-    let status = if result.passed { "PASS" } else { "FAIL" };
+    let status = if result.outcome.is_passed() { "PASS" } else { "FAIL" };
     let _ = writeln!(f, "{} {} ({:.2?})", status, result.name, result.duration);
 
     if let Some(ref error) = result.error {
-        let _ = writeln!(f, "Error: {}", error);
+        let _ = writeln!(f, "Error: {}", error.message);
     }
 
     if !result.assertion_results.is_empty() {
@@ -1183,55 +1150,212 @@ fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
 
 // These TestResult constructors just declutter the execution code a little bit.
 impl TestResult {
-    fn hard_timeout(name: impl Into<String>, timeout: Duration, total_duration: Duration) -> Self {
-        Self {
-            name: name.into(),
-            passed: false,
-            duration: total_duration,
-            assertion_results: vec![],
-            error: Some(format!(
-                "Test timed out after {:?} and failed to clean up resources in time.",
-                timeout
-            )),
-            phase_timings: vec![],
-            assertion_details: vec![],
-        }
+    fn hard_timeout(
+        name: impl Into<String>, timeout: Duration, total_duration: Duration, active_phase: Option<String>,
+        phase_timings: Vec<PhaseTiming>,
+    ) -> Self {
+        Self::errored(
+            name,
+            ErrorKind::Timeout,
+            format!(
+                "Test timed out after {:?} and did not clean up its resources within {:?}.",
+                timeout, GRACE_TIME
+            ),
+            total_duration,
+            phase_timings,
+        )
+        .with_timeout_attribution(TimeoutAttribution::cleanup_grace(GRACE_TIME, timeout, active_phase))
     }
 
     fn cancellation_failure(name: impl Into<String>, grace: Duration, total_duration: Duration) -> Self {
-        Self {
-            name: name.into(),
-            passed: false,
-            duration: total_duration,
-            assertion_results: vec![],
-            error: Some(format!(
+        Self::errored(
+            name,
+            ErrorKind::Internal,
+            format!(
                 "Test was cancelled and failed to clean up its resources with a grace period of {:?}.",
                 grace
-            )),
-            phase_timings: vec![],
-            assertion_details: vec![],
-        }
+            ),
+            total_duration,
+            vec![],
+        )
     }
 
     fn setup_error(name: impl Into<String>, total_duration: Duration, e: impl AsRef<str>) -> Self {
-        Self {
-            name: name.into(),
-            passed: false,
-            duration: total_duration,
-            assertion_results: vec![],
-            error: Some(format!(
-                "Test failed to start due to an error during setup. {}",
-                e.as_ref()
-            )),
-            phase_timings: vec![],
-            assertion_details: vec![],
-        }
+        Self::errored(
+            name,
+            ErrorKind::Setup,
+            format!("Test failed to start due to an error during setup. {}", e.as_ref()),
+            total_duration,
+            vec![],
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::reporter::{DurationMs, PhaseTracker, TestOutcome, TimeoutDeadline};
+    use crate::test::TestSuite;
+
+    /// A test that marks a phase and then stays in it until it is cancelled.
+    struct StuckTest {
+        phase: &'static str,
+        timeout: Duration,
+        finish_on_cancel: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Test for StuckTest {
+        fn name(&self) -> String {
+            "stuck".to_string()
+        }
+
+        fn suite(&self) -> TestSuite {
+            TestSuite::Integration
+        }
+
+        fn description(&self) -> Option<String> {
+            None
+        }
+
+        fn case_path(&self) -> PathBuf {
+            PathBuf::from("/cases/stuck")
+        }
+
+        fn timeout(&self) -> Duration {
+            self.timeout
+        }
+
+        fn images(&self) -> BTreeMap<&str, String> {
+            BTreeMap::new()
+        }
+
+        async fn run(&self, tctx: TestContext) -> TestResult {
+            // The phase is deliberately left active: a test that overruns its deadline does not get
+            // to finish the phase it was in.
+            let _phase = tctx.phases.enter(self.phase);
+
+            tctx.test_cancel_token().cancelled().await;
+            if !self.finish_on_cancel {
+                std::future::pending::<()>().await;
+            }
+
+            TestResult::from_assertions("stuck", Duration::from_secs(1), Vec::new(), Vec::new())
+        }
+    }
+
+    fn test_runner_settings(mounts_dir: &Path) -> RunnerSettings {
+        RunnerSettings {
+            mounts_dir: mounts_dir.to_path_buf(),
+            adp_binary_path: PathBuf::new(),
+            core_agent_binary_path: PathBuf::new(),
+            alpine_image: airlock::driver::DEFAULT_ALPINE_IMAGE.to_string(),
+        }
+    }
+
+    async fn run_stuck_test(test: StuckTest) -> TestResult {
+        let log_base_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
+
+        Runner::run_one(
+            &test,
+            &None,
+            &CancellationToken::new(),
+            log_base_dir.path().to_path_buf(),
+            test_runner_settings(mounts_dir.path()),
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn setup_failure_before_the_test_starts_is_reported_as_an_error() {
+        // A regular file where the log base directory belongs, so the test's log directory cannot be
+        // created. Consumers that build the suite result from events have to see this failure, or
+        // the run reports no test at all and exits zero.
+        let occupied_base_dir = tempfile::NamedTempFile::new().expect("temp file should be creatable");
+        let mounts_dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let result = Runner::run_one(
+            &StuckTest {
+                phase: "assertions",
+                timeout: Duration::from_secs(60),
+                finish_on_cancel: true,
+            },
+            &Some(tx),
+            &CancellationToken::new(),
+            occupied_base_dir.path().to_path_buf(),
+            test_runner_settings(mounts_dir.path()),
+            None,
+        )
+        .await;
+
+        assert_eq!(result.outcome, TestOutcome::Errored);
+        assert_eq!(result.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
+        assert_eq!(result.case_path, Some(PathBuf::from("/cases/stuck")));
+
+        let mut reported = None;
+        while let Ok(event) = rx.try_recv() {
+            if let TestEvent::TestCompleted { result, .. } = event {
+                reported = Some(result);
+            }
+        }
+
+        let reported = reported.expect("a setup failure should be reported as a completed test");
+        assert_eq!(reported.name, "stuck");
+        assert_eq!(reported.outcome, TestOutcome::Errored);
+        assert_eq!(reported.error.as_ref().map(|e| e.kind), Some(ErrorKind::Setup));
+    }
+
+    #[tokio::test]
+    async fn test_deadline_timeout_names_the_phase_that_was_active() {
+        let result = run_stuck_test(StuckTest {
+            phase: "container_start",
+            timeout: Duration::from_millis(50),
+            finish_on_cancel: true,
+        })
+        .await;
+
+        let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
+        assert_eq!(result.outcome, TestOutcome::TimedOut);
+        assert_eq!(timeout.deadline, TimeoutDeadline::TestDeadline);
+        assert_eq!(timeout.active_phase, "container_start");
+        assert_eq!(timeout.configured_ms, 50);
+    }
+
+    #[test]
+    fn cleanup_grace_timeout_keeps_the_phase_and_the_timings_the_test_left_behind() {
+        // Stands in for a test whose future never came back: the runner has only what the shared
+        // tracker holds.
+        let phases = PhaseTracker::default();
+        phases.enter("container_start").finish();
+        let _stuck_in = phases.enter("assertions");
+
+        let result = TestResult::hard_timeout(
+            "stuck",
+            Duration::from_secs(60),
+            Duration::from_secs(90),
+            phases.active(),
+            phases.completed(),
+        );
+
+        let timeout = result.timeout.expect("a timed-out test should carry timeout detail");
+        assert_eq!(timeout.deadline, TimeoutDeadline::CleanupGrace);
+        assert_eq!(timeout.active_phase, "assertions");
+        assert_eq!(timeout.configured_ms, DurationMs(GRACE_TIME).as_millis());
+        assert_eq!(timeout.test_deadline_ms, 60_000);
+        assert_eq!(
+            result
+                .phase_timings
+                .iter()
+                .map(|t| t.phase.as_str())
+                .collect::<Vec<_>>(),
+            vec!["container_start"]
+        );
+    }
 
     #[test]
     fn windows_runtime_adds_adp_native_env_aliases() {

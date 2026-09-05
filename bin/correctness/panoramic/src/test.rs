@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::reporter::TestResult;
+use crate::reporter::{PhaseTracker, TestResult};
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///
@@ -63,6 +63,9 @@ pub(crate) struct TestContext {
     /// For kind-runtime tests: a shared channel that fires when the cluster is ready (or has failed).
     /// Non-kind tests leave this as `None` and proceed immediately.
     pub(crate) kind_ready: Option<KindReadyReceiver>,
+
+    /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
+    pub(crate) phases: PhaseTracker,
 }
 
 impl TestContext {
@@ -72,6 +75,7 @@ impl TestContext {
             log_dir,
             settings,
             kind_ready: None,
+            phases: PhaseTracker::default(),
         }
     }
 
@@ -103,6 +107,9 @@ pub(crate) trait Test: Send + Sync {
 
     /// A description of the test for reporting and documentation purposes.
     fn description(&self) -> Option<String>;
+
+    /// The directory the test case was loaded from, for reporting.
+    fn case_path(&self) -> PathBuf;
 
     /// How long the test should be allowed to run for before it's considered a failure.
     fn timeout(&self) -> Duration;

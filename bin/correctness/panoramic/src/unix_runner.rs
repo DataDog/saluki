@@ -47,7 +47,7 @@ use tracing::{debug, error, info};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_port_spec, IntegrationConfig},
-    reporter::{PhaseTiming, TestResult},
+    reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
 
@@ -183,7 +183,7 @@ impl UnixIntegrationRunner {
         // The Docker integration image always runs the Core Agent beside ADP via s6. Do the
         // same for the Unix runner so mac tests keep the same fixture shape: standalone-mode
         // tests still configure ADP not to use the Agent, but the Agent process exists.
-        let agent_spawn_start = Instant::now();
+        let phase = self.tctx.phases.enter("core_agent_spawn");
         let agent_binary = match resolve_core_agent_binary_path(&self.tctx.settings.core_agent_binary_path) {
             Ok(p) => p,
             Err(e) => return make_error_result(test_name, started, "resolve_core_agent", e, phase_timings),
@@ -218,37 +218,25 @@ impl UnixIntegrationRunner {
         let agent = match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
             Ok(p) => p,
             Err(e) => {
-                phase_timings.push(PhaseTiming {
-                    phase: "core_agent_spawn".to_string(),
-                    duration: agent_spawn_start.elapsed(),
-                });
+                phase_timings.push(phase.finish());
                 return make_error_result(test_name, started, "core_agent_spawn", e, phase_timings);
             }
         };
-        phase_timings.push(PhaseTiming {
-            phase: "core_agent_spawn".to_string(),
-            duration: agent_spawn_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
         info!(test = %test_name, "Core Agent process started.");
 
-        let wait_start = Instant::now();
+        let phase = self.tctx.phases.enter("core_agent_ipc_ready");
         if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
             agent.cleanup().await;
-            phase_timings.push(PhaseTiming {
-                phase: "core_agent_ipc_ready".to_string(),
-                duration: wait_start.elapsed(),
-            });
+            phase_timings.push(phase.finish());
             return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
         }
-        phase_timings.push(PhaseTiming {
-            phase: "core_agent_ipc_ready".to_string(),
-            duration: wait_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
         debug!(test = %test_name, "Core Agent IPC credentials present.");
         let mut core_agent = Some(agent);
 
         // Phase: spawn ADP.
-        let spawn_start = Instant::now();
+        let phase = self.tctx.phases.enter("spawn");
         let config_path_str = config_path.to_string_lossy().into_owned();
         let core_agent_auth_token_path = PathBuf::from(auth_token_path.clone());
         let adp_forced = build_adp_forced_env(auth_token_path);
@@ -264,22 +252,16 @@ impl UnixIntegrationRunner {
                 if let Some(agent) = core_agent.take() {
                     agent.cleanup().await;
                 }
-                phase_timings.push(PhaseTiming {
-                    phase: "spawn".to_string(),
-                    duration: spawn_start.elapsed(),
-                });
+                phase_timings.push(phase.finish());
                 return make_error_result(test_name, started, "spawn", e, phase_timings);
             }
         };
-        phase_timings.push(PhaseTiming {
-            phase: "spawn".to_string(),
-            duration: spawn_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         info!(test = %test_name, "ADP process started.");
 
         // Phase: run assertions.
-        let assertion_start = Instant::now();
+        let phase = self.tctx.phases.enter("assertions");
         let assertion_results = self
             .run_assertions(
                 process.name().to_string(),
@@ -290,45 +272,27 @@ impl UnixIntegrationRunner {
                 core_agent_cli_command,
             )
             .await;
-        phase_timings.push(PhaseTiming {
-            phase: "assertions".to_string(),
-            duration: assertion_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Phase: cleanup. ADP first, Core Agent second — in case the Agent's shutdown depends on
         // ADP releasing connections gracefully.
-        let cleanup_start = Instant::now();
+        let phase = self.tctx.phases.enter("cleanup");
         process.cleanup().await;
         if let Some(agent) = core_agent.take() {
             agent.cleanup().await;
         }
-        phase_timings.push(PhaseTiming {
-            phase: "cleanup".to_string(),
-            duration: cleanup_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Phase: write captured logs to disk so the artifact upload picks them up. Matches the
         // Docker runner's behavior; without this the artifact only contains result.log and a
         // failed assertion's truncated context is all we have to debug from.
-        let write_logs_start = Instant::now();
+        let phase = self.tctx.phases.enter("write_logs");
         if let Err(e) = self.write_logs().await {
             debug!(test = %test_name, error = %e, "Failed to write captured logs to disk.");
         }
-        phase_timings.push(PhaseTiming {
-            phase: "write_logs".to_string(),
-            duration: write_logs_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
-        let passed = assertion_results.iter().all(|r| r.passed);
-        TestResult {
-            name: test_name,
-            passed,
-            duration: started.elapsed(),
-            assertion_results,
-            error: None,
-            phase_timings,
-            assertion_details: Vec::new(),
-        }
+        TestResult::from_assertions(test_name, started.elapsed(), assertion_results, phase_timings)
     }
 
     /// Builds the port mappings for assertions. In the Docker runner this maps container ports
@@ -505,15 +469,13 @@ fn make_error_result(
     name: String, started: Instant, phase: &str, e: GenericError, phase_timings: Vec<PhaseTiming>,
 ) -> TestResult {
     error!(test = %name, error = %e, phase, "Unix integration test setup failed.");
-    TestResult {
+    TestResult::errored(
         name,
-        passed: false,
-        duration: started.elapsed(),
-        assertion_results: vec![],
-        error: Some(format!("Failed in phase '{}': {}", phase, e)),
+        ErrorKind::Setup,
+        format!("Failed in phase '{}': {}", phase, e),
+        started.elapsed(),
         phase_timings,
-        assertion_details: vec![],
-    }
+    )
 }
 
 /// Bridges [`airlock::unix::LogSink`] to the panoramic [`LogBuffer`].

@@ -50,27 +50,7 @@ impl MetricsAnalyzer {
         // We don't yet care about the _values_ of those metrics, just that both sides are emitting the same contexts.
         // We check both context and type, so metrics with the same name but different types (for example, Count vs Rate) are
         // treated as different.
-        let (baseline_only_pairs, comparison_only_pairs) =
-            NormalizedMetrics::context_differences(&baseline_metrics, &comparison_metrics);
-
-        if !baseline_only_pairs.is_empty() || !comparison_only_pairs.is_empty() {
-            error!("Mismatch in unique metrics between baseline and comparison!");
-
-            error!("Metrics in baseline but not in comparison:");
-            for (context, metric_type) in baseline_only_pairs {
-                error!("  - {} (type: {})", context, metric_type);
-            }
-
-            error!("Metrics in comparison but not in baseline:");
-            for (context, metric_type) in comparison_only_pairs {
-                error!("  - {} (type: {})", context, metric_type);
-            }
-
-            return Err((
-                generic_error!("Mismatch in metrics pairs between baseline and comparison."),
-                vec![],
-            ));
-        }
+        compare_metric_contexts(&baseline_metrics, &comparison_metrics)?;
 
         info!(
             "Baseline and comparison both emitted the same set of {} unique metrics. Continuing...",
@@ -82,6 +62,58 @@ impl MetricsAnalyzer {
 }
 
 const SAMPLE_MISMATCH_LIMIT: usize = 5;
+
+/// Compares the unique set of (context, type) pairs emitted by the baseline and comparison targets.
+///
+/// # Errors
+///
+/// If either target emitted a pair the other one didn't, an error is returned along with details listing every
+/// mismatched pair, grouped into a baseline-only section and a comparison-only section.
+fn compare_metric_contexts(
+    baseline_metrics: &NormalizedMetrics, comparison_metrics: &NormalizedMetrics,
+) -> Result<(), (GenericError, Vec<String>)> {
+    let (baseline_only_pairs, comparison_only_pairs) =
+        NormalizedMetrics::context_differences(baseline_metrics, comparison_metrics);
+
+    if baseline_only_pairs.is_empty() && comparison_only_pairs.is_empty() {
+        return Ok(());
+    }
+
+    // The details are the only machine-readable record of _which_ metrics differed, so they carry both directions in
+    // full, even when the inline copy in `result.json` ends up capped.
+    let mut details = Vec::with_capacity(baseline_only_pairs.len() + comparison_only_pairs.len() + 3);
+    details.push(format!(
+        "Mismatch in metrics pairs: {} only in baseline, {} only in comparison.",
+        baseline_only_pairs.len(),
+        comparison_only_pairs.len()
+    ));
+
+    details.push(format!(
+        "Metrics in baseline but not in comparison ({}):",
+        baseline_only_pairs.len()
+    ));
+    for (context, metric_type) in baseline_only_pairs {
+        details.push(format!("  - {} (type: {})", context, metric_type));
+    }
+
+    details.push(format!(
+        "Metrics in comparison but not in baseline ({}):",
+        comparison_only_pairs.len()
+    ));
+    for (context, metric_type) in comparison_only_pairs {
+        details.push(format!("  - {} (type: {})", context, metric_type));
+    }
+
+    error!("Mismatch in unique metrics between baseline and comparison!");
+    for detail in &details {
+        error!("{}", detail);
+    }
+
+    Err((
+        generic_error!("Mismatch in metrics pairs between baseline and comparison."),
+        details,
+    ))
+}
 
 fn compare_metric_values(
     baseline_metrics: &NormalizedMetrics, comparison_metrics: &NormalizedMetrics,
@@ -190,5 +222,73 @@ fn get_formatted_metric_value(value: &MetricValue) -> String {
             sketch.count(),
             sketch.bin_count(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use stele::Metric;
+
+    use super::{compare_metric_contexts, NormalizedMetrics};
+
+    fn metrics(entries: &[(&str, &[&str], &str)]) -> NormalizedMetrics {
+        let metrics = entries
+            .iter()
+            .map(|(name, tags, mtype)| {
+                serde_json::from_value::<Metric>(json!({
+                    "context": {
+                        "name": name,
+                        "tags": tags,
+                    },
+                    "values": [[10, {"mtype": mtype, "value": 1.0}]],
+                }))
+                .expect("metric should deserialize")
+            })
+            .collect::<Vec<_>>();
+
+        NormalizedMetrics::try_from_stele_metrics(&metrics).expect("metrics should normalize")
+    }
+
+    #[test]
+    fn context_mismatch_details_list_every_pair_in_both_directions() {
+        let baseline = metrics(&[
+            ("type.flip", &["env:prod"], "Count"),
+            ("shared.metric", &["env:prod"], "Count"),
+            ("only.in.baseline", &["env:prod"], "Count"),
+        ]);
+        let comparison = metrics(&[
+            ("only.in.comparison", &["env:prod"], "Count"),
+            ("shared.metric", &["env:prod"], "Count"),
+            ("type.flip", &["env:prod"], "Gauge"),
+        ]);
+
+        let (error, details) =
+            compare_metric_contexts(&baseline, &comparison).expect_err("context mismatch should be an error");
+
+        assert_eq!(
+            error.to_string(),
+            "Mismatch in metrics pairs between baseline and comparison."
+        );
+        assert_eq!(
+            details,
+            vec![
+                "Mismatch in metrics pairs: 2 only in baseline, 2 only in comparison.",
+                "Metrics in baseline but not in comparison (2):",
+                "  - only.in.baseline[env:prod] (type: count)",
+                "  - type.flip[env:prod] (type: count)",
+                "Metrics in comparison but not in baseline (2):",
+                "  - only.in.comparison[env:prod] (type: count)",
+                "  - type.flip[env:prod] (type: gauge)",
+            ]
+        );
+    }
+
+    #[test]
+    fn matching_contexts_yield_no_mismatch() {
+        let baseline = metrics(&[("shared.metric", &["env:prod"], "Count")]);
+        let comparison = metrics(&[("shared.metric", &["env:prod"], "Count")]);
+
+        assert!(compare_metric_contexts(&baseline, &comparison).is_ok());
     }
 }

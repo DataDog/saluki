@@ -28,7 +28,7 @@ use crate::{
         config::{Config, TargetConfig},
         runner::make_error_result,
     },
-    reporter::{PhaseTiming, TestResult},
+    reporter::TestResult,
     test::TestContext,
 };
 
@@ -43,8 +43,13 @@ const MILLSTONE_EXIT_TIMEOUT: Duration = Duration::from_secs(300);
 pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
+    // Phases are marked on the shared tracker so the runner can name the one a test was in when a
+    // deadline fires, and so their timings survive a test that never returns.
+    let phases = tctx.phases.clone();
+
     // Wait for the kind cluster to be ready. The runner already waited before acquiring a concurrency
     // slot, so this is a fast-path check: the value should already be Some by the time we get here.
+    let phase = phases.enter("kind_setup");
     if let Some(ref rx) = tctx.kind_ready {
         let status: Option<Result<(), String>> = rx.borrow().clone();
         match status {
@@ -53,7 +58,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
                 return make_error_result(
                     name,
                     started,
-                    "kind_setup",
+                    phase.finish_and_collect(),
                     generic_error!("Kind cluster setup failed: {}", e),
                 );
             }
@@ -61,24 +66,27 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
                 return make_error_result(
                     name,
                     started,
-                    "kind_setup",
+                    phase.finish_and_collect(),
                     generic_error!("Kind cluster setup did not complete"),
                 );
             }
         }
     }
+    phase.finish();
 
+    let phase = phases.enter("k8s_connect");
     let client = match Client::try_default().await {
         Ok(c) => c,
         Err(e) => {
             return make_error_result(
                 name,
                 started,
-                "k8s_connect",
+                phase.finish_and_collect(),
                 generic_error!("Failed to connect to Kubernetes cluster: {}", e),
             )
         }
     };
+    phase.finish();
 
     let run_id = generate_isolation_id();
     let baseline_ns = format!("airlock-{}-baseline", run_id);
@@ -94,6 +102,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let baseline_socket_dir = format!("/tmp/saluki-correctness/{}/baseline", run_id);
     let comparison_socket_dir = format!("/tmp/saluki-correctness/{}/comparison", run_id);
 
+    let phase = phases.enter("read_millstone_config");
     let millstone_cfg = config.millstone_config();
     let millstone_template = match std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
         format!(
@@ -102,8 +111,9 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         )
     }) {
         Ok(t) => t,
-        Err(e) => return make_error_result(name, started, "read_millstone_config", e),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
+    phase.finish();
     let millstone_binary = millstone_cfg
         .binary_path
         .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
@@ -112,8 +122,6 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         "Spawning kind pods: baseline ({}), comparison ({}), millstone ({})...",
         baseline_ns, comparison_ns, millstone_ns
     );
-
-    let run_start = Instant::now();
 
     let use_socket_wait = is_socket_target(&millstone_template);
 
@@ -132,6 +140,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     };
 
     // Phase 1a: Start both agent pods in parallel.
+    let phase = phases.enter("agent_pod_start");
     let (baseline_prep, comparison_prep) = tokio::join!(
         prepare_agent_group(
             client.clone(),
@@ -151,11 +160,12 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         ),
     );
     if let Err(e) = baseline_prep {
-        return make_error_result(name, started, "agent_pod_start", cleanup(e).await);
+        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
     }
     if let Err(e) = comparison_prep {
-        return make_error_result(name, started, "agent_pod_start", cleanup(e).await);
+        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
     }
+    phase.finish();
 
     // Phase 1b: For TCP/gRPC/UDP targets, fetch the agent pod IPs now that both pods are Running
     // so the millstone pod can include a port-readiness check in its startup wait condition.
@@ -164,6 +174,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     // ready regardless).
     let tcp_readiness_checks = if !use_socket_wait {
         if let Some(port) = extract_target_port(&millstone_template) {
+            let phase = phases.enter("get_pod_ips");
             let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
             let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
             match tokio::try_join!(
@@ -171,9 +182,10 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
                 get_pod_ip(&comparison_pod_api, POD_NAME),
             ) {
                 Ok((baseline_ip, comparison_ip)) => {
+                    phase.finish();
                     vec![(baseline_ip, port), (comparison_ip, port)]
                 }
-                Err(e) => return make_error_result(name, started, "get_pod_ips", cleanup(e).await),
+                Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
             }
         } else {
             vec![]
@@ -183,6 +195,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     };
 
     // Phase 1c: Start the millstone pod.
+    let phase = phases.enter("millstone_pod_start");
     if let Err(e) = prepare_millstone_group(
         client.clone(),
         millstone_ns.clone(),
@@ -198,18 +211,21 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     )
     .await
     {
-        return make_error_result(name, started, "millstone_pod_start", cleanup(e).await);
+        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
     }
+    phase.finish();
 
     // Phase 2: All pods are Running. Gather origin data from the millstone pod and write both
     // configs. Both runs use the same container ID and pod UID so both agents resolve identical
     // enrichment, even though the origin actually belongs to the millstone pod, not the agents.
     let millstone_pod_api: Api<Pod> = Api::namespaced(client.clone(), &millstone_ns);
 
+    let phase = phases.enter("gather_origin_data");
     let origin_data = match gather_pod_origin_data(&millstone_pod_api, POD_NAME).await {
         Ok(d) => d,
-        Err(e) => return make_error_result(name, started, "gather_origin_data", cleanup(e).await),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
     };
+    phase.finish();
 
     debug!(
         "Millstone pod origin data: pod_uid={}, container_id={}",
@@ -224,6 +240,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let (baseline_group_value, comparison_group_value) = if is_socket_target(&config_content) {
         ("baseline".to_string(), "comparison".to_string())
     } else {
+        let phase = phases.enter("get_pod_ips");
         let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
         let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
         let (baseline_pod_ip, comparison_pod_ip) = match tokio::try_join!(
@@ -231,14 +248,16 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
             get_pod_ip(&comparison_pod_api, POD_NAME),
         ) {
             Ok(ips) => ips,
-            Err(e) => return make_error_result(name, started, "get_pod_ips", cleanup(e).await),
+            Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
         };
+        phase.finish();
         (baseline_pod_ip, comparison_pod_ip)
     };
 
     let baseline_config = make_millstone_config_for_group(&config_content, &baseline_group_value);
     let comparison_config = make_millstone_config_for_group(&config_content, &comparison_group_value);
 
+    let phase = phases.enter("write_millstone_configs");
     let write_result = tokio::try_join!(
         exec_write_file(
             client.clone(),
@@ -258,10 +277,12 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         ),
     );
     if let Err(e) = write_result {
-        return make_error_result(name, started, "write_millstone_configs", cleanup(e).await);
+        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
     }
+    phase.finish();
 
     // Phase 3: Both agent pods are ready; start port-forwards for data collection.
+    let phase = phases.enter("port_forward");
     let baseline_pf_cancel = CancellationToken::new();
     let comparison_pf_cancel = CancellationToken::new();
     let (baseline_port, comparison_port) = match tokio::try_join!(
@@ -281,20 +302,27 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         ),
     ) {
         Ok(ports) => ports,
-        Err(e) => return make_error_result(name, started, "port_forward", cleanup(e).await),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await),
     };
+    phase.finish();
 
     // Phase 4: Wait for millstone to finish both parallel runs, then flush.
+    let phase = phases.enter("millstone_exit");
     if let Err(e) = wait_for_millstone_exit(&millstone_pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT).await {
         baseline_pf_cancel.cancel();
         comparison_pf_cancel.cancel();
-        return make_error_result(name, started, "millstone_exit", cleanup(e).await);
+        return make_error_result(name, started, phase.finish_and_collect(), cleanup(e).await);
     }
 
+    phase.finish();
+
+    let phase = phases.enter("flush_wait");
     debug!("Millstone completed. Waiting {:?} for flush...", FLUSH_WAIT);
     sleep(FLUSH_WAIT).await;
+    phase.finish();
 
     // Phase 5: Collect data from both agent pods in parallel.
+    let phase = phases.enter("collect_data");
     let (baseline_result, comparison_result) = tokio::join!(
         CollectedData::for_port(baseline_port),
         CollectedData::for_port(comparison_port),
@@ -302,15 +330,16 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     baseline_pf_cancel.cancel();
     comparison_pf_cancel.cancel();
-
-    let run_duration = run_start.elapsed();
+    phase.finish();
 
     // Clean up all three namespaces now that data is collected.
+    let phase = phases.enter("cleanup");
     tokio::join!(
         cleanup_namespace(client.clone(), &baseline_ns),
         cleanup_namespace(client.clone(), &comparison_ns),
         cleanup_namespace(client.clone(), &millstone_ns),
     );
+    phase.finish();
 
     let (baseline_data, comparison_data) = match (baseline_result, comparison_result) {
         (Ok(b), Ok(c)) => (b, c),
@@ -318,7 +347,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
             return make_error_result(
                 name,
                 started,
-                "collect_data",
+                phases.completed(),
                 generic_error!(
                     "Both groups failed to collect data.\n  baseline: {:?}\n  comparison: {:?}",
                     baseline_err,
@@ -326,10 +355,10 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
                 ),
             );
         }
-        (Err(e), _) | (_, Err(e)) => return make_error_result(name, started, "collect_data", e),
+        (Err(e), _) | (_, Err(e)) => return make_error_result(name, started, phases.completed(), e),
     };
 
-    let analysis_start = Instant::now();
+    let phase = phases.enter("analysis");
     let traces_options = match config.analysis_mode {
         AnalysisMode::Traces => Some(TracesAnalysisOptions {
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
@@ -340,51 +369,35 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
         .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
-    let analysis_duration = analysis_start.elapsed();
-
-    let phase_timings = vec![
-        PhaseTiming {
-            phase: "run_groups".to_string(),
-            duration: run_duration,
-        },
-        PhaseTiming {
-            phase: "analysis".to_string(),
-            duration: analysis_duration,
-        },
-    ];
+    let analysis_duration = phase.elapsed();
+    let phase_timings = phase.finish_and_collect();
 
     match analysis_result {
-        Ok(()) => TestResult {
+        Ok(()) => TestResult::from_assertions(
             name,
-            passed: true,
-            duration: started.elapsed(),
-            assertion_results: vec![crate::assertions::AssertionResult {
+            started.elapsed(),
+            vec![crate::assertions::AssertionResult {
                 name: "telemetry matches".to_string(),
                 passed: true,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
             }],
-            error: None,
             phase_timings,
-            assertion_details: vec![],
-        },
+        ),
         Err((e, details)) => {
             let full_message = format!("{:?}", e);
-            let summary = full_message.lines().next().unwrap_or(&full_message).to_string();
-            TestResult {
+            TestResult::from_assertions(
                 name,
-                passed: false,
-                duration: started.elapsed(),
-                assertion_results: vec![crate::assertions::AssertionResult {
+                started.elapsed(),
+                vec![crate::assertions::AssertionResult {
                     name: "telemetry matches".to_string(),
                     passed: false,
                     message: full_message,
                     duration: analysis_duration,
                 }],
-                error: Some(summary),
                 phase_timings,
-                assertion_details: vec![details],
-            }
+            )
+            .with_assertion_details(vec![details])
         }
     }
 }

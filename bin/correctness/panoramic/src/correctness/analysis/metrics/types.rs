@@ -237,7 +237,8 @@ impl NormalizedMetrics {
     /// (for example, Count vs Rate) are treated as different metrics.
     ///
     /// Returns two vectors, the first containing (context, type) pairs that are only present in the left set,
-    /// and the second containing (context, type) pairs that are only present in the right set.
+    /// and the second containing (context, type) pairs that are only present in the right set. Both vectors are
+    /// sorted by context, and then type, in ascending order.
     /// If there are no differences, both vectors will be empty.
     pub fn context_differences<'a>(
         left: &'a Self, right: &'a Self,
@@ -253,8 +254,10 @@ impl NormalizedMetrics {
             .map(|m| (m.context(), m.value_type()))
             .collect::<HashSet<_>>();
 
-        let left_only = left_pairs.difference(&right_pairs).copied().collect();
-        let right_only = right_pairs.difference(&left_pairs).copied().collect();
+        let mut left_only = left_pairs.difference(&right_pairs).copied().collect::<Vec<_>>();
+        let mut right_only = right_pairs.difference(&left_pairs).copied().collect::<Vec<_>>();
+        left_only.sort_unstable();
+        right_only.sort_unstable();
 
         (left_only, right_only)
     }
