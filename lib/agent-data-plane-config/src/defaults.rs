@@ -13,6 +13,12 @@ use std::{
 /// Default internal telemetry verbosity.
 pub const DEFAULT_METRICS_LEVEL: &str = "info";
 
+/// Default memory-accounting slop factor.
+pub const DEFAULT_MEMORY_SLOP_FACTOR: f64 = 0.25;
+
+/// Default global memory limiter state.
+pub const DEFAULT_ENABLE_GLOBAL_LIMITER: bool = true;
+
 /// Default Checks IPC endpoint.
 pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
 

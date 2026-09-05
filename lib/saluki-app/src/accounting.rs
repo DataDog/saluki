@@ -7,7 +7,6 @@ use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot};
 use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{
     ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
@@ -17,22 +16,12 @@ use saluki_core::{
     support::SubsystemIdentifier,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::Deserialize;
 use tokio::{select, time::sleep};
 use tonic::async_trait;
 use tracing::{error, info, warn};
 
-const fn default_memory_slop_factor() -> f64 {
-    0.25
-}
-
-const fn default_enable_global_limiter() -> bool {
-    true
-}
-
 /// Bounds validation and global memory limiter behavior.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MemoryMode {
     /// Bounds validation is skipped, and no memory limiting is applied.
     #[default]
@@ -50,16 +39,9 @@ pub enum MemoryMode {
 }
 
 /// Configuration for memory bounds.
-#[derive(Deserialize)]
 pub struct MemoryBoundsConfiguration {
-    /// The memory limit to adhere to.
-    ///
-    /// This should be the overall memory limit for the entire process. The value can either be an integer for
-    /// specifying the limit in bytes, or a string that uses SI byte prefixes (case-insensitive) such as `1mb` or `1GB`.
-    ///
-    /// If not specified, no memory bounds verification will be performed.
-    #[serde(default)]
-    memory_limit: Option<ByteSize>,
+    /// Process memory limit. `None` enables cgroup detection.
+    pub memory_limit: Option<ByteSize>,
 
     /// The slop factor to apply to the given memory limit.
     ///
@@ -71,73 +53,24 @@ pub struct MemoryBoundsConfiguration {
     /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
     /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
     /// 100 MB, we would then verify that the memory bounds can fit within 75 MB (100 MB * (1 - 0.25) => 75 MB).
-    #[serde(default = "default_memory_slop_factor")]
-    memory_slop_factor: f64,
+    pub memory_slop_factor: f64,
 
     /// Whether or not to enable the global memory limiter.
     ///
     /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never
     /// exert backpressure, and only the inherent memory bounds of the running components will influence memory usage.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_global_limiter")]
-    enable_global_limiter: bool,
+    pub enable_global_limiter: bool,
 
     /// The memory mode to use when reconciling the calculated memory bounds against the configured memory limit.
     ///
     /// See [`MemoryMode`] for the available modes and their behavior.
-    ///
-    /// Defaults to [`MemoryMode::Disabled`].
-    #[serde(default)]
-    memory_mode: MemoryMode,
-}
-
-impl MemoryBoundsConfiguration {
-    /// Attempts to read memory bounds configuration from the provided configuration.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs during deserialization, an error will be returned.
-    pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut config = config
-            .as_typed::<Self>()
-            .error_context("Failed to parse memory bounds configuration.")?;
-
-        if config.memory_limit.is_none() {
-            // Try to pull configured memory limit from Cgroup if running in a containerized environment.
-            if let Ok(value) = env::var("DOCKER_DD_AGENT") {
-                if !value.is_empty() {
-                    let cgroup_memory_reader = CgroupMemoryParser;
-                    if let Some(memory) = cgroup_memory_reader.parse() {
-                        info!(
-                            "Setting memory limit to {} based on detected cgroups limit.",
-                            memory.display().si()
-                        );
-                        config.memory_limit = Some(memory);
-                    }
-                }
-            }
-        }
-
-        // Try constructing the initial grant based on the configuration as a smoke test to validate the values.
-        if let Some(limit) = config.memory_limit {
-            let _ = MemoryGrant::with_slop_factor(limit.as_u64() as usize, config.memory_slop_factor)
-                .error_context("Given memory limit and/or slop factor invalid.")?;
-        }
-
-        Ok(config)
-    }
-
-    /// Gets the initial memory grant based on the configuration.
-    pub fn get_initial_grant(&self) -> Option<MemoryGrant> {
-        self.memory_limit.map(|limit| {
-            MemoryGrant::with_slop_factor(limit.as_u64() as usize, self.memory_slop_factor)
-                .expect("memory limit should be valid")
-        })
-    }
+    pub memory_mode: MemoryMode,
 }
 
 /// Initializes the memory bounds system and verifies any configured bounds based on the configured memory mode.
+///
+/// When no memory limit is configured and `DOCKER_DD_AGENT` is set to a non-empty value, the limit is read from the
+/// process cgroup instead.
 ///
 /// See [`MemoryMode`] for details on the behavior of each mode.
 ///
@@ -148,10 +81,12 @@ impl MemoryBoundsConfiguration {
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
 ) -> Result<MemoryLimiter, GenericError> {
-    let configured_grant = configuration
-        .memory_limit
+    let memory_limit = configuration.memory_limit.or_else(detect_cgroup_memory_limit);
+
+    let configured_grant = memory_limit
         .map(|limit| MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor))
-        .transpose()?;
+        .transpose()
+        .error_context("Given memory limit and/or slop factor invalid.")?;
 
     let limiter_grant = match configuration.memory_mode {
         MemoryMode::Disabled => {
@@ -377,6 +312,20 @@ async fn run_resource_group_metrics_loop() {
     }
 }
 
+fn detect_cgroup_memory_limit() -> Option<ByteSize> {
+    if !env::var("DOCKER_DD_AGENT").is_ok_and(|value| !value.is_empty()) {
+        return None;
+    }
+
+    let memory = CgroupMemoryParser.parse()?;
+    info!(
+        "Setting memory limit to {} based on detected cgroups limit.",
+        memory.display().si()
+    );
+
+    Some(memory)
+}
+
 struct CgroupMemoryParser;
 
 impl CgroupMemoryParser {
@@ -427,9 +376,28 @@ fn bytes_to_si_string(bytes: usize) -> bytesize::Display {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{config_from, test_env_lock};
+    use saluki_config::test_env_lock;
+    use saluki_core::support::SubsystemIdentifier;
 
     use super::*;
+
+    fn config_with_limit(limit: ByteSize, memory_mode: MemoryMode) -> MemoryBoundsConfiguration {
+        MemoryBoundsConfiguration {
+            memory_limit: Some(limit),
+            memory_slop_factor: 0.25,
+            enable_global_limiter: false,
+            memory_mode,
+        }
+    }
+
+    fn registry_with_firm_bound(bytes: usize) -> ComponentRegistry {
+        let registry = ComponentRegistry::default();
+        registry
+            .bounds_builder(&SubsystemIdentifier::from_dotted("test"))
+            .firm()
+            .with_fixed_amount("buffer", bytes);
+        registry
+    }
 
     #[test]
     fn cgroup_memory_parser_converts_raw_limits_to_bytes() {
@@ -448,48 +416,80 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn memory_bounds_configuration_parses_limit_and_slop_factor() {
-        let cfg = config_from(serde_json::json!({
-            "memory_limit": 1_048_576,
-            "memory_slop_factor": 0.25,
-        }))
-        .await;
+    #[test]
+    fn out_of_range_slop_factor_is_rejected() {
+        let mut config = config_with_limit(ByteSize::mib(1), MemoryMode::Strict);
+        config.memory_slop_factor = 1.5;
 
-        let bounds = MemoryBoundsConfiguration::try_from_config(&cfg).expect("valid config should parse");
-        let grant = bounds
-            .get_initial_grant()
-            .expect("a configured memory limit should yield an initial grant");
-
-        assert_eq!(grant.initial_limit_bytes(), 1_048_576);
-        assert_eq!(grant.slop_factor(), 0.25);
+        let error = initialize_memory_bounds(config, ComponentRegistry::default().root())
+            .err()
+            .expect("a slop factor of 1.5 should be rejected");
+        assert!(error
+            .to_string()
+            .contains("Given memory limit and/or slop factor invalid."));
     }
 
-    #[tokio::test]
-    async fn memory_bounds_configuration_rejects_out_of_range_slop_factor() {
-        // `try_from_config` builds a grant as a smoke test, and a slop factor outside `[0.0, 1.0)` makes that fail.
-        let cfg = config_from(serde_json::json!({
-            "memory_limit": 1_048_576,
-            "memory_slop_factor": 1.5,
-        }))
-        .await;
+    #[test]
+    fn disabled_memory_mode_skips_bounds_verification() {
+        let registry = registry_with_firm_bound(64 * 1024 * 1024);
 
-        assert!(
-            MemoryBoundsConfiguration::try_from_config(&cfg).is_err(),
-            "a slop factor of 1.5 should be rejected"
-        );
+        initialize_memory_bounds(
+            config_with_limit(ByteSize::b(1024), MemoryMode::Disabled),
+            registry.root(),
+        )
+        .expect("disabled mode should not verify bounds");
     }
 
-    #[tokio::test]
-    async fn memory_bounds_configuration_without_limit_has_no_grant() {
-        let cfg = config_from(serde_json::json!({})).await;
+    #[test]
+    fn strict_memory_mode_rejects_bounds_exceeding_the_limit() {
+        let registry = registry_with_firm_bound(64 * 1024 * 1024);
 
-        // With no explicit limit, `try_from_config` consults the `DOCKER_DD_AGENT` environment variable, so serialize
-        // against the shared env lock and ensure it's unset for a deterministic "no limit" result.
+        let error = initialize_memory_bounds(
+            config_with_limit(ByteSize::b(1024), MemoryMode::Strict),
+            registry.root(),
+        )
+        .err()
+        .expect("bounds larger than the limit should be fatal in strict mode");
+        assert!(error
+            .to_string()
+            .contains("Configured memory limit is insufficient for the current configuration."));
+    }
+
+    #[test]
+    fn permissive_memory_mode_tolerates_bounds_exceeding_the_limit() {
+        let registry = registry_with_firm_bound(64 * 1024 * 1024);
+
+        initialize_memory_bounds(
+            config_with_limit(ByteSize::b(1024), MemoryMode::Permissive),
+            registry.root(),
+        )
+        .expect("bounds larger than the limit should be non-fatal in permissive mode");
+    }
+
+    #[test]
+    fn absent_memory_limit_skips_bounds_verification() {
+        let registry = registry_with_firm_bound(64 * 1024 * 1024);
+        let config = MemoryBoundsConfiguration {
+            memory_limit: None,
+            memory_slop_factor: 0.25,
+            enable_global_limiter: false,
+            memory_mode: MemoryMode::Strict,
+        };
+
         let _env_guard = test_env_lock();
         std::env::remove_var("DOCKER_DD_AGENT");
 
-        let bounds = MemoryBoundsConfiguration::try_from_config(&cfg).expect("empty config should parse");
-        assert!(bounds.get_initial_grant().is_none());
+        initialize_memory_bounds(config, registry.root()).expect("no limit means no bounds verification");
+    }
+
+    #[test]
+    fn cgroup_memory_limit_is_not_detected_outside_a_container() {
+        let _env_guard = test_env_lock();
+        std::env::remove_var("DOCKER_DD_AGENT");
+        assert_eq!(detect_cgroup_memory_limit(), None);
+
+        std::env::set_var("DOCKER_DD_AGENT", "");
+        assert_eq!(detect_cgroup_memory_limit(), None);
+        std::env::remove_var("DOCKER_DD_AGENT");
     }
 }
