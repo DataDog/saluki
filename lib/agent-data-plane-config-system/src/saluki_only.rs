@@ -150,7 +150,8 @@ pub struct SalukiOnly {
     /// Internal-telemetry verbosity (`metrics_level`).
     pub metrics_level: Option<String>,
     /// Remote-agent IPC string interner byte budget (`remote_agent_string_interner_size_bytes`).
-    pub remote_agent_string_interner_size_bytes: Option<usize>,
+    /// An explicit `0` fails the load: the interner cannot be built with no capacity.
+    pub remote_agent_string_interner_size_bytes: Option<NonZeroUsize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
     pub checks_ipc_endpoint: Option<String>,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
@@ -698,8 +699,8 @@ mod tests {
     use agent_data_plane_config::defaults::{
         DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
         DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY,
-        DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
-        MAX_STRING_INTERNER_SIZE_BYTES,
+        DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES,
+        DEFAULT_TRACE_ENV, MAX_STRING_INTERNER_SIZE_BYTES,
     };
     use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
     use serde_json::json;
@@ -806,7 +807,7 @@ mod tests {
         assert_eq!(config.control.memory_slop_factor, 0.3);
         assert!(!config.control.enable_global_limiter);
         assert_eq!(config.control.memory_mode, MemoryMode::Strict);
-        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes, 4096);
+        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 4096);
 
         // shared
         assert_eq!(config.shared.metrics_level, "debug");
@@ -983,6 +984,29 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn remote_agent_string_interner_size_resolves_the_default_and_rejects_zero() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(
+            config.control.ipc.remote_agent_string_interner_size_bytes,
+            DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES
+        );
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "remote_agent_string_interner_size_bytes": 8192 }))
+                .expect("explicit interner budget deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 8192);
+
+        assert!(
+            serde_json::from_value::<SalukiOnly>(json!({ "remote_agent_string_interner_size_bytes": 0 })).is_err(),
+            "a zero remote-agent string interner budget must fail the load"
+        );
     }
 
     #[test]

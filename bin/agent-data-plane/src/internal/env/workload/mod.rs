@@ -4,7 +4,6 @@ use std::{future::Future, num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::shared::Environment;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
-use saluki_config::GenericConfiguration;
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
@@ -51,9 +50,6 @@ const DEFAULT_TAG_STORE_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(2000).unw
 // SAFETY: The value is demonstrably not zero.
 const DEFAULT_EXTERNAL_DATA_STORE_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(2000).unwrap();
 
-// SAFETY: We know the value is not zero.
-const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap(); // 512KB.
-
 /// Datadog Agent-based workload provider.
 ///
 /// This provider is based primarily on the remote tagger API exposed by the Datadog Agent, which handles the bulk of
@@ -76,24 +72,19 @@ pub struct RemoteAgentWorkloadProvider {
 }
 
 impl RemoteAgentWorkloadProvider {
-    /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration, along with a [`Supervisor`] that
-    /// drives the aggregator and all collector workers.
+    /// Creates a provider and the [`Supervisor`] that drives its collectors.
     ///
     /// # Errors
     ///
-    /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
-    /// error is returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, environment: &Environment, client_config: &RemoteAgentClientConfiguration,
-        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+    /// If there is an issue creating the underlying metadata collectors, an error is returned.
+    pub async fn new(
+        string_interner_size_bytes: NonZeroUsize, environment: &Environment,
+        client_config: &RemoteAgentClientConfiguration, component_registry: &ComponentRegistry,
+        health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
         let workload_provider_id = root_provider_id().child("workload").child("remote_agent");
         let mut provider_bounds = component_registry.bounds_builder(&workload_provider_id);
 
-        // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
-        let string_interner_size_bytes = config
-            .try_get_typed::<NonZeroUsize>("remote_agent_string_interner_size_bytes")?
-            .unwrap_or(DEFAULT_STRING_INTERNER_SIZE_BYTES);
         let string_interner = GenericMapInterner::new(string_interner_size_bytes);
 
         provider_bounds

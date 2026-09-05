@@ -37,6 +37,9 @@ pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration:
 /// Default byte capacity of the DogStatsD mapper's string interner.
 pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
 
+/// Default remote-agent IPC string interner budget.
+pub const DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();
+
 /// Default DogStatsD TCP listen port.
 ///
 /// A value of `0` disables the TCP listener.
