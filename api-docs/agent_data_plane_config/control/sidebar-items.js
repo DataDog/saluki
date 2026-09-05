@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ControlConfiguration","ControlIpc","Logging"]};
+window.SIDEBAR_ITEMS = {"enum":["MemoryMode"],"struct":["ControlConfiguration","ControlIpc","Logging"]};
