@@ -141,7 +141,7 @@ pub async fn handle_run_command(
     // config, so reload logging to match. Standalone resolves the same local sources seen at
     // bootstrap, making a reload redundant.
     if !standalone {
-        match LoggingConfigurationTranslator::translate(&config_sys.raw_map()) {
+        match LoggingConfigurationTranslator::translate(&config_sys.config().control.logging) {
             Ok(logging_config) => {
                 if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                     warn!(

@@ -62,7 +62,6 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
- "serde_with",
  "stringtheory",
  "tempfile",
  "tikv-jemallocator",
