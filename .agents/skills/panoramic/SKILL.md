@@ -47,8 +47,10 @@ before selecting them.
 
 ## Run non-interactively
 
-Build with the current Make recipe, then use `--no-tui -o json` for an agent-readable run. Set
-`-l DIR` when the artifacts need a predictable base directory.
+The Panoramic test targets write artifacts beneath `{{saluki}}/target/test-output/panoramic/` by
+default. This in-tree path is visible to Docker on macOS. Set `SALUKI_TEST_OUTPUT_DIR` to relocate the
+shared test-output root or `PANORAMIC_LOG_DIR` to override Panoramic only. Use the same base for direct
+runs.
 
 ```bash
 make build-panoramic
@@ -56,11 +58,13 @@ target/release/panoramic run \
   -d "$(pwd)/test/integration/cases" \
   --runtime linux \
   -t <case-name> \
-  --no-tui -o json -l /tmp/panoramic-logs
+  --no-tui -o json -l "$(pwd)/target/test-output/panoramic"
 ```
 
 Use comma-separated names with `-t` and `-p 1` when one case needs attributable output. Each run
-creates a timestamped directory beneath `-l`; stdout and `run.json` identify that directory.
+creates a timestamped `panoramic-*` directory beneath the base. `make clean-test-logs` deletes the
+Panoramic directory under the shared test-output root; `make clean` includes that target. Stdout and
+`run.json` identify the directory for a run.
 
 ## Interpret the result
 
@@ -92,3 +96,21 @@ context. Correctness assertion details may point to uncapped files under `detail
 
 `run.json` includes `build_revision`: the source revision used to build Panoramic, with `-dirty` for
 a modified checkout and `unknown` when it cannot be determined.
+
+## Read the traffic artifacts
+
+A correctness test records what it sent and what each side decoded under `<log_dir>/traffic/`. Start
+with `traffic/manifest.json`: it names each capture, reports its compressed size, and says whether
+the file is still on disk (`file.present`). A passing test keeps only the manifest; every other
+outcome keeps the captures. When `input` is `null`, read `input_unavailable_reason` - the
+`kubernetes_in_docker` runtime never produces an input capture.
+
+The captures are zstd-compressed JSON Lines, one record per line, so decompress before reading:
+
+```bash
+zstd -dc traffic/input.jsonl.zst | head -5
+zstd -dc traffic/baseline-decoded.jsonl.zst | jq -c 'select(.kind == "metric") | .value.context'
+```
+
+Input records are in send order, which is not packet order. Decoded records are grouped by kind and
+indexed within each kind, so `index` is a position within a kind, not a global receive order.

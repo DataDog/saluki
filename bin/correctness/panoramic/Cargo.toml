@@ -48,6 +48,7 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 treediff = { workspace = true, features = ["with-serde-json"] }
+zstd = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 rustls = { workspace = true, features = ["aws_lc_rs"] }

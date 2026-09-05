@@ -18,7 +18,9 @@ prost = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }
 saluki-error = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+simdutf8 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
@@ -31,3 +33,7 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+zstd = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

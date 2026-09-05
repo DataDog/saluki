@@ -3697,11 +3697,15 @@ dependencies = [
  "rand 0.10.2",
  "saluki-error",
  "serde",
+ "serde_json",
  "serde_yaml",
+ "simdutf8",
+ "tempfile",
  "tokio",
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
@@ -4060,6 +4064,7 @@ dependencies = [
  "tracing-subscriber",
  "treediff",
  "vergen-gix",
+ "zstd",
 ]
 
 [[package]]
