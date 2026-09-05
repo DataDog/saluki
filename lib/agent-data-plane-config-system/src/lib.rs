@@ -22,6 +22,7 @@
 // expansion limit. Only test builds need the higher limit.
 #![cfg_attr(test, recursion_limit = "256")]
 
+mod compatibility;
 mod env_provider;
 mod loaded;
 mod saluki_env_overlay;
