@@ -8,7 +8,9 @@ use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::time::sleep;
 use tracing::{debug, trace};
 
-use crate::workload::helpers::cgroups::{get_self_container_id, CgroupsConfiguration, CgroupsReader};
+use crate::workload::helpers::cgroups::{
+    get_self_cgroup_controller_inode, get_self_container_id, CgroupsConfiguration, CgroupsReader,
+};
 use crate::{features::FeatureDetector, workload::EntityId};
 
 #[static_metrics(prefix = pid_resolver)]
@@ -105,8 +107,28 @@ impl ResolverImpl {
     }
 
     /// Resolves the current process's container entity from local cgroup membership.
+    ///
+    /// The entity is whichever form we could establish: a container ID when our cgroup path names one, otherwise the
+    /// inode of our cgroup controller, which the cgroups metadata collector aliases to the container ID while walking
+    /// the host's hierarchy. Callers that resolve tags get the same answer either way; callers that need the container
+    /// ID itself have to resolve the alias.
     pub fn resolve_self_container(&self) -> Option<EntityId> {
-        get_self_container_id(&self.interner).map(EntityId::Container)
+        // Try the cgroup path first. It's self-verifying -- either it names a container or it doesn't -- whereas the
+        // inode below is only useful if the collector has aliased it, which we can't check from here.
+        if let Some(container_id) = get_self_container_id(&self.interner) {
+            return Some(EntityId::Container(container_id));
+        }
+
+        // In our own cgroup namespace, `/proc/self/cgroup` reads `0::/` and names nothing, but the namespace root is
+        // our own cgroup. Its inode is the same one a traversal of the host's hierarchy reports for that cgroup, so
+        // handing it back lets the alias the collector registered resolve us.
+        if let Some(controller_inode) = get_self_cgroup_controller_inode() {
+            return Some(EntityId::ContainerInode(controller_inode));
+        }
+
+        debug!("Could not resolve own container: cgroup path named no container, and no usable controller inode.");
+
+        None
     }
 }
 
