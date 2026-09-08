@@ -27,7 +27,7 @@ allow = [
 ]
 
 [licenses.private]
-# Foldspace's prerelease log-pattern crate is distributed through Datadog's internal testing registry.
+# Foldspace's prerelease crates are distributed through Datadog's internal testing registry.
 ignore = true
 # cargo-deny strips one trailing slash while normalizing this sparse registry URL.
 ignore-sources = ["https://depot-read-api-rust.us1.ddbuild.io/datadog/rust-testing//"]
@@ -38,9 +38,6 @@ allow-registry = [
   "sparse+https://depot-read-api-rust.us1.ddbuild.io/datadog/rust-testing/",
 ]
 allow-git = [
-  # Foldspace is revision-pinned while its stateful metrics stack is awaiting publication.
-  "https://github.com/DataDog/foldspace",
-
   # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
   # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
   "https://github.com/DataDog/lading",
