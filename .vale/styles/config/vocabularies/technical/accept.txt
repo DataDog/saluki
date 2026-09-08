@@ -165,6 +165,7 @@ implementor(s?)
 jittered
 losslessly
 lossy
+lookback
 lookups
 lowercased
 mergeable
