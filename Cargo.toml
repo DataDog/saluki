@@ -119,6 +119,7 @@ zstd = { version = "0.13.3", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
+foldspace-core = { version = "=0.1.0-239a7e2d", registry = "datadog-rust-testing" }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
@@ -265,6 +266,17 @@ antithesis-instrumentation = { version = "0.1" }
 antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
 mime = "0.3"
 tokio-stream = "0.1"
+
+[patch.datadog-rust-testing]
+# Branch snapshots resolve unspecified dependency registries against the internal registry. Keep Foldspace's public
+# dependency types and native libraries aligned with the crates.io versions used by this workspace.
+prost = { version = "0.14", registry = "crates-io" }
+serde = { version = "1", registry = "crates-io" }
+serde_json = { version = "1", registry = "crates-io" }
+tonic = { version = "0.14", registry = "crates-io" }
+tonic-prost = { version = "0.14", registry = "crates-io" }
+tonic-prost-build = { version = "0.14", registry = "crates-io" }
+zstd = { version = "0.13", registry = "crates-io" }
 
 [profile.devel]
 inherits = "dev"

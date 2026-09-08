@@ -20,6 +20,14 @@ static SERIALIZER_MAX_METRICS_PER_PAYLOAD_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
+static SERIALIZER_EXPERIMENTAL_USE_V3_API_STATEFUL_METRICS_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "serializer_experimental_use_v3_api.stateful_metrics_enabled",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
 crate::declare_annotations! {
     /// `serializer_compressor_kind`-Payload compression algorithm
     SERIALIZER_COMPRESSOR_KIND = SalukiAnnotation {
@@ -178,6 +186,17 @@ crate::declare_annotations! {
     /// `serializer_experimental_use_v3_api.sketches.endpoints`-Endpoints enabling v3 sketches API
     SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `serializer_experimental_use_v3_api.stateful_metrics_enabled`
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_STATEFUL_METRICS_ENABLED = SalukiAnnotation {
+        schema: &SERIALIZER_EXPERIMENTAL_USE_V3_API_STATEFUL_METRICS_ENABLED_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

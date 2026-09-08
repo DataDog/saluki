@@ -27,6 +27,7 @@ use saluki_components::{
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
+        StatefulMetricsDestinationConfiguration,
     },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
@@ -545,6 +546,12 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     }
 
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    let stateful_metrics_config = StatefulMetricsDestinationConfiguration::from_configuration(
+        shared,
+        &dd_metrics_config,
+        config_system.live(|config| &config.shared.endpoints.api_key),
+        config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+    )?;
 
     blueprint
         // Components.
@@ -552,6 +559,11 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+    if let Some(stateful_metrics_config) = stateful_metrics_config {
+        blueprint
+            .add_destination("stateful_metrics_out", stateful_metrics_config)?
+            .connect_components("metrics_enrich", "stateful_metrics_out")?;
+    }
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
@@ -584,6 +596,13 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     );
     let mrf_metrics_config =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
+    let mrf_stateful_metrics_config = StatefulMetricsDestinationConfiguration::for_endpoint_override(
+        shared,
+        &mrf_metrics_config,
+        mrf_dd_url.clone(),
+        mrf_api_key.clone(),
+        config_system.live(|config| &config.domains.multi_region_failover.api_key),
+    )?;
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
@@ -603,6 +622,11 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             "mrf_metrics_encode",
             "mrf_dd_out",
         ])?;
+    if let Some(mrf_stateful_metrics_config) = mrf_stateful_metrics_config {
+        blueprint
+            .add_destination("mrf_stateful_metrics_out", mrf_stateful_metrics_config)?
+            .connect_components("mrf_metrics_gateway", "mrf_stateful_metrics_out")?;
+    }
 
     Ok(())
 }

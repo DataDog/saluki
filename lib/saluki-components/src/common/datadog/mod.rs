@@ -2,6 +2,7 @@ pub(crate) mod api_key;
 pub mod config;
 pub mod endpoints;
 pub mod io;
+pub(crate) mod metrics;
 pub mod middleware;
 pub mod obfuscation;
 pub mod protocol;
@@ -9,6 +10,7 @@ mod proxy;
 pub mod request_builder;
 mod retry;
 mod retry_capacity;
+pub(crate) mod stateful_metrics;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_util;
