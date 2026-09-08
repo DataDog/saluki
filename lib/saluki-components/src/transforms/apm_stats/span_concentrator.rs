@@ -11,6 +11,7 @@ use super::aggregation::{
     get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey, BUCKET_DURATION_NS,
     TAG_BASE_SERVICE, TAG_SPAN_KIND,
 };
+use super::peer_ip_quantize::quantize_peer_ip_addresses;
 use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
 use crate::common::otlp::semantics::{current_registry, Registry};
@@ -284,6 +285,9 @@ impl SpanConcentrator {
         for key in keys_to_check {
             if let Some(value) = span.attributes.get(key.as_ref()).and_then(AttributeValue::as_string) {
                 if !value.is_empty() {
+                    // Quantize IP addresses before the value is hashed into the aggregation key, so
+                    // that per-host cardinality collapses to a single dimension.
+                    let value = quantize_peer_ip_addresses(value.as_ref());
                     peer_tags.push(MetaString::from(format!("{}:{}", key, value)));
                 }
             }
