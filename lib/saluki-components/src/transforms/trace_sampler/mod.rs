@@ -14,7 +14,6 @@
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use saluki_common::collections::FastHashMap;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
@@ -39,7 +38,7 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
+    get_root_span_index, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
     SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
 
@@ -157,52 +156,17 @@ pub struct TraceSampler {
 }
 
 impl TraceSampler {
-    // TODO: merge this with the other duplicate "find root span of trace" functions
     /// Find the root span index of a trace.
     fn get_root_span_index(&self, trace: &Trace) -> Option<usize> {
-        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L36
-        let spans = trace.spans();
-        if spans.is_empty() {
-            return None;
-        }
-        let length = spans.len();
-        // General case: go over all spans and check for one without a matching parent.
-        // This intentionally mirrors `datadog-agent/pkg/trace/traceutil/trace.go:GetRoot`:
+        // The shared implementation intentionally mirrors
+        // `datadog-agent/pkg/trace/traceutil/trace.go:GetRoot`:
         // - Fast-path: return the last span with `parent_id == 0` (some clients report the root last)
         // - Otherwise: build a map of `parent_id -> child_span_index`, delete entries whose parent
         //   exists in the trace, and pick any remaining "orphan" child span.
-        let mut parent_id_to_child: FastHashMap<u64, usize> = FastHashMap::default();
-
-        for i in 0..length {
-            // Common case optimization: check for span with parent_id == 0, starting from the end,
-            // since some clients report the root last.
-            let j = length - 1 - i;
-            if spans[j].parent_id() == 0 {
-                return Some(j);
-            }
-            parent_id_to_child.insert(spans[j].parent_id(), j);
-        }
-
-        for span in spans.iter() {
-            parent_id_to_child.remove(&span.span_id());
-        }
-
-        // Here, if the trace is valid, we should have `len(parent_id_to_child) == 1`.
-        if parent_id_to_child.len() != 1 {
-            debug!(
-                "Didn't reliably find the root span for traceID:{:016x}{:016x}",
-                trace.trace_id_high, trace.trace_id_low,
-            );
-        }
-
-        // Have a safe behavior if that's not the case.
-        // Pick a random span without its parent.
-        if let Some((_, child_idx)) = parent_id_to_child.iter().next() {
-            return Some(*child_idx);
-        }
-
-        // Gracefully fail with the last span of the trace.
-        Some(length - 1)
+        //
+        // The OTLP translator uses the same function for its metadata backfill, so both paths
+        // anchor trace-level metadata to identical root spans.
+        get_root_span_index(trace.spans())
     }
 
     /// Check for user-set sampling priority in trace
@@ -472,18 +436,30 @@ impl TraceSampler {
         &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, root_span_idx: usize,
     ) {
         let is_otlp = self.is_otlp_trace(trace, root_span_idx);
+        // Add tag for the decision maker.
+        //
+        // An ingest-time backfill may have already populated the trace-level decision maker (the
+        // first span carrying `_dd.p.dm` wins, mirroring `setChunkAttributes` in
+        // datadog-agent/pkg/trace/agent/normalizer.go). Keep it when the sampler itself has no
+        // decision to stamp, before falling back to the root span's tag.
+        let backfilled_decision_maker = if decision_maker.is_empty() {
+            trace.decision_maker.clone()
+        } else {
+            None
+        };
         let root_span_value = match trace.spans_mut().get_mut(root_span_idx) {
             Some(span) => span,
             None => return,
         };
 
-        // Add tag for the decision maker
         let existing_decision_maker = if decision_maker.is_empty() {
-            root_span_value
-                .attributes
-                .get(TAG_DECISION_MAKER)
-                .and_then(AttributeValue::as_string)
-                .cloned()
+            backfilled_decision_maker.or_else(|| {
+                root_span_value
+                    .attributes
+                    .get(TAG_DECISION_MAKER)
+                    .and_then(AttributeValue::as_string)
+                    .cloned()
+            })
         } else {
             None
         };
@@ -623,6 +599,52 @@ mod tests {
 
     fn create_test_trace(spans: Vec<DdSpan>) -> Trace {
         Trace::new(spans)
+    }
+
+    #[test]
+    fn apply_sampling_metadata_preserves_backfilled_decision_maker() {
+        // A decision maker backfilled at ingest (the first `_dd.p.dm` span wins, mirroring
+        // `setChunkAttributes`) survives a sampler decision that does not stamp its own decision
+        // maker, and lands on the root span like any decision maker would.
+        let sampler = create_test_sampler();
+        let root = create_test_span(1, 0);
+        let mut trace = create_test_trace(vec![root]);
+        trace.decision_maker = Some(MetaString::from("-8"));
+
+        sampler.apply_sampling_metadata(&mut trace, true, PRIORITY_AUTO_KEEP, "", 0);
+
+        assert_eq!(trace.decision_maker.as_deref(), Some("-8"));
+        assert_eq!(
+            trace.spans()[0]
+                .attributes
+                .get(TAG_DECISION_MAKER)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some("-8"),
+            "the backfilled decision maker is also written to the root span"
+        );
+    }
+
+    #[test]
+    fn apply_sampling_metadata_sampler_decision_overrides_backfill() {
+        // When the sampler itself makes a decision, its decision maker wins over an ingest-time
+        // backfill, so the chunk reports who actually made the final call.
+        let sampler = create_test_sampler();
+        let root = create_test_span(1, 0);
+        let mut trace = create_test_trace(vec![root]);
+        trace.decision_maker = Some(MetaString::from("-8"));
+
+        sampler.apply_sampling_metadata(&mut trace, true, PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC, 0);
+
+        assert_eq!(trace.decision_maker.as_deref(), Some(DECISION_MAKER_PROBABILISTIC));
+        assert_eq!(
+            trace.spans()[0]
+                .attributes
+                .get(TAG_DECISION_MAKER)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some(DECISION_MAKER_PROBABILISTIC)
+        );
     }
 
     #[test]
