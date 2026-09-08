@@ -68,6 +68,7 @@ pub struct Metrics {
     metrics_errors_channel: Counter,
     metrics_errors_dispatch: Counter,
     metrics_errors_flush: Counter,
+    spans_dropped_foreign_trace: Counter,
 }
 
 impl Metrics {
@@ -103,6 +104,12 @@ impl Metrics {
         &self.metrics_errors_flush
     }
 
+    /// Spans dropped because their trace group mixed spans from different full trace IDs (two
+    /// traces sharing a low 64-bit half).
+    pub fn spans_dropped_foreign_trace(&self) -> &Counter {
+        &self.spans_dropped_foreign_trace
+    }
+
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_tests() -> Self {
@@ -115,6 +122,7 @@ impl Metrics {
             metrics_errors_channel: Counter::noop(),
             metrics_errors_dispatch: Counter::noop(),
             metrics_errors_flush: Counter::noop(),
+            spans_dropped_foreign_trace: Counter::noop(),
         }
     }
 }
@@ -135,6 +143,10 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         metrics_errors_channel: builder.register_counter_with_tags("component_errors_total", [("reason", "channel")]),
         metrics_errors_dispatch: builder.register_counter_with_tags("component_errors_total", [("reason", "dispatch")]),
         metrics_errors_flush: builder.register_counter_with_tags("component_errors_total", [("reason", "flush")]),
+        spans_dropped_foreign_trace: builder.register_counter_with_tags(
+            "component_events_dropped_total",
+            [("message_type", "otlp_spans"), ("reason", "foreign_span")],
+        ),
     }
 }
 
