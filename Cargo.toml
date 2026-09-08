@@ -119,6 +119,7 @@ zstd = { version = "0.13.3", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
+foldspace-core = { version = "=0.1.0", git = "https://github.com/DataDog/foldspace.git", rev = "38078e9827bd9314af5fa2757302b95b5a63f6d1" }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }

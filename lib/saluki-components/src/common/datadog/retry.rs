@@ -116,6 +116,29 @@ impl RetryConfiguration {
         self.queue_max_size_bytes
     }
 
+    /// Returns the initial retry backoff.
+    pub(crate) fn backoff_base(&self) -> Duration {
+        Duration::from_secs_f64(self.backoff_base.max(0.0))
+    }
+
+    /// Creates the configured retry backoff strategy.
+    pub(crate) fn to_exponential_backoff(&self) -> ExponentialBackoff {
+        ExponentialBackoff::with_jitter(
+            Duration::from_secs_f64(self.backoff_base),
+            Duration::from_secs_f64(self.backoff_max),
+            self.backoff_factor,
+        )
+    }
+
+    /// Returns how much a successful delivery reduces the accumulated error count.
+    pub(crate) const fn recovery_error_decrease_factor(&self) -> Option<u32> {
+        if self.recovery_reset {
+            None
+        } else {
+            Some(self.recovery_error_decrease_factor)
+        }
+    }
+
     /// Returns the maximum size of the retry queue on disk, in bytes.
     pub const fn storage_max_size_bytes(&self) -> u64 {
         self.storage_max_size_bytes
@@ -155,11 +178,7 @@ impl RetryConfiguration {
     pub fn to_default_http_retry_policy<B: 'static>(
         &self, live_config: Option<GenericConfiguration>,
     ) -> DefaultHttpRetryPolicy<B> {
-        let retry_backoff = ExponentialBackoff::with_jitter(
-            Duration::from_secs_f64(self.backoff_base),
-            Duration::from_secs_f64(self.backoff_max),
-            self.backoff_factor,
-        );
+        let retry_backoff = self.to_exponential_backoff();
 
         let classifier = if let Some(config) = live_config {
             let gate: HttpRetryPredicate<B> =
@@ -169,7 +188,7 @@ impl RetryConfiguration {
             StandardHttpClassifier::new()
         };
 
-        let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
+        let recovery_error_decrease_factor = self.recovery_error_decrease_factor();
         DefaultHttpRetryPolicy::with_backoff_and_classifier(retry_backoff, classifier)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
     }

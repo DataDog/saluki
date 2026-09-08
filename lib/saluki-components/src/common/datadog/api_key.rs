@@ -117,6 +117,12 @@ pub(crate) struct ApiKeyChanges {
 }
 
 impl ApiKeyChanges {
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        let (_, changed) = watch::channel(());
+        Self { changed }
+    }
+
     /// Waits until at least one endpoint holds a new API key.
     ///
     /// Once the refresher stops, no key can change again, so this never returns.

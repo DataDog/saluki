@@ -159,6 +159,8 @@ pub struct SalukiOnly {
     pub flush_timeout_secs: Option<u64>,
     /// Maximum metrics per payload (`serializer_max_metrics_per_payload`).
     pub serializer_max_metrics_per_payload: Option<usize>,
+    /// Maximum unacknowledged Foldspace metric batches per stream (`stateful_metrics_max_inflight_payloads`).
+    pub stateful_metrics_max_inflight_payloads: Option<usize>,
 
     // ── DogStatsD listener/context/mapper keys (all top-level) ────────────────
     /// TCP listen port (`dogstatsd_tcp_port`).
@@ -216,6 +218,8 @@ pub struct SalukiOnly {
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
     pub data_plane: DataPlane,
+    /// Stateful metrics settings (`serializer_experimental_use_v3_api.*`).
+    pub serializer_experimental_use_v3_api: SerializerExperimentalUseV3Api,
     /// APM trace knobs (`apm_config.*`).
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
@@ -244,6 +248,14 @@ pub struct DataPlane {
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
     pub otlp: DataPlaneOtlp,
+}
+
+/// Saluki-only settings nested under `serializer_experimental_use_v3_api.*`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SerializerExperimentalUseV3Api {
+    /// Whether authoritative V3 series use Foldspace (`stateful_metrics_enabled`).
+    pub stateful_metrics_enabled: Option<bool>,
 }
 
 // TODO(#2177): Delete these ADP-only defaults when receiver endpoints return to the canonical
@@ -514,6 +526,12 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
+        if let Some(v) = self.serializer_experimental_use_v3_api.stateful_metrics_enabled {
+            config.shared.metrics_encoding.stateful.enabled = v;
+        }
+        if let Some(v) = self.stateful_metrics_max_inflight_payloads {
+            config.shared.metrics_encoding.stateful.max_inflight_payloads = v;
+        }
         // Highest precedence of the three inputs `Compression::zstd_compressor_level` resolves, so it
         // is explicit when set and keeps ADP's default otherwise.
         if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
@@ -761,6 +779,13 @@ mod tests {
             "ottl_filter_config": { "error_mode": "ignore", "traces": { "span": ["attributes[\"a\"] == \"b\""] } },
             "ottl_transform_config": { "error_mode": "silent", "trace_statements": ["set(name, \"x\")"] },
         });
+        let mut map = map;
+        let root = map.as_object_mut().expect("test configuration is an object");
+        root.insert("stateful_metrics_max_inflight_payloads".to_string(), json!(12));
+        root.insert(
+            "serializer_experimental_use_v3_api".to_string(),
+            json!({ "stateful_metrics_enabled": true }),
+        );
 
         let saluki_only: SalukiOnly = serde_json::from_value(map).expect("saluki-only source deserializes");
         let mut config = SalukiConfiguration::default();
@@ -778,6 +803,8 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
+        assert!(config.shared.metrics_encoding.stateful.enabled);
+        assert_eq!(config.shared.metrics_encoding.stateful.max_inflight_payloads, 12);
         assert_eq!(config.shared.endpoints.compression.effective_zstd_level(), 9);
 
         // domains.dogstatsd

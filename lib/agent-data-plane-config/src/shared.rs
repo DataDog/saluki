@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_MAX_METRICS_PER_PAYLOAD, DEFAULT_ZSTD_COMPRESSOR_LEVEL};
+use crate::defaults::{
+    DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_MAX_METRICS_PER_PAYLOAD, DEFAULT_STATEFUL_METRICS_ENABLED,
+    DEFAULT_STATEFUL_METRICS_MAX_INFLIGHT_PAYLOADS, DEFAULT_ZSTD_COMPRESSOR_LEVEL,
+};
 use crate::{ConfigValue, Error};
 
 /// Cross-cutting configuration shared across domains.
@@ -423,6 +426,9 @@ pub struct MetricsEncoding {
     /// Per-endpoint V3 series routing overrides, keyed by endpoint URL
     /// (`use_v3_api.series.endpoints`).
     pub v3_series_endpoint_modes: HashMap<String, V3SeriesMode>,
+
+    /// Foldspace stateful metrics delivery settings.
+    pub stateful: StatefulMetricsEncoding,
 }
 
 impl Default for MetricsEncoding {
@@ -443,6 +449,30 @@ impl Default for MetricsEncoding {
             v3_api: V3ApiEncoding::default(),
             v3_series_mode: V3SeriesMode::default(),
             v3_series_endpoint_modes: HashMap::new(),
+            stateful: StatefulMetricsEncoding::default(),
+        }
+    }
+}
+
+/// Foldspace stateful metrics delivery settings.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct StatefulMetricsEncoding {
+    /// Whether authoritative V3 series use Foldspace stateful encoding and gRPC delivery.
+    ///
+    /// Defaults to `false`. When disabled, all metrics remain on the existing HTTP path.
+    pub enabled: bool,
+
+    /// Maximum number of ordered, unacknowledged metric batches retained per endpoint stream.
+    ///
+    /// Defaults to `32`. A configured value of `0` is clamped to `1` so an enabled stream can make progress.
+    pub max_inflight_payloads: usize,
+}
+
+impl Default for StatefulMetricsEncoding {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_STATEFUL_METRICS_ENABLED,
+            max_inflight_payloads: DEFAULT_STATEFUL_METRICS_MAX_INFLIGHT_PAYLOADS,
         }
     }
 }

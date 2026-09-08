@@ -30,6 +30,7 @@ faster-hex = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 fnv = { workspace = true }
 foldhash = { workspace = true }
+foldspace-core = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 headers = { workspace = true }
@@ -86,7 +87,8 @@ tokio = { workspace = true, features = [
   "sync",
 ] }
 tokio-rustls = { workspace = true }
-tonic = { workspace = true, features = ["router", "server", "channel"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true, features = ["router", "server", "channel", "tls-native-roots"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }

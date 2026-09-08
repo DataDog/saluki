@@ -44,6 +44,7 @@ use crate::{
             V3EndpointConfig,
         },
         io::RB_BUFFER_CHUNK_SIZE,
+        metrics::is_foldspace_series,
         protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
         telemetry::ComponentTelemetry,
@@ -226,6 +227,9 @@ pub struct DatadogMetricsConfiguration {
 
     /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
     additional_endpoints: HashMap<String, Vec<String>>,
+
+    /// Whether Foldspace replaces authoritative V3 delivery for supported series.
+    stateful_metrics_enabled: bool,
 }
 
 impl DatadogMetricsConfiguration {
@@ -252,6 +256,7 @@ impl DatadogMetricsConfiguration {
             opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
             primary_endpoint: endpoints.primary_endpoint(),
             additional_endpoints: endpoints.additional_endpoints.clone(),
+            stateful_metrics_enabled: metrics.stateful.enabled,
         }
     }
 
@@ -280,7 +285,39 @@ impl DatadogMetricsConfiguration {
         self.use_v3_api.series.endpoints.clear();
         self.v3_api.series.endpoints.clear();
         self.opw_metrics.clear_v3_series_overrides();
+        self.stateful_metrics_enabled = false;
         self
+    }
+
+    pub(crate) fn stateful_metrics_enabled(&self) -> Result<bool, GenericError> {
+        let v3_compression_scheme = if self.v3_api.compression_level > 0 {
+            CompressionScheme::new(&self.compressor_kind, self.v3_api.compression_level)
+        } else {
+            CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level)
+        };
+        let metrics_v3_disabled_by_compressor = matches!(v3_compression_scheme, CompressionScheme::Zlib(_));
+
+        Ok(self.stateful_metrics_enabled && self.requires_v3_series(metrics_v3_disabled_by_compressor)?)
+    }
+
+    pub(crate) const fn stateful_max_metrics_per_batch(&self) -> usize {
+        self.max_metrics_per_payload
+    }
+
+    pub(crate) const fn stateful_max_points_per_batch(&self) -> usize {
+        self.max_series_points_per_payload
+    }
+
+    pub(crate) const fn stateful_flush_timeout(&self) -> Duration {
+        if self.flush_timeout.is_zero() {
+            Duration::from_millis(10)
+        } else {
+            self.flush_timeout
+        }
+    }
+
+    pub(crate) fn stateful_additional_tags(&self) -> SharedTagSet {
+        self.additional_tags.clone().unwrap_or_default()
     }
 
     fn v3_payload_limits(&self) -> V3PayloadLimits {
@@ -488,6 +525,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             telemetry,
             flush_timeout,
             log_payloads: self.log_payloads,
+            stateful_series_enabled: self.stateful_metrics_enabled && series_mode.needs_v3(),
         }))
     }
 }
@@ -525,6 +563,7 @@ pub struct DatadogMetrics {
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
     log_payloads: bool,
+    stateful_series_enabled: bool,
 }
 
 struct V3RuntimeConfig {
@@ -546,6 +585,7 @@ impl Encoder for DatadogMetrics {
             telemetry,
             flush_timeout,
             log_payloads,
+            stateful_series_enabled,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -568,6 +608,7 @@ impl Encoder for DatadogMetrics {
             payloads_tx,
             flush_timeout,
             log_payloads,
+            stateful_series_enabled,
         );
         runtime::worker("request_builder", request_builder_fut)
             .on_runtime(context.topology_context().global_thread_pool().clone())
@@ -659,7 +700,7 @@ async fn run_request_builder(
     mut v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>, series_mode: MetricsEncoderMode,
     sketches_mode: MetricsEncoderMode, v3_runtime_config: V3RuntimeConfig, telemetry: ComponentTelemetry,
     mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: mpsc::Sender<PayloadsBuffer>,
-    flush_timeout: Duration, log_payloads: bool,
+    flush_timeout: Duration, log_payloads: bool, stateful_series_enabled: bool,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -695,11 +736,15 @@ async fn run_request_builder(
                         log_metric_payload(&metric);
                     }
 
+                    let uses_stateful_series = stateful_series_enabled && is_foldspace_series(&metric);
+
                     // A series metric whose points are all non-finite would encode to a series with no points, which
-                    // intake rejects as an empty value set. Drop it whole rather than emit an empty series.
+                    // intake rejects as an empty value set. The Foldspace destination accounts for its own drops.
                     if !v1::has_emittable_point(&metric) {
                         debug!(metric = %metric.context().name(), "Dropping series metric with no finite points.");
-                        telemetry.events_dropped_encoder().increment(1);
+                        if !uses_stateful_series {
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
                         continue;
                     }
 
@@ -720,7 +765,7 @@ async fn run_request_builder(
                         ),
                     };
                     let metric_point_count = metric.values().len();
-                    let should_buffer_v3 = endpoint_mode.needs_v3();
+                    let should_buffer_v3 = endpoint_mode.needs_v3() && !uses_stateful_series;
 
                     // Store a copy of the metric in `maybe_v3_metrics` if it's present.
                     //
@@ -2857,6 +2902,7 @@ mod tests {
         sketches_mode: MetricsEncoderMode,
         payload_limits: V3PayloadLimits,
         flush_timeout: Duration,
+        stateful_series_enabled: bool,
     }
 
     impl RequestBuilderScenario {
@@ -2867,6 +2913,7 @@ mod tests {
                 sketches_mode,
                 payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000),
                 flush_timeout: Duration::from_millis(10),
+                stateful_series_enabled: false,
             }
         }
 
@@ -2879,6 +2926,12 @@ mod tests {
         /// Overrides the flush timeout used to bound pending flushes.
         fn with_flush_timeout(mut self, flush_timeout: Duration) -> Self {
             self.flush_timeout = flush_timeout;
+            self
+        }
+
+        /// Enables Foldspace ownership of supported series for this scenario.
+        fn with_stateful_series(mut self) -> Self {
+            self.stateful_series_enabled = true;
             self
         }
 
@@ -2908,6 +2961,7 @@ mod tests {
                 payloads_tx,
                 self.flush_timeout,
                 false,
+                self.stateful_series_enabled,
             ));
 
             RequestBuilderHarness {
@@ -2969,6 +3023,20 @@ mod tests {
                 .expect("request builder task should complete")
                 .expect("request builder should stop cleanly");
         }
+    }
+
+    #[tokio::test]
+    async fn stateful_series_are_not_duplicated_on_the_http_v3_path() {
+        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
+            .with_stateful_series()
+            .spawn()
+            .await;
+
+        harness
+            .push_metrics([Metric::counter("stateful.only", [(123, 1.0)])])
+            .await;
+        harness.assert_no_payload_within(Duration::from_millis(50)).await;
+        harness.shutdown().await;
     }
 
     #[tokio::test]

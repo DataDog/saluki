@@ -274,3 +274,4 @@ configtls
 keyspace
 Kueue
 plaintext
+foldspace

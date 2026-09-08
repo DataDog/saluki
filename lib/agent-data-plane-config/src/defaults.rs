@@ -76,6 +76,12 @@ pub const DEFAULT_ZSTD_COMPRESSOR_LEVEL: i32 = 3;
 /// Default maximum number of metrics packed into a single encoder payload.
 pub const DEFAULT_MAX_METRICS_PER_PAYLOAD: usize = 10_000;
 
+/// Whether Foldspace stateful metrics delivery is enabled by default.
+pub const DEFAULT_STATEFUL_METRICS_ENABLED: bool = false;
+
+/// Default maximum number of unacknowledged Foldspace metric batches per stream.
+pub const DEFAULT_STATEFUL_METRICS_MAX_INFLIGHT_PAYLOADS: usize = 32;
+
 /// Default environment for traces that do not provide one.
 pub const DEFAULT_TRACE_ENV: &str = "none";
 
