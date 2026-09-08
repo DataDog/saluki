@@ -1,0 +1,21 @@
+fixes:
+  - |
+    DogStatsD metrics that carry an explicit client timestamp, submitted with the ``|T`` extension
+    and handled by the no-aggregation pipeline, are no longer subject to ``metric_tag_filterlist``
+    or ``metric_tag_value_allowlist``. Both settings remove tags so that samples differing only in
+    a filtered tag merge into a single aggregated context, and timestamped metrics are forwarded
+    without being aggregated, so filtering their tags only degraded the metric and could change
+    query results. This matches the Datadog Agent, which does not apply tag filtering to its
+    no-aggregation pipeline. Metrics without a client timestamp are filtered as before.
+  - |
+    ``aggregator.processed`` (with ``data_type:dogstatsd_metrics``) no longer counts samples
+    carrying a client timestamp, because those samples no longer reach the aggregator. They
+    continue to be counted by ``no_aggregation.processed``.
+  - |
+    ADP's internal ``adp.aggregate_passthrough_metrics_total`` and
+    ``adp.aggregate_passthrough_flushes_total`` telemetry is now tagged
+    ``component_id:dsd_no_agg_split`` instead of ``component_id:dsd_agg``, because the
+    timestamp-based split moved into its own pipeline component. The metric names are unchanged,
+    as are the ``no_aggregation.processed`` and ``no_aggregation.flush`` metrics they are reported
+    as in the Agent telemetry payload. Dashboards and monitors that group or filter the internal
+    metrics by ``component_id`` need updating.

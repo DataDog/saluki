@@ -6,6 +6,10 @@
 //! Whole-tag configuration is read from `metric_tag_filterlist` and can be updated at runtime via
 //! Remote Config. Value allow-list configuration is read independently from the static
 //! `metric_tag_value_allowlist` key.
+//!
+//! Both forms of filtering exist to merge samples that differ only in a filtered tag into a single aggregated
+//! context, so they only apply to metrics that are aggregated. The `dogstatsd_no_agg_split` transform routes
+//! timestamped metrics around this transform, leaving their tags untouched.
 
 mod telemetry;
 
