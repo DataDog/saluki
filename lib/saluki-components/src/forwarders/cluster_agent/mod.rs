@@ -21,10 +21,9 @@ use tokio::select;
 use tracing::debug;
 
 use crate::common::datadog::{
-    api_key::LiveApiKeys,
     config::ForwarderConfiguration,
     endpoints::{ResolvedEndpoint, SingleDestination},
-    io::{EndpointRequestMapper, EndpointRequestMapperFactory, TransactionForwarder},
+    io::{EndpointRequestMapper, EndpointRequestMapperFactory, LiveForwarderConfiguration, TransactionForwarder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
@@ -86,9 +85,10 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
         let forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
             context.component_context().clone(),
             self.forwarder_config.clone(),
-            None,
-            // The bearer token is not a configured API key, so nothing refreshes it.
-            &LiveApiKeys::default(),
+            // Nothing about this forwarder changes at runtime: the bearer token is not a configured API key, so
+            // nothing refreshes it, and a rejected token is not worth retrying on the chance that the Agent
+            // re-resolves a secret.
+            LiveForwarderConfiguration::default(),
             get_cluster_agent_endpoint_name,
             telemetry.clone(),
             metrics_builder,

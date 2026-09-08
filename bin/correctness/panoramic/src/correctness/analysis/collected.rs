@@ -1,6 +1,6 @@
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Collected data from a test target.
 ///
@@ -146,7 +146,7 @@ async fn get_captured_trace_stats(datadog_intake_port: u16) -> Result<ClientStat
     let stats = match serde_json::from_slice(&body) {
         Ok(stats) => stats,
         Err(e) => {
-            println!("raw stats json: {}", String::from_utf8_lossy(&body));
+            error!(body = %String::from_utf8_lossy(&body), "Failed to decode trace stats response.");
             return Err(generic_error!(
                 "Failed to decode dumped trace stats from datadog-intake response: {}",
                 e

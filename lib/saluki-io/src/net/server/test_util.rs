@@ -127,12 +127,12 @@ impl Drop for ServerTestHarness {
     }
 }
 
-struct DataspaceCapture {
+pub(crate) struct DataspaceCapture {
     dataspace_tx: Mutex<Option<oneshot::Sender<DataspaceRegistry>>>,
 }
 
 impl DataspaceCapture {
-    fn new() -> (Self, oneshot::Receiver<DataspaceRegistry>) {
+    pub(crate) fn new() -> (Self, oneshot::Receiver<DataspaceRegistry>) {
         let (dataspace_tx, dataspace_rx) = oneshot::channel();
         (
             Self {

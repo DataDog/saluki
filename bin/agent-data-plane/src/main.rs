@@ -16,7 +16,6 @@ use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
-use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metadata::AppDetails;
@@ -78,20 +77,19 @@ async fn main() -> Result<(), GenericError> {
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
-    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.raw_config())
+    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.local().control.logging)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
     if matches!(&cli.action, Action::Config(command) if command.json) {
         bootstrap_logging_config.log_to_console = false;
     }
 
-    let metrics_default_level = parse_metrics_level(&local_config.raw_config())?;
+    let metrics_default_level = parse_metrics_level(&local_config.local().shared.metrics_level)?;
 
     // Proceed with bootstrapping.
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
     // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
-    let bootstrapper = AppBootstrapper::from_configuration(&local_config.raw_config())
-        .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
+    let bootstrapper = AppBootstrapper::new()
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
         .with_logging_configuration(bootstrap_logging_config);
@@ -173,16 +171,8 @@ async fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<LoadedCon
     loaded
 }
 
-fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericError> {
-    let raw = config
-        .try_get_typed::<String>("metrics_level")
-        .error_context("Failed to read `metrics_level`.")?;
-    match raw {
-        Some(value) => {
-            Level::try_from(value.as_str()).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
-        }
-        None => Ok(Level::INFO),
-    }
+fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
+    Level::try_from(level).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
 }
 
 async fn run_inner(
@@ -236,4 +226,24 @@ async fn run_inner(
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics::Level;
+
+    use super::parse_metrics_level;
+
+    #[test]
+    fn parse_metrics_level_accepts_only_a_known_level() {
+        assert_eq!(parse_metrics_level("debug").expect("known level parses"), Level::DEBUG);
+
+        for level in ["", "verbose"] {
+            let error = parse_metrics_level(level).expect_err("unrecognized level is rejected");
+            assert!(
+                error.to_string().contains("metrics_level"),
+                "error should name the setting: {error}"
+            );
+        }
+    }
 }

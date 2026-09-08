@@ -80,6 +80,13 @@ restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
 Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
 changes to any of these settings update filtering.
 
+Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+matched as written, so an entry that is not itself a normalized name matches nothing. Metric names
+the intake rejects outright, meaning empty names, names longer than 350 bytes, and names containing
+no ASCII letter, never match.
+
 ### UDS origin detection on macOS
 
 ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,

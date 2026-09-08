@@ -11,6 +11,9 @@ use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 const COMPLETION_FILE_ARG: &str = "--completion-file";
+const TRAFFIC_CAPTURE_DIR_ARG: &str = "--traffic-capture-dir";
+
+mod capture;
 
 mod config;
 use self::config::Config;
@@ -53,8 +56,8 @@ fn run() -> Result<(), GenericError> {
         Some(path) => path,
         None => {
             error!(
-                "Usage: millstone <config-path> [--output-file <path>] [{} <path>]",
-                COMPLETION_FILE_ARG
+                "Usage: millstone <config-path> [--output-file <path>] [{} <path>] [{} <dir>]",
+                COMPLETION_FILE_ARG, TRAFFIC_CAPTURE_DIR_ARG
             );
             std::process::exit(1);
         }
@@ -85,8 +88,23 @@ fn run() -> Result<(), GenericError> {
         })
         .map(PathBuf::from);
 
+    // Optional directory for the input traffic capture, written after the run is measured.
+    let traffic_capture_dir = args
+        .iter()
+        .position(|a| a == TRAFFIC_CAPTURE_DIR_ARG)
+        .map(|i| {
+            args.get(i + 1).unwrap_or_else(|| {
+                error!("{} requires a directory path argument.", TRAFFIC_CAPTURE_DIR_ARG);
+                std::process::exit(1);
+            })
+        })
+        .map(PathBuf::from);
+
     let config = Config::try_from_file(config_path)?;
-    let driver = Driver::new(config, output_file)?;
+    let mut driver = Driver::new(config, output_file)?;
+    if let Some(dir) = traffic_capture_dir {
+        driver = driver.with_traffic_capture_dir(dir);
+    }
     driver.run()?;
 
     if let Some(completion_file) = completion_file {

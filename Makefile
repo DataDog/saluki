@@ -46,6 +46,9 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
+# TODO: move this to test/output when everyone has it in their gitignore
+SALUKI_TEST_OUTPUT_DIR ?= $(CURDIR)/target/test-output
+export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
@@ -225,6 +228,7 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		.
 
 
+# TODO: Use a suite-neutral name now that integration tests also use this image.
 .PHONY: build-correctness-tools-image
 build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
 	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."
@@ -606,7 +610,7 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@cargo build --profile release --package panoramic
 
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image
+test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
@@ -662,9 +666,9 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 test-integration-macos-run: BUILD_PROFILE ?= release
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
-	@ADP_BINARY_PATH="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
-		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
+		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
@@ -951,10 +955,15 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	./ci/tooling/update-protos.sh
 
 .PHONY: clean
-clean: check-rust-build-tools
+clean: check-rust-build-tools clean-test-logs
 clean: ## Clean all build artifacts (debug/release)
 	@echo "[*] Cleaning Rust build artifacts..."
 	@cargo clean
+
+.PHONY: clean-test-logs
+clean-test-logs: ## Deletes Panoramic test logs
+	@echo "[*] Cleaning Panoramic test logs..."
+	@rm -rf "$(SALUKI_TEST_OUTPUT_DIR)/panoramic"
 
 .PHONY: clean-docker
 clean-docker: ## Cleans up Docker build cache

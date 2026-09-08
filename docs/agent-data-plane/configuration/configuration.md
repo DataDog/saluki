@@ -377,22 +377,24 @@ setting has no effect in ADP.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                             | Description                               |
-| -------------------------------------- | ----------------------------------------- |
-| `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
-| `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
-| `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
-| `dogstatsd_workers_count`              | Number of DSD processing workers          |
-| `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
-| `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
-| `forwarder_num_workers`                | Concurrent forwarder workers              |
-| `forwarder_stop_timeout`               | Timeout (s) for forwarder graceful stop   |
-| `log_level`                            | Log verbosity directives                  |
-| `min_tls_version`                      | Minimum TLS version for HTTPS connections |
-| `multi_region_failover.enabled`        | Enable multi-region failover mode         |
-| `serializer_zstd_compressor_level`     | Zstd compression level (Agent)            |
-| `skip_ssl_validation`                  | Skip TLS cert validation                  |
-| `statsd_forward_host`                  | UDP packet forwarding destination host    |
+| Config Key                                   | Description                                  |
+| -------------------------------------------- | -------------------------------------------- |
+| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
+| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
+| `dogstatsd_workers_count`                    | Number of DSD processing workers             |
+| `forwarder_apikey_validation_interval`       | API key check interval (minutes)             |
+| `forwarder_high_prio_buffer_size`            | High-priority request queue size             |
+| `forwarder_num_workers`                      | Concurrent forwarder workers                 |
+| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop      |
+| `log_level`                                  | Log verbosity directives                     |
+| `min_tls_version`                            | Minimum TLS version for HTTPS connections    |
+| `multi_region_failover.enabled`              | Enable multi-region failover mode            |
+| `secret_backend_command`                     | Path to the Agent secret-fetch executable    |
+| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403 |
+| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)               |
+| `skip_ssl_validation`                        | Skip TLS cert validation                     |
+| `statsd_forward_host`                        | UDP packet forwarding destination host       |
 
 ### `aggregator_stop_timeout`
 
@@ -537,6 +539,35 @@ is enabled.
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
+### `secret_backend_command`
+
+ADP resolves no secrets of its own. The core Agent runs `secret_backend_command` to resolve `ENC[...]`
+handles, and ADP receives configuration the Agent has already resolved.
+
+ADP reads this key for exactly one purpose: deciding whether an API key that an intake rejected
+with `403 Forbidden` is worth retrying. A configured command means the rejected key may be a secret
+that the Agent can re-resolve, so ADP retries the request; with no command configured, nothing is
+going to replace the key, so the 403 stays non-retriable and the request is dropped.
+
+ADP never executes the command and never inspects the path, so the settings that govern how the
+Agent runs it (`secret_backend_arguments`, `secret_backend_timeout`, `secret_backend_type`, and the
+rest of the `secret_*` family) have no effect in ADP.
+
+### `secret_refresh_on_api_key_failure_interval`
+
+The core Agent uses `secret_refresh_on_api_key_failure_interval` to rate-limit the secret refresh it
+triggers when an intake rejects an API key: at most one refresh per interval, expressed in minutes,
+with `0` disabling those refreshes. Secret resolution and refresh both belong to the Agent; ADP
+defers to it and triggers nothing.
+
+ADP reads this key only as a second signal that secret resolution might replace a rejected API key. A
+positive value makes a `403 Forbidden` response retriable, exactly as a configured
+`secret_backend_command` does, and either signal alone is enough.
+
+ADP does not observe the interval itself: it does not pace, delay, or count retries by it, and retry
+timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
+clamped to `0` with a warning, matching the Agent's own tolerance of the value.
+
 ### `serializer_zstd_compressor_level`
 
 The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
@@ -615,8 +646,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                  | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner   |                |
 | `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP   | 0              |
+| `enable_global_limiter`                                         | Global memory limiter toggle                | true           |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)                |                |
 | `memory_limit`                                                  | Process memory limit                        |                |
+| `memory_mode`                                                   | Memory bounds validation mode               | disabled       |
 | `memory_slop_factor`                                            | Memory accounting slop fraction             | 0.25           |
 | `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list             | []             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts    |                |
@@ -698,6 +731,14 @@ ADP uses an explicit process memory limit (`memory_limit`) rather than relying o
 
 See `memory_limit` above.
 
+### `enable_global_limiter`
+
+Controls whether the global memory limiter exerts backpressure as memory usage approaches `memory_limit`. The default is `true`. When set to `false`, the limiter becomes a no-op and only the memory bounds of the running components influence memory usage.
+
+### `memory_mode`
+
+Controls how the calculated memory bounds are reconciled against `memory_limit`. The default is `disabled`. Accepted values: `disabled` skips bounds validation and applies no memory limiting; `permissive` logs a warning when the bounds do not fit within the limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, the global memory limiter is active only when a limit is in effect (configured or detected from cgroups) and `enable_global_limiter` is `true`.
+
 
 ## Transparent Settings
 
@@ -719,6 +760,13 @@ restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
 
 Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
 changes to any of these settings update filtering.
+
+Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+matched as written, so an entry that is not itself a normalized name matches nothing. Metric names
+the intake rejects outright, meaning empty names, names longer than 350 bytes, and names containing
+no ASCII letter, never match.
 
 ### UDS origin detection on macOS
 

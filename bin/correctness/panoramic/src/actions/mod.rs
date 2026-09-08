@@ -5,6 +5,7 @@ use crate::config::ActionConfig;
 
 mod core_agent_config_set;
 mod dogstatsd_replay;
+mod dogstatsd_send;
 mod target_cli;
 mod target_exec;
 
@@ -68,6 +69,9 @@ pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericEr
             endpoint.clone(),
             timeout.0,
         ))),
+        ActionConfig::DogstatsdSend { payload, port, timeout } => Ok(Box::new(
+            dogstatsd_send::DogstatsdSendAction::new(payload.clone(), *port, timeout.0),
+        )),
         ActionConfig::TargetExec { command, timeout } => {
             Ok(Box::new(target_exec::TargetExecAction::new(command.clone(), timeout.0)))
         }
@@ -109,10 +113,36 @@ mod tests {
             is_host_process: true,
             host_process_exit_code: None,
             docker_container_exit_code: None,
+            intake_host_port: None,
             core_agent_auth_token_path: None,
             adp_cli_command,
             core_agent_cli_command,
         }
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_send_fails_for_a_windows_target() {
+        let action = create_action(&ActionConfig::DogstatsdSend {
+            payload: "panoramic.test:1|c".to_string(),
+            port: 8125,
+            timeout: HumanDuration(Duration::from_secs(5)),
+        })
+        .expect("action should be created");
+        let mut ctx = host_context_with_commands(TargetCommand::new(Vec::new()), TargetCommand::new(Vec::new()));
+        ctx.is_host_process = false;
+        ctx.target_os = Some(airlock::driver::ContainerOs::Windows);
+        // Windows runtimes map exposed ports to themselves, which is what makes a host-side send
+        // look like it worked.
+        ctx.port_mappings = HashMap::from([("8125/udp".to_string(), 8125)]);
+
+        let result = action.execute(&ctx).await;
+
+        assert!(!result.passed, "Windows target unexpectedly passed: {}", result.message);
+        assert!(
+            result.message.contains("Windows"),
+            "unexpected message: {}",
+            result.message
+        );
     }
 
     #[tokio::test]

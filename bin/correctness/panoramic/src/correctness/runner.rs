@@ -16,16 +16,17 @@ use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, Instrument as _, Span};
+use tracing::{debug, error, info, info_span, warn, Instrument as _, Span};
 
 use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
     config::{Config, Runtime},
     sync::Coordinator,
+    traffic::{self, Side},
 };
 use crate::{
     assertions::AssertionResult,
-    reporter::{PhaseTiming, TestResult},
+    reporter::{ErrorKind, PhaseTiming, TestResult},
     test::TestContext,
 };
 
@@ -36,6 +37,9 @@ const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
 const MILLSTONE_BASELINE_COMPLETION_FILE: &str = "/tmp/millstone-baseline-complete";
 const MILLSTONE_COMPARISON_COMPLETION_FILE: &str = "/tmp/millstone-comparison-complete";
 const MILLSTONE_COMPLETION_FILE: &str = "/tmp/millstone-complete";
+
+/// Where the test's traffic directory is mounted inside the shared millstone container.
+const MILLSTONE_TRAFFIC_INTERNAL: &str = "/traffic";
 const MILLSTONE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
 const MILLSTONE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
 const MILLSTONE_HEALTHCHECK_RETRIES: i64 = 3;
@@ -59,24 +63,38 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
 async fn run_docker_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
+    let log_dir = tctx.log_dir().to_path_buf();
+
+    // Phases are marked on the shared tracker so the runner can name the one a test was in when a
+    // deadline fires, and so their timings survive a test that never returns.
+    let phases = tctx.phases.clone();
+
     // Phase 1: spawn containers
-    let spawn_start = Instant::now();
+    let phase = phases.enter("spawn_containers");
     let test_runner = match CorrectnessRunner::from_config(&config, tctx).await {
         Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
-    let spawn_duration = spawn_start.elapsed();
+    phase.finish();
 
     // Phase 2: collect data
-    let collect_start = Instant::now();
+    let phase = phases.enter("collect_data");
     let (baseline_data, comparison_data) = match test_runner.run().await {
         Ok(data) => data,
-        Err(e) => return make_error_result(name, started, "collect_data", e),
+        Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
-    let collect_duration = collect_start.elapsed();
+    phase.finish();
+
+    // Persist what each side decoded before the analysis consumes it.
+    let traffic_dir = traffic::traffic_dir(&log_dir);
+    for (side, data) in [(Side::Baseline, &baseline_data), (Side::Comparison, &comparison_data)] {
+        if let Err(e) = traffic::write_decoded(&traffic_dir, side, data) {
+            warn!(side = side.name(), error = %e, "Failed to write decoded telemetry capture.");
+        }
+    }
 
     // Phase 3: analysis
-    let analysis_start = Instant::now();
+    let phase = phases.enter("analysis");
     let traces_options = match config.analysis_mode {
         AnalysisMode::Traces => Some(TracesAnalysisOptions {
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
@@ -87,57 +105,37 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
     let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
         .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
-    let analysis_duration = analysis_start.elapsed();
+    let analysis_duration = phase.elapsed();
+    let phase_timings = phase.finish_and_collect();
 
     let total_duration = started.elapsed();
 
-    let phase_timings = vec![
-        PhaseTiming {
-            phase: "spawn_containers".to_string(),
-            duration: spawn_duration,
-        },
-        PhaseTiming {
-            phase: "collect_data".to_string(),
-            duration: collect_duration,
-        },
-        PhaseTiming {
-            phase: "analysis".to_string(),
-            duration: analysis_duration,
-        },
-    ];
-
     match analysis_result {
-        Ok(()) => TestResult {
+        Ok(()) => TestResult::from_assertions(
             name,
-            passed: true,
-            duration: total_duration,
-            assertion_results: vec![AssertionResult {
+            total_duration,
+            vec![AssertionResult {
                 name: "telemetry matches".to_string(),
                 passed: true,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
             }],
-            error: None,
             phase_timings,
-            assertion_details: vec![],
-        },
+        ),
         Err((e, details)) => {
             let full_message = format!("{:?}", e);
-            let summary = full_message.lines().next().unwrap_or(&full_message).to_string();
-            TestResult {
+            TestResult::from_assertions(
                 name,
-                passed: false,
-                duration: total_duration,
-                assertion_results: vec![AssertionResult {
+                total_duration,
+                vec![AssertionResult {
                     name: "telemetry matches".to_string(),
                     passed: false,
                     message: full_message,
                     duration: analysis_duration,
                 }],
-                error: Some(summary),
                 phase_timings,
-                assertion_details: vec![details],
-            }
+            )
+            .with_assertion_details(vec![details])
         }
     }
 }
@@ -155,19 +153,17 @@ async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &s
     }
 }
 
-pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
-    TestResult {
+/// Builds a setup-error result carrying the timings of the phases the test finished before failing.
+pub(crate) fn make_error_result(
+    name: String, started: Instant, phase_timings: Vec<PhaseTiming>, e: GenericError,
+) -> TestResult {
+    TestResult::errored(
         name,
-        passed: false,
-        duration: started.elapsed(),
-        assertion_results: vec![],
-        error: Some(format!("{:?}", e)),
-        phase_timings: vec![PhaseTiming {
-            phase: phase.to_string(),
-            duration: started.elapsed(),
-        }],
-        assertion_details: vec![],
-    }
+        ErrorKind::Setup,
+        format!("{:?}", e),
+        started.elapsed(),
+        phase_timings,
+    )
 }
 
 /// Manages the state and program flow of running a *correctness* test.
@@ -216,6 +212,7 @@ impl CorrectnessRunner {
             self.baseline_coordinator.clone(),
             // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
+            self.tctx.settings.alpine_image.clone(),
         );
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
@@ -241,6 +238,7 @@ impl CorrectnessRunner {
             self.comparison_coordinator.clone(),
             // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
+            self.tctx.settings.alpine_image.clone(),
         );
 
         group_runner
@@ -273,6 +271,17 @@ impl CorrectnessRunner {
     ) -> Result<GroupRunner, GenericError> {
         debug!("Creating shared millstone group runner...");
 
+        // The capture lands in the test's log directory through a bind mount, so nothing has to be copied out of
+        // the container afterwards.
+        let host_traffic_dir = traffic::traffic_dir(self.tctx.log_dir());
+        let capture_args = match std::fs::create_dir_all(&host_traffic_dir) {
+            Ok(()) => format!(" --traffic-capture-dir {}", MILLSTONE_TRAFFIC_INTERNAL),
+            Err(e) => {
+                warn!(path = %host_traffic_dir.display(), error = %e, "Failed to create traffic capture directory. Continuing without an input capture.");
+                String::new()
+            }
+        };
+
         let millstone_binary = self
             .millstone_config
             .binary_path
@@ -285,7 +294,7 @@ impl CorrectnessRunner {
         let cmd = format!(
             "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml || exit 1; \
              sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml || exit 1; \
-             {bin} /tmp/millstone-baseline.toml --completion-file {baseline_complete} & P1=$!; \
+             {bin} /tmp/millstone-baseline.toml --completion-file {baseline_complete}{capture_args} & P1=$!; \
              {bin} /tmp/millstone-comparison.toml --completion-file {comparison_complete} & P2=$!; \
              trap 'trap - TERM INT; kill \"$P1\" \"$P2\" 2>/dev/null; \
                    wait \"$P1\" 2>/dev/null; wait \"$P2\" 2>/dev/null; exit 0' TERM INT; \
@@ -303,6 +312,7 @@ impl CorrectnessRunner {
             baseline_complete = MILLSTONE_BASELINE_COMPLETION_FILE,
             comparison_complete = MILLSTONE_COMPARISON_COMPLETION_FILE,
             complete = MILLSTONE_COMPLETION_FILE,
+            capture_args = capture_args,
         );
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
@@ -322,6 +332,8 @@ impl CorrectnessRunner {
             )
             // Bind-mount the original millstone.yaml—same as the single-millstone setup.
             .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
+            // Only the baseline run captures its input: both runs send byte-identical payloads from the same seed.
+            .with_bind_mount(&host_traffic_dir, MILLSTONE_TRAFFIC_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
             .with_volume_mount(
@@ -339,6 +351,7 @@ impl CorrectnessRunner {
             self.tctx.log_dir().to_path_buf(),
             self.millstone_coordinator.clone(),
             self.tctx.test_cancel_token().child_token(),
+            self.tctx.settings.alpine_image.clone(),
         );
         group_runner.with_driver(driver_config)?;
 
@@ -592,12 +605,13 @@ struct GroupRunner {
     drivers: Vec<Driver>,
     coordinator: Coordinator,
     cancel_token: CancellationToken,
+    alpine_image: String,
 }
 
 impl GroupRunner {
     fn new(
         isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, coordinator: Coordinator,
-        cancel_token: CancellationToken,
+        cancel_token: CancellationToken, alpine_image: String,
     ) -> Self {
         // Create a subdirectory for the isolation group's container logs.
         let group_log_dir = log_dir.join(group_name);
@@ -614,10 +628,12 @@ impl GroupRunner {
             drivers: Vec::new(),
             coordinator,
             cancel_token,
+            alpine_image,
         }
     }
 
     fn with_driver(&mut self, config: DriverConfig) -> Result<&mut Self, GenericError> {
+        let config = config.with_alpine_image(self.alpine_image.clone());
         let driver =
             Driver::from_config(self.isolation_group_id.clone(), config)?.with_logging(self.runner_log_dir.clone());
         self.drivers.push(driver);

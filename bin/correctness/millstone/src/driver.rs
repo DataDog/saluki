@@ -6,9 +6,14 @@ use std::{
 
 use bytesize::ByteSize;
 use saluki_error::{ErrorContext as _, GenericError};
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
-use crate::{config::Config, corpus::Corpus, target::TargetSender};
+use crate::{
+    capture::{self, RunFacts},
+    config::Config,
+    corpus::Corpus,
+    target::TargetSender,
+};
 
 /// Load driver.
 ///
@@ -18,6 +23,7 @@ pub struct Driver {
     config: Config,
     corpus: Corpus,
     sender: TargetSender,
+    traffic_capture_dir: Option<PathBuf>,
 }
 
 impl Driver {
@@ -37,7 +43,21 @@ impl Driver {
             None => TargetSender::from_config(&config).error_context("Failed to create target sender.")?,
         };
 
-        Ok(Self { config, corpus, sender })
+        Ok(Self {
+            config,
+            corpus,
+            sender,
+            traffic_capture_dir: None,
+        })
+    }
+
+    /// Captures the payload stream this run sent into `dir`.
+    ///
+    /// The capture is written after the send loop has been timed, so requesting one cannot skew the run's reported
+    /// send rate.
+    pub fn with_traffic_capture_dir(mut self, dir: PathBuf) -> Self {
+        self.traffic_capture_dir = Some(dir);
+        self
     }
 
     /// Runs the driver, sending all generated payloads to the target until the configured target volume has been reached.
@@ -76,13 +96,23 @@ impl Driver {
 
         let send_delay = (self.config.send_delay_us > 0).then(|| Duration::from_micros(self.config.send_delay_us));
 
+        // A send failure breaks the loop instead of returning immediately, so the prefix that did make it onto the
+        // wire is still captured below before the error is reported.
+        let mut send_error = None;
+
         loop {
             if payloads_sent >= max_payloads {
                 break;
             }
 
             let payload = borrowed_payloads.next().unwrap();
-            let bytes_sent = self.sender.send(payload)?;
+            let bytes_sent = match self.sender.send(payload) {
+                Ok(bytes_sent) => bytes_sent,
+                Err(e) => {
+                    send_error = Some(e);
+                    break;
+                }
+            };
 
             trace!(payload_len = payload.len(), bytes_sent, "Payload sent.");
 
@@ -98,20 +128,46 @@ impl Driver {
         }
 
         let send_duration = start.elapsed();
-        let throughput_bps = ByteSize((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
 
-        let payload_bytes_sent_human = ByteSize(payload_bytes_sent);
-        let pct_partial_sends = (partial_sends as f64 / payloads_sent as f64) * 100.0;
-        info!(
-            "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
-            payloads_sent,
-            payload_bytes_sent_human.display().si(),
-            partial_sends,
-            pct_partial_sends,
-            send_duration,
-            throughput_bps.display().si()
-        );
+        if send_error.is_none() {
+            let throughput_bps = ByteSize((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
+            let payload_bytes_sent_human = ByteSize(payload_bytes_sent);
+            let pct_partial_sends = (partial_sends as f64 / payloads_sent as f64) * 100.0;
+            info!(
+                "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
+                payloads_sent,
+                payload_bytes_sent_human.display().si(),
+                partial_sends,
+                pct_partial_sends,
+                send_duration,
+                throughput_bps.display().si()
+            );
+        }
 
-        Ok(())
+        // Written after the run is measured, so the capture stays out of the reported send timing. Written on a send
+        // error too: the payloads already sent are exactly the input this diagnostic exists to preserve.
+        if let Some(dir) = self.traffic_capture_dir.as_deref() {
+            let facts = RunFacts {
+                seed: self.config.seed.iter().map(|b| format!("{:02x}", b)).collect(),
+                payload_kind: self.config.corpus.payload.name(),
+                target_kind: self.config.target.kind(),
+                send_delay_us: self.config.send_delay_us,
+                volume: max_payloads,
+                payloads_sent,
+                wire_bytes: payload_bytes_sent,
+                partial_sends,
+                complete: send_error.is_none(),
+            };
+
+            // A lost capture is a lost diagnostic, not a failed run.
+            if let Err(e) = capture::write_input_capture(dir, &payloads, facts) {
+                warn!(error = %e, "Failed to write input traffic capture.");
+            }
+        }
+
+        match send_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
