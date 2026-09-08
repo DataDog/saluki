@@ -19,6 +19,36 @@ If you find an error on this page, please [open an issue].
 
 ## Unsupported Settings
 
+<!-- section:unsupported-in-progress -->
+### Being Worked On
+
+The following settings are not yet supported in ADP but are planned with GitHub issue links for
+tracking.
+
+| Config Key                                                       | Description                               | Issue   |
+| ---------------------------------------------------------------- | ----------------------------------------- | ------- |
+| `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit   | [#1682] |
+| `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit    | [#1682] |
+| `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout       | [#1682] |
+| `dogstatsd_require_listener`                                     | Require an active DogStatsD listener      | [#2556] |
+| `forwarder_stop_wait_for_inflight`                               | Wait for in-flight forwarder requests     | [#2560] |
+| `metric_lookback.capacity`                                       | Metric lookback ring capacity             | [#2558] |
+| `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection       | [#2558] |
+| `metric_lookback.egress.post_recovery_window`                    | Lookback post-recovery replay window      | [#2558] |
+| `metric_lookback.egress.pre_trigger_window`                      | Lookback pre-trigger replay window        | [#2558] |
+| `metric_lookback.enabled`                                        | Enable metric lookback                    | [#2558] |
+| `metric_lookback.monitor.evaluation_interval`                    | Lookback monitor evaluation window        | [#2558] |
+| `metric_lookback.monitor.metric_name`                            | Metric watched by lookback monitor        | [#2558] |
+| `metric_lookback.monitor.mode`                                   | Metric lookback monitor mode              | [#2558] |
+| `metric_lookback.monitor.partition_tags`                         | Lookback monitor tag partitions           | [#2558] |
+| `metric_lookback.monitor.range_epsilon`                          | Lookback monitor range threshold          | [#2558] |
+| `metric_lookback.shard_count`                                    | Metric lookback ring shards               | [#2558] |
+| `otlp_config.metrics.infra_attributes.as_tags`                   | Promote infrastructure attributes to tags | [#2559] |
+| `otlp_config.traces.infra_attributes.container_tag_promotion`    | OTLP trace container-tag promotion        | [#2338] |
+| `serializer_experimental_use_v3_api.sketches.beta_route`         | V3 sketches beta intake route             | [#2555] |
+| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate` | V3 sketches shadow sample rate            | [#2555] |
+| `serializer_experimental_use_v3_api.sketches.shadow_sites`       | V3 sketches shadow sites                  | [#2555] |
+
 <!-- section:unsupported-not-planned -->
 ### Not Planned
 
@@ -47,6 +77,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`                           | Memory rate limiter FreeOS check max               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
 | `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`                           | Memory rate limiter FreeOS check min               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
 | `dogstatsd_no_aggregation_pipeline_batch_size`                                           | No-aggregation pipeline batch size                 | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
+| `dogstatsd_no_aggregation_pipeline_workers_count`                                        | No-aggregation pipeline worker count               | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_packet_buffer_flush_timeout`                                                  | Packet buffer flush timeout                        | ADP queues individual datagrams without packet batching.                                                                                                                                                                                                                  |
 | `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
 | `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
@@ -189,6 +220,13 @@ have an equivalent in Rust, and ADP does not use a Go runtime.
 ADP takes a different approach to the same problem using explicit static memory accounting
 and a process-level RSS limit. All 11 `dogstatsd_mem_based_rate_limiter.*` keys are not
 planned. See [Memory Management](../memory.md) for details.
+
+### `dogstatsd_no_aggregation_pipeline_workers_count`
+
+ADP handles timestamped metrics through the aggregate transform's passthrough path, not a
+separate no-aggregation worker pool. This setting has no effect in ADP.
+
+`dogstatsd_workers_count` configures packet-decoding workers, not passthrough concurrency.
 
 ### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 
@@ -633,8 +671,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
-| `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
-| `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived        |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        | true           |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT | false          |
 | `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count               | 32768          |
@@ -669,14 +705,6 @@ Temporary development key for setting ADP's OTLP listen endpoints independently 
 ### `data_plane.otlp.receiver_http_endpoint_temporary`
 
 Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.
-
-### `data_plane.serializer_zstd_compressor_level`
-
-ADP-specific zstd compression level, taking precedence over the Core Agent's `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` or in ADP-specific configuration.
-
-### `data_plane.stop_timeout`
-
-ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.
 
 ### `dogstatsd_minimum_sample_rate`
 
@@ -906,6 +934,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `data_plane.otlp.proxy.traces.enabled`                                                     | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                                                          | Enable remote agent mode                           |
 | `data_plane.secure_api_listen_address`                                                     | mTLS-authenticated privileged API address          |
+| `data_plane.serializer_zstd_compressor_level`                                              | ADP zstd compression level                         |
+| `data_plane.stop_timeout`                                                                  | ADP graceful shutdown timeout                      |
 | `data_plane.use_new_config_stream_endpoint`                                                | Use new config stream endpoint                     |
 | `dd_url`                                                                                   | Override intake endpoint URL                       |
 | `disable_file_logging`                                                                     | Disable writing logs to a file                     |
@@ -1031,7 +1061,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `run_path`                                                                                 | Runtime state directory                            |
 | `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |
-| `serializer_experimental_use_v3_api.series.endpoints`                                      | Endpoints enabled for V3 series API                |
 | `serializer_experimental_use_v3_api.sketches.endpoints`                                    | Endpoints enabling v3 sketches API                 |
 | `serializer_max_payload_size`                                                              | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                                                       | Max compressed V2 series payload size              |
@@ -1072,9 +1101,17 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
+[#1682]: https://github.com/DataDog/saluki/issues/1682
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
+[#2338]: https://github.com/DataDog/saluki/issues/2338
+[#2555]: https://github.com/DataDog/saluki/issues/2555
+[#2556]: https://github.com/DataDog/saluki/issues/2556
+[#2557]: https://github.com/DataDog/saluki/issues/2557
+[#2558]: https://github.com/DataDog/saluki/issues/2558
+[#2559]: https://github.com/DataDog/saluki/issues/2559
+[#2560]: https://github.com/DataDog/saluki/issues/2560

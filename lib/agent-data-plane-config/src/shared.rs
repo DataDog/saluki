@@ -417,7 +417,7 @@ pub struct MetricsEncoding {
     /// Histogram aggregation and encoding settings.
     pub histogram: HistogramEncoding,
 
-    /// V3 metrics-intake protocol settings (`serializer_experimental_use_v3_api.*`).
+    /// Experimental V3 sketches settings (`serializer_experimental_use_v3_api.*`).
     pub v3_api: V3ApiEncoding,
 
     /// Global V3 series routing mode (`use_v3_api.series.enabled`).
@@ -450,21 +450,17 @@ impl Default for MetricsEncoding {
     }
 }
 
-/// V3 metrics-intake protocol settings for the series and sketches payloads
-/// (`serializer_experimental_use_v3_api.*`).
+/// Experimental V3 sketches settings (`serializer_experimental_use_v3_api.*`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiEncoding {
-    /// V3 series intake settings.
-    pub series: V3ApiSettings,
-
-    /// V3 sketches intake settings (the series-only fields stay at their defaults).
+    /// Endpoints using the V3 sketches intake.
     pub sketches: V3ApiSettings,
 
     /// zstd compression level for V3 payloads.
     pub compression_level: i32,
 }
 
-/// Per-payload V3 intake settings, reused for both series and sketches.
+/// V3 sketches intake settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
     /// Endpoints enabled for the V3 intake.

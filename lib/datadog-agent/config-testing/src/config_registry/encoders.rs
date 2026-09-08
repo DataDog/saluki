@@ -164,17 +164,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `serializer_experimental_use_v3_api.series.endpoints`-Endpoints enabled for V3 series API
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `serializer_experimental_use_v3_api.sketches.endpoints`-Endpoints enabling v3 sketches API
     SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,

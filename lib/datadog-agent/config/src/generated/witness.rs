@@ -73,6 +73,8 @@ pub trait DatadogConfigWitness {
     fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: bool);
     fn consume_data_plane_remote_agent_enabled(&mut self, value: bool);
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String);
+    fn consume_data_plane_serializer_zstd_compressor_level(&mut self, value: i64);
+    fn consume_data_plane_stop_timeout(&mut self, value: i64);
     fn consume_data_plane_use_new_config_stream_endpoint(&mut self, value: bool);
     fn consume_dd_url(&mut self, value: String);
     fn consume_disable_file_logging(&mut self, value: bool);
@@ -117,9 +119,9 @@ pub trait DatadogConfigWitness {
     fn consume_expected_tags_duration(&mut self, value: std::time::Duration);
     fn consume_extra_tags(&mut self, value: Vec<String>);
     fn consume_forwarder_apikey_validation_interval(&mut self, value: i64);
-    fn consume_forwarder_backoff_base(&mut self, value: i64);
-    fn consume_forwarder_backoff_factor(&mut self, value: i64);
-    fn consume_forwarder_backoff_max(&mut self, value: i64);
+    fn consume_forwarder_backoff_base(&mut self, value: f64);
+    fn consume_forwarder_backoff_factor(&mut self, value: f64);
+    fn consume_forwarder_backoff_max(&mut self, value: f64);
     fn consume_forwarder_connection_reset_interval(&mut self, value: i64);
     fn consume_forwarder_flush_to_disk_mem_ratio(&mut self, value: f64);
     fn consume_forwarder_high_prio_buffer_size(&mut self, value: i64);
@@ -218,7 +220,6 @@ pub trait DatadogConfigWitness {
     fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64);
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
-    fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
@@ -243,7 +244,7 @@ pub trait DatadogConfigWitness {
     fn consume_use_proxy_for_cloud_metadata(&mut self, value: bool);
     fn consume_use_v2_api_series(&mut self, value: bool);
     fn consume_use_v3_api_series_enabled(&mut self, value: String);
-    fn consume_use_v3_api_series_endpoints(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
+    fn consume_use_v3_api_series_endpoints(&mut self, value: HashMap<String, String>);
     fn consume_vector_metrics_enabled(&mut self, value: bool);
     fn consume_vector_metrics_url(&mut self, value: String);
     fn consume_vector_metrics_use_v3_api_series(&mut self, value: bool);
@@ -358,6 +359,10 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_data_plane_otlp_proxy_traces_enabled(config.data_plane.otlp.proxy.traces.enabled.clone());
     consumer.consume_data_plane_remote_agent_enabled(config.data_plane.remote_agent_enabled.clone());
     consumer.consume_data_plane_secure_api_listen_address(config.data_plane.secure_api_listen_address.clone());
+    consumer.consume_data_plane_serializer_zstd_compressor_level(
+        config.data_plane.serializer_zstd_compressor_level.clone(),
+    );
+    consumer.consume_data_plane_stop_timeout(config.data_plane.stop_timeout.clone());
     consumer
         .consume_data_plane_use_new_config_stream_endpoint(config.data_plane.use_new_config_stream_endpoint.clone());
     consumer.consume_dd_url(config.dd_url.clone());
@@ -610,9 +615,6 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_serializer_compressor_kind(config.serializer_compressor_kind.clone());
     consumer.consume_serializer_experimental_use_v3_api_compression_level(
         config.serializer_experimental_use_v3_api.compression_level.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_endpoints(
-        config.serializer_experimental_use_v3_api.series.endpoints.clone(),
     );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),

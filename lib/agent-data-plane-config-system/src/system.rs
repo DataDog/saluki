@@ -431,6 +431,67 @@ mod tests {
         assert_eq!(config.shared.metrics_encoding.v3_series_mode, V3SeriesMode::Enabled);
     }
 
+    #[test]
+    fn compound_v3_series_endpoint_modes_are_rejected_at_startup() {
+        for mode in [json!(["true"]), json!({ "enabled": true })] {
+            let sources = SourceTree::all_explicit(json!({
+                "use_v3_api": { "series": { "endpoints": { "https://app.datadoghq.com": mode } } }
+            }));
+
+            assert!(translate_strict(&sources).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_v3_endpoint_update_keeps_last_known_good_and_recovers() {
+        let (system, agent_tx) = connected_system(json!({
+            "dogstatsd_port": 9125,
+            "use_v3_api": { "series": { "endpoints": { "https://app.datadoghq.com": true } } }
+        }))
+        .await;
+
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("dogstatsd_port", json!(9999)),
+                ConfigSetting::explicit(
+                    "use_v3_api.series.endpoints",
+                    json!({ "https://app.datadoghq.com": ["false"] }),
+                ),
+            ]))
+            .await
+            .unwrap();
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
+            .await
+            .unwrap();
+        await_config(&system, "the update following the rejected snapshot", |config| {
+            config.control.logging.level == "error"
+        })
+        .await;
+
+        assert_eq!(system.config().domains.dogstatsd.listeners.port, 9125);
+        assert_eq!(
+            system.config().shared.metrics_encoding.v3_series_endpoint_modes["https://app.datadoghq.com"],
+            V3SeriesMode::Enabled
+        );
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "use_v3_api.series.endpoints",
+                json!({ "https://app.datadoghq.com": false }),
+            )))
+            .await
+            .unwrap();
+        await_config(&system, "the corrected endpoint mode", |config| {
+            config.shared.metrics_encoding.v3_series_endpoint_modes["https://app.datadoghq.com"]
+                == V3SeriesMode::Disabled
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn connected_stream_translates_metrics_v3_routing_configuration() {
         let (system, agent_tx) = connected_system(json!({
@@ -455,10 +516,6 @@ mod tests {
             .send(ConfigUpdate::snapshot([
                 ConfigSetting::explicit("serializer_compressor_kind", json!("zstd")),
                 ConfigSetting::explicit("serializer_experimental_use_v3_api.compression_level", json!(7)),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.endpoints",
-                    json!(["https://app.us3.datadoghq.com"]),
-                ),
                 ConfigSetting::explicit("use_v2_api.series", json!(false)),
                 ConfigSetting::explicit("use_v3_api.series.enabled", json!("false")),
                 // The Agent sends an object-valued setting whole, and these entry keys contain dots.
@@ -491,7 +548,6 @@ mod tests {
         let metrics = &config.shared.metrics_encoding;
         assert!(!metrics.use_v2_series_api);
         assert_eq!(metrics.v3_api.compression_level, 7);
-        assert_eq!(metrics.v3_api.series.endpoints, vec!["https://app.us3.datadoghq.com"]);
         let opw = &config.shared.endpoints.opw_intake;
         assert!(opw.enabled);
         assert_eq!(opw.url, "https://opw.example.com");

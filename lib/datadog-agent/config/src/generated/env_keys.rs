@@ -316,6 +316,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"],
+        path: &["data_plane", "serializer_zstd_compressor_level"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_STOP_TIMEOUT"],
+        path: &["data_plane", "stop_timeout"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT"],
         path: &["data_plane", "use_new_config_stream_endpoint"],
         decode: EnvDecode::Bool,
@@ -538,17 +548,17 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_FORWARDER_BACKOFF_BASE"],
         path: &["forwarder_backoff_base"],
-        decode: EnvDecode::Integer,
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_BACKOFF_FACTOR"],
         path: &["forwarder_backoff_factor"],
-        decode: EnvDecode::Integer,
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_BACKOFF_MAX"],
         path: &["forwarder_backoff_max"],
-        decode: EnvDecode::Integer,
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_CONNECTION_RESET_INTERVAL"],
@@ -1052,11 +1062,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL"],
         path: &["serializer_experimental_use_v3_api", "compression_level"],
         decode: EnvDecode::Integer,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS"],
-        path: &["serializer_experimental_use_v3_api", "series", "endpoints"],
-        decode: EnvDecode::StringList,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],

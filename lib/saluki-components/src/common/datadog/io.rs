@@ -640,17 +640,13 @@ async fn run_endpoint_io_loop<B>(
     let metrics_primary_v3_override = (route == EndpointRoute::MetricsPrimary)
         .then(|| config.opw_metrics_v3_series_override())
         .flatten();
-    let serializer_v3_configured_endpoint =
-        (route == EndpointRoute::MetricsPrimary).then(|| config.primary_configured_endpoint());
     let endpoint_v3_settings = if config.compressor_disables_metrics_v3() {
         EndpointV3Settings::disabled()
     } else {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: &configured_endpoint,
-            serializer_v3_configured_endpoint,
             series_config: config.use_v3_api_series(),
             metrics_primary_v3_override,
-            serializer_v3_series_endpoints: &v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
         })
     };
