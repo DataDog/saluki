@@ -26,7 +26,6 @@ use crate::common::otlp::{
 };
 
 /// Configuration for the OTLP decoder.
-#[derive(Default)]
 pub struct OtlpDecoderConfiguration {
     /// Resolved OTLP trace ingestion settings.
     traces: domains::otlp::Traces,
