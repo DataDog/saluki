@@ -778,15 +778,46 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_backoff_base(&mut self, value: f64) {
-        self.config.shared.endpoints.forwarder.backoff_base = value;
+        let value = if value <= 0.0 {
+            warn!("`forwarder_backoff_base` is not positive ({value}); using 2.");
+            2.0
+        } else {
+            value
+        };
+
+        match Duration::try_from_secs_f64(value) {
+            Ok(_) => self.config.shared.endpoints.forwarder.backoff_base = value,
+            Err(error) => self.record_error(TranslateError::new("forwarder_backoff_base", error)),
+        }
     }
 
     fn consume_forwarder_backoff_factor(&mut self, value: f64) {
-        self.config.shared.endpoints.forwarder.backoff_factor = value;
+        if value < 2.0 {
+            warn!("`forwarder_backoff_factor` is less than 2 ({value}); using 2.");
+            self.config.shared.endpoints.forwarder.backoff_factor = 2.0;
+        } else {
+            self.config.shared.endpoints.forwarder.backoff_factor = value;
+        }
     }
 
     fn consume_forwarder_backoff_max(&mut self, value: f64) {
-        self.config.shared.endpoints.forwarder.backoff_max = value;
+        let value = if value <= 0.0 {
+            warn!("`forwarder_backoff_max` is not positive ({value}); using 64.");
+            64.0
+        } else {
+            value
+        };
+
+        if let Err(error) = Duration::try_from_secs_f64(value) {
+            self.record_error(TranslateError::new("forwarder_backoff_max", error));
+        } else if value < self.config.shared.endpoints.forwarder.backoff_base {
+            self.record_error(TranslateError::new_with_message(
+                "forwarder_backoff_max",
+                "must be greater than or equal to `forwarder_backoff_base`",
+            ));
+        } else {
+            self.config.shared.endpoints.forwarder.backoff_max = value;
+        }
     }
 
     fn consume_forwarder_connection_reset_interval(&mut self, value: i64) {
@@ -867,9 +898,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_storage_path(&mut self, value: String) {
-        if self.sources.provenance("forwarder_storage_path") == Provenance::Explicit
-            && value != "${run_path}/transactions_to_retry"
-        {
+        if !value.is_empty() && value != "${run_path}/transactions_to_retry" {
             self.config.shared.endpoints.forwarder.storage_path = PathBuf::from(value);
         }
     }
@@ -2024,25 +2053,53 @@ mod tests {
     }
 
     #[test]
-    fn a_defaulted_forwarder_storage_path_remains_derived() {
+    fn forwarder_backoff_uses_agent_fallbacks() {
+        let (config, errors) = translate_explicit(json!({
+            "forwarder_backoff_base": -0.5,
+            "forwarder_backoff_factor": 1.5,
+            "forwarder_backoff_max": -0.5,
+        }));
+
+        assert!(errors.is_none());
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_eq!(forwarder.backoff_base, 2.0);
+        assert_eq!(forwarder.backoff_factor, 2.0);
+        assert_eq!(forwarder.backoff_max, 64.0);
+    }
+
+    #[test]
+    fn unsafe_forwarder_backoff_durations_record_translation_errors() {
+        let (_, errors) = translate_explicit(json!({ "forwarder_backoff_base": 1e100 }));
+        assert!(errors
+            .expect("an unrepresentable base should record an error")
+            .to_string()
+            .contains("forwarder_backoff_base"));
+
+        let (_, errors) = translate_explicit(json!({
+            "forwarder_backoff_base": 2.5,
+            "forwarder_backoff_max": 2.4,
+        }));
+        assert!(errors
+            .expect("a maximum below the base should record an error")
+            .to_string()
+            .contains("forwarder_backoff_max"));
+    }
+
+    #[test]
+    fn forwarder_storage_path_ignores_only_unresolved_defaults() {
         let (config, errors) = translate_stream(&[(
             "forwarder_storage_path",
             json!("${run_path}/transactions_to_retry"),
             StreamProvenance::Default,
         )]);
-
         assert!(errors.is_none());
         assert_eq!(config.shared.endpoints.forwarder.storage_path, PathBuf::new());
 
-        let (config, errors) = translate_explicit(json!({
-            "forwarder_storage_path": "/var/lib/datadog/transactions_to_retry",
-        }));
-
+        let resolved = "/var/lib/datadog/transactions_to_retry";
+        let (config, errors) =
+            translate_stream(&[("forwarder_storage_path", json!(resolved), StreamProvenance::Default)]);
         assert!(errors.is_none());
-        assert_eq!(
-            config.shared.endpoints.forwarder.storage_path,
-            PathBuf::from("/var/lib/datadog/transactions_to_retry")
-        );
+        assert_eq!(config.shared.endpoints.forwarder.storage_path, PathBuf::from(resolved));
     }
 
     #[test]
