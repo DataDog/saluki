@@ -137,16 +137,10 @@ pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString>
 
 /// Finds the index of the root span within the given spans.
 ///
-/// This mirrors `traceutil.GetRoot` (datadog-agent/pkg/trace/traceutil/trace.go):
-/// - Fast path: scanning backwards, return the last span with a parent ID of zero, since some
-///   clients report the root span last.
-/// - Otherwise: build a map of parent ID to child span index, remove every parent ID that an
-///   actual span satisfies, and return whichever orphaned claim remains. A well-formed trace
-///   leaves exactly one.
-/// - Graceful failure: if the trace is malformed and no claim survives, return the last span.
-///
-/// Returns `None` only when `spans` is empty. The spans are never modified; the temporary
-/// parent-claim map is scratch state local to this function.
+/// Scans backwards for the first span with a zero parent ID (clients often report the root last),
+/// falling back to whichever span claims a parent that is absent from the trace. Returns `None`
+/// only when `spans` is empty. The spans are never modified; the parent-claim map is scratch
+/// state local to this function.
 pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
     if spans.is_empty() {
         return None;
@@ -156,8 +150,6 @@ pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
     let mut parent_id_to_child: FastHashMap<u64, usize> = FastHashMap::default();
 
     for i in 0..length {
-        // Common case optimization: check for a span with a zero parent ID, starting from the
-        // end, since some clients report the root span last.
         let j = length - 1 - i;
         if spans[j].parent_id() == 0 {
             return Some(j);
@@ -165,63 +157,47 @@ pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
         parent_id_to_child.insert(spans[j].parent_id(), j);
     }
 
-    // Cross out every claim whose parent actually exists in the trace.
     for span in spans.iter() {
         parent_id_to_child.remove(&span.span_id());
     }
 
-    // Here, if the trace is valid, exactly one claim should remain: the root, whose "parent" (0)
-    // is a sentinel that no span can ever satisfy.
     if parent_id_to_child.len() != 1 {
         debug!("Didn't reliably find the root span for a trace");
     }
 
-    // Have a safe behavior if that's not the case. Pick a span without its parent present.
     if let Some((_, child_idx)) = parent_id_to_child.iter().next() {
         return Some(*child_idx);
     }
 
-    // Gracefully fail with the last span of the trace.
     Some(length - 1)
 }
 
-/// Marks top-level spans in-place, as a fallback for traces whose top-level marks were not already
-/// computed (for example, from OTLP span kinds).
+/// Computes top-level marks from the span relationships themselves, marking spans in-place.
 ///
-/// This mirrors `traceutil.ComputeTopLevel` (datadog-agent/pkg/trace/traceutil/trace.go): a span is
-/// top-level when it is a root span, its parent is missing from the trace (the parent lives in
-/// another chunk or service), or its parent belongs to a different service (the span is the local
-/// entry point of this service's subtree). Like the reference implementation, marking only ever
-/// sets `_top_level` to 1 and never clears an existing value.
-///
-/// This must run before samplers or stats read span attributes, matching the ordering in the
-/// agent's `Process`, which computes top-level spans before sampling.
+/// A span is top-level when it is a root span, its parent is missing from the trace (the entry
+/// point of a distributed fragment), or its parent is in a different service (the entry point of
+/// this service's subtree). Marks are only ever set, never cleared.
 pub fn compute_top_level(spans: &mut [Span]) {
     let mut span_id_to_index: FastHashMap<u64, usize> = FastHashMap::default();
     for (i, span) in spans.iter().enumerate() {
         span_id_to_index.insert(span.span_id(), i);
     }
 
-    // First pass: decide which spans are top-level while the spans are immutably borrowed.
+    // Classify while immutably borrowed, then mark in a second pass.
     let mut top_level_indices = Vec::with_capacity(spans.len());
     for (i, span) in spans.iter().enumerate() {
         let parent_id = span.parent_id();
         if parent_id == 0 {
-            // Root span.
             top_level_indices.push(i);
         } else if let Some(&parent_idx) = span_id_to_index.get(&parent_id) {
             if spans[parent_idx].service() != span.service() {
-                // The parent is in the trace but in a different service: local root at a service
-                // boundary.
                 top_level_indices.push(i);
             }
         } else {
-            // The parent is missing from the trace: orphan fragment of a distributed trace.
             top_level_indices.push(i);
         }
     }
 
-    // Second pass: apply the marks.
     for i in top_level_indices {
         spans[i]
             .attributes
