@@ -29,9 +29,9 @@ where
         warn!(
             error_count,
             %request_uri,
-            http2_error_kind = http2_details.map(|details| details.kind.as_str()),
-            http2_reason_code = http2_details.and_then(|details| details.reason).map(u32::from),
-            http2_received_from_remote = http2_details.map(|details| details.received_from_remote),
+            http2.error_kind = http2_details.map(|details| details.kind.as_str()),
+            http2.reason_code = http2_details.and_then(|details| details.reason).map(u32::from),
+            http2.received_from_remote = http2_details.map(|details| details.received_from_remote),
             "{}. Retrying after {:?}.", categorized_error, retry_backoff
         );
     }
