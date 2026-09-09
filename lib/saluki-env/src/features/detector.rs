@@ -58,3 +58,15 @@ impl FeatureDetector {
         detected_features
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+impl FeatureDetector {
+    /// Creates a `FeatureDetector` that reports exactly the given features.
+    ///
+    /// Detection probes the real filesystem, so tests that need a specific set of features -- the host-mapped ones in
+    /// particular, which depend on running inside a container -- can't reach them through the normal constructors
+    /// without becoming dependent on the environment the tests run in.
+    pub(crate) fn from_detected_features(detected_features: Feature) -> Self {
+        Self { detected_features }
+    }
+}
