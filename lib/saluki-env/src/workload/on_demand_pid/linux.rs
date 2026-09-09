@@ -112,6 +112,8 @@ impl ResolverImpl {
     /// inode of our cgroup controller, which the cgroups metadata collector aliases to the container ID while walking
     /// the host's hierarchy. Callers that resolve tags get the same answer either way; callers that need the container
     /// ID itself have to resolve the alias.
+    ///
+    /// The inode form is only available under the cgroups v2 unified hierarchy.
     pub fn resolve_self_container(&self) -> Option<EntityId> {
         // Try the cgroup path first. It's self-verifying -- either it names a container or it doesn't -- whereas the
         // inode below is only useful if the collector has aliased it, which we can't check from here.
@@ -122,8 +124,15 @@ impl ResolverImpl {
         // In our own cgroup namespace, `/proc/self/cgroup` reads `0::/` and names nothing, but the namespace root is
         // our own cgroup. Its inode is the same one a traversal of the host's hierarchy reports for that cgroup, so
         // handing it back lets the alias the collector registered resolve us.
-        if let Some(controller_inode) = get_self_cgroup_controller_inode() {
-            return Some(EntityId::ContainerInode(controller_inode));
+        //
+        // Only under the unified hierarchy, though. There, `/sys/fs/cgroup` is a cgroup in the same filesystem the
+        // collector walked, so the inode identifies the same object. Under cgroups v1 it's the tmpfs those controllers
+        // are mounted into, and an inode from a different filesystem means nothing to a map keyed on inode alone --
+        // at best it resolves nothing, at worst it collides with another container's.
+        if self.cgroups_reader.is_unified() {
+            if let Some(controller_inode) = get_self_cgroup_controller_inode() {
+                return Some(EntityId::ContainerInode(controller_inode));
+            }
         }
 
         debug!("Could not resolve own container: cgroup path named no container, and no usable controller inode.");

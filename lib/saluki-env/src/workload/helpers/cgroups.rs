@@ -130,6 +130,16 @@ impl CgroupsReader {
         }))
     }
 
+    /// Returns whether the hierarchy being read is the cgroups v2 unified hierarchy.
+    ///
+    /// This distinguishes the layout, not just the version: under the unified hierarchy every cgroup lives in one
+    /// filesystem rooted at the cgroupfs mount, whereas cgroups v1 mounts a separate filesystem per controller
+    /// underneath it. Anything comparing inodes across the hierarchy depends on the former, since inode numbers only
+    /// identify a file within a single filesystem.
+    pub fn is_unified(&self) -> bool {
+        self.hierarchy_reader.is_unified()
+    }
+
     fn try_cgroup_from_path(&self, cgroup_path: &Path) -> Option<Cgroup> {
         let container_id = extract_container_id_from_path(cgroup_path, &self.interner)?;
 
@@ -433,6 +443,10 @@ impl HierarchyReader {
             Self::V2 { root, .. } => root.as_path(),
         }
     }
+
+    fn is_unified(&self) -> bool {
+        matches!(self, Self::V2 { .. })
+    }
 }
 
 /// A container cgroup.
@@ -634,6 +648,10 @@ pub(crate) fn get_self_container_id(interner: &GenericMapInterner) -> Option<Met
 ///
 /// Like [`get_self_container_id`], this intentionally reads the process's own `/sys/fs/cgroup` rather than a configured
 /// cgroupfs root, which may refer to the host.
+///
+/// Only meaningful under the cgroups v2 unified hierarchy, where that path is itself a cgroup. Under cgroups v1 it's
+/// the `tmpfs` the controllers are mounted into, and an inode from that filesystem doesn't identify anything in the
+/// hierarchy. Callers **MUST** check [`CgroupsReader::is_unified`] first.
 pub(crate) fn get_self_cgroup_controller_inode() -> Option<u64> {
     cgroup_controller_inode(Path::new(SELF_CGROUPFS_PATH))
 }
@@ -795,7 +813,7 @@ fn is_container_named_but_not_a_container(cgroup_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         fs, io,
         num::NonZeroUsize,
         os::unix::fs::{MetadataExt as _, PermissionsExt as _},
@@ -1115,6 +1133,17 @@ mod tests {
         }
     }
 
+    fn v1_reader_rooted_at(base_controller_path: &Path) -> CgroupsReader {
+        CgroupsReader {
+            procfs_path: PathBuf::from(DEFAULT_PROCFS_ROOT),
+            hierarchy_reader: HierarchyReader::V1 {
+                base_controller_path: base_controller_path.to_path_buf(),
+                controllers: HashMap::new(),
+            },
+            interner: GenericMapInterner::new(NonZeroUsize::new(1024).unwrap()),
+        }
+    }
+
     #[test]
     fn visit_subdirectories_visits_every_subdirectory() {
         let root = tempdir().unwrap();
@@ -1378,5 +1407,16 @@ mod tests {
         let root = tempdir().unwrap();
 
         assert_eq!(cgroup_controller_inode(&root.path().join("missing")), None);
+    }
+
+    #[test]
+    fn is_unified_distinguishes_the_hierarchy_layout() {
+        let root = tempdir().unwrap();
+
+        // Under the unified hierarchy every cgroup shares one filesystem rooted at the cgroupfs mount, so an inode
+        // read from that mount identifies the same object the collector saw. Under v1 the controllers are separate
+        // filesystems mounted beneath it, and that no longer holds.
+        assert!(reader_rooted_at(root.path()).is_unified());
+        assert!(!v1_reader_rooted_at(root.path()).is_unified());
     }
 }
