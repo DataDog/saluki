@@ -57,8 +57,10 @@ pub struct Domain {
     /// OTTL span-transform settings.
     pub ottl_transform: OttlTransform,
 
-    /// Maximum length of a span's resource name, in bytes; longer resources are truncated. (not
-    /// in Datadog Agent config schema)
+    /// Maximum length of a span's resource name, in bytes; longer resources are truncated.
+    ///
+    /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
+    /// Change this only if legitimate resources exceed the default.
     pub max_resource_len: usize,
 }
 
