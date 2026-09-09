@@ -273,7 +273,7 @@ fn is_valid_metric_name(name: &str) -> bool {
 
     let mut chars = name.chars();
     if let Some(c) = chars.next() {
-        if !IS_ALPHA_LOOKUP[c as usize] {
+        if (c as u32) >= 256 || !IS_ALPHA_LOOKUP[c as usize] {
             return false;
         }
     }
@@ -542,6 +542,10 @@ mod tests {
                 MetaString::from("_"),
                 MetaString::from("unnamed_operation"),
             ),
+            // Multi-byte leading characters are repaired away, never a panic.
+            (MetaString::from("中文query"), MetaString::from("query")),
+            (MetaString::from("日本語"), MetaString::from("unnamed_operation")),
+            (MetaString::from("éxample"), MetaString::from("xample")),
         ];
 
         for (name, expected) in cases.iter() {
@@ -644,6 +648,7 @@ mod tests {
         assert!(!needs_name_normalization("a"));
         assert!(needs_name_normalization(""));
         assert!(needs_name_normalization("bad name"));
+        assert!(needs_name_normalization("中文query"));
         assert!(needs_name_normalization("a".repeat(101).as_str()));
         assert!(!needs_name_normalization("a".repeat(100).as_str()));
         assert!(needs_name_normalization("trailing_"));

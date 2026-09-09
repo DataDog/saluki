@@ -3045,6 +3045,58 @@ mod tests {
     }
 
     #[test]
+    fn otel_span_to_dd_span_repairs_unicode_leading_names() {
+        // A datadog.name starting with a multi-byte character is repaired, not a panic.
+        let dd_span = build_dd_span(
+            SpanKind::Internal,
+            vec![kv_str("datadog.name", "中文query")],
+            None,
+            vec![],
+        );
+        assert_eq!(dd_span.name(), "query");
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_repairs_unicode_leading_link_names() {
+        let link = OtlpSpanLink {
+            trace_id: vec![1; 16],
+            span_id: vec![2; 8],
+            attributes: vec![kv_str("link.name", "中文link")],
+            ..Default::default()
+        };
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            links: vec![link],
+            ..Default::default()
+        };
+        let (interner, mut sb) = extraction_env();
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &Resource::default(),
+            None,
+            false,
+            true,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
+
+        let links_json = dd_span
+            .attributes
+            .get("_dd.span_links")
+            .and_then(AttributeValue::as_string)
+            .map(|s| s.as_ref().to_owned())
+            .expect("span links should be marshaled");
+        assert!(links_json.contains("\"link\""), "repaired link name: {links_json}");
+        assert!(
+            !links_json.contains("中文"),
+            "multi-byte characters are repaired away: {links_json}"
+        );
+    }
+
+    #[test]
     fn otel_span_to_dd_span_truncates_resource_to_configured_limit() {
         let long_route = "/r".repeat(4000);
         let span_attrs = vec![kv_str("http.request.method", "GET"), kv_str("http.route", &long_route)];

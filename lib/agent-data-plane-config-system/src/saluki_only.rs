@@ -295,6 +295,8 @@ pub struct ApmConfig {
     /// Default trace environment (`apm_config.default_env`).
     pub default_env: Option<String>,
     /// Maximum length of a span's resource name, in bytes (`apm_config.max_resource_len`).
+    ///
+    /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
     pub max_resource_len: Option<usize>,
     /// Whether error sampling is enabled (`apm_config.error_sampling_enabled`).
     pub error_sampling_enabled: Option<bool>,
