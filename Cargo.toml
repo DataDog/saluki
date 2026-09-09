@@ -119,6 +119,7 @@ zstd = { version = "0.13.3", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
+h2 = { version = "0.4", default-features = false }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
