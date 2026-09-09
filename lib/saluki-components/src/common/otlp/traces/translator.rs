@@ -214,14 +214,9 @@ impl OtlpTracesTranslator {
                     rejected: false,
                 });
 
-                // Full trace ID consistency: every span must agree with the group's first span on
-                // the high half of the trace ID. Low halves match by construction (the grouping
-                // key). A span with a zero high half - a 64-bit trace ID, or a short/zero-padded
-                // ID - is trusted on the low half alone. This mirrors `SameTraceID`
-                // (datadog-agent/pkg/trace/traceutil) as invoked per-chunk against the first span
-                // by `normalizeTrace` (datadog-agent/pkg/trace/agent/normalizer.go), which drops
-                // the whole chunk as "trace has foreign span" on mismatch. Rejected groups are
-                // dropped whole at chunk assembly time.
+                // Full trace ID consistency: spans in a group must agree with the group's first
+                // span on the high half of the trace ID. A zero high half (a 64-bit trace ID) is
+                // trusted on the low half alone.
                 if entry.trace_id_high != 0 && trace_id_high != 0 && entry.trace_id_high != trace_id_high {
                     entry.rejected = true;
                 }
@@ -266,10 +261,8 @@ impl OtlpTracesTranslator {
 struct OtlpTraceEventsIter {
     resource_meta: OtlpResourceMeta,
     entries: IntoIter<u64, TraceEntry>,
-    /// Whether top-level spans are computed from span kind during span translation. When false,
-    /// the chunk-wide fallback (`compute_top_level`) runs at chunk assembly instead, mirroring
-    /// `Agent.Process` running `traceutil.ComputeTopLevel` when the payload is not marked as
-    /// client-computed.
+    /// Whether top-level spans are computed from span kind during translation; when false, the
+    /// chunk-wide fallback (`compute_top_level`) runs at chunk assembly instead.
     compute_top_level_by_span_kind: bool,
     metrics: Metrics,
 }
@@ -280,9 +273,7 @@ impl Iterator for OtlpTraceEventsIter {
     fn next(&mut self) -> Option<Self::Item> {
         for (trace_id_low, entry) in self.entries.by_ref() {
             if entry.rejected {
-                // A span in this group disagrees with the group's first span on the full trace ID:
-                // the group is two different traces glued together by a shared low half. Drop the
-                // group whole, mirroring `normalizeTrace`'s "trace has foreign span" rejection.
+                // Two different traces glued together by a shared low half: drop the group whole.
                 self.metrics
                     .spans_dropped_foreign_trace()
                     .increment(entry.spans.len() as u64);
@@ -310,16 +301,9 @@ impl Iterator for OtlpTraceEventsIter {
             trace.payload.tracer_version = self.resource_meta.tracer_version.clone();
             trace.attributes = Arc::clone(&self.resource_meta.attributes);
 
-            // Trace-level metadata backfill and top-level marking, mirroring the per-chunk steps
-            // of `Agent.Process` (datadog-agent/pkg/trace/agent/agent.go) and its normalizer:
-            //   normalizeTrace (done at grouping time, above)
-            //   -> GetRoot -> setChunkAttributes -> ComputeTopLevel
-            //
-            // `setChunkAttributes` (datadog-agent/pkg/trace/agent/normalizer.go) rules:
-            // - origin: promoted from the root span's `_dd.origin` tag, if the trace does not
-            //   already have one
-            // - decision maker: the first span in chunk order carrying `_dd.p.dm` wins, if the
-            //   trace does not already have one
+            // Backfill trace-level metadata from the spans: origin comes from the root span's
+            // `_dd.origin` tag, and the decision maker is the first span in chunk order carrying
+            // `_dd.p.dm` - both only when not already set.
             if let Some(root_idx) = get_root_span_index(trace.spans()) {
                 if trace.origin.is_empty() {
                     if let Some(origin) = trace.spans()[root_idx]
@@ -343,8 +327,6 @@ impl Iterator for OtlpTraceEventsIter {
                 }
             }
 
-            // The chunk-wide top-level fallback runs only when span-kind computation did not run
-            // during translation, so spans are never double-marked.
             if !self.compute_top_level_by_span_kind {
                 compute_top_level(trace.spans_mut());
             }
@@ -558,10 +540,8 @@ mod tests {
 
     #[test]
     fn convert_trace_id_uses_agent_grouping_key() {
-        // `OTelTraceIDToUint64` (datadog-agent/pkg/trace/transform/otelutil.go) is
-        // `binary.BigEndian.Uint64(id[8:])`: the low 8 bytes of the 16-byte big-endian trace ID.
-        // `convert_trace_id` must produce the identical grouping key, and the high-half helper
-        // must split the ID the same way.
+        // Pins the grouping key we derive from the upstream OTLP ingest: the low 8 bytes of the
+        // 16-byte big-endian trace ID.
         let id: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         assert_eq!(
             convert_trace_id(&id),
@@ -574,16 +554,12 @@ mod tests {
         assert_eq!(convert_trace_id(&id64), 0x1234_5678_9abc_def0);
         assert_eq!(convert_trace_id_high(&id64), 0);
 
-        // IDs shorter than 8 bytes have no low half; IDs shorter than 16 bytes have no high half.
         assert_eq!(convert_trace_id(&[1, 2, 3]), 0);
         assert_eq!(convert_trace_id_high(&[0xAA; 8]), 0);
     }
 
     #[test]
     fn translate_spans_rejects_groups_with_mixed_full_trace_ids() {
-        // Two spans whose trace IDs share a low half but disagree on the high half are two
-        // different traces. The group is dropped whole, like the agent's `normalizeTrace`
-        // rejecting the chunk as "trace has foreign span". Unrelated traces are unaffected.
         let low = u64::from_be_bytes([0xAA; 8]);
         let rs = build_resource_spans(
             vec![],
@@ -605,9 +581,7 @@ mod tests {
 
     #[test]
     fn translate_spans_accepts_span_missing_high_trace_id_half() {
-        // `SameTraceID` trusts the low half alone when either span is missing its high half: a
-        // 64-bit-style ID groups with a 128-bit ID sharing the low half, in either order. The
-        // chunk carries the first span's (absent) high half.
+        // A span missing its high half groups with one that has it, in either order.
         let id64: Vec<u8> = vec![0xAA; 8];
         let id128 = trace_id16(0x0101_0101_0101_0101, u64::from_be_bytes([0xAA; 8])).to_vec();
 
@@ -638,9 +612,7 @@ mod tests {
 
     #[test]
     fn translate_spans_backfills_origin_from_root_span() {
-        // `setChunkAttributes` (datadog-agent/pkg/trace/agent/normalizer.go) promotes the root
-        // span's `_dd.origin` tag onto the chunk. The root is found with the agent's
-        // root-selection rules; here the root is reported last.
+        // The root is reported last here.
         let trace = trace_id16(0, 1);
         let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
         let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![string_kv("_dd.origin", "lambda")]);
@@ -653,8 +625,6 @@ mod tests {
 
     #[test]
     fn translate_spans_does_not_backfill_origin_from_non_root_span() {
-        // Origin only comes from the root span: a `_dd.origin` tag on a non-root span is left in
-        // place and the trace keeps an empty origin.
         let trace = trace_id16(0, 1);
         let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
         let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![string_kv("_dd.origin", "rum")]);
@@ -667,8 +637,7 @@ mod tests {
 
     #[test]
     fn translate_spans_backfills_decision_maker_from_first_span() {
-        // `setChunkAttributes` scans spans in chunk order and the first span carrying `_dd.p.dm`
-        // wins - deliberately not a root-based rule.
+        // First span carrying the tag wins - not a root-based rule.
         let trace = trace_id16(0, 1);
         let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
         let early = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![string_kv("_dd.p.dm", "-8")]);
@@ -682,9 +651,7 @@ mod tests {
 
     #[test]
     fn translate_spans_marks_top_level_fallback_when_span_kind_computation_disabled() {
-        // With span-kind computation off, the chunk-wide fallback (`traceutil.ComputeTopLevel`)
-        // marks roots, orphans, and service boundaries. A same-service child whose parent is
-        // present in the chunk stays unmarked.
+        // Roots, orphans, and service boundaries get marked; interior same-service spans don't.
         let trace = trace_id16(0, 1);
         let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
         let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
@@ -730,8 +697,6 @@ mod tests {
 
     #[test]
     fn translate_spans_skips_top_level_fallback_when_span_kind_computation_enabled() {
-        // When span-kind computation is on (the default), the chunk-wide fallback must not run:
-        // these spans have unspecified kinds, so nothing gets marked at all.
         let trace = trace_id16(0, 1);
         let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
         let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
