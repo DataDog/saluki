@@ -1,0 +1,6 @@
+fixes:
+  - |
+    Updated ``h2`` to 0.4.19, which relaxes the small DATA frame protection that was added in 0.4.16 and
+    was spuriously terminating legitimate HTTP/2 client connections with a ``too_many_data_frames``
+    ``ENHANCE_YOUR_CALM`` GOAWAY error. This caused connection drops and elevated retries when talking
+    to the metrics intake, and could result in dropped payloads under load.
