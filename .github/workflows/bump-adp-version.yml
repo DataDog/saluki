@@ -7,7 +7,50 @@ on:
   workflow_dispatch:
 
 jobs:
-  bump-version:
+  release-info:
+    runs-on: ubuntu-latest
+    outputs:
+      bump_targets: ${{ steps.compute.outputs.bump_targets }}
+      new_release_branch: ${{ steps.compute.outputs.new_release_branch }}
+    steps:
+      - name: Determine bump targets and whether a new release branch is needed
+        id: compute
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+
+          if [[ "$TAG_NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            RELEASE_BRANCH="releases/${MAJOR}.${MINOR}.x"
+
+            if [[ "$PATCH" == "0" ]]; then
+              # A minor (or major) release: bump `main` to the next minor dev version, and also cut the new
+              # `releases/X.Y.x` branch and bump it to the next patch dev version, mirroring what happens on
+              # `main`.
+              BUMP_TARGETS=$(jq -nc --arg branch "$RELEASE_BRANCH" \
+                '[{"target_branch": "main", "release_type": "minor"}, {"target_branch": $branch, "release_type": "patch"}]')
+              NEW_RELEASE_BRANCH="$RELEASE_BRANCH"
+            else
+              # A patch release: only bump the existing `releases/X.Y.x` branch.
+              BUMP_TARGETS=$(jq -nc --arg branch "$RELEASE_BRANCH" \
+                '[{"target_branch": $branch, "release_type": "patch"}]')
+              NEW_RELEASE_BRANCH=""
+            fi
+          else
+            # workflow_dispatch without a version tag: default to minor bump on main
+            BUMP_TARGETS='[{"target_branch": "main", "release_type": "minor"}]'
+            NEW_RELEASE_BRANCH=""
+          fi
+
+          echo "Bump targets: $BUMP_TARGETS"
+          echo "New release branch: ${NEW_RELEASE_BRANCH:-<none>}"
+          echo "bump_targets=$BUMP_TARGETS" >> $GITHUB_OUTPUT
+          echo "new_release_branch=$NEW_RELEASE_BRANCH" >> $GITHUB_OUTPUT
+
+  create-release-branch:
+    needs: release-info
+    if: needs.release-info.outputs.new_release_branch != ''
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -19,38 +62,44 @@ jobs:
           scope: DataDog/saluki
           policy: self.bump-adp-version.create-pr
 
-      - name: Determine release type and target branch
-        id: release-info
+      - name: Create release branch from the tag, if it doesn't already exist
+        env:
+          RELEASE_BRANCH: ${{ needs.release-info.outputs.new_release_branch }}
+          REMOTE: https://x-access-token:${{ steps.octo-sts.outputs.token }}@github.com/${{ github.repository }}.git
         run: |
-          TAG_NAME="${{ github.ref_name }}"
-
-          if [[ "$TAG_NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            MAJOR="${BASH_REMATCH[1]}"
-            MINOR="${BASH_REMATCH[2]}"
-            PATCH="${BASH_REMATCH[3]}"
-
-            if [[ "$PATCH" == "0" ]]; then
-              TARGET_BRANCH="main"
-              RELEASE_TYPE="minor"
-            else
-              TARGET_BRANCH="releases/${MAJOR}.${MINOR}.x"
-              RELEASE_TYPE="patch"
-            fi
-          else
-            # workflow_dispatch without a version tag: default to minor bump on main
-            TARGET_BRANCH="main"
-            RELEASE_TYPE="minor"
+          if git ls-remote --exit-code --heads "$REMOTE" "refs/heads/$RELEASE_BRANCH" > /dev/null; then
+            echo "Branch $RELEASE_BRANCH already exists, skipping creation."
+            exit 0
           fi
 
-          echo "Release type: $RELEASE_TYPE, target branch: $TARGET_BRANCH"
-          echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
-          echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+          echo "Creating $RELEASE_BRANCH from ${{ github.sha }}"
+          git push "$REMOTE" "${{ github.sha }}:refs/heads/$RELEASE_BRANCH"
+
+  bump-version:
+    needs: [release-info, create-release-branch]
+    if: |
+      always() &&
+      needs.release-info.result == 'success' &&
+      needs.create-release-branch.result != 'failure'
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.release-info.outputs.bump_targets) }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@c85802a58e202b7e764b5441e4378c76043c8108 # v1.0.5
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.bump-adp-version.create-pr
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: "${{ steps.octo-sts.outputs.token }}"
-          ref: ${{ steps.release-info.outputs.target_branch }}
+          ref: ${{ matrix.target_branch }}
 
       - name: Configure Git
         run: |
@@ -67,7 +116,7 @@ jobs:
           MINOR=$(echo $CURRENT_VERSION | cut -d '.' -f 2)
           PATCH=$(echo $CURRENT_VERSION | cut -d '.' -f 3)
 
-          if [[ "${{ steps.release-info.outputs.release_type }}" == "minor" ]]; then
+          if [[ "${{ matrix.release_type }}" == "minor" ]]; then
             NEW_MINOR=$((MINOR + 1))
             NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
           else
@@ -137,7 +186,7 @@ jobs:
             - [x] Non-functional (chore, refactoring, docs)
             - [ ] Performance`;
             const prLabel = 'ci/bump-adp-version';
-            const targetBranch = '${{ steps.release-info.outputs.target_branch }}';
+            const targetBranch = '${{ matrix.target_branch }}';
 
             // Make sure we don't have an open PR for the exact same change.
             const { data: exactPRData } = await github.rest.search.issuesAndPullRequests({
