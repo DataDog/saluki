@@ -158,14 +158,8 @@ pub struct TraceSampler {
 impl TraceSampler {
     /// Find the root span index of a trace.
     fn get_root_span_index(&self, trace: &Trace) -> Option<usize> {
-        // The shared implementation intentionally mirrors
-        // `datadog-agent/pkg/trace/traceutil/trace.go:GetRoot`:
-        // - Fast-path: return the last span with `parent_id == 0` (some clients report the root last)
-        // - Otherwise: build a map of `parent_id -> child_span_index`, delete entries whose parent
-        //   exists in the trace, and pick any remaining "orphan" child span.
-        //
-        // The OTLP translator uses the same function for its metadata backfill, so both paths
-        // anchor trace-level metadata to identical root spans.
+        // Shared with the OTLP translator's metadata backfill, so both paths anchor metadata to
+        // identical root spans.
         get_root_span_index(trace.spans())
     }
 
@@ -436,12 +430,8 @@ impl TraceSampler {
         &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, root_span_idx: usize,
     ) {
         let is_otlp = self.is_otlp_trace(trace, root_span_idx);
-        // Add tag for the decision maker.
-        //
-        // An ingest-time backfill may have already populated the trace-level decision maker (the
-        // first span carrying `_dd.p.dm` wins, mirroring `setChunkAttributes` in
-        // datadog-agent/pkg/trace/agent/normalizer.go). Keep it when the sampler itself has no
-        // decision to stamp, before falling back to the root span's tag.
+        // Add tag for the decision maker: keep one backfilled at ingest (if the sampler itself
+        // has no decision to stamp) before falling back to the root span's tag.
         let backfilled_decision_maker = if decision_maker.is_empty() {
             trace.decision_maker.clone()
         } else {
@@ -603,9 +593,6 @@ mod tests {
 
     #[test]
     fn apply_sampling_metadata_preserves_backfilled_decision_maker() {
-        // A decision maker backfilled at ingest (the first `_dd.p.dm` span wins, mirroring
-        // `setChunkAttributes`) survives a sampler decision that does not stamp its own decision
-        // maker, and lands on the root span like any decision maker would.
         let sampler = create_test_sampler();
         let root = create_test_span(1, 0);
         let mut trace = create_test_trace(vec![root]);
@@ -627,8 +614,6 @@ mod tests {
 
     #[test]
     fn apply_sampling_metadata_sampler_decision_overrides_backfill() {
-        // When the sampler itself makes a decision, its decision maker wins over an ingest-time
-        // backfill, so the chunk reports who actually made the final call.
         let sampler = create_test_sampler();
         let root = create_test_span(1, 0);
         let mut trace = create_test_trace(vec![root]);
