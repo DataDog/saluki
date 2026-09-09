@@ -108,6 +108,7 @@ test-integration:
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-bundled-agent-adp-image
+    - build-correctness-tools-image
   retry: 2
   timeout: 15m
   image: "${SALUKI_BUILD_CI_IMAGE}"
@@ -123,10 +124,13 @@ test-integration:
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
-    # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
-    # test configurations between CI and local test runs.
+    # Copy the images we built to the local Docker instance, under the tags the Makefile builds locally, so we can
+    # share the integration test configurations between CI and local test runs. The correctness-tools image provides
+    # the intake sidecar that opted-in test cases run.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-devel
+    - docker pull ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
+    - docker tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA} saluki-images/correctness-tools:latest
     - make test-integration-quick
 
 # Runs the subset of integration tests that have opted in to the `mac` runtime

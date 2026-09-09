@@ -119,6 +119,7 @@ zstd = { version = "0.13.3", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
+h2 = { version = "0.4", default-features = false }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
@@ -246,6 +247,7 @@ opentelemetry-semantic-conventions = { version = "0.32.0", default-features = fa
 comfy-table = { version = "8", default-features = false }
 dtoa = { version = "1", default-features = false }
 itoa = { version = "1", default-features = false }
+vergen-gix = { version = "9", default-features = false }
 ryu = { version = "1", default-features = false }
 colored = { version = "3", default-features = false }
 tracing-rolling-file = "0.1"

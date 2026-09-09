@@ -643,7 +643,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "accounting.rs",
@@ -658,7 +658,49 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "accounting.rs",
+    },
+    SalukiKey {
+        yaml_path: "enable_global_limiter",
+        description: "Global memory limiter toggle",
+        default: "true",
+        documentation: Some(
+            "Controls whether the global memory limiter exerts backpressure as memory usage \
+             approaches `memory_limit`. The default is `true`. When set to `false`, the limiter \
+             becomes a no-op and only the memory bounds of the running components influence \
+             memory usage.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("true"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "accounting.rs",
+    },
+    SalukiKey {
+        yaml_path: "memory_mode",
+        description: "Memory bounds validation mode",
+        default: "disabled",
+        documentation: Some(
+            "Controls how the calculated memory bounds are reconciled against `memory_limit`. The \
+             default is `disabled`. Accepted values: `disabled` skips bounds validation and applies \
+             no memory limiting; `permissive` logs a warning when the bounds do not fit within the \
+             limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, \
+             the global memory limiter is active only when a limit is in effect (configured or \
+             detected from cgroups) and `enable_global_limiter` is `true`.",
+        ),
+        value_type: "ValueType::String",
+        schema_default: Some("disabled"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "accounting.rs",

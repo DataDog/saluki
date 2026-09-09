@@ -479,7 +479,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_log_file(&mut self, value: String) {
-        self.config.control.logging.file = value;
+        let provenance = self.sources.provenance("data_plane.log_file");
+        self.config.control.logging.file = ConfigValue::new(value, provenance);
     }
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
@@ -879,12 +880,19 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_log_file_max_rolls(&mut self, value: i64) {
-        self.config.control.logging.file_max_rolls = value.max(0) as usize;
+        match usize::try_from(value) {
+            Ok(max_rolls) => self.config.control.logging.file_max_rolls = max_rolls,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "log_file_max_rolls",
+                "log file max rolls must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_log_file_max_size(&mut self, value: String) {
+        let provenance = self.sources.provenance("log_file_max_size");
         match value.parse::<ByteSize>() {
-            Ok(size) => self.config.control.logging.file_max_size = size.as_u64(),
+            Ok(size) => self.config.control.logging.file_max_size = ConfigValue::new(size.as_u64(), provenance),
             Err(reason) => self.record_error(TranslateError::new_with_message("log_file_max_size", reason)),
         }
     }
@@ -1249,6 +1257,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         } else {
             self.config.shared.run_path = Some(PathBuf::from(value))
         }
+    }
+
+    fn consume_secret_backend_command(&mut self, value: String) {
+        self.config.shared.secrets.backend_command = non_empty_trimmed(value);
+    }
+
+    fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64) {
+        // A negative interval is not an error the Core Agent reports, and it means the same thing as
+        // no interval at all, so clamp rather than reporting an error.
+        if value < 0 {
+            warn!("`secret_refresh_on_api_key_failure_interval` is negative ({value}). Treating it as 0 (disabled).");
+        }
+
+        self.config.shared.secrets.refresh_on_api_key_failure_interval = value.max(0) as u64;
     }
 
     fn consume_serializer_compressor_kind(&mut self, value: String) {
@@ -1976,6 +1998,43 @@ mod tests {
     }
 
     #[test]
+    fn logging_file_and_max_size_record_whether_an_operator_set_them() {
+        let (config, errors) = translate_stream(&[
+            (
+                "data_plane.log_file",
+                json!("/var/log/datadog/agent-data-plane.log"),
+                StreamProvenance::Default,
+            ),
+            ("log_file_max_size", json!("10Mb"), StreamProvenance::Default),
+        ]);
+        assert!(errors.is_none());
+        let logging = &config.control.logging;
+        assert_defaulted(&logging.file, "/var/log/datadog/agent-data-plane.log".to_string());
+        assert_defaulted(&logging.file_max_size, 10_000_000);
+
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "log_file": "/tmp/adp.log" },
+            "log_file_max_size": "1MiB",
+        }));
+        assert!(errors.is_none());
+        let logging = &config.control.logging;
+        assert_explicit(&logging.file, "/tmp/adp.log".to_string());
+        assert_explicit(&logging.file_max_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn negative_log_file_max_rolls_records_translation_error() {
+        // A negative roll count is not a smaller retention policy: clamping it would silently accept an
+        // invalid setting, so translation rejects it instead.
+        let (config, errors) = translate_explicit(json!({ "log_file_max_rolls": -1 }));
+
+        assert_eq!(config.control.logging.file_max_rolls, 0);
+        let error = errors.expect("negative log file max rolls should record an error");
+        assert!(error.to_string().contains("log_file_max_rolls"));
+        assert!(error.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
     fn retry_queue_sizes_are_honored_only_when_explicit() {
         // The Core Agent streams both keys even when the operator configured neither. Treating those
         // defaults as explicit settings would hide a value supplied through the deprecated key.
@@ -2060,6 +2119,49 @@ mod tests {
         assert_eq!(None, mrf.site);
         assert_eq!(None, mrf.dd_url);
         assert_eq!(None, mrf.metrics_endpoint_url());
+    }
+
+    #[test]
+    fn secrets_settings_default_to_schema_values_when_unset() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let secrets = &config.shared.secrets;
+        assert_eq!(None, secrets.backend_command);
+        assert_eq!(0, secrets.refresh_on_api_key_failure_interval);
+        assert!(!secrets.in_use());
+    }
+
+    #[test]
+    fn secrets_settings_translate_and_normalize() {
+        let (config, errors) = translate_explicit(json!({
+            "secret_backend_command": "  /usr/bin/fetch-secrets  ",
+            "secret_refresh_on_api_key_failure_interval": 5
+        }));
+
+        assert!(errors.is_none());
+        let secrets = &config.shared.secrets;
+        assert_eq!(Some("/usr/bin/fetch-secrets"), secrets.backend_command.as_deref());
+        assert_eq!(5, secrets.refresh_on_api_key_failure_interval);
+        assert!(secrets.in_use());
+
+        // A blank command says no more than an absent one.
+        let (config, errors) = translate_explicit(json!({ "secret_backend_command": "   " }));
+
+        assert!(errors.is_none());
+        assert_eq!(None, config.shared.secrets.backend_command);
+        assert!(!config.shared.secrets.in_use());
+    }
+
+    #[test]
+    fn a_negative_secret_refresh_interval_is_clamped_rather_than_rejected() {
+        // The Core Agent accepts a negative interval without complaint, and it means the same thing as
+        // no interval, so translation must not fail and leave ADP unable to start.
+        let (config, errors) = translate_explicit(json!({ "secret_refresh_on_api_key_failure_interval": -1 }));
+
+        assert!(errors.is_none());
+        assert_eq!(0, config.shared.secrets.refresh_on_api_key_failure_interval);
+        assert!(!config.shared.secrets.in_use());
     }
 
     #[test]

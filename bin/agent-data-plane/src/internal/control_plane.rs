@@ -48,8 +48,11 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
     supervisor.add_worker(InternalTelemetryAPIWorker::new());
-    supervisor.add_worker(DynamicLogLevelWorker::new(&raw_map, logging_controller));
-    supervisor.add_worker(ConfigWorker::new(raw_map.clone()));
+    supervisor.add_worker(DynamicLogLevelWorker::new(
+        config_system.live(|config| &config.control.logging.level),
+        logging_controller,
+    ));
+    supervisor.add_worker(ConfigWorker::new(raw_map));
     supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
 
     let api_listen_address = dp.api_listen_address()?;

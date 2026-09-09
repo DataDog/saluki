@@ -97,6 +97,14 @@ description: "Verifies that feature X works correctly"
 # Required: overall timeout for the test
 timeout: 60s
 
+# Optional: Datadog intake sidecar. When enabled, the runner starts a datadog-intake
+# container on the test's Docker network under the `datadog-intake` alias, so the
+# target can forward to `http://datadog-intake:2049`. Docker runtimes only.
+# The sidecar runs from the correctness-tools image, which `make test-integration`
+# builds and `make test-integration-quick` expects to already exist.
+intake:
+  enabled: false
+
 # Optional: container configuration
 #
 # The container image is selected by the active runtime, not the test case:
@@ -203,6 +211,25 @@ Captures traffic sent by `sender`, replays the completed capture through the tes
   stats_duration_secs: 3
   expected_metrics: ["replay.example"]
   timeout: 30s
+```
+
+#### `dogstatsd_send`
+
+Sends `payload` to the target's DogStatsD listener as a single UDP datagram. `port` is the container-side port, which the test case must list under `container.exposed_ports`; the datagram goes to the host port that the runner published for it. `timeout` uses the [duration format](#duration-format) and defaults to `30s`.
+
+Place a readiness step before this action: steps run in order, so the send cannot happen until the gate passes. Gate on the listener's own startup log, not on `port_listening`, which for UDP only proves the port is published and so passes before the listener binds:
+
+```yaml
+- assertion: log_contains
+  pattern: 'listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started.'
+  timeout: 60s
+```
+
+```yaml
+- action: dogstatsd_send
+  payload: "example.counter:3|c|#source:integration-test"
+  port: 58125
+  timeout: 10s
 ```
 
 #### `core_agent_cli`
@@ -316,6 +343,21 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
   value: debug
   endpoint: "https://localhost:55101/config/runtime"
   timeout: 30s
+```
+
+#### `intake_has_metric`
+
+Polls the Datadog intake sidecar until it holds a metric matching every criterion given, or until `timeout` elapses. Requires `intake.enabled: true` on the test case. Polling, rather than a single check, absorbs the target's aggregation and flush window without a fixed sleep.
+
+Only `name` is required, and it must match exactly. `metric_type` (`count`, `rate`, `gauge`, or `sketch`) and `value` must both hold for the same metric value. `tags` is a subset requirement: every listed tag must be present, and additional tags, such as the environment-derived ones the Agent adds, are allowed.
+
+```yaml
+- assertion: intake_has_metric
+  name: "example.counter"
+  metric_type: count
+  value: 3
+  tags: ["source:integration-test"]
+  timeout: 120s
 ```
 
 #### `file_contains`

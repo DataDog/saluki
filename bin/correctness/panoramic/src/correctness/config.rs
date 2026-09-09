@@ -180,6 +180,10 @@ impl Test for Config {
         None
     }
 
+    fn case_path(&self) -> PathBuf {
+        self.base_config_path.clone()
+    }
+
     fn timeout(&self) -> Duration {
         CORRECTNESS_TIMEOUT
     }

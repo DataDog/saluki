@@ -6,6 +6,7 @@ use std::{
 };
 
 use agent_data_plane_config::{
+    control::MemoryMode,
     domains::{dogstatsd, multi_region_failover},
     shared::SharedConfiguration,
     SalukiConfiguration,
@@ -16,7 +17,7 @@ use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
-    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
     util::wait_for_shutdown_signal,
@@ -141,7 +142,7 @@ pub async fn handle_run_command(
     // config, so reload logging to match. Standalone resolves the same local sources seen at
     // bootstrap, making a reload redundant.
     if !standalone {
-        match LoggingConfigurationTranslator::translate(&config_sys.raw_map()) {
+        match LoggingConfigurationTranslator::translate(&config_sys.config().control.logging) {
             Ok(logging_config) => {
                 if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                     warn!(
@@ -212,7 +213,19 @@ pub async fn handle_run_command(
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config_sys.raw_map())?;
+    let bounds_config = {
+        let control = &config_sys.config().control;
+        MemoryBoundsConfiguration {
+            memory_limit: control.memory_limit.map(ByteSize::b),
+            memory_slop_factor: control.memory_slop_factor,
+            enable_global_limiter: control.enable_global_limiter,
+            memory_mode: match control.memory_mode {
+                MemoryMode::Disabled => AppMemoryMode::Disabled,
+                MemoryMode::Permissive => AppMemoryMode::Permissive,
+                MemoryMode::Strict => AppMemoryMode::Strict,
+            },
+        }
+    };
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
@@ -415,9 +428,9 @@ async fn create_topology(
     {
         let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
             &shared,
-            &config_system.raw_map(),
             config_system.live(|config| &config.shared.endpoints.api_key),
             config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+            config_system.live(|config| &config.shared.secrets),
         );
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
@@ -574,10 +587,10 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
-        &config_system.raw_map(),
         mrf_dd_url,
         mrf_api_key,
         config_system.live(|config| &config.domains.multi_region_failover.api_key),
+        config_system.live(|config| &config.shared.secrets),
     );
 
     blueprint
