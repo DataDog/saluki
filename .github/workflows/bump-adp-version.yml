@@ -62,6 +62,12 @@ jobs:
           scope: DataDog/saluki
           policy: self.bump-adp-version.create-pr
 
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: "${{ steps.octo-sts.outputs.token }}"
+          ref: ${{ github.sha }}
+
       - name: Create release branch from the tag, if it doesn't already exist
         env:
           RELEASE_BRANCH: ${{ needs.release-info.outputs.new_release_branch }}
@@ -73,7 +79,7 @@ jobs:
           fi
 
           echo "Creating $RELEASE_BRANCH from ${{ github.sha }}"
-          git push "$REMOTE" "${{ github.sha }}:refs/heads/$RELEASE_BRANCH"
+          git push "$REMOTE" "HEAD:refs/heads/$RELEASE_BRANCH"
 
   bump-version:
     needs: [release-info, create-release-branch]
