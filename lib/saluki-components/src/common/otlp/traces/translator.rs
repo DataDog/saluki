@@ -214,10 +214,9 @@ impl OtlpTracesTranslator {
                     rejected: false,
                 });
 
-                // Full trace ID consistency: spans in a group must agree with the group's first
-                // span on the high half of the trace ID. A zero high half (a 64-bit trace ID) is
-                // trusted on the low half alone.
-                if entry.trace_id_high != 0 && trace_id_high != 0 && entry.trace_id_high != trace_id_high {
+                // Full trace ID consistency: spans in a group must carry the same full trace ID
+                // as the group's first span.
+                if entry.trace_id_high != trace_id_high {
                     entry.rejected = true;
                 }
 
@@ -580,34 +579,48 @@ mod tests {
     }
 
     #[test]
-    fn translate_spans_accepts_span_missing_high_trace_id_half() {
-        // A span missing its high half groups with one that has it, in either order.
-        let id64: Vec<u8> = vec![0xAA; 8];
-        let id128 = trace_id16(0x0101_0101_0101_0101, u64::from_be_bytes([0xAA; 8])).to_vec();
+    fn translate_spans_rejects_mixed_zero_and_nonzero_high_halves() {
+        // A zero high half and a nonzero high half are different full trace IDs, in either span
+        // order.
+        let id_short: Vec<u8> = vec![0xAA; 8];
+        let id_full = trace_id16(0x0101_0101_0101_0101, u64::from_be_bytes([0xAA; 8])).to_vec();
 
         let short_first = build_resource_spans(
             vec![],
             vec![
-                span_raw(id64.clone(), [1u8; 8], vec![]),
-                span_raw(id128.clone(), [2u8; 8], vec![]),
+                span_raw(id_short.clone(), [1u8; 8], vec![]),
+                span_raw(id_full.clone(), [2u8; 8], vec![]),
             ],
         );
-        let traces = translate(short_first);
-        assert_eq!(traces.len(), 1);
-        assert_eq!(traces[0].spans().len(), 2);
-        assert_eq!(
-            traces[0].trace_id_high, 0,
-            "the chunk carries the first span's (absent) high half"
-        );
+        assert_eq!(translate(short_first).len(), 0);
 
         let full_first = build_resource_spans(
             vec![],
-            vec![span_raw(id128, [1u8; 8], vec![]), span_raw(id64, [2u8; 8], vec![])],
+            vec![
+                span_raw(id_full, [1u8; 8], vec![]),
+                span_raw(id_short, [2u8; 8], vec![]),
+            ],
         );
-        let traces = translate(full_first);
+        assert_eq!(translate(full_first).len(), 0);
+    }
+
+    #[test]
+    fn translate_spans_accepts_consistent_zero_high_halves() {
+        // An 8-byte ID and its zero-padded 16-byte equivalent are the same 64-bit trace ID.
+        let id_short: Vec<u8> = vec![0xAA; 8];
+        let id_padded = trace_id16(0, u64::from_be_bytes([0xAA; 8])).to_vec();
+
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(id_short, [1u8; 8], vec![]),
+                span_raw(id_padded, [2u8; 8], vec![]),
+            ],
+        );
+        let traces = translate(rs);
         assert_eq!(traces.len(), 1);
         assert_eq!(traces[0].spans().len(), 2);
-        assert_eq!(traces[0].trace_id_high, 0x0101_0101_0101_0101);
+        assert_eq!(traces[0].trace_id_high, 0);
     }
 
     #[test]
