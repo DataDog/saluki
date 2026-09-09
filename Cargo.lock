@@ -5364,6 +5364,7 @@ dependencies = [
  "chrono",
  "fs4",
  "futures",
+ "h2",
  "http",
  "http-body",
  "http-body-util",

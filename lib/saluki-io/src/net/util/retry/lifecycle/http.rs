@@ -1,4 +1,4 @@
-use std::{borrow::Cow, error::Error as _, fmt, time::Duration};
+use std::{borrow::Cow, fmt, time::Duration};
 
 use http::StatusCode;
 use tracing::{debug, warn};
@@ -23,7 +23,17 @@ where
         let request_uri = SanitizedRequestUri(req.uri());
         let categorized_error = CategorizedError::try_categorize(res);
 
-        warn!(error_count, %request_uri, "{}. Retrying after {:?}.", categorized_error, retry_backoff);
+        // The HTTP/2 fields are only present when the failure was an HTTP/2 error: `None` values are not recorded.
+        let http2_details = categorized_error.http2_details();
+
+        warn!(
+            error_count,
+            %request_uri,
+            http2.error_kind = http2_details.map(|details| details.kind.as_str()),
+            http2.reason_code = http2_details.and_then(|details| details.reason).map(u32::from),
+            http2.received_from_remote = http2_details.map(|details| details.received_from_remote),
+            "{}. Retrying after {:?}.", categorized_error, retry_backoff
+        );
     }
 
     fn after_success(&self, req: &http::Request<B>, _: &Result<http::Response<B2>, E>) {
@@ -55,9 +65,16 @@ impl fmt::Display for SanitizedRequestUri<'_> {
     }
 }
 
+/// Maximum number of errors visited when walking a source chain.
+///
+/// Chains are short in practice, so the limit only exists to bound the walk if an error ever reports itself, directly or
+/// indirectly, as its own source.
+const MAX_SOURCE_CHAIN_DEPTH: usize = 32;
+
 enum CategorizedError {
     Client(String),
     Tls(String),
+    Http2(Http2ErrorDetails),
     Http(StatusCode),
     Other(String),
 }
@@ -74,30 +91,38 @@ impl CategorizedError {
     }
 
     fn extract_nested(error: &(dyn std::error::Error + 'static)) -> Self {
-        // See if we have a `hyper-util` error.
-        if let Some(hyper_error) = error.downcast_ref::<hyper_util::client::legacy::Error>() {
-            return match hyper_error.source() {
-                Some(source) => Self::extract_nested(source),
-                None => Self::Client(hyper_error.to_string()),
-            };
+        // Walk the source chain looking for an error we can say something specific about. Wrappers along the way, such
+        // as `hyper-util`'s client error, get no handling of their own: we only care about what they wrap.
+        let mut current = error;
+        for _ in 0..MAX_SOURCE_CHAIN_DEPTH {
+            if let Some(rustls_error) = current.downcast_ref::<rustls::Error>() {
+                return Self::from_rustls(rustls_error);
+            }
+
+            if let Some(http2_error) = current.downcast_ref::<h2::Error>() {
+                return Self::Http2(Http2ErrorDetails::from_http2(http2_error));
+            }
+
+            match next_source(current) {
+                Some(source) => current = source,
+                None => break,
+            }
         }
 
-        // See if we have a `rustls` error.
-        if let Some(rustls_error) = error.downcast_ref::<rustls::Error>() {
-            return Self::from_rustls(rustls_error);
+        // Nothing in the chain was recognized, so we report the deepest error we reached, since that's the one closest
+        // to the actual failure.
+        if let Some(client_error) = current.downcast_ref::<hyper_util::client::legacy::Error>() {
+            return Self::Client(client_error.to_string());
         }
 
-        // See if we have a generic `std::io::Error`.
-        //
-        // It may be wrapping something else, or it may be standalone, so we'll try and suss that out.
-        if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-            return match io_error.get_ref() {
-                Some(source) => Self::extract_nested(source),
-                None => Self::Other(io_error.to_string()),
-            };
-        }
+        Self::Other(current.to_string())
+    }
 
-        Self::Other(error.to_string())
+    fn http2_details(&self) -> Option<&Http2ErrorDetails> {
+        match self {
+            Self::Http2(details) => Some(details),
+            _ => None,
+        }
     }
 
     fn from_rustls(error: &rustls::Error) -> Self {
@@ -120,12 +145,103 @@ impl fmt::Display for CategorizedError {
         match self {
             CategorizedError::Client(reason) => write!(f, "Request failed due to a client error: {}", reason),
             CategorizedError::Tls(reason) => write!(f, "Request failed due to a TLS error: {}", reason),
+            CategorizedError::Http2(details) => write!(f, "Request failed due to {}", details),
             CategorizedError::Http(status_code) => write!(
                 f,
                 "Server responded with non-success status code {}.",
                 status_code.as_str()
             ),
             CategorizedError::Other(reason) => write!(f, "Request failed: {}", reason),
+        }
+    }
+}
+
+/// Returns the next error in a source chain, if any.
+fn next_source<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a (dyn std::error::Error + 'static)> {
+    // `std::io::Error::source` skips the error that the I/O error itself wraps, and returns that error's source instead,
+    // so we have to ask for the wrapped error directly.
+    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+        if let Some(inner) = io_error.get_ref() {
+            return Some(inner);
+        }
+    }
+
+    error.source()
+}
+
+/// The HTTP/2 frame, if any, that an error came from.
+enum Http2ErrorKind {
+    GoAway,
+    Reset,
+    Other,
+}
+
+impl Http2ErrorKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::GoAway => "go_away",
+            Self::Reset => "reset",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// The details of an `h2::Error` that we report.
+///
+/// We snapshot a small set of fields instead of holding the error, so that we never log its `Debug` output or the debug
+/// data carried by a GOAWAY frame.
+struct Http2ErrorDetails {
+    kind: Http2ErrorKind,
+    reason: Option<h2::Reason>,
+    received_from_remote: bool,
+
+    /// The error's own text, used only when there is no reason code to describe the failure.
+    fallback: Option<String>,
+}
+
+impl Http2ErrorDetails {
+    fn from_http2(error: &h2::Error) -> Self {
+        let kind = if error.is_go_away() {
+            Http2ErrorKind::GoAway
+        } else if error.is_reset() {
+            Http2ErrorKind::Reset
+        } else {
+            Http2ErrorKind::Other
+        };
+
+        // The error's text includes GOAWAY debug data, so we only take it when we have nothing better.
+        let reason = error.reason();
+        let fallback = reason.is_none().then(|| error.to_string());
+
+        Self {
+            kind,
+            reason,
+            received_from_remote: error.is_remote(),
+            fallback,
+        }
+    }
+}
+
+impl fmt::Display for Http2ErrorDetails {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let description = match self.kind {
+            Http2ErrorKind::GoAway => "an HTTP/2 GOAWAY",
+            Http2ErrorKind::Reset => "an HTTP/2 stream reset",
+            Http2ErrorKind::Other => "an HTTP/2 error",
+        };
+
+        write!(f, "{}", description)?;
+
+        if self.received_from_remote {
+            write!(f, " received from the remote peer")?;
+        }
+
+        match self.reason {
+            Some(reason) => write!(f, " (reason: {}, code {})", reason.description(), u32::from(reason)),
+            None => match &self.fallback {
+                Some(fallback) => write!(f, ": {}", fallback),
+                None => Ok(()),
+            },
         }
     }
 }
@@ -179,16 +295,87 @@ impl DynError for Box<dyn std::error::Error + Send + Sync> {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::{future::Future, io};
 
+    use bytes::Bytes;
     use http::{Response, StatusCode, Uri};
 
     use super::*;
 
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+    /// An error that reports another error as its source, for building nested chains.
+    #[derive(Debug)]
+    struct NestedError {
+        message: &'static str,
+        source: BoxError,
+    }
+
+    impl NestedError {
+        fn new(message: &'static str, source: impl Into<BoxError>) -> Self {
+            Self {
+                message,
+                source: source.into(),
+            }
+        }
+    }
+
+    impl fmt::Display for NestedError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.message)
+        }
+    }
+
+    impl std::error::Error for NestedError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&*self.source)
+        }
+    }
+
     fn categorize(res: Result<Response<()>, BoxError>) -> String {
         CategorizedError::try_categorize(&res).to_string()
+    }
+
+    fn categorize_error(error: impl Into<BoxError>) -> CategorizedError {
+        let res: Result<Response<()>, BoxError> = Err(error.into());
+        CategorizedError::try_categorize(&res)
+    }
+
+    /// Runs a request over an in-memory HTTP/2 connection and returns the error the client sees.
+    ///
+    /// The server side completes the handshake, waits until the client has sent its request, and then runs `reject`,
+    /// which is expected to fail either the stream or the connection. `reject` hands the connection back, since the
+    /// server has to keep polling it to flush what `reject` queued, and has to hold it open so that closing the socket
+    /// doesn't race the client's read.
+    async fn failed_http2_request<F, Fut>(reject: F) -> h2::Error
+    where
+        F: FnOnce(h2::server::Connection<tokio::io::DuplexStream, Bytes>) -> Fut + Send + 'static,
+        Fut: Future<Output = h2::server::Connection<tokio::io::DuplexStream, Bytes>> + Send,
+    {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let (request_sent_tx, request_sent_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let connection = h2::server::handshake(server_io).await.unwrap();
+            request_sent_rx.await.unwrap();
+
+            let mut connection = reject(connection).await;
+            let _ = std::future::poll_fn(|cx| connection.poll_closed(cx)).await;
+            std::future::pending::<()>().await;
+        });
+
+        let (send_request, connection) = h2::client::handshake(client_io).await.unwrap();
+        let driver = tokio::spawn(connection);
+
+        let mut send_request = send_request.ready().await.unwrap();
+        let request = http::Request::get("https://localhost/api/v2/series").body(()).unwrap();
+        let (response, _send_stream) = send_request.send_request(request, true).unwrap();
+        request_sent_tx.send(()).unwrap();
+
+        let error = response.await.expect_err("request should have failed");
+        driver.abort();
+
+        error
     }
 
     #[test]
@@ -228,6 +415,106 @@ mod tests {
             categorize(Err(err)),
             "Request failed due to a TLS error: peer certificate is invalid: certificate has been revoked"
         );
+    }
+
+    #[test]
+    fn categorizes_deepest_source_when_nothing_is_recognized() {
+        // With no recognized error in the chain, the deepest source is reported, since it sits closest to the failure.
+        let inner = NestedError::new("connecting to endpoint", io::Error::from(io::ErrorKind::TimedOut));
+        let err: BoxError = Box::new(NestedError::new("sending request", inner));
+        assert_eq!(categorize(Err(err)), "Request failed: timed out");
+    }
+
+    #[test]
+    fn categorizes_nested_http2_error_as_http2() {
+        // An HTTP/2 error is found however deeply it is wrapped, and the wrappers add nothing to the message.
+        let inner = NestedError::new(
+            "connection closed",
+            io::Error::other(h2::Error::from(h2::Reason::ENHANCE_YOUR_CALM)),
+        );
+        let err: BoxError = Box::new(NestedError::new("sending request", inner));
+
+        let categorized = categorize_error(err);
+        assert_eq!(
+            categorized.to_string(),
+            "Request failed due to an HTTP/2 error (reason: detected excessive load generating behavior, code 11)"
+        );
+
+        let details = categorized.http2_details().expect("should be an HTTP/2 error");
+        assert_eq!(details.kind.as_str(), "other");
+        assert_eq!(details.reason.map(u32::from), Some(11));
+        assert!(!details.received_from_remote);
+    }
+
+    #[test]
+    fn categorizes_http2_reason_only_error_as_http2() {
+        // An error carrying only a reason code has no frame behind it, so nothing is said about a frame or the remote.
+        let categorized = categorize_error(h2::Error::from(h2::Reason::INTERNAL_ERROR));
+        assert_eq!(
+            categorized.to_string(),
+            "Request failed due to an HTTP/2 error (reason: unexpected internal error encountered, code 2)"
+        );
+
+        let details = categorized.http2_details().expect("should be an HTTP/2 error");
+        assert_eq!(details.kind.as_str(), "other");
+        assert_eq!(details.reason.map(u32::from), Some(2));
+        assert!(!details.received_from_remote);
+    }
+
+    #[test]
+    fn categorizes_http2_unknown_reason_code_as_http2() {
+        // Reason codes that `h2` has no description for are still reported by their numeric value.
+        let categorized = categorize_error(h2::Error::from(h2::Reason::from(9_001)));
+        assert_eq!(
+            categorized.to_string(),
+            "Request failed due to an HTTP/2 error (reason: unknown reason, code 9001)"
+        );
+
+        let details = categorized.http2_details().expect("should be an HTTP/2 error");
+        assert_eq!(details.reason.map(u32::from), Some(9_001));
+    }
+
+    #[tokio::test]
+    async fn categorizes_remote_http2_goaway_as_http2() {
+        // A GOAWAY from the peer is reported as such, along with the fact that it came from the remote.
+        let error = failed_http2_request(|mut connection| async move {
+            connection.abrupt_shutdown(h2::Reason::ENHANCE_YOUR_CALM);
+            connection
+        })
+        .await;
+
+        let categorized = categorize_error(io::Error::other(error));
+        assert_eq!(
+            categorized.to_string(),
+            "Request failed due to an HTTP/2 GOAWAY received from the remote peer (reason: detected excessive load generating behavior, code 11)"
+        );
+
+        let details = categorized.http2_details().expect("should be an HTTP/2 error");
+        assert_eq!(details.kind.as_str(), "go_away");
+        assert_eq!(details.reason.map(u32::from), Some(11));
+        assert!(details.received_from_remote);
+    }
+
+    #[tokio::test]
+    async fn categorizes_remote_http2_reset_as_http2() {
+        // A stream reset from the peer is reported as a stream-level failure that came from the remote.
+        let error = failed_http2_request(|mut connection| async move {
+            let (_request, mut respond) = connection.accept().await.unwrap().unwrap();
+            respond.send_reset(h2::Reason::REFUSED_STREAM);
+            connection
+        })
+        .await;
+
+        let categorized = categorize_error(io::Error::other(error));
+        assert_eq!(
+            categorized.to_string(),
+            "Request failed due to an HTTP/2 stream reset received from the remote peer (reason: refused stream before processing any application logic, code 7)"
+        );
+
+        let details = categorized.http2_details().expect("should be an HTTP/2 error");
+        assert_eq!(details.kind.as_str(), "reset");
+        assert_eq!(details.reason.map(u32::from), Some(7));
+        assert!(details.received_from_remote);
     }
 
     #[test]
