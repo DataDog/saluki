@@ -34,6 +34,9 @@ architecture is fundamentally different or the feature is platform-specific.
 
 { not_planned_table }
 { not_planned_docs }
+
+---
+
 ## Behavioral Differences
 
 <!-- section:behavioral-differences -->
@@ -43,6 +46,9 @@ default values.
 
 { behavioral_table }
 { behavioral_docs }
+
+---
+
 ## Compatibility Unknown
 
 <!-- section:compatibility-unknown -->
@@ -51,6 +57,9 @@ The following settings need further investigation. ADP behavior may differ from 
 ways that are not yet fully characterized.
 
 { investigate_table }
+
+---
+
 ## ADP-Only Settings
 
 <!-- section:adp-only -->
@@ -59,11 +68,20 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 { adp_only_table }
 { adp_only_docs }
-## Transparent Settings
+
+---
+
+## Fully Supported Settings
 
 <!-- section:reference -->
 
 The following settings work in ADP with the same behavior as the core agent.
+
+{ transparent_table }
+
+## Additional Notes
+
+### Syslog Logging
 
 To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
 `log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is empty
@@ -174,6 +192,5 @@ For machine-readable configuration inspection, use these commands:
 
 Both commands scrub recognized secret values before writing JSON to standard output.
 
-{ transparent_table }
 
 { issue_references }

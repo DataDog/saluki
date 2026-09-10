@@ -408,6 +408,9 @@ and HTTP handlers decode the request body and discard transport-level metadata. 
 setting has no effect in ADP.
 
 
+
+---
+
 ## Behavioral Differences
 
 <!-- section:behavioral-differences -->
@@ -630,6 +633,9 @@ be split differently while carrying the same DogStatsD messages. ADP logs setup 
 and tracks send failures through telemetry.
 
 
+
+---
+
 ## Compatibility Unknown
 
 <!-- section:compatibility-unknown -->
@@ -651,6 +657,9 @@ ways that are not yet fully characterized.
 | `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers           |         |
 | `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path            |         |
 | `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout              |         |
+
+
+---
 
 ## ADP-Only Settings
 
@@ -758,120 +767,14 @@ Controls whether the global memory limiter exerts backpressure as memory usage a
 Controls how the calculated memory bounds are reconciled against `memory_limit`. The default is `disabled`. Accepted values: `disabled` skips bounds validation and applies no memory limiting; `permissive` logs a warning when the bounds do not fit within the limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, the global memory limiter is active only when a limit is in effect (configured or detected from cgroups) and `enable_global_limiter` is `true`.
 
 
-## Transparent Settings
+
+---
+
+## Fully Supported Settings
 
 <!-- section:reference -->
 
 The following settings work in ADP with the same behavior as the core agent.
-
-To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
-`log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is empty
-while syslog logging is enabled, ADP uses the platform default local syslog socket:
-`unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
-when the receiving syslog daemon expects the Agent's RFC-style header.
-
-### DogStatsD metric blocklists
-
-A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
-uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
-restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
-
-Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
-changes to any of these settings update filtering.
-
-Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
-metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
-`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
-matched as written, so an entry that is not itself a normalized name matches nothing. Metric names
-the intake rejects outright, meaning empty names, names longer than 350 bytes, and names containing
-no ASCII letter, never match.
-
-### UDS origin detection on macOS
-
-ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
-Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()` provide
-UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but it cannot
-derive a process ID from the socket and therefore cannot use that path for origin enrichment.
-
-When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP logs a
-startup warning and treats the missing PID as a static platform limitation rather than a per-packet
-origin detection error.
-
-The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
-metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which covers
-steady-state tagging when another source provides a PID, but macOS UDS origin detection cannot
-obtain that PID from the socket.
-
-### DogStatsD metric debug log
-
-ADP supports the core agent's DogStatsD metric debug log. To write this file, set
-`dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it defaults
-to `true`, so most configurations only need to enable `dogstatsd_metrics_stats_enable`.
-
-When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination to the
-decoded metric stream. The destination writes one line per metric sample with the metric name, tags,
-count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
-`dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops them.
-This lets runtime configuration changes start and stop the debug log without rebuilding the
-topology. This feature is for support and troubleshooting. It does not change normal metric
-forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
-
-Use these settings to control the file:
-
-| Config Key                     | Behavior                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------- |
-| `dogstatsd_log_file`           | Output path. If empty, ADP uses the platform default DogStatsD stats log path.              |
-| `dogstatsd_log_file_max_rolls` | Number of rotated files to keep. Defaults to `3`.                                           |
-| `dogstatsd_log_file_max_size`  | Maximum active file size before rotation. Defaults to `10Mb`.                               |
-| `dogstatsd_logging_enabled`    | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
-
-The default `dogstatsd_log_file` path is
-`/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
-`/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
-`%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
-
-This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded metric
-summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
-investigation, and they remain tracked separately under [#1381].
-
-### Payload debug logging (`log_payloads`)
-
-ADP supports `log_payloads` for debugging metric, event, and service check payload contents before
-they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with debug-level
-logging enabled.
-
-When enabled, ADP logs decoded payload objects: scalar series metrics, sketches/distributions,
-events, and service checks. These logs can contain high-volume customer data, including metric names,
-tags, host and container metadata, event text, and service check messages. Use this setting only
-while diagnosing payload content.
-
-ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
-compressed wire payload bytes.
-
-### Privileged API authentication
-
-`data_plane.secure_api_listen_address` configures the listener for ADP's privileged HTTP and gRPC API. The address
-uses a transport scheme, such as `tcp://`, to select the underlying socket type. Every client must present the Agent IPC certificate
-from the configured `ipc_cert.pem` during the TLS handshake. ADP accepts the client only when the
-presented leaf certificate's DER encoding exactly matches that certificate and the handshake proves
-possession of its private key. Authentication completes before ADP selects an HTTP route or gRPC
-service, so an unauthenticated request never reaches a route.
-
-The ADP CLI and the Core Agent use this shared IPC identity. All holders therefore act as one
-principal; ADP does not distinguish individual clients. Because the transport authenticates every
-privileged connection, routes do not need a bearer token solely to compensate for anonymous TLS
-access. A route can still enforce separate authorization when its policy requires it.
-
-Exact certificate matching does not allow an issuing CA to broaden trust, and it does not provide an
-overlap window for old and new certificates. Coordinate replacement of `ipc_cert.pem` with restarts
-so ADP and every client use the same certificate throughout a rotation.
-
-For machine-readable configuration inspection, use these commands:
-
-- `agent-data-plane config --json` prints the source/effective configuration view.
-- `agent-data-plane config --json --runtime` prints the translated runtime configuration view.
-
-Both commands scrub recognized secret values before writing JSON to standard output.
 
 | Config Key                                                                                 | Description                                        |
 | ------------------------------------------------------------------------------------------ | -------------------------------------------------- |
@@ -1087,6 +990,120 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `vector.metrics.url`                                                                       | OPW metrics intake URL (legacy alias)              |
 | `vector.metrics.use_v3_api.series`                                                         | Use V3 series for Vector                           |
 | `vsock_addr`                                                                               | vsock address for Agent IPC endpoint               |
+
+
+## Additional Notes
+
+### Syslog Logging
+
+To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
+`log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is empty
+while syslog logging is enabled, ADP uses the platform default local syslog socket:
+`unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
+when the receiving syslog daemon expects the Agent's RFC-style header.
+
+### DogStatsD metric blocklists
+
+A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
+uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
+restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
+
+Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
+changes to any of these settings update filtering.
+
+Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+matched as written, so an entry that is not itself a normalized name matches nothing. Metric names
+the intake rejects outright, meaning empty names, names longer than 350 bytes, and names containing
+no ASCII letter, never match.
+
+### UDS origin detection on macOS
+
+ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
+Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()` provide
+UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but it cannot
+derive a process ID from the socket and therefore cannot use that path for origin enrichment.
+
+When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP logs a
+startup warning and treats the missing PID as a static platform limitation rather than a per-packet
+origin detection error.
+
+The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
+metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which covers
+steady-state tagging when another source provides a PID, but macOS UDS origin detection cannot
+obtain that PID from the socket.
+
+### DogStatsD metric debug log
+
+ADP supports the core agent's DogStatsD metric debug log. To write this file, set
+`dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it defaults
+to `true`, so most configurations only need to enable `dogstatsd_metrics_stats_enable`.
+
+When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination to the
+decoded metric stream. The destination writes one line per metric sample with the metric name, tags,
+count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
+`dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops them.
+This lets runtime configuration changes start and stop the debug log without rebuilding the
+topology. This feature is for support and troubleshooting. It does not change normal metric
+forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
+
+Use these settings to control the file:
+
+| Config Key                     | Behavior                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------- |
+| `dogstatsd_log_file`           | Output path. If empty, ADP uses the platform default DogStatsD stats log path.              |
+| `dogstatsd_log_file_max_rolls` | Number of rotated files to keep. Defaults to `3`.                                           |
+| `dogstatsd_log_file_max_size`  | Maximum active file size before rotation. Defaults to `10Mb`.                               |
+| `dogstatsd_logging_enabled`    | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
+
+The default `dogstatsd_log_file` path is
+`/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
+`/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
+`%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
+
+This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded metric
+summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
+investigation, and they remain tracked separately under [#1381].
+
+### Payload debug logging (`log_payloads`)
+
+ADP supports `log_payloads` for debugging metric, event, and service check payload contents before
+they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with debug-level
+logging enabled.
+
+When enabled, ADP logs decoded payload objects: scalar series metrics, sketches/distributions,
+events, and service checks. These logs can contain high-volume customer data, including metric names,
+tags, host and container metadata, event text, and service check messages. Use this setting only
+while diagnosing payload content.
+
+ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
+compressed wire payload bytes.
+
+### Privileged API authentication
+
+`data_plane.secure_api_listen_address` configures the listener for ADP's privileged HTTP and gRPC API. The address
+uses a transport scheme, such as `tcp://`, to select the underlying socket type. Every client must present the Agent IPC certificate
+from the configured `ipc_cert.pem` during the TLS handshake. ADP accepts the client only when the
+presented leaf certificate's DER encoding exactly matches that certificate and the handshake proves
+possession of its private key. Authentication completes before ADP selects an HTTP route or gRPC
+service, so an unauthenticated request never reaches a route.
+
+The ADP CLI and the Core Agent use this shared IPC identity. All holders therefore act as one
+principal; ADP does not distinguish individual clients. Because the transport authenticates every
+privileged connection, routes do not need a bearer token solely to compensate for anonymous TLS
+access. A route can still enforce separate authorization when its policy requires it.
+
+Exact certificate matching does not allow an issuing CA to broaden trust, and it does not provide an
+overlap window for old and new certificates. Coordinate replacement of `ipc_cert.pem` with restarts
+so ADP and every client use the same certificate throughout a rotation.
+
+For machine-readable configuration inspection, use these commands:
+
+- `agent-data-plane config --json` prints the source/effective configuration view.
+- `agent-data-plane config --json --runtime` prints the translated runtime configuration view.
+
+Both commands scrub recognized secret values before writing JSON to standard output.
 
 
 [#178]: https://github.com/DataDog/saluki/issues/178
