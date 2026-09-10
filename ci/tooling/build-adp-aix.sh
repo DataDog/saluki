@@ -31,10 +31,9 @@ export CARGO_TARGET_DIR
 APP_GIT_HASH_AUTO="$(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo not-in-git)"
 
 export APP_GIT_HASH="${APP_GIT_HASH:-${ADP_APP_GIT_HASH:-${APP_GIT_HASH_AUTO}}}"
-# Unlike the Makefile, this script defaults APP_DEV_BUILD to "false", so it can't fall back to a placeholder
-# timestamp: saluki-metadata rejects placeholder metadata on release builds. Stamp the current time instead.
-APP_BUILD_TIME_AUTO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-${APP_BUILD_TIME_AUTO}}}}"
+# This script defaults APP_DEV_BUILD to "false", so direct callers must use a real timestamp: saluki-metadata rejects
+# placeholder metadata on release builds.
+export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}}}"
 export APP_DEV_BUILD="${APP_DEV_BUILD:-${ADP_APP_DEV_BUILD:-false}}"
 
 require_executable() {

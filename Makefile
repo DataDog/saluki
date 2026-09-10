@@ -8,7 +8,7 @@ mkfile_dir := $(dir $(mkfile_path))
 export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
 export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
-export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
+export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),$(shell date -u '+%Y-%m-%dT%H:%M:%SZ'))
 
 # ADP-specific settings used during builds.
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
@@ -558,10 +558,14 @@ sync-docs-config: ## Synchronizes the Vale configuration, updating configured st
 ##@ Testing
 
 .PHONY: test
-test: check-rust-build-tools cargo-install-cargo-nextest
+test: check-rust-build-tools cargo-install-cargo-nextest test-aix-build-metadata
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
+
+.PHONY: test-aix-build-metadata
+test-aix-build-metadata: ## Verifies AIX release build metadata defaults
+	@$(CURDIR)/ci/tooling/test-build-adp-aix.sh
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
