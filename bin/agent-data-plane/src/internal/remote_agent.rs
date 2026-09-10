@@ -25,6 +25,7 @@ use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
+use saluki_components::semantics::{reset_registry, update_registry, Registry};
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
 use saluki_core::{
     diagnostic::{subscribe_events, DiagnosticCollector, DiagnosticDetails, DiagnosticEvent},
@@ -308,12 +309,13 @@ async fn run_config_stream_event_loop(
                 Ok(event) => {
                     let update = match event.event {
                         Some(config_event::Event::Snapshot(snapshot)) => {
+                            apply_semantic_registry_snapshot(&snapshot);
                             Some(ConfigUpdate::Snapshot(snapshot_to_settings(&snapshot)))
                         }
-                        Some(config_event::Event::Update(update)) => update
-                            .setting
-                            .as_ref()
-                            .map(|setting| ConfigUpdate::Partial(setting_to_config_setting(setting))),
+                        Some(config_event::Event::Update(update)) => update.setting.as_ref().and_then(|setting| {
+                            (!apply_semantic_registry_setting(setting))
+                                .then(|| ConfigUpdate::Partial(setting_to_config_setting(setting)))
+                        }),
                         None => {
                             error!("Received a configuration update event with no data.");
                             None
@@ -344,6 +346,47 @@ const AGENT_DEFAULT_SOURCE: &str = "default";
 const AGENT_DECLARED_ONLY_SOURCE: &str = "schema";
 const AGENT_UNSET_SOURCES: [&str; 2] = [AGENT_DEFAULT_SOURCE, AGENT_DECLARED_ONLY_SOURCE];
 
+/// Reserved config-stream key for semantic registry JSON.
+const SEMANTIC_REGISTRY_SETTING_KEY: &str = "remote_configuration.apm_semantics.registry";
+
+fn apply_semantic_registry_snapshot(snapshot: &ConfigSnapshot) {
+    for setting in snapshot
+        .settings
+        .iter()
+        .filter(|setting| setting.key == SEMANTIC_REGISTRY_SETTING_KEY)
+    {
+        apply_semantic_registry_setting(setting);
+    }
+}
+
+/// Applies a semantic registry setting and returns whether the setting was consumed.
+fn apply_semantic_registry_setting(setting: &AgentConfigSetting) -> bool {
+    if setting.key != SEMANTIC_REGISTRY_SETTING_KEY {
+        return false;
+    }
+
+    match setting.value.as_ref().and_then(|value| value.kind.as_ref()) {
+        Some(Kind::StringValue(json)) => match Registry::from_json(json) {
+            Ok(registry) => {
+                let content_hash = registry.content_hash();
+                let version = registry.version().to_string();
+                update_registry(registry);
+                info!(content_hash, version, "Updated semantic registry from the Core Agent.");
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to parse semantic registry from the Core Agent; retaining the current registry.")
+            }
+        },
+        Some(Kind::NullValue(_)) | None => {
+            reset_registry();
+            info!("Reset semantic registry to the embedded mappings.");
+        }
+        _ => error!("Received a semantic registry setting that was not a JSON string; retaining the current registry."),
+    }
+
+    true
+}
+
 /// Converts a setting from the Agent's RPC wire protocol to our `ConfigSetting` type.
 fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
     let provenance = if AGENT_UNSET_SOURCES.contains(&setting.source.as_str()) {
@@ -361,7 +404,12 @@ fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
 
 /// Converts a `ConfigSnapshot` into the settings it carries.
 fn snapshot_to_settings(snapshot: &ConfigSnapshot) -> Vec<ConfigSetting> {
-    snapshot.settings.iter().map(setting_to_config_setting).collect()
+    snapshot
+        .settings
+        .iter()
+        .filter(|setting| setting.key != SEMANTIC_REGISTRY_SETTING_KEY)
+        .map(setting_to_config_setting)
+        .collect()
 }
 
 /// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
@@ -860,6 +908,8 @@ impl StatusSectionWriter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use saluki_components::semantics::current_registry;
+
     use super::*;
 
     #[test]
@@ -903,6 +953,26 @@ mod tests {
             }),
         }
     }
+
+    struct RegistryRestoreGuard(Registry);
+
+    impl Drop for RegistryRestoreGuard {
+        fn drop(&mut self) {
+            update_registry(self.0.clone());
+        }
+    }
+
+    const TEST_REGISTRY_JSON: &str = r#"{
+        "version": "test",
+        "concepts": {
+            "peer.service": {
+                "canonical": "peer.service",
+                "fallbacks": [
+                    {"name": "test.remote.service", "provider": "otel", "type": "string"}
+                ]
+            }
+        }
+    }"#;
 
     #[test]
     fn an_agent_default_is_marked_as_a_default() {
@@ -994,6 +1064,7 @@ mod tests {
                 agent_setting("file", "site", "datadoghq.eu"),
                 agent_setting("default", "dd_url", "https://app.datadoghq.com"),
                 agent_setting(AGENT_DECLARED_ONLY_SOURCE, "api_key", ""),
+                agent_setting("remote-config", SEMANTIC_REGISTRY_SETTING_KEY, TEST_REGISTRY_JSON),
             ],
         };
 
@@ -1007,6 +1078,40 @@ mod tests {
                 ConfigSetting::new("api_key", Value::from(""), Provenance::Default),
             ]
         );
+    }
+
+    #[test]
+    fn semantic_registry_setting_updates_and_resets_the_live_registry() {
+        let original = (*current_registry()).clone();
+        let original_hash = original.content_hash();
+        let _guard = RegistryRestoreGuard(original);
+
+        assert!(apply_semantic_registry_setting(&agent_setting(
+            "remote-config",
+            SEMANTIC_REGISTRY_SETTING_KEY,
+            TEST_REGISTRY_JSON,
+        )));
+        assert_ne!(current_registry().content_hash(), original_hash);
+        assert_eq!(current_registry().version(), "test");
+
+        assert!(apply_semantic_registry_setting(&AgentConfigSetting {
+            source: "remote-config".to_string(),
+            key: SEMANTIC_REGISTRY_SETTING_KEY.to_string(),
+            value: None,
+        }));
+        assert_eq!(current_registry().content_hash(), original_hash);
+    }
+
+    #[test]
+    fn malformed_semantic_registry_setting_keeps_the_current_registry() {
+        let original_hash = current_registry().content_hash();
+
+        assert!(apply_semantic_registry_setting(&agent_setting(
+            "remote-config",
+            SEMANTIC_REGISTRY_SETTING_KEY,
+            "not valid JSON",
+        )));
+        assert_eq!(current_registry().content_hash(), original_hash);
     }
 
     #[test]

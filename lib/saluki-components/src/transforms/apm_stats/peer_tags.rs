@@ -102,7 +102,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::otlp::semantics::REGISTRY;
+    use crate::common::otlp::semantics::current_registry;
 
     /// The base key set derived from the embedded registry, pinned so that registry or derivation
     /// drift surfaces as a test failure instead of as split stats aggregates in mixed clusters.
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn base_keys_match_upstream_peer_tags() {
-        let keys = PeerTagKeys::build(&REGISTRY, &[]);
+        let keys = PeerTagKeys::build(&current_registry(), &[]);
         assert_eq!(
             keys.keys().iter().map(|k| k.as_ref()).collect::<Vec<&str>>(),
             EXPECTED_BASE_KEYS,
@@ -171,7 +171,7 @@ mod tests {
         proptest!(|(custom_tags in proptest::collection::vec("[a-z_]{1,12}", 0..16))| {
             let custom: Vec<MetaString> =
                 custom_tags.iter().map(|t: &String| MetaString::from(t.as_str())).collect();
-            let keys = PeerTagKeys::build(&REGISTRY, &custom);
+            let keys = PeerTagKeys::build(&current_registry(), &custom);
 
             for window in keys.keys().windows(2) {
                 prop_assert!(window[0] < window[1], "keys must be strictly sorted");
@@ -188,7 +188,7 @@ mod tests {
             // A duplicate within the custom list itself.
             MetaString::from("my.custom.peer.tag"),
         ];
-        let keys = PeerTagKeys::build(&REGISTRY, &custom);
+        let keys = PeerTagKeys::build(&current_registry(), &custom);
         let names: Vec<&str> = keys.keys().iter().map(|k| k.as_ref()).collect();
 
         assert!(names.contains(&"my.custom.peer.tag"));
@@ -198,13 +198,13 @@ mod tests {
 
     #[test]
     fn refresh_is_a_noop_when_registry_is_unchanged() {
-        let mut keys = PeerTagKeys::build(&REGISTRY, &[]);
-        assert!(!keys.refresh(&REGISTRY, &[]));
+        let mut keys = PeerTagKeys::build(&current_registry(), &[]);
+        assert!(!keys.refresh(&current_registry(), &[]));
     }
 
     #[test]
     fn refresh_rebuilds_when_registry_content_changes() {
-        let mut keys = PeerTagKeys::build(&REGISTRY, &[]);
+        let mut keys = PeerTagKeys::build(&current_registry(), &[]);
 
         // A modified registry: one new attribute in the `peer.service` precedence list.
         let modified = r#"{

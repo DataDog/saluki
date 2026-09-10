@@ -7,7 +7,7 @@ pub mod registry;
 
 pub use accessor::{Accessor, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
 pub use lookup::{lookup_float64, lookup_int64, lookup_string};
-pub use registry::{Registry, REGISTRY};
+pub use registry::{current_registry, reset_registry, update_registry, Registry};
 
 /// A named semantic concept—the canonical identity of an attribute that may
 /// have multiple representations across OpenTelemetry versions and Datadog

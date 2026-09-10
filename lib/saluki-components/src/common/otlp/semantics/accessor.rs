@@ -306,12 +306,12 @@ mod tests {
         let a = DdSpanAccessor::new(&span);
 
         assert_eq!(
-            lookup_string(&crate::common::otlp::semantics::REGISTRY, &a, Concept::DdEnv).as_deref(),
+            lookup_string(&crate::common::otlp::semantics::current_registry(), &a, Concept::DdEnv).as_deref(),
             Some("prod"),
         );
         assert_eq!(
             lookup_int64(
-                &crate::common::otlp::semantics::REGISTRY,
+                &crate::common::otlp::semantics::current_registry(),
                 &a,
                 Concept::RpcGrpcStatusCode
             ),

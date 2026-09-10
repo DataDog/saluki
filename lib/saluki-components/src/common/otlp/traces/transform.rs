@@ -25,7 +25,7 @@ use tracing::error;
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::common::otlp::semantics::{
-    lookup_int64, lookup_string, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor, REGISTRY,
+    current_registry, lookup_int64, lookup_string, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor,
 };
 use crate::common::otlp::traces::normalize::{
     is_normalized_tag_value, normalize_service_into, normalize_tag_value_append_unchecked,
@@ -286,7 +286,8 @@ pub fn otel_span_to_dd_span(
     // gRPC spans; that key is checked last, conditionally when the span is identified as gRPC
     // via rpc.system.name or rpc.system (matching the Agent 7.80.1 fallback behavior).
     let combined = OtelSpanAccessor::new(span_attributes, resource_attributes);
-    let grpc_name = lookup_int64(&REGISTRY, &combined, Concept::RpcGrpcStatusCode)
+    let registry = current_registry();
+    let grpc_name = lookup_int64(&registry, &combined, Concept::RpcGrpcStatusCode)
         .and_then(|code| {
             let name = grpc_status_code_name(code as u8);
             if name.is_empty() {
@@ -296,7 +297,7 @@ pub fn otel_span_to_dd_span(
             }
         })
         .or_else(|| {
-            lookup_string(&REGISTRY, &combined, Concept::RpcGrpcStatusCode)
+            lookup_string(&registry, &combined, Concept::RpcGrpcStatusCode)
                 .filter(|s| !s.is_empty())
                 .and_then(|s| {
                     // Parse string (either decimal "14" or canonical "UNAVAILABLE") to name.
@@ -1636,7 +1637,8 @@ fn get_otel_status_code(
     }
 
     let combined = OtelSpanAccessor::new(span_attributes, resource_attributes);
-    lookup_int64(&REGISTRY, &combined, Concept::HttpStatusCode)
+    let registry = current_registry();
+    lookup_int64(&registry, &combined, Concept::HttpStatusCode)
 }
 
 // Returns an i64 from either an IntValue attribute or a StringValue attribute

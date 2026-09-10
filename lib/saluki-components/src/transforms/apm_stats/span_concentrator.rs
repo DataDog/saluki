@@ -13,7 +13,7 @@ use super::aggregation::{
 };
 use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
-use crate::common::otlp::semantics::{Registry, REGISTRY};
+use crate::common::otlp::semantics::{current_registry, Registry};
 
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
@@ -78,9 +78,6 @@ pub struct SpanConcentrator {
     /// Operator-configured peer tags, kept so the key set can be rebuilt when the registry changes
     custom_peer_tags: Vec<MetaString>,
 
-    /// Semantic attribute registry the peer tag key set is derived from
-    registry: Registry,
-
     /// Bucket duration in nanoseconds (10 s)
     bsize: u64,
 
@@ -103,20 +100,21 @@ impl SpanConcentrator {
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
+        let registry = current_registry();
         Self::new_with_registry(
             compute_stats_by_span_kind,
             peer_tags_aggregation,
             custom_peer_tags,
-            &REGISTRY,
+            &registry,
             now,
         )
     }
 
     /// Creates a new concentrator deriving its peer tag keys from the given semantic registry.
     ///
-    /// The key set is a snapshot pinned to the registry's content hash; [`Self::flush`] rebuilds it
-    /// whenever the live registry content hash changes, so remotely shipped semantic updates reach
-    /// stats aggregation without a restart.
+    /// The given registry only seeds the initial key set; [`Self::flush`] always refreshes against
+    /// the live registry, so swaps via [`update_registry`][crate::common::otlp::semantics::update_registry]
+    /// reach stats aggregation without a restart.
     pub fn new_with_registry(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString],
         registry: &Registry, now: u64,
@@ -128,7 +126,6 @@ impl SpanConcentrator {
             peer_tags_aggregation,
             peer_tag_keys,
             custom_peer_tags: custom_peer_tags.to_vec(),
-            registry: registry.clone(),
             bsize: BUCKET_DURATION_NS,
             oldest_ts: align_ts(now, BUCKET_DURATION_NS),
             buffer_len: DEFAULT_BUFFER_LEN,
@@ -149,10 +146,11 @@ impl SpanConcentrator {
     }
 
     pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
-        // Refresh the peer tag key snapshot if the registry content changed. This runs on the
+        // Refresh the peer tag key snapshot if the live registry content changed. This runs on the
         // flush cycle, deliberately off the per-span hot path: the steady-state cost is a single
         // `u64` comparison, and only an actual registry change pays the re-derivation cost.
-        self.peer_tag_keys.refresh(&self.registry, &self.custom_peer_tags);
+        let registry = current_registry();
+        self.peer_tag_keys.refresh(&registry, &self.custom_peer_tags);
 
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
         let mut container_tags_by_id = FastHashMap::<MetaString, TagSet>::default();
@@ -361,5 +359,46 @@ fn is_partial_snapshot(span: &Span) -> bool {
     {
         Some(v) => v >= 0.0,
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::otlp::semantics::{current_registry, update_registry, Registry};
+
+    /// A modified registry: adds one attribute to the `peer.service` precedence list.
+    const MODIFIED_MAPPINGS: &str = r#"{
+        "version": "modified",
+        "concepts": {
+            "peer.service": {
+                "fallbacks": [{"name": "peer.service", "provider": "otel", "type": "string"},
+                              {"name": "custom.remote.service", "provider": "otel", "type": "string"}]
+            }
+        }
+    }"#;
+
+    /// Restores the live registry when dropped, so tests that swap it cannot leak state.
+    struct RestoreGuard(Registry);
+
+    impl Drop for RestoreGuard {
+        fn drop(&mut self) {
+            update_registry(self.0.clone());
+        }
+    }
+
+    #[test]
+    fn registry_swap_rebuilds_peer_tag_keys_on_flush() {
+        let now = 1_000_000_000u64;
+        let mut concentrator = SpanConcentrator::new(false, true, &[], now);
+
+        let has_key = |c: &SpanConcentrator, key: &str| c.peer_tag_keys.keys().iter().any(|k| k.as_ref() == key);
+        assert!(!has_key(&concentrator, "custom.remote.service"));
+
+        let _guard = RestoreGuard((*current_registry()).clone());
+        update_registry(Registry::from_json(MODIFIED_MAPPINGS).expect("modified registry should parse"));
+
+        let _ = concentrator.flush(now, false);
+        assert!(has_key(&concentrator, "custom.remote.service"));
     }
 }
