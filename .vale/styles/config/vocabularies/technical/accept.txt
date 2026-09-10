@@ -275,3 +275,7 @@ configtls
 keyspace
 Kueue
 plaintext
+quantiz(ation|ations|er|ers|ed|es|e|ing)
+allowlist(s|ed|ing)?
+hostname(s?)
+instrumentation(s?)
