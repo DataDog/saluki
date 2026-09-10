@@ -145,7 +145,7 @@
 <a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// `env`-Agent environment name
 <a href=#146 id=146 data-nosnippet>146</a>    </span>ENV = SalukiAnnotation {
 <a href=#147 id=147 data-nosnippet>147</a>        schema: <span class="kw-2">&amp;</span>schema::ENV,
-<a href=#148 id=148 data-nosnippet>148</a>        support_level: SupportLevel::Full,
+<a href=#148 id=148 data-nosnippet>148</a>        support_level: SupportLevel::Partial,
 <a href=#149 id=149 data-nosnippet>149</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#150 id=150 data-nosnippet>150</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#151 id=151 data-nosnippet>151</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
@@ -164,9 +164,9 @@
 <a href=#164 id=164 data-nosnippet>164</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#165 id=165 data-nosnippet>165</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#166 id=166 data-nosnippet>166</a>    };
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.series.endpoints`-Endpoints enabled for V3 series API
-<a href=#168 id=168 data-nosnippet>168</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-<a href=#169 id=169 data-nosnippet>169</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
+<a href=#167 id=167 data-nosnippet>167</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.sketches.endpoints`-Endpoints enabling v3 sketches API
+<a href=#168 id=168 data-nosnippet>168</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
+<a href=#169 id=169 data-nosnippet>169</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
 <a href=#170 id=170 data-nosnippet>170</a>        support_level: SupportLevel::Full,
 <a href=#171 id=171 data-nosnippet>171</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#172 id=172 data-nosnippet>172</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -175,38 +175,27 @@
 <a href=#175 id=175 data-nosnippet>175</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#176 id=176 data-nosnippet>176</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#177 id=177 data-nosnippet>177</a>    };
-<a href=#178 id=178 data-nosnippet>178</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.sketches.endpoints`-Endpoints enabling v3 sketches API
-<a href=#179 id=179 data-nosnippet>179</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
-<a href=#180 id=180 data-nosnippet>180</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
+<a href=#178 id=178 data-nosnippet>178</a>    <span class="doccomment">/// `use_v3_api.series.enabled`-Global V3 series mode
+<a href=#179 id=179 data-nosnippet>179</a>    </span>USE_V3_API_SERIES_ENABLED = SalukiAnnotation {
+<a href=#180 id=180 data-nosnippet>180</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V3_API_SERIES_ENABLED,
 <a href=#181 id=181 data-nosnippet>181</a>        support_level: SupportLevel::Full,
 <a href=#182 id=182 data-nosnippet>182</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#183 id=183 data-nosnippet>183</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#183 id=183 data-nosnippet>183</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENABLED"</span>]),
 <a href=#184 id=184 data-nosnippet>184</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#185 id=185 data-nosnippet>185</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#186 id=186 data-nosnippet>186</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#187 id=187 data-nosnippet>187</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#188 id=188 data-nosnippet>188</a>    };
-<a href=#189 id=189 data-nosnippet>189</a>    <span class="doccomment">/// `use_v3_api.series.enabled`-Global V3 series mode
-<a href=#190 id=190 data-nosnippet>190</a>    </span>USE_V3_API_SERIES_ENABLED = SalukiAnnotation {
-<a href=#191 id=191 data-nosnippet>191</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V3_API_SERIES_ENABLED,
+<a href=#189 id=189 data-nosnippet>189</a>    <span class="doccomment">/// `use_v3_api.series.endpoints`-Per-endpoint V3 series modes
+<a href=#190 id=190 data-nosnippet>190</a>    </span>USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
+<a href=#191 id=191 data-nosnippet>191</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V3_API_SERIES_ENDPOINTS,
 <a href=#192 id=192 data-nosnippet>192</a>        support_level: SupportLevel::Full,
 <a href=#193 id=193 data-nosnippet>193</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#194 id=194 data-nosnippet>194</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENABLED"</span>]),
+<a href=#194 id=194 data-nosnippet>194</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENDPOINTS"</span>]),
 <a href=#195 id=195 data-nosnippet>195</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#196 id=196 data-nosnippet>196</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#197 id=197 data-nosnippet>197</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#197 id=197 data-nosnippet>197</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""{\"http://datadog.example.com\":\"false\"}""#</span>),
 <a href=#198 id=198 data-nosnippet>198</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#199 id=199 data-nosnippet>199</a>    };
-<a href=#200 id=200 data-nosnippet>200</a>    <span class="doccomment">/// `use_v3_api.series.endpoints`-Per-endpoint V3 series modes
-<a href=#201 id=201 data-nosnippet>201</a>    </span>USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-<a href=#202 id=202 data-nosnippet>202</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V3_API_SERIES_ENDPOINTS,
-<a href=#203 id=203 data-nosnippet>203</a>        support_level: SupportLevel::Full,
-<a href=#204 id=204 data-nosnippet>204</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#205 id=205 data-nosnippet>205</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_USE_V3_API_SERIES_ENDPOINTS"</span>]),
-<a href=#206 id=206 data-nosnippet>206</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
-<a href=#207 id=207 data-nosnippet>207</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#208 id=208 data-nosnippet>208</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""{\"http://datadog.example.com\":\"false\"}""#</span>),
-<a href=#209 id=209 data-nosnippet>209</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#210 id=210 data-nosnippet>210</a>    };
-<a href=#211 id=211 data-nosnippet>211</a>}
+<a href=#200 id=200 data-nosnippet>200</a>}
 </code></pre></div></section></main></body></html>

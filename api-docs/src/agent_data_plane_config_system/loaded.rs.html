@@ -446,35 +446,52 @@
 <a href=#446 id=446 data-nosnippet>446</a>    }
 <a href=#447 id=447 data-nosnippet>447</a>
 <a href=#448 id=448 data-nosnippet>448</a>    <span class="attr">#[test]
-<a href=#449 id=449 data-nosnippet>449</a>    </span><span class="kw">fn </span>build_base_rejects_a_malformed_environment_value() {
+<a href=#449 id=449 data-nosnippet>449</a>    </span><span class="kw">fn </span>the_adp_stop_timeout_override_reaches_both_views_from_the_environment() {
 <a href=#450 id=450 data-nosnippet>450</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#451 id=451 data-nosnippet>451</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_bad_{}.yaml"</span>, std::process::id()));
-<a href=#452 id=452 data-nosnippet>452</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"dogstatsd_port: 8125\n"</span>).unwrap();
-<a href=#453 id=453 data-nosnippet>453</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
+<a href=#451 id=451 data-nosnippet>451</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_stop_timeout_env_{}.yaml"</span>, std::process::id()));
+<a href=#452 id=452 data-nosnippet>452</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
+<a href=#453 id=453 data-nosnippet>453</a>        std::env::set_var(<span class="string">"DD_DATA_PLANE_STOP_TIMEOUT"</span>, <span class="string">"45"</span>);
 <a href=#454 id=454 data-nosnippet>454</a>
-<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">let </span>result = build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile);
-<a href=#456 id=456 data-nosnippet>456</a>
-<a href=#457 id=457 data-nosnippet>457</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
-<a href=#458 id=458 data-nosnippet>458</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
-<a href=#459 id=459 data-nosnippet>459</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(Error::Base { .. })));
-<a href=#460 id=460 data-nosnippet>460</a>    }
-<a href=#461 id=461 data-nosnippet>461</a>
-<a href=#462 id=462 data-nosnippet>462</a>    <span class="attr">#[test]
-<a href=#463 id=463 data-nosnippet>463</a>    </span><span class="kw">fn </span>build_base_accepts_a_human_readable_dogstatsd_interner_size() {
-<a href=#464 id=464 data-nosnippet>464</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#465 id=465 data-nosnippet>465</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_interner_{}.yaml"</span>, std::process::id()));
-<a href=#466 id=466 data-nosnippet>466</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
-<a href=#467 id=467 data-nosnippet>467</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>, <span class="string">"12MiB"</span>);
-<a href=#468 id=468 data-nosnippet>468</a>
-<a href=#469 id=469 data-nosnippet>469</a>        <span class="kw">let </span>base = SourceTree::all_explicit(build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile).expect(<span class="string">"base builds"</span>));
-<a href=#470 id=470 data-nosnippet>470</a>        <span class="kw">let </span>config = translate_strict(<span class="kw-2">&amp;</span>base).expect(<span class="string">"human-readable byte size translates"</span>);
+<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">let </span>loaded = block_on(LoadedConfiguration::load(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile)).expect(<span class="string">"local sources load"</span>);
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="kw">let </span>from_by_key = loaded.raw_config().try_get_typed::&lt;u64&gt;(<span class="string">"data_plane.stop_timeout"</span>);
+<a href=#457 id=457 data-nosnippet>457</a>        <span class="kw">let </span>from_typed = loaded.local().control.stop_timeout;
+<a href=#458 id=458 data-nosnippet>458</a>
+<a href=#459 id=459 data-nosnippet>459</a>        std::env::remove_var(<span class="string">"DD_DATA_PLANE_STOP_TIMEOUT"</span>);
+<a href=#460 id=460 data-nosnippet>460</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="macro">assert_eq!</span>(from_by_key.expect(<span class="string">"key reads"</span>), <span class="prelude-val">Some</span>(<span class="number">45</span>));
+<a href=#462 id=462 data-nosnippet>462</a>        <span class="macro">assert_eq!</span>(from_typed, <span class="prelude-val">Some</span>(std::time::Duration::from_secs(<span class="number">45</span>)));
+<a href=#463 id=463 data-nosnippet>463</a>    }
+<a href=#464 id=464 data-nosnippet>464</a>
+<a href=#465 id=465 data-nosnippet>465</a>    <span class="attr">#[test]
+<a href=#466 id=466 data-nosnippet>466</a>    </span><span class="kw">fn </span>build_base_rejects_a_malformed_environment_value() {
+<a href=#467 id=467 data-nosnippet>467</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#468 id=468 data-nosnippet>468</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_bad_{}.yaml"</span>, std::process::id()));
+<a href=#469 id=469 data-nosnippet>469</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"dogstatsd_port: 8125\n"</span>).unwrap();
+<a href=#470 id=470 data-nosnippet>470</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
 <a href=#471 id=471 data-nosnippet>471</a>
-<a href=#472 id=472 data-nosnippet>472</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>);
-<a href=#473 id=473 data-nosnippet>473</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
-<a href=#474 id=474 data-nosnippet>474</a>        <span class="macro">assert_eq!</span>(
-<a href=#475 id=475 data-nosnippet>475</a>            config.domains.dogstatsd.contexts.string_interner_size_bytes,
-<a href=#476 id=476 data-nosnippet>476</a>            <span class="prelude-val">Some</span>(ByteSize::mib(<span class="number">12</span>).as_u64())
-<a href=#477 id=477 data-nosnippet>477</a>        );
-<a href=#478 id=478 data-nosnippet>478</a>    }
-<a href=#479 id=479 data-nosnippet>479</a>}
+<a href=#472 id=472 data-nosnippet>472</a>        <span class="kw">let </span>result = build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile);
+<a href=#473 id=473 data-nosnippet>473</a>
+<a href=#474 id=474 data-nosnippet>474</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
+<a href=#475 id=475 data-nosnippet>475</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#476 id=476 data-nosnippet>476</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(Error::Base { .. })));
+<a href=#477 id=477 data-nosnippet>477</a>    }
+<a href=#478 id=478 data-nosnippet>478</a>
+<a href=#479 id=479 data-nosnippet>479</a>    <span class="attr">#[test]
+<a href=#480 id=480 data-nosnippet>480</a>    </span><span class="kw">fn </span>build_base_accepts_a_human_readable_dogstatsd_interner_size() {
+<a href=#481 id=481 data-nosnippet>481</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_interner_{}.yaml"</span>, std::process::id()));
+<a href=#483 id=483 data-nosnippet>483</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
+<a href=#484 id=484 data-nosnippet>484</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>, <span class="string">"12MiB"</span>);
+<a href=#485 id=485 data-nosnippet>485</a>
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">let </span>base = SourceTree::all_explicit(build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile).expect(<span class="string">"base builds"</span>));
+<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">let </span>config = translate_strict(<span class="kw-2">&amp;</span>base).expect(<span class="string">"human-readable byte size translates"</span>);
+<a href=#488 id=488 data-nosnippet>488</a>
+<a href=#489 id=489 data-nosnippet>489</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>);
+<a href=#490 id=490 data-nosnippet>490</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#491 id=491 data-nosnippet>491</a>        <span class="macro">assert_eq!</span>(
+<a href=#492 id=492 data-nosnippet>492</a>            config.domains.dogstatsd.contexts.string_interner_size_bytes,
+<a href=#493 id=493 data-nosnippet>493</a>            <span class="prelude-val">Some</span>(ByteSize::mib(<span class="number">12</span>).as_u64())
+<a href=#494 id=494 data-nosnippet>494</a>        );
+<a href=#495 id=495 data-nosnippet>495</a>    }
+<a href=#496 id=496 data-nosnippet>496</a>}
 </code></pre></div></section></main></body></html>
