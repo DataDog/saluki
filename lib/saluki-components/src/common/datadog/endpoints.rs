@@ -39,14 +39,10 @@ pub struct EndpointV3Settings {
 pub(crate) struct V3EndpointConfig<'a> {
     /// Endpoint string as it appeared in configuration for this routed endpoint.
     pub(crate) configured_endpoint: &'a str,
-    /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
-    pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
     /// Agent-compatible V3 series config.
     pub(crate) series_config: &'a UseV3ApiSeriesConfig,
     /// OPW/Vector route-specific V3 override.
     pub(crate) metrics_primary_v3_override: Option<bool>,
-    /// Serializer V3 series endpoint list.
-    pub(crate) serializer_v3_series_endpoints: &'a [String],
     /// Serializer V3 sketches endpoint list.
     pub(crate) serializer_v3_sketches_endpoints: &'a [String],
 }
@@ -60,38 +56,9 @@ impl EndpointV3Settings {
         }
     }
 
-    /// Creates V3 settings for a specific endpoint based on URL matching.
-    ///
-    /// The `v3_series_endpoints` and `v3_sketches_endpoints` are lists of configured endpoint names.
-    /// If the endpoint name matches any entry, V3 is enabled for that metric type.
-    #[cfg(test)]
-    pub fn from_endpoint_url(
-        configured_endpoint: &str, _resolved_endpoint: &Url, v3_series_endpoints: &[String],
-        v3_sketches_endpoints: &[String],
-    ) -> Self {
-        let use_v3_series = serializer_v3_config_matches_endpoint(configured_endpoint, v3_series_endpoints);
-        let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| configured_endpoint == e);
-
-        Self {
-            use_v3_series,
-            use_v3_sketches,
-        }
-    }
-
     /// Creates V3 settings using Agent-compatible series V3 configuration.
-    ///
-    /// `V3EndpointConfig::serializer_v3_configured_endpoint` lets metrics-primary OPW/Vector routes match
-    /// `serializer_experimental_use_v3_api.series.endpoints` against the normal primary endpoint name, matching the
-    /// Core Agent resolver behavior.
     pub fn from_v3_config(config: V3EndpointConfig<'_>) -> Self {
-        let serializer_use_v3_series =
-            serializer_v3_config_matches_endpoint(config.configured_endpoint, config.serializer_v3_series_endpoints)
-                || config.serializer_v3_configured_endpoint.is_some_and(|endpoint| {
-                    serializer_v3_config_matches_endpoint(endpoint, config.serializer_v3_series_endpoints)
-                });
-        let use_v3_series = if serializer_use_v3_series {
-            true
-        } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
+        let use_v3_series = if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
             metrics_primary_use_v3
         } else if let Some(endpoint_mode) = config.series_config.endpoints.get(config.configured_endpoint) {
             evaluate_series_v3_mode(*endpoint_mode, config.configured_endpoint)
@@ -150,12 +117,6 @@ impl EndpointV3Settings {
             }
         }
     }
-}
-
-fn serializer_v3_config_matches_endpoint(configured_endpoint: &str, v3_series_endpoints: &[String]) -> bool {
-    v3_series_endpoints
-        .iter()
-        .any(|endpoint| configured_endpoint == endpoint)
 }
 
 fn configured_endpoint_is_datadog_url(configured_endpoint: &str) -> bool {
@@ -334,11 +295,6 @@ impl EndpointConfiguration {
     pub(crate) fn build_primary_endpoint(&self) -> Result<ResolvedEndpoint, GenericError> {
         ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")
-    }
-
-    /// Returns the configured primary endpoint string without resolving or version-prefixing it.
-    pub(crate) fn configured_primary_endpoint(&self) -> &str {
-        &self.primary_endpoint
     }
 
     /// Builds the resolved primary endpoint from a URL override.
@@ -787,7 +743,10 @@ mod tests {
 
         assert_eq!(
             "https://cluster-agent.example.com:5005",
-            config.configured_primary_endpoint()
+            config
+                .build_primary_endpoint()
+                .expect("endpoint should resolve")
+                .configured_endpoint()
         );
         assert!(config
             .build_additional_endpoints()
@@ -880,34 +839,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn v3_endpoint_matching_uses_configured_endpoint_before_version_prefix() {
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-
-        assert_eq!("https://app.datadoghq.com", resolved.configured_endpoint());
-        assert_ne!("app.datadoghq.com", resolved.endpoint().host_str().unwrap());
-
-        let v3_series_endpoints = vec!["https://app.datadoghq.com".to_string()];
-        let settings = EndpointV3Settings::from_endpoint_url(
-            resolved.configured_endpoint(),
-            resolved.endpoint(),
-            &v3_series_endpoints,
-            &[],
-        );
-
-        assert!(settings.use_v3_series);
-    }
-
     fn v3_endpoint_config<'a>(
         endpoint: &'a ResolvedEndpoint, series_config: &'a UseV3ApiSeriesConfig,
     ) -> V3EndpointConfig<'a> {
         V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
-            serializer_v3_configured_endpoint: None,
             series_config,
             metrics_primary_v3_override: None,
-            serializer_v3_series_endpoints: &[],
             serializer_v3_sketches_endpoints: &[],
         }
     }
@@ -1024,72 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn metrics_primary_serializer_v3_can_match_primary_endpoint_name() {
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let series_config = agent_series_config();
-        let serializer_v3_endpoints = vec!["https://app.datadoghq.com".to_string()];
-
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            serializer_v3_configured_endpoint: Some("https://app.datadoghq.com"),
-            metrics_primary_v3_override: Some(false),
-            serializer_v3_series_endpoints: &serializer_v3_endpoints,
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
-
-        assert!(settings.use_v3_series);
-    }
-
-    #[test]
-    fn serializer_v3_endpoint_list_wins_over_other_agent_settings() {
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let series_config = UseV3ApiSeriesConfig {
-            enabled: V3SeriesMode::Disabled,
-            ..Default::default()
-        };
-        let serializer_v3_endpoints = vec![resolved.configured_endpoint().to_string()];
-
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            metrics_primary_v3_override: Some(false),
-            serializer_v3_series_endpoints: &serializer_v3_endpoints,
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
-
-        assert!(settings.use_v3_series);
-    }
-
-    #[test]
-    fn v3_endpoint_matching_is_endpoint_based() {
-        let v3_series_endpoints = vec!["https://app.us".to_string()];
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.us5.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let settings = EndpointV3Settings::from_endpoint_url(
-            resolved.configured_endpoint(),
-            resolved.endpoint(),
-            &v3_series_endpoints,
-            &[],
-        );
-
-        assert!(!settings.use_v3_series);
-    }
-
-    #[test]
-    fn v3_endpoint_matching_requires_exact_configured_endpoint() {
-        let v3_series_endpoints = vec!["app.datadoghq.com/".to_string()];
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let settings = EndpointV3Settings::from_endpoint_url(
-            resolved.configured_endpoint(),
-            resolved.endpoint(),
-            &v3_series_endpoints,
-            &[],
-        );
-
-        assert!(!settings.use_v3_series);
-    }
-
-    #[test]
     fn the_configured_endpoint_keeps_the_agent_endpoint_shape() {
         // The configured endpoint is matched against V3 endpoint lists, so it must stay in the shape
         // the Agent uses, before version prefixing.
@@ -1100,7 +972,6 @@ mod tests {
         };
         let config = EndpointConfiguration::from_configuration(&endpoints);
 
-        assert_eq!("https://app.datadoghq.com", config.configured_primary_endpoint());
         assert_eq!(
             "https://app.datadoghq.com",
             config
@@ -1136,7 +1007,14 @@ mod tests {
             };
             let config = EndpointConfiguration::from_configuration(&endpoints);
 
-            assert_eq!(expected, config.configured_primary_endpoint(), "{name}");
+            assert_eq!(
+                expected,
+                config
+                    .build_primary_endpoint()
+                    .expect("endpoint should resolve")
+                    .configured_endpoint(),
+                "{name}"
+            );
         }
     }
 }

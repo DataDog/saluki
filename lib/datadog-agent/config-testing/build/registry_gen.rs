@@ -279,7 +279,6 @@ static GOLDEN_ORDER: &[(&str, &[&str])] = &[
             "forwarder_max_concurrent_requests",
             "forwarder_retry_queue_capacity_time_interval_sec",
             "serializer_experimental_use_v3_api.compression_level",
-            "serializer_experimental_use_v3_api.series.endpoints",
             "serializer_experimental_use_v3_api.sketches.endpoints",
             "tls_handshake_timeout",
             "aggregator_buffer_size",

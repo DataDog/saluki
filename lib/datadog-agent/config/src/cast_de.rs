@@ -1,14 +1,13 @@
-//! Deserialize a schema scalar leaf the way the Datadog Agent reads one.
+//! Deserialize schema values the way the Datadog Agent reads them.
 //!
 //! The Agent never reads a setting as the type its YAML happens to hold: `GetBool`, `GetInt`,
 //! `GetFloat64`, and `GetString` each coerce whatever is stored through `spf13/cast`. Permissiveness
 //! is therefore a property of the leaf's declared type, not of the key, and `dogstatsd_port: "8125"`
 //! or `use_v3_api.series.enabled: true` are configurations the Agent accepts.
 //!
-//! This module ports `cast.To{Bool,Int64,Float64,String}E` so a leaf accepts every spelling the
-//! Agent accepts, while the generated field keeps the schema's type. Codegen attaches these to every
-//! scalar leaf, and [`crate::env_decode`] routes environment strings through the same parsers, so one
-//! accept-set serves every configuration source.
+//! This module ports `cast.To{Bool,Int64,Float64,String}E` so scalar leaves and string-map values
+//! accept every spelling the Agent accepts while keeping the schema's type. [`crate::env_decode`]
+//! uses the same parsers for environment strings.
 //!
 //! Two deliberate divergences from `cast`:
 //!
@@ -18,9 +17,10 @@
 //! - A numeric string is accepted in decimal only, not in Go's base-prefixed or underscored integer
 //!   literal forms. YAML and JSON parse those spellings into numbers before ADP sees them.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use serde::de::{self, Deserializer, Unexpected, Visitor};
+use serde::Deserialize;
 
 /// `cast.ToBoolE` for a string: Go's `strconv.ParseBool` grammar, exactly.
 ///
@@ -117,6 +117,26 @@ where
     D: Deserializer<'de>,
 {
     deserializer.deserialize_any(StringVisitor)
+}
+
+/// Deserializes a string map, coercing each value as the Agent does.
+///
+/// # Errors
+///
+/// Returns an error when a value is not scalar.
+pub(crate) fn deserialize_string_map<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|(key, value)| {
+            cast_to_string(&value)
+                .map(|value| (key, value))
+                .map_err(de::Error::custom)
+        })
+        .collect()
 }
 
 /// Renders a JSON value as a `string` leaf (`cast.ToStringE`).
@@ -370,6 +390,9 @@ mod tests {
     #[derive(Deserialize)]
     struct OptStr(#[serde(deserialize_with = "deserialize_optional_string")] Option<String>);
 
+    #[derive(Deserialize)]
+    struct StringMap(#[serde(deserialize_with = "deserialize_string_map")] HashMap<String, String>);
+
     fn as_bool(value: Value) -> Result<bool, String> {
         serde_json::from_value::<Bool>(value)
             .map(|b| b.0)
@@ -497,6 +520,24 @@ mod tests {
         for rejected in [json!(["a"]), json!({"a": "b"})] {
             assert!(as_string(rejected.clone()).is_err(), "{rejected}");
         }
+    }
+
+    #[test]
+    fn string_map_coerces_scalar_values() {
+        let values = serde_json::from_value::<StringMap>(json!({
+            "bool": true,
+            "integer": 3,
+            "null": null,
+            "string": "datadog_only"
+        }))
+        .expect("scalar values deserialize")
+        .0;
+
+        assert_eq!(values["bool"], "true");
+        assert_eq!(values["integer"], "3");
+        assert_eq!(values["null"], "");
+        assert_eq!(values["string"], "datadog_only");
+        assert!(serde_json::from_value::<StringMap>(json!({ "compound": [] })).is_err());
     }
 
     #[test]

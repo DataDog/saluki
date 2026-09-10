@@ -192,6 +192,39 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `dogstatsd_experimental_http.max_concurrent_requests`-DogStatsD HTTP concurrent request limit
+    DOGSTATSD_EXPERIMENTAL_HTTP_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_MAX_CONCURRENT_REQUESTS,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `dogstatsd_experimental_http.max_payload_size`-DogStatsD HTTP request body size limit
+    DOGSTATSD_EXPERIMENTAL_HTTP_MAX_PAYLOAD_SIZE = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_MAX_PAYLOAD_SIZE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `dogstatsd_experimental_http.read_timeout`-DogStatsD HTTP request read timeout
+    DOGSTATSD_EXPERIMENTAL_HTTP_READ_TIMEOUT = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_READ_TIMEOUT,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
     /// `dogstatsd_host_socket_path`-Host UDS socket dir for DSD
     DOGSTATSD_HOST_SOCKET_PATH = SalukiAnnotation {
         schema: &schema::DOGSTATSD_HOST_SOCKET_PATH,
@@ -335,6 +368,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `dogstatsd_no_aggregation_pipeline_workers_count`-No-aggregation pipeline worker count
+    DOGSTATSD_NO_AGGREGATION_PIPELINE_WORKERS_COUNT = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_NO_AGGREGATION_PIPELINE_WORKERS_COUNT,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
     /// `dogstatsd_packet_buffer_flush_timeout`-Packet buffer flush timeout
     DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT = SalukiAnnotation {
         schema: &schema::DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT,
@@ -390,6 +434,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `dogstatsd_require_listener`-Require an active DogStatsD listener
+    DOGSTATSD_REQUIRE_LISTENER = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_REQUIRE_LISTENER,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
     /// `enable_json_stream_shared_compressor_buffers`-Pre-allocate shared compressor buffers
     ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
         schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
@@ -412,6 +467,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `forwarder_stop_wait_for_inflight`-Wait for in-flight forwarder requests
+    FORWARDER_STOP_WAIT_FOR_INFLIGHT = SalukiAnnotation {
+        schema: &schema::FORWARDER_STOP_WAIT_FOR_INFLIGHT,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `logging_frequency`-Transaction success log interval
     LOGGING_FREQUENCY = SalukiAnnotation {
         schema: &schema::LOGGING_FREQUENCY,
@@ -422,6 +488,127 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `metric_lookback.capacity`-Metric lookback ring capacity
+    METRIC_LOOKBACK_CAPACITY = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_CAPACITY,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.dogstatsd.metric_names`-DogStatsD metric lookback selection
+    METRIC_LOOKBACK_DOGSTATSD_METRIC_NAMES = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_DOGSTATSD_METRIC_NAMES,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.egress.post_recovery_window`-Lookback post-recovery replay window
+    METRIC_LOOKBACK_EGRESS_POST_RECOVERY_WINDOW = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_EGRESS_POST_RECOVERY_WINDOW,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.egress.pre_trigger_window`-Lookback pre-trigger replay window
+    METRIC_LOOKBACK_EGRESS_PRE_TRIGGER_WINDOW = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_EGRESS_PRE_TRIGGER_WINDOW,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.enabled`-Enable metric lookback
+    METRIC_LOOKBACK_ENABLED = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_ENABLED,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.monitor.evaluation_interval`-Lookback monitor evaluation window
+    METRIC_LOOKBACK_MONITOR_EVALUATION_INTERVAL = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_MONITOR_EVALUATION_INTERVAL,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.monitor.metric_name`-Metric watched by lookback monitor
+    METRIC_LOOKBACK_MONITOR_METRIC_NAME = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_MONITOR_METRIC_NAME,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.monitor.mode`-Metric lookback monitor mode
+    METRIC_LOOKBACK_MONITOR_MODE = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_MONITOR_MODE,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.monitor.partition_tags`-Lookback monitor tag partitions
+    METRIC_LOOKBACK_MONITOR_PARTITION_TAGS = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_MONITOR_PARTITION_TAGS,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.monitor.range_epsilon`-Lookback monitor range threshold
+    METRIC_LOOKBACK_MONITOR_RANGE_EPSILON = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_MONITOR_RANGE_EPSILON,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `metric_lookback.shard_count`-Metric lookback ring shards
+    METRIC_LOOKBACK_SHARD_COUNT = SalukiAnnotation {
+        schema: &schema::METRIC_LOOKBACK_SHARD_COUNT,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `otlp_config.metrics.batch.flush_timeout`-OTLP metrics batch flush timeout
     OTLP_CONFIG_METRICS_BATCH_FLUSH_TIMEOUT = SalukiAnnotation {
@@ -448,6 +635,17 @@ crate::declare_annotations! {
     /// `otlp_config.metrics.batch.min_size`-Minimum OTLP metrics batch size
     OTLP_CONFIG_METRICS_BATCH_MIN_SIZE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_BATCH_MIN_SIZE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.infra_attributes.as_tags`-Promote infrastructure attributes to tags
+    OTLP_CONFIG_METRICS_INFRA_ATTRIBUTES_AS_TAGS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_INFRA_ATTRIBUTES_AS_TAGS,
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -862,6 +1060,50 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.traces.infra_attributes.container_tag_promotion`-OTLP trace container-tag promotion
+    OTLP_CONFIG_TRACES_INFRA_ATTRIBUTES_CONTAINER_TAG_PROMOTION = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_TRACES_INFRA_ATTRIBUTES_CONTAINER_TAG_PROMOTION,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.sketches.beta_route`-V3 sketches beta intake route
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_BETA_ROUTE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_BETA_ROUTE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `serializer_experimental_use_v3_api.sketches.shadow_sample_rate`-V3 sketches shadow sample rate
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SAMPLE_RATE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `serializer_experimental_use_v3_api.sketches.shadow_sites`-V3 sketches shadow sites
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SITES = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_SHADOW_SITES,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `use_dogstatsd`-Master DogStatsD enable toggle
     USE_DOGSTATSD = SalukiAnnotation {

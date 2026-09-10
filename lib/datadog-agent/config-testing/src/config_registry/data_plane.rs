@@ -20,22 +20,6 @@ static DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = Sc
     default: Some("localhost:6318"),
 };
 
-static DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "data_plane.serializer_zstd_compressor_level",
-    env_vars: &[],
-    value_type: ValueType::Integer,
-    default: Some("3"),
-};
-
-static DATA_PLANE_STOP_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "data_plane.stop_timeout",
-    env_vars: &[],
-    value_type: ValueType::Integer,
-    default: None,
-};
-
 crate::declare_annotations! {
     /// `agent_ipc.grpc_max_message_size`-Max inbound gRPC message size for IPC client
     AGENT_IPC_GRPC_MAX_MESSAGE_SIZE = SalukiAnnotation {
@@ -180,9 +164,9 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `data_plane.serializer_zstd_compressor_level`
+    /// `data_plane.serializer_zstd_compressor_level`-ADP zstd compression level
     DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL = SalukiAnnotation {
-        schema: &DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL_SCHEMA,
+        schema: &schema::DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -191,9 +175,9 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `data_plane.stop_timeout`
+    /// `data_plane.stop_timeout`-ADP graceful shutdown timeout
     DATA_PLANE_STOP_TIMEOUT = SalukiAnnotation {
-        schema: &DATA_PLANE_STOP_TIMEOUT_SCHEMA,
+        schema: &schema::DATA_PLANE_STOP_TIMEOUT,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
