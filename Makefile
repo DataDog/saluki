@@ -8,7 +8,7 @@ mkfile_dir := $(dir $(mkfile_path))
 export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
 export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
-export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),$(shell date -u '+%Y-%m-%dT%H:%M:%SZ'))
+export APP_BUILD_TIME := $(or $(APP_BUILD_TIME),$(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
 # ADP-specific settings used during builds.
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
