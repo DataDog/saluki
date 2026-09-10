@@ -65,6 +65,7 @@ type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
 struct InFlightTransaction<R> {
     metadata: Metadata,
+    body_size: u64,
     retry_counters: Option<TransactionRetryCounters>,
     result: R,
 }
@@ -120,6 +121,7 @@ async fn handle_in_flight_transaction_result<B>(
 {
     let InFlightTransaction {
         metadata,
+        body_size,
         retry_counters,
         result,
     } = match task_result {
@@ -144,7 +146,15 @@ async fn handle_in_flight_transaction_result<B>(
         // surfaced by the inspection layer in the service stack rather than here, since a retriable 403 becomes a
         // `Retry` result and never reaches this arm.
         Ok(http_response) => {
-            process_http_response(http_response, metadata, telemetry, endpoint_url, endpoint_domain).await
+            process_http_response(
+                http_response,
+                metadata,
+                body_size,
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await
         }
 
         // The service itself encountered an error while sending the request or receiving the response:
@@ -368,7 +378,6 @@ where
             .with_min_tls_version(config.min_tls_version())
             .with_tls_handshake_timeout(config.tls_handshake_timeout())
             .with_http_protocol(config.http_protocol())
-            .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(
                 metrics_builder.clone(),
                 Some(move |uri: &Uri| endpoint_name_for_client(uri)),
@@ -777,8 +786,10 @@ async fn run_endpoint_io_loop<B>(
                         &mut retry_telemetry,
                         endpoint_name.as_ref(),
                     );
+                    let body_size = request.body().remaining() as u64;
                     in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
                         metadata,
+                        body_size,
                         retry_counters,
                         result,
                     }));
@@ -881,7 +892,8 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
 
 /// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
 async fn process_http_response(
-    response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str, domain: &str,
+    response: Response<Incoming>, metadata: Metadata, body_size: u64, telemetry: &ComponentTelemetry,
+    endpoint_url: &str, domain: &str,
 ) {
     let status = response.status();
     if status.is_success() {
@@ -899,7 +911,7 @@ async fn process_http_response(
             { "domain": domain }
         );
 
-        telemetry.track_successful_transaction(&metadata, domain);
+        telemetry.track_successful_transaction(&metadata, body_size, domain);
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
 
@@ -1487,6 +1499,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result: Err(RetryCircuitBreakerError::Service(
                     Box::new(std::io::Error::other("request failed")) as BoxError,
@@ -1510,6 +1523,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result: Err(RetryCircuitBreakerError::Service(
                     Box::new(std::io::Error::other("request failed")) as BoxError,
@@ -1594,6 +1608,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result,
             }),
@@ -1638,6 +1653,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result: Err(RetryCircuitBreakerError::Service(
                     Box::new(std::io::Error::other("request failed")) as BoxError,
@@ -2200,7 +2216,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn forwarder_counts_only_dispatched_retries_after_server_errors() {
+    async fn forwarder_counts_successful_body_bytes_once_after_retries() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let (server_url, counter) = start_recording_http_server(vec![
@@ -2242,6 +2258,25 @@ mod tests {
         assert_eq!(
             recorder.counter(retry_metric_key("network_http_requests_requeued_total")),
             Some(0)
+        );
+
+        let component_metric_key = |name: &str| {
+            metrics::Key::from_parts(
+                name.to_string(),
+                vec![
+                    metrics::Label::new("component_id", "test_forwarder"),
+                    metrics::Label::new("component_type", "forwarder"),
+                ],
+            )
+        };
+        assert_eq!(
+            recorder.counter(component_metric_key("component_events_sent_total")),
+            Some(1)
+        );
+        // Regression: socket-write accounting counted every retry. Successful bytes must count the request body once.
+        assert_eq!(
+            recorder.counter(component_metric_key("component_bytes_sent_total")),
+            Some(12)
         );
     }
 
