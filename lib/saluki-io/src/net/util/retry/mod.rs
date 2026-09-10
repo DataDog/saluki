@@ -5,7 +5,7 @@ mod classifier;
 pub use self::classifier::{HttpRetryPredicate, RetryClassifier, StandardHttpClassifier};
 
 mod lifecycle;
-pub use self::lifecycle::StandardHttpRetryLifecycle;
+pub use self::lifecycle::{RetryCauseTelemetry, StandardHttpRetryLifecycle};
 
 mod policy;
 pub use self::policy::{NoopRetryPolicy, RollingExponentialBackoffRetryPolicy};
@@ -34,7 +34,8 @@ impl<B: 'static> DefaultHttpRetryPolicy<B> {
     /// has been customized (for example, with additional [`HttpRetryPredicate`]s via
     /// [`StandardHttpClassifier::with_predicate`]).
     pub fn with_backoff_and_classifier(backoff: ExponentialBackoff, classifier: StandardHttpClassifier<B>) -> Self {
-        RollingExponentialBackoffRetryPolicy::new(classifier, backoff).with_retry_lifecycle(StandardHttpRetryLifecycle)
+        RollingExponentialBackoffRetryPolicy::new(classifier, backoff)
+            .with_retry_lifecycle(StandardHttpRetryLifecycle::new())
     }
 }
 

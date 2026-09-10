@@ -12,8 +12,8 @@ use agent_data_plane_config::Live;
 use http::{Response, StatusCode};
 use saluki_common::task::spawn_traced_named;
 use saluki_io::net::util::retry::{
-    ExponentialBackoff, RetryClassifier, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier,
-    StandardHttpRetryLifecycle,
+    ExponentialBackoff, RetryCauseTelemetry, RetryClassifier, RollingExponentialBackoffRetryPolicy,
+    StandardHttpClassifier, StandardHttpRetryLifecycle,
 };
 use tracing::debug;
 
@@ -244,7 +244,11 @@ impl RetryConfiguration {
     /// rejected API key. The gate is updated as configuration changes, so turning secrets management on or off while the
     /// process runs changes the gate without rebuilding the service. A gate reporting nothing configured leaves a 403
     /// non-retriable, which is the default behavior.
-    pub(crate) fn to_default_http_retry_policy<B: 'static>(&self, secrets: SecretsGate) -> SecretsHttpRetryPolicy<B> {
+    ///
+    /// Retries are counted by cause through `retry_causes`, which is scoped to the domain the policy sends to.
+    pub(crate) fn to_default_http_retry_policy<B: 'static>(
+        &self, secrets: SecretsGate, retry_causes: RetryCauseTelemetry,
+    ) -> SecretsHttpRetryPolicy<B> {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
             Duration::from_secs_f64(self.backoff_max),
@@ -257,7 +261,7 @@ impl RetryConfiguration {
 
         let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
         RollingExponentialBackoffRetryPolicy::new(classifier, retry_backoff)
-            .with_retry_lifecycle(StandardHttpRetryLifecycle)
+            .with_retry_lifecycle(StandardHttpRetryLifecycle::new().with_telemetry(retry_causes))
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
     }
 }
@@ -284,6 +288,8 @@ fn resolve_storage_path(configured: &Path, run_path: Option<&Path>) -> PathBuf {
 mod tests {
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
     use http::{Request, Response};
+    use metrics::{Key, Label};
+    use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use tower::retry::Policy;
 
     use super::*;
@@ -322,6 +328,10 @@ mod tests {
         };
 
         RetryConfiguration::from_configuration(&forwarder, None)
+    }
+
+    fn test_retry_causes() -> RetryCauseTelemetry {
+        RetryCauseTelemetry::from_builder(&MetricsBuilder::default(), "http://localhost")
     }
 
     #[test]
@@ -389,9 +399,35 @@ mod tests {
     #[test]
     fn policy_without_secrets_management_configured_does_not_retry_403() {
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&Secrets::default()));
+        let mut policy =
+            retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&Secrets::default()), test_retry_causes());
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    #[tokio::test]
+    async fn retry_policy_counts_the_cause_when_it_retries() {
+        // Exercise telemetry through the policy used by the forwarder, rather than calling the lifecycle hook directly.
+        let recorder = TestRecorder::default();
+        let builder = MetricsBuilder::default();
+        let retry_causes = RetryCauseTelemetry::from_builder(&builder, "https://example.com");
+        let retry_config = test_retry_config();
+        let mut policy =
+            retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&Secrets::default()), retry_causes);
+
+        let retried = metrics::with_local_recorder(&recorder, || {
+            would_retry(&mut policy, ok_response(StatusCode::SERVICE_UNAVAILABLE))
+        });
+
+        assert!(retried);
+        let key = Key::from_parts(
+            "network_http_requests_retry_causes_total",
+            vec![
+                Label::new("domain", "https://example.com"),
+                Label::new("cause", "http_status"),
+            ],
+        );
+        assert_eq!(recorder.counter(key), Some(1));
     }
 
     #[tokio::test]
@@ -407,7 +443,8 @@ mod tests {
             },
         ] {
             let retry_config = test_retry_config();
-            let mut policy = retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&secrets));
+            let mut policy =
+                retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&secrets), test_retry_causes());
 
             assert!(
                 would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)),
@@ -423,7 +460,8 @@ mod tests {
             refresh_on_api_key_failure_interval: 0,
         };
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&secrets));
+        let mut policy =
+            retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&secrets), test_retry_causes());
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::OK)));
         assert!(!would_retry(&mut policy, ok_response(StatusCode::BAD_REQUEST)));
@@ -441,7 +479,7 @@ mod tests {
         refresher.spawn();
 
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(gate.clone());
+        let mut policy = retry_config.to_default_http_retry_policy(gate.clone(), test_retry_causes());
 
         // Before secrets management is configured, a 403 must not be retried.
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
