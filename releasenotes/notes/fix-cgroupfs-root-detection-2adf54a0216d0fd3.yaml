@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Detect the host-mapped cgroup filesystem independently of the host-mapped proc filesystem when choosing where to
+    read control groups from. Previously, a deployment that mounted one without the other could read control groups
+    from a path that doesn't exist, or read the container's own hierarchy instead of the host's, leaving container
+    origin detection unable to resolve workloads. Set ``container_cgroup_root`` to override the detected path.
