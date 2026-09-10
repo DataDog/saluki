@@ -12,7 +12,9 @@ use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
-use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
+use crate::common::datadog::{
+    compute_top_level, get_root_span_index, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
+};
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, otel_span_to_dd_span,
     otlp_value_to_string,
@@ -161,6 +163,8 @@ struct TraceEntry {
     trace_id_hex: Option<MetaString>,
     /// High 8 bytes of the 128-bit trace ID (captured from the first span).
     trace_id_high: u64,
+    /// Whether the group failed the full trace ID consistency check and must be dropped whole.
+    rejected: bool,
 }
 
 pub struct OtlpTracesTranslator {
@@ -207,7 +211,14 @@ impl OtlpTracesTranslator {
                     priority: None,
                     trace_id_hex: None,
                     trace_id_high,
+                    rejected: false,
                 });
+
+                // Full trace ID consistency: spans in a group must carry the same full trace ID
+                // as the group's first span.
+                if entry.trace_id_high != trace_id_high {
+                    entry.rejected = true;
+                }
 
                 if entry.trace_id_hex.is_none() {
                     entry.trace_id_hex = trace_id_hex_meta(&span.trace_id);
@@ -240,6 +251,8 @@ impl OtlpTracesTranslator {
         OtlpTraceEventsIter {
             resource_meta,
             entries: traces_by_id.into_iter(),
+            compute_top_level_by_span_kind: compute_top_level,
+            metrics: metrics.clone(),
         }
     }
 }
@@ -247,6 +260,10 @@ impl OtlpTracesTranslator {
 struct OtlpTraceEventsIter {
     resource_meta: OtlpResourceMeta,
     entries: IntoIter<u64, TraceEntry>,
+    /// Whether top-level spans are computed from span kind during translation; when false, the
+    /// chunk-wide fallback (`compute_top_level`) runs at chunk assembly instead.
+    compute_top_level_by_span_kind: bool,
+    metrics: Metrics,
 }
 
 impl Iterator for OtlpTraceEventsIter {
@@ -254,6 +271,14 @@ impl Iterator for OtlpTraceEventsIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         for (trace_id_low, entry) in self.entries.by_ref() {
+            if entry.rejected {
+                // Two different traces glued together by a shared low half: drop the group whole.
+                self.metrics
+                    .spans_dropped_foreign_trace()
+                    .increment(entry.spans.len() as u64);
+                continue;
+            }
+
             if entry.spans.is_empty() {
                 continue;
             }
@@ -274,6 +299,36 @@ impl Iterator for OtlpTraceEventsIter {
             trace.payload.language_name = self.resource_meta.language_name.clone();
             trace.payload.tracer_version = self.resource_meta.tracer_version.clone();
             trace.attributes = Arc::clone(&self.resource_meta.attributes);
+
+            // Backfill trace-level metadata from the spans: origin comes from the root span's
+            // `_dd.origin` tag, and the decision maker is the first span in chunk order carrying
+            // `_dd.p.dm` - both only when not already set.
+            if let Some(root_idx) = get_root_span_index(trace.spans()) {
+                if trace.origin.is_empty() {
+                    if let Some(origin) = trace.spans()[root_idx]
+                        .attributes
+                        .get(TAG_ORIGIN)
+                        .and_then(AttributeValue::as_string)
+                    {
+                        trace.origin = origin.clone();
+                    }
+                }
+            }
+
+            if trace.decision_maker.is_none() {
+                let first_decision_maker = trace.spans().iter().find_map(|span| {
+                    span.attributes
+                        .get(TAG_DECISION_MAKER)
+                        .and_then(AttributeValue::as_string)
+                });
+                if let Some(dm) = first_decision_maker {
+                    trace.decision_maker = Some(dm.clone());
+                }
+            }
+
+            if !self.compute_top_level_by_span_kind {
+                compute_top_level(trace.spans_mut());
+            }
 
             return Some(Event::Trace(trace));
         }
@@ -324,14 +379,40 @@ mod tests {
     }
 
     fn span(trace_id: [u8; 16], span_id: [u8; 8], attributes: Vec<KeyValue>) -> OtlpSpan {
+        span_raw(trace_id.to_vec(), span_id, attributes)
+    }
+
+    fn span_with_parent(
+        trace_id: [u8; 16], span_id: [u8; 8], parent_span_id: [u8; 8], attributes: Vec<KeyValue>,
+    ) -> OtlpSpan {
         OtlpSpan {
             trace_id: trace_id.to_vec(),
+            span_id: span_id.to_vec(),
+            parent_span_id: parent_span_id.to_vec(),
+            name: "span".to_string(),
+            end_time_unix_nano: 2,
+            attributes,
+            ..Default::default()
+        }
+    }
+
+    fn span_raw(trace_id: Vec<u8>, span_id: [u8; 8], attributes: Vec<KeyValue>) -> OtlpSpan {
+        OtlpSpan {
+            trace_id,
             span_id: span_id.to_vec(),
             name: "span".to_string(),
             end_time_unix_nano: 2,
             attributes,
             ..Default::default()
         }
+    }
+
+    /// Builds a 16-byte big-endian trace ID from its high and low u64 halves.
+    fn trace_id16(high: u64, low: u64) -> [u8; 16] {
+        let mut id = [0u8; 16];
+        id[..8].copy_from_slice(&high.to_be_bytes());
+        id[8..].copy_from_slice(&low.to_be_bytes());
+        id
     }
 
     fn build_resource_spans(resource_attrs: Vec<KeyValue>, spans: Vec<OtlpSpan>) -> ResourceSpans {
@@ -348,9 +429,10 @@ mod tests {
         }
     }
 
-    fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
+    fn translate_with_config(resource_spans: ResourceSpans, compute_top_level_by_span_kind: bool) -> Vec<Trace> {
         let mut translator = OtlpTracesTranslator::new(domains::otlp::Traces {
             string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            enable_compute_top_level_by_span_kind: compute_top_level_by_span_kind,
             ..Default::default()
         });
         let metrics = Metrics::for_tests();
@@ -358,6 +440,10 @@ mod tests {
             .translate_spans(resource_spans, &metrics)
             .filter_map(Event::try_into_trace)
             .collect()
+    }
+
+    fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
+        translate_with_config(resource_spans, true)
     }
 
     #[test]
@@ -449,5 +535,195 @@ mod tests {
         assert_eq!(payload.container_id.as_ref(), "abc123");
         assert_eq!(payload.language_name.as_ref(), "go");
         assert_eq!(payload.tracer_version.as_ref(), "1.0");
+    }
+
+    #[test]
+    fn convert_trace_id_uses_agent_grouping_key() {
+        // Pins the grouping key we derive from the upstream OTLP ingest: the low 8 bytes of the
+        // 16-byte big-endian trace ID.
+        let id: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert_eq!(
+            convert_trace_id(&id),
+            u64::from_be_bytes([8, 9, 10, 11, 12, 13, 14, 15])
+        );
+        assert_eq!(convert_trace_id_high(&id), u64::from_be_bytes([0, 1, 2, 3, 4, 5, 6, 7]));
+
+        // A zero-padded 64-bit trace ID: its value lives entirely in the low half.
+        let id64 = trace_id16(0, 0x1234_5678_9abc_def0);
+        assert_eq!(convert_trace_id(&id64), 0x1234_5678_9abc_def0);
+        assert_eq!(convert_trace_id_high(&id64), 0);
+
+        assert_eq!(convert_trace_id(&[1, 2, 3]), 0);
+        assert_eq!(convert_trace_id_high(&[0xAA; 8]), 0);
+    }
+
+    #[test]
+    fn translate_spans_rejects_groups_with_mixed_full_trace_ids() {
+        let low = u64::from_be_bytes([0xAA; 8]);
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace_id16(0x0101_0101_0101_0101, low), [1u8; 8], vec![]),
+                span(trace_id16(0x0202_0202_0202_0202, low), [2u8; 8], vec![]),
+                span(trace_id16(0, 0x0BBB_BBBB_BBBB_BBBB), [3u8; 8], vec![]),
+            ],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(
+            traces.len(),
+            1,
+            "the mixed group is dropped; the unrelated trace survives"
+        );
+        assert_eq!(traces[0].trace_id_low, 0x0BBB_BBBB_BBBB_BBBB);
+    }
+
+    #[test]
+    fn translate_spans_rejects_mixed_zero_and_nonzero_high_halves() {
+        // A zero high half and a nonzero high half are different full trace IDs, in either span
+        // order.
+        let id_short: Vec<u8> = vec![0xAA; 8];
+        let id_full = trace_id16(0x0101_0101_0101_0101, u64::from_be_bytes([0xAA; 8])).to_vec();
+
+        let short_first = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(id_short.clone(), [1u8; 8], vec![]),
+                span_raw(id_full.clone(), [2u8; 8], vec![]),
+            ],
+        );
+        assert_eq!(translate(short_first).len(), 0);
+
+        let full_first = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(id_full, [1u8; 8], vec![]),
+                span_raw(id_short, [2u8; 8], vec![]),
+            ],
+        );
+        assert_eq!(translate(full_first).len(), 0);
+    }
+
+    #[test]
+    fn translate_spans_accepts_consistent_zero_high_halves() {
+        // An 8-byte ID and its zero-padded 16-byte equivalent are the same 64-bit trace ID.
+        let id_short: Vec<u8> = vec![0xAA; 8];
+        let id_padded = trace_id16(0, u64::from_be_bytes([0xAA; 8])).to_vec();
+
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(id_short, [1u8; 8], vec![]),
+                span_raw(id_padded, [2u8; 8], vec![]),
+            ],
+        );
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].spans().len(), 2);
+        assert_eq!(traces[0].trace_id_high, 0);
+    }
+
+    #[test]
+    fn translate_spans_backfills_origin_from_root_span() {
+        // The root is reported last here.
+        let trace = trace_id16(0, 1);
+        let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
+        let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![string_kv("_dd.origin", "lambda")]);
+
+        let rs = build_resource_spans(vec![], vec![child, root]);
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].origin.as_ref(), "lambda");
+    }
+
+    #[test]
+    fn translate_spans_does_not_backfill_origin_from_non_root_span() {
+        let trace = trace_id16(0, 1);
+        let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
+        let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![string_kv("_dd.origin", "rum")]);
+
+        let rs = build_resource_spans(vec![], vec![root, child]);
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert!(traces[0].origin.as_ref().is_empty());
+    }
+
+    #[test]
+    fn translate_spans_backfills_decision_maker_from_first_span() {
+        // First span carrying the tag wins - not a root-based rule.
+        let trace = trace_id16(0, 1);
+        let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
+        let early = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![string_kv("_dd.p.dm", "-8")]);
+        let late = span_with_parent(trace, [3u8; 8], [1u8; 8], vec![string_kv("_dd.p.dm", "-9")]);
+
+        let rs = build_resource_spans(vec![], vec![root, early, late]);
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].decision_maker.as_deref(), Some("-8"));
+    }
+
+    #[test]
+    fn translate_spans_marks_top_level_fallback_when_span_kind_computation_disabled() {
+        // Roots, orphans, and service boundaries get marked; interior same-service spans don't.
+        let trace = trace_id16(0, 1);
+        let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
+        let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
+        let orphan = span_with_parent(trace, [3u8; 8], [0xEEu8; 8], vec![]);
+        let other_service = span_with_parent(trace, [5u8; 8], [1u8; 8], vec![string_kv("service.name", "svc-b")]);
+        let local_entry = span_with_parent(trace, [6u8; 8], [5u8; 8], vec![]);
+
+        let rs = build_resource_spans(
+            vec![string_kv("service.name", "svc-a")],
+            vec![root, child, orphan, other_service, local_entry],
+        );
+        let traces = translate_with_config(rs, false);
+        assert_eq!(traces.len(), 1);
+
+        let spans = traces[0].spans();
+        let top_level = |sid: u8| {
+            spans
+                .iter()
+                .find(|s| s.span_id() == u64::from_be_bytes([sid; 8]))
+                .unwrap()
+                .attributes
+                .get(crate::common::datadog::TOP_LEVEL_KEY)
+                .and_then(AttributeValue::as_num)
+        };
+        assert_eq!(top_level(1), Some(1.0), "root spans are marked");
+        assert_eq!(
+            top_level(3),
+            Some(1.0),
+            "orphans whose parent is missing from the chunk are marked"
+        );
+        assert_eq!(top_level(5), Some(1.0), "spans entering a different service are marked");
+        assert_eq!(
+            top_level(6),
+            Some(1.0),
+            "spans crossing back into the resource service are marked (local root)"
+        );
+        assert_eq!(
+            top_level(2),
+            None,
+            "same-service children with their parent present are not marked"
+        );
+    }
+
+    #[test]
+    fn translate_spans_skips_top_level_fallback_when_span_kind_computation_enabled() {
+        let trace = trace_id16(0, 1);
+        let root = span_with_parent(trace, [1u8; 8], [0u8; 8], vec![]);
+        let child = span_with_parent(trace, [2u8; 8], [1u8; 8], vec![]);
+        let orphan = span_with_parent(trace, [3u8; 8], [0xEEu8; 8], vec![]);
+
+        let rs = build_resource_spans(vec![], vec![root, child, orphan]);
+        let traces = translate_with_config(rs, true);
+        assert_eq!(traces.len(), 1);
+
+        for span in traces[0].spans() {
+            assert!(
+                !span.attributes.contains_key(crate::common::datadog::TOP_LEVEL_KEY),
+                "no span should carry a top-level mark with the fallback disabled"
+            );
+        }
     }
 }

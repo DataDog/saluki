@@ -15,8 +15,10 @@ pub(crate) mod test_util;
 pub mod transaction;
 pub mod validation;
 
-use saluki_core::data_model::event::trace::{AttributeValue, Trace};
+use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
 use stringtheory::MetaString;
+use tracing::debug;
 
 /// Metric key used to store Datadog sampling priority (`_sampling_priority_v1`).
 pub const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
@@ -77,6 +79,12 @@ pub(crate) const METRIC_INTAKE_PATHS: [&str; 6] = [
 /// Metadata tag used to store the sampling decision maker (`_dd.p.dm`).
 pub const TAG_DECISION_MAKER: &str = "_dd.p.dm";
 
+/// Metadata tag used to store the trace origin (`_dd.origin`).
+pub const TAG_ORIGIN: &str = "_dd.origin";
+
+/// Span attribute key used to mark top-level spans (`_top_level`).
+pub const TOP_LEVEL_KEY: &str = "_top_level";
+
 /// Decision maker value for probabilistic sampling (matches Datadog Agent).
 pub const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 
@@ -125,4 +133,74 @@ pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString>
         return Some(&trace.payload.env);
     }
     None
+}
+
+/// Finds the index of the root span within the given spans.
+///
+/// Scans backwards for the first span with a zero parent ID (clients often report the root last),
+/// falling back to whichever span claims a parent that is absent from the trace. Returns `None`
+/// only when `spans` is empty. The spans are never modified; the parent-claim map is scratch
+/// state local to this function.
+pub fn get_root_span_index(spans: &[Span]) -> Option<usize> {
+    if spans.is_empty() {
+        return None;
+    }
+
+    let length = spans.len();
+    let mut parent_id_to_child: FastHashMap<u64, usize> = FastHashMap::default();
+
+    for i in 0..length {
+        let j = length - 1 - i;
+        if spans[j].parent_id() == 0 {
+            return Some(j);
+        }
+        parent_id_to_child.insert(spans[j].parent_id(), j);
+    }
+
+    for span in spans.iter() {
+        parent_id_to_child.remove(&span.span_id());
+    }
+
+    if parent_id_to_child.len() != 1 {
+        debug!("Didn't reliably find the root span for a trace");
+    }
+
+    if let Some((_, child_idx)) = parent_id_to_child.iter().next() {
+        return Some(*child_idx);
+    }
+
+    Some(length - 1)
+}
+
+/// Computes top-level marks from the span relationships themselves, marking spans in-place.
+///
+/// A span is top-level when it is a root span, its parent is missing from the trace (the entry
+/// point of a distributed fragment), or its parent is in a different service (the entry point of
+/// this service's subtree). Marks are only ever set, never cleared.
+pub fn compute_top_level(spans: &mut [Span]) {
+    let mut span_id_to_index: FastHashMap<u64, usize> = FastHashMap::default();
+    for (i, span) in spans.iter().enumerate() {
+        span_id_to_index.insert(span.span_id(), i);
+    }
+
+    // Classify while immutably borrowed, then mark in a second pass.
+    let mut top_level_indices = Vec::with_capacity(spans.len());
+    for (i, span) in spans.iter().enumerate() {
+        let parent_id = span.parent_id();
+        if parent_id == 0 {
+            top_level_indices.push(i);
+        } else if let Some(&parent_idx) = span_id_to_index.get(&parent_id) {
+            if spans[parent_idx].service() != span.service() {
+                top_level_indices.push(i);
+            }
+        } else {
+            top_level_indices.push(i);
+        }
+    }
+
+    for i in top_level_indices {
+        spans[i]
+            .attributes
+            .insert(MetaString::from_static(TOP_LEVEL_KEY), AttributeValue::Float(1.0));
+    }
 }
