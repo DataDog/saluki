@@ -697,21 +697,28 @@ inventory:
     pipelines: [cross_cutting]
     description: "mTLS-authenticated privileged API address"
     documentation: |-
-      ### `data_plane.secure_api_listen_address`
+      ### Privileged API authentication
 
-      This key configures the listener for the mTLS-authenticated privileged HTTP and gRPC API.
-      Addresses use a transport scheme (for example, `tcp://`) to select the underlying socket
-      type. See `data_plane.api_listen_address` for the unprivileged endpoint.
+      `data_plane.secure_api_listen_address` configures the listener for ADP's privileged HTTP and
+      gRPC API. The address uses a transport scheme, such as `tcp://`, to select the underlying
+      socket type. See `data_plane.api_listen_address` for the unprivileged endpoint.
 
-      Before ADP routes a request, every client must present a certificate during the TLS
-      handshake. The presented leaf certificate's DER encoding must exactly equal the Agent IPC
-      certificate loaded from the configured `ipc_cert.pem`, and the handshake must prove
-      possession of its private key. An issuing CA does not broaden the accepted identity.
+      Every client must present the Agent IPC certificate from the configured `ipc_cert.pem` during
+      the TLS handshake. ADP accepts the client only when the presented leaf certificate's DER
+      encoding exactly matches that certificate and the handshake proves possession of its private
+      key. Authentication completes before ADP selects an HTTP route or gRPC service, so an
+      unauthenticated request never reaches a route.
 
-      All clients use this same certificate and therefore share one principal; ADP does not
-      distinguish individual clients. Certificate rotation is exact-only: ADP accepts no old/new
-      certificate overlap. Coordinate replacement of `ipc_cert.pem` with restarts so every client
-      and the server use the same certificate.
+      The ADP CLI and the Core Agent use this shared IPC identity. All holders therefore act as one
+      principal; ADP does not distinguish individual clients. Because the transport authenticates
+      every privileged connection, routes do not need a bearer token solely to compensate for
+      anonymous TLS access. A route can still enforce separate authorization when its policy
+      requires it.
+
+      Exact certificate matching does not allow an issuing CA to broaden trust, and it does not
+      provide an overlap window for old and new certificates. Coordinate replacement of
+      `ipc_cert.pem` with restarts so ADP and every client use the same certificate throughout a
+      rotation.
     test_support:
       used_by: [get_typed]
       additional_attributes:
@@ -722,8 +729,12 @@ inventory:
     pipelines: [cross_cutting]
     description: "ADP zstd compression level"
     documentation: |-
-      This setting takes precedence over `serializer_zstd_compressor_level`. When unset, ADP uses
-      an explicitly configured Agent level, or its own default of 3 when neither setting is set.
+      ADP-specific zstd compression level, taking precedence over the Core Agent's
+      `serializer_zstd_compressor_level`. When this key is unset, ADP uses that setting if you set
+      it explicitly, and otherwise uses its own default of 3. Level 3 achieves approximately 6%
+      smaller payloads (65.3 MB versus 69.3 MB) without a net CPU increase, since ADP is more
+      efficient than the Agent and can afford higher compression. Configure it under `data_plane`
+      or with `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL`.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -945,26 +956,38 @@ inventory:
     pipelines: [dogstatsd]
     description: "Enables DSD metric logging"
     documentation: |
+      ### DogStatsD metric debug log
+
       ADP supports the core agent's DogStatsD metric debug log. To write this file, set
-      `dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`;
-      it defaults to `true`, so most configurations only need to enable
+      `dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it
+      defaults to `true`, so most configurations only need to enable
       `dogstatsd_metrics_stats_enable`.
 
-      When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination
-      to the decoded metric stream. The destination writes one line per metric sample with the
-      metric name, tags, count, and last-seen time while `dogstatsd_metrics_stats_enable` is
-      `true`. When `dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded
-      metrics and drops them. This lets runtime configuration changes start and stop the debug
-      log without rebuilding the topology.
+      When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination to the
+      decoded metric stream. The destination writes one line per metric sample with the metric
+      name, tags, count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
+      `dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops
+      them. This lets runtime configuration changes start and stop the debug log without rebuilding
+      the topology. This feature is for support and troubleshooting. It does not change normal
+      metric forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
+
+      Use these settings to control the file:
+
+      | Config Key                     | Behavior                                                                                    |
+      | ------------------------------ | ------------------------------------------------------------------------------------------- |
+      | `dogstatsd_log_file`           | Output path. If empty, ADP uses the platform default DogStatsD stats log path.              |
+      | `dogstatsd_log_file_max_rolls` | Number of rotated files to keep. Defaults to `3`.                                           |
+      | `dogstatsd_log_file_max_size`  | Maximum active file size before rotation. Defaults to `10Mb`.                               |
+      | `dogstatsd_logging_enabled`    | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
 
       The default `dogstatsd_log_file` path is
       `/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
       `/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
       `%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
 
-      This debug log differs from the `dogstatsd_capture_*` settings. The debug log records
-      decoded metric summaries after DogStatsD parsing. The capture settings record raw
-      DogStatsD traffic for packet-level investigation.
+      This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded
+      metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
+      for packet-level investigation, and they remain tracked separately under [#1381].
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -1157,6 +1180,23 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Enable UDS origin detection"
+    documentation: |-
+      ### UDS origin detection on macOS
+
+      ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
+      Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()`
+      provide UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but
+      it cannot derive a process ID from the socket and therefore cannot use that path for origin
+      enrichment.
+
+      When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP
+      logs a startup warning and treats the missing PID as a static platform limitation rather than
+      a per-packet origin detection error.
+
+      The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
+      metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which
+      covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
+      cannot obtain that PID from the socket.
     test_support:
       used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
@@ -1471,10 +1511,15 @@ inventory:
     documentation: "ADP internal DogStatsD telemetry uses OpenMetrics."
 
   env:
-    support: full
+    support: partial
     pipelines: [traces]
     description: "Agent environment name"
-    documentation: "ADP reads env but defaults to 'none' instead of the core agent's ''. Scope is narrower in ADP (only traces/stats encoders). Neither implementation uses env directly on the DogStatsD metrics path."
+    documentation: |-
+      The core Agent defaults `env` to an empty string and attaches the configured environment to
+      every metric, event, log, trace, and service check it emits.
+
+      ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
+      It does not apply this setting directly to the DogStatsD metrics path.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -1918,14 +1963,19 @@ inventory:
     pipelines: [checks, dogstatsd, traces]
     description: "Debug-log decoded payload contents before encoding"
     documentation: |
-      Set `log_payloads: true` and run with debug-level logging to see decoded payload objects
-      (scalar series metrics, sketches/distributions, events, and service checks) before they
-      enter Datadog encoders. These logs can contain high-volume customer data including metric
-      names, tags, host and container metadata, event text, and service check messages. Use this
-      setting only while diagnosing payload content.
+      ### Payload debug logging (`log_payloads`)
 
-      ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
-      log compressed wire payload bytes.
+      ADP supports `log_payloads` for debugging metric, event, and service check payload contents
+      before they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with
+      debug-level logging enabled.
+
+      When enabled, ADP logs decoded payload objects: scalar series metrics,
+      sketches/distributions, events, and service checks. These logs can contain high-volume
+      customer data, including metric names, tags, host and container metadata, event text, and
+      service check messages. Use this setting only while diagnosing payload content.
+
+      ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
+      compressed wire payload bytes.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -1942,6 +1992,14 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Write logs to syslog"
+    documentation: |-
+      ### Syslog logging
+
+      To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
+      `log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is
+      empty while syslog logging is enabled, ADP uses the platform default local syslog socket:
+      `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set
+      `syslog_rfc: true` when the receiving syslog daemon expects the Agent's RFC-style header.
     test_support:
       used_by: [NO_SMOKE]
 
@@ -1957,6 +2015,23 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "Metric name blocklist"
+    documentation: |-
+      ### DogStatsD metric blocklists
+
+      A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`:
+      ADP uses `metric_filterlist_match_prefix` as the active match mode. Clearing
+      `metric_filterlist` restores `statsd_metric_blocklist` and
+      `statsd_metric_blocklist_match_prefix`.
+
+      Both lists default to empty, and both match-prefix settings default to `false`. Accepted
+      runtime changes to any of these settings update filtering.
+
+      Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+      metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+      `my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+      matched as written, so an entry that is not itself a normalized name matches nothing. Metric
+      names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
+      containing no ASCII letter, never match.
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -2284,7 +2359,7 @@ inventory:
     pipelines: [otlp]
     description: "TTL (seconds) for cached delta-conversion points"
     documentation: |-
-      Controls how long previously-seen data points are kept in memory when converting cumulative
+      Controls how long previously seen data points are kept in memory when converting cumulative
       monotonic sums to deltas. Once a series' cached prior value is older than this TTL, it is
       evicted and the next value is treated as an initial value again. Defaults to `3600` seconds.
       Raise this for high-cardinality or low-frequency series that report infrequently enough to

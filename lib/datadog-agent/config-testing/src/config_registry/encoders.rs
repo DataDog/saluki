@@ -145,7 +145,7 @@ crate::declare_annotations! {
     /// `env`-Agent environment name
     ENV = SalukiAnnotation {
         schema: &schema::ENV,
-        support_level: SupportLevel::Full,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],

@@ -257,8 +257,8 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
         .collect();
     let adp_only_docs = render_docs_block(&adp_doc_entries);
 
-    // ── Transparent Settings (full) ─────────────────────────────────────
-    let transparent: Vec<(&str, &FullSupport)> = overlay
+    // ── Fully Supported Settings (full) ─────────────────────────────────
+    let fully_supported: Vec<(&str, &FullSupport)> = overlay
         .inventory
         .iter()
         .filter_map(|(k, v)| match v {
@@ -267,7 +267,7 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
         })
         .collect();
 
-    let transparent_rows: Vec<TwoColRow> = transparent
+    let fully_supported_rows: Vec<TwoColRow> = fully_supported
         .iter()
         .map(|(key, f)| {
             if let Some(i) = &f.issue {
@@ -281,7 +281,13 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
             }
         })
         .collect();
-    let transparent_table = render_two_col_table(["Config Key", "Description"], &transparent_rows);
+    let fully_supported_table = render_two_col_table(["Config Key", "Description"], &fully_supported_rows);
+
+    let fully_supported_doc_entries: Vec<(&str, &str)> = fully_supported
+        .iter()
+        .filter_map(|(key, f)| f.documentation.as_deref().map(|documentation| (*key, documentation)))
+        .collect();
+    let fully_supported_docs = render_docs_block(&fully_supported_doc_entries);
 
     // ── Issue references ────────────────────────────────────────────────
     let mut issue_refs = String::new();
@@ -299,7 +305,8 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
     ctx.insert("investigate_table".to_string(), investigate_table);
     ctx.insert("adp_only_table".to_string(), adp_only_table);
     ctx.insert("adp_only_docs".to_string(), adp_only_docs);
-    ctx.insert("transparent_table".to_string(), transparent_table);
+    ctx.insert("fully_supported_table".to_string(), fully_supported_table);
+    ctx.insert("fully_supported_docs".to_string(), fully_supported_docs);
     ctx.insert("issue_references".to_string(), issue_refs);
 
     let mut tt = TinyTemplate::new();
