@@ -144,7 +144,7 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_flush_incomplete_buckets: bool,
 
-    #[serde(default)]
+    #[serde(default = "defaults::datadog_configuration_dogstatsd_log_file")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_log_file: String,
 
@@ -264,17 +264,17 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_apikey_validation_interval: i64,
 
-    #[serde(default = "defaults::default_u64::<i64, 2>")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
-    pub forwarder_backoff_base: i64,
+    #[serde(default = "defaults::datadog_configuration_forwarder_backoff_base")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub forwarder_backoff_base: f64,
 
-    #[serde(default = "defaults::default_u64::<i64, 2>")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
-    pub forwarder_backoff_factor: i64,
+    #[serde(default = "defaults::datadog_configuration_forwarder_backoff_factor")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub forwarder_backoff_factor: f64,
 
-    #[serde(default = "defaults::default_u64::<i64, 64>")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
-    pub forwarder_backoff_max: i64,
+    #[serde(default = "defaults::datadog_configuration_forwarder_backoff_max")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub forwarder_backoff_max: f64,
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
@@ -340,7 +340,7 @@ pub struct DatadogConfiguration {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_storage_max_size_in_bytes: i64,
 
-    #[serde(default)]
+    #[serde(default = "defaults::datadog_configuration_forwarder_storage_path")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub forwarder_storage_path: String,
 
@@ -597,7 +597,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_eol_required: Default::default(),
             dogstatsd_expiry_seconds: defaults::default_u64::<i64, 300>(),
             dogstatsd_flush_incomplete_buckets: Default::default(),
-            dogstatsd_log_file: Default::default(),
+            dogstatsd_log_file: defaults::datadog_configuration_dogstatsd_log_file(),
             dogstatsd_log_file_max_rolls: defaults::default_u64::<i64, 3>(),
             dogstatsd_log_file_max_size: defaults::datadog_configuration_dogstatsd_log_file_max_size(),
             dogstatsd_logging_enabled: defaults::default_bool::<true>(),
@@ -626,9 +626,9 @@ impl Default for DatadogConfiguration {
             expected_tags_duration: duration_defaults::expected_tags_duration(),
             extra_tags: Default::default(),
             forwarder_apikey_validation_interval: defaults::default_u64::<i64, 60>(),
-            forwarder_backoff_base: defaults::default_u64::<i64, 2>(),
-            forwarder_backoff_factor: defaults::default_u64::<i64, 2>(),
-            forwarder_backoff_max: defaults::default_u64::<i64, 64>(),
+            forwarder_backoff_base: defaults::datadog_configuration_forwarder_backoff_base(),
+            forwarder_backoff_factor: defaults::datadog_configuration_forwarder_backoff_factor(),
+            forwarder_backoff_max: defaults::datadog_configuration_forwarder_backoff_max(),
             forwarder_connection_reset_interval: Default::default(),
             forwarder_flush_to_disk_mem_ratio: defaults::datadog_configuration_forwarder_flush_to_disk_mem_ratio(),
             forwarder_high_prio_buffer_size: defaults::default_u64::<i64, 100>(),
@@ -650,7 +650,7 @@ impl Default for DatadogConfiguration {
             forwarder_stop_timeout: defaults::default_u64::<i64, 2>(),
             forwarder_storage_max_disk_ratio: defaults::datadog_configuration_forwarder_storage_max_disk_ratio(),
             forwarder_storage_max_size_in_bytes: Default::default(),
-            forwarder_storage_path: Default::default(),
+            forwarder_storage_path: defaults::datadog_configuration_forwarder_storage_path(),
             forwarder_timeout: defaults::default_u64::<i64, 20>(),
             histogram_aggregates: defaults::datadog_configuration_histogram_aggregates(),
             histogram_copy_to_distribution: Default::default(),
@@ -1144,6 +1144,14 @@ pub struct DataPlane {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub secure_api_listen_address: String,
 
+    #[serde(default = "defaults::default_u64::<i64, 3>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub serializer_zstd_compressor_level: i64,
+
+    #[serde(default = "defaults::default_u64::<i64, 4>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub stop_timeout: i64,
+
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub use_new_config_stream_endpoint: bool,
@@ -1159,6 +1167,8 @@ impl Default for DataPlane {
             otlp: Default::default(),
             remote_agent_enabled: defaults::default_bool::<true>(),
             secure_api_listen_address: defaults::datadog_configuration_data_plane_secure_api_listen_address(),
+            serializer_zstd_compressor_level: defaults::default_u64::<i64, 3>(),
+            stop_timeout: defaults::default_u64::<i64, 4>(),
             use_new_config_stream_endpoint: defaults::default_bool::<true>(),
         }
     }
@@ -1914,9 +1924,6 @@ pub struct SerializerExperimentalUseV3Api {
     pub compression_level: i64,
 
     #[serde(default)]
-    pub series: SerializerExperimentalUseV3ApiSeries,
-
-    #[serde(default)]
     pub sketches: SerializerExperimentalUseV3ApiSketches,
 }
 
@@ -1924,23 +1931,7 @@ impl Default for SerializerExperimentalUseV3Api {
     fn default() -> Self {
         Self {
             compression_level: Default::default(),
-            series: Default::default(),
             sketches: Default::default(),
-        }
-    }
-}
-
-#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct SerializerExperimentalUseV3ApiSeries {
-    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
-    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
-    pub endpoints: Vec<String>,
-}
-
-impl Default for SerializerExperimentalUseV3ApiSeries {
-    fn default() -> Self {
-        Self {
-            endpoints: Default::default(),
         }
     }
 }
@@ -2008,8 +1999,9 @@ pub struct UseV3ApiSeries {
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub enabled: String,
 
-    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    pub endpoints: ::serde_json::Map<String, ::serde_json::Value>,
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string_map")]
+    pub endpoints: HashMap<String, String>,
 }
 
 impl Default for UseV3ApiSeries {
@@ -2094,6 +2086,9 @@ pub mod defaults {
     pub(super) fn datadog_configuration_dd_url() -> String {
         "https://app.datadoghq.com".to_string()
     }
+    pub(super) fn datadog_configuration_dogstatsd_log_file() -> String {
+        "${log_path}/dogstatsd_info/dogstatsd-stats.log".to_string()
+    }
     pub(super) fn datadog_configuration_dogstatsd_log_file_max_size() -> String {
         "10Mb".to_string()
     }
@@ -2103,6 +2098,15 @@ pub mod defaults {
     pub(super) fn datadog_configuration_dogstatsd_windows_pipe_security_descriptor() -> String {
         "D:AI(A;;GA;;;WD)".to_string()
     }
+    pub(super) fn datadog_configuration_forwarder_backoff_base() -> f64 {
+        2_f64
+    }
+    pub(super) fn datadog_configuration_forwarder_backoff_factor() -> f64 {
+        2_f64
+    }
+    pub(super) fn datadog_configuration_forwarder_backoff_max() -> f64 {
+        64_f64
+    }
     pub(super) fn datadog_configuration_forwarder_flush_to_disk_mem_ratio() -> f64 {
         0.5_f64
     }
@@ -2111,6 +2115,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_forwarder_storage_max_disk_ratio() -> f64 {
         0.8_f64
+    }
+    pub(super) fn datadog_configuration_forwarder_storage_path() -> String {
+        "${run_path}/transactions_to_retry".to_string()
     }
     pub(super) fn datadog_configuration_histogram_aggregates() -> Vec<String> {
         vec![
@@ -2187,7 +2194,7 @@ pub mod defaults {
         "tcp://0.0.0.0:5100".to_string()
     }
     pub(super) fn datadog_configuration_data_plane_log_file() -> String {
-        "/var/log/datadog/agent-data-plane.log".to_string()
+        "${log_path}/agent-data-plane.log".to_string()
     }
     pub(super) fn datadog_configuration_data_plane_secure_api_listen_address() -> String {
         "tcp://0.0.0.0:5101".to_string()

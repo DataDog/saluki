@@ -80,7 +80,7 @@ use agent_data_plane_config::defaults::{
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
-use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
 use serde::de::Visitor;
@@ -238,16 +238,8 @@ pub struct SalukiOnly {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlane {
-    /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout`).
-    ///
-    /// If present, this will override the Datadog schema's `aggregator_stop_timeout` and
-    /// `forwarder_stop_timeout` values.
-    pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
-    /// ADP-specific zstd compression level (`data_plane.serializer_zstd_compressor_level`), which
-    /// takes precedence over the Core Agent's `serializer_zstd_compressor_level`.
-    pub serializer_zstd_compressor_level: Option<i32>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
@@ -518,7 +510,6 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
-        config.control.stop_timeout = self.data_plane.stop_timeout.map(Duration::from_secs);
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
         }
@@ -543,11 +534,6 @@ impl SalukiOnly {
         }
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
-        }
-        // Highest precedence of the three inputs `Compression::zstd_compressor_level` resolves, so it
-        // is explicit when set and keeps ADP's default otherwise.
-        if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
-            config.shared.endpoints.compression.adp_zstd_level = ConfigValue::explicit(v);
         }
 
         // domains.dogstatsd
@@ -754,9 +740,7 @@ mod tests {
             "otlp_string_interner_size": 333,
             // nested: data_plane
             "data_plane": {
-                "stop_timeout": 45,
                 "standalone_mode": true,
-                "serializer_zstd_compressor_level": 9,
                 "checks": { "enabled": true },
                 // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
                 // canonical schema-provided endpoint keys.
@@ -799,7 +783,6 @@ mod tests {
         saluki_only.seed(&mut config);
 
         // control
-        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
         assert_eq!(config.control.memory_limit, Some(ByteSize::mb(512).as_u64()));
@@ -812,7 +795,6 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert_eq!(config.shared.endpoints.compression.effective_zstd_level(), 9);
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;

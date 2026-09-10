@@ -145,7 +145,7 @@ crate::declare_annotations! {
     /// `env`-Agent environment name
     ENV = SalukiAnnotation {
         schema: &schema::ENV,
-        support_level: SupportLevel::Full,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
@@ -156,17 +156,6 @@ crate::declare_annotations! {
     /// `serializer_experimental_use_v3_api.compression_level`-V3 API zstd compression level
     SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `serializer_experimental_use_v3_api.series.endpoints`-Endpoints enabled for V3 series API
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
