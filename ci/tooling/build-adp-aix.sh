@@ -37,10 +37,7 @@ app_build_time_placeholder="0000-00-00T00:00:00-00:00"
 if [[ "${APP_BUILD_TIME:-}" == "${app_build_time_placeholder}" ]]; then
     unset APP_BUILD_TIME
 fi
-if [[ "${ADP_APP_BUILD_TIME:-}" == "${app_build_time_placeholder}" ]]; then
-    unset ADP_APP_BUILD_TIME
-fi
-export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}}}"
+export APP_BUILD_TIME="${APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}}"
 export APP_DEV_BUILD="${APP_DEV_BUILD:-${ADP_APP_DEV_BUILD:-false}}"
 
 require_executable() {
