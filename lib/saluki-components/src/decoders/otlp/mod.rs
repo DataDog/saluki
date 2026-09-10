@@ -26,16 +26,21 @@ use crate::common::otlp::{
 };
 
 /// Configuration for the OTLP decoder.
-#[derive(Default)]
 pub struct OtlpDecoderConfiguration {
     /// Resolved OTLP trace ingestion settings.
     traces: domains::otlp::Traces,
+
+    /// Maximum length of a span's resource name, in bytes.
+    max_resource_len: usize,
 }
 
 impl OtlpDecoderConfiguration {
     /// Creates a new `OtlpDecoderConfiguration` from the resolved OTLP trace configuration.
-    pub fn from_configuration(traces: &domains::otlp::Traces) -> Self {
-        Self { traces: traces.clone() }
+    pub fn from_configuration(traces: &domains::otlp::Traces, max_resource_len: usize) -> Self {
+        Self {
+            traces: traces.clone(),
+            max_resource_len,
+        }
     }
 }
 
@@ -51,7 +56,7 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(context.component_context());
-        let traces_translator = OtlpTracesTranslator::new(self.traces.clone());
+        let traces_translator = OtlpTracesTranslator::new(self.traces.clone(), self.max_resource_len);
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,

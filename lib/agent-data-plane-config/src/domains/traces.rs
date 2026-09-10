@@ -3,8 +3,8 @@
 use serde::Serialize;
 
 use crate::defaults::{
-    DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS,
-    DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+    DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
+    DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
 };
 
 /// Resolved traces configuration.
@@ -56,6 +56,12 @@ pub struct Domain {
 
     /// OTTL span-transform settings.
     pub ottl_transform: OttlTransform,
+
+    /// Maximum length of a span's resource name, in bytes; longer resources are truncated.
+    ///
+    /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
+    /// Change this only if legitimate resources exceed the default.
+    pub max_resource_len: usize,
 }
 
 impl Default for Domain {
@@ -74,6 +80,7 @@ impl Default for Domain {
             obfuscation: Obfuscation::default(),
             // Saluki-only fields own their absent-key behavior here.
             default_env: DEFAULT_TRACE_ENV.to_owned(),
+            max_resource_len: DEFAULT_MAX_RESOURCE_LEN,
             error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
             rare_sampler: RareSampler::default(),
             ottl_filter: OttlFilter::default(),

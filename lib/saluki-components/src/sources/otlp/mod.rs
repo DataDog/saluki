@@ -129,19 +129,23 @@ pub struct OtlpConfiguration {
     /// Resolved OTLP domain slice.
     otlp: domains::otlp::Domain,
 
+    /// Maximum length of a span's resource name, in bytes.
+    max_resource_len: usize,
+
     /// Workload provider to utilize for origin detection/enrichment.
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
 
 impl OtlpConfiguration {
     /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration and workload provider.
-    pub fn from_configuration<W>(otlp: &domains::otlp::Domain, workload_provider: W) -> Self
+    pub fn from_configuration<W>(otlp: &domains::otlp::Domain, max_resource_len: usize, workload_provider: W) -> Self
     where
         W: WorkloadProvider + Send + Sync + 'static,
     {
         Self {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
+            max_resource_len,
             workload_provider: Arc::new(workload_provider),
         }
     }
@@ -217,7 +221,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
+        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone(), self.max_resource_len);
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = resolve_grpc_http2_config(
             &self.otlp.receiver.grpc.keepalive,
@@ -615,7 +619,11 @@ mod tests {
             metrics,
             ..Default::default()
         };
-        OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+        OtlpConfiguration::from_configuration(
+            &otlp,
+            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            saluki_env::workload::providers::NoopWorkloadProvider,
+        )
     }
 
     #[test]

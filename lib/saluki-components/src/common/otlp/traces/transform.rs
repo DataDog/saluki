@@ -28,10 +28,10 @@ use crate::common::otlp::semantics::{
     current_registry, lookup_int64, lookup_string, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor,
 };
 use crate::common::otlp::traces::normalize::{
-    is_normalized_tag_value, normalize_service_into, normalize_tag_value_append_unchecked,
-    normalize_tag_value_into_unchecked,
+    is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name, normalize_service_into,
+    normalize_tag_value_append_unchecked, normalize_tag_value_into_unchecked, truncate_utf8, truncate_with_ellipses,
+    MAX_META_KEY_LEN, MAX_META_VAL_LEN,
 };
-use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
@@ -56,6 +56,7 @@ const KEY_DATADOG_ERROR_STACK: &str = "datadog.error.stack";
 const KEY_DATADOG_HTTP_STATUS_CODE: &str = "datadog.http_status_code";
 
 const DEFAULT_SERVICE_NAME: &str = "otlpresourcenoservicename";
+const LINK_NAME_KEY: &str = "link.name";
 const OPERATION_NAME_KEY: &str = "operation.name";
 const RESOURCE_NAME_KEY: &str = "resource.name";
 const HTTP_REQUEST_METHOD_KEYS: &[&str] = &["http.request.method", "http.method"];
@@ -112,10 +113,11 @@ const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7
 
 // otel_span_to_dd_span converts an OTLP span to DD span and is based on the logic defined in the agent.
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
+#[allow(clippy::too_many_arguments)]
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
     ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<&MetaString>,
+    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<&MetaString>, max_resource_len: usize,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -127,6 +129,7 @@ pub fn otel_span_to_dd_span(
         compute_top_level_by_span_kind,
         interner,
         string_builder,
+        max_resource_len,
     );
 
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
@@ -350,8 +353,45 @@ pub fn otel_span_to_dd_span(
         }
     }
 
+    truncate_attributes(&mut attrs);
+
     dd_span.attributes = attrs;
     dd_span
+}
+
+/// Truncates oversized attribute keys and string values in-place, leaving everything else untouched.
+///
+/// Keys longer than `MAX_META_KEY_LEN` and string values longer than `MAX_META_VAL_LEN` are
+/// truncated to the limit and suffixed with `...`. Structured meta keys
+/// (`_dd.*.{json,msgpack,protobuf}`) are exempt. Only oversized entries are rewritten.
+fn truncate_attributes(attrs: &mut FastHashMap<MetaString, AttributeValue>) {
+    let oversized_keys: Vec<MetaString> = attrs
+        .iter()
+        .filter(|(key, value)| {
+            if is_structured_meta_key(key) {
+                return false;
+            }
+            key.len() > MAX_META_KEY_LEN || matches!(value, AttributeValue::String(s) if s.len() > MAX_META_VAL_LEN)
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for key in oversized_keys {
+        let Some(mut value) = attrs.remove(&key) else {
+            continue;
+        };
+        let new_key = if key.len() > MAX_META_KEY_LEN {
+            MetaString::from(truncate_with_ellipses(key.as_ref(), MAX_META_KEY_LEN).into_owned())
+        } else {
+            key
+        };
+        if let AttributeValue::String(s) = &mut value {
+            if s.len() > MAX_META_VAL_LEN {
+                *s = MetaString::from(truncate_with_ellipses(s.as_ref(), MAX_META_VAL_LEN).into_owned());
+            }
+        }
+        attrs.insert(new_key, value);
+    }
 }
 
 // OtelSpanToDDSpanMinimal otelSpanToDDSpan converts an OTel span to a DD span.
@@ -360,7 +400,7 @@ pub fn otel_span_to_dd_span(
 pub fn otel_to_dd_span_minimal(
     otel_span: &OtlpSpan, otel_resource: &Resource, _instrumentation_scope: Option<&OtlpInstrumentationScope>,
     ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>,
+    string_builder: &mut StringBuilder<GenericMapInterner>, max_resource_len: usize,
 ) -> (DdSpan, FastHashMap<MetaString, AttributeValue>) {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -476,18 +516,13 @@ pub fn otel_to_dd_span_minimal(
             );
         }
         if resource.is_empty() {
-            resource = get_otel_resource_v2_truncated(
+            resource = get_otel_resource_v2(
                 otel_span,
                 span_attributes,
                 resource_attributes,
                 interner,
                 string_builder,
             );
-            // Agent normalizer sets resource = name when resource is empty
-            // https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/normalizer.go#L245-248
-            if resource.is_empty() {
-                resource = name.clone();
-            }
         }
         if span_type.is_empty() {
             span_type = get_otel_span_type(
@@ -498,6 +533,17 @@ pub fn otel_to_dd_span_minimal(
                 string_builder,
             );
         }
+    }
+
+    name = normalize_name(name);
+
+    // An empty resource falls back to the span name.
+    if !ignore_missing_fields && resource.is_empty() {
+        resource = name.clone();
+    }
+
+    if resource.len() > max_resource_len {
+        resource = MetaString::from(truncate_utf8(&resource, max_resource_len));
     }
 
     dd_span = dd_span
@@ -909,24 +955,6 @@ fn get_otel_resource_v2(
     MetaString::empty()
 }
 
-fn get_otel_resource_v2_truncated(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
-    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
-) -> MetaString {
-    let res_name = get_otel_resource_v2(
-        otel_span,
-        span_attributes,
-        resource_attributes,
-        interner,
-        string_builder,
-    );
-    if res_name.len() > MAX_RESOURCE_LEN {
-        MetaString::from(truncate_utf8(&res_name, MAX_RESOURCE_LEN))
-    } else {
-        res_name
-    }
-}
-
 fn get_otel_span_type(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
@@ -1153,7 +1181,13 @@ fn marshal_links(links: &[OtlpSpanLink]) -> Option<String> {
         if !link.trace_state.is_empty() {
             obj.insert("tracestate".to_string(), JsonValue::String(link.trace_state.clone()));
         }
-        if let Some(attributes) = key_values_to_json_object(&link.attributes) {
+        if let Some(mut attributes) = key_values_to_json_object(&link.attributes) {
+            if let Some(JsonValue::String(link_name)) = attributes.get_mut(LINK_NAME_KEY) {
+                if needs_name_normalization(link_name) {
+                    let normalized = normalize_name(MetaString::from(link_name.as_str()));
+                    *link_name = normalized.as_ref().to_string();
+                }
+            }
             obj.insert("attributes".to_string(), JsonValue::Object(attributes));
         }
         if link.dropped_attributes_count != 0 {
@@ -2243,6 +2277,7 @@ mod tests {
             &interner,
             &mut string_builder,
             None,
+            5000,
         );
 
         use saluki_core::data_model::event::trace::AttributeValue;
@@ -2328,6 +2363,7 @@ mod tests {
                 &interner,
                 &mut string_builder,
                 None,
+                5000,
             );
             use saluki_core::data_model::event::trace::AttributeValue;
             if tc.should_map {
@@ -2393,6 +2429,7 @@ mod tests {
             &interner,
             &mut string_builder,
             None,
+            5000,
         );
 
         use saluki_core::data_model::event::trace::AttributeValue;
@@ -2832,7 +2869,7 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None)
+        otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000)
     }
 
     #[test]
@@ -2888,6 +2925,209 @@ mod tests {
         );
     }
 
+    #[test]
+    fn otel_span_to_dd_span_normalizes_span_name() {
+        // `datadog.name` values are tag-normalized on the way in, but tag rules differ from span
+        // name rules: colons are valid in tags and invalid in names.
+        let dd_span = build_dd_span(SpanKind::Internal, vec![kv_str("datadog.name", "fun:ky")], None, vec![]);
+        assert_eq!(dd_span.name(), "fun_ky");
+
+        // Already-valid names pass through unchanged.
+        let dd_span = build_dd_span(
+            SpanKind::Internal,
+            vec![kv_str("datadog.name", "good.name")],
+            None,
+            vec![],
+        );
+        assert_eq!(dd_span.name(), "good.name");
+
+        // Over-length names are truncated to the name limit before normalization.
+        let dd_span = build_dd_span(
+            SpanKind::Internal,
+            vec![kv_str("datadog.name", "a".repeat(150).as_str())],
+            None,
+            vec![],
+        );
+        assert_eq!(dd_span.name(), "a".repeat(100));
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_truncates_oversized_attributes() {
+        let long_key = "k".repeat(MAX_META_KEY_LEN + 50);
+        let long_value = "v".repeat(MAX_META_VAL_LEN + 100);
+        let dd_span = build_dd_span(
+            SpanKind::Internal,
+            vec![kv_str(&long_key, "value"), kv_str("small_key", &long_value)],
+            None,
+            vec![],
+        );
+
+        let expected_key = format!("{}...", "k".repeat(MAX_META_KEY_LEN));
+        assert!(dd_span.attributes.contains_key(expected_key.as_str()));
+        assert!(!dd_span.attributes.contains_key(long_key.as_str()));
+
+        let value = dd_span
+            .attributes
+            .get("small_key")
+            .and_then(AttributeValue::as_string)
+            .expect("value attribute should exist");
+        assert_eq!(value.len(), MAX_META_VAL_LEN + 3);
+        assert!(value.as_ref().ends_with("..."));
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_preserves_structured_meta_keys() {
+        let big_payload = "x".repeat(MAX_META_VAL_LEN + 1000);
+        let dd_span = build_dd_span(
+            SpanKind::Internal,
+            vec![kv_str("_dd.appsec.json", &big_payload)],
+            None,
+            vec![],
+        );
+
+        let value = dd_span
+            .attributes
+            .get("_dd.appsec.json")
+            .and_then(AttributeValue::as_string)
+            .expect("structured key should survive");
+        assert_eq!(
+            value.len(),
+            big_payload.len(),
+            "structured meta values are never truncated"
+        );
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_normalizes_link_name() {
+        let link = OtlpSpanLink {
+            trace_id: vec![1; 16],
+            span_id: vec![2; 8],
+            attributes: vec![
+                kv_str("link.name", "bad link name!"),
+                kv_str("other.attribute", "untouched"),
+            ],
+            ..Default::default()
+        };
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            links: vec![link],
+            ..Default::default()
+        };
+        let (interner, mut sb) = extraction_env();
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &Resource::default(),
+            None,
+            false,
+            true,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
+
+        let links_json = dd_span
+            .attributes
+            .get("_dd.span_links")
+            .and_then(AttributeValue::as_string)
+            .map(|s| s.as_ref().to_owned())
+            .expect("span links should be marshaled");
+        assert!(
+            links_json.contains("bad_link_name"),
+            "link name is normalized: {links_json}"
+        );
+        assert!(
+            !links_json.contains("bad link name"),
+            "raw link name is gone: {links_json}"
+        );
+        assert!(links_json.contains("untouched"), "other link attributes are untouched");
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_repairs_unicode_leading_names() {
+        // A datadog.name starting with a multi-byte character is repaired, not a panic.
+        let dd_span = build_dd_span(
+            SpanKind::Internal,
+            vec![kv_str("datadog.name", "中文query")],
+            None,
+            vec![],
+        );
+        assert_eq!(dd_span.name(), "query");
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_repairs_unicode_leading_link_names() {
+        let link = OtlpSpanLink {
+            trace_id: vec![1; 16],
+            span_id: vec![2; 8],
+            attributes: vec![kv_str("link.name", "中文link")],
+            ..Default::default()
+        };
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            links: vec![link],
+            ..Default::default()
+        };
+        let (interner, mut sb) = extraction_env();
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &Resource::default(),
+            None,
+            false,
+            true,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
+
+        let links_json = dd_span
+            .attributes
+            .get("_dd.span_links")
+            .and_then(AttributeValue::as_string)
+            .map(|s| s.as_ref().to_owned())
+            .expect("span links should be marshaled");
+        assert!(links_json.contains("\"link\""), "repaired link name: {links_json}");
+        assert!(
+            !links_json.contains("中文"),
+            "multi-byte characters are repaired away: {links_json}"
+        );
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_truncates_resource_to_configured_limit() {
+        let long_route = "/r".repeat(4000);
+        let span_attrs = vec![kv_str("http.request.method", "GET"), kv_str("http.route", &long_route)];
+
+        // Default cap: the resolved resource (method + route) is truncated to 5000 bytes.
+        let dd_span = build_dd_span(SpanKind::Server, span_attrs.clone(), None, vec![]);
+        assert_eq!(dd_span.resource().len(), 5000);
+
+        // The configured cap overrides the default.
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: SpanKind::Server as i32,
+            attributes: span_attrs,
+            ..Default::default()
+        };
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &Resource::default(),
+            None,
+            false,
+            true,
+            &interner,
+            &mut sb,
+            None,
+            100,
+        );
+        assert_eq!(dd_span.resource().len(), 100);
+        assert!(dd_span.resource().starts_with("GET /r"));
+    }
+
     /// `http.status_code` must be emitted as a numeric (float) attribute, mirroring the Agent's
     /// `Metrics[traceutil.TagStatusCode]`, so the encoded span carries a `DoubleValue` rather than
     /// a string reference. See https://github.com/DataDog/saluki/issues/2379.
@@ -2926,7 +3166,7 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let (_dd_span, attrs) = otel_to_dd_span_minimal(&span, &resource, None, false, true, &interner, &mut sb);
+        let (_dd_span, attrs) = otel_to_dd_span_minimal(&span, &resource, None, false, true, &interner, &mut sb, 5000);
         assert!(
             !attrs.contains_key(HTTP_STATUS_CODE_KEY),
             "negative status code must not produce an http.status_code attribute"
