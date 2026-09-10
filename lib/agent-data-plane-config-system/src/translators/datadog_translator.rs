@@ -780,6 +780,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_forwarder_backoff_base(&mut self, value: f64) {
         let value = if value <= 0.0 {
             warn!("`forwarder_backoff_base` is not positive ({value}); using 2.");
+            // TODO(#2580): either use the schema default here, or upstream a validation to the
+            // schema itself
             2.0
         } else {
             value
@@ -794,6 +796,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_forwarder_backoff_factor(&mut self, value: f64) {
         if value < 2.0 {
             warn!("`forwarder_backoff_factor` is less than 2 ({value}); using 2.");
+            // TODO(#2580): either use the schema default here, or upstream a validation to the
+            // schema itself
             self.config.shared.endpoints.forwarder.backoff_factor = 2.0;
         } else {
             self.config.shared.endpoints.forwarder.backoff_factor = value;
@@ -803,6 +807,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_forwarder_backoff_max(&mut self, value: f64) {
         let value = if value <= 0.0 {
             warn!("`forwarder_backoff_max` is not positive ({value}); using 64.");
+            // TODO(#2580): either use the schema default here, or upstream a validation to the
+            // schema itself
             64.0
         } else {
             value
