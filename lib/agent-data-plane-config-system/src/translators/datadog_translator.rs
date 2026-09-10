@@ -778,11 +778,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_backoff_base(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
         let value = if value <= 0.0 {
-            warn!("`forwarder_backoff_base` is not positive ({value}); using 2.");
-            // TODO(#2580): either use the schema default here, or upstream a validation to the
-            // schema itself
-            2.0
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_base;
+            warn!("`forwarder_backoff_base` is not positive ({value}); using {default}.");
+            default
         } else {
             value
         };
@@ -794,22 +795,24 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_backoff_factor(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
         if value < 2.0 {
-            warn!("`forwarder_backoff_factor` is less than 2 ({value}); using 2.");
-            // TODO(#2580): either use the schema default here, or upstream a validation to the
-            // schema itself
-            self.config.shared.endpoints.forwarder.backoff_factor = 2.0;
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_factor;
+            warn!("`forwarder_backoff_factor` is less than 2 ({value}); using {default}.");
+            self.config.shared.endpoints.forwarder.backoff_factor = default;
         } else {
             self.config.shared.endpoints.forwarder.backoff_factor = value;
         }
     }
 
     fn consume_forwarder_backoff_max(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
         let value = if value <= 0.0 {
-            warn!("`forwarder_backoff_max` is not positive ({value}); using 64.");
-            // TODO(#2580): either use the schema default here, or upstream a validation to the
-            // schema itself
-            64.0
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_max;
+            warn!("`forwarder_backoff_max` is not positive ({value}); using {default}.");
+            default
         } else {
             value
         };
@@ -2067,10 +2070,11 @@ mod tests {
         }));
 
         assert!(errors.is_none());
+        let defaults = DatadogConfiguration::schema_defaults();
         let forwarder = &config.shared.endpoints.forwarder;
-        assert_eq!(forwarder.backoff_base, 2.0);
-        assert_eq!(forwarder.backoff_factor, 2.0);
-        assert_eq!(forwarder.backoff_max, 64.0);
+        assert_eq!(forwarder.backoff_base, defaults.forwarder_backoff_base);
+        assert_eq!(forwarder.backoff_factor, defaults.forwarder_backoff_factor);
+        assert_eq!(forwarder.backoff_max, defaults.forwarder_backoff_max);
     }
 
     #[test]

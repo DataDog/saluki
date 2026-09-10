@@ -19,6 +19,9 @@ pub mod env_reader;
 /// Build-time generated code, produced from `core_schema.yaml` plus `schema_overlay.yaml`.
 mod generated;
 
+/// A shared, immutable view of the vendored schema's defaults.
+mod schema_defaults;
+
 /// The translation error type recorded by the translator and surfaced by the witness driver.
 mod translate_error;
 
