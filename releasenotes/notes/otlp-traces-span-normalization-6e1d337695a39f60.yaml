@@ -1,0 +1,9 @@
+enhancements:
+  - |
+    OTLP spans are now normalized the same way the Datadog trace-agent normalizes spans received
+    from tracers. A span whose end time precedes its start time is given a zero duration instead of
+    a duration near ``18446744073709551615``. A span whose start time predates the year 2000 is
+    rewritten to the receive time minus its duration. A span that lists itself as its own parent is
+    treated as a root span, and a ``span.type`` longer than 100 bytes is truncated. Spans with a
+    span ID of zero are dropped along with the rest of their trace, and each such drop increments
+    the new ``component_events_dropped_total`` metric with the ``drop_reason:span_id_zero`` tag.

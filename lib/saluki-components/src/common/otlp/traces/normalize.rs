@@ -11,6 +11,19 @@ pub const MAX_SERVICE_LEN: usize = 100;
 pub const MAX_RESOURCE_LEN: usize = 5000;
 pub const MAX_TAG_LEN: usize = 200;
 
+/// Maximum length of `span.type`, mirroring `MaxTypeLen` (`pkg/trace/agent/normalizer.go`).
+pub const MAX_TYPE_LEN: usize = 100;
+
+// Above this, start+duration would overflow a signed 64-bit integer.
+const MAX_START_PLUS_DURATION: u64 = i64::MAX as u64;
+
+/// Below this, a start timestamp predates the reference's `Year2000NanosecTS` floor and is replaced.
+///
+/// `time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()` (`pkg/trace/agent/normalizer.go`).
+/// Used as the fallback when the system clock is unavailable, so a rewritten start still clears the
+/// year-2000 floor it exists to enforce.
+pub const YEAR_2000_NANOSEC_TS: u64 = 946_684_800_000_000_000;
+
 // default service name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
 // default span name we assign a span if it's missing and we have no reasonable fallback
@@ -340,6 +353,48 @@ const fn is_valid_ascii_tag_char(c: char) -> bool {
     is_valid_ascii_start_char(c) || (c >= '0' && c <= '9') || c == '.' || c == '/' || c == '-'
 }
 
+/// Mirrors `validateAndFixDurationV1` (`pkg/trace/agent/normalizer.go`): a duration that would overflow
+/// a signed 64-bit integer when added to `start` becomes zero.
+///
+/// The reference computes `duration > math.MaxInt64 - uint64(start)` in wrapping `uint64` arithmetic.
+/// When `start > math.MaxInt64`, that subtraction wraps around to a very large number, so the
+/// comparison is false for any realistic duration and the duration survives untouched. This uses
+/// `wrapping_sub` rather than `saturating_sub` for exactly that reason: `saturating_sub` would clamp to
+/// zero for `start > i64::MAX`, making the comparison `duration > 0` and zeroing any non-zero
+/// duration—the opposite of the reference for that boundary. See the regression test at the boundary
+/// below.
+pub(super) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
+    if duration > MAX_START_PLUS_DURATION.wrapping_sub(start) {
+        0
+    } else {
+        duration
+    }
+}
+
+/// Mirrors `validateAndFixStartTimeV1` (`pkg/trace/agent/normalizer.go`): a start timestamp before the
+/// year-2000 floor is replaced with the receive time minus `duration`, clamped to the receive time if
+/// that subtraction would go negative.
+pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
+    if start >= YEAR_2000_NANOSEC_TS {
+        return start;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        // If the clock is unavailable or predates the epoch, fall back to the year-2000 floor itself
+        // rather than `0`, so the replacement still clears the floor it exists to enforce.
+        .unwrap_or(YEAR_2000_NANOSEC_TS);
+
+    let new_start = now.wrapping_sub(duration);
+    if new_start > now {
+        // Underflow: duration was larger than `now`.
+        now
+    } else {
+        new_start
+    }
+}
+
 /// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
 pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     truncate_utf8_str(s, max_len)
@@ -586,5 +641,75 @@ mod tests {
 
         let empty = MetaString::from("");
         assert_eq!(truncate_utf8(&empty, 5), "");
+    }
+
+    #[test]
+    fn validate_and_fix_duration_zeroes_overflowing_duration() {
+        // A wrapped duration (end before start) is astronomically large and overflows `start +
+        // duration`, so it becomes zero.
+        let start = YEAR_2000_NANOSEC_TS;
+        assert_eq!(validate_and_fix_duration(start, u64::MAX), 0);
+        assert_eq!(validate_and_fix_duration(start, u64::MAX - start), 0);
+
+        // A duration that fits in the signed headroom survives.
+        assert_eq!(validate_and_fix_duration(start, 100), 100);
+    }
+
+    #[test]
+    fn validate_and_fix_duration_survives_when_start_exceeds_i64_max() {
+        // Pins the reference's wrapping `uint64` arithmetic: `MaxInt64 - start` wraps around to a huge
+        // number when `start > MaxInt64`, so the overflow check is false and the duration is
+        // preserved. `saturating_sub` would instead clamp that subtraction to zero, making any
+        // non-zero duration look like an overflow and zeroing it—the opposite of the reference.
+        let start = u64::MAX;
+        assert_eq!(validate_and_fix_duration(start, 100), 100);
+        // A duration that's still too large for even the wrapped headroom is zeroed, matching the
+        // reference's own behavior for a duration that overflows twice over.
+        assert_eq!(validate_and_fix_duration(start, u64::MAX), 0);
+    }
+
+    #[test]
+    fn validate_and_fix_start_time_leaves_valid_start_untouched() {
+        let start = YEAR_2000_NANOSEC_TS + 1_000_000_000;
+        assert_eq!(validate_and_fix_start_time(start, 1_000_000), start);
+        assert_eq!(
+            validate_and_fix_start_time(YEAR_2000_NANOSEC_TS, 0),
+            YEAR_2000_NANOSEC_TS
+        );
+    }
+
+    #[test]
+    fn validate_and_fix_start_time_replaces_pre_year_2000_start() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let duration = 1_000_000_000;
+
+        let start = validate_and_fix_start_time(1, duration);
+        assert!(
+            start >= YEAR_2000_NANOSEC_TS,
+            "replaced start must clear the year-2000 floor"
+        );
+        assert!(
+            start <= now && now - start < 5_000_000_000,
+            "start: {start}, now: {now}"
+        );
+    }
+
+    #[test]
+    fn validate_and_fix_start_time_clamps_when_duration_exceeds_now() {
+        // A duration larger than the current time cannot be subtracted; the reference clamps to the
+        // receive time rather than wrapping to a far-future timestamp.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let start = validate_and_fix_start_time(1, u64::MAX);
+        assert!(
+            start >= YEAR_2000_NANOSEC_TS,
+            "clamped start must clear the year-2000 floor"
+        );
+        assert!(start.abs_diff(now) < 5_000_000_000, "start: {start}, now: {now}");
     }
 }

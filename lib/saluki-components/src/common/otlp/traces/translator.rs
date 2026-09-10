@@ -161,6 +161,9 @@ struct TraceEntry {
     trace_id_hex: Option<MetaString>,
     /// High 8 bytes of the 128-bit trace ID (captured from the first span).
     trace_id_high: u64,
+    /// Set when any span in the trace has a span ID of zero. Mirrors `normalizeV1`
+    /// (`pkg/trace/agent/normalizer.go`), which drops such a span along with the chunk containing it.
+    dropped: bool,
 }
 
 pub struct OtlpTracesTranslator {
@@ -207,7 +210,14 @@ impl OtlpTracesTranslator {
                     priority: None,
                     trace_id_hex: None,
                     trace_id_high,
+                    dropped: false,
                 });
+
+                // Once a trace is headed for the drop bin, skip the remaining spans entirely rather
+                // than paying for their conversion only to discard the results at emit time.
+                if entry.dropped {
+                    continue;
+                }
 
                 if entry.trace_id_hex.is_none() {
                     entry.trace_id_hex = trace_id_hex_meta(&span.trace_id);
@@ -233,6 +243,16 @@ impl OtlpTracesTranslator {
                     entry.priority = Some(priority as i32);
                 }
 
+                // A span ID of zero is malformed: drop the span and, like the reference normalizer,
+                // the entire chunk containing it.
+                if dd_span.span_id() == 0 {
+                    if !entry.dropped {
+                        entry.dropped = true;
+                        metrics.traces_dropped_span_id_zero().increment(1);
+                    }
+                    continue;
+                }
+
                 entry.spans.push(dd_span);
             }
         }
@@ -254,6 +274,10 @@ impl Iterator for OtlpTraceEventsIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         for (trace_id_low, entry) in self.entries.by_ref() {
+            if entry.dropped {
+                continue;
+            }
+
             if entry.spans.is_empty() {
                 continue;
             }
@@ -301,9 +325,11 @@ mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+    use saluki_core::components::ComponentContext;
+    use saluki_metrics::test::TestRecorder;
 
     use super::*;
-    use crate::common::otlp::Metrics;
+    use crate::common::otlp::{build_metrics, Metrics};
 
     fn string_kv(key: &str, value: &str) -> KeyValue {
         KeyValue {
@@ -449,5 +475,64 @@ mod tests {
         assert_eq!(payload.container_id.as_ref(), "abc123");
         assert_eq!(payload.language_name.as_ref(), "go");
         assert_eq!(payload.tracer_version.as_ref(), "1.0");
+    }
+
+    /// A span whose span ID converts to zero is dropped along with the trace containing it, mirroring
+    /// `normalizeV1` (`pkg/trace/agent/normalizer.go`). https://github.com/DataDog/saluki/issues/2382
+    #[test]
+    fn translate_spans_drops_trace_containing_zero_span_id() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let mut translator = OtlpTracesTranslator::new(domains::otlp::Traces {
+            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            ..Default::default()
+        });
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xDDu8; 16];
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace, [1u8; 8], vec![]),
+                span(trace, [0u8; 8], vec![]), // zero span ID drops the whole trace
+                span(trace, [2u8; 8], vec![]),
+            ],
+        );
+
+        let traces: Vec<Trace> = translator
+            .translate_spans(rs, &metrics)
+            .filter_map(Event::try_into_trace)
+            .collect();
+        assert!(
+            traces.is_empty(),
+            "the trace containing the zero-ID span must be dropped"
+        );
+
+        // Exactly one drop is counted, with the documented tag set, even though multiple spans were
+        // involved.
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("intentional", "true"),
+            ("drop_reason", "span_id_zero"),
+        ];
+        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(1));
+    }
+
+    /// A zero-ID span in one trace must not affect a well-formed trace in the same batch.
+    #[test]
+    fn translate_spans_keeps_well_formed_trace_alongside_dropped_trace() {
+        let bad_trace = [0xEEu8; 16];
+        let good_trace = [0xFFu8; 16];
+        let rs = build_resource_spans(
+            vec![],
+            vec![span(bad_trace, [0u8; 8], vec![]), span(good_trace, [1u8; 8], vec![])],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1, "only the well-formed trace survives");
+        assert_eq!(traces[0].trace_id_low, u64::from_be_bytes([0xFF; 8]));
+        assert_eq!(traces[0].spans().len(), 1);
     }
 }
