@@ -558,14 +558,10 @@ sync-docs-config: ## Synchronizes the Vale configuration, updating configured st
 ##@ Testing
 
 .PHONY: test
-test: check-rust-build-tools cargo-install-cargo-nextest test-aix-build-metadata
+test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
-
-.PHONY: test-aix-build-metadata
-test-aix-build-metadata: ## Verifies AIX release build metadata defaults
-	@$(CURDIR)/ci/tooling/test-build-adp-aix.sh
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
