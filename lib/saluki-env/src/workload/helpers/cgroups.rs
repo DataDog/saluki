@@ -27,6 +27,7 @@ const DEFAULT_HOST_MAPPED_CGROUPFS_ROOT: &str = "/host/sys/fs/cgroup";
 const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
 const CGROUPS_V2_CONTROLLERS_FILE: &str = "cgroup.controllers";
 const SELF_CGROUP_PATH: &str = "/proc/self/cgroup";
+const SELF_CGROUPFS_PATH: &str = "/sys/fs/cgroup";
 
 /// Highest inode number that can't refer to a specific cgroup controller.
 ///
@@ -126,6 +127,16 @@ impl CgroupsReader {
             hierarchy_reader,
             interner,
         }))
+    }
+
+    /// Returns whether the hierarchy being read is the cgroups v2 unified hierarchy.
+    ///
+    /// This distinguishes the layout, not just the version: under the unified hierarchy every cgroup lives in one
+    /// filesystem rooted at the cgroupfs mount, whereas cgroups v1 mounts a separate filesystem per controller
+    /// underneath it. Anything comparing inodes across the hierarchy depends on the former, since inode numbers only
+    /// identify a file within a single filesystem.
+    pub fn is_unified(&self) -> bool {
+        self.hierarchy_reader.is_unified()
     }
 
     fn try_cgroup_from_path(&self, cgroup_path: &Path) -> Option<Cgroup> {
@@ -431,6 +442,10 @@ impl HierarchyReader {
             Self::V2 { root, .. } => root.as_path(),
         }
     }
+
+    fn is_unified(&self) -> bool {
+        matches!(self, Self::V2 { .. })
+    }
 }
 
 /// A container cgroup.
@@ -621,6 +636,47 @@ pub(crate) fn get_self_container_id(interner: &GenericMapInterner) -> Option<Met
     get_container_id_from_cgroup_lines(&lines, interner)
 }
 
+/// Gets the inode of the cgroup controller the current process is attached to.
+///
+/// When the process runs in its own cgroup namespace, the namespace's root *is* the process's own cgroup, so this
+/// identifies the container without needing a path that names it. Inodes are the same on both sides of a namespace
+/// boundary, so the value matches what a traversal of the host's hierarchy reports for the same cgroup.
+///
+/// Returns `None` when the process shares the host's cgroup namespace, since the namespace root is then the hierarchy
+/// root rather than any particular container, and its inode is rejected as reserved.
+///
+/// Like [`get_self_container_id`], this intentionally reads the process's own `/sys/fs/cgroup` rather than a configured
+/// cgroupfs root, which may refer to the host.
+///
+/// Only meaningful under the cgroups v2 unified hierarchy, where that path is itself a cgroup. Under cgroups v1 it's
+/// the `tmpfs` the controllers are mounted into, and an inode from that filesystem doesn't identify anything in the
+/// hierarchy. Callers **MUST** check [`CgroupsReader::is_unified`] first.
+pub(crate) fn get_self_cgroup_controller_inode() -> Option<u64> {
+    cgroup_controller_inode(Path::new(SELF_CGROUPFS_PATH))
+}
+
+fn cgroup_controller_inode(path: &Path) -> Option<u64> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            debug!(error = %e, path = %path.display(), "Failed to query metadata for own cgroup controller.");
+            return None;
+        }
+    };
+
+    let controller_inode = metadata.ino();
+    if !is_usable_controller_inode(controller_inode) {
+        debug!(
+            controller_inode,
+            path = %path.display(),
+            "Own cgroup controller reports a reserved inode, which can't identify a container.",
+        );
+        return None;
+    }
+
+    Some(controller_inode)
+}
+
 fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInterner) -> Option<MetaString> {
     lines
         .iter()
@@ -756,10 +812,10 @@ fn is_container_named_but_not_a_container(cgroup_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         fs, io,
         num::NonZeroUsize,
-        os::unix::fs::PermissionsExt as _,
+        os::unix::fs::{MetadataExt as _, PermissionsExt as _},
         path::{Path, PathBuf},
     };
 
@@ -771,10 +827,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
-        is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry, CgroupsConfiguration, CgroupsReader,
-        Feature, FeatureDetector, HierarchyReader, TraversalResult, DEFAULT_CGROUPFS_ROOT,
-        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
+        cgroup_controller_inode, extract_container_id, extract_container_id_from_path,
+        get_container_id_from_cgroup_lines, is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry,
+        CgroupsConfiguration, CgroupsReader, Feature, FeatureDetector, HierarchyReader, TraversalResult,
+        DEFAULT_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -1078,6 +1134,17 @@ mod tests {
         }
     }
 
+    fn v1_reader_rooted_at(base_controller_path: &Path) -> CgroupsReader {
+        CgroupsReader {
+            procfs_path: PathBuf::from(DEFAULT_PROCFS_ROOT),
+            hierarchy_reader: HierarchyReader::V1 {
+                base_controller_path: base_controller_path.to_path_buf(),
+                controllers: HashMap::new(),
+            },
+            interner: GenericMapInterner::new(NonZeroUsize::new(1024).unwrap()),
+        }
+    }
+
     #[test]
     fn visit_subdirectories_visits_every_subdirectory() {
         let root = tempdir().unwrap();
@@ -1324,6 +1391,34 @@ mod tests {
         // collector reap every alias it holds.
         assert!(!traversal.is_complete());
         assert!(traversal.cgroups.is_empty());
+    }
+
+    #[test]
+    fn cgroup_controller_inode_reports_a_real_directory_inode() {
+        let root = tempdir().unwrap();
+
+        let inode = cgroup_controller_inode(root.path()).expect("a real directory has a usable inode");
+
+        assert_eq!(inode, fs::metadata(root.path()).unwrap().ino());
+        assert!(is_usable_controller_inode(inode));
+    }
+
+    #[test]
+    fn cgroup_controller_inode_returns_none_for_a_missing_path() {
+        let root = tempdir().unwrap();
+
+        assert_eq!(cgroup_controller_inode(&root.path().join("missing")), None);
+    }
+
+    #[test]
+    fn is_unified_distinguishes_the_hierarchy_layout() {
+        let root = tempdir().unwrap();
+
+        // Under the unified hierarchy every cgroup shares one filesystem rooted at the cgroupfs mount, so an inode
+        // read from that mount identifies the same object the collector saw. Under v1 the controllers are separate
+        // filesystems mounted beneath it, and that no longer holds.
+        assert!(reader_rooted_at(root.path()).is_unified());
+        assert!(!v1_reader_rooted_at(root.path()).is_unified());
     }
 
     async fn cgroups_config_with(detected: Feature) -> CgroupsConfiguration {
