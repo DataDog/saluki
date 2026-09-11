@@ -4,11 +4,11 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
-use std::{path::PathBuf, time::Duration};
+use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
-use crate::ConfigValue;
+use crate::{defaults::DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES, ConfigValue};
 
 /// Topology gates and orchestration decisions. Most are static; `logging.level` is live.
 ///
@@ -181,9 +181,9 @@ pub struct Logging {
 /// IPC and remote-agent connection parameters, read once at bootstrap before runtime authority
 /// exists and again from the authoritative configuration once it does.
 ///
-/// The derived `Default` is all zeroes and serves only as the starting point for translation. The
-/// effective default of each field is the one the Datadog schema declares, noted per field below.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+/// Witnessed fields get their effective defaults during translation. The Saluki-only interner
+/// budget uses its Rust `Default`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ControlIpc {
     /// Path to the Agent authentication token file.
     ///
@@ -217,6 +217,28 @@ pub struct ControlIpc {
     /// Defaults to `134217728` (128 MiB).
     pub grpc_max_message_size: usize,
 
-    /// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
-    pub remote_agent_string_interner_size_bytes: usize,
+    /// Byte budget for the remote-agent workload metadata string interner. (not in Datadog Agent config schema)
+    ///
+    /// The workload provider interns entity IDs and tags into a single allocation of this size, taken at startup and
+    /// charged in full against the memory bounds ceiling. A workload whose tag cardinality outgrows the budget starts
+    /// failing to intern, which drops the affected tags and entity updates and increments the collectors'
+    /// `intern_failed_total` counters.
+    ///
+    /// Defaults to `524288` (512 KiB). An explicit `0` fails the configuration load. Change it when tuning ADP itself;
+    /// operators are not expected to.
+    pub remote_agent_string_interner_size_bytes: NonZeroUsize,
+}
+
+impl Default for ControlIpc {
+    fn default() -> Self {
+        Self {
+            // Written by the Datadog witness driver.
+            auth_token_file_path: PathBuf::new(),
+            ipc_cert_file_path: PathBuf::new(),
+            cmd_port: 0,
+            vsock_addr: String::new(),
+            grpc_max_message_size: 0,
+            remote_agent_string_interner_size_bytes: DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES,
+        }
+    }
 }

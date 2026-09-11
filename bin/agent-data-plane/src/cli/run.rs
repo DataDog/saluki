@@ -183,7 +183,7 @@ pub async fn handle_run_command(
     let resource_registry = ResourceRegistry::new();
     let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
         standalone,
-        &config_sys.raw_map(),
+        config_sys.config().control.ipc.remote_agent_string_interner_size_bytes,
         &config_sys.config().shared.environment,
         remote_agent_client_config.as_ref(),
         &component_registry,

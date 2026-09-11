@@ -1,8 +1,7 @@
-use std::future::Future;
+use std::{future::Future, num::NonZeroUsize};
 
 use agent_data_plane_config::shared::Environment;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
@@ -56,7 +55,7 @@ impl ADPEnvironmentProvider {
     /// In standalone mode, no supervisor is returned as all behavior/functionality is either provided via
     /// fixed configuration or operates in a no-op fashion.
     pub async fn from_configuration(
-        standalone: bool, raw_map: &GenericConfiguration, environment: &Environment,
+        standalone: bool, string_interner_size_bytes: NonZeroUsize, environment: &Environment,
         client_config: Option<&RemoteAgentClientConfiguration>, component_registry: &ComponentRegistry,
         health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
@@ -87,8 +86,8 @@ impl ADPEnvironmentProvider {
 
         let host_provider = RemoteAgentHostProvider::new(client_config, component_registry).await?;
 
-        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
-            raw_map,
+        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::new(
+            string_interner_size_bytes,
             environment,
             client_config,
             component_registry,
