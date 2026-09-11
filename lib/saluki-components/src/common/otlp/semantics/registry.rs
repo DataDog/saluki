@@ -1,10 +1,6 @@
-//! Semantic attribute registry—port of upstream `pkg/trace/semantics/registry.go`.
-//!
-//! Loads the embedded `mappings.json` once at startup and exposes the fallback
-//! precedence list for each [`Concept`].
+use std::sync::{Arc, LazyLock};
 
-use std::sync::LazyLock;
-
+use arc_swap::ArcSwap;
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
@@ -79,15 +75,17 @@ struct RegistryData {
 }
 
 /// Semantic attribute registry.
+#[derive(Clone)]
 pub struct Registry {
     version: String,
+    content_hash: u64,
     mappings: FastHashMap<Concept, Vec<TagInfo>>,
 }
 
 impl Registry {
     /// Parse a registry from JSON matching the upstream `mappings.json` schema.
     ///
-    /// Any concept key that doesn't correspond to a known [`Concept`] variant
+    /// Any concept key that doesn't correspond to a known variant
     /// is treated as an error—keeping the enum and the embedded JSON in sync.
     pub fn from_json(json: &str) -> Result<Self, GenericError> {
         let data: RegistryData =
@@ -102,8 +100,22 @@ impl Registry {
 
         Ok(Self {
             version: data.version,
+            content_hash: content_hash_for(json),
             mappings,
         })
+    }
+
+    /// Content hash of the mappings this registry was loaded from.
+    ///
+    /// The hash covers the raw JSON document, so any change to the loaded
+    /// content (embedded updates, remotely shipped semantic updates) yields
+    /// a different value. Consumers that derive data from the registry can
+    /// compare this hash against a snapshotted value to detect when their
+    /// derivation is stale. Hash collisions are possible but astronomically
+    /// unlikely; the failure mode is a missed or spurious rebuild, never
+    /// incorrect keys.
+    pub fn content_hash(&self) -> u64 {
+        self.content_hash
     }
 
     /// Returns the ordered list of attribute fallbacks for a concept, or
@@ -120,11 +132,39 @@ impl Registry {
 
 const MAPPINGS_JSON: &str = include_str!("mappings.json");
 
-/// The default registry, loaded from the embedded `mappings.json`.
+/// Hashes a raw registry document for change detection.
+fn content_hash_for(json: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut hasher);
+    hasher.finish()
+}
+
+static REGISTRY: LazyLock<ArcSwap<Registry>> = LazyLock::new(|| {
+    ArcSwap::from_pointee(Registry::from_json(MAPPINGS_JSON).expect("embedded semantic mappings.json failed to load"))
+});
+
+/// Returns the current registry snapshot.
 ///
-/// This mirrors upstream's `DefaultRegistry()` singleton.
-pub static REGISTRY: LazyLock<Registry> =
-    LazyLock::new(|| Registry::from_json(MAPPINGS_JSON).expect("embedded semantic mappings.json failed to load"));
+/// Cheap: one atomic load plus a reference count bump, so grab it once per operation rather than
+/// once per lookup.
+pub fn current_registry() -> Arc<Registry> {
+    REGISTRY.load_full()
+}
+
+/// Atomically replaces the live registry.
+///
+/// Consumers holding snapshots derived from the previous registry detect the swap via the
+/// content hash and rebuild on their next refresh cycle.
+pub fn update_registry(registry: Registry) {
+    REGISTRY.store(Arc::new(registry));
+}
+
+/// Restores the embedded registry.
+pub fn reset_registry() {
+    update_registry(Registry::from_json(MAPPINGS_JSON).expect("embedded semantic mappings.json failed to load"));
+}
 
 #[cfg(test)]
 mod tests {
@@ -132,9 +172,8 @@ mod tests {
 
     #[test]
     fn embedded_mappings_load() {
-        // Dereferencing the LazyLock forces parsing; any schema drift or unknown
-        // concept would panic here.
-        let _ = &*REGISTRY;
+        // Loading forces parsing; any schema drift or unknown concept would panic here.
+        let _ = current_registry();
     }
 
     #[test]
@@ -165,7 +204,8 @@ mod tests {
     fn embedded_mappings_use_when_for_grpc_fallback() {
         // The `rpc.response.status_code` fallbacks are gated on the span being a
         // gRPC span; the registry must preserve those conditions.
-        let tags = REGISTRY
+        let registry = current_registry();
+        let tags = registry
             .get_attribute_precedence(Concept::RpcGrpcStatusCode)
             .expect("rpc.grpc.status_code concept missing");
         let gated = tags.iter().filter(|t| !t.when.is_empty()).count();
@@ -174,9 +214,10 @@ mod tests {
 
     #[test]
     fn every_concept_variant_is_registered() {
+        let registry = current_registry();
         for concept in Concept::ALL {
             assert!(
-                REGISTRY.get_attribute_precedence(*concept).is_some(),
+                registry.get_attribute_precedence(*concept).is_some(),
                 "concept {:?} (\"{}\") has no entry in mappings.json",
                 concept,
                 concept.as_str(),
@@ -187,7 +228,8 @@ mod tests {
     #[test]
     fn http_status_code_has_int_and_string_fallbacks() {
         // Guards against regressions of the exact bug this module was written for.
-        let tags = REGISTRY
+        let registry = current_registry();
+        let tags = registry
             .get_attribute_precedence(Concept::HttpStatusCode)
             .expect("http.status_code concept missing");
 
@@ -224,5 +266,42 @@ mod tests {
     #[test]
     fn from_json_rejects_malformed_input() {
         assert!(Registry::from_json("not json").is_err());
+    }
+
+    /// Restores the live registry when dropped, so tests that swap it cannot leak state.
+    struct RestoreGuard(Registry);
+
+    impl Drop for RestoreGuard {
+        fn drop(&mut self) {
+            update_registry(self.0.clone());
+        }
+    }
+
+    #[test]
+    fn initial_registry_is_the_embedded_mappings() {
+        let embedded = Registry::from_json(MAPPINGS_JSON).expect("embedded mappings should parse");
+        assert_eq!(current_registry().content_hash(), embedded.content_hash());
+    }
+
+    #[test]
+    fn swap_replaces_the_live_registry() {
+        let modified = Registry::from_json(
+            r#"{
+                "version": "modified",
+                "concepts": {
+                    "peer.service": {
+                        "fallbacks": [{"name": "custom.remote.service", "provider": "otel", "type": "string"}]
+                    }
+                }
+            }"#,
+        )
+        .expect("modified registry should parse");
+        let modified_hash = modified.content_hash();
+
+        let previous = (*current_registry()).clone();
+        update_registry(modified);
+        let _guard = RestoreGuard(previous);
+
+        assert_eq!(current_registry().content_hash(), modified_hash);
     }
 }
