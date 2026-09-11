@@ -215,7 +215,7 @@ publish-adp-image-internal:
       needs:
         - build-adp-image-internal
   trigger:
-    project: DataDog/images
+    project: ddoghq/images
     branch: master
     strategy: depend
   variables:
@@ -238,7 +238,7 @@ publish-adp-image-internal-fips:
       needs:
         - build-adp-image-fips-internal
   trigger:
-    project: DataDog/images
+    project: ddoghq/images
     branch: master
     strategy: depend
   variables:
