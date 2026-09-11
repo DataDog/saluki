@@ -1,0 +1,64 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-io/src/net/util/retry/lifecycle/telemetry.rs`."><title>telemetry.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../../../../" data-static-root-path="../../../../../../static.files/" data-current-crate="saluki_io" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../../src-files.js"></script><script defer src="../../../../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_io/net/util/retry/lifecycle/</div>telemetry.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-2"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::sync::{Arc, Mutex};
+<a href=#2 id=2 data-nosnippet>2</a>
+<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>metrics::Counter;
+<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_common::collections::FastHashMap;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_metrics::MetricsBuilder;
+<a href=#6 id=6 data-nosnippet>6</a>
+<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">super</span>::http::RetryCause;
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">const </span>NETWORK_HTTP_REQUESTS_RETRY_CAUSES_TOTAL: <span class="kw-2">&amp;</span>str = <span class="string">"network_http_requests_retry_causes_total"</span>;
+<a href=#10 id=10 data-nosnippet>10</a>
+<a href=#11 id=11 data-nosnippet>11</a><span class="doccomment">/// Counts retried requests by what caused the retry.
+<a href=#12 id=12 data-nosnippet>12</a>///
+<a href=#13 id=13 data-nosnippet>13</a>/// Attach this to [`StandardHttpRetryLifecycle`][super::StandardHttpRetryLifecycle] to count retries as they're decided,
+<a href=#14 id=14 data-nosnippet>14</a>/// at the point where the response or the error that triggered them is still available.
+<a href=#15 id=15 data-nosnippet>15</a>///
+<a href=#16 id=16 data-nosnippet>16</a>/// ## Metrics
+<a href=#17 id=17 data-nosnippet>17</a>///
+<a href=#18 id=18 data-nosnippet>18</a>/// - `network_http_requests_retry_causes_total`: the total number of retried requests, tagged with the `domain` given at
+<a href=#19 id=19 data-nosnippet>19</a>///   construction and with a bounded description of the failure:
+<a href=#20 id=20 data-nosnippet>20</a>///   - `cause`: one of `http_status`, `http2`, `tls`, `timeout`, `connection`, `client`, or `other`.
+<a href=#21 id=21 data-nosnippet>21</a>///   - `frame` and `initiator`: for `cause:http2` only. `frame` is the HTTP/2 frame the error came from, and
+<a href=#22 id=22 data-nosnippet>22</a>///     `initiator` is the side of the connection that sent it, where `local` means this client ended the request rather
+<a href=#23 id=23 data-nosnippet>23</a>///     than the remote endpoint.
+<a href=#24 id=24 data-nosnippet>24</a>///   - `reason`: for `cause:http2`, the HTTP/2 reason code by name; for `cause:timeout`, the stage that timed out; for
+<a href=#25 id=25 data-nosnippet>25</a>///     `cause:connection`, the kind of transport failure. Absent when the failure carries no reason we recognize.
+<a href=#26 id=26 data-nosnippet>26</a>///
+<a href=#27 id=27 data-nosnippet>27</a>/// Retries caused by response status codes aren't broken down by code here, since
+<a href=#28 id=28 data-nosnippet>28</a>/// `network_http_requests_errors_total` already counts every non-success response by status code.
+<a href=#29 id=29 data-nosnippet>29</a></span><span class="attr">#[derive(Clone)]
+<a href=#30 id=30 data-nosnippet>30</a></span><span class="kw">pub struct </span>RetryCauseTelemetry {
+<a href=#31 id=31 data-nosnippet>31</a>    builder: MetricsBuilder,
+<a href=#32 id=32 data-nosnippet>32</a>
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// Counters by cause, registered on first use.
+<a href=#34 id=34 data-nosnippet>34</a>    ///
+<a href=#35 id=35 data-nosnippet>35</a>    /// The key is an enumerated value, so this map is bounded by the number of causes that can be expressed, and it only
+<a href=#36 id=36 data-nosnippet>36</a>    /// grows on the failure path.
+<a href=#37 id=37 data-nosnippet>37</a>    </span>counters: Arc&lt;Mutex&lt;FastHashMap&lt;RetryCause, Counter&gt;&gt;&gt;,
+<a href=#38 id=38 data-nosnippet>38</a>}
+<a href=#39 id=39 data-nosnippet>39</a>
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">impl </span>RetryCauseTelemetry {
+<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// Creates retry cause telemetry for requests sent to `domain`.
+<a href=#42 id=42 data-nosnippet>42</a>    ///
+<a href=#43 id=43 data-nosnippet>43</a>    /// The domain is used as-is for the `domain` tag, so pass the same value that the rest of a client's telemetry uses:
+<a href=#44 id=44 data-nosnippet>44</a>    /// the scheme, host, and port of the remote endpoint.
+<a href=#45 id=45 data-nosnippet>45</a>    </span><span class="kw">pub fn </span>from_builder(builder: <span class="kw-2">&amp;</span>MetricsBuilder, domain: <span class="kw-2">&amp;</span>str) -&gt; <span class="self">Self </span>{
+<a href=#46 id=46 data-nosnippet>46</a>        <span class="self">Self </span>{
+<a href=#47 id=47 data-nosnippet>47</a>            builder: builder.clone().add_default_tag((<span class="string">"domain"</span>, domain.to_string())),
+<a href=#48 id=48 data-nosnippet>48</a>            counters: Arc::new(Mutex::new(FastHashMap::default())),
+<a href=#49 id=49 data-nosnippet>49</a>        }
+<a href=#50 id=50 data-nosnippet>50</a>    }
+<a href=#51 id=51 data-nosnippet>51</a>
+<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// Counts a single retry.
+<a href=#53 id=53 data-nosnippet>53</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>increment(<span class="kw-2">&amp;</span><span class="self">self</span>, cause: RetryCause) {
+<a href=#54 id=54 data-nosnippet>54</a>        <span class="kw">let </span><span class="kw-2">mut </span>counters = <span class="self">self</span>.counters.lock().unwrap();
+<a href=#55 id=55 data-nosnippet>55</a>        counters
+<a href=#56 id=56 data-nosnippet>56</a>            .entry(cause)
+<a href=#57 id=57 data-nosnippet>57</a>            .or_insert_with(|| {
+<a href=#58 id=58 data-nosnippet>58</a>                <span class="self">self</span>.builder
+<a href=#59 id=59 data-nosnippet>59</a>                    .register_counter_with_tags(NETWORK_HTTP_REQUESTS_RETRY_CAUSES_TOTAL, cause.tags())
+<a href=#60 id=60 data-nosnippet>60</a>            })
+<a href=#61 id=61 data-nosnippet>61</a>            .increment(<span class="number">1</span>);
+<a href=#62 id=62 data-nosnippet>62</a>    }
+<a href=#63 id=63 data-nosnippet>63</a>}
+</code></pre></div></section></main></body></html>
