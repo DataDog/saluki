@@ -1,8 +1,3 @@
-//! Semantic attribute registry—port of upstream `pkg/trace/semantics/registry.go`.
-//!
-//! Starts from the embedded `mappings.json` and exposes the fallback precedence list for each
-//! [`Concept`]. The live registry can be replaced at runtime via [`update_registry`].
-
 use std::sync::{Arc, LazyLock};
 
 use arc_swap::ArcSwap;
@@ -90,7 +85,7 @@ pub struct Registry {
 impl Registry {
     /// Parse a registry from JSON matching the upstream `mappings.json` schema.
     ///
-    /// Any concept key that doesn't correspond to a known [`Concept`] variant
+    /// Any concept key that doesn't correspond to a known variant
     /// is treated as an error—keeping the enum and the embedded JSON in sync.
     pub fn from_json(json: &str) -> Result<Self, GenericError> {
         let data: RegistryData =
