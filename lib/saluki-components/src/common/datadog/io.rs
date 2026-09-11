@@ -32,7 +32,7 @@ use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
     util::{
         middleware::{HttpInspectionLayer, RetryCircuitBreakerError, RetryCircuitBreakerLayer},
-        retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryQueue, Retryable},
+        retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryCauseTelemetry, RetryQueue, Retryable},
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -517,6 +517,7 @@ async fn run_io_loop<B>(
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
         let retry_telemetry = TransactionRetryTelemetry::from_builder(&metrics_builder, &endpoint_domain);
+        let retry_cause_telemetry = RetryCauseTelemetry::from_builder(&metrics_builder, &endpoint_domain);
 
         let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
         let task_barrier = Arc::clone(&task_barrier);
@@ -534,6 +535,7 @@ async fn run_io_loop<B>(
                 telemetry.clone(),
                 txnq_telemetry,
                 retry_telemetry,
+                retry_cause_telemetry,
                 Arc::clone(&endpoint_name),
                 route,
                 resolved_endpoint,
@@ -632,8 +634,9 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
     txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
-    endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute, endpoint: ResolvedEndpoint,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
+    retry_cause_telemetry: RetryCauseTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
+    endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -698,7 +701,9 @@ async fn run_endpoint_io_loop<B>(
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
         .layer(RetryCircuitBreakerLayer::new(
-            config.retry().to_default_http_retry_policy(secrets),
+            config
+                .retry()
+                .to_default_http_retry_policy(secrets, retry_cause_telemetry),
         ))
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
