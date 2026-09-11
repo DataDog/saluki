@@ -28,6 +28,13 @@ pub struct ControlConfiguration {
     /// Whether the OTLP pipeline is built.
     pub otlp: bool,
 
+    /// Whether the Datadog v1.0 (`idx`/ETP) APM trace pipeline is built. (not in Datadog Agent
+    /// config schema)
+    ///
+    /// Independent of the trace-agent, which keeps serving its own receiver on `8126`.
+    /// Defaults to `false`; the two run side by side, and each tracer points at exactly one of them.
+    pub apm: bool,
+
     /// Whether standalone mode is active, running without a core Agent. (not in Datadog Agent
     /// config schema)
     pub standalone_mode: bool,

@@ -4,6 +4,54 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
+static DATA_PLANE_APM_DISPATCH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.apm.dispatch_timeout",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("1s"),
+};
+
+static DATA_PLANE_APM_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.apm.enabled",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
+static DATA_PLANE_APM_MAX_PAYLOAD_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.apm.max_payload_size",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("25000000"),
+};
+
+static DATA_PLANE_APM_NON_LOCAL_TRAFFIC_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.apm.non_local_traffic",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
+static DATA_PLANE_APM_RECEIVER_ENDPOINT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.apm.receiver_endpoint",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("localhost:8127"),
+};
+
+static DATA_PLANE_APM_RECEIVER_SOCKET_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.apm.receiver_socket",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
 static DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
@@ -75,6 +123,72 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.apm.dispatch_timeout`
+    DATA_PLANE_APM_DISPATCH_TIMEOUT = SalukiAnnotation {
+        schema: &DATA_PLANE_APM_DISPATCH_TIMEOUT_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `data_plane.apm.enabled`
+    DATA_PLANE_APM_ENABLED = SalukiAnnotation {
+        schema: &DATA_PLANE_APM_ENABLED_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `data_plane.apm.max_payload_size`
+    DATA_PLANE_APM_MAX_PAYLOAD_SIZE = SalukiAnnotation {
+        schema: &DATA_PLANE_APM_MAX_PAYLOAD_SIZE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `data_plane.apm.non_local_traffic`
+    DATA_PLANE_APM_NON_LOCAL_TRAFFIC = SalukiAnnotation {
+        schema: &DATA_PLANE_APM_NON_LOCAL_TRAFFIC_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `data_plane.apm.receiver_endpoint`
+    DATA_PLANE_APM_RECEIVER_ENDPOINT = SalukiAnnotation {
+        schema: &DATA_PLANE_APM_RECEIVER_ENDPOINT_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `data_plane.apm.receiver_socket`
+    DATA_PLANE_APM_RECEIVER_SOCKET = SalukiAnnotation {
+        schema: &DATA_PLANE_APM_RECEIVER_SOCKET_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
     /// `data_plane.log_file`-ADP log file path
     DATA_PLANE_LOG_FILE = SalukiAnnotation {

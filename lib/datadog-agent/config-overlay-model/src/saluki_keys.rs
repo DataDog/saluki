@@ -24,6 +24,118 @@ pub struct SalukiKey {
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
+        yaml_path: "data_plane.apm.dispatch_timeout",
+        description: "How long the v1.0 trace receiver waits for the pipeline to accept a payload",
+        // Spelled out rather than `1s`: this string is rendered into the generated configuration table, where the
+        // style checker requires a nonbreaking space between a number and a unit. `schema_default` below carries the
+        // machine-readable form. Compare `data_plane.stop_timeout`, whose `default` is the prose value "derived".
+        default: "1 second",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: Some("1s"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.enabled",
+        description: "Enable the ADP v1.0 APM trace pipeline",
+        default: "false",
+        documentation: Some(
+            "### `data_plane.apm.*`
+
+\
+             ADP can receive Datadog v1.0 (`idx`/ETP) tracer payloads directly, over \
+             `POST /v1.0/traces`, and forward them to the traces intake without going through the \
+             trace-agent. The pipeline is off by default.
+
+\
+             These keys are deliberately separate from `apm_config.receiver_port`, \
+             `apm_config.receiver_socket`, `apm_config.max_payload_size`, and \
+             `apm_config.apm_non_local_traffic`. Those configure the trace-agent's receiver, which \
+             keeps running on port `8126` alongside ADP, so the two listeners need independent \
+             settings. Point each tracer at exactly one of the two: fanning the same traffic to both \
+             double-counts APM stats.
+
+\
+             Only `/v1.0/traces` is served. Tracers that need `/v0.4/traces`, `/v0.5/traces`, or the \
+             profiling and telemetry proxy routes must stay pointed at the trace-agent.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.max_payload_size",
+        description: "Maximum accepted v1.0 trace request body size",
+        default: "25000000",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: Some("25000000"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.non_local_traffic",
+        description: "Allow the v1.0 trace receiver to bind a non-loopback address",
+        default: "false",
+        documentation: None,
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.receiver_endpoint",
+        description: "ADP v1.0 trace receiver TCP endpoint",
+        default: "localhost:8127",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: Some("localhost:8127"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.receiver_socket",
+        description: "ADP v1.0 trace receiver Unix domain socket path",
+        default: "",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
         description: "ADP OTLP gRPC listen endpoint",
         default: "localhost:6317",

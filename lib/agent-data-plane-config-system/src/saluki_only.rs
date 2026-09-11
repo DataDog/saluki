@@ -245,6 +245,36 @@ pub struct DataPlane {
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
     pub otlp: DataPlaneOtlp,
+    /// APM v1.0 trace pipeline gate and receiver settings (`data_plane.apm.*`).
+    pub apm: DataPlaneApm,
+}
+
+/// `data_plane.apm.*`: the Datadog v1.0 (`idx`/ETP) trace receiver.
+///
+/// Deliberately not spelled `apm_config.*`: see
+/// [`agent_data_plane_config::domains::apm`] for why those keys can't be reused.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DataPlaneApm {
+    /// Whether the APM v1.0 trace pipeline is built (`data_plane.apm.enabled`).
+    pub enabled: Option<bool>,
+    /// TCP receiver endpoint (`data_plane.apm.receiver_endpoint`).
+    pub receiver_endpoint: Option<String>,
+    /// Unix domain socket path (`data_plane.apm.receiver_socket`).
+    pub receiver_socket: Option<String>,
+    /// Maximum accepted request body size (`data_plane.apm.max_payload_size`), given as a bare
+    /// integer number of bytes or a byte-size string such as `25MB`. `ByteSize` accepts both forms,
+    /// so the plain integer the equivalent Agent key uses does not fail the load.
+    pub max_payload_size: Option<ByteSize>,
+    /// Whether the receiver may bind a non-loopback TCP address (`data_plane.apm.non_local_traffic`).
+    pub non_local_traffic: Option<bool>,
+    /// How long to wait for the pipeline to accept a payload (`data_plane.apm.dispatch_timeout`),
+    /// given as a duration string such as `1s`.
+    ///
+    /// Not interchangeable with the reference trace-agent's `apm_config.decoder_timeout`, whose bare
+    /// integer counts milliseconds: a bare integer here counts nanoseconds, following Go's
+    /// `time.Duration` and the rest of ADP's duration keys. Spell the unit to avoid the ambiguity.
+    pub dispatch_timeout: Option<DurationString>,
 }
 
 // TODO(#2177): Delete these ADP-only defaults when receiver endpoints return to the canonical
@@ -517,6 +547,9 @@ impl SalukiOnly {
         if let Some(v) = self.data_plane.checks.enabled {
             config.control.checks = v;
         }
+        if let Some(v) = self.data_plane.apm.enabled {
+            config.control.apm = v;
+        }
         config.control.memory_limit = self.memory_limit.map(|v| v.as_u64());
         config.control.memory_slop_factor = self.memory_slop_factor.unwrap_or(DEFAULT_MEMORY_SLOP_FACTOR);
         config.control.enable_global_limiter = self.enable_global_limiter.unwrap_or(DEFAULT_ENABLE_GLOBAL_LIMITER);
@@ -673,6 +706,27 @@ impl SalukiOnly {
             };
         }
 
+        // domains.apm
+        let apm = &mut config.domains.apm;
+        if let Some(v) = self.data_plane.apm.receiver_endpoint.clone() {
+            apm.receiver_endpoint = v;
+        }
+        if let Some(v) = self.data_plane.apm.receiver_socket.clone() {
+            apm.receiver_socket = v;
+        }
+        if let Some(v) = self.data_plane.apm.max_payload_size {
+            // Saturating rather than wrapping: on a 32-bit target a configured cap above `usize::MAX`
+            // is unreachable anyway, and clamping to the largest expressible cap is closer to the
+            // operator's intent than truncating it to a small one.
+            apm.max_payload_size = usize::try_from(v.as_u64()).unwrap_or(usize::MAX);
+        }
+        if let Some(v) = self.data_plane.apm.non_local_traffic {
+            apm.non_local_traffic = v;
+        }
+        if let Some(v) = self.data_plane.apm.dispatch_timeout {
+            apm.dispatch_timeout = v.into();
+        }
+
         // domains.checks
         if let Some(v) = &self.checks_ipc_endpoint {
             config.domains.checks.ipc_endpoint = v.clone();
@@ -748,6 +802,14 @@ mod tests {
                 "otlp": {
                     "receiver_grpc_endpoint_temporary": "0.0.0.0:19317",
                     "receiver_http_endpoint_temporary": "0.0.0.0:19318"
+                },
+                "apm": {
+                    "enabled": true,
+                    "receiver_endpoint": "0.0.0.0:18127",
+                    "receiver_socket": "/var/run/datadog/apm.socket",
+                    "max_payload_size": "12MB",
+                    "non_local_traffic": true,
+                    "dispatch_timeout": "3s"
                 }
             },
             // nested: apm_config
@@ -786,6 +848,7 @@ mod tests {
         // control
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
+        assert!(config.control.apm);
         assert_eq!(config.control.memory_limit, Some(ByteSize::mb(512).as_u64()));
         assert_eq!(config.control.memory_slop_factor, 0.3);
         assert!(!config.control.enable_global_limiter);
@@ -858,8 +921,38 @@ mod tests {
             vec!["set(name, \"x\")".to_string()]
         );
 
+        // domains.apm
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_endpoint, "0.0.0.0:18127");
+        assert_eq!(apm.receiver_socket, "/var/run/datadog/apm.socket");
+        assert_eq!(
+            apm.max_payload_size,
+            usize::try_from(ByteSize::mb(12).as_u64()).expect("12MB fits in usize")
+        );
+        assert!(apm.non_local_traffic);
+        assert_eq!(apm.dispatch_timeout, Duration::from_secs(3));
+
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+    }
+
+    /// `data_plane.apm.max_payload_size` is a byte size, but the equivalent Agent key
+    /// (`apm_config.max_payload_size`) is a plain integer number of bytes, so an operator porting a
+    /// value across will write an integer. Both forms must land on the same byte count.
+    #[test]
+    fn the_apm_max_payload_size_accepts_an_integer_or_a_byte_size_string() {
+        for value in [json!(12_000_000), json!("12MB")] {
+            let map = json!({ "data_plane": { "apm": { "max_payload_size": value.clone() } } });
+
+            let saluki_only: SalukiOnly = serde_json::from_value(map).expect("saluki-only source deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+
+            assert_eq!(
+                config.domains.apm.max_payload_size, 12_000_000,
+                "unexpected byte count for input: {value:?}"
+            );
+        }
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
