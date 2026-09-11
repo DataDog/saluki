@@ -10,7 +10,6 @@ use std::{
 };
 
 use regex::Regex;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
@@ -22,6 +21,7 @@ use crate::features::{Feature, FeatureDetector};
 
 const DEFAULT_PROCFS_ROOT: &str = "/proc";
 const DEFAULT_CGROUPFS_ROOT: &str = "/sys/fs/cgroup";
+const DEFAULT_LEGACY_CGROUPFS_ROOT: &str = "/cgroup";
 const DEFAULT_HOST_MAPPED_PROCFS_ROOT: &str = "/host/proc";
 const DEFAULT_HOST_MAPPED_CGROUPFS_ROOT: &str = "/host/sys/fs/cgroup";
 const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
@@ -43,44 +43,42 @@ pub struct CgroupsConfiguration {
 }
 
 impl CgroupsConfiguration {
-    /// Creates a new `CgroupsConfiguration` from the given configuration.
+    /// Creates a new `CgroupsConfiguration` from the given filesystem roots.
     ///
-    /// # Errors
-    ///
-    /// If any of the paths in the configuration aren't valid, an error will be returned. This doesn't include,
-    /// however, if any of the configured paths don't _exist_.
-    pub fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector,
-    ) -> Result<Self, GenericError> {
-        let procfs_root = match config.try_get_typed::<PathBuf>("container_proc_root")? {
-            Some(path) => path,
-            None => {
-                if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
-                    PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
-                } else {
-                    PathBuf::from(DEFAULT_PROCFS_ROOT)
-                }
+    /// If a root is given, that path is used. Otherwise, each root falls back to its host-mapped default when its own
+    /// filesystem is detected as host-mapped, and to its local default when it isn't. The cgroupfs root has one more
+    /// fallback: the legacy `/cgroup` root, when that layout is detected.
+    pub fn new(
+        procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
+    ) -> Self {
+        let procfs_root = procfs_root.unwrap_or_else(|| {
+            if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
+                PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
+            } else {
+                PathBuf::from(DEFAULT_PROCFS_ROOT)
             }
-        };
+        });
 
-        let cgroupfs_root = match config.try_get_typed::<PathBuf>("container_cgroup_root")? {
-            Some(path) => path,
-            None => {
-                // Detected separately from procfs: the two are independent mounts, and a deployment can map one
-                // without the other. Keying this off the procfs feature would point us at a cgroupfs path that isn't
-                // there, or make us miss the host's hierarchy in favor of our own container's.
-                if feature_detector.is_feature_available(Feature::HostMappedCgroupfs) {
-                    PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
-                } else {
-                    PathBuf::from(DEFAULT_CGROUPFS_ROOT)
-                }
+        let cgroupfs_root = cgroupfs_root.unwrap_or_else(|| {
+            // Detected separately from procfs: the two are independent mounts, and a deployment can map one
+            // without the other. Keying this off the procfs feature would point us at a cgroupfs path that isn't
+            // there, or make us miss the host's hierarchy in favor of our own container's.
+            if feature_detector.is_feature_available(Feature::HostMappedCgroupfs) {
+                PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
+            } else if feature_detector.is_feature_available(Feature::LegacyCgroupfsRoot) {
+                // Older Amazon Linux hosts put the cgroups v1 hierarchy at `/cgroup`. The Datadog Agent detects that
+                // layout and defaults `container_cgroup_root` to it, but it sends us the result as a default value,
+                // which we can't tell apart from a schema default, so we detect the layout ourselves.
+                PathBuf::from(DEFAULT_LEGACY_CGROUPFS_ROOT)
+            } else {
+                PathBuf::from(DEFAULT_CGROUPFS_ROOT)
             }
-        };
+        });
 
-        Ok(Self {
+        Self {
             procfs_root,
             cgroupfs_root,
-        })
+        }
     }
 
     /// Returns the path to the "procfs" filesystem.
@@ -763,7 +761,6 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use saluki_config::ConfigurationLoader;
     use stringtheory::{
         interning::{GenericMapInterner, InternedString, Interner as _},
         MetaString,
@@ -774,7 +771,8 @@ mod tests {
         extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
         is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry, CgroupsConfiguration, CgroupsReader,
         Feature, FeatureDetector, HierarchyReader, TraversalResult, DEFAULT_CGROUPFS_ROOT,
-        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
+        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_LEGACY_CGROUPFS_ROOT,
+        DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -1326,41 +1324,57 @@ mod tests {
         assert!(traversal.cgroups.is_empty());
     }
 
-    async fn cgroups_config_with(detected: Feature) -> CgroupsConfiguration {
-        let (config, _updates_tx) = ConfigurationLoader::for_tests(None, None, false).await;
-
-        CgroupsConfiguration::from_configuration(&config, FeatureDetector::from_detected_features(detected))
-            .expect("configuration should load")
+    fn cgroups_config_with(detected: Feature) -> CgroupsConfiguration {
+        CgroupsConfiguration::new(None, None, &FeatureDetector::from_detected_features(detected))
     }
 
-    #[tokio::test]
-    async fn cgroupfs_root_defaults_to_local_when_nothing_is_host_mapped() {
-        let config = cgroups_config_with(Feature::none()).await;
+    #[test]
+    fn cgroupfs_root_defaults_to_local_when_nothing_is_host_mapped() {
+        let config = cgroups_config_with(Feature::none());
 
         assert_eq!(config.procfs_path(), Path::new(DEFAULT_PROCFS_ROOT));
         assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_CGROUPFS_ROOT));
     }
 
-    #[tokio::test]
-    async fn cgroupfs_root_follows_host_mapped_cgroupfs() {
-        let config = cgroups_config_with(Feature::HostMappedCgroupfs).await;
+    #[test]
+    fn cgroupfs_root_follows_host_mapped_cgroupfs() {
+        let config = cgroups_config_with(Feature::HostMappedCgroupfs);
 
         assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT));
     }
 
-    #[tokio::test]
-    async fn cgroupfs_root_ignores_host_mapped_procfs() {
+    #[test]
+    fn cgroupfs_root_ignores_host_mapped_procfs() {
         // procfs and cgroupfs are independent mounts. A deployment that maps one without the other used to get the
         // host cgroupfs path off the back of the procfs mount, pointing the reader at a path that isn't there.
-        let config = cgroups_config_with(Feature::HostMappedProcfs).await;
+        let config = cgroups_config_with(Feature::HostMappedProcfs);
 
         assert_eq!(config.procfs_path(), Path::new(DEFAULT_HOST_MAPPED_PROCFS_ROOT));
         assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_CGROUPFS_ROOT));
     }
 
-    #[tokio::test]
-    async fn procfs_root_ignores_host_mapped_cgroupfs() {
-        let config = cgroups_config_with(Feature::HostMappedCgroupfs).await;
+    #[test]
+    fn cgroupfs_root_follows_legacy_root() {
+        let config = cgroups_config_with(Feature::LegacyCgroupfsRoot);
+
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_LEGACY_CGROUPFS_ROOT));
+        assert_eq!(config.procfs_path(), Path::new(DEFAULT_PROCFS_ROOT));
+    }
+
+    #[test]
+    fn host_mapped_cgroupfs_takes_precedence_over_legacy_root() {
+        // The legacy root is a host layout, so a container that has the host cgroupfs mapped in reads the host
+        // hierarchy through that mount rather than through a `/cgroup` path in its own filesystem. Feature detection
+        // never reports both at once, since it only looks for the legacy root when it isn't containerized, but the
+        // ordering here is what makes that safe.
+        let config = cgroups_config_with(Feature::HostMappedCgroupfs | Feature::LegacyCgroupfsRoot);
+
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT));
+    }
+
+    #[test]
+    fn procfs_root_ignores_host_mapped_cgroupfs() {
+        let config = cgroups_config_with(Feature::HostMappedCgroupfs);
 
         assert_eq!(config.procfs_path(), Path::new(DEFAULT_PROCFS_ROOT));
     }
