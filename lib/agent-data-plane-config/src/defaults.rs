@@ -108,3 +108,36 @@ pub const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(5
 
 /// Maximum string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
 pub const MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(1024 * 1024 * 1024).unwrap();
+
+/// Default TCP endpoint the APM v1.0 trace receiver listens on.
+///
+/// Adjacent to the Core Agent trace-agent's `8126` so the side-by-side relationship is obvious, and
+/// deliberately not `8126` itself: the trace-agent keeps that port, and operators roll ADP back by
+/// pointing tracers at it again. Loopback-only, matching
+/// [`DEFAULT_APM_NON_LOCAL_TRAFFIC`]; a containerized deployment that needs to accept traffic from
+/// other containers must set both the endpoint and that gate.
+pub const DEFAULT_APM_RECEIVER_ENDPOINT: &str = "localhost:8127";
+
+/// Default maximum accepted v1.0 trace request body size, in bytes: 25 MB.
+///
+/// Matches `MaxRequestBytes` in the reference trace-agent, which `apm_config.max_payload_size` sets.
+/// This bounds the request body before any decoding, so raising it raises peak memory per in-flight
+/// request; high-volume tracers that batch aggressively may need a larger value, at that cost.
+pub const DEFAULT_APM_MAX_PAYLOAD_SIZE: usize = 25_000_000;
+
+/// Whether the APM v1.0 trace receiver accepts non-local traffic by default.
+///
+/// Defaults to `false`, so the receiver refuses to bind a non-loopback TCP address. Set this only
+/// when tracers run outside the host's network namespace and the port is not reachable from
+/// untrusted networks.
+pub const DEFAULT_APM_NON_LOCAL_TRAFFIC: bool = false;
+
+/// Default time the APM v1.0 trace receiver waits for the pipeline to accept a payload: 1 second.
+///
+/// Matches `DecoderTimeout` in the reference trace-agent (`apm_config.decoder_timeout`), which bounds
+/// the equivalent wait there. Once this elapses the receiver sheds the payload rather than holding
+/// the tracer's connection open: a saturated or wedged pipeline then costs the tracer one refused
+/// request instead of an indefinitely blocked one. Raise it to trade tracer-visible refusals for
+/// tolerance of longer downstream stalls; lower it to shed load sooner. A value of `0` refuses every
+/// payload the pipeline cannot accept instantly.
+pub const DEFAULT_APM_DISPATCH_TIMEOUT: Duration = Duration::from_secs(1);
