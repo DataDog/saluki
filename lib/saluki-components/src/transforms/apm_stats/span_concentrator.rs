@@ -11,6 +11,7 @@ use super::aggregation::{
     get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey, BUCKET_DURATION_NS,
     TAG_BASE_SERVICE, TAG_SPAN_KIND,
 };
+use super::peer_ip_quantize::quantize_peer_ip_addresses;
 use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
 use crate::common::otlp::semantics::{current_registry, Registry};
@@ -284,6 +285,9 @@ impl SpanConcentrator {
         for key in keys_to_check {
             if let Some(value) = span.attributes.get(key.as_ref()).and_then(AttributeValue::as_string) {
                 if !value.is_empty() {
+                    // Quantize IP addresses before the value is hashed into the aggregation key, so
+                    // that per-host cardinality collapses to a single dimension.
+                    let value = quantize_peer_ip_addresses(value.as_ref());
                     peer_tags.push(MetaString::from(format!("{}:{}", key, value)));
                 }
             }
@@ -400,5 +404,77 @@ mod tests {
 
         let _ = concentrator.flush(now, false);
         assert!(has_key(&concentrator, "custom.remote.service"));
+    }
+
+    #[test]
+    fn peer_tag_ips_quantize_into_one_aggregation_group() {
+        let now = 1_000_000_000u64;
+        let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+
+        let payload_key = PayloadAggregationKey {
+            env: MetaString::from("test"),
+            ..Default::default()
+        };
+        let infra_tags = InfraTags::default();
+
+        // Two otherwise-identical client spans, differing only in the peer tag's IP address.
+        // With quantization, both collapse to `blocked-ip-address` and aggregate into a single
+        // group; if the quantize call in `matching_peer_tags` were removed, the raw IPs would
+        // hash differently and split the stats into two groups of one hit each.
+        for peer_ip in ["10.0.0.1:5432", "10.0.0.2:5432"] {
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            attrs.insert(
+                MetaString::from("db.instance"),
+                AttributeValue::String(MetaString::from(peer_ip)),
+            );
+            attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+            let span =
+                Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 0, now, 75, 0).with_attributes(attrs);
+
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("client span with peer tags should produce stats");
+            concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+        }
+
+        let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
+
+        let mut matching_groups = Vec::new();
+        for payload in &payloads {
+            for bucket in payload.stats() {
+                for grouped in bucket.stats() {
+                    if grouped.resource() == "SELECT ..." {
+                        matching_groups.push(grouped);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            matching_groups.len(),
+            1,
+            "spans with different peer IPs must group after quantization"
+        );
+        assert_eq!(
+            matching_groups[0].hits(),
+            2,
+            "both spans' hits must combine into the single group"
+        );
+
+        let peer_tags: Vec<&str> = matching_groups[0].peer_tags().iter().map(|t| t.as_ref()).collect();
+        assert!(
+            peer_tags.contains(&"db.instance:blocked-ip-address:5432"),
+            "peer tags must carry the quantized value, got: {:?}",
+            peer_tags
+        );
+        assert!(
+            peer_tags.iter().all(|t| !t.contains("10.0.0.")),
+            "no peer tag may retain the raw IP, got: {:?}",
+            peer_tags
+        );
     }
 }
