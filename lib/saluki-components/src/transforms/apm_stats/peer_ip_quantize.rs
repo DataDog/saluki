@@ -186,7 +186,7 @@ fn is_parseable_ip(s: &str) -> Option<usize> {
             b'.' | b'_' | b'-' => return parse_ipv4(s, b),
             b':' => {
                 // IPv6: the whole remaining string must parse.
-                if s.parse::<Ipv6Addr>().is_ok() {
+                if parse_ipv6_with_optional_zone(s) {
                     return Some(s.len());
                 }
                 return None;
@@ -201,6 +201,17 @@ fn is_parseable_ip(s: &str) -> Option<usize> {
     }
 
     None
+}
+
+/// Parses an IPv6 address with an optional trailing `%zone`, mirroring Go's `netip.ParseAddr`.
+///
+/// `Ipv6Addr` rejects scoped addresses like `fe80::1%eth0`, so the zone is split off before
+/// parsing the address portion. The zone must be non-empty, matching `netip`'s requirement.
+fn parse_ipv6_with_optional_zone(s: &str) -> bool {
+    match s.split_once('%') {
+        Some((addr, zone)) => !zone.is_empty() && addr.parse::<Ipv6Addr>().is_ok(),
+        None => s.parse::<Ipv6Addr>().is_ok(),
+    }
 }
 
 /// Parses `s` as an IPv4 address and returns the index of the first character after the address.
@@ -314,6 +325,19 @@ mod tests {
     fn ipv6_is_blocked() {
         assert_q("fd00:ec2::16", "blocked-ip-address");
         assert_q("[2001:db8::1]:8080", "blocked-ip-address:8080");
+    }
+
+    #[test]
+    fn scoped_ipv6_is_blocked() {
+        // Scoped IPv6 addresses carry a zone (fe80::1%eth0), which the Agent's `netip.ParseAddr`
+        // accepts, so they quantize like their unscoped forms.
+        assert_q("fe80::1%eth0", "blocked-ip-address");
+        assert_q("[fe80::1%eth0]:8080", "blocked-ip-address:8080");
+        assert_q("fd00:ec2::16%eth0", "blocked-ip-address");
+        // An empty zone is rejected, matching `netip`'s requirement for a non-empty zone.
+        assert_q("fe80::1%", "fe80::1%");
+        // A '%' with no colons before it is not an address with a zone.
+        assert_q("ab%eth0", "ab%eth0");
     }
 
     #[test]
