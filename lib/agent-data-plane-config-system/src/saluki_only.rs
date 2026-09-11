@@ -251,7 +251,7 @@ pub struct DataPlane {
 
 /// `data_plane.apm.*`: the Datadog v1.0 (`idx`/ETP) trace receiver.
 ///
-/// Deliberately not spelled `apm_config.*` — see
+/// Deliberately not spelled `apm_config.*`: see
 /// [`agent_data_plane_config::domains::apm`] for why those keys can't be reused.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
