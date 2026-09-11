@@ -1,0 +1,10 @@
+enhancements:
+  - |
+    Added ``network_http_requests_retry_causes_total``, which counts retried HTTP requests by what caused the retry:
+    a response status code, an HTTP/2 error, TLS, a timeout, a connection failure, or a client error. HTTP/2 retries
+    also report the frame the error came from, the reason code, and whether the data plane or the remote endpoint
+    ended the request when that can be determined.
+  - |
+    Retry warnings for HTTP/2 failures now report which side ended the request as ``http2.initiator``, with ``local``,
+    ``remote``, or ``unknown`` values. This field replaces ``http2.received_from_remote``. The frame is now reported
+    as ``http2.frame``, replacing ``http2.error_kind``.
