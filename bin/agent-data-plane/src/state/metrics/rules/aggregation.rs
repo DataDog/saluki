@@ -1,5 +1,7 @@
 use super::RemapperRule;
 
+const NO_AGG_SPLIT_COMPONENT_TAG: &str = "component_id:dsd_no_agg_split";
+
 pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
     vec![
         RemapperRule::by_name_and_tags(
@@ -29,16 +31,18 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
         )
         .with_additional_tags(["data_type:dogstatsd_metrics"])
         .with_help_text("Amount of metrics/services_checks/events processed by the aggregator"),
+        // The passthrough counters are emitted by `dsd_no_agg_split`, not `dsd_agg`, since the timestamp-based
+        // split moved out of the aggregate transform.
         RemapperRule::by_name_and_tags(
             "adp.aggregate_passthrough_metrics_total",
-            &["component_id:dsd_agg"],
+            &[NO_AGG_SPLIT_COMPONENT_TAG],
             "no_aggregation.processed",
         )
         .with_additional_tags(["state:ok"])
         .with_help_text("Count the number of samples processed by the no-aggregation pipeline worker"),
         RemapperRule::by_name_and_tags(
             "adp.aggregate_passthrough_flushes_total",
-            &["component_id:dsd_agg"],
+            &[NO_AGG_SPLIT_COMPONENT_TAG],
             "no_aggregation.flush",
         )
         .with_help_text("Count the number of flushes done by the no-aggregation pipeline worker"),

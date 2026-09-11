@@ -1,9 +1,4 @@
-use std::{
-    future::pending,
-    num::NonZeroU64,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::{future::pending, num::NonZeroU64, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
 use ddsketch::DDSketch;
@@ -15,17 +10,17 @@ use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{metric::*, Event, EventType},
     observability::ComponentMetricsExt as _,
+    topology::EventsBuffer,
     topology::{interconnect::BufferedDispatcher, OutputDefinition},
-    topology::{EventsBuffer, EventsDispatcher},
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
-    pin, select,
+    select,
     sync::{mpsc, oneshot},
-    time::{interval, interval_at},
+    time::interval_at,
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -36,7 +31,6 @@ mod config;
 pub use self::config::HistogramConfiguration;
 use self::config::HistogramStatistic;
 
-const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY: usize = 1;
 
 /// The shape of metric values retained by the aggregate transform.
@@ -342,21 +336,6 @@ pub struct AggregateConfiguration {
     /// A value of `0`, or `None`, disables idle counter keep-alive.
     pub counter_expiry_seconds: Option<u64>,
 
-    /// Whether or not to immediately forward (passthrough) metrics with pre-defined timestamps.
-    ///
-    /// When enabled, this causes the aggregator to immediately forward metrics that already have a timestamp present.
-    /// Only metrics without a timestamp will be aggregated. This can be useful when metrics are already pre-aggregated
-    /// client-side and both timeliness and memory efficiency are paramount, as it avoids the overhead of aggregating
-    /// within the pipeline.
-    pub passthrough_timestamped_metrics: bool,
-
-    /// How often to flush buffered passthrough metrics.
-    ///
-    /// While passthrough metrics aren't re-aggregated by the transform, they will still be temporarily buffered in
-    /// order to optimize the efficiency of processing them in the next component. This setting controls the maximum
-    /// amount of time that passthrough metrics will be buffered before being forwarded.
-    pub passthrough_idle_flush_timeout: Duration,
-
     /// Statistics to calculate over histograms, and how to copy them to distributions.
     pub hist_config: HistogramConfiguration,
 
@@ -382,8 +361,6 @@ impl AggregateConfiguration {
             context_limit: 1_000_000,
             flush_open_windows: false,
             counter_expiry_seconds: Some(300),
-            passthrough_timestamped_metrics: true,
-            passthrough_idle_flush_timeout: Duration::from_secs(1),
             hist_config: HistogramConfiguration::default(),
             context_snapshot_receiver,
         }
@@ -405,20 +382,11 @@ impl TransformBuilder for AggregateConfiguration {
             telemetry.clone(),
         );
 
-        let passthrough_batcher = PassthroughBatcher::new(
-            self.passthrough_idle_flush_timeout,
-            self.window_duration_seconds,
-            telemetry.clone(),
-        )
-        .await;
-
         Ok(Box::new(Aggregate {
             state,
             telemetry,
             primary_flush_interval: self.primary_flush_interval,
             flush_open_windows: self.flush_open_windows,
-            passthrough_batcher,
-            passthrough_timestamped_metrics: self.passthrough_timestamped_metrics,
             context_snapshot_requests: Some(context_snapshot_requests),
         }))
     }
@@ -473,8 +441,6 @@ pub struct Aggregate {
     telemetry: Telemetry,
     primary_flush_interval: Duration,
     flush_open_windows: bool,
-    passthrough_batcher: PassthroughBatcher,
-    passthrough_timestamped_metrics: bool,
     context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
 }
 
@@ -489,12 +455,8 @@ impl Transform for Aggregate {
         );
         let mut final_primary_flush = false;
 
-        let passthrough_flush = interval(PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL);
-
         health.mark_ready();
         debug!("Aggregation transform started.");
-
-        pin!(passthrough_flush);
 
         loop {
             select! {
@@ -535,7 +497,6 @@ impl Transform for Aggregate {
                         break
                     }
                 },
-                _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.dispatcher()).await,
                 snapshot_request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
                     match snapshot_request {
                         Some(response) => {
@@ -549,33 +510,9 @@ impl Transform for Aggregate {
                         trace!(events_len = events.len(), "Received events.");
 
                         let current_time = get_unix_timestamp();
-                        let mut processed_passthrough_metrics = false;
 
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
-                                let metric = if self.passthrough_timestamped_metrics {
-                                    // Try splitting out any timestamped values, and if we have any, we'll buffer them
-                                    // separately and process the remaining nontimestamped metric (if any) by
-                                    // aggregating it like normal.
-                                    let (maybe_timestamped_metric, maybe_nontimestamped_metric) = try_split_timestamped_values(metric);
-
-                                    // If we have a timestamped metric, then batch it up out-of-band.
-                                    if let Some(timestamped_metric) = maybe_timestamped_metric {
-                                        self.passthrough_batcher.push_metric(timestamped_metric, context.dispatcher()).await;
-                                        processed_passthrough_metrics = true;
-                                    }
-
-                                    // If we have an nontimestamped metric, we'll process it like normal.
-                                    //
-                                    // Otherwise, continue to the next event.
-                                    match maybe_nontimestamped_metric {
-                                        Some(metric) => metric,
-                                        None => continue,
-                                    }
-                                } else {
-                                    metric
-                                };
-
                                 let was_breached = self.state.context_limit_breached();
                                 if !self.state.insert(current_time, metric) {
                                     trace!("Dropping metric due to context limit.");
@@ -587,10 +524,6 @@ impl Transform for Aggregate {
                                     self.telemetry.increment_events_dropped();
                                 }
                             }
-                        }
-
-                        if processed_passthrough_metrics {
-                            self.passthrough_batcher.update_last_processed_at();
                         }
                     },
                     None => {
@@ -605,9 +538,6 @@ impl Transform for Aggregate {
             }
         }
 
-        // Do a final flush of any timestamped metrics that we've buffered up.
-        self.passthrough_batcher.try_flush(context.dispatcher()).await;
-
         debug!("Aggregation transform stopped.");
 
         Ok(())
@@ -620,114 +550,6 @@ async fn receive_context_snapshot_request(
     match receiver {
         Some(receiver) => receiver.recv().await,
         None => pending().await,
-    }
-}
-
-fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<Metric>) {
-    if metric.values().all_timestamped() {
-        (Some(metric), None)
-    } else if metric.values().any_timestamped() {
-        // Only _some_ of the values are timestamped, so we'll split the timestamped values into a new metric.
-        let new_metric_values = metric.values_mut().split_timestamped();
-        let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
-
-        (Some(new_metric), Some(metric))
-    } else {
-        // No timestamped values, so we need to aggregate this metric.
-        (None, Some(metric))
-    }
-}
-
-struct PassthroughBatcher {
-    active_buffer: EventsBuffer,
-    active_buffer_start: Instant,
-    last_processed_at: Instant,
-    idle_flush_timeout: Duration,
-    bucket_width_secs: NonZeroU64,
-    telemetry: Telemetry,
-}
-
-impl PassthroughBatcher {
-    async fn new(idle_flush_timeout: Duration, bucket_width_secs: NonZeroU64, telemetry: Telemetry) -> Self {
-        let active_buffer = EventsBuffer::default();
-
-        Self {
-            active_buffer,
-            active_buffer_start: Instant::now(),
-            last_processed_at: Instant::now(),
-            idle_flush_timeout,
-            bucket_width_secs,
-            telemetry,
-        }
-    }
-
-    async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
-        // Convert counters to rates before we batch them up.
-        //
-        // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
-        // you say it out loud is sort of confusing and nonsensical since the whole point is that these are
-        // _pre-aggregated_ metrics but we have to match the behavior of the Datadog Agent. ¯\_(ツ)_/¯
-        let (context, values, metadata) = metric.into_parts();
-        let adjusted_values = counter_values_to_rate(values, self.bucket_width_secs);
-        let metric = Metric::from_parts(context, adjusted_values, metadata);
-
-        // Try pushing the metric into our active buffer.
-        //
-        // If our active buffer is full, then we'll flush the buffer, grab a new one, and push the metric into it.
-        if let Some(event) = self.active_buffer.try_push(Event::Metric(metric)) {
-            debug!("Passthrough event buffer was full. Flushing...");
-            self.dispatch_events(dispatcher).await;
-
-            if self.active_buffer.try_push(event).is_some() {
-                error!("Event buffer is full even after dispatching events. Dropping event.");
-                self.telemetry.increment_events_dropped();
-                return;
-            }
-        }
-
-        // If this is the first metric in the buffer, we've started a new batch, so track when it started.
-        if self.active_buffer.len() == 1 {
-            self.active_buffer_start = Instant::now();
-        }
-
-        self.telemetry.increment_passthrough_metrics();
-    }
-
-    fn update_last_processed_at(&mut self) {
-        // We expose this as a standalone method, rather than just doing it automatically in `push_metric`, because
-        // otherwise we might be calling this 10-20K times per second, instead of simply doing it after the end of each
-        // input event buffer in the transform's main loop, which should be much less frequent.
-        self.last_processed_at = Instant::now();
-    }
-
-    async fn try_flush(&mut self, dispatcher: &EventsDispatcher) {
-        // If our active buffer isn't empty, and we've exceeded our idle flush timeout, then flush the buffer.
-        if !self.active_buffer.is_empty() && self.last_processed_at.elapsed() >= self.idle_flush_timeout {
-            debug!("Passthrough processing exceeded idle flush timeout. Flushing...");
-
-            self.dispatch_events(dispatcher).await;
-        }
-    }
-
-    async fn dispatch_events(&mut self, dispatcher: &EventsDispatcher) {
-        if !self.active_buffer.is_empty() {
-            let unaggregated_events = self.active_buffer.len();
-
-            // Track how long this batch was alive for.
-            let batch_duration = self.active_buffer_start.elapsed();
-            self.telemetry.record_passthrough_batch_duration(batch_duration);
-
-            self.telemetry.increment_passthrough_flushes();
-
-            // Swap our active buffer with a new, empty one, and then forward the old one.
-            let new_active_buffer = EventsBuffer::default();
-            let old_active_buffer = std::mem::replace(&mut self.active_buffer, new_active_buffer);
-
-            match dispatcher.dispatch(old_active_buffer).await {
-                Ok(()) => debug!(unaggregated_events, "Dispatched events."),
-                Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
-            }
-        }
     }
 }
 
@@ -1129,7 +951,7 @@ mod tests {
         health::HealthRegistry,
         runtime::{state::ResourceRegistry, Supervisor},
         support::SubsystemIdentifier,
-        topology::{interconnect::Dispatcher, OutputDefinition, OutputName, TopologyBlueprint},
+        topology::{interconnect::Dispatcher, EventsDispatcher, OutputDefinition, OutputName, TopologyBlueprint},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -1615,15 +1437,6 @@ mod tests {
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
             let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
 
-            let passthrough_context = Context::from_static_name("owner.loop.timestamped.gauge");
-            events_tx
-                .send(Event::Metric(Metric::gauge(
-                    passthrough_context.clone(),
-                    (insert_ts(1), 1.0),
-                )))
-                .await
-                .expect("controlled source should accept a timestamped event");
-
             let retained_context = Context::from_static_name("owner.loop.mixed.counter");
             let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(insert_ts(1)), 3.0)]);
             events_tx
@@ -1650,7 +1463,6 @@ mod tests {
             assert_eq!(entry.context(), &retained_context);
             assert_eq!(entry.metric_type(), AggregateMetricType::Counter);
             assert_eq!(entry.unit(), None);
-            assert!(snapshot.iter().all(|entry| entry.context() != &passthrough_context));
 
             drop(events_tx);
             drop(snapshot_handle);
@@ -2154,35 +1966,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preaggregated_counters_to_rate() {
-        let counter_value = 42.0;
-        let timestamp = 123456;
-
-        // Create a basic passthrough batcher and forwarder.
-        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), BUCKET_WIDTH_SECS, Telemetry::noop()).await;
-        let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
-
-        // Create a simple pre-aggregated counter, and batch it.
-        let input_metric = Metric::counter("metric1", (timestamp, counter_value));
-        batcher.push_metric(input_metric.clone(), &dispatcher).await;
-
-        // Flush the batcher, and observe that we've emitted the expected counter and that it has the right
-        // value, but specifically that it's a rate with an interval that matches our configured bucket width:
-        batcher.try_flush(&dispatcher).await;
-
-        let mut flushed_metrics = dispatcher_receiver.collect_next();
-        assert_eq!(flushed_metrics.len(), 1);
-        assert_eq!(
-            Metric::rate("metric1", (timestamp, counter_value), BUCKET_WIDTH),
-            flushed_metrics.remove(0)
-        );
-    }
-
-    #[tokio::test]
     async fn telemetry() {
-        // TODO: We don't check `component_events_dropped_total` or `aggregate_passthrough_metrics_total` here as
-        // they're set directly in the aggregate component future rather than `AggregationState`, which is harder to
-        // drive overall and would have required even more boilerplate.
+        // TODO: We don't check `component_events_dropped_total` here as it's set directly in the aggregate
+        // component future rather than `AggregationState`, which is harder to drive overall and would have
+        // required even more boilerplate.
         //
         // Leaving that as a future improvement.
 
@@ -2202,7 +1989,6 @@ mod tests {
 
         // Make sure our telemetry is registered at default values.
         assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(0.0));
-        assert_eq!(recorder.counter("aggregate_passthrough_metrics_total"), Some(0));
         assert_eq!(
             recorder.counter(("component_events_dropped_total", &[("intentional", "true")])),
             Some(0)
@@ -2221,7 +2007,6 @@ mod tests {
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "counter")])),
             Some(1.0)
         );
-        assert_eq!(recorder.counter("aggregate_passthrough_metrics_total"), Some(0));
 
         // Insert a gauge with a timestamped value.
         assert!(state.insert(insert_ts(1), Metric::gauge("metric2", (insert_ts(1), 42.0))));

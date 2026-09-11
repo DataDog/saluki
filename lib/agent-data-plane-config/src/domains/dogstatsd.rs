@@ -429,8 +429,9 @@ pub struct MetricTagFilterEntry {
 
 /// One tag value allow-list entry.
 ///
-/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Distinct
-/// prefixes must not overlap. Multiple rules may use the same prefix when they target different tags.
+/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing, and only
+/// to metrics that are aggregated: metrics carrying an explicit client timestamp bypass tag filtering entirely.
+/// Distinct prefixes must not overlap. Multiple rules may use the same prefix when they target different tags.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MetricTagValueAllowlistEntry {
     /// Non-empty metric-name prefix the entry applies to.

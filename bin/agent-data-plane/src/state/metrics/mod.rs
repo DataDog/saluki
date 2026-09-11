@@ -570,6 +570,47 @@ mod tests {
     }
 
     #[test]
+    fn rar_rules_match_the_component_that_emits_them() {
+        // The passthrough counters are emitted by the `dsd_no_agg_split` transform, which is where the
+        // timestamp-based split lives. Component metrics carry a `component_id` tag naming their emitting
+        // component, and a rule only matches when every required tag is present, so moving the split between
+        // components without updating these rules silently drops `no_aggregation.*` from the RAR payload.
+        let rules = get_datadog_agent_remappings();
+        let remapped_name = |internal_name: &'static str, component_id: &'static str| {
+            let context = Context::from_static_parts(internal_name, &[component_id]);
+            rules
+                .iter()
+                .find_map(|rule| rule.try_match_no_context(&context))
+                .map(|remapped| remapped.name)
+        };
+
+        assert_eq!(
+            remapped_name(
+                "adp.aggregate_passthrough_metrics_total",
+                "component_id:dsd_no_agg_split"
+            ),
+            Some("no_aggregation.processed")
+        );
+        assert_eq!(
+            remapped_name(
+                "adp.aggregate_passthrough_flushes_total",
+                "component_id:dsd_no_agg_split"
+            ),
+            Some("no_aggregation.flush")
+        );
+        assert_eq!(
+            remapped_name("adp.aggregate_passthrough_metrics_total", "component_id:dsd_agg"),
+            None
+        );
+
+        // The aggregation rules that do belong to `dsd_agg` still match it.
+        assert_eq!(
+            remapped_name("adp.component_events_received_total", "component_id:dsd_agg"),
+            Some("aggregator.processed")
+        );
+    }
+
+    #[test]
     fn rar_telemetry_remaps_supported_dogstatsd_client_byte_telemetry_as_counters() {
         let metrics = [
             "adp.dogstatsd_client_telemetry_bytes_sent",
