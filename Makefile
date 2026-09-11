@@ -8,13 +8,12 @@ mkfile_dir := $(dir $(mkfile_path))
 export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
 export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
-export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
+export APP_BUILD_TIME := $(or $(APP_BUILD_TIME),$(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
 # ADP-specific settings used during builds.
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
-export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
 # Datadog Agent version used by the project-wide comparison image.
 export DATADOG_AGENT_VERSION := $(shell cat .datadog-agent-version)
@@ -126,7 +125,7 @@ build-adp-base: check-rust-build-tools
 build-adp-base:
 	@echo "[*] Building ADP locally (profile: $(BUILD_PROFILE))"
 	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-	APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
+	APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
 
 .PHONY: build-adp
@@ -635,7 +634,7 @@ build-adp-host: $(if $(filter true,$(CI)),cargo-install-cargo-auditable)
 build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
 	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
 	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-		APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
+		APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: build-adp-aix
@@ -875,7 +874,7 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 .PHONY: emit-adp-build-metadata
 emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
 	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
-	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
+	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
 
 .PHONY: bump-adp-version
 bump-adp-version: ## Creates a PR branch that bumps the ADP patch version
