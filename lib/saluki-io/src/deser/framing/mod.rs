@@ -34,6 +34,15 @@ pub enum FramingError {
         remaining
     ))]
     PartialFrame { needed: usize, remaining: usize },
+
+    /// A frame was received without its trailing delimiter.
+    ///
+    /// This only occurs for framers that require the delimiter to always be present: EOF was reached with data still
+    /// buffered, but no delimiter was found. Callers that distinguish between malformed frames and unterminated ones
+    /// -- such as DogStatsD, which reports unterminated payloads separately when `dogstatsd_eol_required` is set --
+    /// can match on this variant specifically.
+    #[snafu(display("missing delimiter at EOF (frame length: {})", frame_len))]
+    MissingDelimiter { frame_len: usize },
 }
 
 /// A trait for reading framed messages from a buffer.
