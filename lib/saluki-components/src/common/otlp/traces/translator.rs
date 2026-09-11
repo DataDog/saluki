@@ -216,6 +216,7 @@ impl OtlpTracesTranslator {
                 // Once a trace is headed for the drop bin, skip the remaining spans entirely rather
                 // than paying for their conversion only to discard the results at emit time.
                 if entry.dropped {
+                    metrics.spans_dropped_span_id_zero().increment(1);
                     continue;
                 }
 
@@ -249,6 +250,12 @@ impl OtlpTracesTranslator {
                     if !entry.dropped {
                         entry.dropped = true;
                         metrics.traces_dropped_span_id_zero().increment(1);
+                        // Matches the Go trace-agent's separate `SpansDropped += len(chunk)`: count
+                        // every span already accepted into this trace plus the zero-ID span itself.
+                        metrics
+                            .spans_dropped_span_id_zero()
+                            .increment(entry.spans.len() as u64 + 1);
+                        entry.spans.clear();
                     }
                     continue;
                 }
@@ -509,15 +516,28 @@ mod tests {
             "the trace containing the zero-ID span must be dropped"
         );
 
-        // Exactly one drop is counted, with the documented tag set, even though multiple spans were
-        // involved.
-        let tags: &[(&str, &str)] = &[
+        // Exactly one trace-level drop is counted, but all three spans in that trace are counted at
+        // the span level, mirroring the Go trace-agent's separate `TracesDropped`/`SpansDropped`
+        // counters.
+        let trace_tags: &[(&str, &str)] = &[
             ("component_id", "otlp_test"),
             ("component_type", "source"),
             ("intentional", "true"),
             ("drop_reason", "span_id_zero"),
         ];
-        assert_eq!(recorder.counter(("component_events_dropped_total", tags)), Some(1));
+        assert_eq!(
+            recorder.counter(("component_events_dropped_total", trace_tags)),
+            Some(1)
+        );
+
+        let span_tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("intentional", "true"),
+            ("drop_reason", "span_id_zero"),
+            ("message_type", "otlp_spans"),
+        ];
+        assert_eq!(recorder.counter(("component_events_dropped_total", span_tags)), Some(3));
     }
 
     /// A zero-ID span in one trace must not affect a well-formed trace in the same batch.

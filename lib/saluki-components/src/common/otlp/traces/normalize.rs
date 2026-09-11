@@ -386,13 +386,7 @@ pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
         // rather than `0`, so the replacement still clears the floor it exists to enforce.
         .unwrap_or(YEAR_2000_NANOSEC_TS);
 
-    let new_start = now.wrapping_sub(duration);
-    if new_start > now {
-        // Underflow: duration was larger than `now`.
-        now
-    } else {
-        new_start
-    }
+    now.checked_sub(duration).unwrap_or(now)
 }
 
 /// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
