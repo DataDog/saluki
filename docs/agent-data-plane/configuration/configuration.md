@@ -741,7 +741,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 ### `data_plane.apm.*`
 
-ADP can receive Datadog v1.0 (`idx`/ETP) tracer payloads directly, over `POST /v1.0/traces`, and forward them to the traces intake without going through the Core Agent trace-agent. The pipeline is off by default.
+ADP can receive Datadog v1.0 (`idx`/ETP) tracer payloads directly, over `POST /v1.0/traces`, and forward them to the traces intake without going through the trace-agent. The pipeline is off by default.
 
 These keys are deliberately separate from `apm_config.receiver_port`, `apm_config.receiver_socket`, `apm_config.max_payload_size`, and `apm_config.apm_non_local_traffic`. Those configure the trace-agent's receiver, which keeps running on port `8126` alongside ADP, so the two listeners need independent settings. Point each tracer at exactly one of the two: fanning the same traffic to both double-counts APM stats.
 

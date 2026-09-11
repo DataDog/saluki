@@ -251,11 +251,8 @@ pub struct DataPlane {
 
 /// `data_plane.apm.*`: the Datadog v1.0 (`idx`/ETP) trace receiver.
 ///
-/// Deliberately not spelled `apm_config.*`. The Datadog schema's `apm_config.receiver_port`,
-/// `apm_config.receiver_socket`, `apm_config.max_payload_size`, and
-/// `apm_config.apm_non_local_traffic` configure the Core Agent trace-agent's receiver, which keeps
-/// running beside ADP, so ADP's own listener needs its own keys rather than a second reading of
-/// those.
+/// Deliberately not spelled `apm_config.*` — see
+/// [`agent_data_plane_config::domains::apm`] for why those keys can't be reused.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlaneApm {

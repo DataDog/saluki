@@ -31,7 +31,7 @@ pub struct ControlConfiguration {
     /// Whether the Datadog v1.0 (`idx`/ETP) APM trace pipeline is built. (not in Datadog Agent
     /// config schema)
     ///
-    /// Independent of the Core Agent trace-agent, which keeps serving its own receiver on `8126`.
+    /// Independent of the trace-agent, which keeps serving its own receiver on `8126`.
     /// Defaults to `false`; the two run side by side, and each tracer points at exactly one of them.
     pub apm: bool,
 

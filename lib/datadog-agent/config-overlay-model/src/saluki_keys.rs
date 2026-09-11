@@ -51,7 +51,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
 \
              ADP can receive Datadog v1.0 (`idx`/ETP) tracer payloads directly, over \
              `POST /v1.0/traces`, and forward them to the traces intake without going through the \
-             Core Agent trace-agent. The pipeline is off by default.
+             trace-agent. The pipeline is off by default.
 
 \
              These keys are deliberately separate from `apm_config.receiver_port`, \

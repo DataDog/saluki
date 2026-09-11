@@ -111,7 +111,7 @@ pub const MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(1024 
 
 /// Default TCP endpoint the APM v1.0 trace receiver listens on.
 ///
-/// Adjacent to the Core Agent trace-agent's `8126` so the side-by-side relationship is obvious, and
+/// Adjacent to the trace-agent's `8126` so the side-by-side relationship is obvious, and
 /// deliberately not `8126` itself: the trace-agent keeps that port, and operators roll ADP back by
 /// pointing tracers at it again. Loopback-only, matching
 /// [`DEFAULT_APM_NON_LOCAL_TRAFFIC`]; a containerized deployment that needs to accept traffic from

@@ -7,8 +7,8 @@
 //! Every key here is Saluki-only. The Datadog schema's `apm_config.receiver_port`,
 //! `apm_config.receiver_socket`, `apm_config.max_payload_size`, and
 //! `apm_config.apm_non_local_traffic` all sit in the excluded block of the overlay: they configure
-//! the Core Agent trace-agent's receiver, which keeps running alongside ADP, so reusing them would
-//! create a duplicate source of truth for two listeners that must not collide.
+//! the trace-agent's receiver, which keeps running alongside ADP, so reusing them would create a
+//! duplicate source of truth for two listeners that must not collide.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
