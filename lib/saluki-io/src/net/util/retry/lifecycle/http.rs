@@ -323,7 +323,9 @@ pub(super) enum ConnectionFailure {
     BrokenPipe,
     NotConnected,
     UnexpectedEof,
-    Unreachable,
+    HostUnreachable,
+    NetworkUnreachable,
+    NetworkDown,
 }
 
 impl ConnectionFailure {
@@ -335,9 +337,9 @@ impl ConnectionFailure {
             io::ErrorKind::BrokenPipe => Some(Self::BrokenPipe),
             io::ErrorKind::NotConnected => Some(Self::NotConnected),
             io::ErrorKind::UnexpectedEof => Some(Self::UnexpectedEof),
-            io::ErrorKind::HostUnreachable | io::ErrorKind::NetworkUnreachable | io::ErrorKind::NetworkDown => {
-                Some(Self::Unreachable)
-            }
+            io::ErrorKind::HostUnreachable => Some(Self::HostUnreachable),
+            io::ErrorKind::NetworkUnreachable => Some(Self::NetworkUnreachable),
+            io::ErrorKind::NetworkDown => Some(Self::NetworkDown),
             _ => None,
         }
     }
@@ -350,7 +352,9 @@ impl ConnectionFailure {
             Self::BrokenPipe => "broken_pipe",
             Self::NotConnected => "not_connected",
             Self::UnexpectedEof => "unexpected_eof",
-            Self::Unreachable => "unreachable",
+            Self::HostUnreachable => "host_unreachable",
+            Self::NetworkUnreachable => "network_unreachable",
+            Self::NetworkDown => "network_down",
         }
     }
 }
@@ -774,9 +778,13 @@ mod tests {
             (io::ErrorKind::BrokenPipe, "broken_pipe", "broken pipe"),
             (io::ErrorKind::NotConnected, "not_connected", "not connected"),
             (io::ErrorKind::UnexpectedEof, "unexpected_eof", "unexpected end of file"),
-            (io::ErrorKind::HostUnreachable, "unreachable", "host unreachable"),
-            (io::ErrorKind::NetworkUnreachable, "unreachable", "network unreachable"),
-            (io::ErrorKind::NetworkDown, "unreachable", "network down"),
+            (io::ErrorKind::HostUnreachable, "host_unreachable", "host unreachable"),
+            (
+                io::ErrorKind::NetworkUnreachable,
+                "network_unreachable",
+                "network unreachable",
+            ),
+            (io::ErrorKind::NetworkDown, "network_down", "network down"),
         ];
 
         for (kind, expected_reason, expected_message) in cases {
