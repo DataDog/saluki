@@ -139,11 +139,6 @@ impl ComponentTelemetry {
         }
     }
 
-    /// Returns a reference to the "bytes sent" counter.
-    pub fn bytes_sent(&self) -> &Counter {
-        &self.bytes_sent
-    }
-
     /// Creates telemetry handles for transactions entering the forwarder queue.
     pub(super) fn register_transaction_input_telemetry(
         &self, domain: &str, endpoint: &str,
@@ -165,9 +160,10 @@ impl ComponentTelemetry {
     }
 
     /// Tracks a successful transaction.
-    pub fn track_successful_transaction(&self, metadata: &Metadata, domain: &str) {
+    pub fn track_successful_transaction(&self, metadata: &Metadata, body_size: u64, domain: &str) {
         self.events_sent.increment(metadata.event_count as u64);
         self.events_sent_batch_size.record(metadata.event_count as f64);
+        self.bytes_sent.increment(body_size);
         self.track_data_points_sent(domain, metadata.data_point_count as u64);
     }
 
@@ -598,10 +594,11 @@ mod tests {
         let telemetry = component_telemetry();
 
         let metadata = Metadata::from_event_and_data_point_count(4, 9);
-        telemetry.track_successful_transaction(&metadata, "datadoghq.com");
+        telemetry.track_successful_transaction(&metadata, 42, "datadoghq.com");
 
         assert_eq!(recorder.counter("component_events_sent_total"), Some(4));
         assert_eq!(recorder.histogram("component_events_sent_batch_size"), Some(vec![4.0]));
+        assert_eq!(recorder.counter("component_bytes_sent_total"), Some(42));
         assert_eq!(
             recorder.gauge(("component_data_points_sent_total", &[("domain", "datadoghq.com")])),
             Some(9.0)

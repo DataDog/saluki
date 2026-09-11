@@ -15,7 +15,6 @@ use hyper_util::{
     client::legacy::connect::{CaptureConnection, Connected, Connection, HttpConnector},
     rt::TokioIo,
 };
-use metrics::Counter;
 use pin_project_lite::pin_project;
 use rustls::{pki_types::ServerName, ClientConfig};
 use saluki_error::GenericError;
@@ -154,7 +153,6 @@ pin_project! {
     pub struct HttpsCapableConnection {
         #[pin]
         inner: MaybeHttpsStream<Transport>,
-        bytes_sent: Option<Counter>,
         error_telemetry: Option<HttpTransactionErrorTelemetry>,
         conn_age_limit: Option<Duration>,
     }
@@ -186,12 +184,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let this = self.project();
         match this.inner.poll_write(cx, buf) {
-            Poll::Ready(Ok(n)) => {
-                if let Some(bytes_sent) = this.bytes_sent {
-                    bytes_sent.increment(n as u64);
-                }
-                Poll::Ready(Ok(n))
-            }
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
             Poll::Ready(Err(error)) => {
                 if let Some(error_telemetry) = this.error_telemetry.as_ref() {
                     error_telemetry.increment_wrote_request_error();
@@ -229,12 +222,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
     ) -> Poll<io::Result<usize>> {
         let this = self.project();
         match this.inner.poll_write_vectored(cx, bufs) {
-            Poll::Ready(Ok(n)) => {
-                if let Some(bytes_sent) = this.bytes_sent {
-                    bytes_sent.increment(n as u64);
-                }
-                Poll::Ready(Ok(n))
-            }
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
             Poll::Ready(Err(error)) => {
                 if let Some(error_telemetry) = this.error_telemetry.as_ref() {
                     error_telemetry.increment_wrote_request_error();
@@ -370,7 +358,6 @@ pub struct HttpsCapableConnector {
     inner: InnerConnector,
     tls_config: Arc<ClientConfig>,
     tls_handshake_timeout: Duration,
-    bytes_sent: Option<Counter>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
 }
@@ -408,7 +395,6 @@ impl Service<Uri> for HttpsCapableConnector {
         let transport_fut = self.inner.call(dst.clone());
         let tls_config = Arc::clone(&self.tls_config);
         let tls_handshake_timeout = self.tls_handshake_timeout;
-        let bytes_sent = self.bytes_sent.clone();
         let error_telemetry = self.error_telemetry.clone();
         let conn_age_limit = self.conn_age_limit;
 
@@ -441,7 +427,6 @@ impl Service<Uri> for HttpsCapableConnector {
 
             Ok(HttpsCapableConnection {
                 inner,
-                bytes_sent,
                 error_telemetry,
                 conn_age_limit,
             })
@@ -490,7 +475,6 @@ fn build_dns_resolver(error_telemetry: &Option<HttpTransactionErrorTelemetry>) -
 pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
     tls_handshake_timeout: Option<Duration>,
-    bytes_sent: Option<Counter>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
     http_protocol: HttpProtocol,
@@ -536,17 +520,6 @@ impl HttpsCapableConnectorBuilder {
         L: Into<Option<Duration>>,
     {
         self.conn_age_limit = limit.into();
-        self
-    }
-
-    /// Sets a counter that gets incremented with the number of bytes sent over the connection.
-    ///
-    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
-    /// transport overhead, such as TLS handshaking, and so on.
-    ///
-    /// Defaults to unset.
-    pub fn with_bytes_sent_counter(mut self, counter: Counter) -> Self {
-        self.bytes_sent = Some(counter);
         self
     }
 
@@ -610,7 +583,6 @@ impl HttpsCapableConnectorBuilder {
             inner: inner_connector,
             tls_config: Arc::new(tls_config),
             tls_handshake_timeout,
-            bytes_sent: self.bytes_sent,
             error_telemetry: self.error_telemetry,
             conn_age_limit: self.conn_age_limit,
         })
@@ -737,7 +709,6 @@ mod tests {
             inner,
             tls_config,
             tls_handshake_timeout: Duration::from_secs(1),
-            bytes_sent: None,
             error_telemetry: None,
             conn_age_limit: None,
         };
