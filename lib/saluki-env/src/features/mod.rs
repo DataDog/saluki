@@ -44,8 +44,9 @@ pub enum Feature {
 
     /// Legacy cgroupfs root.
     ///
-    /// This implies that the cgroups v1 hierarchy sits at `/cgroup` rather than `/sys/fs/cgroup`, which is the layout
-    /// used by older Amazon Linux hosts.
+    /// This implies that we're running directly on a host whose cgroups v1 hierarchy sits at `/cgroup` rather than
+    /// `/sys/fs/cgroup`, which is the layout used by older Amazon Linux hosts. This is never detected in a
+    /// containerized environment, where the host's hierarchy is reached through a host-mapped path instead.
     LegacyCgroupfsRoot,
 
     /// Containerd.
@@ -231,6 +232,14 @@ fn has_host_mapped_cgroupfs() -> bool {
 }
 
 fn has_legacy_cgroupfs_root() -> bool {
+    // This layout only describes a host we're running on directly. The Datadog Agent probes for it only when it isn't
+    // containerized, and otherwise picks between the host-mapped and local cgroupfs roots without considering
+    // `/cgroup` at all. A `/cgroup` path inside our own container is not the host's hierarchy, so treating it as one
+    // would point the reader at a root with no cgroups under it.
+    if is_running_inside_container() {
+        return false;
+    }
+
     // The Datadog Agent looks for the `memory` controller's `memory.stat` rather than the `/cgroup` directory itself,
     // since the directory can exist while empty. Like the Agent, we count a stat that fails for any reason other than
     // the file being absent: the layout is there, we just can't read the marker.

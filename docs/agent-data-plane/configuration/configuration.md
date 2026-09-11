@@ -1026,10 +1026,12 @@ The following settings work in ADP with the same behavior as the core agent.
 
 ADP reads the cgroups hierarchy from this root. When the key is not set explicitly, ADP
 selects the root from detected features: the host-mapped `/host/sys/fs/cgroup` when a
-host-mapped cgroupfs is detected, the legacy `/cgroup` root when the cgroups v1 `memory`
-controller is found there, and `/sys/fs/cgroup` otherwise. That detection is independent of
-the procfs mount. The core Agent reports its own detected root as a default value, which ADP
-can't tell apart from a schema default, so ADP repeats the detection instead of consuming it.
+host-mapped cgroupfs is detected, the legacy `/cgroup` root when ADP runs directly on a host
+whose cgroups v1 `memory` controller is found there, and `/sys/fs/cgroup` otherwise. Like the
+core Agent, ADP considers the legacy root only when it is not containerized. That detection is
+independent of the procfs mount. The core Agent reports its own detected root as a default
+value, which ADP can't tell apart from a schema default, so ADP repeats the detection instead
+of consuming it.
 
 ### `container_proc_root`
 

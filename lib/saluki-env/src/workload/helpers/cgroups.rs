@@ -1364,7 +1364,9 @@ mod tests {
     #[test]
     fn host_mapped_cgroupfs_takes_precedence_over_legacy_root() {
         // The legacy root is a host layout, so a container that has the host cgroupfs mapped in reads the host
-        // hierarchy through that mount rather than through a `/cgroup` path in its own filesystem.
+        // hierarchy through that mount rather than through a `/cgroup` path in its own filesystem. Feature detection
+        // never reports both at once, since it only looks for the legacy root when it isn't containerized, but the
+        // ordering here is what makes that safe.
         let config = cgroups_config_with(Feature::HostMappedCgroupfs | Feature::LegacyCgroupfsRoot);
 
         assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT));
