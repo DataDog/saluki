@@ -21,6 +21,7 @@ use crate::features::{Feature, FeatureDetector};
 
 const DEFAULT_PROCFS_ROOT: &str = "/proc";
 const DEFAULT_CGROUPFS_ROOT: &str = "/sys/fs/cgroup";
+const DEFAULT_LEGACY_CGROUPFS_ROOT: &str = "/cgroup";
 const DEFAULT_HOST_MAPPED_PROCFS_ROOT: &str = "/host/proc";
 const DEFAULT_HOST_MAPPED_CGROUPFS_ROOT: &str = "/host/sys/fs/cgroup";
 const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
@@ -45,7 +46,8 @@ impl CgroupsConfiguration {
     /// Creates a new `CgroupsConfiguration` from the given filesystem roots.
     ///
     /// If a root is given, that path is used. Otherwise, each root falls back to its host-mapped default when its own
-    /// filesystem is detected as host-mapped, and to its local default when it isn't.
+    /// filesystem is detected as host-mapped, and to its local default when it isn't. The cgroupfs root has one more
+    /// fallback: the legacy `/cgroup` root, when that layout is detected.
     pub fn new(
         procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
     ) -> Self {
@@ -63,6 +65,11 @@ impl CgroupsConfiguration {
             // there, or make us miss the host's hierarchy in favor of our own container's.
             if feature_detector.is_feature_available(Feature::HostMappedCgroupfs) {
                 PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
+            } else if feature_detector.is_feature_available(Feature::LegacyCgroupfsRoot) {
+                // Older Amazon Linux hosts put the cgroups v1 hierarchy at `/cgroup`. The Datadog Agent detects that
+                // layout and defaults `container_cgroup_root` to it, but it sends us the result as a default value,
+                // which we can't tell apart from a schema default, so we detect the layout ourselves.
+                PathBuf::from(DEFAULT_LEGACY_CGROUPFS_ROOT)
             } else {
                 PathBuf::from(DEFAULT_CGROUPFS_ROOT)
             }
@@ -764,7 +771,8 @@ mod tests {
         extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
         is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry, CgroupsConfiguration, CgroupsReader,
         Feature, FeatureDetector, HierarchyReader, TraversalResult, DEFAULT_CGROUPFS_ROOT,
-        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
+        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_LEGACY_CGROUPFS_ROOT,
+        DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -1343,6 +1351,23 @@ mod tests {
 
         assert_eq!(config.procfs_path(), Path::new(DEFAULT_HOST_MAPPED_PROCFS_ROOT));
         assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_CGROUPFS_ROOT));
+    }
+
+    #[test]
+    fn cgroupfs_root_follows_legacy_root() {
+        let config = cgroups_config_with(Feature::LegacyCgroupfsRoot);
+
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_LEGACY_CGROUPFS_ROOT));
+        assert_eq!(config.procfs_path(), Path::new(DEFAULT_PROCFS_ROOT));
+    }
+
+    #[test]
+    fn host_mapped_cgroupfs_takes_precedence_over_legacy_root() {
+        // The legacy root is a host layout, so a container that has the host cgroupfs mapped in reads the host
+        // hierarchy through that mount rather than through a `/cgroup` path in its own filesystem.
+        let config = cgroups_config_with(Feature::HostMappedCgroupfs | Feature::LegacyCgroupfsRoot);
+
+        assert_eq!(config.cgroupfs_path(), Path::new(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT));
     }
 
     #[test]

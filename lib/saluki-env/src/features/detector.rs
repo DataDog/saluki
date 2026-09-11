@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tracing::info;
 
-use super::{has_host_mapped_cgroupfs, has_host_mapped_procfs, ContainerdDetector, Feature};
+use super::{has_host_mapped_cgroupfs, has_host_mapped_procfs, has_legacy_cgroupfs_root, ContainerdDetector, Feature};
 
 /// Detects workload features.
 ///
@@ -55,6 +55,11 @@ impl FeatureDetector {
         if feature_mask.contains(Feature::HostMappedCgroupfs) && has_host_mapped_cgroupfs() {
             info!("Detected presence of host-mapped cgroupfs.");
             detected_features |= Feature::HostMappedCgroupfs;
+        }
+
+        if feature_mask.contains(Feature::LegacyCgroupfsRoot) && has_legacy_cgroupfs_root() {
+            info!("Detected presence of legacy cgroupfs root.");
+            detected_features |= Feature::LegacyCgroupfsRoot;
         }
 
         if feature_mask.contains(Feature::Containerd)

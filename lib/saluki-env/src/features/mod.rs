@@ -19,6 +19,7 @@ mod detector;
 pub use self::detector::FeatureDetector;
 
 const CONTAINER_HOST_MOUNT_PATH: &str = "/host";
+const LEGACY_CGROUPFS_ROOT_MARKER: &str = "/cgroup/memory/memory.stat";
 #[cfg(unix)]
 const SOCKET_CHECK_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -40,6 +41,12 @@ pub enum Feature {
     /// This implies that we're in a containerized environment and the host's cgroupfs (`/sys/fs/cgroup`) has been
     /// mapped into the container using a `/host` prefix, resulting in a `/host/sys/fs/cgroup` path.
     HostMappedCgroupfs,
+
+    /// Legacy cgroupfs root.
+    ///
+    /// This implies that the cgroups v1 hierarchy sits at `/cgroup` rather than `/sys/fs/cgroup`, which is the layout
+    /// used by older Amazon Linux hosts.
+    LegacyCgroupfsRoot,
 
     /// Containerd.
     Containerd,
@@ -221,4 +228,14 @@ fn has_host_mapped_procfs() -> bool {
 fn has_host_mapped_cgroupfs() -> bool {
     let path = PathBuf::from(CONTAINER_HOST_MOUNT_PATH).join("sys/fs/cgroup");
     is_running_inside_container() && file_exists(&path)
+}
+
+fn has_legacy_cgroupfs_root() -> bool {
+    // The Datadog Agent looks for the `memory` controller's `memory.stat` rather than the `/cgroup` directory itself,
+    // since the directory can exist while empty. Like the Agent, we count a stat that fails for any reason other than
+    // the file being absent: the layout is there, we just can't read the marker.
+    match std::fs::metadata(LEGACY_CGROUPFS_ROOT_MARKER) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
 }
