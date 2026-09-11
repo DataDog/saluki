@@ -421,6 +421,7 @@ default values.
 | Config Key                                   | Description                                  |
 | -------------------------------------------- | -------------------------------------------- |
 | `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `cri_socket_path`                            | containerd/CRI socket path                   |
 | `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
 | `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
 | `dogstatsd_workers_count`                    | Number of DSD processing workers             |
@@ -454,6 +455,22 @@ Support is partial because ADP does not apply this timeout only to an aggregator
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
+
+### `cri_socket_path`
+
+The core Agent uses this key to enable both its CRI and containerd integrations, classifying
+the socket by path: a path containing `containerd` selects containerd, a path containing
+`crio` selects CRI-O, and any other reachable CRI socket is treated as a nonstandard CRI
+runtime. When the key is unset, the core Agent probes well-known containerd and CRI-O paths.
+
+ADP implements the containerd runtime only. Setting this path enables the containerd
+integration against that socket, but only when the path contains `containerd`. A CRI-O or
+otherwise nonstandard CRI socket path leaves containerd undetected, and ADP starts no
+container runtime metadata collector for it. When the key is not set explicitly, ADP probes
+the well-known containerd socket paths only. An explicitly empty path leaves containerd
+undetected.
+
+Container ID resolution through cgroups is independent of this key and is unaffected.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -831,6 +848,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
+| `container_cgroup_root`                                                                    | cgroupfs root for container metadata               |
+| `container_proc_root`                                                                      | procfs root for container metadata                 |
 | `cri_connection_timeout`                                                                   | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                                                        | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                                            | Unprivileged API listen address                    |
@@ -908,6 +927,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `histogram_copy_to_distribution`                                                           | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
+| `hostname`                                                                                 | Forced hostname for emitted data                   |
 | `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |
@@ -1001,6 +1021,23 @@ The following settings work in ADP with the same behavior as the core agent.
 
 
 ## Additional Notes
+
+### `container_cgroup_root`
+
+ADP reads the cgroups hierarchy from this root. When the key is not set explicitly, ADP
+selects the root from detected features: the host-mapped `/host/sys/fs/cgroup` when a
+host-mapped cgroupfs is detected, the legacy `/cgroup` root when ADP runs directly on a host
+whose cgroups v1 `memory` controller is found there, and `/sys/fs/cgroup` otherwise. Like the
+core Agent, ADP considers the legacy root only when it is not containerized. That detection is
+independent of the procfs mount. The core Agent reports its own detected root as a default
+value, which ADP can't tell apart from a schema default, so ADP repeats the detection instead
+of consuming it.
+
+### `container_proc_root`
+
+ADP inspects container processes under this root. When the key is not set explicitly, ADP
+selects the root from detected features: the host-mapped `/host/proc` when a host-mapped
+procfs is detected, and `/proc` otherwise.
 
 ### `data_plane.api_listen_address`
 
@@ -1110,6 +1147,11 @@ The on-demand PID resolver is also Linux-only because it reads procfs and cgroup
 metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which
 covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
 cannot obtain that PID from the socket.
+
+### `hostname`
+
+ADP uses this only in standalone mode, where the fixed host provider requires a configured
+hostname. In connected mode the hostname comes from the Datadog Agent.
 
 ### Payload debug logging (`log_payloads`)
 

@@ -5,7 +5,6 @@ use saluki_common::{
     collections::{FastHashMap, FastHashSet},
     sync::shutdown::ShutdownHandle,
 };
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -15,13 +14,10 @@ use tokio::{pin, select, sync::mpsc};
 use tracing::{debug, warn};
 
 use super::MetadataCollector;
-use crate::{
-    features::FeatureDetector,
-    workload::{
-        entity::EntityId,
-        helpers::cgroups::{CgroupsConfiguration, CgroupsReader},
-        metadata::MetadataOperation,
-    },
+use crate::workload::{
+    entity::EntityId,
+    helpers::cgroups::{CgroupsConfiguration, CgroupsReader},
+    metadata::MetadataOperation,
 };
 
 #[static_metrics(prefix = cgroups_metadata_collector)]
@@ -55,16 +51,15 @@ pub struct CgroupsMetadataCollector {
 }
 
 impl CgroupsMetadataCollector {
-    /// Creates a new `CgroupsMetadataCollector` from the given configuration.
+    /// Creates a new `CgroupsMetadataCollector` from the given cgroups configuration.
     ///
     /// # Errors
     ///
     /// If a valid cgroups hierarchy can not be located at the configured path, an error will be returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector, health: Health, interner: GenericMapInterner,
+    pub async fn new(
+        cgroups_config: &CgroupsConfiguration, health: Health, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
-        let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
-        let reader = match CgroupsReader::try_from_config(&cgroups_config, interner)? {
+        let reader = match CgroupsReader::try_from_config(cgroups_config, interner)? {
             Some(reader) => reader,
             None => {
                 return Err(generic_error!("Failed to detect any cgroups v1/v2 hierarchy. "));

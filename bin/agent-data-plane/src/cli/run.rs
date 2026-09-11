@@ -184,6 +184,7 @@ pub async fn handle_run_command(
     let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
         standalone,
         &config_sys.raw_map(),
+        &config_sys.config().shared.environment,
         remote_agent_client_config.as_ref(),
         &component_registry,
         &health_registry,
