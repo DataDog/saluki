@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::OnceLock;
 use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
+use agent_data_plane_config::SalukiConfiguration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::{
@@ -14,15 +16,21 @@ use datadog_protos::agent::v1::{
     ReportRemoteAgentEventRequest,
 };
 use datadog_protos::agent::{
+    command::v1::{
+        execute_command_response::Frame as ExecuteCommandFrame,
+        remote_command_provider_server::{RemoteCommandProvider, RemoteCommandProviderServer},
+        Command as RemoteCommand, CommandParameter, CommandProvider, ExecuteCommandRequest, ExecuteCommandResponse,
+        ListCommandsRequest, ListCommandsResponse, ParameterType,
+    },
     config_event,
     flare::v1::{flare_provider_server::*, *},
     status::v1::{status_provider_server::*, *},
     telemetry::v1::{get_telemetry_response::*, telemetry_provider_server::*, *},
     ConfigSetting as AgentConfigSetting, ConfigSnapshot,
 };
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use process_memory::Querier as MemoryQuerier;
-use prost_types::value::Kind;
+use prost_types::{value::Kind, Struct};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
@@ -44,11 +52,16 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
-use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::get_datadog_agent_remappings;
+use crate::{
+    cli::dogstatsd::{parse_remote_dogstatsd_command, run_dogstatsd_command},
+    config::DataPlaneConfiguration,
+};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -67,6 +80,160 @@ const LISTENER_UDP: &str = "listener_type:udp";
 const LISTENER_UNIX: &str = "listener_type:unix";
 const LISTENER_UNIXGRAM: &str = "listener_type:unixgram";
 const SESSION_ID_METADATA_KEY: &str = "session_id";
+
+fn dogstatsd_command_provider() -> CommandProvider {
+    CommandProvider {
+        name: "dogstatsd".to_string(),
+        description: "Inspect DogStatsD pipeline status".to_string(),
+        commands: vec![
+            remote_command(
+                "stats",
+                "Print basic statistics about metrics received by the data plane.",
+                vec![
+                    command_parameter(
+                        "duration-secs",
+                        "d",
+                        "Amount of time to collect statistics for, in seconds.",
+                        ParameterType::TypeUint,
+                        true,
+                    ),
+                    command_parameter(
+                        "mode",
+                        "m",
+                        "Analysis mode: summary or cardinality.",
+                        ParameterType::TypeString,
+                        false,
+                    ),
+                    command_parameter(
+                        "sort-dir",
+                        "s",
+                        "Sort direction: asc or desc.",
+                        ParameterType::TypeString,
+                        false,
+                    ),
+                    command_parameter(
+                        "filter",
+                        "f",
+                        "Exclude metrics whose names do not contain this value.",
+                        ParameterType::TypeString,
+                        false,
+                    ),
+                    command_parameter(
+                        "limit",
+                        "l",
+                        "Maximum number of metrics to display.",
+                        ParameterType::TypeUint,
+                        false,
+                    ),
+                ],
+            ),
+            remote_command(
+                "capture",
+                "Start a DogStatsD traffic capture.",
+                vec![
+                    command_parameter(
+                        "duration",
+                        "d",
+                        "Capture duration in Go duration syntax.",
+                        ParameterType::TypeString,
+                        false,
+                    ),
+                    command_parameter(
+                        "path",
+                        "p",
+                        "Directory in which to write the capture.",
+                        ParameterType::TypeString,
+                        false,
+                    ),
+                    command_parameter(
+                        "compressed",
+                        "z",
+                        "Whether to zstd-compress the capture file.",
+                        ParameterType::TypeBool,
+                        false,
+                    ),
+                ],
+            ),
+            remote_command(
+                "replay",
+                "Replay DogStatsD traffic from a capture file.",
+                vec![
+                    command_parameter(
+                        "file",
+                        "f",
+                        "Path to the .dog or .dog.zstd capture file to replay.",
+                        ParameterType::TypeString,
+                        true,
+                    ),
+                    command_parameter(
+                        "loops",
+                        "l",
+                        "Number of replay iterations; 0 repeats until cancelled.",
+                        ParameterType::TypeUint,
+                        false,
+                    ),
+                ],
+            ),
+            remote_command(
+                "top",
+                "Display DogStatsD contexts with the highest cardinality.",
+                vec![
+                    command_parameter(
+                        "path",
+                        "p",
+                        "Read a context dump artifact instead of requesting one.",
+                        ParameterType::TypeString,
+                        false,
+                    ),
+                    command_parameter(
+                        "num-metrics",
+                        "m",
+                        "Maximum number of metrics to display.",
+                        ParameterType::TypeUint,
+                        false,
+                    ),
+                    command_parameter(
+                        "num-tags",
+                        "t",
+                        "Maximum number of tags to display per metric.",
+                        ParameterType::TypeUint,
+                        false,
+                    ),
+                ],
+            ),
+            remote_command(
+                "dump-contexts",
+                "Write currently tracked DogStatsD contexts as JSON.",
+                Vec::new(),
+            ),
+        ],
+    }
+}
+
+fn remote_command(name: &str, helper: &str, parameters: Vec<CommandParameter>) -> RemoteCommand {
+    RemoteCommand {
+        name: name.to_string(),
+        short_name: name.to_string(),
+        helper: helper.to_string(),
+        parameters,
+        is_runnable: true,
+        ..Default::default()
+    }
+}
+
+fn command_parameter(
+    name: &str, short_name: &str, helper: &str, parameter_type: ParameterType, required: bool,
+) -> CommandParameter {
+    CommandParameter {
+        name: name.to_string(),
+        short_name: short_name.to_string(),
+        helper: helper.to_string(),
+        r#type: parameter_type.into(),
+        required,
+        is_flag: true,
+        is_persistent: false,
+    }
+}
 
 /// Remote agent initialization.
 ///
@@ -100,6 +267,7 @@ impl RemoteAgentBootstrap {
             <StatusProviderServer<()> as NamedService>::NAME.to_string(),
             <FlareProviderServer<()> as NamedService>::NAME.to_string(),
             <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
+            <RemoteCommandProviderServer<RemoteCommandProviderImpl> as NamedService>::NAME.to_string(),
         ];
 
         let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
@@ -176,6 +344,16 @@ impl RemoteAgentBootstrap {
     /// Creates a new `FlareProviderServer` tied to this remote agent.
     pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
         FlareProviderServer::new(self.build_impl())
+    }
+
+    /// Creates a remote-command service bound to the current runtime configuration.
+    pub fn create_command_service(
+        &self, current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
+    ) -> RemoteCommandProviderServer<RemoteCommandProviderImpl> {
+        RemoteCommandProviderServer::new(RemoteCommandProviderImpl {
+            session_id: self.session_id.clone(),
+            current_config,
+        })
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
@@ -506,6 +684,122 @@ impl StatusProvider for RemoteAgentImpl {
                 Ok(tonic::Response::new(builder.into_response()))
             })
             .await;
+    }
+}
+
+pub(crate) struct RemoteCommandProviderImpl {
+    session_id: SessionIdHandle,
+    current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
+}
+
+impl RemoteCommandProviderImpl {
+    fn response_with_session_id<T>(&self, value: T) -> Result<tonic::Response<T>, Status> {
+        let session_id = self
+            .session_id
+            .get()
+            .ok_or(Status::failed_precondition(
+                "session ID not set; must be registered with Core Agent",
+            ))?
+            .to_grpc_header_value();
+        let mut response = tonic::Response::new(value);
+        response.metadata_mut().append(SESSION_ID_METADATA_KEY, session_id);
+        Ok(response)
+    }
+}
+
+struct RemoteCommandOutput {
+    sender: mpsc::Sender<Result<ExecuteCommandResponse, Status>>,
+}
+
+impl std::io::Write for RemoteCommandOutput {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let output = String::from_utf8_lossy(buffer).into_owned();
+        self.sender
+            .try_send(Ok(ExecuteCommandResponse {
+                frame: Some(ExecuteCommandFrame::Stdout(output)),
+            }))
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RemoteCommandProvider for RemoteCommandProviderImpl {
+    type ExecuteCommandStream = Pin<Box<dyn Stream<Item = Result<ExecuteCommandResponse, Status>> + Send>>;
+
+    async fn list_commands(
+        &self, _request: tonic::Request<ListCommandsRequest>,
+    ) -> Result<tonic::Response<ListCommandsResponse>, Status> {
+        self.response_with_session_id(ListCommandsResponse {
+            providers: vec![dogstatsd_command_provider()],
+        })
+    }
+
+    async fn execute_command(
+        &self, request: tonic::Request<ExecuteCommandRequest>,
+    ) -> Result<tonic::Response<Self::ExecuteCommandStream>, Status> {
+        let (sender, receiver) = mpsc::channel(128);
+        let response =
+            self.response_with_session_id(Box::pin(ReceiverStream::new(receiver)) as Self::ExecuteCommandStream)?;
+        let cancellation = CancellationToken::new();
+        let command = if request.get_ref().provider_name != "dogstatsd" {
+            Err(generic_error!(
+                "unknown remote command provider `{}`",
+                request.get_ref().provider_name
+            ))
+        } else {
+            parse_remote_dogstatsd_command(
+                &request.get_ref().command_path,
+                request.get_ref().arguments.as_ref().unwrap_or(&Struct::default()),
+            )
+        };
+
+        let current_config = Arc::clone(&self.current_config);
+        let cancel_on_disconnect = cancellation.clone();
+        let disconnect_sender = sender.clone();
+        tokio::spawn(async move {
+            disconnect_sender.closed().await;
+            cancel_on_disconnect.cancel();
+        });
+        tokio::spawn(async move {
+            let exit_code = match command {
+                Ok(command) => {
+                    let mut output = RemoteCommandOutput { sender: sender.clone() };
+                    match run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
+                        .await
+                    {
+                        Ok(()) => 0,
+                        Err(error) => {
+                            let _ = sender
+                                .send(Ok(ExecuteCommandResponse {
+                                    frame: Some(ExecuteCommandFrame::Stderr(format!("{error:#}\n"))),
+                                }))
+                                .await;
+                            1
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender
+                        .send(Ok(ExecuteCommandResponse {
+                            frame: Some(ExecuteCommandFrame::Stderr(format!("{error:#}\n"))),
+                        }))
+                        .await;
+                    1
+                }
+            };
+            let _ = sender
+                .send(Ok(ExecuteCommandResponse {
+                    frame: Some(ExecuteCommandFrame::ExitCode(exit_code)),
+                }))
+                .await;
+        });
+
+        Ok(response)
     }
 }
 
@@ -1007,6 +1301,29 @@ mod tests {
                 ConfigSetting::new("api_key", Value::from(""), Provenance::Default),
             ]
         );
+    }
+
+    #[test]
+    fn dogstatsd_command_provider_describes_every_remote_command() {
+        let provider = dogstatsd_command_provider();
+
+        assert_eq!(provider.name, "dogstatsd");
+        assert_eq!(provider.description, "Inspect DogStatsD pipeline status");
+        assert_eq!(
+            provider
+                .commands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            ["stats", "capture", "replay", "top", "dump-contexts"]
+        );
+
+        let stats = &provider.commands[0];
+        assert!(stats.is_runnable);
+        assert_eq!(stats.parameters[0].name, "duration-secs");
+        assert_eq!(stats.parameters[0].short_name, "d");
+        assert!(stats.parameters[0].required);
+        assert!(stats.parameters[0].is_flag);
     }
 
     #[test]
