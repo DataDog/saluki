@@ -1,0 +1,4 @@
+# Written by build.rs from schema_overlay.yaml; regenerate with `make build-schema-overlay`.
+*
+!.gitignore
+!mod.rs

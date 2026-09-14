@@ -62,18 +62,7 @@ pub fn generate(overlay: &SchemaOverlay, manifest_dir: &Path) {
 
     let body = render(&resolved);
 
-    let path = manifest_dir.join("src/generated/witness.rs");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    if existing != body {
-        std::fs::write(&path, &body).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
-    }
-
-    // Canonicalize to the repo's rustfmt style. Best-effort: a missing rustfmt is not fatal.
-    let _ = std::process::Command::new("rustfmt")
-        .arg("--edition")
-        .arg("2021")
-        .arg(&path)
-        .status();
+    crate::generated_file::write_formatted(&manifest_dir.join("src/generated/witness.rs"), &body);
 }
 
 /// Collect the dotted paths of every `support: full` / `support: partial` overlay entry.
