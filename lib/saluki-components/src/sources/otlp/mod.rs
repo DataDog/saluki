@@ -130,6 +130,8 @@ pub struct OtlpConfiguration {
     otlp: domains::otlp::Domain,
 
     /// Maximum length of a span's resource name, in bytes.
+    ///
+    /// Defaults to `usize::MAX`, meaning resource names are not truncated.
     max_resource_len: usize,
 
     /// Workload provider to utilize for origin detection/enrichment.
@@ -138,14 +140,15 @@ pub struct OtlpConfiguration {
 
 impl OtlpConfiguration {
     /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration and workload provider.
-    pub fn from_configuration<W>(otlp: &domains::otlp::Domain, max_resource_len: usize, workload_provider: W) -> Self
+    ///
+    pub fn from_configuration<W>(otlp: &domains::otlp::Domain, workload_provider: W) -> Self
     where
         W: WorkloadProvider + Send + Sync + 'static,
     {
         Self {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
-            max_resource_len,
+            max_resource_len: usize::MAX,
             workload_provider: Arc::new(workload_provider),
         }
     }
@@ -173,6 +176,18 @@ impl OtlpConfiguration {
     /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
+        self
+    }
+
+    /// Sets the maximum length of a span's resource name, in bytes.
+    ///
+    /// Resource names longer than this limit are truncated to the limit, on a UTF-8 boundary. Defaults to `usize::MAX`
+    /// (unbounded), which matches the source's behavior before resource name truncation was introduced.
+    ///
+    /// If set to `0`, every resource name is truncated to an empty string. Pass through the configured value
+    /// unmodified, including `0`, so the configured behavior is always honored.
+    pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
+        self.max_resource_len = max_resource_len;
         self
     }
 }
@@ -619,11 +634,7 @@ mod tests {
             metrics,
             ..Default::default()
         };
-        OtlpConfiguration::from_configuration(
-            &otlp,
-            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
-            saluki_env::workload::providers::NoopWorkloadProvider,
-        )
+        OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
     }
 
     #[test]

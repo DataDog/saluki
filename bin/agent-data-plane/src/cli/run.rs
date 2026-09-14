@@ -1035,10 +1035,8 @@ async fn add_otlp_pipeline_to_blueprint(
 
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(
-            &config.domains.otlp.traces,
-            config.domains.traces.max_resource_len,
-        );
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces)
+            .with_max_resource_len(config.domains.traces.max_resource_len);
 
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
@@ -1072,13 +1070,10 @@ async fn add_otlp_pipeline_to_blueprint(
             &config.shared.tags,
             features::is_ecs_fargate(),
         );
-        let otlp_config = OtlpConfiguration::from_configuration(
-            &config.domains.otlp,
-            config.domains.traces.max_resource_len,
-            env_provider.workload().clone(),
-        )
-        .with_static_metric_tags(static_tags)
-        .with_default_hostname(default_hostname);
+        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
+            .with_max_resource_len(config.domains.traces.max_resource_len)
+            .with_static_metric_tags(static_tags)
+            .with_default_hostname(default_hostname);
 
         blueprint
             // Components.
