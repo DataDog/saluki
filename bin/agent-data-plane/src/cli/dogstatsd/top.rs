@@ -53,12 +53,12 @@ impl ValidatedTopCommand {
 #[argh(subcommand, name = "dump-contexts")]
 pub(super) struct DumpContextsCommand {}
 
-#[async_trait(?Send)]
-pub(super) trait DogStatsDContextDumpRequester {
+#[async_trait]
+pub(super) trait DogStatsDContextDumpRequester: Send {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError>;
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
         self.dogstatsd_contexts_dump().await
@@ -66,7 +66,8 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 }
 
 pub(super) async fn handle_dogstatsd_top(
-    requester: Option<&mut dyn DogStatsDContextDumpRequester>, cmd: ValidatedTopCommand, output: &mut dyn Write,
+    requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: ValidatedTopCommand,
+    output: &mut (dyn Write + Send),
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
         Some(path) => path,
@@ -95,7 +96,7 @@ pub(super) async fn handle_dogstatsd_top(
 }
 
 pub(super) async fn handle_dogstatsd_dump_contexts(
-    requester: &mut dyn DogStatsDContextDumpRequester, output: &mut dyn Write,
+    requester: &mut (dyn DogStatsDContextDumpRequester + Send), output: &mut (dyn Write + Send),
 ) -> Result<(), GenericError> {
     let path = requester
         .request_context_dump()
@@ -411,7 +412,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl DogStatsDContextDumpRequester for FakeRequester {
         async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
             self.calls += 1;
