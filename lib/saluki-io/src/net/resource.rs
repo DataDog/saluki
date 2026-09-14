@@ -118,15 +118,31 @@ impl ResourceSpecification for SocketSpecification {
 /// Specification for a connection-oriented network listener.
 ///
 /// Creates a [`ConnectionOrientedListener`], which accepts connections on TCP or Unix stream addresses only.
+///
+/// Only the listen address identifies the resource. The accept backoff is applied when the listener is first created
+/// and has no effect on a later acquisition of the same address, since the socket is already bound. The registry logs
+/// a warning if a subsequent specification disagrees.
 #[derive(Clone, Debug)]
 pub struct ConnectionOrientedSocketSpecification {
     address: ListenAddress,
+    accept_backoff: Option<ExponentialBackoff>,
 }
 
 impl ConnectionOrientedSocketSpecification {
     /// Creates a specification for the given listen address.
     pub fn new(address: ListenAddress) -> Self {
-        Self { address }
+        Self {
+            address,
+            accept_backoff: None,
+        }
+    }
+
+    /// Sets the backoff the listener applies when accepting fails for want of a system resource.
+    ///
+    /// `None` keeps the listener's default. See [`ConnectionOrientedListener::with_accept_backoff`].
+    pub fn with_accept_backoff(mut self, accept_backoff: Option<ExponentialBackoff>) -> Self {
+        self.accept_backoff = accept_backoff;
+        self
     }
 
     /// Returns the listen address this specification names.
@@ -152,11 +168,20 @@ impl ResourceSpecification for ConnectionOrientedSocketSpecification {
     }
 
     async fn create(&self) -> Result<Self::Resource, GenericError> {
-        Ok(ConnectionOrientedListener::from_listen_address(self.address.clone()).await?)
+        let listener = ConnectionOrientedListener::from_listen_address(self.address.clone()).await?;
+
+        Ok(match self.accept_backoff.clone() {
+            Some(accept_backoff) => listener.with_accept_backoff(accept_backoff),
+            None => listener,
+        })
     }
 
-    // No `reset`: `accept` draws from the kernel's connection backlog rather than a fixed supply of pre-bound sockets,
-    // so a connection-oriented listener carries nothing that belongs to a single holder.
+    fn reset(listener: &mut Self::Resource) {
+        // Nothing to restore in the way of sockets -- `accept` draws from the kernel's connection backlog rather than
+        // a fixed supply of pre-bound sockets -- but the accept backoff is per-holder state, so the next holder
+        // shouldn't inherit a wait accumulated during someone else's resource shortage.
+        listener.rearm();
+    }
 }
 
 #[cfg(test)]
