@@ -23,10 +23,19 @@ set -euo pipefail
 # "advisory" field at all), keyed on the diagnostic code, advisory ID (if any), and affected
 # package/version (from the diagnostic's primary label span).
 advisory_fingerprints() {
-    local output
+    local output status
     # cargo-deny writes its JSON diagnostics to stderr (even with --format json), so swap stdout
-    # and stderr to capture them and discard the (empty, for our purposes) real stdout.
-    output="$(cargo deny --format json check advisories 2>&1 1>/dev/null || true)"
+    # and stderr to capture them and discard the (empty, for our purposes) real stdout. Exit status
+    # 0 means no issues, 1 means it ran fine and found diagnostics to report below -- anything else
+    # is an operational failure (e.g. it couldn't fetch the advisory database), which must not be
+    # swallowed and silently treated as "no advisories found".
+    status=0
+    output="$(cargo deny --format json check advisories 2>&1 1>/dev/null)" || status=$?
+    if [[ "${status}" -gt 1 ]]; then
+        echo "cargo-deny failed to run (exit ${status}):" >&2
+        printf '%s\n' "${output}" >&2
+        exit "${status}"
+    fi
     printf '%s\n' "${output}" | jq -r '
         select(.type == "diagnostic")
         | select(.fields.severity == "error")
