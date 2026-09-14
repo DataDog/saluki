@@ -707,23 +707,54 @@ impl RemoteCommandProviderImpl {
     }
 }
 
+const MAX_REMOTE_COMMAND_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
 struct RemoteCommandOutput {
-    sender: mpsc::Sender<Result<ExecuteCommandResponse, Status>>,
+    bytes: Vec<u8>,
+}
+
+impl RemoteCommandOutput {
+    fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 impl std::io::Write for RemoteCommandOutput {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let output = String::from_utf8_lossy(buffer).into_owned();
-        self.sender
-            .try_send(Ok(ExecuteCommandResponse {
-                frame: Some(ExecuteCommandFrame::Stdout(output)),
-            }))
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        let new_len = self.bytes.len().saturating_add(buffer.len());
+        if new_len > MAX_REMOTE_COMMAND_OUTPUT_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "remote command output exceeds the 16 MiB limit",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
         Ok(buffer.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+struct CancellableCommandStream {
+    inner: ReceiverStream<Result<ExecuteCommandResponse, Status>>,
+    cancellation: CancellationToken,
+}
+
+impl Stream for CancellableCommandStream {
+    type Item = Result<ExecuteCommandResponse, Status>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>, context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(context)
+    }
+}
+
+impl Drop for CancellableCommandStream {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
     }
 }
 
@@ -743,9 +774,11 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
         &self, request: tonic::Request<ExecuteCommandRequest>,
     ) -> Result<tonic::Response<Self::ExecuteCommandStream>, Status> {
         let (sender, receiver) = mpsc::channel(128);
-        let response =
-            self.response_with_session_id(Box::pin(ReceiverStream::new(receiver)) as Self::ExecuteCommandStream)?;
         let cancellation = CancellationToken::new();
+        let response = self.response_with_session_id(Box::pin(CancellableCommandStream {
+            inner: ReceiverStream::new(receiver),
+            cancellation: cancellation.clone(),
+        }) as Self::ExecuteCommandStream)?;
         let command = if request.get_ref().provider_name != "dogstatsd" {
             Err(generic_error!(
                 "unknown remote command provider `{}`",
@@ -759,19 +792,24 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
         };
 
         let current_config = Arc::clone(&self.current_config);
-        let cancel_on_disconnect = cancellation.clone();
-        let disconnect_sender = sender.clone();
-        tokio::spawn(async move {
-            disconnect_sender.closed().await;
-            cancel_on_disconnect.cancel();
-        });
         tokio::spawn(async move {
             let exit_code = match command {
                 Ok(command) => {
-                    let mut output = RemoteCommandOutput { sender: sender.clone() };
-                    match run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
-                        .await
-                    {
+                    let mut output = RemoteCommandOutput { bytes: Vec::new() };
+                    let result =
+                        run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
+                            .await;
+                    let stdout = output.into_bytes();
+                    if !stdout.is_empty() {
+                        let _ = sender
+                            .send(Ok(ExecuteCommandResponse {
+                                frame: Some(ExecuteCommandFrame::Stdout(
+                                    String::from_utf8_lossy(&stdout).into_owned(),
+                                )),
+                            }))
+                            .await;
+                    }
+                    match result {
                         Ok(()) => 0,
                         Err(error) => {
                             let _ = sender
