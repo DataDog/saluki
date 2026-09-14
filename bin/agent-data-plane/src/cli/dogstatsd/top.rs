@@ -27,6 +27,10 @@ pub(super) struct TopCommand {
 }
 
 impl TopCommand {
+    pub(super) fn offline_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     pub(super) fn validate(self) -> ValidatedTopCommand {
         ValidatedTopCommand {
             path: self.path,

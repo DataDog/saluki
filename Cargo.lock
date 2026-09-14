@@ -41,6 +41,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "libc",
  "metrics",
  "ottl",
  "prost",
