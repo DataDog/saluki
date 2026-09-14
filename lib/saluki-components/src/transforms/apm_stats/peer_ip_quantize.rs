@@ -133,14 +133,23 @@ fn split_prefix(raw: &str) -> (&str, &str) {
     }
 
     for scheme in SCHEMES {
-        if let Some(scheme_index) = raw.find(scheme) {
-            let scheme_end = scheme_index + scheme.len() + 4;
-            if scheme_end < raw.len() && &raw[scheme_index + scheme.len()..scheme_end] == ":///" {
-                return (&raw[scheme_index..scheme_end], &raw[scheme_end..]);
-            }
-            let scheme_end = scheme_index + scheme.len() + 3;
-            if scheme_end < raw.len() && &raw[scheme_index + scheme.len()..scheme_end] == "://" {
-                return (&raw[scheme_index..scheme_end], &raw[scheme_end..]);
+        let Some(scheme_index) = raw.find(scheme) else {
+            continue;
+        };
+
+        // Slicing here is safe because `find` returns a character boundary and the schemes are
+        // ASCII. Matching the separator with `strip_prefix` then avoids computing any further
+        // index, which is what could otherwise land inside a multi-byte character and panic.
+        let after_scheme = &raw[scheme_index + scheme.len()..];
+
+        // `:///` is tried first because `://` is a prefix of it. The separator must be followed
+        // by at least one character.
+        for separator in [":///", "://"] {
+            if let Some(rest) = after_scheme.strip_prefix(separator) {
+                if !rest.is_empty() {
+                    let scheme_end = scheme_index + scheme.len() + separator.len();
+                    return (&raw[scheme_index..scheme_end], rest);
+                }
             }
         }
     }
@@ -369,6 +378,21 @@ mod tests {
         assert_q("10.0.0.7.5", "blocked-ip-address.5");
         assert_q("", "");
         assert_q("postgres", "postgres");
+    }
+
+    #[test]
+    fn multibyte_values_never_panic() {
+        // These inputs once panicked in the scheme probe: the `+3` and `+4` byte offsets
+        // landed inside a multi-byte UTF-8 character, and slicing at a non-boundary panics
+        // before the comparison can reject the value. None of them are IP addresses, so they
+        // pass through unchanged.
+        //
+        // Byte geometry: `日` is 3 bytes (the `+4` probe lands inside the second one), `é` is
+        // 2 bytes (the `+3` probe lands inside the second one), and the `dnspoll://` case puts
+        // a 2-byte character where the probe looks after a scheme plus separator.
+        assert_q("http日日x", "http日日x");
+        assert_q("httpééx", "httpééx");
+        assert_q("dnspoll://éx", "dnspoll://éx");
     }
 
     #[test]
