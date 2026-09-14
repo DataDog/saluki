@@ -1,7 +1,7 @@
 /// Datadog Agent configuration annotations, generated from `schema_overlay.yaml`.
 ///
-/// Type definitions live here (hand-written); generated annotation constants and statics
-/// live in `annotations_index.rs` (generated in-tree by `build.rs`).
+/// Type definitions live here (hand-written); the annotation constants and statics live in the
+/// `generated` module, which `build.rs` writes and `.gitignore` excludes.
 pub use datadog_agent_config::classifier::{structs, Pipeline, PipelineAffinity, Severity};
 
 /// Support level for a configuration key, as recorded in the testing annotation layer.
@@ -179,5 +179,6 @@ impl From<&SalukiAnnotation> for ConfigKey {
     }
 }
 
-// Generated module containing all annotation constants and the aggregation statics.
-include!("annotations_index.rs");
+mod generated;
+
+pub use self::generated::{ALL_ANNOTATIONS, SUPPORTED_ANNOTATIONS, UNSUPPORTED_ANNOTATIONS};
