@@ -1386,6 +1386,53 @@ mod tests {
         assert!(futures::StreamExt::next(&mut stream).await.is_none());
     }
 
+    #[tokio::test]
+    async fn execute_command_invalid_provider_streams_error_and_exit_code_with_session_header() {
+        let session_id = SessionIdHandle::empty();
+        session_id.update(Some(
+            SessionId::new("test-session-id").expect("session ID should be valid"),
+        ));
+        let service = RemoteCommandProviderImpl {
+            session_id,
+            current_config: Arc::new(arc_swap::ArcSwap::from_pointee(SalukiConfiguration::default())),
+        };
+
+        let response = service
+            .execute_command(tonic::Request::new(ExecuteCommandRequest {
+                provider_name: "invalid-provider".to_string(),
+                command_path: Vec::new(),
+                arguments: None,
+            }))
+            .await
+            .expect("invalid provider should return an execution stream");
+        assert_eq!(
+            response
+                .metadata()
+                .get(SESSION_ID_METADATA_KEY)
+                .expect("response should include session ID"),
+            "test-session-id"
+        );
+
+        let mut stream = response.into_inner();
+        let stderr = stream
+            .next()
+            .await
+            .expect("stream should contain stderr frame")
+            .expect("stderr frame should not be a transport error");
+        assert!(matches!(
+            stderr.frame,
+            Some(ExecuteCommandFrame::Stderr(message)) if message.contains("unknown remote command provider `invalid-provider`")
+        ));
+
+        let exit_code = stream
+            .next()
+            .await
+            .expect("stream should contain exit code frame")
+            .expect("exit code frame should not be a transport error");
+        assert!(matches!(exit_code.frame, Some(ExecuteCommandFrame::ExitCode(1))));
+        assert!(stream.next().await.is_none(), "stream should end after the exit code");
+    }
+
     #[test]
     fn remote_command_output_rejects_data_beyond_its_limit() {
         let mut output = RemoteCommandOutput {
