@@ -165,22 +165,20 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: Resource
             }
 
             // Other mappings
-            (key, Some(Value::StringValue(s_val))) => {
-                if !s_val.is_empty() {
-                    // core attributes mapping
-                    if let Some(datadog_key) = CORE_MAPPING.get(key) {
-                        tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                    }
+            (key, Some(Value::StringValue(s_val))) if !s_val.is_empty() => {
+                // core attributes mapping
+                if let Some(datadog_key) = CORE_MAPPING.get(key) {
+                    tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+                }
 
-                    // Kubernetes labels mapping
-                    if let Some(datadog_key) = KUBERNETES_MAPPING.get(key) {
-                        tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                    }
+                // Kubernetes labels mapping
+                if let Some(datadog_key) = KUBERNETES_MAPPING.get(key) {
+                    tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+                }
 
-                    // Kubernetes DD tags
-                    if KUBERNETES_DD_TAGS.contains(key) {
-                        tags.insert_tag(format!("{}:{}", key, s_val));
-                    }
+                // Kubernetes DD tags
+                if KUBERNETES_DD_TAGS.contains(key) {
+                    tags.insert_tag(format!("{}:{}", key, s_val));
                 }
             }
             _ => {}
