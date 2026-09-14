@@ -5,4 +5,5 @@ max_width = 120
 fn_params_layout = "Compressed"
 ignore = [
     "lib/datadog-agent/config/src/generated/",
+    "lib/datadog-agent/config-testing/src/config_registry/generated/",
 ]
