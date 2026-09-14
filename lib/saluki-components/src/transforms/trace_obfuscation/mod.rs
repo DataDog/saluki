@@ -100,7 +100,8 @@ impl TraceObfuscation {
         };
 
         // Screen the borrowed URL first: obfuscating it needs an owned copy to release the borrow on the span, and most
-        // URLs have nothing to obfuscate.
+        // URLs have nothing to obfuscate. The screen is approximate in one direction, so a URL whose authority cannot be
+        // parsed is forwarded instead of being redacted wholesale; see `http::should_obfuscate_url`.
         if !self.obfuscator.should_obfuscate_url(url) {
             return;
         }

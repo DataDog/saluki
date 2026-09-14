@@ -1,8 +1,24 @@
 //! HTTP URL obfuscation.
 //!
-//! The rewrite itself lives in `libdd_trace_obfuscation::http`, a shared crate that follows the reference
+//! The rewrite itself lives in `libdd_trace_obfuscation::http`, a shared crate that tracks the reference
 //! implementation's URL handling: its escaping rules, its acceptance of relative references, and its decoding of
-//! percent-encoded path characters. This module adapts that leaf API to [`HttpObfuscationConfig`] and [`MetaString`].
+//! percent-encoded path characters before the digit scan. This module adapts that leaf API to
+//! [`HttpObfuscationConfig`] and [`MetaString`].
+//!
+//! # Missing
+//!
+//! Three behaviors of the shared crate diverge from the reference implementation. Each one is tracked upstream and
+//! pinned by a test below, so the output moves visibly in a diff when the pinned revision moves:
+//!
+//! - A percent-escaped unreserved character in the path is decoded, so a URL the reference implementation emits
+//!   byte-identical is rewritten (<https://github.com/DataDog/libdatadog/issues/2522>).
+//! - A `[` or `]` in the path or fragment fails the crate's stricter parse, so the URL collapses to `?` whenever
+//!   either config option is on (<https://github.com/DataDog/libdatadog/issues/2523>).
+//! - [`should_obfuscate_url`] finds no trigger in a URL whose authority cannot be parsed, which the rewrite would
+//!   replace with `?` (<https://github.com/DataDog/libdatadog/issues/2524>).
+//!
+//! Removing the userinfo from a URL that cannot be parsed is a deliberate divergence, not a gap: the reference
+//! implementation returns such a URL verbatim, credentials included.
 
 use libdd_trace_obfuscation::http;
 use stringtheory::MetaString;
@@ -12,8 +28,16 @@ use super::obfuscator::HttpObfuscationConfig;
 /// Returns whether [`obfuscate_url`] could change `val`.
 ///
 /// This scans bytes and allocates nothing, so callers holding a borrowed URL can avoid copying it out of a span when
-/// there is nothing to obfuscate. The scan is a conservative superset of the rewrite's triggers: `true` does not
-/// promise that the URL changes, but `false` does promise that it does not.
+/// there is nothing to obfuscate. `true` means the scan found a byte that could trigger the rewrite, not that the
+/// rewrite changes anything.
+///
+/// # Missing
+///
+/// The scan is not a complete superset of the rewrite's triggers, so `false` is not a promise that the URL is left
+/// alone. It finds no trigger in a URL whose authority cannot be parsed, such as `https://example.com:port/x`, which
+/// the rewrite replaces with `?` when either `config` option is on. A caller that screens with this function forwards
+/// that URL unchanged, where the reference implementation redacts it. Tracked upstream in
+/// <https://github.com/DataDog/libdatadog/issues/2524>.
 pub fn should_obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> bool {
     http::should_obfuscate_url(val, config.remove_query_string, config.remove_paths_with_digits)
 }
@@ -21,10 +45,16 @@ pub fn should_obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> bool {
 /// Obfuscates a URL string by removing userinfo, query strings, and/or path digits.
 ///
 /// Returns `Some(obfuscated)` if the URL changed, `None` if it did not. Userinfo is always removed; the query string
-/// and path digits are removed per `config`. A URL that cannot be parsed is returned with only its userinfo removed
-/// when both `config` options are off, and is replaced with `?` when either option is on.
+/// and path digits are removed per `config`. A URL that cannot be parsed loses its userinfo when both `config` options
+/// are off, and is replaced with `?` when either option is on.
+///
+/// # Design
+///
+/// This calls the rewrite directly rather than `libdd_trace_obfuscation::http::obfuscate_url`, which screens with
+/// [`should_obfuscate_url`] first: the span path has already screened by the time it gets here, and the equality check
+/// below is exact where the screen is approximate.
 pub fn obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> Option<MetaString> {
-    let obfuscated = http::obfuscate_url(val, config.remove_query_string, config.remove_paths_with_digits)?;
+    let obfuscated = http::obfuscate_url_string(val, config.remove_query_string, config.remove_paths_with_digits);
 
     // The rewrite normalizes escaping even where nothing sensitive was found, so it can hand back a string equal to its
     // input. Report that as unchanged so the caller keeps the URL it already has instead of replacing it with an
@@ -64,9 +94,10 @@ mod tests {
         );
     }
 
-    // An unparseable URL keeps everything but its userinfo when neither option is set.
+    // An unparseable URL keeps everything but its userinfo when neither option is set. This is deliberately safer than
+    // the reference implementation, which returns such a URL verbatim, credentials and all.
     #[test]
-    fn unparseable_url_only_loses_userinfo() {
+    fn unparseable_url_loses_userinfo_by_design() {
         assert_eq!(obfuscate("http://foo.com/%", false, false), None);
         assert_eq!(
             obfuscate("http://user:password@foo.com/%", false, false).as_deref(),
@@ -246,8 +277,79 @@ mod tests {
         );
     }
 
+    // The rewrite normalizes escaping without finding anything sensitive, so it returns a string equal to its input and
+    // the caller keeps the URL it already has. The `%` admits this URL to the rewrite; `%20` is left alone by it.
     #[test]
-    fn precheck_admits_everything_that_changes() {
+    fn unchanged_rewrite_reports_no_change() {
+        assert!(should_obfuscate_url("http://foo.com/foo%20bar/", &config(false, false)));
+        assert_eq!(obfuscate("http://foo.com/foo%20bar/", false, false), None);
+        assert_eq!(obfuscate("http://foo.com/foo%20bar/", true, true), None);
+    }
+
+    // Known gap, tracked in https://github.com/DataDog/libdatadog/issues/2522: a percent-escaped unreserved character
+    // in the path is decoded even when nothing sensitive was found, so these URLs are rewritten where the reference
+    // implementation emits them byte-identical. Pinned so the upstream fix shows up here as a diff.
+    #[test]
+    fn pinned_gap_path_escapes_are_decoded() {
+        assert_eq!(
+            obfuscate("https://example.com/a/%2E%2E/b", false, false).as_deref(),
+            Some("https://example.com/a/../b")
+        );
+        assert_eq!(
+            obfuscate("https://example.com/%7Euser/index.html", false, false).as_deref(),
+            Some("https://example.com/~user/index.html")
+        );
+        assert_eq!(
+            obfuscate("https://example.com/path/%41BC/x", false, false).as_deref(),
+            Some("https://example.com/path/ABC/x")
+        );
+        // Digit removal is off here, so the decoded `2` is revealed rather than redacted.
+        assert_eq!(
+            obfuscate("https://example.com/users/%32/profile", true, false).as_deref(),
+            Some("https://example.com/users/2/profile")
+        );
+        // Same root cause on the authority: the reference implementation escapes only the path.
+        assert_eq!(
+            obfuscate("http://foo bar.com/x", false, false).as_deref(),
+            Some("http://foo%20bar.com/x")
+        );
+    }
+
+    // Known gap, tracked in https://github.com/DataDog/libdatadog/issues/2523: a `[` or `]` in the path or fragment is
+    // not escaped before the parse it fails, so the whole URL collapses to `?` and the endpoint is lost. The reference
+    // implementation keeps the endpoint and redacts only the digit segment. Pinned so the upstream fix is visible.
+    #[test]
+    fn pinned_gap_brackets_collapse_the_url() {
+        let url = "https://example.com/api/items[1]/detail";
+        assert_eq!(obfuscate(url, false, false), None);
+        assert_eq!(obfuscate(url, true, false).as_deref(), Some("?"));
+        assert_eq!(obfuscate(url, false, true).as_deref(), Some("?"));
+        assert_eq!(obfuscate(url, true, true).as_deref(), Some("?"));
+        assert_eq!(obfuscate("http://foo.com/x#a[b", true, false).as_deref(), Some("?"));
+    }
+
+    // Known gap, tracked in https://github.com/DataDog/libdatadog/issues/2524: the precheck finds no trigger in a URL
+    // whose authority cannot be parsed, while the rewrite replaces exactly those URLs with `?`. The span path screens
+    // with the precheck, so it forwards them unchanged where the reference implementation redacts them wholesale.
+    #[test]
+    fn pinned_gap_precheck_misses_unparseable_authority() {
+        for url in ["https://example.com:port/x", "http://foo:bar.com/x", ":"] {
+            for (remove_query_string, remove_paths_with_digits) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    obfuscate(url, remove_query_string, remove_paths_with_digits).as_deref(),
+                    Some("?"),
+                    "expected wholesale redaction for {url:?}"
+                );
+                assert!(
+                    !should_obfuscate_url(url, &config(remove_query_string, remove_paths_with_digits)),
+                    "precheck admitted {url:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn precheck_admits_the_urls_it_rewrites() {
         let cases = [
             ("http://user:password@foo.com/1/2/3?q=james", false, false),
             ("http://foo.com/users/%32/profile", false, true),

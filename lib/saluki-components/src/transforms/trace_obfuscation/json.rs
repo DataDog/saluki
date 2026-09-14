@@ -100,6 +100,18 @@ mod tests {
         assert_eq!(parsed["id"], "?");
     }
 
+    // Key order is part of the output, and every other test here compares parsed values, which are order-insensitive.
+    // `libdd-trace-obfuscation` enables `serde_json/preserve_order` for the whole workspace, so a `Map` is now
+    // insertion-ordered: the obfuscated document keeps the key order of the input instead of sorting it. That is also
+    // what the reference implementation does, since it streams over the raw JSON rather than parsing it into a map.
+    #[test]
+    fn test_obfuscate_preserves_key_order() {
+        let json = r#"{"z": 1, "m": {"y": 2, "a": 3}, "a": 4}"#;
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
+
+        assert_eq!(result, r#"{"z":"?","m":{"y":"?","a":"?"},"a":"?"}"#);
+    }
+
     #[test]
     fn test_obfuscate_nested_object() {
         let json = r#"{"user": {"name": "john", "age": 30}, "active": true}"#;
