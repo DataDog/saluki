@@ -101,6 +101,28 @@ impl Obfuscator {
         self.cc_obfuscator.as_ref()?.obfuscate_credit_card_number(key, val)
     }
 
+    /// Returns `true` when the value carried under `key` is subject to card scrubbing.
+    ///
+    /// Returns `false` when credit card obfuscation is disabled.
+    pub fn should_obfuscate_credit_card_key(&self, key: &str) -> bool {
+        match &self.cc_obfuscator {
+            Some(cc_obfuscator) => cc_obfuscator.should_obfuscate_key(key),
+            None => false,
+        }
+    }
+
+    /// Returns `true` when `val` could be a credit card number.
+    ///
+    /// Returns `false` when credit card obfuscation is disabled. This does not consult the key
+    /// allowlist: pair it with [`should_obfuscate_credit_card_key`][Self::should_obfuscate_credit_card_key]
+    /// when the value came from a keyed attribute.
+    pub fn is_credit_card_number(&self, val: &str) -> bool {
+        match &self.cc_obfuscator {
+            Some(cc_obfuscator) => cc_obfuscator.is_card_number(val),
+            None => false,
+        }
+    }
+
     /// Quantizes a Redis command string (extracts command names only).
     /// Returns `Some(quantized)` if any changes were made, `None` if unchanged.
     pub fn quantize_redis_string(&self, query: &str) -> Option<MetaString> {
