@@ -172,16 +172,20 @@ struct StatsResponse<'a> {
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: DogstatsdCommand) {
     let cancellation = CancellationToken::new();
-    let signal_task = tokio::spawn({
-        let cancellation = cancellation.clone();
-        async move {
-            wait_for_shutdown_signal().await;
-            cancellation.cancel();
-        }
+    let signal_task = matches!(&cmd.subcommand, DogstatsdSubcommand::Replay(_)).then(|| {
+        tokio::spawn({
+            let cancellation = cancellation.clone();
+            async move {
+                wait_for_shutdown_signal().await;
+                cancellation.cancel();
+            }
+        })
     });
     let mut output = std::io::stdout();
     let result = run_dogstatsd_command(local_config.local(), cmd, &mut output, &cancellation, false).await;
-    signal_task.abort();
+    if let Some(signal_task) = signal_task {
+        signal_task.abort();
+    }
 
     if let Err(error) = result {
         error!("{:#}", error);
@@ -243,12 +247,26 @@ pub(crate) async fn run_dogstatsd_command(
                 handle_dogstatsd_top(None, command, output).await
             } else {
                 let mut api_client = get_api_client(config).await?;
-                handle_dogstatsd_top(Some(&mut api_client), command, output).await
+                if stream_status {
+                    tokio::select! {
+                        result = handle_dogstatsd_top(Some(&mut api_client), command, output) => result,
+                        _ = cancellation.cancelled() => Ok(()),
+                    }
+                } else {
+                    handle_dogstatsd_top(Some(&mut api_client), command, output).await
+                }
             }
         }
         DogstatsdSubcommand::DumpContexts(_) => {
             let mut api_client = get_api_client(config).await?;
-            handle_dogstatsd_dump_contexts(&mut api_client, output).await
+            if stream_status {
+                tokio::select! {
+                    result = handle_dogstatsd_dump_contexts(&mut api_client, output) => result,
+                    _ = cancellation.cancelled() => Ok(()),
+                }
+            } else {
+                handle_dogstatsd_dump_contexts(&mut api_client, output).await
+            }
         }
     }
 }
