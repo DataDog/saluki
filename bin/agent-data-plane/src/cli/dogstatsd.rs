@@ -33,7 +33,10 @@ use tracing::{debug, error, info};
 use crate::cli::utils::{get_api_client, DataPlaneAPIClient};
 
 mod top;
-use self::top::{handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DumpContextsCommand, TopCommand};
+use self::top::{
+    handle_dogstatsd_dump_contexts, handle_dogstatsd_top, handle_dogstatsd_top_offline_cancellable,
+    DumpContextsCommand, TopCommand,
+};
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -244,7 +247,11 @@ pub(crate) async fn run_dogstatsd_command(
         DogstatsdSubcommand::Top(command) => {
             let command = command.validate();
             if command.is_offline() {
-                handle_dogstatsd_top(None, command, output).await
+                if stream_status {
+                    handle_dogstatsd_top_offline_cancellable(command, output, cancellation).await
+                } else {
+                    handle_dogstatsd_top(None, command, output).await
+                }
             } else {
                 let mut api_client = get_api_client(config).await?;
                 if stream_status {
