@@ -107,7 +107,7 @@ fn classify_accept_error(error: &ListenerError) -> RecoveryAction {
 /// able to accept it, and other times, transient errors with the underlying system (file descriptor exhaustion, etc)
 /// can occur, both of which leave the listener in a state where another accept can be attempted.
 ///
-/// `AcceptRecovery` is responsible for not only categorizing an accept error (retryable vs fatal), but also tracking
+/// `AcceptRecovery` is responsible for not only categorizing an accept error (retriable vs fatal), but also tracking
 /// the state of previous retry attempts in order to apply throttling between consecutive accepts. This ensures that
 /// listeners avoid consuming excess system resources by busy looping during an already transient resource exhaustion
 /// issue.
@@ -145,13 +145,13 @@ impl AcceptRecovery {
     ) -> Result<(), ListenerError> {
         match classify_accept_error(&error) {
             RecoveryAction::Retry => {
-                debug!(%listen_address, %error, "Failed to accept an incoming connection. Retrying.");
+                debug!(%listen_address, %error, "Failed to accept connection. Retrying.");
             }
             RecoveryAction::Throttle => {
                 let delay = self.backoff.get_backoff_duration(self.consecutive_throttled_accepts);
                 self.consecutive_throttled_accepts = self.consecutive_throttled_accepts.saturating_add(1);
 
-                warn!(%listen_address, %error, ?delay, "Failed to accept an incoming connection. Retrying shortly.");
+                warn!(%listen_address, %error, ?delay, "Failed to accept connection. Retrying shortly.");
 
                 sleep(delay).await;
             }

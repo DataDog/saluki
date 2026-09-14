@@ -1036,15 +1036,6 @@ impl Source for DogStatsD {
                 packet_forwarder_target: self.packet_forwarder_target.clone(),
             };
 
-            // Significant, because a source that has lost a listener is a source that silently stops accepting the
-            // traffic it exists to accept. The component's supervisor is configured with
-            // `AutoShutdown::AnySignificant`, so a listener stopping brings the whole component down instead: the
-            // failure is surfaced rather than swallowed, and the lease goes back to the registry with its socket
-            // still bound, so whatever restarts the component picks that same socket back up.
-            //
-            // Orderly shutdown doesn't trip this: the supervisor evaluates auto-shutdown only while it is running,
-            // and a source's own shutdown signal is its supervisor's, so by the time the listeners are drained the
-            // supervisor is already tearing the subtree down.
             runtime::supervisable(ListenerWorker::new(
                 task_name,
                 listener_source_context,
@@ -1237,9 +1228,6 @@ async fn process_listener(
 
                     runtime::worker(task_name, handler).spawn();
                 }
-                // `accept` recovers from what it can -- a reset connection, a momentary shortage of descriptors --
-                // so an error here means the listener is done. Stopping is also not cheap: this listener is a
-                // significant child, so it takes the whole component with it.
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
                     break
