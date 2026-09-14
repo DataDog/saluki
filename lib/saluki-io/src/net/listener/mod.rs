@@ -1,7 +1,7 @@
 //! Network listeners.
 #[cfg(unix)]
 use std::path::PathBuf;
-use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize, sync::Arc};
 #[cfg(windows)]
 use std::{ffi::c_void, mem, ptr};
 
@@ -12,8 +12,7 @@ use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
 #[cfg(unix)]
 use tokio::net::{UnixDatagram, UnixListener};
-use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::warn;
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{LocalFree, FALSE, HLOCAL},
@@ -34,33 +33,10 @@ use super::{
 use crate::net::addr::BoundListenAddress;
 use crate::net::util::retry::ExponentialBackoff;
 
+mod recovery;
+use self::recovery::AcceptRecovery;
+
 const SOCKET_RECV_BUFFER_SIZE_SETTING: &str = "SO_RCVBUF";
-
-/// Shortest wait between accepts while the system is out of a resource the accept needs.
-///
-/// Small enough that a momentary spike in open descriptors costs the listener almost nothing.
-const DEFAULT_ACCEPT_MIN_BACKOFF: Duration = Duration::from_millis(10);
-
-/// Longest wait between accepts while the system is out of a resource the accept needs.
-///
-/// A sustained shortage then costs one system call a second rather than a spinning core, while still resuming promptly
-/// once the resource frees up.
-const DEFAULT_ACCEPT_MAX_BACKOFF: Duration = Duration::from_secs(1);
-
-/// Jitter applied to the accept backoff, as the factor the delay may be divided by.
-///
-/// Every listener in the process draws on the same descriptor table, so a shortage tends to hit all of them at once.
-/// Without jitter they would then retry in lockstep, converting one shortage into a repeating thundering herd.
-const DEFAULT_ACCEPT_BACKOFF_JITTER: f64 = 2.0;
-
-/// Returns the backoff a listener applies to accepts when the system is out of resources, absent an override.
-fn default_accept_backoff() -> ExponentialBackoff {
-    ExponentialBackoff::with_jitter(
-        DEFAULT_ACCEPT_MIN_BACKOFF,
-        DEFAULT_ACCEPT_MAX_BACKOFF,
-        DEFAULT_ACCEPT_BACKOFF_JITTER,
-    )
-}
 
 #[cfg(not(target_os = "linux"))]
 const fn socket_reuseport_supported() -> bool {
@@ -125,77 +101,6 @@ pub enum ListenerError {
     },
 }
 
-/// How [`Listener::accept`] responds to a failed accept.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AcceptRecovery {
-    /// The failure concerned only the connection being accepted.
-    ///
-    /// Accept again immediately.
-    Retry,
-
-    /// The system is out of a resource required to accept connections.
-    ///
-    /// Wait, then accept again.
-    Throttle,
-
-    /// The listener can't produce further streams.
-    ///
-    /// The error is returned to the caller.
-    Fatal,
-}
-
-/// Classifies a failed accept.
-///
-/// Only a failure to accept is ever recoverable. Everything else -- an address that couldn't be bound, a setting that
-/// couldn't be applied -- describes a listener that was never usable, or a stream that can't be safely handed on.
-fn classify_accept_error(error: &ListenerError) -> AcceptRecovery {
-    let source = match error {
-        ListenerError::FailedToAccept { source, .. } => source,
-        _ => return AcceptRecovery::Fatal,
-    };
-
-    // The peer went away, or the call was interrupted, between the connection arriving and us taking it.
-    if matches!(
-        source.kind(),
-        io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::Interrupted
-            | io::ErrorKind::WouldBlock
-    ) {
-        return AcceptRecovery::Retry;
-    }
-
-    // Out of memory is the one exhaustion case with a stable `ErrorKind`; the rest have to be matched on errno.
-    if source.kind() == io::ErrorKind::OutOfMemory {
-        return AcceptRecovery::Throttle;
-    }
-
-    #[cfg(unix)]
-    if let Some(errno) = source.raw_os_error() {
-        match errno {
-            // Process- or system-wide exhaustion of descriptors or buffers.
-            libc::EMFILE | libc::ENFILE | libc::ENOBUFS => return AcceptRecovery::Throttle,
-
-            // Network errors already pending on the new connection, which Linux reports out of `accept` rather than
-            // out of a later read on the accepted socket. `accept(2)` is explicit that these should be treated like
-            // `EAGAIN` and retried.
-            libc::EPROTO
-            | libc::ENOPROTOOPT
-            | libc::ENETDOWN
-            | libc::ENETUNREACH
-            | libc::EHOSTDOWN
-            | libc::EHOSTUNREACH
-            | libc::EOPNOTSUPP => return AcceptRecovery::Retry,
-            #[cfg(target_os = "linux")]
-            libc::ENONET => return AcceptRecovery::Retry,
-
-            _ => {}
-        }
-    }
-
-    AcceptRecovery::Fatal
-}
-
 enum ListenerInner {
     Tcp(TcpListener, SocketAddr),
 
@@ -257,8 +162,7 @@ pub struct Listener {
     listen_address: ListenAddress,
     inner: ListenerInner,
     socket_receive_buffer_size: Option<usize>,
-    accept_backoff: ExponentialBackoff,
-    consecutive_throttled_accepts: u32,
+    accept_recovery: AcceptRecovery,
 }
 
 impl Listener {
@@ -388,8 +292,7 @@ impl Listener {
             listen_address,
             inner,
             socket_receive_buffer_size: None,
-            accept_backoff: default_accept_backoff(),
-            consecutive_throttled_accepts: 0,
+            accept_recovery: AcceptRecovery::default(),
         })
     }
 
@@ -413,7 +316,7 @@ impl Listener {
     ///
     /// Defaults to 10 milliseconds, doubling per consecutive failure up to 1 second, jittered down by up to half.
     pub fn with_accept_backoff(mut self, accept_backoff: ExponentialBackoff) -> Self {
-        self.accept_backoff = accept_backoff;
+        self.accept_recovery = AcceptRecovery::from_backoff(accept_backoff);
         self
     }
 
@@ -456,7 +359,7 @@ impl Listener {
     /// Readies the listener for its next holder.
     pub(crate) fn rearm(&mut self) {
         // Reset our backoff state since the listener is migrating to another owner.
-        self.consecutive_throttled_accepts = 0;
+        self.accept_recovery.reset();
 
         match &mut self.inner {
             ListenerInner::Udp { handed_out, .. } => *handed_out = 0,
@@ -496,30 +399,12 @@ impl Listener {
     /// is returned.
     pub async fn accept(&mut self) -> Result<Stream, ListenerError> {
         loop {
-            let error = match self.accept_once().await {
+            match self.accept_once().await {
                 Ok(stream) => {
-                    self.consecutive_throttled_accepts = 0;
+                    self.accept_recovery.accept_succeeded();
                     return Ok(stream);
                 }
-                Err(e) => e,
-            };
-
-            let listen_address = &self.listen_address;
-            match classify_accept_error(&error) {
-                AcceptRecovery::Retry => {
-                    debug!(%listen_address, %error, "Failed to accept an incoming connection. Retrying.");
-                }
-                AcceptRecovery::Throttle => {
-                    let delay = self
-                        .accept_backoff
-                        .get_backoff_duration(self.consecutive_throttled_accepts);
-                    self.consecutive_throttled_accepts = self.consecutive_throttled_accepts.saturating_add(1);
-
-                    warn!(%listen_address, %error, ?delay, "Failed to accept an incoming connection. Retrying shortly.");
-
-                    sleep(delay).await;
-                }
-                AcceptRecovery::Fatal => return Err(error),
+                Err(error) => self.accept_recovery.recover(&self.listen_address, error).await?,
             }
         }
     }
@@ -753,6 +638,7 @@ enum ConnectionOrientedListenerInner {
 pub struct ConnectionOrientedListener {
     listen_address: ListenAddress,
     inner: ConnectionOrientedListenerInner,
+    accept_recovery: AcceptRecovery,
 }
 
 impl ConnectionOrientedListener {
@@ -804,7 +690,19 @@ impl ConnectionOrientedListener {
             }
         };
 
-        Ok(Self { listen_address, inner })
+        Ok(Self {
+            listen_address,
+            inner,
+            accept_recovery: AcceptRecovery::default(),
+        })
+    }
+
+    /// Sets the backoff strategy used when [`accept`](Self::accept) encounters a recoverable, system-wide error.
+    ///
+    /// See [`Listener::with_accept_backoff`], which this mirrors.
+    pub fn with_accept_backoff(mut self, accept_backoff: ExponentialBackoff) -> Self {
+        self.accept_recovery = AcceptRecovery::from_backoff(accept_backoff);
+        self
     }
 
     /// Gets a reference to the listen address.
@@ -821,13 +719,46 @@ impl ConnectionOrientedListener {
         }
     }
 
+    /// Readies the listener for its next holder.
+    ///
+    /// Clears the backoff state a single holder accumulates, so a listener returned to a registry during a resource
+    /// shortage doesn't hand the next holder a maximum-length wait it did nothing to earn. The bound socket is
+    /// untouched, which is what lets a listener be lent out, returned, and lent out again.
+    pub(crate) fn rearm(&mut self) {
+        self.accept_recovery.reset();
+    }
+
     /// Accepts a new connection from the listener.
+    ///
+    /// # Recoverable failures
+    ///
+    /// Failures that say nothing about the listener -- a connection reset before it could be accepted, a momentary
+    /// shortage of descriptors -- are recovered from here rather than surfaced, so an error from this method means the
+    /// listener is done. See [`with_accept_backoff`](Self::with_accept_backoff) for the wait applied to a shortage.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. No connection is ever lost by dropping the returned future: a successful accept
+    /// returns straight away, so the only thing in flight at a cancellation point is a failure being recovered from.
     ///
     /// # Errors
     ///
-    /// If the listener fails to accept a new connection, or if the accepted connection can't be configured correctly,
+    /// If the listener can no longer produce connections, or if an accepted connection can't be configured correctly,
     /// an error is returned.
     pub async fn accept(&mut self) -> Result<Connection, ListenerError> {
+        loop {
+            match self.accept_once().await {
+                Ok(connection) => {
+                    self.accept_recovery.accept_succeeded();
+                    return Ok(connection);
+                }
+                Err(error) => self.accept_recovery.recover(&self.listen_address, error).await?,
+            }
+        }
+    }
+
+    /// Makes a single attempt to accept a new connection, without recovering from a failure.
+    async fn accept_once(&mut self) -> Result<Connection, ListenerError> {
         match &mut self.inner {
             ConnectionOrientedListenerInner::Tcp(tcp, _) => tcp
                 .accept()
@@ -1126,94 +1057,6 @@ mod tests {
                 .map(|socket| socket.local_addr().expect("socket should have local addr").port())
                 .collect(),
             _ => panic!("expected UDP listener"),
-        }
-    }
-
-    /// Builds the error an accept loop would actually see for a given `errno`.
-    #[cfg(unix)]
-    fn accept_errno(errno: i32) -> ListenerError {
-        ListenerError::FailedToAccept {
-            address: ListenAddress::Tcp(([127, 0, 0, 1], 0).into()),
-            source: io::Error::from_raw_os_error(errno),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn resource_exhaustion_throttles_rather_than_stopping_the_listener() {
-        // The case this classification exists for: hitting the open-file limit says nothing about the listener, and
-        // the connection is still queued, so stopping would take the listener down over a condition that clears on
-        // its own.
-        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
-            assert_eq!(
-                classify_accept_error(&accept_errno(errno)),
-                AcceptRecovery::Throttle,
-                "errno {errno} should throttle"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn per_connection_failures_retry_immediately() {
-        // Nothing about the listener changed, so there is nothing to wait for.
-        for errno in [
-            libc::ECONNABORTED,
-            libc::EINTR,
-            libc::EPROTO,
-            libc::EHOSTUNREACH,
-            libc::ENETUNREACH,
-        ] {
-            assert_eq!(
-                classify_accept_error(&accept_errno(errno)),
-                AcceptRecovery::Retry,
-                "errno {errno} should retry"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn an_unrecognized_accept_failure_stops_the_listener() {
-        // Retrying an error we can't account for is how an accept loop spins forever, so anything unclassified keeps
-        // the old behavior of stopping.
-        assert_eq!(classify_accept_error(&accept_errno(libc::EBADF)), AcceptRecovery::Fatal);
-    }
-
-    #[test]
-    fn only_accept_failures_are_recoverable() {
-        // A listener that never bound, or a stream that couldn't be configured, isn't something an accept loop can
-        // retry its way out of.
-        let bind = ListenerError::FailedToBind {
-            address: ListenAddress::Tcp(([127, 0, 0, 1], 0).into()),
-            source: io::Error::from_raw_os_error(1),
-        };
-        assert_eq!(classify_accept_error(&bind), AcceptRecovery::Fatal);
-
-        let configure = ListenerError::FailedToConfigureStream {
-            setting: SOCKET_RECV_BUFFER_SIZE_SETTING,
-            stream_type: "tcp",
-            source: io::Error::from_raw_os_error(1),
-        };
-        assert_eq!(classify_accept_error(&configure), AcceptRecovery::Fatal);
-    }
-
-    #[test]
-    fn the_default_accept_backoff_stays_within_its_bounds() {
-        let mut backoff = default_accept_backoff();
-
-        // The first wait is the floor exactly, so a one-off shortage costs a listener almost nothing.
-        assert_eq!(backoff.get_backoff_duration(0), DEFAULT_ACCEPT_MIN_BACKOFF);
-
-        // Past that, jitter makes each draw a range rather than a value, so the bounds are what there is to assert --
-        // and they have to hold however long a shortage lasts, including for counts large enough to overflow a naive
-        // doubling.
-        for consecutive in [1, 2, 8, 32, 64, u32::MAX] {
-            let delay = backoff.get_backoff_duration(consecutive);
-            assert!(
-                delay >= DEFAULT_ACCEPT_MIN_BACKOFF && delay <= DEFAULT_ACCEPT_MAX_BACKOFF,
-                "delay for {consecutive} consecutive failures should be within bounds, got {delay:?}"
-            );
         }
     }
 

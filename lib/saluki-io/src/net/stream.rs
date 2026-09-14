@@ -106,15 +106,10 @@ impl AsyncWrite for Connection {
     }
 }
 
-/// A connectionless socket, shared with the listener that yielded it.
+/// A connectionless socket.
 ///
 /// This type wraps network sockets that operate in a connectionless manner, such as UDP or Unix domain sockets in
 /// datagram mode.
-///
-/// The socket is held behind an `Arc` rather than owned outright: for connectionless families the bound socket *is* the
-/// stream, so moving it out would take it away from the listener, and a listener owned by a
-/// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry] has to keep the sockets it was created with.
-/// Each stream still gets its own distinct socket -- the listener never yields the same one twice.
 enum Connectionless {
     /// A UDP socket.
     Udp(Arc<UdpSocket>),
@@ -145,14 +140,14 @@ enum StreamInner {
 /// not required to know the exact socket family (for example, TCP, UDP, Unix domain socket) that's being used, and it can be
 /// beneficial to allow abstracting over the differences to facilitate simpler code.
 ///
-/// ## Connection-oriented mode
+/// # Connection-oriented mode
 ///
 /// In connection-oriented mode, the stream is backed by a socket that operates in a connection-oriented manner, which
 /// ensures a reliable, ordered stream of messages to and from the remote peer.
 ///
 /// The connection address returned when receiving data _should_ be stable for the life of the `Stream`.
 ///
-/// ## Connectionless mode
+/// # Connectionless mode
 ///
 /// In connectionless mode, the stream is backed by a socket that operates in a connectionless manner, which doesn't
 /// provide any assurances around reliability and ordering of messages to and from the remote peer. While a stream might
@@ -172,7 +167,7 @@ impl Stream {
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the underlying system call fails, an error is returned.
     pub async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {

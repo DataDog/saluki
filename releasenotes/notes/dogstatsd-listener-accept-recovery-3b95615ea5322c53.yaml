@@ -1,9 +1,0 @@
-fixes:
-  - |
-    Fix DogStatsD listeners stopping permanently after a transient failure to accept a connection.
-    A per-connection error is now retried, and a system-wide shortage such as running out of file
-    descriptors is retried with a backoff instead of taking the listener out of service for the
-    lifetime of the process.
-  - |
-    A DogStatsD listener that stops for an unrecoverable reason now stops the DogStatsD source
-    along with it, rather than leaving the source running while it silently accepts nothing.
