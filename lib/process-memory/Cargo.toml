@@ -23,7 +23,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-mach2 = { version = "0.6.0" }
+mach2 = { version = "0.7.0" }
 
 [target.'cfg(not(target_os = "aix"))'.dev-dependencies]
 dhat = { workspace = true }
