@@ -91,5 +91,8 @@ tower = { workspace = true, features = ["util"] }
 [target.'cfg(not(windows))'.dev-dependencies]
 rcgen = { workspace = true, features = ["aws_lc_rs"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }
+
 [target.'cfg(windows)'.dev-dependencies]
 rcgen = { workspace = true, features = ["ring"] }
