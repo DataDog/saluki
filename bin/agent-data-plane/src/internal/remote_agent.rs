@@ -1365,6 +1365,36 @@ mod tests {
     }
 
     #[test]
+    fn dropping_command_stream_cancels_execution() {
+        let cancellation = CancellationToken::new();
+        let (_sender, receiver) = mpsc::channel(1);
+        drop(CancellableCommandStream {
+            inner: ReceiverStream::new(receiver),
+            cancellation: cancellation.clone(),
+        });
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn completed_command_sender_ends_the_stream() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+        let mut stream = CancellableCommandStream {
+            inner: ReceiverStream::new(receiver),
+            cancellation: CancellationToken::new(),
+        };
+        assert!(futures::StreamExt::next(&mut stream).await.is_none());
+    }
+
+    #[test]
+    fn remote_command_output_rejects_data_beyond_its_limit() {
+        let mut output = RemoteCommandOutput {
+            bytes: vec![0; MAX_REMOTE_COMMAND_OUTPUT_BYTES],
+        };
+        assert!(std::io::Write::write(&mut output, b"x").is_err());
+    }
+
+    #[test]
     fn diagnostic_to_remote_agent_event_maps_invalid_api_key() {
         let event = DiagnosticEvent::new("credentials rejected", DiagnosticDetails::InvalidApiKey);
         let converted =
