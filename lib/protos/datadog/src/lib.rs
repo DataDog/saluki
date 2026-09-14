@@ -98,7 +98,21 @@ pub mod checks {
 mod tests {
     use protobuf::Message as _;
 
-    use super::traces::{self, AgentPayload};
+    use super::{
+        agent::command::v1::CommandProvider,
+        traces::{self, AgentPayload},
+    };
+
+    #[test]
+    fn remote_command_provider_messages_are_available() {
+        let provider = CommandProvider {
+            name: "dogstatsd".to_string(),
+            description: "Inspect DogStatsD pipeline status".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(provider.name, "dogstatsd");
+    }
 
     #[test]
     fn agent_payload_round_trips_classic_and_indexed_tracer_payloads() {
