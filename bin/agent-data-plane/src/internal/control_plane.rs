@@ -52,7 +52,7 @@ pub async fn create_control_plane_supervisor(
         logging_controller,
     ));
     supervisor.add_worker(ConfigWorker::new(config_system.raw_snapshot()));
-    supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
+    supervisor.add_worker(ConfigRuntimeWorker::new(Arc::clone(&current_config)));
 
     let api_listen_address = dp.api_listen_address()?;
     let secure_api_listen_address = dp.secure_api_listen_address()?;
@@ -72,7 +72,8 @@ pub async fn create_control_plane_supervisor(
         privileged_api = privileged_api
             .with_grpc_service(ra_bootstrap.create_status_service())
             .with_grpc_service(ra_bootstrap.create_flare_service())
-            .with_grpc_service(ra_bootstrap.create_telemetry_service());
+            .with_grpc_service(ra_bootstrap.create_telemetry_service())
+            .with_grpc_service(ra_bootstrap.create_command_service(current_config));
     }
 
     supervisor.add_worker(privileged_api.into_supervisor());
