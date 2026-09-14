@@ -196,15 +196,33 @@ pub(crate) async fn run_dogstatsd_command(
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(command) => {
             let mut api_client = get_api_client(config).await?;
-            handle_dogstatsd_stats(&mut api_client, command, output, stream_status)
-                .await
-                .error_context("Failed to run stats subcommand")
+            if stream_status {
+                tokio::select! {
+                    result = handle_dogstatsd_stats(&mut api_client, command, output, stream_status) => {
+                        result.error_context("Failed to run stats subcommand")
+                    }
+                    _ = cancellation.cancelled() => Ok(()),
+                }
+            } else {
+                handle_dogstatsd_stats(&mut api_client, command, output, stream_status)
+                    .await
+                    .error_context("Failed to run stats subcommand")
+            }
         }
         DogstatsdSubcommand::Capture(command) => {
             let mut api_client = get_api_client(config).await?;
-            handle_dogstatsd_capture(&mut api_client, command, output, stream_status)
-                .await
-                .error_context("Failed to start DogStatsD capture")
+            if stream_status {
+                tokio::select! {
+                    result = handle_dogstatsd_capture(&mut api_client, command, output, stream_status) => {
+                        result.error_context("Failed to start DogStatsD capture")
+                    }
+                    _ = cancellation.cancelled() => Ok(()),
+                }
+            } else {
+                handle_dogstatsd_capture(&mut api_client, command, output, stream_status)
+                    .await
+                    .error_context("Failed to start DogStatsD capture")
+            }
         }
         DogstatsdSubcommand::Replay(command) => {
             let mut api_client = get_api_client(config).await?;
