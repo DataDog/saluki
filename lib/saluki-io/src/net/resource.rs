@@ -1,14 +1,9 @@
 //! Registry-managed network listeners.
 //!
-//! A bound listen address is the canonical scarce resource: only one thing in the process can hold it, releasing it
-//! hands it back to the operating system, and re-binding can fail because something else took it in the meantime. The
-//! specifications here let a [`ResourceRegistry`] own listeners on behalf of the whole process and lend them out, so a
-//! component can be torn down and rebuilt without its sockets ever being released.
-//!
-//! Both specifications are [`ResourceKind::Socket`] and key on the listen address, so a listen address can only be held
-//! once no matter which listener type is asking for it. Asking for the same address as both a [`Listener`] and a
-//! [`ConnectionOrientedListener`] is an [`AcquireError::TypeMismatch`][saluki_core::runtime::state::AcquireError], since
-//! one bound socket can't be reinterpreted as the other.
+//! A listening network socket is the canonical scarce resource: only one subsystem in the process can hold it,
+//! releasing it hands it back to the operating system, and re-binding can fail because something else took it in the
+//! meantime. The specifications here let a [`ResourceRegistry`] own listeners on behalf of the whole process and lend
+//! them out, so a component can be torn down and rebuilt without its sockets ever being released.
 
 use std::num::NonZeroUsize;
 
@@ -76,7 +71,7 @@ impl SocketSpecification {
     }
 
     /// Returns the listen address this specification names.
-    pub fn address(&self) -> &ListenAddress {
+    pub fn listen_address(&self) -> &ListenAddress {
         &self.address
     }
 }
@@ -109,8 +104,6 @@ impl ResourceSpecification for SocketSpecification {
     }
 
     fn reset(listener: &mut Self::Resource) {
-        // A listener hands out each of its pre-bound connectionless sockets once, so without this the next holder would
-        // find it exhausted. The sockets themselves are untouched.
         listener.rearm();
     }
 }
@@ -146,7 +139,7 @@ impl ConnectionOrientedSocketSpecification {
     }
 
     /// Returns the listen address this specification names.
-    pub fn address(&self) -> &ListenAddress {
+    pub fn listen_address(&self) -> &ListenAddress {
         &self.address
     }
 }
@@ -177,9 +170,6 @@ impl ResourceSpecification for ConnectionOrientedSocketSpecification {
     }
 
     fn reset(listener: &mut Self::Resource) {
-        // Nothing to restore in the way of sockets -- `accept` draws from the kernel's connection backlog rather than
-        // a fixed supply of pre-bound sockets -- but the accept backoff is per-holder state, so the next holder
-        // shouldn't inherit a wait accumulated during someone else's resource shortage.
         listener.rearm();
     }
 }

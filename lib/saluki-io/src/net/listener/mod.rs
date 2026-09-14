@@ -358,9 +358,10 @@ impl Listener {
 
     /// Readies the listener for its next holder.
     pub(crate) fn rearm(&mut self) {
-        // Reset our backoff state since the listener is migrating to another owner.
         self.accept_recovery.reset();
 
+        // Update our tracking of the connectionless streams we've handed out since we're being lent (overall) to a new
+        // holder.
         match &mut self.inner {
             ListenerInner::Udp { handed_out, .. } => *handed_out = 0,
             #[cfg(unix)]
@@ -720,10 +721,6 @@ impl ConnectionOrientedListener {
     }
 
     /// Readies the listener for its next holder.
-    ///
-    /// Clears the backoff state a single holder accumulates, so a listener returned to a registry during a resource
-    /// shortage doesn't hand the next holder a maximum-length wait it did nothing to earn. The bound socket is
-    /// untouched, which is what lets a listener be lent out, returned, and lent out again.
     pub(crate) fn rearm(&mut self) {
         self.accept_recovery.reset();
     }
