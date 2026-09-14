@@ -2,8 +2,8 @@
     Pipelines(&amp;'static [<a class="enum" href="enum.Pipeline.html" title="enum datadog_agent_config_testing::config_registry::Pipeline">Pipeline</a>]),
     CrossCutting,
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Datadog Agent configuration annotations, generated from <code>schema_overlay.yaml</code>.</p>
-<p>Type definitions live here (hand-written); generated annotation constants and statics
-live in <code>annotations_index.rs</code> (generated in-tree by <code>build.rs</code>).
+<p>Type definitions live here (hand-written); the annotation constants and statics live in the
+<code>generated</code> module, which <code>build.rs</code> writes and <code>.gitignore</code> excludes.
 Which pipelines a config key affects.</p>
 </div></details><h2 id="variants" class="variants section-header">Variants<a href="#variants" class="anchor">§</a></h2><div class="variants"><section id="variant.Pipelines" class="variant"><a href="#variant.Pipelines" class="anchor">§</a><h3 class="code-header">Pipelines(&amp;'static [<a class="enum" href="enum.Pipeline.html" title="enum datadog_agent_config_testing::config_registry::Pipeline">Pipeline</a>])</h3></section><div class="docblock"><p>The list of pipelines affected by the key.</p>
 <p>This list must be non-empty, enforced by test.</p>
