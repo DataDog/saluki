@@ -1,12 +1,14 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agent_data_plane_config::domains::dogstatsd::Listeners;
+use agent_data_plane_config::{domains::dogstatsd::Listeners, SalukiConfiguration};
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+use prost_types::{value::Kind, Struct};
 use saluki_app::util::wait_for_shutdown_signal;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
@@ -19,7 +21,8 @@ use saluki_io::net::ListenAddress;
 #[cfg(target_os = "linux")]
 use saluki_io::net::{unix::uds_sendmsg_with_creds, ProcessCredentials};
 use serde::Deserialize;
-use tokio::io::{self, AsyncWriteExt};
+#[cfg(target_os = "windows")]
+use tokio::io::AsyncWriteExt;
 #[cfg(target_os = "windows")]
 use tokio::net::windows::named_pipe::ClientOptions;
 #[cfg(unix)]
@@ -27,10 +30,13 @@ use tokio::net::UnixDatagram;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
+use crate::cli::utils::{get_api_client, DataPlaneAPIClient};
 
 mod top;
-use self::top::{handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DumpContextsCommand, TopCommand};
+use self::top::{
+    handle_dogstatsd_dump_contexts, handle_dogstatsd_top, handle_dogstatsd_top_offline_cancellable,
+    DumpContextsCommand, TopCommand,
+};
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -168,103 +174,193 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: DogstatsdCommand) {
-    if let Err(error) = run_dogstatsd_command(&local_config, cmd).await {
+    let cancellation = CancellationToken::new();
+    let signal_task = matches!(&cmd.subcommand, DogstatsdSubcommand::Replay(_)).then(|| {
+        tokio::spawn({
+            let cancellation = cancellation.clone();
+            async move {
+                wait_for_shutdown_signal().await;
+                cancellation.cancel();
+            }
+        })
+    });
+    let mut output = std::io::stdout();
+    let result = run_dogstatsd_command(local_config.local(), cmd, &mut output, &cancellation, false).await;
+    if let Some(signal_task) = signal_task {
+        signal_task.abort();
+    }
+
+    if let Err(error) = result {
         error!("{:#}", error);
         std::process::exit(1);
     }
 }
 
-async fn run_dogstatsd_command(local_config: &LoadedConfiguration, cmd: DogstatsdCommand) -> Result<(), GenericError> {
+pub(crate) async fn run_dogstatsd_command(
+    config: &SalukiConfiguration, cmd: DogstatsdCommand, output: &mut (dyn Write + Send),
+    cancellation: &CancellationToken, stream_status: bool,
+) -> Result<(), GenericError> {
     match cmd.subcommand {
-        DogstatsdSubcommand::Stats(config) => {
-            let mut api_client = get_api_client_or_exit(local_config).await;
-            handle_dogstatsd_stats(&mut api_client, config)
-                .await
-                .error_context("Failed to run stats subcommand")
-        }
-        DogstatsdSubcommand::Capture(config) => {
-            let mut api_client = get_api_client_or_exit(local_config).await;
-            handle_dogstatsd_capture(&mut api_client, config)
-                .await
-                .error_context("Failed to start DogStatsD capture")
-        }
-        DogstatsdSubcommand::Replay(config) => {
-            let mut api_client = get_api_client_or_exit(local_config).await;
-            let listeners = &local_config.local().domains.dogstatsd.listeners;
-            handle_dogstatsd_replay(&mut api_client, listeners, config)
-                .await
-                .error_context("Failed to replay DogStatsD traffic")
-        }
-        DogstatsdSubcommand::Top(config) => {
-            let config = config.validate();
-            let mut output = std::io::stdout();
-            if config.is_offline() {
-                handle_dogstatsd_top(None, config, &mut output).await
+        DogstatsdSubcommand::Stats(command) => {
+            let mut api_client = get_api_client(config).await?;
+            if stream_status {
+                tokio::select! {
+                    result = handle_dogstatsd_stats(&mut api_client, command, output, stream_status) => {
+                        result.error_context("Failed to run stats subcommand")
+                    }
+                    _ = cancellation.cancelled() => Ok(()),
+                }
             } else {
-                let mut api_client = get_api_client_or_exit(local_config).await;
-                handle_dogstatsd_top(Some(&mut api_client), config, &mut output).await
+                handle_dogstatsd_stats(&mut api_client, command, output, stream_status)
+                    .await
+                    .error_context("Failed to run stats subcommand")
+            }
+        }
+        DogstatsdSubcommand::Capture(command) => {
+            let mut api_client = get_api_client(config).await?;
+            if stream_status {
+                tokio::select! {
+                    result = handle_dogstatsd_capture(&mut api_client, command, output, stream_status) => {
+                        result.error_context("Failed to start DogStatsD capture")
+                    }
+                    _ = cancellation.cancelled() => Ok(()),
+                }
+            } else {
+                handle_dogstatsd_capture(&mut api_client, command, output, stream_status)
+                    .await
+                    .error_context("Failed to start DogStatsD capture")
+            }
+        }
+        DogstatsdSubcommand::Replay(command) => {
+            let mut api_client = get_api_client(config).await?;
+            handle_dogstatsd_replay(
+                &mut api_client,
+                &config.domains.dogstatsd.listeners,
+                command,
+                output,
+                cancellation,
+                stream_status,
+            )
+            .await
+            .error_context("Failed to replay DogStatsD traffic")
+        }
+        DogstatsdSubcommand::Top(command) => {
+            let command = command.validate();
+            if command.is_offline() {
+                if stream_status {
+                    handle_dogstatsd_top_offline_cancellable(command, output, cancellation).await
+                } else {
+                    handle_dogstatsd_top(None, command, output).await
+                }
+            } else {
+                let mut api_client = get_api_client(config).await?;
+                if stream_status {
+                    tokio::select! {
+                        result = handle_dogstatsd_top(Some(&mut api_client), command, output) => result,
+                        _ = cancellation.cancelled() => Ok(()),
+                    }
+                } else {
+                    handle_dogstatsd_top(Some(&mut api_client), command, output).await
+                }
             }
         }
         DogstatsdSubcommand::DumpContexts(_) => {
-            let mut api_client = get_api_client_or_exit(local_config).await;
-            let mut output = std::io::stdout();
-            handle_dogstatsd_dump_contexts(&mut api_client, &mut output).await
+            let mut api_client = get_api_client(config).await?;
+            if stream_status {
+                tokio::select! {
+                    result = handle_dogstatsd_dump_contexts(&mut api_client, output) => result,
+                    _ = cancellation.cancelled() => Ok(()),
+                }
+            } else {
+                handle_dogstatsd_dump_contexts(&mut api_client, output).await
+            }
         }
     }
 }
 
-async fn handle_dogstatsd_stats(api_client: &mut DataPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {
+async fn handle_dogstatsd_stats(
+    api_client: &mut DataPlaneAPIClient, cmd: StatsCommand, output: &mut (dyn Write + Send), stream_status: bool,
+) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
-    info!(
-        "Triggered statistics collection over the next {} seconds. Waiting for completion...",
-        cmd.collection_duration_secs
-    );
+    report_status(
+        output,
+        stream_status,
+        format!(
+            "Triggered statistics collection over the next {} seconds. Waiting for completion...",
+            cmd.collection_duration_secs
+        ),
+    )?;
 
     let response_body = api_client.dogstatsd_stats(cmd.collection_duration_secs).await?;
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
 
-    info!("Collected {} metric(s).", response.stats.len());
+    report_status(
+        output,
+        stream_status,
+        format!("Collected {} metric(s).", response.stats.len()),
+    )?;
 
     // Filter out any non-matching metrics if a filter was given.
     if let Some(filter) = cmd.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
-        info!("{} metric(s) remain after filtering.", response.stats.len());
+        report_status(
+            output,
+            stream_status,
+            format!("{} metric(s) remain after filtering.", response.stats.len()),
+        )?;
     }
 
     if let Some(limit) = cmd.limit {
-        info!("Output will be limited to the top {} metric(s).", limit);
+        report_status(
+            output,
+            stream_status,
+            format!("Output will be limited to the top {} metric(s).", limit),
+        )?;
     }
 
     match cmd.analysis_mode {
-        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response).await?,
-        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response).await?,
+        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response, output)?,
+        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response, output)?,
     }
 
     Ok(())
 }
 
 async fn handle_dogstatsd_capture(
-    api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand,
+    api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand, output: &mut (dyn Write + Send), stream_status: bool,
 ) -> Result<(), GenericError> {
-    info!("Starting a DogStatsD traffic capture session...");
+    report_status(
+        output,
+        stream_status,
+        "Starting a DogStatsD traffic capture session...".to_string(),
+    )?;
 
     let capture_duration = cmd.capture_duration.to_string();
     let capture_path = api_client
         .dogstatsd_capture(&capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
         .await?;
 
-    info!("Capture started. Data will be written to '{capture_path}'.");
+    report_status(
+        output,
+        stream_status,
+        format!("Capture started. Data will be written to '{capture_path}'."),
+    )?;
 
     Ok(())
 }
 
 async fn handle_dogstatsd_replay(
-    api_client: &mut DataPlaneAPIClient, listeners: &Listeners, cmd: ReplayCommand,
+    api_client: &mut DataPlaneAPIClient, listeners: &Listeners, cmd: ReplayCommand, output: &mut (dyn Write + Send),
+    cancel: &CancellationToken, stream_status: bool,
 ) -> Result<(), GenericError> {
     let target = dogstatsd_replay_target(listeners)?;
 
-    info!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display());
+    report_status(
+        output,
+        stream_status,
+        format!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display()),
+    )?;
 
     #[cfg(not(target_os = "linux"))]
     tracing::warn!(
@@ -276,31 +372,30 @@ async fn handle_dogstatsd_replay(
     let state = reader.read_state()?;
     let session_id = api_client.dogstatsd_replay_start_session(state.as_ref()).await?;
     if state.is_some() {
-        info!("Loaded captured DogStatsD tagger state into ADP.");
+        report_status(
+            output,
+            stream_status,
+            "Loaded captured DogStatsD tagger state into ADP.".to_string(),
+        )?;
     } else {
-        info!("Capture file contains no DogStatsD tagger state. Replayed packets will not receive captured tags.");
+        report_status(
+            output,
+            stream_status,
+            "Capture file contains no DogStatsD tagger state. Replayed packets will not receive captured tags."
+                .to_string(),
+        )?;
     }
     drop(reader);
 
-    let cancel = CancellationToken::new();
-    let cancel_on_signal = tokio::spawn({
-        let cancel = cancel.clone();
-        async move {
-            wait_for_shutdown_signal().await;
-            cancel.cancel();
-        }
-    });
-
-    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, target, cmd.loops, &cancel).await;
-    cancel_on_signal.abort();
+    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, target, cmd.loops, cancel).await;
 
     let finish_result = api_client.dogstatsd_replay_finish_session(&session_id).await;
     match (replay_result, finish_result) {
         (Ok(()), Ok(())) => {
             if cancel.is_cancelled() {
-                info!("DogStatsD replay interrupted.");
+                report_status(output, stream_status, "DogStatsD replay interrupted.".to_string())?;
             } else {
-                info!("DogStatsD replay completed.");
+                report_status(output, stream_status, "DogStatsD replay completed.".to_string())?;
             }
             Ok(())
         }
@@ -500,7 +595,9 @@ fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: Times
     }
 }
 
-async fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse<'_>) -> io::Result<()> {
+fn handle_stats_summary_analysis(
+    cmd: &StatsCommand, mut response: StatsResponse<'_>, output: &mut (dyn Write + Send),
+) -> std::io::Result<()> {
     let mut table = get_stylized_table();
     table.set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
 
@@ -533,10 +630,12 @@ async fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsRe
         ]));
     }
 
-    output_lines(table.lines()).await
+    output_lines(output, table.lines())
 }
 
-async fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: StatsResponse<'a>) -> io::Result<()> {
+fn handle_stats_cardinality_analysis<'a>(
+    cmd: &StatsCommand, response: StatsResponse<'a>, output: &mut (dyn Write + Send),
+) -> std::io::Result<()> {
     let mut table = get_stylized_table();
     table.set_header(["Metric", "Unique Contexts", "Highest Cardinality Tags (top 5)"]);
 
@@ -611,7 +710,7 @@ async fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: Sta
         ]));
     }
 
-    output_lines(table.lines()).await
+    output_lines(output, table.lines())
 }
 
 fn get_stylized_table() -> Table {
@@ -622,17 +721,114 @@ fn get_stylized_table() -> Table {
     table
 }
 
-async fn output_lines<I>(lines: I) -> io::Result<()>
+fn report_status(output: &mut (dyn Write + Send), stream_status: bool, message: String) -> std::io::Result<()> {
+    if stream_status {
+        writeln!(output, "{message}")
+    } else {
+        info!("{message}");
+        Ok(())
+    }
+}
+
+fn output_lines<I>(output: &mut (dyn Write + Send), lines: I) -> std::io::Result<()>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut stdout = io::stdout();
     for line in lines {
-        stdout.write_all(line.as_bytes()).await?;
-        stdout.write_all(b"\n").await?;
+        writeln!(output, "{line}")?;
     }
-    stdout.flush().await?;
-    Ok(())
+    output.flush()
+}
+
+/// Parses a typed remote-command request into the same command representation used by the local CLI.
+pub(crate) fn parse_remote_dogstatsd_command(
+    command_path: &[String], arguments: &Struct,
+) -> Result<DogstatsdCommand, GenericError> {
+    let [command] = command_path else {
+        return Err(generic_error!("expected exactly one DogStatsD command path segment"));
+    };
+
+    let mut argv = vec![command.clone()];
+    for (name, value) in &arguments.fields {
+        let expected_type = remote_argument_type(command, name)
+            .ok_or_else(|| generic_error!("unexpected argument `{name}` for DogStatsD command `{command}`"))?;
+        argv.push(format!("--{name}"));
+        argv.push(remote_argument_value(name, value.kind.as_ref(), expected_type)?);
+    }
+
+    let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
+    let command = DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], &argv_refs)
+        .map_err(|error| generic_error!("invalid arguments for DogStatsD command `{command}`: {}", error.output))?;
+    validate_remote_file_paths(&command)?;
+
+    Ok(command)
+}
+
+fn validate_remote_file_paths(command: &DogstatsdCommand) -> Result<(), GenericError> {
+    match &command.subcommand {
+        DogstatsdSubcommand::Replay(command) => {
+            validate_remote_regular_file("replay --file", &command.replay_file_path)
+        }
+        DogstatsdSubcommand::Top(command) => command
+            .offline_path()
+            .map_or(Ok(()), |path| validate_remote_regular_file("top --path", path)),
+        _ => Ok(()),
+    }
+}
+
+fn validate_remote_regular_file(argument: &str, path: &Path) -> Result<(), GenericError> {
+    let metadata = std::fs::metadata(path).with_error_context(|| {
+        format!(
+            "Remote DogStatsD {argument} must refer to a regular file; failed to inspect '{}'.",
+            path.display()
+        )
+    })?;
+    if metadata.is_file() {
+        Ok(())
+    } else {
+        Err(generic_error!(
+            "Remote DogStatsD {argument} must refer to a regular file; '{}' is not a regular file.",
+            path.display()
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RemoteArgumentType {
+    String,
+    Bool,
+    Uint,
+}
+
+fn remote_argument_type(command: &str, name: &str) -> Option<RemoteArgumentType> {
+    match (command, name) {
+        ("stats", "duration-secs" | "limit") | ("replay", "loops") | ("top", "num-metrics" | "num-tags") => {
+            Some(RemoteArgumentType::Uint)
+        }
+        ("capture", "compressed") => Some(RemoteArgumentType::Bool),
+        ("stats", "mode" | "sort-dir" | "filter")
+        | ("capture", "duration" | "path")
+        | ("replay", "file")
+        | ("top", "path") => Some(RemoteArgumentType::String),
+        _ => None,
+    }
+}
+
+fn remote_argument_value(
+    name: &str, kind: Option<&Kind>, expected_type: RemoteArgumentType,
+) -> Result<String, GenericError> {
+    match (expected_type, kind) {
+        (RemoteArgumentType::String, Some(Kind::StringValue(value))) => Ok(value.clone()),
+        (RemoteArgumentType::Bool, Some(Kind::BoolValue(value))) => Ok(value.to_string()),
+        (RemoteArgumentType::Uint, Some(Kind::NumberValue(value)))
+            if value.is_finite() && *value >= 0.0 && value.fract() == 0.0 && *value <= u64::MAX as f64 =>
+        {
+            Ok(format!("{value:.0}"))
+        }
+        (RemoteArgumentType::String, _) => Err(generic_error!("argument `{name}` must be a string")),
+        (RemoteArgumentType::Bool, _) => Err(generic_error!("argument `{name}` must be a boolean")),
+        (RemoteArgumentType::Uint, _) => Err(generic_error!("argument `{name}` must be an unsigned integer")),
+    }
 }
 
 #[cfg(test)]
@@ -640,11 +836,87 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::Listeners;
+    use prost_types::Value;
 
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
-        dogstatsd_socket_path, ReplayTarget, TimestampResolution,
+        dogstatsd_socket_path, parse_remote_dogstatsd_command, DogstatsdSubcommand, ReplayTarget, TimestampResolution,
     };
+
+    #[test]
+    fn remote_command_parser_requires_the_stats_duration() {
+        let error = parse_remote_dogstatsd_command(&["stats".to_string()], &prost_types::Struct::default())
+            .expect_err("stats duration is required");
+
+        assert!(error.to_string().contains("duration-secs"));
+    }
+
+    #[test]
+    fn remote_command_parser_preserves_capture_defaults() {
+        let command = parse_remote_dogstatsd_command(&["capture".to_string()], &prost_types::Struct::default())
+            .expect("capture accepts no optional flags");
+        let DogstatsdSubcommand::Capture(capture) = command.subcommand else {
+            panic!("expected capture command");
+        };
+
+        assert_eq!(capture.capture_duration.as_duration(), Duration::from_secs(60));
+        assert!(capture.compressed);
+        assert_eq!(capture.capture_path, None);
+    }
+
+    #[test]
+    fn remote_command_parser_rejects_top_path_that_is_not_a_regular_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let error =
+            parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", directory.path()))
+                .expect_err("remote top should reject a directory");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&directory.path().display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn remote_command_parser_rejects_replay_file_that_is_not_a_regular_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let error =
+            parse_remote_dogstatsd_command(&["replay".to_string()], &remote_file_argument("file", directory.path()))
+                .expect_err("remote replay should reject a directory");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&directory.path().display().to_string()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_command_parser_rejects_top_path_that_is_a_fifo() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let fifo = directory.path().join("context-dump.fifo");
+        create_fifo(&fifo);
+
+        let error = parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", &fifo))
+            .expect_err("remote top should reject a FIFO");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&fifo.display().to_string()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_command_parser_rejects_replay_file_that_is_a_fifo() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let fifo = directory.path().join("capture.fifo");
+        create_fifo(&fifo);
+
+        let error = parse_remote_dogstatsd_command(&["replay".to_string()], &remote_file_argument("file", &fifo))
+            .expect_err("remote replay should reject a FIFO");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&fifo.display().to_string()), "{error}");
+    }
 
     #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
@@ -666,6 +938,28 @@ mod tests {
 
         let clamped = compute_target_offset(50, 100, TimestampResolution::Nanoseconds);
         assert_eq!(clamped, Duration::ZERO);
+    }
+
+    fn remote_file_argument(name: &str, path: &std::path::Path) -> prost_types::Struct {
+        prost_types::Struct {
+            fields: [(
+                name.to_string(),
+                Value {
+                    kind: Some(prost_types::value::Kind::StringValue(path.display().to_string())),
+                },
+            )]
+            .into(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn create_fifo(path: &std::path::Path) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let path = CString::new(path.as_os_str().as_bytes()).expect("FIFO path should not contain a null byte");
+        let result = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+        assert_eq!(result, 0, "FIFO should be created: {}", std::io::Error::last_os_error());
     }
 
     fn listeners_with(socket: Option<&str>, pipe_name: Option<&str>) -> Listeners {

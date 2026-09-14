@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use argh::FromArgs;
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio_util::sync::CancellationToken;
 
 use crate::cli::utils::DataPlaneAPIClient;
 use crate::dogstatsd_contexts::read_report;
@@ -26,6 +27,10 @@ pub(super) struct TopCommand {
 }
 
 impl TopCommand {
+    pub(super) fn offline_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     pub(super) fn validate(self) -> ValidatedTopCommand {
         ValidatedTopCommand {
             path: self.path,
@@ -53,12 +58,12 @@ impl ValidatedTopCommand {
 #[argh(subcommand, name = "dump-contexts")]
 pub(super) struct DumpContextsCommand {}
 
-#[async_trait(?Send)]
-pub(super) trait DogStatsDContextDumpRequester {
+#[async_trait]
+pub(super) trait DogStatsDContextDumpRequester: Send {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError>;
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
         self.dogstatsd_contexts_dump().await
@@ -66,7 +71,8 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 }
 
 pub(super) async fn handle_dogstatsd_top(
-    requester: Option<&mut dyn DogStatsDContextDumpRequester>, cmd: ValidatedTopCommand, output: &mut dyn Write,
+    requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: ValidatedTopCommand,
+    output: &mut (dyn Write + Send),
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
         Some(path) => path,
@@ -82,9 +88,42 @@ pub(super) async fn handle_dogstatsd_top(
         }
     };
 
-    let report = read_report(&path)
+    write_rendered_report(output, &path, render_report(&path, cmd.num_metrics, cmd.num_tags)?)
+}
+
+pub(super) async fn handle_dogstatsd_top_offline_cancellable(
+    cmd: ValidatedTopCommand, output: &mut (dyn Write + Send), cancellation: &CancellationToken,
+) -> Result<(), GenericError> {
+    let path = cmd
+        .path
+        .ok_or_else(|| generic_error!("Offline DogStatsD top requires a context dump path."))?;
+    if cancellation.is_cancelled() {
+        return Ok(());
+    }
+
+    let metric_limit = cmd.num_metrics;
+    let tag_limit = cmd.num_tags;
+    let rendered = tokio::select! {
+        result = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || render_report(&path, metric_limit, tag_limit)
+        }) => result.map_err(|error| generic_error!("DogStatsD context report rendering task failed: {error}"))??,
+        _ = cancellation.cancelled() => return Ok(()),
+    };
+    if cancellation.is_cancelled() {
+        return Ok(());
+    }
+
+    write_rendered_report(output, &path, rendered)
+}
+
+fn render_report(path: &Path, metric_limit: usize, tag_limit: usize) -> Result<String, GenericError> {
+    let report = read_report(path)
         .with_error_context(|| format!("Failed to read DogStatsD context report from '{}'.", path.display()))?;
-    let rendered = report.render(cmd.num_metrics, cmd.num_tags);
+    Ok(report.render(metric_limit, tag_limit))
+}
+
+fn write_rendered_report(output: &mut (dyn Write + Send), path: &Path, rendered: String) -> Result<(), GenericError> {
     output
         .write_all(rendered.as_bytes())
         .with_error_context(|| format!("Failed to write DogStatsD context report for '{}'.", path.display()))?;
@@ -95,7 +134,7 @@ pub(super) async fn handle_dogstatsd_top(
 }
 
 pub(super) async fn handle_dogstatsd_dump_contexts(
-    requester: &mut dyn DogStatsDContextDumpRequester, output: &mut dyn Write,
+    requester: &mut (dyn DogStatsDContextDumpRequester + Send), output: &mut (dyn Write + Send),
 ) -> Result<(), GenericError> {
     let path = requester
         .request_context_dump()
@@ -121,10 +160,11 @@ mod tests {
     use argh::FromArgs as _;
     use async_trait::async_trait;
     use saluki_error::{generic_error, GenericError};
+    use tokio_util::sync::CancellationToken;
 
     use super::{
-        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DogStatsDContextDumpRequester, TopCommand,
-        ValidatedTopCommand,
+        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, handle_dogstatsd_top_offline_cancellable,
+        DogStatsDContextDumpRequester, TopCommand, ValidatedTopCommand,
     };
     use crate::cli::dogstatsd::{DogstatsdCommand, DogstatsdSubcommand};
 
@@ -223,6 +263,24 @@ mod tests {
 
         assert_eq!(requester.calls, 0);
         assert_eq!(output.text(), GOLDEN_REPORT);
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_top_offline_cancellable_does_not_render_after_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut output = RecordingWriter::default();
+
+        handle_dogstatsd_top_offline_cancellable(
+            top_command(Some(PathBuf::from("missing-context-dump.ndjson")), 10, None),
+            &mut output,
+            &cancellation,
+        )
+        .await
+        .expect("cancelled offline top should not read or render the artifact");
+
+        assert_eq!(output.text(), "");
+        assert!(output.flushes.is_empty());
     }
 
     #[tokio::test]
@@ -411,7 +469,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl DogStatsDContextDumpRequester for FakeRequester {
         async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
             self.calls += 1;
