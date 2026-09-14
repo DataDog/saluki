@@ -19,6 +19,7 @@ use stringtheory::MetaString;
 
 use super::{
     listener::{ConnectionOrientedListener, Listener},
+    util::retry::ExponentialBackoff,
     ListenAddress,
 };
 
@@ -26,14 +27,15 @@ use super::{
 ///
 /// Creates a [`Listener`], which handles both connection-oriented and connectionless address families.
 ///
-/// Only the listen address identifies the resource. Tuning -- the UDP socket count, the receive buffer size -- is
-/// applied when the listener is first created and has no effect on a later acquisition of the same address, since the
-/// sockets are already bound. The registry logs a warning if a subsequent specification disagrees.
+/// Only the listen address identifies the resource. Tuning -- the UDP socket count, the receive buffer size, the accept
+/// backoff -- is applied when the listener is first created and has no effect on a later acquisition of the same
+/// address, since the sockets are already bound. The registry logs a warning if a subsequent specification disagrees.
 #[derive(Clone, Debug)]
 pub struct SocketSpecification {
     address: ListenAddress,
     udp_streams: Option<NonZeroUsize>,
     receive_buffer_size: Option<usize>,
+    accept_backoff: Option<ExponentialBackoff>,
 }
 
 impl SocketSpecification {
@@ -43,6 +45,7 @@ impl SocketSpecification {
             address,
             udp_streams: None,
             receive_buffer_size: None,
+            accept_backoff: None,
         }
     }
 
@@ -61,6 +64,14 @@ impl SocketSpecification {
     /// `None` keeps the operating system default.
     pub fn with_receive_buffer_size(mut self, receive_buffer_size: Option<usize>) -> Self {
         self.receive_buffer_size = receive_buffer_size;
+        self
+    }
+
+    /// Sets how long the listener waits between accepts when the system is out of resources.
+    ///
+    /// `None` keeps the listener's default. See [`Listener::with_accept_backoff`].
+    pub fn with_accept_backoff(mut self, accept_backoff: Option<ExponentialBackoff>) -> Self {
+        self.accept_backoff = accept_backoff;
         self
     }
 
@@ -87,9 +98,14 @@ impl ResourceSpecification for SocketSpecification {
     }
 
     async fn create(&self) -> Result<Self::Resource, GenericError> {
-        let listener = Listener::from_listen_address(self.address.clone(), self.udp_streams).await?;
+        let listener = Listener::from_listen_address(self.address.clone(), self.udp_streams)
+            .await?
+            .with_receive_buffer_size(self.receive_buffer_size);
 
-        Ok(listener.with_receive_buffer_size(self.receive_buffer_size))
+        Ok(match self.accept_backoff.clone() {
+            Some(accept_backoff) => listener.with_accept_backoff(accept_backoff),
+            None => listener,
+        })
     }
 
     fn reset(listener: &mut Self::Resource) {

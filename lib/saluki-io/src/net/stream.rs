@@ -106,11 +106,10 @@ impl AsyncWrite for Connection {
     }
 }
 
-/// A connectionless socket.
+/// A connectionless socket, shared with the listener that yielded it.
 ///
 /// This type wraps network sockets that operate in a connectionless manner, such as UDP or Unix domain sockets in
 /// datagram mode.
-/// A connectionless socket, shared with the listener that yielded it.
 ///
 /// The socket is held behind an `Arc` rather than owned outright: for connectionless families the bound socket *is* the
 /// stream, so moving it out would take it away from the listener, and a listener owned by a
