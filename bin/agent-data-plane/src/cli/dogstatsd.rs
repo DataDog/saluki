@@ -757,8 +757,40 @@ pub(crate) fn parse_remote_dogstatsd_command(
     }
 
     let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
-    DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], &argv_refs)
-        .map_err(|error| generic_error!("invalid arguments for DogStatsD command `{command}`: {}", error.output))
+    let command = DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], &argv_refs)
+        .map_err(|error| generic_error!("invalid arguments for DogStatsD command `{command}`: {}", error.output))?;
+    validate_remote_file_paths(&command)?;
+
+    Ok(command)
+}
+
+fn validate_remote_file_paths(command: &DogstatsdCommand) -> Result<(), GenericError> {
+    match &command.subcommand {
+        DogstatsdSubcommand::Replay(command) => {
+            validate_remote_regular_file("replay --file", &command.replay_file_path)
+        }
+        DogstatsdSubcommand::Top(command) => command
+            .offline_path()
+            .map_or(Ok(()), |path| validate_remote_regular_file("top --path", path)),
+        _ => Ok(()),
+    }
+}
+
+fn validate_remote_regular_file(argument: &str, path: &Path) -> Result<(), GenericError> {
+    let metadata = std::fs::metadata(path).with_error_context(|| {
+        format!(
+            "Remote DogStatsD {argument} must refer to a regular file; failed to inspect '{}'.",
+            path.display()
+        )
+    })?;
+    if metadata.is_file() {
+        Ok(())
+    } else {
+        Err(generic_error!(
+            "Remote DogStatsD {argument} must refer to a regular file; '{}' is not a regular file.",
+            path.display()
+        ))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -804,6 +836,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::Listeners;
+    use prost_types::Value;
 
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
@@ -832,6 +865,60 @@ mod tests {
     }
 
     #[test]
+    fn remote_command_parser_rejects_top_path_that_is_not_a_regular_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let error =
+            parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", directory.path()))
+                .expect_err("remote top should reject a directory");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&directory.path().display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn remote_command_parser_rejects_replay_file_that_is_not_a_regular_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let error =
+            parse_remote_dogstatsd_command(&["replay".to_string()], &remote_file_argument("file", directory.path()))
+                .expect_err("remote replay should reject a directory");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&directory.path().display().to_string()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_command_parser_rejects_top_path_that_is_a_fifo() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let fifo = directory.path().join("context-dump.fifo");
+        create_fifo(&fifo);
+
+        let error = parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", &fifo))
+            .expect_err("remote top should reject a FIFO");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&fifo.display().to_string()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_command_parser_rejects_replay_file_that_is_a_fifo() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let fifo = directory.path().join("capture.fifo");
+        create_fifo(&fifo);
+
+        let error = parse_remote_dogstatsd_command(&["replay".to_string()], &remote_file_argument("file", &fifo))
+            .expect_err("remote replay should reject a FIFO");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("regular file"), "{error}");
+        assert!(error.contains(&fifo.display().to_string()), "{error}");
+    }
+
+    #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
         assert_eq!(default_capture_duration().as_duration(), Duration::from_secs(60));
     }
@@ -851,6 +938,28 @@ mod tests {
 
         let clamped = compute_target_offset(50, 100, TimestampResolution::Nanoseconds);
         assert_eq!(clamped, Duration::ZERO);
+    }
+
+    fn remote_file_argument(name: &str, path: &std::path::Path) -> prost_types::Struct {
+        prost_types::Struct {
+            fields: [(
+                name.to_string(),
+                Value {
+                    kind: Some(prost_types::value::Kind::StringValue(path.display().to_string())),
+                },
+            )]
+            .into(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn create_fifo(path: &std::path::Path) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let path = CString::new(path.as_os_str().as_bytes()).expect("FIFO path should not contain a null byte");
+        let result = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+        assert_eq!(result, 0, "FIFO should be created: {}", std::io::Error::last_os_error());
     }
 
     fn listeners_with(socket: Option<&str>, pipe_name: Option<&str>) -> Listeners {
