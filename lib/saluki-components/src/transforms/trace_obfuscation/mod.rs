@@ -94,10 +94,17 @@ impl TraceObfuscation {
     }
 
     fn obfuscate_http_span(&mut self, span: &mut Span) {
-        let url_value = match span.attributes.get(tags::HTTP_URL).and_then(AttributeValue::as_string) {
-            Some(v) if !v.is_empty() => v.as_ref().to_owned(),
+        let url = match span.attributes.get(tags::HTTP_URL).and_then(AttributeValue::as_string) {
+            Some(v) if !v.is_empty() => v,
             _ => return,
         };
+
+        // Screen the borrowed URL first: obfuscating it needs an owned copy to release the borrow on the span, and most
+        // URLs have nothing to obfuscate.
+        if !self.obfuscator.should_obfuscate_url(url) {
+            return;
+        }
+        let url_value = url.as_ref().to_owned();
 
         if let Some(obfuscated) = self.obfuscator.obfuscate_url(&url_value) {
             span.attributes

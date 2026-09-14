@@ -1,0 +1,8 @@
+fixes:
+  - |
+    Fix HTTP URL obfuscation of trace spans so it matches the Datadog Agent in three cases. With
+    ``apm_config.obfuscation.http.remove_paths_with_digits`` enabled, a path segment holding a
+    percent-encoded digit such as ``%32`` is now redacted. A URL that cannot be parsed is no longer
+    replaced with ``?`` when only userinfo removal applies; it keeps everything but its credentials.
+    A relative URL such as ``/users/123/profile`` now has its digit segments redacted instead of
+    being replaced with ``?``, so the endpoint survives in the trace.

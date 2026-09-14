@@ -696,6 +696,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "borrow-or-share"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -999,6 +1005,27 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "const_format"
+version = "0.2.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4481a617ad9a412be3b97c5d403fef8ed023103368908b9c50af598ff467cc1e"
+dependencies = [
+ "const_format_proc_macros",
+ "konst",
+]
+
+[[package]]
+name = "const_format_proc_macros"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d57c2eccfb16dbac1f4e61e206105db5820c9d26c3c472bc17c774259ef7744"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-xid",
+]
 
 [[package]]
 name = "containerd-protos"
@@ -1718,6 +1745,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluent-uri"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc74ac4d8359ae70623506d512209619e5cf8f347124910440dbc221714b328e"
+dependencies = [
+ "borrow-or-share",
+ "ref-cast",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1880,8 +1917,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3349,6 +3388,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "konst"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "128133ed7824fcd73d6e7b17957c5eb7bacb885649bd8c69708b2331a10bcefb"
+dependencies = [
+ "konst_macro_rules",
+]
+
+[[package]]
+name = "konst_macro_rules"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
+
+[[package]]
 name = "kstring"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3463,6 +3517,122 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libdd-capabilities"
+version = "3.0.1"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "http",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "libdd-common"
+version = "6.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cc",
+ "const_format",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "http",
+ "libc",
+ "nix 0.29.0",
+ "pin-project",
+ "regex",
+ "serde",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "libdd-tinybytes"
+version = "1.1.3"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "libdd-trace-normalization"
+version = "4.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "anyhow",
+ "libdd-trace-protobuf",
+]
+
+[[package]]
+name = "libdd-trace-obfuscation"
+version = "8.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "anyhow",
+ "fluent-uri",
+ "libdd-common",
+ "libdd-trace-protobuf",
+ "libdd-trace-utils",
+ "log",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "libdd-trace-protobuf"
+version = "5.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "prost",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "libdd-trace-utils"
+version = "12.0.0"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "crossbeam-channel",
+ "futures",
+ "getrandom 0.2.17",
+ "hex",
+ "http",
+ "http-body",
+ "http-body-util",
+ "indexmap",
+ "itoa",
+ "libdd-capabilities",
+ "libdd-common",
+ "libdd-tinybytes",
+ "libdd-trace-normalization",
+ "libdd-trace-protobuf",
+ "prost",
+ "rand 0.8.6",
+ "rmp",
+ "rmp-serde",
+ "rmpv",
+ "rustc-hash 2.1.2",
+ "serde",
+ "serde-transcode",
+ "serde_json",
+ "thin-vec",
+ "thread_local",
+ "tracing",
+]
 
 [[package]]
 name = "libloading"
@@ -3783,6 +3953,18 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rand 0.8.6",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -4769,6 +4951,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4877,6 +5079,15 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "rmpv"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a4e1d4b9b938a26d2996af33229f0ca0956c652c1375067f0b45291c1df8417"
+dependencies = [
+ "rmp",
 ]
 
 [[package]]
@@ -5185,6 +5396,7 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
+ "libdd-trace-obfuscation",
  "lru-slab",
  "memchr",
  "metrics",
@@ -5597,6 +5809,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-transcode"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "590c0e25c2a5bb6e85bf5c1bce768ceb86b316e7a01bdf07d2cb4ec2271990e2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde-value"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5666,6 +5887,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -6149,6 +6371,12 @@ dependencies = [
  "structmeta",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "thin-vec"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79def32ffcd477db1ff26f76dab9e3a91f0bd42a85ca96577089b24623056f9d"
 
 [[package]]
 name = "thiserror"
@@ -6941,7 +7169,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ba782755fc073877e567c2253c0be48e4aa9a254c232d36d3985dfae0bd5205"
 dependencies = [
  "libc",
- "nix",
+ "nix 0.31.3",
 ]
 
 [[package]]
