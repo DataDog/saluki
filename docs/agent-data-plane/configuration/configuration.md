@@ -729,6 +729,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `memory_mode`                                                   | Memory bounds validation mode                                               | disabled       |
 | `memory_slop_factor`                                            | Memory accounting slop fraction                                             | 0.25           |
 | `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list                                             | []             |
+| `metrics_endpoint_routing_experimental.metric_allowlist`        | Per-endpoint series metric allow lists                                      | {}             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts                                    |                |
 | `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts                                             |                |
 | `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                                                     |                |
@@ -738,6 +739,46 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                                         |                |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity                                              |                |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                                                     |                |
+
+### `metrics_endpoint_routing_experimental.metric_allowlist`
+
+ADP can route a selected subset of series metrics to the primary intake or to specific additional endpoints. This experimental routing is independent of Multi-Region Failover.
+
+Key `metrics_endpoint_routing_experimental.metric_allowlist` by the exact configured endpoint string. For the primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure additional destinations and their API keys through `additional_endpoints`, and use those exact map keys. The allowlist filters only series: counters, rates, gauges, and sets. Histogram and distribution sketch payloads retain ordinary delivery. An empty endpoint allowlist sends no series to that endpoint. Endpoints absent from the policy map retain their ordinary behavior.
+
+ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies are read when the topology is built, so changing the map requires an ADP restart. An absent or empty policy map leaves ordinary endpoint routing unchanged.
+
+To filter the primary while leaving an additional endpoint on its ordinary full stream:
+
+```yaml
+api_key: <primary-api-key>
+dd_url: https://app.us5.datadoghq.com
+additional_endpoints:
+  https://app.datadoghq.com:
+    - <secondary-api-key>
+metrics_endpoint_routing_experimental:
+  metric_allowlist:
+    https://app.us5.datadoghq.com:
+      - allowed.metric
+```
+
+To leave the primary on its ordinary full stream while filtering only additional endpoints, omit the primary URL from the policy map:
+
+```yaml
+api_key: <primary-api-key>
+dd_url: https://app.us5.datadoghq.com
+additional_endpoints:
+  https://app.datadoghq.com:
+    - <us1-api-key>
+  https://app.datadoghq.eu:
+    - <eu1-api-key>
+metrics_endpoint_routing_experimental:
+  metric_allowlist:
+    https://app.datadoghq.com:
+      - critical.slo
+    https://app.datadoghq.eu:
+      - billing.latency
+```
 
 ### `data_plane.apm.*`
 

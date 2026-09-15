@@ -26,8 +26,8 @@ pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperPr
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
-mod mrf_gateway;
-pub use self::mrf_gateway::MrfMetricsGatewayConfiguration;
+mod metric_filter;
+pub use self::metric_filter::MetricFilterConfiguration;
 
 mod trace_sampler;
 pub use self::trace_sampler::TraceSamplerConfiguration;

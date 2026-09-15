@@ -1,0 +1,6 @@
+features:
+  - |
+    Add the experimental ``metrics_endpoint_routing_experimental.metric_allowlist`` setting
+    for endpoint-aware metric routing. Selected primary or additional endpoints
+    receive only exact-name allowlisted series metrics. Sketch delivery is unchanged,
+    and endpoints absent from the policy retain their ordinary behavior.

@@ -21,7 +21,10 @@ use saluki_app::{
     util::wait_for_shutdown_signal,
 };
 use saluki_components::{
-    config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
+    config::{
+        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
+        MrfConfiguration,
+    },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
@@ -29,7 +32,7 @@ use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration,
+        DatadogTraceConfiguration, MetricsEndpointRouting,
     },
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
@@ -42,7 +45,7 @@ use saluki_components::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
         AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        MetricFilterConfiguration, ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration,
         TraceTagReplacerConfiguration,
     },
 };
@@ -457,15 +460,13 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         }
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    let endpoint_routing = MetricsEndpointRoutingConfiguration::from_configuration(
+        &config.domains.metrics_endpoint_routing.metric_allowlists,
+        &shared.endpoints,
+    )?;
+    blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
 
-    blueprint
-        // Components.
-        .add_transform("metrics_enrich", metrics_enrich_config)?
-        .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics, then forwarding.
-        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
-
+    add_metrics_output_pipelines_to_blueprint(blueprint, shared, &endpoint_routing)?;
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
@@ -491,7 +492,7 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(
+    let mrf_gateway_config = MetricFilterConfiguration::for_mrf(
         mrf_config.is_enabled(),
         config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
     );
@@ -516,6 +517,38 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             "mrf_metrics_encode",
             "mrf_dd_out",
         ])?;
+
+    Ok(())
+}
+
+// Build both sides of series filtering together: ordinary series exclude selected endpoints, and each filtered
+// stream targets only its policy's endpoints. Sketches keep ordinary routing through dd_metrics_encode.
+fn add_metrics_output_pipelines_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, routing: &MetricsEndpointRoutingConfiguration,
+) -> Result<(), GenericError> {
+    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    if !routing.selected_endpoints().is_empty() {
+        dd_metrics_config = dd_metrics_config.with_endpoint_routing(MetricsEndpointRouting::AllExcept(
+            routing.selected_endpoints().iter().cloned().collect(),
+        ));
+    }
+    blueprint
+        .add_encoder("dd_metrics_encode", dd_metrics_config)?
+        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+
+    // Each policy group needs unique component IDs; indices keep endpoint names out of those IDs.
+    for (index, policy) in routing.policy_groups().iter().enumerate() {
+        let filter_id = format!("endpoint_allowlist_filter_{index}");
+        let encoder_id = format!("endpoint_allowlist_encode_{index}");
+        let filter_config = MetricFilterConfiguration::for_series_allowlist(policy.metric_allowlist.clone());
+        let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
+            .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
+
+        blueprint
+            .add_transform(filter_id.as_str(), filter_config)?
+            .add_encoder(encoder_id.as_str(), metrics_config)?
+            .connect_components_in_order(["metrics_enrich", filter_id.as_str(), encoder_id.as_str(), "dd_out"])?;
+    }
 
     Ok(())
 }

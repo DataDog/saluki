@@ -1,4 +1,4 @@
-use std::{collections::HashMap, collections::VecDeque, ops::Range, time::Duration};
+use std::{collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, time::Duration};
 
 use agent_data_plane_config::shared::{SharedConfiguration, V3SeriesMode};
 use async_trait::async_trait;
@@ -44,11 +44,11 @@ use crate::{
             V3EndpointConfig,
         },
         io::RB_BUFFER_CHUNK_SIZE,
-        protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
+        protocol::{MetricsEndpointRouting, MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
         telemetry::ComponentTelemetry,
-        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
-        METRICS_SKETCHES_V3_PATH,
+        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V1_PATH,
+        METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH, METRICS_SKETCHES_V3_PATH,
     },
     encoders::datadog::metrics::v2::MetricsEndpointEncoder,
 };
@@ -225,6 +225,9 @@ pub struct DatadogMetricsConfiguration {
 
     /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
     additional_endpoints: HashMap<String, Vec<String>>,
+
+    /// Optional targeting applied only to series payloads emitted by this encoder.
+    endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -251,12 +254,19 @@ impl DatadogMetricsConfiguration {
             opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
             primary_endpoint: endpoints.primary_endpoint(),
             additional_endpoints: endpoints.additional_endpoints.clone(),
+            endpoint_routing: None,
         }
     }
 
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         self.additional_tags = Some(additional_tags);
+        self
+    }
+
+    /// Restricts series payloads to the configured endpoint routing policy. Sketch routing is unchanged.
+    pub fn with_endpoint_routing(mut self, endpoint_routing: MetricsEndpointRouting) -> Self {
+        self.endpoint_routing = Some(Arc::new(endpoint_routing));
         self
     }
 
@@ -310,14 +320,14 @@ impl DatadogMetricsConfiguration {
             let metrics_primary = ResolvedEndpoint::from_raw_endpoint(metrics_primary_url, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
             let settings = self.endpoint_v3_settings(&metrics_primary, Some(metrics_primary_v3_override));
-            if predicate(&settings) {
+            if self.routes_to_endpoint(&metrics_primary) && predicate(&settings) {
                 return Ok(true);
             }
         } else {
             let primary = ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
             let settings = self.endpoint_v3_settings(&primary, None);
-            if predicate(&settings) {
+            if self.routes_to_endpoint(&primary) && predicate(&settings) {
                 return Ok(true);
             }
         }
@@ -326,12 +336,18 @@ impl DatadogMetricsConfiguration {
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
             let settings = self.endpoint_v3_settings(&endpoint, None);
-            if predicate(&settings) {
+            if self.routes_to_endpoint(&endpoint) && predicate(&settings) {
                 return Ok(true);
             }
         }
 
         Ok(false)
+    }
+
+    fn routes_to_endpoint(&self, endpoint: &ResolvedEndpoint) -> bool {
+        self.endpoint_routing
+            .as_ref()
+            .is_none_or(|routing| routing.should_route_to(endpoint.configured_endpoint()))
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
@@ -477,6 +493,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             telemetry,
             flush_timeout,
             log_payloads: self.log_payloads,
+            endpoint_routing: self.endpoint_routing.clone(),
         }))
     }
 }
@@ -514,6 +531,7 @@ pub struct DatadogMetrics {
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
     log_payloads: bool,
+    endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
 struct V3RuntimeConfig {
@@ -535,6 +553,7 @@ impl Encoder for DatadogMetrics {
             telemetry,
             flush_timeout,
             log_payloads,
+            endpoint_routing,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -572,6 +591,7 @@ impl Encoder for DatadogMetrics {
                 _ = health.live() => continue,
                 maybe_payload = payloads_rx.recv() => match maybe_payload {
                     Some(payload) => {
+                        let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
                         if let Err(e) = context.dispatcher().dispatch(payload).await {
                             error!("Failed to dispatch payload: {}", e);
                         }
@@ -593,8 +613,11 @@ impl Encoder for DatadogMetrics {
                                 permit = events_tx.reserve() => break permit
                                     .error_context("Failed to reserve capacity for event buffer.")?,
                                 maybe_payload = payloads_rx.recv() => match maybe_payload {
-                                    Some(payload) => if let Err(e) = context.dispatcher().dispatch(payload).await {
-                                        error!("Failed to dispatch payload: {}", e);
+                                    Some(payload) => {
+                                        let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
+                                        if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                            error!("Failed to dispatch payload: {}", e);
+                                        }
                                     },
 
                                     // Our payloads channel is gone, which means our request builder task went away unexpectedly.
@@ -615,6 +638,7 @@ impl Encoder for DatadogMetrics {
 
         // Continue draining the payloads receiver until it is closed.
         while let Some(payload) = payloads_rx.recv().await {
+            let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
             if let Err(e) = context.dispatcher().dispatch(payload).await {
                 error!("Failed to dispatch payload: {}", e);
             }
@@ -625,6 +649,28 @@ impl Encoder for DatadogMetrics {
         debug!("Datadog Metrics encoder stopped.");
 
         Ok(())
+    }
+}
+
+fn apply_endpoint_routing(payload: Payload, endpoint_routing: Option<&Arc<MetricsEndpointRouting>>) -> Payload {
+    let Some(endpoint_routing) = endpoint_routing else {
+        return payload;
+    };
+
+    match payload {
+        Payload::Http(http_payload) => {
+            let (mut metadata, request) = http_payload.into_parts();
+            // Restrict series only; sketches must retain normal endpoint delivery.
+            // V2-only payloads can lack MetricsPayloadInfo, so use the request path to distinguish them.
+            if matches!(
+                request.uri().path(),
+                METRICS_SERIES_V1_PATH | METRICS_SERIES_V2_PATH | METRICS_SERIES_V3_BETA_PATH | METRICS_SERIES_V3_PATH
+            ) {
+                metadata.set(Arc::clone(endpoint_routing));
+            }
+            Payload::Http(HttpPayload::new(metadata, request))
+        }
+        payload => payload,
     }
 }
 
@@ -1799,6 +1845,47 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_routing_restricts_series_but_preserves_sketch_delivery() {
+        use crate::common::datadog::METRICS_SKETCHES_PATH;
+
+        for routing in [
+            MetricsEndpointRouting::AllExcept(["https://selected.example.com".to_string()].into()),
+            MetricsEndpointRouting::Only(["https://selected.example.com".to_string()].into()),
+        ] {
+            let routing = Arc::new(routing);
+            for (path, info) in [
+                (METRICS_SERIES_V1_PATH, MetricsPayloadInfo::v2_series()),
+                (METRICS_SERIES_V2_PATH, MetricsPayloadInfo::v2_series()),
+                (METRICS_SERIES_V3_BETA_PATH, MetricsPayloadInfo::v3_series()),
+                (METRICS_SERIES_V3_PATH, MetricsPayloadInfo::v3_series()),
+                (METRICS_SKETCHES_PATH, MetricsPayloadInfo::v2_sketches()),
+                (METRICS_SKETCHES_V3_PATH, MetricsPayloadInfo::v3_sketches()),
+            ] {
+                for tagged in [false, true] {
+                    let mut metadata = PayloadMetadata::from_event_count(1);
+                    if tagged {
+                        metadata.set(info);
+                    }
+                    let body = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE).freeze();
+                    let request = Request::builder().uri(path).body(body).unwrap();
+                    let payload = Payload::Http(HttpPayload::new(metadata, request));
+                    let routed = apply_endpoint_routing(payload, Some(&routing))
+                        .try_into_http_payload()
+                        .unwrap();
+                    let (metadata, _) = routed.into_parts();
+                    let payload_routing = metadata.get::<Arc<MetricsEndpointRouting>>();
+                    if info.is_sketch() {
+                        assert!(payload_routing.is_none());
+                    } else {
+                        assert!(Arc::ptr_eq(payload_routing.unwrap(), &routing));
+                    }
+                    assert_eq!(metadata.get::<MetricsPayloadInfo>(), tagged.then_some(&info));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn v3_api_settings_come_from_resolved_configuration() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_api.compression_level = 7;
@@ -1872,6 +1959,32 @@ mod tests {
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn endpoint_routing_limits_protocol_selection_to_payload_targets() {
+        // The primary Datadog endpoint is V3-authoritative under `datadog_only`, while the custom additional endpoint
+        // stays on V2. Each routing direction therefore proves that primary and additional endpoints can both be
+        // selected or excluded.
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://custom.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]);
+
+        let primary = shared.endpoints.primary_endpoint();
+        let additional = "https://custom.example.com".to_string();
+        for (routing, expects_v2) in [
+            (MetricsEndpointRouting::AllExcept([additional.clone()].into()), false),
+            (MetricsEndpointRouting::Only([additional].into()), true),
+            (MetricsEndpointRouting::AllExcept([primary.clone()].into()), true),
+            (MetricsEndpointRouting::Only([primary].into()), false),
+        ] {
+            let config = metrics_config_from(&shared).with_endpoint_routing(routing);
+            assert_eq!(config.requires_v2_series(false).unwrap(), expects_v2);
+            assert_eq!(config.requires_v3_series(false).unwrap(), !expects_v2);
+        }
     }
 
     #[test]

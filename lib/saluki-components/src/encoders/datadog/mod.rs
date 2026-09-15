@@ -6,6 +6,7 @@ pub use self::service_checks::DatadogServiceChecksConfiguration;
 
 mod metrics;
 pub use self::metrics::DatadogMetricsConfiguration;
+pub use crate::common::datadog::protocol::MetricsEndpointRouting;
 
 mod logs;
 pub use self::logs::DatadogLogsConfiguration;
