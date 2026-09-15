@@ -33,6 +33,8 @@ use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
+mod peer_ip_quantize;
+
 mod peer_tags;
 
 mod span_concentrator;
