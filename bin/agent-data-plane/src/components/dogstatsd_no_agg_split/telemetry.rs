@@ -1,9 +1,4 @@
 //! Telemetry for the DogStatsD no-aggregation-pipeline split transform.
-//!
-//! The passthrough metrics keep their original `aggregate_`-prefixed names, even though they're no longer emitted by
-//! the aggregate transform, so that existing dashboards and the Datadog Agent telemetry remappings keep working. The
-//! `component_id` tag on them does change, from `dsd_agg` to `dsd_no_agg_split`: see
-//! `crate::state::metrics::rules::get_aggregation_remappings`.
 
 use std::time::Duration;
 

@@ -5,23 +5,7 @@
 //! batched, on the `"passthrough"` output; metrics with no timestamp are forwarded unchanged on the default output
 //! to continue through tag filtering and aggregation as normal.
 //!
-//! This split exists as its own transform, rather than living inside `dsd_agg` (where it originated), specifically
-//! so that it can run *before* `dogstatsd_tag_filterlist`. Both halves of that transform exist to strip tags so that
-//! samples differing only in a filtered tag get merged into a single aggregated context: `metric_tag_filterlist`
-//! removes whole tags, and `metric_tag_value_allowlist` removes or rewrites tag values. That merging only happens
-//! during aggregation, so applying either to passthrough/timestamped metrics, which are never aggregated, would
-//! discard tags for nothing. The Datadog Agent likewise leaves its no-aggregation pipeline unfiltered.
-//!
-//! Splitting first, rather than teaching `dogstatsd_tag_filterlist` to skip timestamped metrics in place, is what
-//! makes that exclusion exact. A single `Metric` can hold both timestamped and non-timestamped values, and the
-//! filterlist rewrites the context those values share, so in-place skipping can only choose between filtering all of
-//! a mixed metric or none of it. Splitting the values into two metrics first gives each half the treatment it should
-//! get: the timestamped half keeps every tag, and the remainder is filtered and aggregated as normal. That exactness
-//! is why this is a separate transform and not a few lines inside the filterlist.
-//!
-//! The transform is only wired into the topology when the Datadog `dogstatsd_no_aggregation_pipeline` key is enabled
-//! (the default). When it's disabled there is nothing to split out -- every metric is aggregated -- so the component
-//! is left out entirely rather than sitting in the hot path as a pure forwarder.
+//! Only wired into the topology when the Datadog `dogstatsd_no_aggregation_pipeline` key is enabled (the default).
 
 use std::{
     num::NonZeroU64,

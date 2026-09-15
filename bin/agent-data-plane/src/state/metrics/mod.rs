@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn rar_rules_match_the_component_that_emits_them() {
+    fn rar_rules_match_no_agg_split_passthrough_component() {
         // The passthrough counters are emitted by the `dsd_no_agg_split` transform, which is where the
         // timestamp-based split lives. Component metrics carry a `component_id` tag naming their emitting
         // component, and a rule only matches when every required tag is present, so moving the split between

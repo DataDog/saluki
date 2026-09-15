@@ -31,8 +31,6 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
         )
         .with_additional_tags(["data_type:dogstatsd_metrics"])
         .with_help_text("Amount of metrics/services_checks/events processed by the aggregator"),
-        // The passthrough counters are emitted by `dsd_no_agg_split`, not `dsd_agg`, since the timestamp-based
-        // split moved out of the aggregate transform.
         RemapperRule::by_name_and_tags(
             "adp.aggregate_passthrough_metrics_total",
             &[NO_AGG_SPLIT_COMPONENT_TAG],
