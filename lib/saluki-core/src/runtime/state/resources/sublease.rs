@@ -77,9 +77,10 @@ impl Subleases {
 
     /// Issues a sublease, held until the returned value is dropped.
     ///
-    /// Returns `None` once the resource is no longer registered, which happens when a holder
-    /// [`discard`][super::ResourceLease::discard]s it. There is nothing left to record a sublease against, and the
-    /// subresource is on its way out with the resource it came from.
+    /// Returns `None` once the resource's registry entry is gone, leaving nothing to record a sublease against. That
+    /// only happens after the resource itself has been dropped -- a
+    /// [`discard`][super::ResourceLease::discard]ed resource keeps its entry until its subleases are returned -- so a
+    /// resource still in use always gets its sublease.
     ///
     /// # Subleasing after the head lease is returned
     ///
@@ -108,7 +109,9 @@ impl std::fmt::Debug for Subleases {
 ///
 /// Held by a subresource for as long as it is in use. Outstanding subleases keep the resource's lease alive: the
 /// registry won't hand the resource to another acquirer while one is held, even once the head
-/// [`ResourceLease`][super::ResourceLease] has been dropped.
+/// [`ResourceLease`][super::ResourceLease] has been dropped -- nor build a replacement for one that was
+/// [`discard`][super::ResourceLease::discard]ed, since that replacement would exist alongside whatever this sublease
+/// is still holding open.
 pub struct Sublease {
     ledger: Arc<SubleaseLedger>,
 }
