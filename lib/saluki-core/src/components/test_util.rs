@@ -133,7 +133,41 @@ impl TestComponentSupervisor {
         .await;
     }
 
-    /// Signals shutdown and waits for the supervisor to finish draining its children.
+    /// Returns a shutdown handle that fires when this supervisor is asked to shut down.
+    ///
+    /// Install this into the context of the component under test, in place of a coordinator the test owns outright.
+    /// In production a component's shutdown handle *is* its supervisor's, which is what puts the supervisor into its
+    /// drain before the component starts stopping the children it spawned. A test driving the two separately inverts
+    /// that order, so a child marked significant terminates while the supervisor is still running normally --
+    /// tripping [`AutoShutdown`] over what is really an orderly shutdown.
+    ///
+    /// The supervisor's `select!` is biased towards shutdown, so a signal is always observed here before any child
+    /// exit it causes.
+    pub fn component_shutdown_handle(&mut self) -> ShutdownHandle {
+        match self.shutdown_coordinator.as_mut() {
+            Some(coordinator) => coordinator.register(),
+
+            // Only reachable after shutdown has already been signalled, where a handle that never fires would hang
+            // the caller. Hand back one that is already triggered instead.
+            None => {
+                let (coordinator, handle) = ShutdownHandle::paired();
+                coordinator.shutdown();
+                handle
+            }
+        }
+    }
+
+    /// Signals shutdown without waiting for the supervisor to finish draining.
+    ///
+    /// Use this where the test needs to observe something between the signal and the supervisor stopping -- that the
+    /// component's own `run` returns first, say. Pair it with [`wait`][Self::wait].
+    pub fn signal_shutdown(&mut self) {
+        if let Some(shutdown_coordinator) = self.shutdown_coordinator.take() {
+            shutdown_coordinator.shutdown();
+        }
+    }
+
+    /// Waits for the supervisor to finish draining its children.
     ///
     /// The result is the supervisor's own: `Err(SupervisorError::ShutdownTimedOut { .. })` means a child ignored
     /// shutdown and had to be aborted, which is usually what a test wants to assert did *not* happen.
@@ -141,12 +175,20 @@ impl TestComponentSupervisor {
     /// # Panics
     ///
     /// Panics if the supervisor task panicked.
-    pub async fn shutdown(mut self) -> Result<(), SupervisorError> {
-        if let Some(shutdown_coordinator) = self.shutdown_coordinator.take() {
-            shutdown_coordinator.shutdown();
-        }
-
+    pub async fn wait(mut self) -> Result<(), SupervisorError> {
         (&mut self.task).await.expect("test supervisor task should not panic")
+    }
+
+    /// Signals shutdown and waits for the supervisor to finish draining its children.
+    ///
+    /// See [`wait`][Self::wait] for how to read the result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the supervisor task panicked.
+    pub async fn shutdown(mut self) -> Result<(), SupervisorError> {
+        self.signal_shutdown();
+        self.wait().await
     }
 
     async fn poll_until(&self, description: &str, mut condition: impl FnMut() -> bool) {

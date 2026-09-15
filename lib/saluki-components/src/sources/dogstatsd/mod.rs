@@ -35,7 +35,11 @@ use saluki_core::data_model::event::{
 use saluki_core::{
     components::{sources::*, BuildContext},
     pooling::{ElasticObjectPool, ObjectPool as _},
-    runtime::{self, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
+    runtime::{
+        self,
+        state::{AcquireError, ResourceLease},
+        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+    },
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
@@ -46,10 +50,7 @@ use saluki_io::{
         codec::dogstatsd::*,
         framing::{Framer as _, FramingError, LengthDelimitedFramer},
     },
-    net::{
-        listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
-    },
+    net::{listener::Listener, ConnectionAddress, ListenAddress, ProcessIdentity, SocketSpecification, Stream},
 };
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
@@ -96,10 +97,10 @@ mod tags;
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum Error {
-    #[snafu(display("Failed to create {} listener: {}", listener_type, source))]
-    FailedToCreateListener {
+    #[snafu(display("Failed to acquire {} listener: {}", listener_type, source))]
+    FailedToAcquireListener {
         listener_type: &'static str,
-        source: ListenerError,
+        source: AcquireError,
     },
 
     #[snafu(display("No listeners configured. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) to enable a listener."))]
@@ -657,8 +658,11 @@ impl DogStatsDConfiguration {
         }
     }
 
-    /// Builds the appropriate `Listener` objects.
-    async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
+    /// Acquires the appropriate `Listener` objects from the resource registry.
+    ///
+    /// The listeners are leased, not owned: the registry keeps the bound sockets when this source is torn down, so a
+    /// rebuilt source gets the same sockets back rather than racing to re-bind addresses it just released.
+    async fn build_listeners(&self, context: &BuildContext) -> Result<Vec<ResourceLease<Listener>>, Error> {
         // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
         // `non_local_traffic=true` since `bind_host` is ignored in that branch—matches Go's
         // laziness and avoids failing startup on an unresolvable hostname that wouldn't be used.
@@ -682,10 +686,13 @@ impl DogStatsDConfiguration {
             let listener_streams = matches!(address, ListenAddress::Udp(_))
                 .then_some(udp_streams_to_yield)
                 .flatten();
-            let listener = Listener::from_listen_address(address, listener_streams)
-                .await
-                .context(FailedToCreateListener { listener_type })?
+            let spec = SocketSpecification::new(address)
+                .with_udp_streams(listener_streams)
                 .with_receive_buffer_size(socket_receive_buffer_size);
+            let listener = context
+                .acquire_resource(spec)
+                .await
+                .context(FailedToAcquireListener { listener_type })?;
 
             listeners.push(listener);
         }
@@ -696,14 +703,14 @@ impl DogStatsDConfiguration {
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        let listeners = self.build_listeners().await?;
+        let listeners = self.build_listeners(&context).await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
         }
 
         // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
         // deadlocking any of the others. Multi-socket connectionless listeners require one buffer per yielded socket.
-        let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
+        let min_buffers: usize = listeners.iter().map(|listener| listener.min_buffer_reservation()).sum();
         let max_buffers = self.effective_max_buffer_count();
         if max_buffers < min_buffers {
             return Err(generic_error!(
@@ -820,7 +827,7 @@ impl MemoryBounds for DogStatsDConfiguration {
 
 /// DogStatsD source.
 pub struct DogStatsD {
-    listeners: Vec<Listener>,
+    listeners: Vec<ResourceLease<Listener>>,
     decoder_worker_count: NonZeroUsize,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_queue_capacity: usize,
@@ -842,7 +849,7 @@ pub struct DogStatsD {
 
 struct ListenerContext {
     shutdown_handle: ShutdownHandle,
-    listener: Listener,
+    listener: ResourceLease<Listener>,
     datagram_sender: mpsc::Sender<QueuedDatagram>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     origin_telemetry_enabled: bool,
@@ -1035,6 +1042,7 @@ impl Source for DogStatsD {
                 listener_context,
             ))
             .temporary()
+            .with_significant(true)
             .spawn();
         }
         drop(datagram_sender);
@@ -1221,11 +1229,6 @@ async fn process_listener(
                     runtime::worker(task_name, handler).spawn();
                 }
                 Err(e) => {
-                    // TODO: We shouldn't actually bail out here just because of an error during accept,
-                    // since it could be a temporary failure like hitting the open file limit on the system.
-                    //
-                    // However, we need to add sufficient guardrails to `Listener::accept` so that retrying doesn't
-                    // lead to thrashing in an endless loop or anything... so I'm leaving it like this for now.
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
                     break
                 }
@@ -3052,11 +3055,11 @@ mod tests {
     }
 
     fn udp_listen_address() -> ListenAddress {
-        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+        ListenAddress::udp_loopback(8125)
     }
 
     fn tcp_listen_address() -> ListenAddress {
-        ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+        ListenAddress::tcp_loopback(8125)
     }
 
     fn named_pipe_listen_address() -> ListenAddress {
@@ -3855,10 +3858,7 @@ mod tests {
             non_local_traffic: false,
             ..DogStatsDConfiguration::for_test()
         };
-        let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
-            8125,
-        )))];
+        let mut expected = vec![ListenAddress::udp_loopback(8125)];
         let mut actual = config.build_addresses(None);
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
@@ -3874,10 +3874,7 @@ mod tests {
             non_local_traffic: true,
             ..DogStatsDConfiguration::for_test()
         };
-        let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(0, 0, 0, 0),
-            8125,
-        )))];
+        let mut expected = vec![ListenAddress::udp_any(8125)];
         let mut actual = config.build_addresses(None);
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
@@ -3964,8 +3961,8 @@ mod tests {
             ..DogStatsDConfiguration::for_test()
         };
         let mut expected = vec![
-            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8125))),
-            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000))),
+            ListenAddress::udp_any(8125),
+            ListenAddress::tcp_any(9000),
             ListenAddress::Unixgram("/tmp/dsd.sock".into()),
             ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
         ];
@@ -3985,8 +3982,8 @@ mod tests {
             ..DogStatsDConfiguration::for_test()
         };
         let mut expected = vec![
-            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8125))),
-            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9000))),
+            ListenAddress::udp_loopback(8125),
+            ListenAddress::tcp_loopback(9000),
             ListenAddress::Unixgram("/tmp/dsd.sock".into()),
             ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
         ];
@@ -4008,8 +4005,8 @@ mod tests {
         };
         let bind_host = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
         let mut expected = vec![
-            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 8125))),
-            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 9000))),
+            ListenAddress::Udp(([192, 168, 1, 50], 8125).into()),
+            ListenAddress::Tcp(([192, 168, 1, 50], 9000).into()),
             ListenAddress::Unixgram("/tmp/dsd.sock".into()),
         ];
         let mut actual = config.build_addresses(bind_host);
@@ -4031,8 +4028,8 @@ mod tests {
         };
         let bind_host = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
         let mut expected = vec![
-            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8125))),
-            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000))),
+            ListenAddress::udp_any(8125),
+            ListenAddress::tcp_any(9000),
             ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
         ];
         let mut actual = config.build_addresses(bind_host);
@@ -4199,16 +4196,18 @@ mod supervision {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use saluki_common::sync::shutdown::ShutdownCoordinator;
+    use bytes::BytesMut;
+    use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::components::{
-        sources::{Source as _, SourceContext},
-        ComponentContext,
+        sources::{Source as _, SourceBuilder as _, SourceContext},
+        BuildContext, ComponentContext,
     };
     use saluki_core::health::HealthRegistry;
-    use saluki_core::runtime::state::DataspaceRegistry;
+    use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
+    use saluki_core::runtime::SupervisorError;
     use saluki_core::support::SubsystemIdentifier;
     use saluki_core::topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext};
     use saluki_io::net::listener::Listener;
@@ -4245,8 +4244,6 @@ mod supervision {
     struct Harness {
         source: Box<DogStatsD>,
         context: SourceContext,
-        /// Signals the source's global shutdown.
-        shutdown_coordinator: ShutdownCoordinator,
         /// Events dispatched to the `metrics` output.
         metrics_rx: mpsc::Receiver<EventsBuffer>,
         /// The address the source is listening on.
@@ -4261,22 +4258,22 @@ mod supervision {
     /// Builds a source whose `metrics` output holds a single buffer.
     ///
     /// One slot makes backpressure trivial to arrange: one dispatched buffer fills it and the next blocks a decoder.
-    async fn build_source(health_registry: &HealthRegistry) -> Harness {
-        build_source_with_output_capacity(health_registry, 1).await
+    async fn build_source(health_registry: &HealthRegistry, shutdown: ShutdownHandle) -> Harness {
+        build_source_with_output_capacity(health_registry, shutdown, 1).await
     }
 
-    async fn build_source_with_output_capacity(health_registry: &HealthRegistry, output_capacity: usize) -> Harness {
-        build_source_with(health_registry, output_capacity, 16).await
+    async fn build_source_with_output_capacity(
+        health_registry: &HealthRegistry, shutdown: ShutdownHandle, output_capacity: usize,
+    ) -> Harness {
+        build_source_with(health_registry, shutdown, output_capacity, 16).await
     }
 
     async fn build_source_with(
-        health_registry: &HealthRegistry, output_capacity: usize, io_buffer_count: usize,
+        health_registry: &HealthRegistry, shutdown: ShutdownHandle, output_capacity: usize, io_buffer_count: usize,
     ) -> Harness {
         let component_context = ComponentContext::test_source("dogstatsd");
 
-        let listener = Listener::from_listen_address(ListenAddress::Udp("127.0.0.1:0".parse().unwrap()), None)
-            .await
-            .expect("listener should bind");
+        let listener = leased_listener(ListenAddress::udp_loopback(0)).await;
         let listen_addr = match listener.bound_listen_address() {
             BoundListenAddress::Udp(addr) => addr,
             other => panic!("expected a bound UDP address, got {other:?}"),
@@ -4344,50 +4341,61 @@ mod supervision {
             dispatcher,
         );
 
-        let mut shutdown_coordinator = ShutdownCoordinator::default();
-        context.set_shutdown_handle_for_test(shutdown_coordinator.register());
+        context.set_shutdown_handle_for_test(shutdown);
 
         Harness {
             source,
             context,
-            shutdown_coordinator,
             metrics_rx,
             listen_addr,
         }
+    }
+
+    /// Acquires a listener the way a real build does, so the source holds a lease rather than a bare listener.
+    ///
+    /// A registry per call is enough for a test that only needs one holder: a `ResourceLease` keeps its own clone of
+    /// the registry, so the registry outlives the lease without the caller holding it.
+    async fn leased_listener(address: ListenAddress) -> ResourceLease<Listener> {
+        leased_listener_from(&ResourceRegistry::new(), address).await
+    }
+
+    /// Acquires a listener from a specific registry, for a test that cares about what the registry does afterwards.
+    async fn leased_listener_from(registry: &ResourceRegistry, address: ListenAddress) -> ResourceLease<Listener> {
+        registry
+            .acquire(
+                &SubsystemIdentifier::from_segments(["test", "dogstatsd"]),
+                SocketSpecification::new(address),
+            )
+            .await
+            .expect("listener should bind")
     }
 
     #[tokio::test]
     async fn background_work_runs_as_supervised_children() {
         // The pool shrinker, each datagram decoder, and each listener are supervised children rather than detached
         // tasks, so they are all accounted for while the source runs and all gone once it stops.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&health_registry).await;
-        let Harness {
-            source,
-            context,
-            shutdown_coordinator,
-            ..
-        } = harness;
+        let harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
+        let Harness { source, context, .. } = harness;
 
         let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
 
         supervisor.wait_for_children(udp_child_count()).await;
 
-        shutdown_coordinator.shutdown();
+        supervisor.signal_shutdown();
         timeout(RUN_TIMEOUT, run)
             .await
             .expect("source should stop on shutdown")
             .expect("source task should not panic")
             .expect("source should stop cleanly");
 
-        // Everything the source drains explicitly -- listener, stream handler, decoders -- is gone by the time `run`
-        // returns. The pool shrinker is the one exception, and deliberately so: it is brutally stopped, so it runs until
-        // the supervisor drops it rather than being waited on.
-        supervisor.wait_for_children(1).await;
-
-        // A clean result is the assertion: `ShutdownTimedOut` would mean a child ignored shutdown and was aborted.
-        let result = supervisor.shutdown().await;
+        // The supervisor is draining by now -- its shutdown and the source's are one signal, as in production -- and a
+        // drain freezes the child roster rather than emptying it, so there is no count left to sample here. What the
+        // drain does still show is that nothing had to be forced: `ShutdownTimedOut` would mean a child ignored
+        // shutdown and was aborted, which is the same "everything stopped on its own" property the count stood in for.
+        // The brutally-stopped pool shrinker is the deliberate exception, and doesn't count as forced.
+        let result = supervisor.wait().await;
         assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
     }
 
@@ -4400,13 +4408,12 @@ mod supervision {
         // Rather than race a datagram against shutdown, this pins a decoder open: the metrics output holds a single
         // buffer, so one dispatched buffer fills it and the next blocks a decoder mid-dispatch. `run` must not return
         // while that is true, no matter that shutdown has been signalled.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&health_registry).await;
+        let harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
         let Harness {
             source,
             context,
-            shutdown_coordinator,
             mut metrics_rx,
             listen_addr,
         } = harness;
@@ -4433,7 +4440,7 @@ mod supervision {
         }
         tokio::time::sleep(BACKPRESSURE_SETTLE).await;
 
-        shutdown_coordinator.shutdown();
+        supervisor.signal_shutdown();
 
         // `run` must still be waiting on the blocked decoder. Without the drain it would return here.
         tokio::time::sleep(BACKPRESSURE_SETTLE).await;
@@ -4466,7 +4473,7 @@ mod supervision {
         // Nothing accepted before shutdown should have been dropped on the way out.
         assert_eq!(drained, 3, "every queued datagram should have been dispatched");
 
-        let supervisor_result = supervisor.shutdown().await;
+        let supervisor_result = supervisor.wait().await;
         assert!(
             supervisor_result.is_ok(),
             "every child should have stopped on its own: {supervisor_result:?}"
@@ -4483,14 +4490,13 @@ mod supervision {
         // waiting on a queue that never closes -- until the shutdown budget elapsed and aborted the lot.
         let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&health_registry).await;
-        let Harness {
-            source,
-            context,
-            // Deliberately held, not signalled: `run` stays in its loop for the whole test.
-            shutdown_coordinator: _shutdown_coordinator,
-            ..
-        } = harness;
+
+        // A signal of the test's own, deliberately never fired, so `run` stays in its loop for the whole test. This is
+        // the one case production can't produce -- there a source's shutdown signal *is* its supervisor's -- and
+        // separating them is what isolates the listener's own `process_shutdown` arm.
+        let mut source_shutdown = ShutdownCoordinator::default();
+        let harness = build_source(&health_registry, source_shutdown.register()).await;
+        let Harness { source, context, .. } = harness;
 
         let _run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
         supervisor.wait_for_children(udp_child_count()).await;
@@ -4506,27 +4512,20 @@ mod supervision {
     async fn stream_handlers_are_supervised_children() {
         // Per-connection handlers are supervised too, under one fixed name per listener type. Accepting a connection
         // adds a child, and tearing the source down takes it with everything else.
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
 
         // A TCP listener, so there are real connections to accept.
-        let tcp_listener = Listener::from_listen_address(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap()), None)
-            .await
-            .expect("listener should bind");
+        let tcp_listener = leased_listener(ListenAddress::Tcp("127.0.0.1:0".parse().unwrap())).await;
         let listen_addr = match tcp_listener.bound_listen_address() {
             BoundListenAddress::Tcp(addr) => addr,
             other => panic!("expected a bound TCP address, got {other:?}"),
         };
 
-        let mut harness = build_source(&health_registry).await;
+        let mut harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
         harness.source.listeners = vec![tcp_listener];
 
-        let Harness {
-            source,
-            context,
-            shutdown_coordinator,
-            ..
-        } = harness;
+        let Harness { source, context, .. } = harness;
 
         let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
 
@@ -4538,17 +4537,143 @@ mod supervision {
             .expect("client should connect");
         supervisor.wait_for_children(baseline + 1).await;
 
-        shutdown_coordinator.shutdown();
+        supervisor.signal_shutdown();
         timeout(RUN_TIMEOUT, run)
             .await
             .expect("source should stop on shutdown")
             .expect("source task should not panic")
             .expect("source should stop cleanly");
 
-        // As above, only the brutally-stopped pool shrinker is left for the supervisor to drop.
-        supervisor.wait_for_children(1).await;
-
-        let result = supervisor.shutdown().await;
+        // As above, the drain is what attests that the handler stopped on its own rather than being aborted.
+        let result = supervisor.wait().await;
         assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn the_registry_keeps_the_listener_bound_after_the_source_stops() {
+        // The property the whole migration is for. The source only ever borrows its listener, so stopping it hands the
+        // socket back to the registry still bound, rather than releasing the port to the operating system and leaving
+        // a rebuilt source to race whatever else wants it.
+        let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let health_registry = HealthRegistry::new();
+
+        // A registry the test keeps, so it can ask for the same address once the source is gone.
+        //
+        // Port 0 is what makes the assertion below mean anything: the specification is keyed on the address as asked
+        // for, so re-acquiring it can only come back on the same port if the registry really held the socket. A fixed
+        // port could be re-bound from scratch and look identical.
+        let registry = ResourceRegistry::new();
+        let address = ListenAddress::udp_loopback(0);
+
+        let mut harness = build_source(&health_registry, supervisor.component_shutdown_handle()).await;
+        harness.source.listeners = vec![leased_listener_from(&registry, address.clone()).await];
+        let bound = harness.source.listeners[0].bound_listen_address();
+        let listen_addr = match bound {
+            BoundListenAddress::Udp(addr) => addr,
+            other => panic!("expected a bound UDP address, got {other:?}"),
+        };
+
+        let Harness { source, context, .. } = harness;
+        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
+        supervisor.wait_for_children(udp_child_count()).await;
+
+        supervisor.signal_shutdown();
+        timeout(RUN_TIMEOUT, run)
+            .await
+            .expect("source should stop on shutdown")
+            .expect("source task should not panic")
+            .expect("source should stop cleanly");
+        supervisor.wait().await.expect("supervisor should drain cleanly");
+
+        // The same socket, not a lucky re-bind: the registry never let go of it.
+        let mut listener = leased_listener_from(&registry, address).await;
+        assert_eq!(listener.bound_listen_address(), bound);
+
+        // And it is still usable. A listener whose socket had been moved out by the previous holder rather than
+        // borrowed would come back exhausted and hang here instead of yielding anything.
+        let mut stream = timeout(RUN_TIMEOUT, listener.accept())
+            .await
+            .expect("accept should not hang once the source has released its lease")
+            .expect("listener should yield its socket");
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.expect("client should bind");
+        client
+            .send_to(b"after.teardown:1|c", listen_addr)
+            .await
+            .expect("client should send");
+
+        let mut buf = BytesMut::with_capacity(64);
+        let (read, _) = timeout(RUN_TIMEOUT, stream.receive(&mut buf))
+            .await
+            .expect("receive should not time out")
+            .expect("receive should succeed");
+        assert_eq!(&buf[..read], b"after.teardown:1|c");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn building_against_an_already_leased_address_says_so() {
+        // Two holders of one address is a conflict the registry can name, rather than the bind failure an operator
+        // would otherwise have to work backwards from.
+        //
+        // A socket path rather than a port: the configuration has to name the address concretely for the build to ask
+        // for the same one, and a path in a temporary directory is unique to this test by construction, so there is no
+        // ephemeral port to discover and race over.
+        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
+        let socket_path = temp_dir.path().join("dogstatsd.socket");
+
+        let registry = ResourceRegistry::new();
+        let _held = leased_listener_from(&registry, ListenAddress::Unixgram(socket_path.clone())).await;
+
+        let mut config = DogStatsDConfiguration::for_test();
+        config.socket_path = Some(socket_path.to_string_lossy().into_owned());
+
+        // The fixture defaults to the real DogStatsD port, which this test has no business binding.
+        config.port = 0;
+
+        // The build and the existing holder have to share a registry for the conflict to exist at all;
+        // `BuildContext::test_source` would give the build one of its own.
+        let context = BuildContext::new(ComponentContext::test_source("dogstatsd"), registry);
+        let Err(error) = config.build(context).await else {
+            panic!("building against an address that is already leased should be refused");
+        };
+        let error = error.to_string();
+        assert!(error.contains("already leased"), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    async fn a_listener_stopping_takes_the_component_down() {
+        // The listener is a significant child, so it stopping is a component-level event rather than a source that
+        // carries on with nothing left to listen on.
+        //
+        // A fatal accept error is what causes this in production, which a test can't readily provoke. Signalling only
+        // the source's own shutdown produces the same shape: the listener exits while the supervisor around it is
+        // still running normally, which is exactly the case significance exists to catch.
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let health_registry = HealthRegistry::new();
+
+        let mut source_shutdown = ShutdownCoordinator::default();
+        let harness = build_source(&health_registry, source_shutdown.register()).await;
+        let Harness { source, context, .. } = harness;
+
+        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
+        supervisor.wait_for_children(udp_child_count()).await;
+
+        source_shutdown.shutdown();
+        timeout(RUN_TIMEOUT, run)
+            .await
+            .expect("source should stop on shutdown")
+            .expect("source task should not panic")
+            .expect("source should stop cleanly");
+
+        // The supervisor was never told to stop, so it stopping at all is the assertion. The timeout is what turns a
+        // listener that was left non-significant into a failure rather than a hang.
+        let result = timeout(RUN_TIMEOUT, supervisor.wait())
+            .await
+            .expect("the supervisor should have stopped on its own");
+        assert!(
+            matches!(result, Err(SupervisorError::SignificantChildExited)),
+            "a stopped listener should have brought the component down, got {result:?}"
+        );
     }
 }
