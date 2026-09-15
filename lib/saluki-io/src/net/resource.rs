@@ -8,7 +8,7 @@
 use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
-use saluki_core::runtime::state::{ResourceKind, ResourceSpecification};
+use saluki_core::runtime::state::{ResourceKind, ResourceSpecification, Subleases};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
@@ -92,10 +92,14 @@ impl ResourceSpecification for SocketSpecification {
         MetaString::from(self.address.to_string())
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, subleases: Subleases) -> Result<Self::Resource, GenericError> {
         let listener = Listener::from_listen_address(self.address.clone(), self.udp_streams)
             .await?
-            .with_receive_buffer_size(self.receive_buffer_size);
+            .with_receive_buffer_size(self.receive_buffer_size)
+            // For a connectionless family the bound socket *is* the stream, so every stream this listener yields
+            // shares its socket and can outlive the lease it was acquired under. Each takes a sublease, which keeps
+            // the registry from handing this listener on while a stream is still reading from the socket.
+            .with_subleases(subleases);
 
         Ok(match self.accept_backoff.clone() {
             Some(accept_backoff) => listener.with_accept_backoff(accept_backoff),
@@ -160,7 +164,9 @@ impl ResourceSpecification for ConnectionOrientedSocketSpecification {
         MetaString::from(self.address.to_string())
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
+        // Never subdivided, so there is nothing to sublet: `accept` mints a new socket per connection, and the
+        // listener keeps nothing that outlives the lease it was acquired under.
         let listener = ConnectionOrientedListener::from_listen_address(self.address.clone()).await?;
 
         Ok(match self.accept_backoff.clone() {

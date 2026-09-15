@@ -1,6 +1,7 @@
 use std::{
     io,
     net::SocketAddr,
+    ops::Deref,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -8,8 +9,11 @@ use std::{
 
 use bytes::BufMut;
 use pin_project::pin_project;
+use saluki_core::runtime::state::Sublease;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::NamedPipeServer;
+#[cfg(unix)]
+use tokio::net::{UnixDatagram, UnixStream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::{TcpStream, UdpSocket},
@@ -106,17 +110,52 @@ impl AsyncWrite for Connection {
     }
 }
 
+/// A connectionless socket leased by a listener.
+///
+/// The socket is shared with the listener that yielded it rather than owned outright: for connectionless families the
+/// bound socket *is* the stream, so moving it out would take it away from the listener, and a listener owned by a
+/// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry] has to keep the sockets it was created with.
+///
+/// The sublease is what stops that sharing from becoming a hazard. While this value lives, the listener's lease is
+/// still active no matter what its holder does, so the registry won't hand the listener to another acquirer whose
+/// streams would then read from the same socket.
+pub(crate) struct SubleasedSocket<T> {
+    socket: Arc<T>,
+
+    /// The sublease held for as long as this socket is in use.
+    ///
+    /// `None` for a socket that didn't come from a registry-managed listener, which has no lease to sublet.
+    _sublease: Option<Sublease>,
+}
+
+impl<T> SubleasedSocket<T> {
+    pub(crate) fn new(socket: Arc<T>, sublease: Option<Sublease>) -> Self {
+        Self {
+            socket,
+            _sublease: sublease,
+        }
+    }
+}
+
+impl<T> Deref for SubleasedSocket<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
+    }
+}
+
 /// A connectionless socket.
 ///
 /// This type wraps network sockets that operate in a connectionless manner, such as UDP or Unix domain sockets in
 /// datagram mode.
 enum Connectionless {
     /// A UDP socket.
-    Udp(Arc<UdpSocket>),
+    Udp(SubleasedSocket<UdpSocket>),
 
     /// A Unix domain socket in datagram mode (SOCK_DGRAM).
     #[cfg(unix)]
-    Unixgram(Arc<tokio::net::UnixDatagram>),
+    Unixgram(SubleasedSocket<tokio::net::UnixDatagram>),
 }
 
 impl Connectionless {
@@ -206,13 +245,19 @@ impl From<(TcpStream, SocketAddr)> for Stream {
     }
 }
 
-impl From<Arc<UdpSocket>> for Stream {
-    fn from(socket: Arc<UdpSocket>) -> Self {
+impl From<SubleasedSocket<UdpSocket>> for Stream {
+    fn from(socket: SubleasedSocket<UdpSocket>) -> Self {
         Self {
             inner: StreamInner::Connectionless {
                 socket: Connectionless::Udp(socket),
             },
         }
+    }
+}
+
+impl From<Arc<UdpSocket>> for Stream {
+    fn from(socket: Arc<UdpSocket>) -> Self {
+        Self::from(SubleasedSocket::new(socket, None))
     }
 }
 
@@ -223,8 +268,8 @@ impl From<UdpSocket> for Stream {
 }
 
 #[cfg(unix)]
-impl From<Arc<tokio::net::UnixDatagram>> for Stream {
-    fn from(socket: Arc<tokio::net::UnixDatagram>) -> Self {
+impl From<SubleasedSocket<UnixDatagram>> for Stream {
+    fn from(socket: SubleasedSocket<UnixDatagram>) -> Self {
         Self {
             inner: StreamInner::Connectionless {
                 socket: Connectionless::Unixgram(socket),
@@ -234,15 +279,22 @@ impl From<Arc<tokio::net::UnixDatagram>> for Stream {
 }
 
 #[cfg(unix)]
-impl From<tokio::net::UnixDatagram> for Stream {
-    fn from(socket: tokio::net::UnixDatagram) -> Self {
+impl From<Arc<UnixDatagram>> for Stream {
+    fn from(socket: Arc<UnixDatagram>) -> Self {
+        Self::from(SubleasedSocket::new(socket, None))
+    }
+}
+
+#[cfg(unix)]
+impl From<UnixDatagram> for Stream {
+    fn from(socket: UnixDatagram) -> Self {
         Self::from(Arc::new(socket))
     }
 }
 
 #[cfg(unix)]
-impl From<tokio::net::UnixStream> for Stream {
-    fn from(stream: tokio::net::UnixStream) -> Self {
+impl From<UnixStream> for Stream {
+    fn from(stream: UnixStream) -> Self {
         Self {
             inner: StreamInner::Connection {
                 socket: Connection::Unix(stream),

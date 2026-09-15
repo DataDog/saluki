@@ -142,6 +142,47 @@ async fn udp_listener_yields_one_stream_per_bound_socket() {
 }
 
 #[tokio::test]
+async fn a_stream_outliving_its_lease_holds_the_listener() {
+    // For a connectionless family the stream *is* the listener's bound socket, so handing the listener to the next
+    // acquirer while a stream is still alive would leave both reading the same socket, splitting incoming datagrams
+    // between them. The sublease the stream carries is what prevents that.
+    let registry = ResourceRegistry::new();
+    let addr = reserved_udp_addr();
+    let spec = SocketSpecification::new(ListenAddress::Udp(addr));
+
+    let mut listener = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let mut stream = listener.accept().await.expect("should yield a stream");
+    let bound = listener.bound_listen_address();
+
+    // Release the head lease but keep the stream. The listener is back with the registry, and still not available.
+    drop(listener);
+
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            registry.acquire(&owner("second"), spec.clone())
+        )
+        .await
+        .is_err(),
+        "the listener should not be handed over while a stream is still reading its socket"
+    );
+
+    // And the stream keeps working throughout, which is why waiting is the right answer here rather than revoking it
+    // out from under whoever is still using it.
+    round_trip(&mut stream, addr, b"still mine").await;
+    drop(stream);
+
+    let listener = timeout(Duration::from_secs(5), registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should complete once the stream is dropped")
+        .expect("should reacquire");
+    assert_eq!(listener.bound_listen_address(), bound);
+}
+
+#[tokio::test]
 async fn one_address_cannot_be_held_as_two_listener_types() {
     let registry = ResourceRegistry::new();
     let address = ListenAddress::Tcp(reserved_tcp_addr());

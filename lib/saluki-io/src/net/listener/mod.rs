@@ -5,6 +5,7 @@ use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZ
 #[cfg(windows)]
 use std::{ffi::c_void, mem, ptr};
 
+use saluki_core::runtime::state::Subleases;
 use snafu::{ResultExt as _, Snafu};
 use socket2::SockRef;
 #[cfg(windows)]
@@ -30,8 +31,8 @@ use super::{
     addr::ListenAddress,
     stream::{Connection, Stream},
 };
-use crate::net::addr::BoundListenAddress;
 use crate::net::util::retry::ExponentialBackoff;
+use crate::net::{addr::BoundListenAddress, stream::SubleasedSocket};
 
 mod recovery;
 use self::recovery::AcceptRecovery;
@@ -104,32 +105,22 @@ pub enum ListenerError {
 enum ListenerInner {
     Tcp(TcpListener, SocketAddr),
 
-    /// Pre-bound UDP sockets, how many have been handed out so far, and the address they are bound to.
-    ///
-    /// The sockets are retained rather than moved out by [`Listener::accept`], so a listener returned to a
-    /// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry] still holds every socket it was created
-    /// with. Each socket is bound independently with `SO_REUSEPORT`, so the kernel load-balances across them; sharing
-    /// one socket would defeat that entirely.
-    ///
-    /// The bound address is recorded separately because the caller may have asked for port `0`, in which case it is
-    /// only knowable after the first socket is bound.
     Udp {
         sockets: Vec<Arc<TokioUdpSocket>>,
         handed_out: usize,
         bound_addr: SocketAddr,
     },
 
-    /// A single pre-bound Unix datagram socket, whether it has been handed out, and the path it is bound to.
-    ///
-    /// Unlike UDP there is only ever one, since `SO_REUSEPORT` doesn't apply.
     #[cfg(unix)]
     Unixgram {
         socket: Arc<UnixDatagram>,
         handed_out: bool,
         bound_path: PathBuf,
     },
+
     #[cfg(unix)]
     Unix(UnixListener, PathBuf),
+
     #[cfg(windows)]
     NamedPipe {
         server: NamedPipeServer,
@@ -163,6 +154,7 @@ pub struct Listener {
     inner: ListenerInner,
     socket_receive_buffer_size: Option<usize>,
     accept_recovery: AcceptRecovery,
+    subleases: Option<Subleases>,
 }
 
 impl Listener {
@@ -293,7 +285,18 @@ impl Listener {
             inner,
             socket_receive_buffer_size: None,
             accept_recovery: AcceptRecovery::default(),
+            subleases: None,
         })
+    }
+
+    /// Sets the subleases issued for the connectionless sockets this listener lends out.
+    ///
+    /// Only meaningful for a listener owned by a
+    /// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry]: it is what stops the registry handing the
+    /// listener to another acquirer while a stream from the previous one is still reading the socket underneath it.
+    pub fn with_subleases(mut self, subleases: Subleases) -> Self {
+        self.subleases = Some(subleases);
+        self
     }
 
     /// Sets the socket receive buffer size for this listener.
@@ -433,7 +436,9 @@ impl Listener {
                             self.socket_receive_buffer_size,
                             stream_type,
                         )?;
-                        Ok(Arc::clone(socket).into())
+
+                        let sublease = self.subleases.as_ref().and_then(Subleases::issue);
+                        Ok(SubleasedSocket::new(Arc::clone(socket), sublease).into())
                     }
                     // Every socket is already in use. There is nothing further to yield, but the caller is typically an
                     // accept loop, so go quiet rather than returning an error.
@@ -452,7 +457,9 @@ impl Listener {
                     setting: "SO_PASSCRED",
                     stream_type,
                 })?;
-                Ok(Arc::clone(socket).into())
+
+                let sublease = self.subleases.as_ref().and_then(Subleases::issue);
+                Ok(SubleasedSocket::new(Arc::clone(socket), sublease).into())
             }
             #[cfg(unix)]
             ListenerInner::Unix(unix, _) => unix
