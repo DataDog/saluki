@@ -5,7 +5,7 @@
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">pub mod </span>lookup;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">pub mod </span>registry;
 <a href=#7 id=7 data-nosnippet>7</a>
-<a href=#8 id=8 data-nosnippet>8</a><span class="kw">pub use </span>accessor::{Accessor, OtelSpanAccessor, OtlpAttributesAccessor};
+<a href=#8 id=8 data-nosnippet>8</a><span class="kw">pub use </span>accessor::{Accessor, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">pub use </span>lookup::{lookup_float64, lookup_int64, lookup_string};
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">pub use </span>registry::{Registry, REGISTRY};
 <a href=#11 id=11 data-nosnippet>11</a>
@@ -88,188 +88,213 @@
 <a href=#88 id=88 data-nosnippet>88</a>    OtelTraceId,
 <a href=#89 id=89 data-nosnippet>89</a>    DdPTid,
 <a href=#90 id=90 data-nosnippet>90</a>    DdPartialVersion,
-<a href=#91 id=91 data-nosnippet>91</a>}
+<a href=#91 id=91 data-nosnippet>91</a>    DdOrigin,
 <a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a><span class="kw">impl </span>Concept {
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="doccomment">/// All known concepts, in declaration order. Used by tests to verify that
-<a href=#95 id=95 data-nosnippet>95</a>    /// every variant has a corresponding entry in `mappings.json`.
-<a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub const </span>ALL: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[Concept] = <span class="kw-2">&amp;</span>[
-<a href=#97 id=97 data-nosnippet>97</a>        <span class="comment">// Peer Tags
-<a href=#98 id=98 data-nosnippet>98</a>        </span>Concept::PeerService,
-<a href=#99 id=99 data-nosnippet>99</a>        Concept::PeerHostname,
-<a href=#100 id=100 data-nosnippet>100</a>        Concept::PeerDbName,
-<a href=#101 id=101 data-nosnippet>101</a>        Concept::PeerDbSystem,
-<a href=#102 id=102 data-nosnippet>102</a>        Concept::PeerCassandraContactPoints,
-<a href=#103 id=103 data-nosnippet>103</a>        Concept::PeerCouchbaseSeedNodes,
-<a href=#104 id=104 data-nosnippet>104</a>        Concept::PeerMessagingDestination,
-<a href=#105 id=105 data-nosnippet>105</a>        Concept::PeerMessagingSystem,
-<a href=#106 id=106 data-nosnippet>106</a>        Concept::PeerKafkaBootstrapServers,
-<a href=#107 id=107 data-nosnippet>107</a>        Concept::PeerRpcService,
-<a href=#108 id=108 data-nosnippet>108</a>        Concept::PeerRpcSystem,
-<a href=#109 id=109 data-nosnippet>109</a>        Concept::PeerAwsS3Bucket,
-<a href=#110 id=110 data-nosnippet>110</a>        Concept::PeerAwsSqsQueue,
-<a href=#111 id=111 data-nosnippet>111</a>        Concept::PeerAwsDynamoDbTable,
-<a href=#112 id=112 data-nosnippet>112</a>        Concept::PeerAwsKinesisStream,
-<a href=#113 id=113 data-nosnippet>113</a>        <span class="comment">// Stats Aggregation
-<a href=#114 id=114 data-nosnippet>114</a>        </span>Concept::HttpStatusCode,
-<a href=#115 id=115 data-nosnippet>115</a>        Concept::HttpMethod,
-<a href=#116 id=116 data-nosnippet>116</a>        Concept::HttpRoute,
-<a href=#117 id=117 data-nosnippet>117</a>        Concept::RpcGrpcStatusCode,
-<a href=#118 id=118 data-nosnippet>118</a>        Concept::SpanKind,
-<a href=#119 id=119 data-nosnippet>119</a>        Concept::DdBaseService,
-<a href=#120 id=120 data-nosnippet>120</a>        <span class="comment">// Service &amp; Resource Identification
-<a href=#121 id=121 data-nosnippet>121</a>        </span>Concept::ServiceName,
-<a href=#122 id=122 data-nosnippet>122</a>        Concept::ResourceName,
-<a href=#123 id=123 data-nosnippet>123</a>        Concept::OperationName,
-<a href=#124 id=124 data-nosnippet>124</a>        Concept::SpanType,
-<a href=#125 id=125 data-nosnippet>125</a>        Concept::DbSystem,
-<a href=#126 id=126 data-nosnippet>126</a>        Concept::DbStatement,
-<a href=#127 id=127 data-nosnippet>127</a>        Concept::DbNamespace,
-<a href=#128 id=128 data-nosnippet>128</a>        Concept::RpcSystem,
-<a href=#129 id=129 data-nosnippet>129</a>        Concept::RpcService,
-<a href=#130 id=130 data-nosnippet>130</a>        Concept::MessagingSystem,
-<a href=#131 id=131 data-nosnippet>131</a>        Concept::MessagingDestination,
-<a href=#132 id=132 data-nosnippet>132</a>        Concept::DeploymentEnvironment,
-<a href=#133 id=133 data-nosnippet>133</a>        Concept::ServiceVersion,
-<a href=#134 id=134 data-nosnippet>134</a>        Concept::ContainerId,
-<a href=#135 id=135 data-nosnippet>135</a>        Concept::K8sPodUid,
-<a href=#136 id=136 data-nosnippet>136</a>        <span class="comment">// Obfuscation
-<a href=#137 id=137 data-nosnippet>137</a>        </span>Concept::DbQuery,
-<a href=#138 id=138 data-nosnippet>138</a>        Concept::MongoDbQuery,
-<a href=#139 id=139 data-nosnippet>139</a>        Concept::ElasticsearchBody,
-<a href=#140 id=140 data-nosnippet>140</a>        Concept::OpenSearchBody,
-<a href=#141 id=141 data-nosnippet>141</a>        Concept::RedisRawCommand,
-<a href=#142 id=142 data-nosnippet>142</a>        Concept::ValkeyRawCommand,
-<a href=#143 id=143 data-nosnippet>143</a>        Concept::MemcachedCommand,
-<a href=#144 id=144 data-nosnippet>144</a>        Concept::HttpUrl,
-<a href=#145 id=145 data-nosnippet>145</a>        <span class="comment">// Normalization
-<a href=#146 id=146 data-nosnippet>146</a>        </span>Concept::MessagingOperation,
-<a href=#147 id=147 data-nosnippet>147</a>        Concept::GraphQlOperationType,
-<a href=#148 id=148 data-nosnippet>148</a>        Concept::GraphQlOperationName,
-<a href=#149 id=149 data-nosnippet>149</a>        Concept::FaasInvokedProvider,
-<a href=#150 id=150 data-nosnippet>150</a>        Concept::FaasInvokedName,
-<a href=#151 id=151 data-nosnippet>151</a>        Concept::FaasTrigger,
-<a href=#152 id=152 data-nosnippet>152</a>        Concept::NetworkProtocolName,
-<a href=#153 id=153 data-nosnippet>153</a>        Concept::RpcMethod,
-<a href=#154 id=154 data-nosnippet>154</a>        Concept::Component,
-<a href=#155 id=155 data-nosnippet>155</a>        Concept::LinkName,
-<a href=#156 id=156 data-nosnippet>156</a>        <span class="comment">// Sampling
-<a href=#157 id=157 data-nosnippet>157</a>        </span>Concept::DdMeasured,
-<a href=#158 id=158 data-nosnippet>158</a>        Concept::DdTopLevel,
-<a href=#159 id=159 data-nosnippet>159</a>        Concept::SamplingPriority,
-<a href=#160 id=160 data-nosnippet>160</a>        Concept::OtelTraceId,
-<a href=#161 id=161 data-nosnippet>161</a>        Concept::DdPTid,
-<a href=#162 id=162 data-nosnippet>162</a>        Concept::DdPartialVersion,
-<a href=#163 id=163 data-nosnippet>163</a>    ];
-<a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a>    <span class="doccomment">/// Canonical string identifier as used in `mappings.json`.
-<a href=#166 id=166 data-nosnippet>166</a>    </span><span class="kw">pub const fn </span>as_str(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
-<a href=#167 id=167 data-nosnippet>167</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#168 id=168 data-nosnippet>168</a>            <span class="comment">// Peer Tags
-<a href=#169 id=169 data-nosnippet>169</a>            </span>Concept::PeerService =&gt; <span class="string">"peer.service"</span>,
-<a href=#170 id=170 data-nosnippet>170</a>            Concept::PeerHostname =&gt; <span class="string">"peer.hostname"</span>,
-<a href=#171 id=171 data-nosnippet>171</a>            Concept::PeerDbName =&gt; <span class="string">"peer.db.name"</span>,
-<a href=#172 id=172 data-nosnippet>172</a>            Concept::PeerDbSystem =&gt; <span class="string">"peer.db.system"</span>,
-<a href=#173 id=173 data-nosnippet>173</a>            Concept::PeerCassandraContactPoints =&gt; <span class="string">"peer.cassandra.contact.points"</span>,
-<a href=#174 id=174 data-nosnippet>174</a>            Concept::PeerCouchbaseSeedNodes =&gt; <span class="string">"peer.couchbase.seed.nodes"</span>,
-<a href=#175 id=175 data-nosnippet>175</a>            Concept::PeerMessagingDestination =&gt; <span class="string">"peer.messaging.destination"</span>,
-<a href=#176 id=176 data-nosnippet>176</a>            Concept::PeerMessagingSystem =&gt; <span class="string">"peer.messaging.system"</span>,
-<a href=#177 id=177 data-nosnippet>177</a>            Concept::PeerKafkaBootstrapServers =&gt; <span class="string">"peer.kafka.bootstrap.servers"</span>,
-<a href=#178 id=178 data-nosnippet>178</a>            Concept::PeerRpcService =&gt; <span class="string">"peer.rpc.service"</span>,
-<a href=#179 id=179 data-nosnippet>179</a>            Concept::PeerRpcSystem =&gt; <span class="string">"peer.rpc.system"</span>,
-<a href=#180 id=180 data-nosnippet>180</a>            Concept::PeerAwsS3Bucket =&gt; <span class="string">"peer.aws.s3.bucket"</span>,
-<a href=#181 id=181 data-nosnippet>181</a>            Concept::PeerAwsSqsQueue =&gt; <span class="string">"peer.aws.sqs.queue"</span>,
-<a href=#182 id=182 data-nosnippet>182</a>            Concept::PeerAwsDynamoDbTable =&gt; <span class="string">"peer.aws.dynamodb.table"</span>,
-<a href=#183 id=183 data-nosnippet>183</a>            Concept::PeerAwsKinesisStream =&gt; <span class="string">"peer.aws.kinesis.stream"</span>,
-<a href=#184 id=184 data-nosnippet>184</a>            <span class="comment">// Stats Aggregation
-<a href=#185 id=185 data-nosnippet>185</a>            </span>Concept::HttpStatusCode =&gt; <span class="string">"http.status_code"</span>,
-<a href=#186 id=186 data-nosnippet>186</a>            Concept::HttpMethod =&gt; <span class="string">"http.method"</span>,
-<a href=#187 id=187 data-nosnippet>187</a>            Concept::HttpRoute =&gt; <span class="string">"http.route"</span>,
-<a href=#188 id=188 data-nosnippet>188</a>            Concept::RpcGrpcStatusCode =&gt; <span class="string">"rpc.grpc.status_code"</span>,
-<a href=#189 id=189 data-nosnippet>189</a>            Concept::SpanKind =&gt; <span class="string">"span.kind"</span>,
-<a href=#190 id=190 data-nosnippet>190</a>            Concept::DdBaseService =&gt; <span class="string">"_dd.base_service"</span>,
-<a href=#191 id=191 data-nosnippet>191</a>            <span class="comment">// Service &amp; Resource Identification
-<a href=#192 id=192 data-nosnippet>192</a>            </span>Concept::ServiceName =&gt; <span class="string">"service.name"</span>,
-<a href=#193 id=193 data-nosnippet>193</a>            Concept::ResourceName =&gt; <span class="string">"resource.name"</span>,
-<a href=#194 id=194 data-nosnippet>194</a>            Concept::OperationName =&gt; <span class="string">"operation.name"</span>,
-<a href=#195 id=195 data-nosnippet>195</a>            Concept::SpanType =&gt; <span class="string">"span.type"</span>,
-<a href=#196 id=196 data-nosnippet>196</a>            Concept::DbSystem =&gt; <span class="string">"db.system"</span>,
-<a href=#197 id=197 data-nosnippet>197</a>            Concept::DbStatement =&gt; <span class="string">"db.statement"</span>,
-<a href=#198 id=198 data-nosnippet>198</a>            Concept::DbNamespace =&gt; <span class="string">"db.namespace"</span>,
-<a href=#199 id=199 data-nosnippet>199</a>            Concept::RpcSystem =&gt; <span class="string">"rpc.system"</span>,
-<a href=#200 id=200 data-nosnippet>200</a>            Concept::RpcService =&gt; <span class="string">"rpc.service"</span>,
-<a href=#201 id=201 data-nosnippet>201</a>            Concept::MessagingSystem =&gt; <span class="string">"messaging.system"</span>,
-<a href=#202 id=202 data-nosnippet>202</a>            Concept::MessagingDestination =&gt; <span class="string">"messaging.destination"</span>,
-<a href=#203 id=203 data-nosnippet>203</a>            Concept::DeploymentEnvironment =&gt; <span class="string">"deployment.environment"</span>,
-<a href=#204 id=204 data-nosnippet>204</a>            Concept::ServiceVersion =&gt; <span class="string">"service.version"</span>,
-<a href=#205 id=205 data-nosnippet>205</a>            Concept::ContainerId =&gt; <span class="string">"container.id"</span>,
-<a href=#206 id=206 data-nosnippet>206</a>            Concept::K8sPodUid =&gt; <span class="string">"k8s.pod.uid"</span>,
-<a href=#207 id=207 data-nosnippet>207</a>            <span class="comment">// Obfuscation
-<a href=#208 id=208 data-nosnippet>208</a>            </span>Concept::DbQuery =&gt; <span class="string">"db.query"</span>,
-<a href=#209 id=209 data-nosnippet>209</a>            Concept::MongoDbQuery =&gt; <span class="string">"mongodb.query"</span>,
-<a href=#210 id=210 data-nosnippet>210</a>            Concept::ElasticsearchBody =&gt; <span class="string">"elasticsearch.body"</span>,
-<a href=#211 id=211 data-nosnippet>211</a>            Concept::OpenSearchBody =&gt; <span class="string">"opensearch.body"</span>,
-<a href=#212 id=212 data-nosnippet>212</a>            Concept::RedisRawCommand =&gt; <span class="string">"redis.raw_command"</span>,
-<a href=#213 id=213 data-nosnippet>213</a>            Concept::ValkeyRawCommand =&gt; <span class="string">"valkey.raw_command"</span>,
-<a href=#214 id=214 data-nosnippet>214</a>            Concept::MemcachedCommand =&gt; <span class="string">"memcached.command"</span>,
-<a href=#215 id=215 data-nosnippet>215</a>            Concept::HttpUrl =&gt; <span class="string">"http.url"</span>,
-<a href=#216 id=216 data-nosnippet>216</a>            <span class="comment">// Normalization
-<a href=#217 id=217 data-nosnippet>217</a>            </span>Concept::MessagingOperation =&gt; <span class="string">"messaging.operation"</span>,
-<a href=#218 id=218 data-nosnippet>218</a>            Concept::GraphQlOperationType =&gt; <span class="string">"graphql.operation.type"</span>,
-<a href=#219 id=219 data-nosnippet>219</a>            Concept::GraphQlOperationName =&gt; <span class="string">"graphql.operation.name"</span>,
-<a href=#220 id=220 data-nosnippet>220</a>            Concept::FaasInvokedProvider =&gt; <span class="string">"faas.invoked.provider"</span>,
-<a href=#221 id=221 data-nosnippet>221</a>            Concept::FaasInvokedName =&gt; <span class="string">"faas.invoked.name"</span>,
-<a href=#222 id=222 data-nosnippet>222</a>            Concept::FaasTrigger =&gt; <span class="string">"faas.trigger"</span>,
-<a href=#223 id=223 data-nosnippet>223</a>            Concept::NetworkProtocolName =&gt; <span class="string">"network.protocol.name"</span>,
-<a href=#224 id=224 data-nosnippet>224</a>            Concept::RpcMethod =&gt; <span class="string">"rpc.method"</span>,
-<a href=#225 id=225 data-nosnippet>225</a>            Concept::Component =&gt; <span class="string">"component"</span>,
-<a href=#226 id=226 data-nosnippet>226</a>            Concept::LinkName =&gt; <span class="string">"link.name"</span>,
-<a href=#227 id=227 data-nosnippet>227</a>            <span class="comment">// Sampling
-<a href=#228 id=228 data-nosnippet>228</a>            </span>Concept::DdMeasured =&gt; <span class="string">"_dd.measured"</span>,
-<a href=#229 id=229 data-nosnippet>229</a>            Concept::DdTopLevel =&gt; <span class="string">"_dd.top_level"</span>,
-<a href=#230 id=230 data-nosnippet>230</a>            Concept::SamplingPriority =&gt; <span class="string">"_sampling_priority_v1"</span>,
-<a href=#231 id=231 data-nosnippet>231</a>            Concept::OtelTraceId =&gt; <span class="string">"otel.trace_id"</span>,
-<a href=#232 id=232 data-nosnippet>232</a>            Concept::DdPTid =&gt; <span class="string">"_dd.p.tid"</span>,
-<a href=#233 id=233 data-nosnippet>233</a>            Concept::DdPartialVersion =&gt; <span class="string">"_dd.partial_version"</span>,
-<a href=#234 id=234 data-nosnippet>234</a>        }
-<a href=#235 id=235 data-nosnippet>235</a>    }
-<a href=#236 id=236 data-nosnippet>236</a>
-<a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// Parse a concept identifier from its canonical string form.
-<a href=#238 id=238 data-nosnippet>238</a>    ///
-<a href=#239 id=239 data-nosnippet>239</a>    /// Used by the registry loader to reject `mappings.json` entries that have
-<a href=#240 id=240 data-nosnippet>240</a>    /// no corresponding variant—keeping the enum and the JSON in sync.
-<a href=#241 id=241 data-nosnippet>241</a>    </span><span class="kw">pub fn </span>from_str(s: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;Concept&gt; {
-<a href=#242 id=242 data-nosnippet>242</a>        Concept::ALL.iter().copied().find(|c| c.as_str() == s)
-<a href=#243 id=243 data-nosnippet>243</a>    }
-<a href=#244 id=244 data-nosnippet>244</a>}
-<a href=#245 id=245 data-nosnippet>245</a>
-<a href=#246 id=246 data-nosnippet>246</a><span class="attr">#[cfg(test)]
-<a href=#247 id=247 data-nosnippet>247</a></span><span class="kw">mod </span>tests {
-<a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#249 id=249 data-nosnippet>249</a>
-<a href=#250 id=250 data-nosnippet>250</a>    <span class="attr">#[test]
-<a href=#251 id=251 data-nosnippet>251</a>    </span><span class="kw">fn </span>concept_all_covers_every_variant() {
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="comment">// Count matches the number of "case" arms in as_str(). If a variant is
-<a href=#253 id=253 data-nosnippet>253</a>        // added without being added to ALL, this test should start failing
-<a href=#254 id=254 data-nosnippet>254</a>        // (once you add a matching test below). The primary guard is compiler:
-<a href=#255 id=255 data-nosnippet>255</a>        // `match` on Concept forces exhaustiveness in as_str().
-<a href=#256 id=256 data-nosnippet>256</a>        </span><span class="macro">assert_eq!</span>(Concept::ALL.len(), <span class="number">60</span>);
-<a href=#257 id=257 data-nosnippet>257</a>    }
-<a href=#258 id=258 data-nosnippet>258</a>
-<a href=#259 id=259 data-nosnippet>259</a>    <span class="attr">#[test]
-<a href=#260 id=260 data-nosnippet>260</a>    </span><span class="kw">fn </span>concept_all_entries_are_unique() {
-<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen = std::collections::HashSet::new();
-<a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">for </span>c <span class="kw">in </span>Concept::ALL {
-<a href=#263 id=263 data-nosnippet>263</a>            <span class="macro">assert!</span>(seen.insert(c.as_str()), <span class="string">"duplicate concept string: {}"</span>, c.as_str());
-<a href=#264 id=264 data-nosnippet>264</a>        }
-<a href=#265 id=265 data-nosnippet>265</a>    }
-<a href=#266 id=266 data-nosnippet>266</a>
-<a href=#267 id=267 data-nosnippet>267</a>    <span class="attr">#[test]
-<a href=#268 id=268 data-nosnippet>268</a>    </span><span class="kw">fn </span>concept_from_str_roundtrip() {
-<a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">for </span>c <span class="kw">in </span>Concept::ALL {
-<a href=#270 id=270 data-nosnippet>270</a>            <span class="macro">assert_eq!</span>(Concept::from_str(c.as_str()), <span class="prelude-val">Some</span>(<span class="kw-2">*</span>c));
-<a href=#271 id=271 data-nosnippet>271</a>        }
-<a href=#272 id=272 data-nosnippet>272</a>        <span class="macro">assert_eq!</span>(Concept::from_str(<span class="string">"nope.not.a.concept"</span>), <span class="prelude-val">None</span>);
-<a href=#273 id=273 data-nosnippet>273</a>    }
-<a href=#274 id=274 data-nosnippet>274</a>}
+<a href=#93 id=93 data-nosnippet>93</a>    <span class="comment">// ---- Datadog tags ----
+<a href=#94 id=94 data-nosnippet>94</a>    </span>DdEnv,
+<a href=#95 id=95 data-nosnippet>95</a>    DdVersion,
+<a href=#96 id=96 data-nosnippet>96</a>    DdHostname,
+<a href=#97 id=97 data-nosnippet>97</a>    DdGitCommitSha,
+<a href=#98 id=98 data-nosnippet>98</a>    DdDecisionMaker,
+<a href=#99 id=99 data-nosnippet>99</a>    DdApmMode,
+<a href=#100 id=100 data-nosnippet>100</a>}
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a><span class="kw">impl </span>Concept {
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="doccomment">/// All known concepts, in declaration order. Used by tests to verify that
+<a href=#104 id=104 data-nosnippet>104</a>    /// every variant has a corresponding entry in `mappings.json`.
+<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="kw">pub const </span>ALL: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[Concept] = <span class="kw-2">&amp;</span>[
+<a href=#106 id=106 data-nosnippet>106</a>        <span class="comment">// Peer Tags
+<a href=#107 id=107 data-nosnippet>107</a>        </span>Concept::PeerService,
+<a href=#108 id=108 data-nosnippet>108</a>        Concept::PeerHostname,
+<a href=#109 id=109 data-nosnippet>109</a>        Concept::PeerDbName,
+<a href=#110 id=110 data-nosnippet>110</a>        Concept::PeerDbSystem,
+<a href=#111 id=111 data-nosnippet>111</a>        Concept::PeerCassandraContactPoints,
+<a href=#112 id=112 data-nosnippet>112</a>        Concept::PeerCouchbaseSeedNodes,
+<a href=#113 id=113 data-nosnippet>113</a>        Concept::PeerMessagingDestination,
+<a href=#114 id=114 data-nosnippet>114</a>        Concept::PeerMessagingSystem,
+<a href=#115 id=115 data-nosnippet>115</a>        Concept::PeerKafkaBootstrapServers,
+<a href=#116 id=116 data-nosnippet>116</a>        Concept::PeerRpcService,
+<a href=#117 id=117 data-nosnippet>117</a>        Concept::PeerRpcSystem,
+<a href=#118 id=118 data-nosnippet>118</a>        Concept::PeerAwsS3Bucket,
+<a href=#119 id=119 data-nosnippet>119</a>        Concept::PeerAwsSqsQueue,
+<a href=#120 id=120 data-nosnippet>120</a>        Concept::PeerAwsDynamoDbTable,
+<a href=#121 id=121 data-nosnippet>121</a>        Concept::PeerAwsKinesisStream,
+<a href=#122 id=122 data-nosnippet>122</a>        <span class="comment">// Stats Aggregation
+<a href=#123 id=123 data-nosnippet>123</a>        </span>Concept::HttpStatusCode,
+<a href=#124 id=124 data-nosnippet>124</a>        Concept::HttpMethod,
+<a href=#125 id=125 data-nosnippet>125</a>        Concept::HttpRoute,
+<a href=#126 id=126 data-nosnippet>126</a>        Concept::RpcGrpcStatusCode,
+<a href=#127 id=127 data-nosnippet>127</a>        Concept::SpanKind,
+<a href=#128 id=128 data-nosnippet>128</a>        Concept::DdBaseService,
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="comment">// Service &amp; Resource Identification
+<a href=#130 id=130 data-nosnippet>130</a>        </span>Concept::ServiceName,
+<a href=#131 id=131 data-nosnippet>131</a>        Concept::ResourceName,
+<a href=#132 id=132 data-nosnippet>132</a>        Concept::OperationName,
+<a href=#133 id=133 data-nosnippet>133</a>        Concept::SpanType,
+<a href=#134 id=134 data-nosnippet>134</a>        Concept::DbSystem,
+<a href=#135 id=135 data-nosnippet>135</a>        Concept::DbStatement,
+<a href=#136 id=136 data-nosnippet>136</a>        Concept::DbNamespace,
+<a href=#137 id=137 data-nosnippet>137</a>        Concept::RpcSystem,
+<a href=#138 id=138 data-nosnippet>138</a>        Concept::RpcService,
+<a href=#139 id=139 data-nosnippet>139</a>        Concept::MessagingSystem,
+<a href=#140 id=140 data-nosnippet>140</a>        Concept::MessagingDestination,
+<a href=#141 id=141 data-nosnippet>141</a>        Concept::DeploymentEnvironment,
+<a href=#142 id=142 data-nosnippet>142</a>        Concept::ServiceVersion,
+<a href=#143 id=143 data-nosnippet>143</a>        Concept::ContainerId,
+<a href=#144 id=144 data-nosnippet>144</a>        Concept::K8sPodUid,
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="comment">// Obfuscation
+<a href=#146 id=146 data-nosnippet>146</a>        </span>Concept::DbQuery,
+<a href=#147 id=147 data-nosnippet>147</a>        Concept::MongoDbQuery,
+<a href=#148 id=148 data-nosnippet>148</a>        Concept::ElasticsearchBody,
+<a href=#149 id=149 data-nosnippet>149</a>        Concept::OpenSearchBody,
+<a href=#150 id=150 data-nosnippet>150</a>        Concept::RedisRawCommand,
+<a href=#151 id=151 data-nosnippet>151</a>        Concept::ValkeyRawCommand,
+<a href=#152 id=152 data-nosnippet>152</a>        Concept::MemcachedCommand,
+<a href=#153 id=153 data-nosnippet>153</a>        Concept::HttpUrl,
+<a href=#154 id=154 data-nosnippet>154</a>        <span class="comment">// Normalization
+<a href=#155 id=155 data-nosnippet>155</a>        </span>Concept::MessagingOperation,
+<a href=#156 id=156 data-nosnippet>156</a>        Concept::GraphQlOperationType,
+<a href=#157 id=157 data-nosnippet>157</a>        Concept::GraphQlOperationName,
+<a href=#158 id=158 data-nosnippet>158</a>        Concept::FaasInvokedProvider,
+<a href=#159 id=159 data-nosnippet>159</a>        Concept::FaasInvokedName,
+<a href=#160 id=160 data-nosnippet>160</a>        Concept::FaasTrigger,
+<a href=#161 id=161 data-nosnippet>161</a>        Concept::NetworkProtocolName,
+<a href=#162 id=162 data-nosnippet>162</a>        Concept::RpcMethod,
+<a href=#163 id=163 data-nosnippet>163</a>        Concept::Component,
+<a href=#164 id=164 data-nosnippet>164</a>        Concept::LinkName,
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="comment">// Sampling
+<a href=#166 id=166 data-nosnippet>166</a>        </span>Concept::DdMeasured,
+<a href=#167 id=167 data-nosnippet>167</a>        Concept::DdTopLevel,
+<a href=#168 id=168 data-nosnippet>168</a>        Concept::SamplingPriority,
+<a href=#169 id=169 data-nosnippet>169</a>        Concept::OtelTraceId,
+<a href=#170 id=170 data-nosnippet>170</a>        Concept::DdPTid,
+<a href=#171 id=171 data-nosnippet>171</a>        Concept::DdPartialVersion,
+<a href=#172 id=172 data-nosnippet>172</a>        Concept::DdOrigin,
+<a href=#173 id=173 data-nosnippet>173</a>        <span class="comment">// Datadog tags
+<a href=#174 id=174 data-nosnippet>174</a>        </span>Concept::DdEnv,
+<a href=#175 id=175 data-nosnippet>175</a>        Concept::DdVersion,
+<a href=#176 id=176 data-nosnippet>176</a>        Concept::DdHostname,
+<a href=#177 id=177 data-nosnippet>177</a>        Concept::DdGitCommitSha,
+<a href=#178 id=178 data-nosnippet>178</a>        Concept::DdDecisionMaker,
+<a href=#179 id=179 data-nosnippet>179</a>        Concept::DdApmMode,
+<a href=#180 id=180 data-nosnippet>180</a>    ];
+<a href=#181 id=181 data-nosnippet>181</a>
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="doccomment">/// Canonical string identifier as used in `mappings.json`.
+<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">pub const fn </span>as_str(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#185 id=185 data-nosnippet>185</a>            <span class="comment">// Peer Tags
+<a href=#186 id=186 data-nosnippet>186</a>            </span>Concept::PeerService =&gt; <span class="string">"peer.service"</span>,
+<a href=#187 id=187 data-nosnippet>187</a>            Concept::PeerHostname =&gt; <span class="string">"peer.hostname"</span>,
+<a href=#188 id=188 data-nosnippet>188</a>            Concept::PeerDbName =&gt; <span class="string">"peer.db.name"</span>,
+<a href=#189 id=189 data-nosnippet>189</a>            Concept::PeerDbSystem =&gt; <span class="string">"peer.db.system"</span>,
+<a href=#190 id=190 data-nosnippet>190</a>            Concept::PeerCassandraContactPoints =&gt; <span class="string">"peer.cassandra.contact.points"</span>,
+<a href=#191 id=191 data-nosnippet>191</a>            Concept::PeerCouchbaseSeedNodes =&gt; <span class="string">"peer.couchbase.seed.nodes"</span>,
+<a href=#192 id=192 data-nosnippet>192</a>            Concept::PeerMessagingDestination =&gt; <span class="string">"peer.messaging.destination"</span>,
+<a href=#193 id=193 data-nosnippet>193</a>            Concept::PeerMessagingSystem =&gt; <span class="string">"peer.messaging.system"</span>,
+<a href=#194 id=194 data-nosnippet>194</a>            Concept::PeerKafkaBootstrapServers =&gt; <span class="string">"peer.kafka.bootstrap.servers"</span>,
+<a href=#195 id=195 data-nosnippet>195</a>            Concept::PeerRpcService =&gt; <span class="string">"peer.rpc.service"</span>,
+<a href=#196 id=196 data-nosnippet>196</a>            Concept::PeerRpcSystem =&gt; <span class="string">"peer.rpc.system"</span>,
+<a href=#197 id=197 data-nosnippet>197</a>            Concept::PeerAwsS3Bucket =&gt; <span class="string">"peer.aws.s3.bucket"</span>,
+<a href=#198 id=198 data-nosnippet>198</a>            Concept::PeerAwsSqsQueue =&gt; <span class="string">"peer.aws.sqs.queue"</span>,
+<a href=#199 id=199 data-nosnippet>199</a>            Concept::PeerAwsDynamoDbTable =&gt; <span class="string">"peer.aws.dynamodb.table"</span>,
+<a href=#200 id=200 data-nosnippet>200</a>            Concept::PeerAwsKinesisStream =&gt; <span class="string">"peer.aws.kinesis.stream"</span>,
+<a href=#201 id=201 data-nosnippet>201</a>            <span class="comment">// Stats Aggregation
+<a href=#202 id=202 data-nosnippet>202</a>            </span>Concept::HttpStatusCode =&gt; <span class="string">"http.status_code"</span>,
+<a href=#203 id=203 data-nosnippet>203</a>            Concept::HttpMethod =&gt; <span class="string">"http.method"</span>,
+<a href=#204 id=204 data-nosnippet>204</a>            Concept::HttpRoute =&gt; <span class="string">"http.route"</span>,
+<a href=#205 id=205 data-nosnippet>205</a>            Concept::RpcGrpcStatusCode =&gt; <span class="string">"rpc.grpc.status_code"</span>,
+<a href=#206 id=206 data-nosnippet>206</a>            Concept::SpanKind =&gt; <span class="string">"span.kind"</span>,
+<a href=#207 id=207 data-nosnippet>207</a>            Concept::DdBaseService =&gt; <span class="string">"_dd.base_service"</span>,
+<a href=#208 id=208 data-nosnippet>208</a>            <span class="comment">// Service &amp; Resource Identification
+<a href=#209 id=209 data-nosnippet>209</a>            </span>Concept::ServiceName =&gt; <span class="string">"service.name"</span>,
+<a href=#210 id=210 data-nosnippet>210</a>            Concept::ResourceName =&gt; <span class="string">"resource.name"</span>,
+<a href=#211 id=211 data-nosnippet>211</a>            Concept::OperationName =&gt; <span class="string">"operation.name"</span>,
+<a href=#212 id=212 data-nosnippet>212</a>            Concept::SpanType =&gt; <span class="string">"span.type"</span>,
+<a href=#213 id=213 data-nosnippet>213</a>            Concept::DbSystem =&gt; <span class="string">"db.system"</span>,
+<a href=#214 id=214 data-nosnippet>214</a>            Concept::DbStatement =&gt; <span class="string">"db.statement"</span>,
+<a href=#215 id=215 data-nosnippet>215</a>            Concept::DbNamespace =&gt; <span class="string">"db.namespace"</span>,
+<a href=#216 id=216 data-nosnippet>216</a>            Concept::RpcSystem =&gt; <span class="string">"rpc.system"</span>,
+<a href=#217 id=217 data-nosnippet>217</a>            Concept::RpcService =&gt; <span class="string">"rpc.service"</span>,
+<a href=#218 id=218 data-nosnippet>218</a>            Concept::MessagingSystem =&gt; <span class="string">"messaging.system"</span>,
+<a href=#219 id=219 data-nosnippet>219</a>            Concept::MessagingDestination =&gt; <span class="string">"messaging.destination"</span>,
+<a href=#220 id=220 data-nosnippet>220</a>            Concept::DeploymentEnvironment =&gt; <span class="string">"deployment.environment"</span>,
+<a href=#221 id=221 data-nosnippet>221</a>            Concept::ServiceVersion =&gt; <span class="string">"service.version"</span>,
+<a href=#222 id=222 data-nosnippet>222</a>            Concept::ContainerId =&gt; <span class="string">"container.id"</span>,
+<a href=#223 id=223 data-nosnippet>223</a>            Concept::K8sPodUid =&gt; <span class="string">"k8s.pod.uid"</span>,
+<a href=#224 id=224 data-nosnippet>224</a>            <span class="comment">// Obfuscation
+<a href=#225 id=225 data-nosnippet>225</a>            </span>Concept::DbQuery =&gt; <span class="string">"db.query"</span>,
+<a href=#226 id=226 data-nosnippet>226</a>            Concept::MongoDbQuery =&gt; <span class="string">"mongodb.query"</span>,
+<a href=#227 id=227 data-nosnippet>227</a>            Concept::ElasticsearchBody =&gt; <span class="string">"elasticsearch.body"</span>,
+<a href=#228 id=228 data-nosnippet>228</a>            Concept::OpenSearchBody =&gt; <span class="string">"opensearch.body"</span>,
+<a href=#229 id=229 data-nosnippet>229</a>            Concept::RedisRawCommand =&gt; <span class="string">"redis.raw_command"</span>,
+<a href=#230 id=230 data-nosnippet>230</a>            Concept::ValkeyRawCommand =&gt; <span class="string">"valkey.raw_command"</span>,
+<a href=#231 id=231 data-nosnippet>231</a>            Concept::MemcachedCommand =&gt; <span class="string">"memcached.command"</span>,
+<a href=#232 id=232 data-nosnippet>232</a>            Concept::HttpUrl =&gt; <span class="string">"http.url"</span>,
+<a href=#233 id=233 data-nosnippet>233</a>            <span class="comment">// Normalization
+<a href=#234 id=234 data-nosnippet>234</a>            </span>Concept::MessagingOperation =&gt; <span class="string">"messaging.operation"</span>,
+<a href=#235 id=235 data-nosnippet>235</a>            Concept::GraphQlOperationType =&gt; <span class="string">"graphql.operation.type"</span>,
+<a href=#236 id=236 data-nosnippet>236</a>            Concept::GraphQlOperationName =&gt; <span class="string">"graphql.operation.name"</span>,
+<a href=#237 id=237 data-nosnippet>237</a>            Concept::FaasInvokedProvider =&gt; <span class="string">"faas.invoked.provider"</span>,
+<a href=#238 id=238 data-nosnippet>238</a>            Concept::FaasInvokedName =&gt; <span class="string">"faas.invoked.name"</span>,
+<a href=#239 id=239 data-nosnippet>239</a>            Concept::FaasTrigger =&gt; <span class="string">"faas.trigger"</span>,
+<a href=#240 id=240 data-nosnippet>240</a>            Concept::NetworkProtocolName =&gt; <span class="string">"network.protocol.name"</span>,
+<a href=#241 id=241 data-nosnippet>241</a>            Concept::RpcMethod =&gt; <span class="string">"rpc.method"</span>,
+<a href=#242 id=242 data-nosnippet>242</a>            Concept::Component =&gt; <span class="string">"component"</span>,
+<a href=#243 id=243 data-nosnippet>243</a>            Concept::LinkName =&gt; <span class="string">"link.name"</span>,
+<a href=#244 id=244 data-nosnippet>244</a>            <span class="comment">// Sampling
+<a href=#245 id=245 data-nosnippet>245</a>            </span>Concept::DdMeasured =&gt; <span class="string">"_dd.measured"</span>,
+<a href=#246 id=246 data-nosnippet>246</a>            Concept::DdTopLevel =&gt; <span class="string">"_dd.top_level"</span>,
+<a href=#247 id=247 data-nosnippet>247</a>            Concept::SamplingPriority =&gt; <span class="string">"_sampling_priority_v1"</span>,
+<a href=#248 id=248 data-nosnippet>248</a>            Concept::OtelTraceId =&gt; <span class="string">"otel.trace_id"</span>,
+<a href=#249 id=249 data-nosnippet>249</a>            Concept::DdPTid =&gt; <span class="string">"_dd.p.tid"</span>,
+<a href=#250 id=250 data-nosnippet>250</a>            Concept::DdPartialVersion =&gt; <span class="string">"_dd.partial_version"</span>,
+<a href=#251 id=251 data-nosnippet>251</a>            Concept::DdOrigin =&gt; <span class="string">"_dd.origin"</span>,
+<a href=#252 id=252 data-nosnippet>252</a>            <span class="comment">// Datadog tags
+<a href=#253 id=253 data-nosnippet>253</a>            </span>Concept::DdEnv =&gt; <span class="string">"env"</span>,
+<a href=#254 id=254 data-nosnippet>254</a>            Concept::DdVersion =&gt; <span class="string">"version"</span>,
+<a href=#255 id=255 data-nosnippet>255</a>            Concept::DdHostname =&gt; <span class="string">"_dd.hostname"</span>,
+<a href=#256 id=256 data-nosnippet>256</a>            Concept::DdGitCommitSha =&gt; <span class="string">"_dd.git.commit.sha"</span>,
+<a href=#257 id=257 data-nosnippet>257</a>            Concept::DdDecisionMaker =&gt; <span class="string">"_dd.p.dm"</span>,
+<a href=#258 id=258 data-nosnippet>258</a>            Concept::DdApmMode =&gt; <span class="string">"_dd.apm_mode"</span>,
+<a href=#259 id=259 data-nosnippet>259</a>        }
+<a href=#260 id=260 data-nosnippet>260</a>    }
+<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#262 id=262 data-nosnippet>262</a>    <span class="doccomment">/// Parse a concept identifier from its canonical string form.
+<a href=#263 id=263 data-nosnippet>263</a>    ///
+<a href=#264 id=264 data-nosnippet>264</a>    /// Used by the registry loader to reject `mappings.json` entries that have
+<a href=#265 id=265 data-nosnippet>265</a>    /// no corresponding variant—keeping the enum and the JSON in sync.
+<a href=#266 id=266 data-nosnippet>266</a>    </span><span class="kw">pub fn </span>from_str(s: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;Concept&gt; {
+<a href=#267 id=267 data-nosnippet>267</a>        Concept::ALL.iter().copied().find(|c| c.as_str() == s)
+<a href=#268 id=268 data-nosnippet>268</a>    }
+<a href=#269 id=269 data-nosnippet>269</a>}
+<a href=#270 id=270 data-nosnippet>270</a>
+<a href=#271 id=271 data-nosnippet>271</a><span class="attr">#[cfg(test)]
+<a href=#272 id=272 data-nosnippet>272</a></span><span class="kw">mod </span>tests {
+<a href=#273 id=273 data-nosnippet>273</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#274 id=274 data-nosnippet>274</a>
+<a href=#275 id=275 data-nosnippet>275</a>    <span class="attr">#[test]
+<a href=#276 id=276 data-nosnippet>276</a>    </span><span class="kw">fn </span>concept_all_covers_every_variant() {
+<a href=#277 id=277 data-nosnippet>277</a>        <span class="comment">// Count matches the number of "case" arms in as_str(). If a variant is
+<a href=#278 id=278 data-nosnippet>278</a>        // added without being added to ALL, this test should start failing
+<a href=#279 id=279 data-nosnippet>279</a>        // (once you add a matching test below). The primary guard is compiler:
+<a href=#280 id=280 data-nosnippet>280</a>        // `match` on Concept forces exhaustiveness in as_str().
+<a href=#281 id=281 data-nosnippet>281</a>        </span><span class="macro">assert_eq!</span>(Concept::ALL.len(), <span class="number">67</span>);
+<a href=#282 id=282 data-nosnippet>282</a>    }
+<a href=#283 id=283 data-nosnippet>283</a>
+<a href=#284 id=284 data-nosnippet>284</a>    <span class="attr">#[test]
+<a href=#285 id=285 data-nosnippet>285</a>    </span><span class="kw">fn </span>concept_all_entries_are_unique() {
+<a href=#286 id=286 data-nosnippet>286</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen = std::collections::HashSet::new();
+<a href=#287 id=287 data-nosnippet>287</a>        <span class="kw">for </span>c <span class="kw">in </span>Concept::ALL {
+<a href=#288 id=288 data-nosnippet>288</a>            <span class="macro">assert!</span>(seen.insert(c.as_str()), <span class="string">"duplicate concept string: {}"</span>, c.as_str());
+<a href=#289 id=289 data-nosnippet>289</a>        }
+<a href=#290 id=290 data-nosnippet>290</a>    }
+<a href=#291 id=291 data-nosnippet>291</a>
+<a href=#292 id=292 data-nosnippet>292</a>    <span class="attr">#[test]
+<a href=#293 id=293 data-nosnippet>293</a>    </span><span class="kw">fn </span>concept_from_str_roundtrip() {
+<a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">for </span>c <span class="kw">in </span>Concept::ALL {
+<a href=#295 id=295 data-nosnippet>295</a>            <span class="macro">assert_eq!</span>(Concept::from_str(c.as_str()), <span class="prelude-val">Some</span>(<span class="kw-2">*</span>c));
+<a href=#296 id=296 data-nosnippet>296</a>        }
+<a href=#297 id=297 data-nosnippet>297</a>        <span class="macro">assert_eq!</span>(Concept::from_str(<span class="string">"nope.not.a.concept"</span>), <span class="prelude-val">None</span>);
+<a href=#298 id=298 data-nosnippet>298</a>    }
+<a href=#299 id=299 data-nosnippet>299</a>}
 </code></pre></div></section></main></body></html>
