@@ -31,6 +31,9 @@ allow = [
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  # MIT with the attribution requirement dropped, so it asks less of us than MIT. Reached through
+  # `libdd-trace-obfuscation` -> `fluent-uri` -> `borrow-or-share`.
+  "MIT-0",
   "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
@@ -52,4 +55,8 @@ allow-git = [
   # Pinned to a specific revision so we can select our workspace's `rand` version, ahead of a crates.io release that
   # supports it.
   "https://github.com/antithesishq/antithesis-sdk-rust",
+
+  # Datadog-maintained trace obfuscation primitives, shared with the Datadog Agent. Consumed from GitHub, pinned to a
+  # specific revision, so that obfuscation behavior can be kept in lockstep with the Agent rather than reimplemented.
+  "https://github.com/DataDog/libdatadog",
 ]
