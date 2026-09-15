@@ -1,5 +1,6 @@
 pub mod apm_onboarding;
 mod dogstatsd_filterlist;
+pub mod dogstatsd_no_agg_split;
 pub mod dogstatsd_post_aggregate_filter;
 pub mod dogstatsd_prefix_filter;
 pub mod host_tags;
