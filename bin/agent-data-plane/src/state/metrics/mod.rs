@@ -150,16 +150,23 @@ mod tests {
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
                     "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:unix"],
+                    &["component_id:dsd_in", "listener_type:unix", "state:ok"],
                 ),
                 7.0,
             )),
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
                     "adp.component_packets_received_total",
-                    &["component_id:dsd_in", "listener_type:unixgram"],
+                    &["component_id:dsd_in", "listener_type:unixgram", "state:ok"],
                 ),
                 5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:udp", "state:ok"],
+                ),
+                41.0,
             )),
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
@@ -251,9 +258,14 @@ mod tests {
         let output = render_with(get_compat_remappings(), metrics);
 
         assert!(output.contains("dogstatsd_metric_packets 11"));
-        assert!(output.contains("dogstatsd_uds_packets 48"));
+        // Packet counts only track successful reads, matching the Core Agent's `Packets` expvars; failed reads are
+        // reported solely as packet reading errors.
+        assert!(output.contains("dogstatsd_udp_packets 41"));
+        assert!(output.contains("dogstatsd_uds_packets 12"));
         assert!(output.contains("dogstatsd_udp_packet_reading_errors 13"));
         assert!(output.contains("dogstatsd_uds_packet_reading_errors 36"));
+        assert!(!output.contains("dogstatsd_udp_packets 54"));
+        assert!(!output.contains("dogstatsd_uds_packets 48"));
         assert!(!output.contains("dogstatsd_udp_packet_reading_errors 23"));
         assert!(!output.contains("dogstatsd_uds_packet_reading_errors 60"));
         assert!(
@@ -276,6 +288,85 @@ mod tests {
     }
 
     #[test]
+    fn compat_telemetry_separates_unterminated_from_other_framing_errors() {
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:udp", "error_type:unterminated"],
+                ),
+                4.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:unix", "error_type:unterminated"],
+                ),
+                6.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:unix", "error_type:framing"],
+                ),
+                99.0,
+            )),
+        ];
+
+        let output = render_with(get_compat_remappings(), metrics);
+
+        // The Core Agent's `UnterminatedMetricErrors` expvar is transport-agnostic, so both transports sum together.
+        assert!(output.contains("dogstatsd_unterminated_metric_errors 10"));
+        // Generic framing failures have no expvar equivalent and must not leak into the unterminated count.
+        assert!(!output.contains("dogstatsd_unterminated_metric_errors 109"));
+    }
+
+    #[test]
+    fn compat_telemetry_scopes_origin_detection_errors_to_uds() {
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &[
+                        "component_id:dsd_in",
+                        "listener_type:unix",
+                        "error_type:origin_detection",
+                    ],
+                ),
+                8.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &[
+                        "component_id:dsd_in",
+                        "listener_type:unixgram",
+                        "error_type:origin_detection",
+                    ],
+                ),
+                9.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &[
+                        "component_id:dsd_in",
+                        "listener_type:udp",
+                        "error_type:origin_detection",
+                    ],
+                ),
+                50.0,
+            )),
+        ];
+
+        let output = render_with(get_compat_remappings(), metrics);
+
+        // The Core Agent only tracks origin detection errors for UDS, so UDP failures are excluded.
+        assert!(output.contains("dogstatsd_uds_origin_detection_errors 17"));
+        assert!(!output.contains("dogstatsd_uds_origin_detection_errors 67"));
+    }
+
+    #[test]
     fn compat_remappings_cover_expected_names() {
         let rules = get_compat_remappings();
         let expected_names = [
@@ -285,6 +376,7 @@ mod tests {
             "dogstatsd_metric_parse_errors",
             "dogstatsd_service_check_packets",
             "dogstatsd_service_check_parse_errors",
+            "dogstatsd_unterminated_metric_errors",
             "dogstatsd_udp_packets",
             "dogstatsd_udp_bytes",
             "dogstatsd_udp_packet_reading_errors",

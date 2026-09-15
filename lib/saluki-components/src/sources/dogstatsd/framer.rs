@@ -80,7 +80,7 @@ mod tests {
 
         assert!(matches!(
             framer.next_frame(&mut buf, true),
-            Err(FramingError::InvalidFrame { .. })
+            Err(FramingError::MissingDelimiter { .. })
         ));
     }
 
@@ -95,7 +95,7 @@ mod tests {
 
         assert!(matches!(
             framer.next_frame(&mut buf, true),
-            Err(FramingError::InvalidFrame { .. })
+            Err(FramingError::MissingDelimiter { .. })
         ));
     }
 

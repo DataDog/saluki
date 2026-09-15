@@ -1618,7 +1618,14 @@ impl DogStatsDDecoder {
                     return DecodeOutcome::Continue;
                 }
                 Err(error) => {
-                    metrics.framing_errors().increment(1);
+                    // Unterminated payloads are reported separately from other framing failures so that they can be
+                    // mapped to the Core Agent's `dogstatsd/UnterminatedMetricErrors` expvar.
+                    if matches!(error, FramingError::MissingDelimiter { .. }) {
+                        metrics.unterminated_metric_errors().increment(1);
+                    } else {
+                        metrics.framing_errors().increment(1);
+                    }
+
                     if should_warn_stream_log_too_big(listen_addr, &error, self.stream_log_too_big) {
                         warn!(
                             %listen_addr,
@@ -2680,6 +2687,7 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_test"),
                     ("component_type", "source"),
+                    ("listener_type", "unix"),
                     ("error_type", "origin_detection"),
                 ],
             )),
@@ -2746,6 +2754,7 @@ mod tests {
                 &[
                     ("component_id", "dogstatsd_test"),
                     ("component_type", "source"),
+                    ("listener_type", "unix"),
                     ("error_type", "origin_detection"),
                 ],
             )),
@@ -2790,7 +2799,9 @@ mod tests {
         let stream_outcome = decoder.decode_buffer(&mut stream_context, received).await;
         assert_eq!(stream_outcome, DecodeOutcome::Stop);
 
-        for listener_type in ["unixgram", "unix"] {
+        // The datagram payload was missing its required trailing newline, which is reported separately from other
+        // framing failures. The stream frame was oversized, which stays a generic framing error.
+        for (listener_type, error_type) in [("unixgram", "unterminated"), ("unix", "framing")] {
             assert_eq!(
                 recorder.counter((
                     "component_errors_total",
@@ -2798,12 +2809,24 @@ mod tests {
                         ("component_id", "dogstatsd_test"),
                         ("component_type", "source"),
                         ("listener_type", listener_type),
-                        ("error_type", "framing"),
+                        ("error_type", error_type),
                     ],
                 )),
                 Some(1)
             );
         }
+        assert_eq!(
+            recorder.counter((
+                "component_errors_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unixgram"),
+                    ("error_type", "framing"),
+                ],
+            )),
+            Some(0)
+        );
         assert_eq!(
             recorder.counter((
                 "component_packets_received_total",
