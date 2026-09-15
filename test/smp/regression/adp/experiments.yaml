@@ -487,6 +487,33 @@ experiments:
         - unix_datagram:
             bytes_per_second: "500 MiB"
 
+  # Measure the cost of evaluating the experimental secondary-endpoint allowlist when every
+  # aggregated series misses. This deliberately matches the 500 MiB/s baseline above so its CPU,
+  # memory, and ingress-throughput results are directly comparable.
+  - name: metric_mirroring_drop_all_500mb_3k_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+
+    target:
+      environment:
+        DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
+        # Keep this non-empty so ADP builds and exercises the filtering branch. A colon separates
+        # the metric name from its value in DogStatsD, so this cannot equal an emitted metric name.
+        DD_SERIALIZER_EXPERIMENTAL_METRIC_ALLOWLIST: '{"http://127.0.0.1:9092":["metric_mirroring:never_matches"]}'
+
+    lading:
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+        - http:
+            binding_addr: "127.0.0.1:9092"
+      generator:
+        - unix_datagram:
+            bytes_per_second: "500 MiB"
+
   # ============================================================================
   # DogStatsD: quality gates (memory)
   # ============================================================================

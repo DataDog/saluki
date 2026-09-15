@@ -64,6 +64,8 @@ pub enum ValueType {
     Float,
     /// A list of strings (YAML sequence or space-separated env var string).
     StringList,
+    /// A map from strings to lists of strings.
+    StringMapList,
     /// A duration, expressed as a Go duration string (for example, `10s`) or integer nanoseconds.
     Duration,
 }

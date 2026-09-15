@@ -22,6 +22,45 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
+    // ── serializer_experimental.rs ──────────────────────────────────────────
+    SalukiKey {
+        yaml_path: "serializer_experimental.metric_allowlist",
+        description: "Exact series allow lists keyed by additional endpoint",
+        default: "{}",
+        documentation: Some(concat!(
+            "### `serializer_experimental.metric_allowlist`\n\n",
+            "ADP can route a selected subset of series metrics to specific secondary endpoints while continuing ",
+            "to send every metric to the primary intake. This experimental routing is independent of Multi-Region ",
+            "Failover.\n\n",
+            "Configure each destination and its API keys through `additional_endpoints`. Then key ",
+            "`serializer_experimental.metric_allowlist` by the exact endpoint string used in ",
+            "`additional_endpoints`. A selected endpoint receives only listed counters, rates, gauges, and ",
+            "sets; it receives no histogram or distribution sketch payloads. An empty endpoint allowlist sends ",
+            "nothing to that endpoint. Endpoints absent from the policy map keep ordinary dual-shipping behavior.\n\n",
+            "ADP rejects a policy whose endpoint is absent from `additional_endpoints`, preventing a typo from ",
+            "silently sending an unfiltered stream. Endpoint policies are read when the topology is built, so ",
+            "changing the map requires an ADP restart. An absent or empty policy map leaves ordinary endpoint ",
+            "routing unchanged.\n\n",
+            "```yaml\n",
+            "additional_endpoints:\n",
+            "  https://app.us5.datadoghq.com:\n",
+            "    - <secondary-api-key>\n",
+            "serializer_experimental:\n",
+            "  metric_allowlist:\n",
+            "    https://app.us5.datadoghq.com:\n",
+            "      - allowed.metric\n",
+            "```",
+        )),
+        value_type: "ValueType::StringMapList",
+        schema_default: Some("{}"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#"{"https://smoke-secondary.example.com":["allowed.metric"]}"#),
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "serializer_experimental.rs",
+    },
     // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",

@@ -1,0 +1,6 @@
+features:
+  - |
+    Add the experimental ``serializer_experimental.metric_allowlist`` setting
+    for endpoint-aware metric routing. Selected additional endpoints receive
+    only exact-name allowlisted series metrics, while the primary endpoint
+    continues to receive all metrics.

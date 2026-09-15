@@ -10,7 +10,7 @@ use pin_project::pin_project;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
-use super::protocol::MetricsPayloadInfo;
+use super::protocol::{MetricsEndpointRouting, MetricsPayloadInfo};
 
 /// Data type for the body of `TransactionBody<B>`.
 pub enum TransactionBodyData<B>
@@ -186,6 +186,13 @@ pub struct Metadata {
     /// This is `Some` for metrics payloads and `None` for non-metrics payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_info: Option<MetricsPayloadInfo>,
+
+    /// Endpoint targeting for a metrics payload, if applicable.
+    ///
+    /// This is persisted with retry-queue entries so a filtered payload cannot be replayed to an endpoint it did not
+    /// originally target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_endpoint_routing: Option<MetricsEndpointRouting>,
 }
 
 impl Metadata {
@@ -195,6 +202,7 @@ impl Metadata {
             event_count,
             data_point_count,
             payload_info: None,
+            metrics_endpoint_routing: None,
         }
     }
 }

@@ -1,8 +1,8 @@
-//! MRF metrics gateway transform.
+//! Selective metric-mirroring gateway transform.
 
 use std::collections::HashSet;
 
-use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
+use agent_data_plane_config::{domains::metric_mirroring::Routing as MetricMirroringRouting, Live};
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -10,49 +10,92 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{Event, EventType},
+    data_model::event::{
+        metric::{Metric, MetricValues},
+        Event, EventType,
+    },
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
 use tokio::select;
 use tracing::{debug, error};
 
-/// Configuration for the MRF metrics gateway transform.
+/// Configuration for the metric-mirroring gateway transform.
 ///
-/// This transform sits between the enrichment stage and the MRF-specific encoder/forwarder, and owns all routing and
-/// filtering decisions for the MRF metrics pipeline:
+/// This transform sits between the enrichment stage and a secondary encoder/forwarder, and owns the branch's routing
+/// and filtering decisions:
 ///
-/// - When multi-region failover is off, or metric mirroring is off, all events are dropped.
-/// - When both are on and no allowlist is configured, all events are forwarded.
+/// - When the branch gate or live metric mirroring is off, all events are dropped.
+/// - When both are on and no allowlist is configured, events are forwarded or dropped according to the configured
+///   empty-allowlist behavior.
 /// - When both are on and an allowlist is configured, only events whose metric name is in the allowlist are forwarded.
-pub struct MrfMetricsGatewayConfiguration {
+pub struct MetricMirroringGatewayConfiguration {
     enabled: bool,
-    metric_mirroring: Live<MetricMirroring>,
+    metric_mirroring: Live<MetricMirroringRouting>,
+    empty_allowlist_behavior: EmptyAllowlistBehavior,
+    metric_scope: MirroredMetricScope,
 }
 
-impl MrfMetricsGatewayConfiguration {
-    /// Creates a new `MrfMetricsGatewayConfiguration`.
+impl MetricMirroringGatewayConfiguration {
+    /// Creates a new `MetricMirroringGatewayConfiguration`.
     ///
-    /// `enabled` is whether multi-region failover is on. It defaults to off in configuration and is read once, when
-    /// the topology is built, because the failover forwarder this transform feeds is wired at that point or not at all.
+    /// `enabled` is the branch's static gate. It is read once when the topology is built because the secondary
+    /// forwarder this transform feeds is wired at that point or not at all.
     ///
-    /// `metric_mirroring` is whether metrics are mirrored to the failover region and which metric names are allowed to
-    /// be mirrored, defaulting to off and empty respectively. It is a live view: an operator can turn mirroring on, or
-    /// change the allowlist, without restarting, and the transform rebuilds its routing state from the new value. The
-    /// two settings arrive as one value, from one configuration version, so a rebuild cannot mix a fresh setting with a
-    /// stale one.
-    pub fn new(enabled: bool, metric_mirroring: Live<MetricMirroring>) -> Self {
+    /// `metric_mirroring` is whether metrics are mirrored to the secondary intake and which metric names are allowed to
+    /// be mirrored. It is a live view: an operator can turn mirroring on or change the allowlist without restarting,
+    /// and the transform rebuilds its routing state from the new value. The two settings arrive as one value, from one
+    /// configuration version, so a rebuild cannot mix a fresh setting with a stale one.
+    ///
+    /// `metric_scope` determines which metric kinds are eligible for this branch. It is static because it expresses
+    /// the contract of the branch rather than an operator-controlled routing setting.
+    pub fn new(
+        enabled: bool, metric_mirroring: Live<MetricMirroringRouting>,
+        empty_allowlist_behavior: EmptyAllowlistBehavior, metric_scope: MirroredMetricScope,
+    ) -> Self {
         Self {
             enabled,
             metric_mirroring,
+            empty_allowlist_behavior,
+            metric_scope,
         }
     }
 }
 
-/// Routing and filtering state for the MRF metrics gateway.
+/// Behavior of an active mirroring branch whose metric allowlist is empty.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmptyAllowlistBehavior {
+    /// Forward every metric.
+    ForwardAll,
+    /// Drop every metric.
+    DropAll,
+}
+
+/// Metric kinds that a mirroring branch is permitted to forward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MirroredMetricScope {
+    /// Permit both series and sketch metrics.
+    AllMetrics,
+    /// Permit only series metrics: counters, rates, gauges, and sets.
+    SeriesOnly,
+}
+
+impl MirroredMetricScope {
+    fn includes(self, metric: &Metric) -> bool {
+        match self {
+            Self::AllMetrics => true,
+            Self::SeriesOnly => matches!(
+                metric.values(),
+                MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..)
+            ),
+        }
+    }
+}
+
+/// Routing and filtering state for a metric-mirroring gateway.
 #[derive(Debug)]
 enum GatewayMode {
-    /// Multi-region failover is off, or metric mirroring is off; drop all events.
+    /// The static branch gate or live metric mirroring is off; drop all events.
     Inactive,
     /// Mirroring is on and no allowlist is configured; forward all events.
     ForwardAll,
@@ -67,15 +110,22 @@ enum GatewayMode {
 /// is derived from cannot be a fresh value and a stale one.
 struct Routing {
     enabled: bool,
-    metric_mirroring: MetricMirroring,
+    metric_mirroring: MetricMirroringRouting,
+    empty_allowlist_behavior: EmptyAllowlistBehavior,
+    metric_scope: MirroredMetricScope,
     mode: GatewayMode,
 }
 
 impl Routing {
-    fn new(enabled: bool, metric_mirroring: MetricMirroring) -> Self {
+    fn new(
+        enabled: bool, metric_mirroring: MetricMirroringRouting, empty_allowlist_behavior: EmptyAllowlistBehavior,
+        metric_scope: MirroredMetricScope,
+    ) -> Self {
         let mut routing = Self {
             enabled,
             metric_mirroring,
+            empty_allowlist_behavior,
+            metric_scope,
             mode: GatewayMode::Inactive,
         };
         routing.rebuild_mode();
@@ -83,17 +133,20 @@ impl Routing {
         routing
     }
 
-    fn set_metric_mirroring(&mut self, metric_mirroring: MetricMirroring) {
+    fn set_metric_mirroring(&mut self, metric_mirroring: MetricMirroringRouting) {
         self.metric_mirroring = metric_mirroring;
         self.rebuild_mode();
-        debug!(mode = ?self.mode, "MRF metrics gateway routing state rebuilt.");
+        debug!(mode = ?self.mode, "Metric-mirroring gateway routing state rebuilt.");
     }
 
     fn rebuild_mode(&mut self) {
         self.mode = if !(self.enabled && self.metric_mirroring.enabled) {
             GatewayMode::Inactive
         } else if self.metric_mirroring.allowlist.is_empty() {
-            GatewayMode::ForwardAll
+            match self.empty_allowlist_behavior {
+                EmptyAllowlistBehavior::ForwardAll => GatewayMode::ForwardAll,
+                EmptyAllowlistBehavior::DropAll => GatewayMode::Inactive,
+            }
         } else {
             GatewayMode::FilteredForward {
                 allowlist: self.metric_mirroring.allowlist.iter().cloned().collect(),
@@ -102,15 +155,17 @@ impl Routing {
     }
 
     fn should_forward(&self, event: &Event) -> bool {
+        let Event::Metric(metric) = event else {
+            return false;
+        };
+        if !self.metric_scope.includes(metric) {
+            return false;
+        }
+
         match &self.mode {
             GatewayMode::Inactive => false,
             GatewayMode::ForwardAll => true,
-            GatewayMode::FilteredForward { allowlist } => {
-                let Event::Metric(metric) = event else {
-                    return false;
-                };
-                allowlist.contains(metric.context().name().as_ref())
-            }
+            GatewayMode::FilteredForward { allowlist } => allowlist.contains(metric.context().name().as_ref()),
         }
     }
 
@@ -126,35 +181,39 @@ impl Routing {
         debug!(
             forwarded_events = sent_count,
             dropped_events = dropped_count,
-            "MRF metrics gateway processed event batch."
+            "Metric-mirroring gateway processed event batch."
         );
 
         Ok(())
     }
 }
 
-/// MRF metrics gateway transform.
+/// Metric-mirroring gateway transform.
 ///
-/// Forwards the metrics permitted to reach the failover region and drops the rest, following the live mirroring
+/// Forwards the metrics permitted to reach the secondary intake and drops the rest, following the live mirroring
 /// settings it holds. It carries the view rather than a snapshot so that the run loop can await it.
-pub struct MrfMetricsGateway {
+pub struct MetricMirroringGateway {
     enabled: bool,
-    metric_mirroring: Live<MetricMirroring>,
+    metric_mirroring: Live<MetricMirroringRouting>,
+    empty_allowlist_behavior: EmptyAllowlistBehavior,
+    metric_scope: MirroredMetricScope,
 }
 
-impl MrfMetricsGateway {
-    fn new(config: &MrfMetricsGatewayConfiguration) -> Self {
+impl MetricMirroringGateway {
+    fn new(config: &MetricMirroringGatewayConfiguration) -> Self {
         Self {
             enabled: config.enabled,
             metric_mirroring: config.metric_mirroring.clone(),
+            empty_allowlist_behavior: config.empty_allowlist_behavior,
+            metric_scope: config.metric_scope,
         }
     }
 }
 
 #[async_trait]
-impl TransformBuilder for MrfMetricsGatewayConfiguration {
+impl TransformBuilder for MetricMirroringGatewayConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        Ok(Box::new(MrfMetricsGateway::new(self)))
+        Ok(Box::new(MetricMirroringGateway::new(self)))
     }
 
     fn input_event_type(&self) -> EventType {
@@ -167,12 +226,12 @@ impl TransformBuilder for MrfMetricsGatewayConfiguration {
     }
 }
 
-impl MemoryBounds for MrfMetricsGatewayConfiguration {
+impl MemoryBounds for MetricMirroringGatewayConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         let allowlist = &self.metric_mirroring.allowlist;
         builder
             .minimum()
-            .with_single_value::<MrfMetricsGateway>("component struct")
+            .with_single_value::<MetricMirroringGateway>("component struct")
             .with_fixed_amount("hashset overhead", std::mem::size_of::<HashSet<String>>())
             .with_fixed_amount(
                 // Three copies: the live view's snapshot, routing state, and hash set.
@@ -191,7 +250,7 @@ impl MemoryBounds for MrfMetricsGatewayConfiguration {
 }
 
 #[async_trait]
-impl Transform for MrfMetricsGateway {
+impl Transform for MetricMirroringGateway {
     async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         // The view is moved out of the transform because `select!` awaits it while an arm body updates the routing
@@ -199,11 +258,18 @@ impl Transform for MrfMetricsGateway {
         let Self {
             enabled,
             mut metric_mirroring,
+            empty_allowlist_behavior,
+            metric_scope,
         } = *self;
-        let mut routing = Routing::new(enabled, (*metric_mirroring).clone());
+        let mut routing = Routing::new(
+            enabled,
+            (*metric_mirroring).clone(),
+            empty_allowlist_behavior,
+            metric_scope,
+        );
 
         health.mark_ready();
-        debug!(mode = ?routing.mode, "MRF metrics gateway transform started.");
+        debug!(mode = ?routing.mode, "Metric-mirroring gateway transform started.");
 
         loop {
             select! {
@@ -211,11 +277,11 @@ impl Transform for MrfMetricsGateway {
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         if let Err(e) = routing.process_event_batch(events, &mut context).await {
-                            error!(error = %e, "MRF metrics gateway failed to process event batch.");
+                            error!(error = %e, "Metric-mirroring gateway failed to process event batch.");
                         }
                     }
                     None => {
-                        debug!("Event stream terminated, shutting down MRF metrics gateway transform.");
+                        debug!("Event stream terminated, shutting down metric-mirroring gateway transform.");
                         break;
                     }
                 },
@@ -225,14 +291,14 @@ impl Transform for MrfMetricsGateway {
             }
         }
 
-        debug!("MRF metrics gateway transform stopped.");
+        debug!("Metric-mirroring gateway transform stopped.");
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{mem::size_of, sync::Arc};
+    use std::{mem::size_of, sync::Arc, time::Duration};
 
     use agent_data_plane_config::SalukiConfiguration;
     use arc_swap::ArcSwap;
@@ -264,7 +330,7 @@ mod tests {
             }
         }
 
-        fn metric_mirroring(&self) -> Live<MetricMirroring> {
+        fn metric_mirroring(&self) -> Live<MetricMirroringRouting> {
             Live::new_dynamic(Arc::clone(&self.cell), self.tick.subscribe(), |config| {
                 &config.domains.multi_region_failover.metric_mirroring
             })
@@ -288,14 +354,67 @@ mod tests {
 
     /// Builds the routing state the transform starts from, the way `run` does.
     fn routing(enabled: bool, source: &LiveSource) -> Routing {
-        let config = MrfMetricsGatewayConfiguration::new(enabled, source.metric_mirroring());
-        let gateway = MrfMetricsGateway::new(&config);
+        routing_with_policy(
+            enabled,
+            source,
+            EmptyAllowlistBehavior::ForwardAll,
+            MirroredMetricScope::AllMetrics,
+        )
+    }
 
-        Routing::new(gateway.enabled, (*gateway.metric_mirroring).clone())
+    fn routing_with_empty_behavior(
+        enabled: bool, source: &LiveSource, empty_allowlist_behavior: EmptyAllowlistBehavior,
+    ) -> Routing {
+        routing_with_policy(
+            enabled,
+            source,
+            empty_allowlist_behavior,
+            MirroredMetricScope::AllMetrics,
+        )
+    }
+
+    fn routing_with_policy(
+        enabled: bool, source: &LiveSource, empty_allowlist_behavior: EmptyAllowlistBehavior,
+        metric_scope: MirroredMetricScope,
+    ) -> Routing {
+        let config = MetricMirroringGatewayConfiguration::new(
+            enabled,
+            source.metric_mirroring(),
+            empty_allowlist_behavior,
+            metric_scope,
+        );
+        let gateway = MetricMirroringGateway::new(&config);
+
+        Routing::new(
+            gateway.enabled,
+            (*gateway.metric_mirroring).clone(),
+            gateway.empty_allowlist_behavior,
+            gateway.metric_scope,
+        )
     }
 
     fn counter(name: &'static str) -> Event {
         Event::Metric(Metric::counter(name, 1.0))
+    }
+
+    fn gauge(name: &'static str) -> Event {
+        Event::Metric(Metric::gauge(name, 1.0))
+    }
+
+    fn rate(name: &'static str) -> Event {
+        Event::Metric(Metric::rate(name, 1.0, Duration::from_secs(10)))
+    }
+
+    fn set(name: &'static str) -> Event {
+        Event::Metric(Metric::set(name, "value".to_string()))
+    }
+
+    fn histogram(name: &'static str) -> Event {
+        Event::Metric(Metric::histogram(name, 1.0))
+    }
+
+    fn distribution(name: &'static str) -> Event {
+        Event::Metric(Metric::distribution(name, 1.0))
     }
 
     /// Waits for `view` to process the published update, failing the test rather than hanging.
@@ -312,7 +431,12 @@ mod tests {
     fn memory_bounds_include_all_allowlist_copies() {
         let allowlist = ["allowed.metric", "also.allowed"];
         let source = LiveSource::new(true, &allowlist);
-        let config = MrfMetricsGatewayConfiguration::new(true, source.metric_mirroring());
+        let config = MetricMirroringGatewayConfiguration::new(
+            true,
+            source.metric_mirroring(),
+            EmptyAllowlistBehavior::ForwardAll,
+            MirroredMetricScope::AllMetrics,
+        );
 
         let registry = ComponentRegistry::default();
         config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
@@ -322,7 +446,7 @@ mod tests {
             .iter()
             .map(|name| name.len() + size_of::<String>())
             .sum::<usize>();
-        let expected = size_of::<MrfMetricsGateway>()
+        let expected = size_of::<MetricMirroringGateway>()
             + size_of::<HashSet<String>>()
             + allowlist_strings * 3
             + allowlist.len() * size_of::<Option<String>>() * 2;
@@ -332,7 +456,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failover_that_is_off_drops_everything() {
+    async fn a_static_branch_gate_that_is_off_drops_everything() {
         let source = LiveSource::new(true, &[]);
         let routing = routing(false, &source);
 
@@ -356,12 +480,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_empty_allowlist_can_drop_everything() {
+        let source = LiveSource::new(true, &[]);
+        let routing = routing_with_empty_behavior(true, &source, EmptyAllowlistBehavior::DropAll);
+
+        assert!(!routing.should_forward(&counter("any.metric")));
+    }
+
+    #[tokio::test]
     async fn an_allowlist_forwards_only_matching_metrics() {
         let source = LiveSource::new(true, &["allowed.metric"]);
         let routing = routing(true, &source);
 
         assert!(routing.should_forward(&counter("allowed.metric")));
         assert!(!routing.should_forward(&counter("blocked.metric")));
+    }
+
+    #[test]
+    fn series_only_scope_forwards_allowed_series_and_drops_sketches() {
+        let source = LiveSource::new(
+            true,
+            &[
+                "allowed.counter",
+                "allowed.gauge",
+                "allowed.rate",
+                "allowed.set",
+                "allowed.histogram",
+                "allowed.distribution",
+            ],
+        );
+        let routing = routing_with_policy(
+            true,
+            &source,
+            EmptyAllowlistBehavior::DropAll,
+            MirroredMetricScope::SeriesOnly,
+        );
+
+        assert!(routing.should_forward(&counter("allowed.counter")));
+        assert!(routing.should_forward(&gauge("allowed.gauge")));
+        assert!(routing.should_forward(&rate("allowed.rate")));
+        assert!(routing.should_forward(&set("allowed.set")));
+        assert!(!routing.should_forward(&histogram("allowed.histogram")));
+        assert!(!routing.should_forward(&distribution("allowed.distribution")));
+        assert!(!routing.should_forward(&counter("blocked.counter")));
+    }
+
+    #[test]
+    fn all_metrics_scope_preserves_mrf_sketch_forwarding() {
+        let source = LiveSource::new(true, &["allowed.histogram", "allowed.distribution"]);
+        let routing = routing_with_policy(
+            true,
+            &source,
+            EmptyAllowlistBehavior::ForwardAll,
+            MirroredMetricScope::AllMetrics,
+        );
+
+        assert!(routing.should_forward(&histogram("allowed.histogram")));
+        assert!(routing.should_forward(&distribution("allowed.distribution")));
     }
 
     #[tokio::test]

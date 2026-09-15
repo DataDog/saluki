@@ -6,7 +6,7 @@ use std::{
 
 use agent_data_plane_config::{
     control::MemoryMode,
-    domains::{dogstatsd, multi_region_failover},
+    domains::{dogstatsd, metric_mirroring, multi_region_failover},
     shared::SharedConfiguration,
     SalukiConfiguration,
 };
@@ -21,7 +21,9 @@ use saluki_app::{
     util::wait_for_shutdown_signal,
 };
 use saluki_components::{
-    config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
+    config::{
+        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricMirroringConfiguration, MrfConfiguration,
+    },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
@@ -29,7 +31,7 @@ use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration,
+        DatadogTraceConfiguration, MetricsEndpointRouting,
     },
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
@@ -41,8 +43,9 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
         AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        DogStatsDMapperProfile, DogStatsDMetricMapping, EmptyAllowlistBehavior, HistogramConfiguration,
+        HostEnrichmentConfiguration, MetricMirroringGatewayConfiguration, MirroredMetricScope,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_context::origin::OriginTagCardinality;
@@ -453,7 +456,16 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         }
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    let metric_mirroring_config = MetricMirroringConfiguration::from_configuration(
+        &config.domains.metric_mirroring,
+        &shared.endpoints.additional_endpoints,
+    )?;
+    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    if !metric_mirroring_config.selected_endpoints().is_empty() {
+        dd_metrics_config = dd_metrics_config.with_endpoint_routing(MetricsEndpointRouting::all_except_additional(
+            metric_mirroring_config.selected_endpoints().iter().cloned(),
+        ));
+    }
 
     blueprint
         // Components.
@@ -463,6 +475,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
+    add_metric_mirroring_pipeline_to_blueprint(blueprint, shared, &metric_mirroring_config)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
     Ok(())
@@ -487,9 +500,11 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(
+    let mrf_gateway_config = MetricMirroringGatewayConfiguration::new(
         mrf_config.is_enabled(),
         config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
+        EmptyAllowlistBehavior::ForwardAll,
+        MirroredMetricScope::AllMetrics,
     );
     let mrf_metrics_config =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
@@ -512,6 +527,34 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             "mrf_metrics_encode",
             "mrf_dd_out",
         ])?;
+
+    Ok(())
+}
+
+fn add_metric_mirroring_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, mirroring: &MetricMirroringConfiguration,
+) -> Result<(), GenericError> {
+    for (index, policy) in mirroring.policy_groups().iter().enumerate() {
+        let gateway_id = format!("metric_mirroring_gateway_{index}");
+        let encoder_id = format!("metric_mirroring_encode_{index}");
+        let gateway_config = MetricMirroringGatewayConfiguration::new(
+            true,
+            agent_data_plane_config::Live::new_fixed(metric_mirroring::Routing {
+                enabled: true,
+                allowlist: policy.metric_allowlist.clone(),
+            }),
+            EmptyAllowlistBehavior::DropAll,
+            MirroredMetricScope::SeriesOnly,
+        );
+        let metrics_config = DatadogMetricsConfiguration::from_configuration(shared).with_endpoint_routing(
+            MetricsEndpointRouting::only_additional(policy.endpoints.iter().cloned()),
+        );
+
+        blueprint
+            .add_transform(gateway_id.as_str(), gateway_config)?
+            .add_encoder(encoder_id.as_str(), metrics_config)?
+            .connect_components_in_order(["metrics_enrich", gateway_id.as_str(), encoder_id.as_str(), "dd_out"])?;
+    }
 
     Ok(())
 }
