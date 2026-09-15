@@ -30,11 +30,9 @@ use agent_data_plane_config::domains::otlp::{
     DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
-use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
-use datadog_agent_config::{
-    cast_to_string, drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
-};
+use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
 use tracing::warn;
 
 use crate::source::SourceTree;
@@ -92,6 +90,16 @@ impl<'a> DatadogTranslator<'a> {
                     key,
                     "port must be between 0 and 65535",
                 ));
+                None
+            }
+        }
+    }
+
+    fn parse_timeout_secs(&mut self, key: &'static str, value: i64) -> Option<Duration> {
+        match u64::try_from(value) {
+            Ok(secs) => Some(Duration::from_secs(secs)),
+            Err(_) => {
+                self.record_error(TranslateError::new_with_message(key, "timeout must not be negative"));
                 None
             }
         }
@@ -442,12 +450,31 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_container_cgroup_root(&mut self, value: String) {
+        let provenance = self.sources.provenance("container_cgroup_root");
+        self.config.shared.environment.container_roots.cgroup_root = ConfigValue::new(PathBuf::from(value), provenance);
+    }
+
+    fn consume_container_proc_root(&mut self, value: String) {
+        let provenance = self.sources.provenance("container_proc_root");
+        self.config.shared.environment.container_roots.proc_root = ConfigValue::new(PathBuf::from(value), provenance);
+    }
+
     fn consume_cri_connection_timeout(&mut self, value: i64) {
-        self.config.control.ipc.cri_connection_timeout = value;
+        if let Some(timeout) = self.parse_timeout_secs("cri_connection_timeout", value) {
+            self.config.shared.environment.containerd.connection_timeout = timeout;
+        }
     }
 
     fn consume_cri_query_timeout(&mut self, value: i64) {
-        self.config.control.ipc.cri_query_timeout = value;
+        if let Some(timeout) = self.parse_timeout_secs("cri_query_timeout", value) {
+            self.config.shared.environment.containerd.query_timeout = timeout;
+        }
+    }
+
+    fn consume_cri_socket_path(&mut self, value: String) {
+        let provenance = self.sources.provenance("cri_socket_path");
+        self.config.shared.environment.containerd.socket_path = ConfigValue::new(PathBuf::from(value), provenance);
     }
 
     fn consume_data_plane_api_listen_address(&mut self, value: String) {
@@ -513,6 +540,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String) {
         self.config.control.secure_api_listen_address = value;
+    }
+
+    fn consume_data_plane_serializer_zstd_compressor_level(&mut self, value: i64) {
+        let provenance = self.sources.provenance("data_plane.serializer_zstd_compressor_level");
+        match i32::try_from(value) {
+            Ok(value) => {
+                self.config.shared.endpoints.compression.adp_zstd_level = ConfigValue::new(value, provenance);
+            }
+            Err(error) => self.record_error(TranslateError::new(
+                "data_plane.serializer_zstd_compressor_level",
+                error,
+            )),
+        }
+    }
+
+    fn consume_data_plane_stop_timeout(&mut self, value: i64) {
+        if self.sources.provenance("data_plane.stop_timeout") == Provenance::Explicit {
+            match parse_seconds("data_plane.stop_timeout", value) {
+                Ok(duration) => self.config.control.stop_timeout = Some(duration),
+                Err(error) => self.record_error(error),
+            }
+        }
     }
 
     fn consume_data_plane_use_new_config_stream_endpoint(&mut self, value: bool) {
@@ -582,7 +631,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
-        if !value.is_empty() {
+        if self.sources.provenance("dogstatsd_log_file") == Provenance::Explicit
+            && !value.is_empty()
+            && value != "${log_path}/dogstatsd_info/dogstatsd-stats.log"
+        {
             self.config.domains.dogstatsd.debug_log.log_file = Some(PathBuf::from(value));
         }
     }
@@ -754,16 +806,56 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.forwarder.apikey_validation_interval = value;
     }
 
-    fn consume_forwarder_backoff_base(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.backoff_base = value as f64;
+    fn consume_forwarder_backoff_base(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
+        let value = if value <= 0.0 {
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_base;
+            warn!("`forwarder_backoff_base` is not positive ({value}); using {default}.");
+            default
+        } else {
+            value
+        };
+
+        match Duration::try_from_secs_f64(value) {
+            Ok(_) => self.config.shared.endpoints.forwarder.backoff_base = value,
+            Err(error) => self.record_error(TranslateError::new("forwarder_backoff_base", error)),
+        }
     }
 
-    fn consume_forwarder_backoff_factor(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.backoff_factor = value as f64;
+    fn consume_forwarder_backoff_factor(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
+        if value < 2.0 {
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_factor;
+            warn!("`forwarder_backoff_factor` is less than 2 ({value}); using {default}.");
+            self.config.shared.endpoints.forwarder.backoff_factor = default;
+        } else {
+            self.config.shared.endpoints.forwarder.backoff_factor = value;
+        }
     }
 
-    fn consume_forwarder_backoff_max(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.backoff_max = value as f64;
+    fn consume_forwarder_backoff_max(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
+        let value = if value <= 0.0 {
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_max;
+            warn!("`forwarder_backoff_max` is not positive ({value}); using {default}.");
+            default
+        } else {
+            value
+        };
+
+        if let Err(error) = Duration::try_from_secs_f64(value) {
+            self.record_error(TranslateError::new("forwarder_backoff_max", error));
+        } else if value < self.config.shared.endpoints.forwarder.backoff_base {
+            self.record_error(TranslateError::new_with_message(
+                "forwarder_backoff_max",
+                "must be greater than or equal to `forwarder_backoff_base`",
+            ));
+        } else {
+            self.config.shared.endpoints.forwarder.backoff_max = value;
+        }
     }
 
     fn consume_forwarder_connection_reset_interval(&mut self, value: i64) {
@@ -844,7 +936,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_storage_path(&mut self, value: String) {
-        self.config.shared.endpoints.forwarder.storage_path = PathBuf::from(value);
+        if !value.is_empty() && value != "${run_path}/transactions_to_retry" {
+            self.config.shared.endpoints.forwarder.storage_path = PathBuf::from(value);
+        }
     }
 
     fn consume_forwarder_timeout(&mut self, value: i64) {
@@ -869,6 +963,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_histogram_percentiles(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.histogram.percentiles = value;
+    }
+
+    fn consume_hostname(&mut self, value: String) {
+        let provenance = self.sources.provenance("hostname");
+        self.config.shared.environment.hostname = ConfigValue::new(value, provenance);
     }
 
     fn consume_ipc_cert_file_path(&mut self, value: String) {
@@ -1281,10 +1380,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
     }
 
-    fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>) {
-        self.config.shared.metrics_encoding.v3_api.series.endpoints = value;
-    }
-
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
@@ -1390,23 +1485,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_series_mode = parse_v3_series_mode("use_v3_api.series.enabled", &value);
     }
 
-    fn consume_use_v3_api_series_endpoints(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>) {
-        // This key arrives as raw JSON, so each mode is rendered the way the Agent's own string cast
-        // renders it before it is parsed: a boolean, an integer, `1.0`, and a null all reach the
-        // parser as the Agent reads them.
-        let mut modes: HashMap<String, V3SeriesMode> = HashMap::with_capacity(value.len());
-        for (endpoint, mode) in value {
-            match cast_to_string(&mode) {
-                Ok(rendered) => {
-                    modes.insert(endpoint, parse_v3_series_mode("use_v3_api.series.endpoints", &rendered));
-                }
-                Err(reason) => {
-                    self.record_error(TranslateError::new_with_message("use_v3_api.series.endpoints", reason))
-                }
-            }
-        }
-
-        self.config.shared.metrics_encoding.v3_series_endpoint_modes = modes;
+    fn consume_use_v3_api_series_endpoints(&mut self, value: HashMap<String, String>) {
+        self.config.shared.metrics_encoding.v3_series_endpoint_modes = value
+            .into_iter()
+            .map(|(endpoint, mode)| (endpoint, parse_v3_series_mode("use_v3_api.series.endpoints", &mode)))
+            .collect();
     }
 
     fn consume_vector_metrics_enabled(&mut self, value: bool) {
@@ -1875,15 +1958,63 @@ mod tests {
     }
 
     #[test]
-    fn a_compound_v3_series_endpoint_mode_records_a_translation_error() {
-        // A mode written as a list or map is a structural error, not a mode the Agent interprets.
-        let (config, errors) = translate_explicit(json!({
-            "use_v3_api": { "series": { "endpoints": { "https://app.datadoghq.com": ["true"] } } }
-        }));
+    fn defaulted_environment_settings_stay_distinguishable_from_configured_ones() {
+        let (config, errors) = translate_stream(&[
+            ("hostname", json!(""), StreamProvenance::Default),
+            ("cri_socket_path", json!(""), StreamProvenance::Default),
+            ("container_proc_root", json!("/host/proc"), StreamProvenance::Default),
+            (
+                "container_cgroup_root",
+                json!("/host/sys/fs/cgroup/"),
+                StreamProvenance::Default,
+            ),
+        ]);
 
-        assert!(config.shared.metrics_encoding.v3_series_endpoint_modes.is_empty());
-        let errors = errors.expect("a compound mode should record a translation error");
-        assert!(errors.to_string().contains("use_v3_api.series.endpoints"));
+        assert!(errors.is_none());
+        let environment = &config.shared.environment;
+        assert_defaulted(&environment.hostname, "");
+        assert_defaulted(&environment.containerd.socket_path, PathBuf::from(""));
+        assert_defaulted(&environment.container_roots.proc_root, PathBuf::from("/host/proc"));
+        assert_defaulted(
+            &environment.container_roots.cgroup_root,
+            PathBuf::from("/host/sys/fs/cgroup/"),
+        );
+    }
+
+    #[test]
+    fn explicit_environment_settings_are_carried_verbatim() {
+        let (config, errors) = translate_stream(&[
+            ("hostname", json!("my-host"), StreamProvenance::Explicit),
+            ("cri_socket_path", json!(""), StreamProvenance::Explicit),
+            ("container_proc_root", json!("/proc"), StreamProvenance::Explicit),
+        ]);
+
+        assert!(errors.is_none());
+        let environment = &config.shared.environment;
+        assert_explicit(&environment.hostname, "my-host");
+        assert_explicit(&environment.containerd.socket_path, PathBuf::from(""));
+        assert_explicit(&environment.container_roots.proc_root, PathBuf::from("/proc"));
+    }
+
+    #[test]
+    fn cri_timeouts_become_durations_and_reject_negative_values() {
+        let (config, errors) = translate_explicit(json!({ "cri_connection_timeout": 2, "cri_query_timeout": 7 }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.shared.environment.containerd.connection_timeout,
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            config.shared.environment.containerd.query_timeout,
+            Duration::from_secs(7)
+        );
+
+        let (config, errors) = translate_explicit(json!({ "cri_query_timeout": -1 }));
+
+        let errors = errors.expect("a negative timeout should record a translation error");
+        assert!(errors.to_string().contains("cri_query_timeout"));
+        assert_eq!(config.shared.environment.containerd.query_timeout, Duration::ZERO);
     }
 
     // Issue #1965: the Core Agent streams `dd_url` at its schema default even when the operator
@@ -1971,15 +2102,32 @@ mod tests {
     }
 
     #[test]
-    fn the_adp_zstd_level_wins_over_an_explicit_agent_level() {
-        let (mut config, errors) = translate_explicit(json!({ "serializer_zstd_compressor_level": 5 }));
+    fn defaulted_data_plane_overrides_do_not_replace_derived_values() {
+        let (config, errors) = translate_stream(&[
+            ("aggregator_stop_timeout", json!(8), StreamProvenance::Explicit),
+            ("forwarder_stop_timeout", json!(9), StreamProvenance::Explicit),
+            ("data_plane.stop_timeout", json!(17), StreamProvenance::Default),
+            ("serializer_zstd_compressor_level", json!(5), StreamProvenance::Explicit),
+            (
+                "data_plane.serializer_zstd_compressor_level",
+                json!(3),
+                StreamProvenance::Default,
+            ),
+        ]);
+
         assert!(errors.is_none());
+        assert_eq!(config.control.stop_timeout, None);
+        assert_eq!(5, config.shared.endpoints.compression.effective_zstd_level());
+    }
 
-        let saluki_only: SalukiOnly =
-            serde_json::from_value(json!({ "data_plane": { "serializer_zstd_compressor_level": 4 } }))
-                .expect("saluki-only source deserializes");
-        saluki_only.seed(&mut config);
+    #[test]
+    fn the_adp_zstd_level_wins_over_an_explicit_agent_level() {
+        let (config, errors) = translate_explicit(json!({
+            "serializer_zstd_compressor_level": 5,
+            "data_plane": { "serializer_zstd_compressor_level": 4 },
+        }));
 
+        assert!(errors.is_none());
         assert_eq!(4, config.shared.endpoints.compression.effective_zstd_level());
     }
 
@@ -1995,6 +2143,67 @@ mod tests {
             DEFAULT_ZSTD_COMPRESSOR_LEVEL,
             config.shared.endpoints.compression.effective_zstd_level()
         );
+    }
+
+    #[test]
+    fn an_explicit_data_plane_stop_timeout_is_an_override() {
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "stop_timeout": 45 },
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn forwarder_backoff_uses_agent_fallbacks() {
+        let (config, errors) = translate_explicit(json!({
+            "forwarder_backoff_base": -0.5,
+            "forwarder_backoff_factor": 1.5,
+            "forwarder_backoff_max": -0.5,
+        }));
+
+        assert!(errors.is_none());
+        let defaults = DatadogConfiguration::schema_defaults();
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_eq!(forwarder.backoff_base, defaults.forwarder_backoff_base);
+        assert_eq!(forwarder.backoff_factor, defaults.forwarder_backoff_factor);
+        assert_eq!(forwarder.backoff_max, defaults.forwarder_backoff_max);
+    }
+
+    #[test]
+    fn unsafe_forwarder_backoff_durations_record_translation_errors() {
+        let (_, errors) = translate_explicit(json!({ "forwarder_backoff_base": 1e100 }));
+        assert!(errors
+            .expect("an unrepresentable base should record an error")
+            .to_string()
+            .contains("forwarder_backoff_base"));
+
+        let (_, errors) = translate_explicit(json!({
+            "forwarder_backoff_base": 2.5,
+            "forwarder_backoff_max": 2.4,
+        }));
+        assert!(errors
+            .expect("a maximum below the base should record an error")
+            .to_string()
+            .contains("forwarder_backoff_max"));
+    }
+
+    #[test]
+    fn forwarder_storage_path_ignores_only_unresolved_defaults() {
+        let (config, errors) = translate_stream(&[(
+            "forwarder_storage_path",
+            json!("${run_path}/transactions_to_retry"),
+            StreamProvenance::Default,
+        )]);
+        assert!(errors.is_none());
+        assert_eq!(config.shared.endpoints.forwarder.storage_path, PathBuf::new());
+
+        let resolved = "/var/lib/datadog/transactions_to_retry";
+        let (config, errors) =
+            translate_stream(&[("forwarder_storage_path", json!(resolved), StreamProvenance::Default)]);
+        assert!(errors.is_none());
+        assert_eq!(config.shared.endpoints.forwarder.storage_path, PathBuf::from(resolved));
     }
 
     #[test]

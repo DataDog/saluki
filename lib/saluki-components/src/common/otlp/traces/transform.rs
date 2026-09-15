@@ -31,7 +31,9 @@ use crate::common::otlp::traces::normalize::{
     is_normalized_tag_value, normalize_service_into, normalize_tag_value_append_unchecked,
     normalize_tag_value_into_unchecked,
 };
-use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
+use crate::common::otlp::traces::normalize::{
+    truncate_utf8, validate_and_fix_duration, validate_and_fix_start_time, MAX_RESOURCE_LEN, MAX_TYPE_LEN,
+};
 use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
@@ -366,9 +368,22 @@ pub fn otel_to_dd_span_minimal(
     let mut dd_span = DdSpan::default();
 
     let span_id = convert_span_id(&otel_span.span_id);
-    let parent_id = convert_span_id(&otel_span.parent_span_id);
+    let mut parent_id = convert_span_id(&otel_span.parent_span_id);
+
+    // Mirrors `normalizeV1` (`pkg/trace/agent/normalizer.go`): a span that is its own parent is
+    // treated as a root span.
+    if parent_id == span_id {
+        parent_id = 0;
+    }
+
+    // Mirrors `validateAndFixDurationV1` and `validateAndFixStartTimeV1`, in that order: the duration
+    // is fixed first using the original start, then the start is fixed using the corrected duration.
+    // Without the duration fix, a tracer reporting an end time before its start time wraps the `u64`
+    // subtraction and the span carries a duration near `u64::MAX`.
     let start = otel_span.start_time_unix_nano;
-    let duration = otel_span.end_time_unix_nano - otel_span.start_time_unix_nano;
+    let duration = validate_and_fix_duration(start, otel_span.end_time_unix_nano.wrapping_sub(start));
+    let start = validate_and_fix_start_time(start, duration);
+
     let mut attrs: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
     attrs.reserve(span_attributes.len() + resource_attributes.len());
     let is_top_level = compute_top_level_by_span_kind
@@ -497,6 +512,12 @@ pub fn otel_to_dd_span_minimal(
                 string_builder,
             );
         }
+    }
+
+    // Mirrors `validateAndFixType` (`pkg/trace/agent/normalizer.go`): truncate `span.type` at
+    // `MaxTypeLen` bytes, cutting back to a valid UTF-8 boundary.
+    if span_type.len() > MAX_TYPE_LEN {
+        span_type = MetaString::from(truncate_utf8(&span_type, MAX_TYPE_LEN).to_owned());
     }
 
     dd_span = dd_span
@@ -1741,6 +1762,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
 
     use super::*;
+    use crate::common::otlp::traces::normalize::YEAR_2000_NANOSEC_TS;
 
     // Helper to create a KeyValue with a string value
     fn kv_str(key: &str, value: &str) -> KeyValue {
@@ -2959,5 +2981,140 @@ mod tests {
                 .map(|s| s.as_ref()),
             Some("500 Internal Server Error")
         );
+    }
+
+    /// An end time before the start time must yield a zero duration, not a wrapped `u64` near
+    /// `u64::MAX`. Mirrors `validateAndFixDurationV1` (`pkg/trace/agent/normalizer.go`).
+    /// https://github.com/DataDog/saluki/issues/2382
+    #[test]
+    fn otel_to_dd_span_zeroes_duration_when_end_time_precedes_start_time() {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            start_time_unix_nano: YEAR_2000_NANOSEC_TS + 1_000_000_000,
+            end_time_unix_nano: YEAR_2000_NANOSEC_TS,
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None);
+
+        assert_eq!(dd_span.duration(), 0);
+        // The start is above the year-2000 floor, so it must survive untouched.
+        assert_eq!(dd_span.start(), YEAR_2000_NANOSEC_TS + 1_000_000_000);
+    }
+
+    /// A start time before the year-2000 floor is replaced with the receive time minus the duration.
+    /// Mirrors `validateAndFixStartTimeV1` (`pkg/trace/agent/normalizer.go`).
+    /// https://github.com/DataDog/saluki/issues/2382
+    #[test]
+    fn otel_to_dd_span_rewrites_pre_year_2000_start_time() {
+        let (interner, mut sb) = extraction_env();
+        let duration = 1_000_000_000;
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 1 + duration,
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let start = dd_span.start();
+        assert!(
+            start >= YEAR_2000_NANOSEC_TS,
+            "rewritten start must clear the year-2000 floor"
+        );
+        assert!(
+            start <= now && now - start < 5_000_000_000,
+            "start: {start}, now: {now}"
+        );
+        assert_eq!(dd_span.duration(), duration, "a valid duration must survive");
+    }
+
+    /// A parent ID equal to the span ID is cleared to zero, mirroring `normalizeV1`
+    /// (`pkg/trace/agent/normalizer.go`). https://github.com/DataDog/saluki/issues/2382
+    #[test]
+    fn otel_to_dd_span_clears_self_referencing_parent_id() {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            span_id: [1u8; 8].to_vec(),
+            parent_span_id: [1u8; 8].to_vec(),
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None);
+
+        assert_eq!(dd_span.parent_id(), 0);
+        assert_eq!(dd_span.span_id(), u64::from_be_bytes([1u8; 8]));
+    }
+
+    /// A distinct parent ID survives the self-referencing check.
+    #[test]
+    fn otel_to_dd_span_keeps_distinct_parent_id() {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            span_id: [1u8; 8].to_vec(),
+            parent_span_id: [2u8; 8].to_vec(),
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None);
+
+        assert_eq!(dd_span.parent_id(), u64::from_be_bytes([2u8; 8]));
+    }
+
+    /// A `span.type` longer than 100 bytes is truncated at a UTF-8 boundary, mirroring
+    /// `validateAndFixType` (`pkg/trace/agent/normalizer.go`).
+    /// https://github.com/DataDog/saluki/issues/2382
+    #[test]
+    fn otel_to_dd_span_truncates_long_span_type() {
+        let (interner, mut sb) = extraction_env();
+        // 150 ASCII bytes, well over the limit, and a multibyte character straddling the boundary:
+        // 98 bytes of 'a' plus two 4-byte crabs cut back to the last valid boundary at 98 bytes.
+        let long_ascii = "t".repeat(150);
+        let long_multibyte = "a".repeat(98) + "🦀🦀";
+        for (label, span_type, expected_len) in [("ascii", long_ascii, 100), ("multibyte", long_multibyte, 98)] {
+            let span = OtlpSpan {
+                name: "span-name".to_string(),
+                attributes: vec![kv_str(KEY_DATADOG_TYPE, span_type.as_str())],
+                ..Default::default()
+            };
+            let resource = Resource::default();
+            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None);
+
+            assert_eq!(
+                dd_span.span_type().len(),
+                expected_len,
+                "{label}: span type must be truncated at a UTF-8 boundary"
+            );
+            // The right length from the wrong bytes would still be wrong: the result must be a prefix
+            // of the input.
+            assert!(
+                span_type.as_bytes().starts_with(dd_span.span_type().as_bytes()),
+                "{label}: truncated span type must be a prefix of the input"
+            );
+        }
+    }
+
+    /// A `span.type` at or below the limit is left untouched.
+    #[test]
+    fn otel_to_dd_span_keeps_span_type_within_limit() {
+        let (interner, mut sb) = extraction_env();
+        let span_type = "x".repeat(MAX_TYPE_LEN);
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            attributes: vec![kv_str(KEY_DATADOG_TYPE, span_type.as_str())],
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None);
+
+        assert_eq!(dd_span.span_type(), span_type);
     }
 }

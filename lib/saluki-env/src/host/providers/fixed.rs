@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 
@@ -12,17 +11,9 @@ pub struct FixedHostProvider {
 }
 
 impl FixedHostProvider {
-    /// Creates a new `FixedHostProvider` from the given configuration.
-    ///
-    /// Depends on the hostname existing in the given configuration under the `hostname` key.
-    ///
-    /// # Errors
-    ///
-    /// If the hostname isn't specified in the configuration, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let hostname = config.get_typed::<String>("hostname")?;
-
-        Ok(Self { hostname })
+    /// Creates a new `FixedHostProvider` that reports the given hostname.
+    pub fn new(hostname: String) -> Self {
+        Self { hostname }
     }
 }
 

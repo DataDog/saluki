@@ -82,17 +82,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
 
     writeln!(out, "];").unwrap();
 
-    let path = manifest_dir.join("src/generated/env_keys.rs");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    if existing != out {
-        std::fs::write(&path, &out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
-    }
-
-    let _ = std::process::Command::new("rustfmt")
-        .arg("--edition")
-        .arg("2021")
-        .arg(&path)
-        .status();
+    crate::generated_file::write_formatted(&manifest_dir.join("src/generated/env_keys.rs"), &out);
 }
 
 /// Derives the Agent's standard environment name for a key: `DD_` + `UPPER(dotted_path)`.

@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
 pub enum ConfigurationStruct {
     AggregateConfiguration,
-    ContainerdConfiguration,
     DatadogEventsConfiguration,
     DatadogLogsConfiguration,
     DatadogServiceChecksConfiguration,
@@ -40,7 +39,6 @@ impl ConfigurationStruct {
     pub fn as_smoke_test_const(&self) -> &'static str {
         match self {
             ConfigurationStruct::AggregateConfiguration => "AGGREGATE_CONFIGURATION",
-            ConfigurationStruct::ContainerdConfiguration => "CONTAINERD_CONFIGURATION",
             ConfigurationStruct::DatadogEventsConfiguration => "DATADOG_EVENTS_CONFIGURATION",
             ConfigurationStruct::DatadogLogsConfiguration => "DATADOG_LOGS_CONFIGURATION",
             ConfigurationStruct::DatadogServiceChecksConfiguration => "DATADOG_SERVICE_CHECKS_CONFIGURATION",

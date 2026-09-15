@@ -57,50 +57,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Otlp])",
         filename: "data_plane.rs",
     },
-    SalukiKey {
-        yaml_path: "data_plane.serializer_zstd_compressor_level",
-        description: "ADP zstd compression level",
-        default: "3",
-        documentation: Some(
-            "ADP-specific zstd compression level, taking precedence over the Core Agent's \
-             `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to \
-             `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its \
-             own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs \
-             69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can \
-             afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` \
-             or in ADP-specific configuration.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: Some("3"),
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["TYPED_CONFIG_SYSTEM"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
-    SalukiKey {
-        yaml_path: "data_plane.stop_timeout",
-        description: "ADP graceful shutdown timeout (s)",
-        default: "derived",
-        documentation: Some(
-            "### `data_plane.stop_timeout`
-
-\
-             ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. \
-             If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: None,
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["GET_TYPED"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
     // ── dogstatsd.rs ─────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",

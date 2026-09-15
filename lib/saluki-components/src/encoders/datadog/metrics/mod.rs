@@ -116,12 +116,11 @@ fn metrics_primary_url_can_resolve(url: &str) -> bool {
 }
 
 fn series_v3_can_be_enabled_for_config(
-    use_v2_api_series: bool, serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>,
-    has_additional_endpoints: bool, series_config: &UseV3ApiSeriesConfig,
+    use_v2_api_series: bool, metrics_primary_v3_override: Option<bool>, has_additional_endpoints: bool,
+    series_config: &UseV3ApiSeriesConfig,
 ) -> bool {
     use_v2_api_series
-        && (serializer_use_v3_series
-            || metrics_primary_v3_override == Some(true)
+        && (metrics_primary_v3_override == Some(true)
             || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
                 && series_v3_config_can_enable_v3(series_config)))
 }
@@ -278,7 +277,6 @@ impl DatadogMetricsConfiguration {
     pub fn with_v2_series_only(mut self) -> Self {
         self.use_v3_api.series.enabled = V3SeriesMode::Disabled;
         self.use_v3_api.series.endpoints.clear();
-        self.v3_api.series.endpoints.clear();
         self.opw_metrics.clear_v3_series_overrides();
         self
     }
@@ -294,14 +292,11 @@ impl DatadogMetricsConfiguration {
 
     fn endpoint_v3_settings(
         &self, endpoint: &ResolvedEndpoint, metrics_primary_v3_override: Option<bool>,
-        serializer_v3_configured_endpoint: Option<&str>,
     ) -> EndpointV3Settings {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
-            serializer_v3_configured_endpoint,
             series_config: &self.use_v3_api.series,
             metrics_primary_v3_override,
-            serializer_v3_series_endpoints: &self.v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &self.v3_api.sketches.endpoints,
         })
     }
@@ -314,18 +309,14 @@ impl DatadogMetricsConfiguration {
         {
             let metrics_primary = ResolvedEndpoint::from_raw_endpoint(metrics_primary_url, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
-            let settings = self.endpoint_v3_settings(
-                &metrics_primary,
-                Some(metrics_primary_v3_override),
-                Some(&self.primary_endpoint),
-            );
+            let settings = self.endpoint_v3_settings(&metrics_primary, Some(metrics_primary_v3_override));
             if predicate(&settings) {
                 return Ok(true);
             }
         } else {
             let primary = ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
-            let settings = self.endpoint_v3_settings(&primary, None, None);
+            let settings = self.endpoint_v3_settings(&primary, None);
             if predicate(&settings) {
                 return Ok(true);
             }
@@ -334,7 +325,7 @@ impl DatadogMetricsConfiguration {
         for endpoint in resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
-            let settings = self.endpoint_v3_settings(&endpoint, None, None);
+            let settings = self.endpoint_v3_settings(&endpoint, None);
             if predicate(&settings) {
                 return Ok(true);
             }
@@ -359,7 +350,6 @@ impl DatadogMetricsConfiguration {
         let metrics_primary_v3_override = selected_metrics_primary_v3_override(&self.opw_metrics);
         if !series_v3_can_be_enabled_for_config(
             self.use_v2_series_api,
-            self.v3_api.use_v3_series(),
             metrics_primary_v3_override,
             !self.additional_endpoints.is_empty(),
             &self.use_v3_api.series,
@@ -473,7 +463,6 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             debug!(
                 ?series_mode,
                 ?sketches_mode,
-                v3_series_endpoints = ?self.v3_api.series.endpoints,
                 v3_sketches_endpoints = ?self.v3_api.sketches.endpoints,
                 "V3 encoding support is enabled."
             );
@@ -1813,9 +1802,6 @@ mod tests {
     fn v3_api_settings_come_from_resolved_configuration() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_api.compression_level = 7;
-        shared.metrics_encoding.v3_api.series = TypedV3ApiSettings {
-            endpoints: vec!["https://app.datadoghq.com".to_string()],
-        };
         shared.metrics_encoding.v3_api.sketches = TypedV3ApiSettings {
             endpoints: vec!["https://app.datadoghq.eu".to_string()],
         };
@@ -1823,10 +1809,6 @@ mod tests {
         let config = metrics_config_from(&shared);
 
         assert_eq!(7, config.v3_api.compression_level);
-        assert_eq!(
-            Some("https://app.datadoghq.com"),
-            config.v3_api.series.endpoints.first().map(String::as_str)
-        );
         assert_eq!(
             Some("https://app.datadoghq.eu"),
             config.v3_api.sketches.endpoints.first().map(String::as_str)
@@ -1920,13 +1902,8 @@ mod tests {
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
         let config = metrics_config_from(&shared);
 
-        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
-            config.use_v2_series_api,
-            false,
-            None,
-            false,
-            &config.use_v3_api.series,
-        );
+        let series_v3_can_be_enabled =
+            series_v3_can_be_enabled_for_config(config.use_v2_series_api, None, false, &config.use_v3_api.series);
 
         assert!(!series_v3_can_be_enabled);
 
@@ -1942,33 +1919,12 @@ mod tests {
     }
 
     #[test]
-    fn all_v3_serializer_endpoints_require_only_v3_series() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
-        shared.endpoints.dd_url = ConfigValue::explicit("https://agent.datad0g.com.".to_string());
-        shared.endpoints.additional_endpoints = HashMap::from([(
-            "https://agent.datadoghq.com.".to_string(),
-            vec!["additional-api-key".to_string()],
-        )]);
-        shared.metrics_encoding.v3_api.series.endpoints = vec![
-            "https://agent.datad0g.com.".to_string(),
-            "https://agent.datadoghq.com.".to_string(),
-        ];
-        let config = metrics_config_from(&shared);
-
-        assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
-        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
-    }
-
-    #[test]
     fn endpoint_override_uses_the_overridden_endpoint_protocol() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
         shared.endpoints.dd_url = ConfigValue::explicit("https://primary.example.com".to_string());
-        shared.metrics_encoding.v3_api.series.endpoints = vec![
-            "https://primary.example.com".to_string(),
-            "https://v3-mrf.example.com".to_string(),
-        ];
+        shared.metrics_encoding.v3_series_endpoint_modes =
+            HashMap::from([("https://v3-mrf.example.com".to_string(), V3SeriesMode::Enabled)]);
         let config = metrics_config_from(&shared);
 
         let v2_mrf_config = config
@@ -2019,7 +1975,6 @@ mod tests {
 
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert!(config.use_v3_api.series.endpoints.is_empty());
-        assert!(config.v3_api.series.endpoints.is_empty());
         assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
         assert!(!config.requires_v3_series(false).expect("endpoint should resolve"));
     }
@@ -2044,36 +1999,25 @@ mod tests {
 
         assert!(!series_v3_can_be_enabled_for_config(
             true,
-            false,
             Some(false),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
             true,
-            false,
             Some(true),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
             true,
-            false,
             Some(false),
             true,
-            &series_config
-        ));
-        assert!(series_v3_can_be_enabled_for_config(
-            true,
-            true,
-            Some(false),
-            false,
             &series_config
         ));
         assert_eq!(None, invalid_metrics_primary_override);
         assert!(series_v3_can_be_enabled_for_config(
             true,
-            false,
             invalid_metrics_primary_override,
             false,
             &series_config

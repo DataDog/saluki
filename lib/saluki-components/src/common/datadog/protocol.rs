@@ -100,9 +100,6 @@ impl V3ApiSettings {
 /// V3 API configuration for per-endpoint V3 support.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct V3ApiConfig {
-    /// V3 settings for series metrics (counters, gauges, rates, sets).
-    pub series: V3ApiSettings,
-
     /// V3 settings for sketch metrics (histograms, distributions).
     pub sketches: V3ApiSettings,
 
@@ -113,11 +110,6 @@ pub struct V3ApiConfig {
 }
 
 impl V3ApiConfig {
-    /// Returns true if V3 is enabled for series metrics.
-    pub fn use_v3_series(&self) -> bool {
-        self.series.is_enabled()
-    }
-
     /// Returns true if V3 is enabled for sketch metrics.
     pub fn use_v3_sketches(&self) -> bool {
         self.sketches.is_enabled()
@@ -135,7 +127,6 @@ impl From<&TypedV3ApiSettings> for V3ApiSettings {
 impl From<&TypedV3ApiEncoding> for V3ApiConfig {
     fn from(config: &TypedV3ApiEncoding) -> Self {
         Self {
-            series: (&config.series).into(),
             sketches: (&config.sketches).into(),
             compression_level: config.compression_level,
         }

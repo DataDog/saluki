@@ -5,6 +5,9 @@ use tracing::debug;
 mod http;
 pub use self::http::StandardHttpRetryLifecycle;
 
+mod telemetry;
+pub use self::telemetry::RetryCauseTelemetry;
+
 pub trait RetryLifecycle<Req, Res, Error> {
     fn before_retry(&self, req: &Req, res: &Result<Res, Error>, retry_backoff: Duration, error_count: u32);
     fn after_success(&self, req: &Req, res: &Result<Res, Error>);

@@ -93,7 +93,8 @@ are no help: `data_plane.foo` can belong to either class.
 
 The vendored schema and overlay have different jobs:
 
-- `schema/core/*.yaml` defines Datadog keys as JSON Schema rendered in YAML.
+- `schema/core/*.yaml` defines Datadog keys. Keep it a pristine upstream copy, not hand-edited.
+  Warn the user about proposed or existing hand edits.
 - `schema_overlay.yaml` classifies every schema leaf for ADP. Its shape is defined by ADP.
 
 Under `inventory`, support is `full|partial|none|unknown`; `excluded` is a separate section.

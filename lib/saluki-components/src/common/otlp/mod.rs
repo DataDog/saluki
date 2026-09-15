@@ -64,6 +64,8 @@ pub struct Metrics {
     logs_received: Counter,
     bytes_received: Counter,
     spans_received: Counter,
+    traces_dropped_span_id_zero: Counter,
+    spans_dropped_span_id_zero: Counter,
     metrics_errors_decode: Counter,
     metrics_errors_channel: Counter,
     metrics_errors_dispatch: Counter,
@@ -81,6 +83,18 @@ impl Metrics {
 
     pub fn spans_received(&self) -> &Counter {
         &self.spans_received
+    }
+
+    /// Counter for traces dropped because they contained a span with a span ID of zero.
+    pub fn traces_dropped_span_id_zero(&self) -> &Counter {
+        &self.traces_dropped_span_id_zero
+    }
+
+    /// Counter for individual spans dropped as part of a trace dropped for containing a span ID of
+    /// zero. Mirrors the Go trace-agent's separate `TracesDropped.SpanIDZero` and `SpansDropped`
+    /// counters, since `component_events_received_total{message_type:otlp_spans}` counts spans.
+    pub fn spans_dropped_span_id_zero(&self) -> &Counter {
+        &self.spans_dropped_span_id_zero
     }
 
     pub fn bytes_received(&self) -> &Counter {
@@ -111,6 +125,8 @@ impl Metrics {
             logs_received: Counter::noop(),
             bytes_received: Counter::noop(),
             spans_received: Counter::noop(),
+            traces_dropped_span_id_zero: Counter::noop(),
+            spans_dropped_span_id_zero: Counter::noop(),
             metrics_errors_decode: Counter::noop(),
             metrics_errors_channel: Counter::noop(),
             metrics_errors_dispatch: Counter::noop(),
@@ -131,6 +147,18 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
             .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+        traces_dropped_span_id_zero: builder.register_counter_with_tags(
+            "component_events_dropped_total",
+            ["intentional:true", "drop_reason:span_id_zero"],
+        ),
+        spans_dropped_span_id_zero: builder.register_counter_with_tags(
+            "component_events_dropped_total",
+            [
+                "intentional:true",
+                "drop_reason:span_id_zero",
+                "message_type:otlp_spans",
+            ],
+        ),
         metrics_errors_decode: builder.register_counter_with_tags("component_errors_total", [("reason", "decode")]),
         metrics_errors_channel: builder.register_counter_with_tags("component_errors_total", [("reason", "channel")]),
         metrics_errors_dispatch: builder.register_counter_with_tags("component_errors_total", [("reason", "dispatch")]),

@@ -316,21 +316,19 @@ impl ForwarderConfiguration {
     /// alternate metrics intakes apply to it. Because the destination is part of construction, no
     /// later step can overwrite it.
     pub(crate) fn for_single_destination(shared: &SharedConfiguration, destination: &SingleDestination) -> Self {
-        let mut v3_api: V3ApiConfig = (&shared.metrics_encoding.v3_api).into();
-        let mut series_mode: UseV3ApiSeriesConfig = (&shared.metrics_encoding).into();
-
-        if !destination.accepts_v3_series {
-            series_mode = UseV3ApiSeriesConfig {
+        let series_mode = if destination.accepts_v3_series {
+            (&shared.metrics_encoding).into()
+        } else {
+            UseV3ApiSeriesConfig {
                 enabled: V3SeriesMode::Disabled,
                 endpoints: HashMap::new(),
-            };
-            v3_api.series.endpoints.clear();
-        }
+            }
+        };
 
         let routing = ForwarderRouting {
             endpoint: EndpointConfiguration::for_single_destination(destination),
             opw_metrics: OpwMetricsConfiguration::default(),
-            v3_api,
+            v3_api: (&shared.metrics_encoding.v3_api).into(),
             use_v3_api: UseV3ApiConfig { series: series_mode },
         };
 
@@ -486,11 +484,6 @@ impl ForwarderConfiguration {
         self.opw_metrics
             .selected_endpoint()
             .map(|selected| selected.use_v3_series)
-    }
-
-    /// Returns the configured primary endpoint string without resolving or version-prefixing it.
-    pub(crate) fn primary_configured_endpoint(&self) -> &str {
-        self.endpoint.configured_primary_endpoint()
     }
 
     /// Returns whether the configured metrics compressor is incompatible with Metrics V3.
@@ -709,7 +702,6 @@ mod tests {
         shared.endpoints.dd_url = ConfigValue::explicit(DATADOG_URL.to_string());
         let config = forwarder_config_from(shared).await;
 
-        assert_eq!(DATADOG_URL, config.primary_configured_endpoint());
         assert_eq!(
             vec![DATADOG_URI],
             endpoint_urls_by_route(&config, EndpointRoute::Primary)
@@ -723,7 +715,13 @@ mod tests {
         shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
         let config = forwarder_config_from(shared).await;
 
-        assert_eq!("https://app.datadoghq.eu", config.primary_configured_endpoint());
+        let primary = config
+            .build_routable_endpoints()
+            .expect("endpoint should resolve")
+            .into_iter()
+            .find(|endpoint| endpoint.route() == EndpointRoute::Primary)
+            .expect("primary endpoint exists");
+        assert_eq!("https://app.datadoghq.eu", primary.endpoint().configured_endpoint());
     }
 
     #[tokio::test]
@@ -909,7 +907,6 @@ mod tests {
         // A destination that does not accept V3 series payloads gets none of the configured V3 routing.
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
         assert!(config.use_v3_api_series().endpoints.is_empty());
-        assert!(config.v3_api().series.endpoints.is_empty());
     }
 
     #[tokio::test]
