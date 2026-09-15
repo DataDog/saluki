@@ -120,6 +120,12 @@ impl AsyncWrite for Connection {
 /// still active no matter what its holder does, so the registry won't hand the listener to another acquirer whose
 /// streams would then read from the same socket.
 pub(crate) struct SubleasedSocket<T> {
+    /// The bound socket, shared with the listener that yielded it.
+    ///
+    /// Declared before the sublease, and that order matters: fields drop in declaration order, so the socket closes
+    /// before the sublease is returned. Returning the sublease first would tell the registry the socket is gone while
+    /// it is still open, and a discarded listener is rebuilt the instant its last sublease comes back -- which would
+    /// bind the replacement alongside this socket rather than after it.
     socket: Arc<T>,
 
     /// The sublease held for as long as this socket is in use.

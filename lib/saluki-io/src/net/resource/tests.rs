@@ -183,6 +183,51 @@ async fn a_stream_outliving_its_lease_holds_the_listener() {
 }
 
 #[tokio::test]
+async fn a_discarded_listener_is_not_rebound_while_a_stream_holds_its_socket() {
+    // Discarding drops the listener, but for a connectionless family that doesn't close the socket: the stream shares
+    // it, so it stays bound and receiving. Binding a replacement now would put two sockets on the address, and since
+    // UDP sockets are bound with `SO_REUSEPORT`, the kernel would hash incoming datagrams across both -- silently
+    // delivering a share of the traffic to the listener that was discarded. The sublease the stream carries is what
+    // holds the address until it is genuinely free.
+    let registry = ResourceRegistry::new();
+    let addr = reserved_udp_addr();
+    let spec = SocketSpecification::new(ListenAddress::Udp(addr));
+
+    let mut listener = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let mut stream = listener.accept().await.expect("should yield a stream");
+    let bound = listener.bound_listen_address();
+
+    listener.discard();
+
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            registry.acquire(&owner("second"), spec.clone())
+        )
+        .await
+        .is_err(),
+        "a replacement listener should not be bound while a stream is still reading the discarded socket"
+    );
+
+    // The stream keeps working throughout, exactly as it does when the listener is released rather than discarded.
+    round_trip(&mut stream, addr, b"still mine").await;
+    drop(stream);
+
+    // With the socket finally closed, the replacement binds the address it was waiting for, and owns it alone.
+    let mut listener = timeout(Duration::from_secs(5), registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should complete once the stream is dropped")
+        .expect("should acquire a replacement");
+    assert_eq!(listener.bound_listen_address(), bound);
+
+    let mut stream = listener.accept().await.expect("should yield a stream");
+    round_trip(&mut stream, addr, b"mine now").await;
+}
+
+#[tokio::test]
 async fn one_address_cannot_be_held_as_two_listener_types() {
     let registry = ResourceRegistry::new();
     let address = ListenAddress::Tcp(reserved_tcp_addr());
