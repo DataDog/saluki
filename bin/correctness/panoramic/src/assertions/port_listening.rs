@@ -1,16 +1,15 @@
-use std::{
-    future::Future,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use airlock::docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures::TryStreamExt as _;
 use tokio::net::TcpStream;
-use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::assertions::{
+    polling::{run_poll_attempt, PollAttemptResult, PROBE_ATTEMPT_TIMEOUT},
+    Assertion, AssertionContext, AssertionResult,
+};
 
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -96,15 +95,16 @@ impl Assertion for PortListeningAssertion {
         let deadline = Instant::now() + self.timeout;
 
         loop {
-            match run_probe_attempt_until(
+            match run_poll_attempt(
                 deadline,
+                PROBE_ATTEMPT_TIMEOUT,
                 &ctx.cancel_token,
                 &ctx.container_exit_token,
                 probe.run(&ctx.container_name),
             )
             .await
             {
-                ProbeAttemptResult::Listening => {
+                PollAttemptResult::Completed(true) => {
                     return AssertionResult {
                         name: self.name().to_string(),
                         passed: true,
@@ -117,22 +117,16 @@ impl Assertion for PortListeningAssertion {
                         duration: started.elapsed(),
                     };
                 }
-                ProbeAttemptResult::NotListening => {}
-                ProbeAttemptResult::TimedOut => {
-                    return AssertionResult {
-                        name: self.name().to_string(),
-                        passed: false,
-                        message: format!(
-                            "Port {}/{} ({}) not listening after {:?}.",
-                            self.port,
-                            self.protocol,
-                            probe.target_label(),
-                            self.timeout
-                        ),
-                        duration: started.elapsed(),
-                    };
+                PollAttemptResult::Completed(false) => {}
+                PollAttemptResult::TimedOut => {
+                    trace!(
+                        port = self.port,
+                        protocol = %self.protocol,
+                        target = %probe.target_label(),
+                        "Port probe attempt timed out, retrying..."
+                    );
                 }
-                ProbeAttemptResult::Cancelled => {
+                PollAttemptResult::Cancelled => {
                     return AssertionResult {
                         name: self.name().to_string(),
                         passed: false,
@@ -140,6 +134,21 @@ impl Assertion for PortListeningAssertion {
                         duration: started.elapsed(),
                     };
                 }
+            }
+
+            if Instant::now() >= deadline {
+                return AssertionResult {
+                    name: self.name().to_string(),
+                    passed: false,
+                    message: format!(
+                        "Port {}/{} ({}) not listening after {:?}.",
+                        self.port,
+                        self.protocol,
+                        probe.target_label(),
+                        self.timeout
+                    ),
+                    duration: started.elapsed(),
+                };
             }
 
             trace!(
@@ -151,31 +160,6 @@ impl Assertion for PortListeningAssertion {
 
             tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
         }
-    }
-}
-
-enum ProbeAttemptResult {
-    Listening,
-    NotListening,
-    TimedOut,
-    Cancelled,
-}
-
-async fn run_probe_attempt_until<F>(
-    deadline: Instant, cancel_token: &CancellationToken, container_exit_token: &CancellationToken, probe: F,
-) -> ProbeAttemptResult
-where
-    F: Future<Output = bool>,
-{
-    // Keep the assertion deadline and cancellation active while a Docker-backed probe is pending.
-    tokio::select! {
-        result = tokio::time::timeout_at(deadline.into(), probe) => match result {
-            Ok(true) => ProbeAttemptResult::Listening,
-            Ok(false) => ProbeAttemptResult::NotListening,
-            Err(_) => ProbeAttemptResult::TimedOut,
-        },
-        _ = cancel_token.cancelled() => ProbeAttemptResult::Cancelled,
-        _ = container_exit_token.cancelled() => ProbeAttemptResult::Cancelled,
     }
 }
 
@@ -282,42 +266,4 @@ async fn exec_status(container_name: &str, cmd: Vec<&str>) -> Result<bool, Strin
         .await
         .map_err(|e| format!("Failed to inspect exec: {}", e))?;
     Ok(inspect.exit_code == Some(0))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::future;
-
-    use tokio_util::sync::CancellationToken;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn stalled_probe_respects_deadline() {
-        let deadline = Instant::now() + Duration::from_millis(10);
-        let result = run_probe_attempt_until(
-            deadline,
-            &CancellationToken::new(),
-            &CancellationToken::new(),
-            future::pending(),
-        )
-        .await;
-
-        assert!(matches!(result, ProbeAttemptResult::TimedOut));
-    }
-
-    #[tokio::test]
-    async fn stalled_probe_respects_cancellation() {
-        let cancel_token = CancellationToken::new();
-        cancel_token.cancel();
-        let result = run_probe_attempt_until(
-            Instant::now() + Duration::from_secs(10),
-            &cancel_token,
-            &CancellationToken::new(),
-            future::pending(),
-        )
-        .await;
-
-        assert!(matches!(result, ProbeAttemptResult::Cancelled));
-    }
 }
