@@ -80,8 +80,7 @@ mod tests {
     use std::{
         future::Future,
         pin::Pin,
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll, Waker},
     };
 
     use saluki_metrics::test::TestRecorder;
@@ -107,12 +106,6 @@ mod tests {
         }
     }
 
-    struct NoopWaker;
-
-    impl Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-    }
-
     #[test]
     fn poll_records_one_duration_sample_per_poll() {
         let recorder = TestRecorder::default();
@@ -122,8 +115,8 @@ mod tests {
         let task = PendsThenReady { pending_polls: 2 }.with_task_instrumentation("poll_duration_test".to_string());
         let mut task = Box::pin(task);
 
-        let waker = Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
 
         let mut polls = 0;
         loop {
