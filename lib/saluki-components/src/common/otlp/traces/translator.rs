@@ -170,16 +170,19 @@ struct TraceEntry {
 
 pub struct OtlpTracesTranslator {
     config: domains::otlp::Traces,
+    /// Maximum length of a span's resource name, in bytes.
+    max_resource_len: usize,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: domains::otlp::Traces) -> Self {
+    pub fn new(config: domains::otlp::Traces, max_resource_len: usize) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         Self {
             config,
+            max_resource_len,
             interner,
             string_builder,
         }
@@ -248,6 +251,7 @@ impl OtlpTracesTranslator {
                     interner,
                     string_builder,
                     entry.trace_id_hex.as_ref(),
+                    self.max_resource_len,
                 );
 
                 // Malformed self-parented spans (parent == span == trace ID) get their parent
@@ -447,11 +451,14 @@ mod tests {
     }
 
     fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
-        let mut translator = OtlpTracesTranslator::new(domains::otlp::Traces {
-            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-            enable_compute_top_level_by_span_kind: true,
-            ..Default::default()
-        });
+        let mut translator = OtlpTracesTranslator::new(
+            domains::otlp::Traces {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                enable_compute_top_level_by_span_kind: true,
+                ..Default::default()
+            },
+            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+        );
         let metrics = Metrics::for_tests();
         translator
             .translate_spans(resource_spans, &metrics)
@@ -557,10 +564,13 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
 
-        let mut translator = OtlpTracesTranslator::new(domains::otlp::Traces {
-            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-            ..Default::default()
-        });
+        let mut translator = OtlpTracesTranslator::new(
+            domains::otlp::Traces {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                ..Default::default()
+            },
+            5000,
+        );
         let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
 
         let trace = [0xDDu8; 16];
