@@ -23,6 +23,7 @@ mod file_contains;
 mod http_check;
 mod intake_has_metric;
 mod log_contains;
+mod polling;
 mod port_listening;
 mod process_stable;
 
