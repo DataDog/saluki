@@ -6,6 +6,7 @@ use serde::Serialize;
 
 pub mod checks;
 pub mod dogstatsd;
+pub mod metric_mirroring;
 pub mod multi_region_failover;
 pub mod otlp;
 pub mod traces;
@@ -17,5 +18,6 @@ pub struct DomainConfiguration {
     pub otlp: otlp::Domain,
     pub traces: traces::Domain,
     pub checks: checks::Domain,
+    pub metric_mirroring: metric_mirroring::Domain,
     pub multi_region_failover: multi_region_failover::Domain,
 }

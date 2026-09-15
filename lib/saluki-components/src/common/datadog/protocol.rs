@@ -8,6 +8,61 @@ use agent_data_plane_config::shared::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::endpoints::EndpointRoute;
+
+/// How an encoded metrics payload is targeted within the normal Datadog endpoint set.
+///
+/// Endpoint names are compared against [`ResolvedEndpoint::configured_endpoint`](super::endpoints::ResolvedEndpoint::configured_endpoint)
+/// exactly as they appeared in configuration. Targeting only changes additional-endpoint delivery: the normal primary
+/// and metrics-primary routes are never selected by a filtered branch and are never excluded from the baseline branch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricsEndpointRouting {
+    mode: MetricsEndpointRoutingMode,
+    configured_endpoints: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum MetricsEndpointRoutingMode {
+    AllExceptAdditional,
+    OnlyAdditional,
+}
+
+impl MetricsEndpointRouting {
+    /// Targets every ordinary route except the named additional endpoints.
+    pub fn all_except_additional(endpoints: impl IntoIterator<Item = String>) -> Self {
+        Self::new(MetricsEndpointRoutingMode::AllExceptAdditional, endpoints)
+    }
+
+    /// Targets only the named additional endpoints.
+    pub fn only_additional(endpoints: impl IntoIterator<Item = String>) -> Self {
+        Self::new(MetricsEndpointRoutingMode::OnlyAdditional, endpoints)
+    }
+
+    fn new(mode: MetricsEndpointRoutingMode, endpoints: impl IntoIterator<Item = String>) -> Self {
+        let mut configured_endpoints: Vec<_> = endpoints.into_iter().collect();
+        configured_endpoints.sort_unstable();
+        configured_endpoints.dedup();
+        Self {
+            mode,
+            configured_endpoints,
+        }
+    }
+
+    /// Returns whether this payload targets the given routed endpoint.
+    pub(crate) fn should_route_to(&self, route: EndpointRoute, configured_endpoint: &str) -> bool {
+        let is_selected_additional = route == EndpointRoute::Additional
+            && self
+                .configured_endpoints
+                .binary_search_by(|endpoint| endpoint.as_str().cmp(configured_endpoint))
+                .is_ok();
+
+        match self.mode {
+            MetricsEndpointRoutingMode::AllExceptAdditional => !is_selected_additional,
+            MetricsEndpointRoutingMode::OnlyAdditional => is_selected_additional,
+        }
+    }
+}
+
 /// The type of metrics payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetricsPayloadType {
@@ -156,5 +211,45 @@ impl From<&TypedMetricsEncoding> for UseV3ApiSeriesConfig {
             enabled: config.v3_series_mode,
             endpoints: config.v3_series_endpoint_modes.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SELECTED: &str = "https://secondary.example.com";
+
+    #[test]
+    fn all_except_additional_preserves_primary_and_excludes_only_the_selected_secondary() {
+        let routing = MetricsEndpointRouting::all_except_additional([SELECTED.to_string()]);
+
+        assert!(routing.should_route_to(EndpointRoute::Primary, SELECTED));
+        assert!(routing.should_route_to(EndpointRoute::MetricsPrimary, SELECTED));
+        assert!(!routing.should_route_to(EndpointRoute::Additional, SELECTED));
+        assert!(routing.should_route_to(EndpointRoute::Additional, "https://other.example.com"));
+    }
+
+    #[test]
+    fn only_additional_never_targets_a_primary_route() {
+        let routing = MetricsEndpointRouting::only_additional([SELECTED.to_string()]);
+
+        assert!(!routing.should_route_to(EndpointRoute::Primary, SELECTED));
+        assert!(!routing.should_route_to(EndpointRoute::MetricsPrimary, SELECTED));
+        assert!(routing.should_route_to(EndpointRoute::Additional, SELECTED));
+        assert!(!routing.should_route_to(EndpointRoute::Additional, "https://other.example.com"));
+    }
+
+    #[test]
+    fn routing_round_trips_through_retry_queue_serialization() {
+        let routing = MetricsEndpointRouting::only_additional([
+            "https://secondary-b.example.com".to_string(),
+            "https://secondary-a.example.com".to_string(),
+        ]);
+
+        let encoded = rmp_serde::to_vec(&routing).expect("routing metadata should serialize");
+        let decoded: MetricsEndpointRouting =
+            rmp_serde::from_slice(&encoded).expect("routing metadata should deserialize");
+        assert_eq!(routing, decoded);
     }
 }

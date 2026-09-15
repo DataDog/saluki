@@ -67,6 +67,7 @@
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
 use std::{
+    collections::HashMap,
     fmt,
     marker::PhantomData,
     num::{NonZeroU64, NonZeroUsize},
@@ -225,6 +226,8 @@ pub struct SalukiOnly {
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
     pub data_plane: DataPlane,
+    /// Experimental serializer settings (`serializer_experimental.*`).
+    pub serializer_experimental: SerializerExperimental,
     /// APM trace knobs (`apm_config.*`).
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
@@ -233,6 +236,15 @@ pub struct SalukiOnly {
     pub ottl_filter_config: Option<OttlFilterConfig>,
     /// OTTL span-transform processor (`ottl_transform_config`).
     pub ottl_transform_config: Option<OttlTransformConfig>,
+}
+
+/// Experimental serializer settings (`serializer_experimental.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SerializerExperimental {
+    /// Exact series names permitted per configured secondary endpoint
+    /// (`serializer_experimental.metric_allowlist`).
+    pub metric_allowlist: Option<HashMap<String, Vec<String>>>,
 }
 
 /// `data_plane.*` Saluki-only knobs.
@@ -537,6 +549,13 @@ impl SalukiOnly {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
 
+        // domains.metric_mirroring
+        let mirroring = &self.serializer_experimental;
+        let destination = &mut config.domains.metric_mirroring;
+        if let Some(v) = &mirroring.metric_allowlist {
+            destination.metric_allowlists.clone_from(v);
+        }
+
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
         if let Some(v) = self.dogstatsd_tcp_port {
@@ -750,6 +769,12 @@ mod tests {
                     "receiver_http_endpoint_temporary": "0.0.0.0:19318"
                 }
             },
+            // nested: serializer_experimental
+            "serializer_experimental": {
+                "metric_allowlist": {
+                    "https://app.us5.datadoghq.com": ["allowed.metric", "also.allowed"]
+                }
+            },
             // nested: apm_config
             "apm_config": {
                 "default_env": "staging",
@@ -796,6 +821,13 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
+
+        // domains.metric_mirroring
+        let mirroring = &config.domains.metric_mirroring;
+        assert_eq!(
+            mirroring.metric_allowlists["https://app.us5.datadoghq.com"],
+            ["allowed.metric", "also.allowed"]
+        );
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;

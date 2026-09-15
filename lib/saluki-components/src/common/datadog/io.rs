@@ -513,6 +513,7 @@ async fn run_io_loop<B>(
         let (route, resolved_endpoint) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
+        let configured_endpoint = resolved_endpoint.configured_endpoint().to_string();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
@@ -547,6 +548,7 @@ async fn run_io_loop<B>(
         endpoint_txs.push(EndpointSender {
             endpoint_url,
             endpoint_domain,
+            configured_endpoint,
             route,
             tx: endpoint_tx,
         });
@@ -557,6 +559,13 @@ async fn run_io_loop<B>(
         let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
+                continue;
+            }
+            if !matches_metrics_endpoint_routing(
+                endpoint_sender.route,
+                &endpoint_sender.configured_endpoint,
+                transaction.metadata(),
+            ) {
                 continue;
             }
 
@@ -594,6 +603,7 @@ where
 {
     endpoint_url: String,
     endpoint_domain: String,
+    configured_endpoint: String,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
 }
@@ -627,6 +637,20 @@ fn track_transaction_input_for_endpoint(
     let transaction_input_telemetry = telemetry.register_transaction_input_telemetry(endpoint_domain, &endpoint_name);
     transaction_input_telemetry.track(transaction_size);
     telemetry_by_endpoint.insert(endpoint_name, transaction_input_telemetry);
+}
+
+fn should_forward_to_endpoint(
+    route: EndpointRoute, configured_endpoint: &str, endpoint_v3_settings: &EndpointV3Settings, metadata: &Metadata,
+) -> bool {
+    matches_metrics_endpoint_routing(route, configured_endpoint, metadata)
+        && endpoint_v3_settings.should_receive_payload(metadata.payload_info)
+}
+
+fn matches_metrics_endpoint_routing(route: EndpointRoute, configured_endpoint: &str, metadata: &Metadata) -> bool {
+    metadata
+        .metrics_endpoint_routing
+        .as_ref()
+        .is_none_or(|routing| routing.should_route_to(route, configured_endpoint))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -748,13 +772,17 @@ async fn run_endpoint_io_loop<B>(
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => {
-                    // Filter transactions based on endpoint's V3 settings and the transaction's payload info.
+                    // Evaluate endpoint targeting and protocol selection before the transaction enters this endpoint's
+                    // retry queue. Routing metadata is persisted with the transaction, so replay keeps the same
+                    // destination boundary.
                     let payload_info = txn.metadata().payload_info;
-                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
+                    if !should_forward_to_endpoint(route, &configured_endpoint, &endpoint_v3_settings, txn.metadata()) {
                         debug!(
                             endpoint_url,
+                            configured_endpoint,
+                            ?route,
                             ?payload_info,
-                            "Filtering out transaction based on endpoint V3 settings."
+                            "Filtering out metrics transaction based on endpoint routing or protocol settings."
                         );
                         continue;
                     }
@@ -1207,6 +1235,7 @@ mod tests {
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
     use crate::common::datadog::{
         endpoints::resolve_additional_endpoints,
+        protocol::MetricsEndpointRouting,
         test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
     };
     use crate::common::datadog::{
@@ -1220,6 +1249,48 @@ mod tests {
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    #[test]
+    fn endpoint_routing_filters_whole_payloads_before_the_retry_queue() {
+        const SELECTED: &str = "https://secondary.example.com";
+        let settings = EndpointV3Settings::disabled();
+
+        let mut baseline = TxnMetadata::from_event_and_data_point_count(2, 2);
+        baseline.metrics_endpoint_routing = Some(MetricsEndpointRouting::all_except_additional([SELECTED.to_string()]));
+        assert!(should_forward_to_endpoint(
+            EndpointRoute::Primary,
+            SELECTED,
+            &settings,
+            &baseline
+        ));
+        assert!(!should_forward_to_endpoint(
+            EndpointRoute::Additional,
+            SELECTED,
+            &settings,
+            &baseline
+        ));
+
+        let mut filtered = TxnMetadata::from_event_and_data_point_count(1, 1);
+        filtered.metrics_endpoint_routing = Some(MetricsEndpointRouting::only_additional([SELECTED.to_string()]));
+        assert!(!should_forward_to_endpoint(
+            EndpointRoute::Primary,
+            SELECTED,
+            &settings,
+            &filtered
+        ));
+        assert!(should_forward_to_endpoint(
+            EndpointRoute::Additional,
+            SELECTED,
+            &settings,
+            &filtered
+        ));
+        assert!(!should_forward_to_endpoint(
+            EndpointRoute::Additional,
+            "https://other.example.com",
+            &settings,
+            &filtered
+        ));
     }
 
     fn is_metrics_request_path(path: &'static str) -> bool {

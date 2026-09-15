@@ -121,6 +121,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn endpoint_metric_allowlists_decode_from_json() {
+        let _guard = test_env_lock();
+        std::env::set_var(
+            "DD_SERIALIZER_EXPERIMENTAL_METRIC_ALLOWLIST",
+            r#"{"https://secondary.example.com":["allowed.metric"]}"#,
+        );
+
+        let provider = EnvironmentProvider::new().expect("environment reads");
+
+        std::env::remove_var("DD_SERIALIZER_EXPERIMENTAL_METRIC_ALLOWLIST");
+        assert_eq!(
+            values_of(&provider).pointer("/serializer_experimental/metric_allowlist"),
+            Some(&serde_json::json!({
+                "https://secondary.example.com": ["allowed.metric"]
+            }))
+        );
+    }
+
     /// The documented environment variable must appear at the key's canonical nested path in the
     /// provider output.
     #[test]

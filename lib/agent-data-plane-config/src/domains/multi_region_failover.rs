@@ -3,6 +3,9 @@
 
 use serde::Serialize;
 
+/// Routing settings used to mirror metrics to the failover region.
+pub use super::metric_mirroring::Routing as MetricMirroring;
+
 /// Prefix of the Datadog failover-region metrics intake, completed by the failover site.
 const MRF_METRICS_ENDPOINT_PREFIX: &str = "https://app.mrf.";
 
@@ -17,6 +20,10 @@ pub struct Domain {
     pub enabled: bool,
 
     /// Which metrics are mirrored to the failover region.
+    ///
+    /// Routing defaults to disabled with an empty allowlist. When MRF and metrics mirroring are enabled, an empty
+    /// allowlist preserves the MRF behavior of mirroring every metric. Operators can populate the list with exact,
+    /// case-sensitive metric names to restrict the branch, and can update both settings without restarting.
     pub metric_mirroring: MetricMirroring,
 
     /// API key used to authenticate to the failover region.
@@ -27,28 +34,6 @@ pub struct Domain {
 
     /// Explicit intake URL for the failover region, overriding the site.
     pub dd_url: Option<String>,
-}
-
-/// Which metrics are mirrored to the failover region.
-///
-/// The two settings are grouped because they are consumed together: the routing state of the failover metrics
-/// pipeline is derived from both at once. A consumer that watched them separately could rebuild that state from a
-/// fresh value of one and a stale value of the other, describing a configuration that was never published; a live
-/// view of this struct delivers both from one configuration version instead.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct MetricMirroring {
-    /// Whether metrics are mirrored to the failover region.
-    ///
-    /// Defaults to `false`. Mirroring also requires [`Domain::enabled`], but unlike it this setting is read live,
-    /// which is the point of it: an operator starts and stops mirroring on a running process.
-    pub enabled: bool,
-
-    /// Metrics permitted to be sent to the failover region.
-    ///
-    /// Defaults to empty, which mirrors every metric rather than none: the list narrows mirroring, it does not enable
-    /// it. Names match exactly. Read live, alongside [`enabled`](Self::enabled), so an operator can restrict mirroring
-    /// to the metrics the failover region needs without restarting.
-    pub allowlist: Vec<String>,
 }
 
 impl Domain {
