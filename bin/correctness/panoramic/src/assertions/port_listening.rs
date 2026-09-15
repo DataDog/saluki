@@ -1,12 +1,18 @@
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use airlock::docker;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use futures::TryStreamExt as _;
 use tokio::net::TcpStream;
+use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
 use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+
+const PROBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Assertion that checks a port is listening.
 pub struct PortListeningAssertion {
@@ -90,42 +96,50 @@ impl Assertion for PortListeningAssertion {
         let deadline = Instant::now() + self.timeout;
 
         loop {
-            if Instant::now() > deadline {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: format!(
-                        "Port {}/{} ({}) not listening after {:?}.",
-                        self.port,
-                        self.protocol,
-                        probe.target_label(),
-                        self.timeout
-                    ),
-                    duration: started.elapsed(),
-                };
-            }
-
-            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: "Assertion cancelled because container exited.".to_string(),
-                    duration: started.elapsed(),
-                };
-            }
-
-            if probe.run(&ctx.container_name).await {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: true,
-                    message: format!(
-                        "Port {}/{} ({}) is listening.",
-                        self.port,
-                        self.protocol,
-                        probe.target_label()
-                    ),
-                    duration: started.elapsed(),
-                };
+            match run_probe_attempt_until(
+                deadline,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+                probe.run(&ctx.container_name),
+            )
+            .await
+            {
+                ProbeAttemptResult::Listening => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: true,
+                        message: format!(
+                            "Port {}/{} ({}) is listening.",
+                            self.port,
+                            self.protocol,
+                            probe.target_label()
+                        ),
+                        duration: started.elapsed(),
+                    };
+                }
+                ProbeAttemptResult::NotListening => {}
+                ProbeAttemptResult::TimedOut => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!(
+                            "Port {}/{} ({}) not listening after {:?}.",
+                            self.port,
+                            self.protocol,
+                            probe.target_label(),
+                            self.timeout
+                        ),
+                        duration: started.elapsed(),
+                    };
+                }
+                ProbeAttemptResult::Cancelled => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: "Assertion cancelled because container exited.".to_string(),
+                        duration: started.elapsed(),
+                    };
+                }
             }
 
             trace!(
@@ -135,8 +149,33 @@ impl Assertion for PortListeningAssertion {
                 "Port not yet listening, retrying..."
             );
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
         }
+    }
+}
+
+enum ProbeAttemptResult {
+    Listening,
+    NotListening,
+    TimedOut,
+    Cancelled,
+}
+
+async fn run_probe_attempt_until<F>(
+    deadline: Instant, cancel_token: &CancellationToken, container_exit_token: &CancellationToken, probe: F,
+) -> ProbeAttemptResult
+where
+    F: Future<Output = bool>,
+{
+    // Keep the assertion deadline and cancellation active while a Docker-backed probe is pending.
+    tokio::select! {
+        result = tokio::time::timeout_at(deadline.into(), probe) => match result {
+            Ok(true) => ProbeAttemptResult::Listening,
+            Ok(false) => ProbeAttemptResult::NotListening,
+            Err(_) => ProbeAttemptResult::TimedOut,
+        },
+        _ = cancel_token.cancelled() => ProbeAttemptResult::Cancelled,
+        _ = container_exit_token.cancelled() => ProbeAttemptResult::Cancelled,
     }
 }
 
@@ -243,4 +282,42 @@ async fn exec_status(container_name: &str, cmd: Vec<&str>) -> Result<bool, Strin
         .await
         .map_err(|e| format!("Failed to inspect exec: {}", e))?;
     Ok(inspect.exit_code == Some(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn stalled_probe_respects_deadline() {
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let result = run_probe_attempt_until(
+            deadline,
+            &CancellationToken::new(),
+            &CancellationToken::new(),
+            future::pending(),
+        )
+        .await;
+
+        assert!(matches!(result, ProbeAttemptResult::TimedOut));
+    }
+
+    #[tokio::test]
+    async fn stalled_probe_respects_cancellation() {
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+        let result = run_probe_attempt_until(
+            Instant::now() + Duration::from_secs(10),
+            &cancel_token,
+            &CancellationToken::new(),
+            future::pending(),
+        )
+        .await;
+
+        assert!(matches!(result, ProbeAttemptResult::Cancelled));
+    }
 }
