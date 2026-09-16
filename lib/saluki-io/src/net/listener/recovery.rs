@@ -175,13 +175,18 @@ mod tests {
     use super::*;
     use crate::net::listener::SOCKET_RECV_BUFFER_SIZE_SETTING;
 
+    /// Builds the error an accept loop would actually see for a given I/O error.
+    fn accept_error(source: io::Error) -> ListenerError {
+        ListenerError::FailedToAccept {
+            address: ListenAddress::Tcp(([127, 0, 0, 1], 0).into()),
+            source,
+        }
+    }
+
     /// Builds the error an accept loop would actually see for a given `errno`.
     #[cfg(unix)]
     fn accept_errno(errno: i32) -> ListenerError {
-        ListenerError::FailedToAccept {
-            address: ListenAddress::Tcp(([127, 0, 0, 1], 0).into()),
-            source: io::Error::from_raw_os_error(errno),
-        }
+        accept_error(io::Error::from_raw_os_error(errno))
     }
 
     #[cfg(unix)]
@@ -269,10 +274,11 @@ mod tests {
         let address = ListenAddress::Tcp(([127, 0, 0, 1], 0).into());
 
         // Walk the backoff up, then clear it, and check the next wait starts from the floor again rather than carrying
-        // on from where it left off.
+        // on from where it left off. Out of memory is the one exhaustion case that throttles on every platform, so the
+        // throttle state can be driven without reaching for an errno.
         for _ in 0..4 {
             recovery
-                .recover(&address, accept_errno(libc::EMFILE))
+                .recover(&address, accept_error(io::ErrorKind::OutOfMemory.into()))
                 .await
                 .expect("resource exhaustion should be recovered from");
         }
@@ -290,8 +296,9 @@ mod tests {
         let mut recovery = AcceptRecovery::default();
         let address = ListenAddress::Tcp(([127, 0, 0, 1], 0).into());
 
+        // A kind that carries no errno is unclassified on every platform, so it exercises the fatal path everywhere.
         let error = recovery
-            .recover(&address, accept_errno(libc::EBADF))
+            .recover(&address, accept_error(io::ErrorKind::PermissionDenied.into()))
             .await
             .expect_err("an unclassified failure should be handed back");
         assert!(matches!(error, ListenerError::FailedToAccept { .. }));
