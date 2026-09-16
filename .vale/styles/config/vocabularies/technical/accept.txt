@@ -279,3 +279,7 @@ quantiz(ation|ations|er|ers|ed|es|e|ing)
 allowlist(s|ed|ing)?
 hostname(s?)
 instrumentation(s?)
+Graphviz
+renderer(s?)
+unscoped
+underflowing
