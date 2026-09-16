@@ -20,6 +20,10 @@ use crate::{runtime::process::Id as ProcessId, support::SubsystemIdentifier};
 mod api;
 pub use self::api::{ResourceRegistryAPIHandler, ResourceRegistryState};
 
+mod sublease;
+use self::sublease::SubleaseLedger;
+pub use self::sublease::{Sublease, Subleases};
+
 mod worker;
 pub use self::worker::ResourceRegistryWorker;
 
@@ -89,14 +93,21 @@ pub trait ResourceSpecification: Clone + fmt::Debug + Send + Sync + 'static {
     /// `SO_REUSEPORT`, say -- holds all of them itself. Creating them together in a single call is what makes them
     /// atomic: if any one fails, this returns an error and nothing is registered.
     ///
+    /// `subleases` issues subleases on the resource, for a resource that hands out subresources able to outlive the
+    /// lease they came from -- a connectionless listener lending the bound socket underneath it to every stream it
+    /// yields, say. Keep it on the resource and issue one per subresource; outstanding subleases keep the resource
+    /// from being handed to another acquirer. A resource that is never subdivided has no use for it.
+    ///
     /// # Errors
     ///
     /// If the resource can't be created, an error is returned and nothing is registered.
-    async fn create(&self) -> Result<Self::Resource, GenericError>;
+    async fn create(&self, subleases: Subleases) -> Result<Self::Resource, GenericError>;
 
     /// Prepares a returning resource for its next holder.
     ///
-    /// Called when a lease is dropped, before the resource becomes available again. Implement this only for a resource
+    /// Called once a returned resource has no subleases outstanding, immediately before it is handed to its next
+    /// holder -- so it runs knowing the previous holder is genuinely finished, including with anything it lent out.
+    /// Implement this only for a resource
     /// that accumulates state over the course of a single lease and must start clean for the next one -- a listener
     /// tracking how many of its pre-bound sockets it has handed out, for example. Everything the resource is *for*,
     /// such as the sockets themselves, must survive: the point of the registry is that it outlives its holders.
@@ -105,15 +116,12 @@ pub trait ResourceSpecification: Clone + fmt::Debug + Send + Sync + 'static {
     ///
     /// This is deliberately infallible. A resource that can't be made fit for reuse should be
     /// [`discard`][ResourceLease::discard]ed by its holder instead, so the next acquisition builds a fresh one.
+    ///
+    /// # Panics
+    ///
+    /// Don't. A panic here aborts the acquisition that triggered it, and the resource goes back to the registry
+    /// intact but only partly reset, so the next acquisition gets the same resource and runs the same reset again.
     fn reset(_resource: &mut Self::Resource) {}
-}
-
-/// Erases the specification type so [`Entry`] can reset a resource it only knows as `dyn Any`.
-fn reset_shim<S: ResourceSpecification>(resource: &mut (dyn Any + Send)) {
-    match resource.downcast_mut::<S::Resource>() {
-        Some(resource) => S::reset(resource),
-        None => unreachable!("entry only ever holds the resource type its specification names"),
-    }
 }
 
 /// An error that occurred while acquiring a resource.
@@ -275,30 +283,86 @@ impl Drop for ClaimCreationGuard<'_> {
     }
 }
 
+/// RAII guard to release a claim on an existing entry when an acquisition doesn't run to completion.
+///
+/// [`ResourceRegistry::acquire`] claims an idle or discarded entry before awaiting its outstanding subleases, and that
+/// await is a cancellation point. Without this guard the claim would outlive the acquisition and block the key for the
+/// life of the process.
+///
+/// Unlike [`ClaimCreationGuard`], this only ever clears a flag: the entry keeps whatever it was holding for the whole
+/// wait, so there is no path here that can drop a resource and release the underlying resource. A tombstone left
+/// behind by a cancelled acquisition costs nothing beyond its entry, and the next acquirer clears it.
+struct ClaimedEntryGuard<'a> {
+    registry: &'a ResourceRegistry,
+    key: &'a EntryKey,
+    armed: bool,
+}
+
+impl<'a> ClaimedEntryGuard<'a> {
+    /// Creates a new guard for the given key in the armed state.
+    fn from_key(registry: &'a ResourceRegistry, key: &'a EntryKey) -> Self {
+        Self {
+            registry,
+            key,
+            armed: true,
+        }
+    }
+
+    /// Disarm and consume the guard.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ClaimedEntryGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let mut state = self.registry.inner.lock().unwrap();
+        if let Some(entry) = state.entries.get_mut(self.key) {
+            debug!(key = %self.key, "Resource acquisition was cancelled. Releasing the claim on its entry.");
+            entry.release_claim();
+        }
+    }
+}
+
 /// Lifecycle state of a registry entry.
 enum EntryState {
-    /// The resource is held by the registry and can be acquired.
-    Idle(Box<dyn Any + Send>),
+    /// The resource is held by the registry.
+    ///
+    /// `claimed_by` is set while an acquisition waits for outstanding subleases to be returned: the resource is still
+    /// right here, but it is already spoken for. Keeping the resource in the entry rather than moving it into the
+    /// waiting acquisition is deliberate -- it means no code path, including a cancelled acquisition, can drop it and
+    /// release the underlying resource.
+    Idle {
+        value: Box<dyn Any + Send>,
+        claimed_by: Option<LeaseInfo>,
+    },
 
     /// Creation is in flight. The entry holds nothing yet, but is already spoken for.
     Creating(LeaseInfo),
 
     /// The resource is lent out.
     Leased(LeaseInfo),
+
+    /// The resource was discarded while it still had subleases outstanding.
+    ///
+    /// A tombstone: the resource itself is gone, but the things it lent out are not, and for a subdivided resource
+    /// those are what hold the underlying resource open -- a connectionless listener's socket stays bound and
+    /// receiving for as long as a stream is reading it. The entry stays behind to keep the key reserved until they
+    /// come back, because building a replacement in the meantime would put two of the resource in the world at once.
+    ///
+    /// `claimed_by` works as it does for [`Idle`][Self::Idle], serializing acquirers waiting on the same key. The
+    /// acquisition that wins the wait replaces this entry with one of its own.
+    Discarded { claimed_by: Option<LeaseInfo> },
 }
 
 impl EntryState {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Idle(_) => "idle",
-            Self::Creating(_) => "creating",
-            Self::Leased(_) => "leased",
-        }
-    }
-
     fn holder(&self) -> Option<&LeaseInfo> {
         match self {
-            Self::Idle(_) => None,
+            Self::Idle { claimed_by, .. } | Self::Discarded { claimed_by } => claimed_by.as_ref(),
             Self::Creating(info) | Self::Leased(info) => Some(info),
         }
     }
@@ -308,10 +372,15 @@ impl EntryState {
 struct Entry {
     type_id: TypeId,
     type_name: &'static str,
-    reset: fn(&mut (dyn Any + Send)),
     spec_desc: String,
     state: EntryState,
     acquisitions: u64,
+
+    /// Subleases taken out on this resource.
+    ///
+    /// Lives on the entry rather than on any one lease: a sublease can outlive the head lease that issued it, and the
+    /// resource keeps its [`Subleases`] across every lease it is handed out under.
+    subleases: Arc<SubleaseLedger>,
 }
 
 impl Entry {
@@ -319,17 +388,53 @@ impl Entry {
         Self {
             type_id: TypeId::of::<S::Resource>(),
             type_name: std::any::type_name::<S::Resource>(),
-            reset: reset_shim::<S>,
             spec_desc: format!("{:?}", spec),
             state: EntryState::Creating(lease_info),
             acquisitions: 0,
+            subleases: SubleaseLedger::new(),
         }
     }
 
-    /// Hands out an idle resource, or explains why it can't.
-    fn lease<S: ResourceSpecification>(
-        &mut self, registry: &ResourceRegistry, key: &EntryKey, new_spec: &S, lease_info: LeaseInfo,
-    ) -> Result<ResourceLease<S::Resource>, AcquireError> {
+    /// Reported lifecycle state of this entry.
+    fn state_name(&self) -> &'static str {
+        match &self.state {
+            // The head lease is back, but the resource isn't available until its subleases are too.
+            EntryState::Idle { .. } if self.subleases.outstanding() > 0 => "subleased",
+            EntryState::Idle { .. } => "idle",
+            EntryState::Creating(_) => "creating",
+            EntryState::Leased(_) => "leased",
+            EntryState::Discarded { .. } => "discarded",
+        }
+    }
+
+    /// Claims this entry for an acquisition, or explains why it can't be claimed.
+    ///
+    /// Nothing is handed over here. Either way the caller has to wait for any outstanding subleases first, and that
+    /// wait happens with the registry lock released, so this returns the entry's sublease ledger to wait on alongside
+    /// what to do once it settles.
+    fn claim<S: ResourceSpecification>(
+        &mut self, key: &EntryKey, new_spec: &S, lease_info: LeaseInfo,
+    ) -> Result<Claim, AcquireError> {
+        let already_leased = |holder: &LeaseInfo| AcquireError::AlreadyLeased {
+            kind: S::KIND,
+            key: key.key.clone(),
+            owner: MetaString::from(holder.owner.to_string()),
+            acquisition_process_id: holder.acquisition_process_id,
+        };
+
+        // A discarded entry holds no resource, only the key, so there is nothing here to type-check against or to
+        // hand over: whoever wins the wait builds fresh from their own specification. Checking the type of a resource
+        // that has already been dropped would refuse an acquisition over a resource that no longer exists.
+        if let EntryState::Discarded { claimed_by } = &mut self.state {
+            if let Some(holder) = claimed_by.as_ref() {
+                return Err(already_leased(holder));
+            }
+
+            *claimed_by = Some(lease_info);
+
+            return Ok(Claim::Rebuild(Arc::clone(&self.subleases)));
+        }
+
         if self.type_id != TypeId::of::<S::Resource>() {
             return Err(AcquireError::TypeMismatch {
                 kind: S::KIND,
@@ -340,12 +445,7 @@ impl Entry {
         }
 
         if let Some(holder) = self.state.holder() {
-            return Err(AcquireError::AlreadyLeased {
-                kind: S::KIND,
-                key: key.key.clone(),
-                owner: MetaString::from(holder.owner.to_string()),
-                acquisition_process_id: holder.acquisition_process_id,
-            });
+            return Err(already_leased(holder));
         }
 
         // The key identifies the resource, so a specification differing only in its settings still names this same
@@ -361,19 +461,76 @@ impl Entry {
             );
         }
 
-        // `holder` returned `None` just above, so the entry is idle and holds its value.
+        // `holder` returned `None` just above, and the discarded case returned earlier, so the entry is idle and
+        // unclaimed.
+        match &mut self.state {
+            EntryState::Idle { claimed_by, .. } => *claimed_by = Some(lease_info),
+            _ => unreachable!("entry without a holder is idle or discarded"),
+        }
+
+        Ok(Claim::HandOver(Arc::clone(&self.subleases)))
+    }
+
+    /// Hands a claimed resource to its acquirer.
+    ///
+    /// Runs once every sublease has been returned, so the previous holder is genuinely finished with the resource --
+    /// including with anything it lent out.
+    ///
+    /// Resetting the resource is the caller's job, not this method's: [`ResourceSpecification::reset`] is
+    /// implementor-supplied code, and running it here would run it while the registry lock is held and while the
+    /// resource is owned by nothing but a local. See [`ResourceRegistry::acquire`].
+    fn hand_over<S: ResourceSpecification>(
+        &mut self, registry: &ResourceRegistry, key: &EntryKey,
+    ) -> ResourceLease<S::Resource> {
+        // Take the claim first, so the state can be replaced wholesale without needing a placeholder to stand in for
+        // the resource while it moves.
+        let lease_info = match &mut self.state {
+            EntryState::Idle { claimed_by, .. } => claimed_by.take().expect("a claimed entry holds its claim"),
+            _ => unreachable!("a claimed entry is idle"),
+        };
+
         let value = match mem::replace(&mut self.state, EntryState::Leased(lease_info)) {
-            EntryState::Idle(value) => value,
-            _ => unreachable!("entry without a holder is idle"),
+            EntryState::Idle { value, .. } => value,
+            _ => unreachable!("a claimed entry is idle and holds its value"),
         };
 
         self.acquisitions += 1;
 
-        Ok(ResourceLease {
-            value: Some(*value.downcast::<S::Resource>().expect("entry type checked above")),
+        ResourceLease {
+            value: Some(
+                *value
+                    .downcast::<S::Resource>()
+                    .expect("entry type checked when claimed"),
+            ),
             registry: registry.clone(),
             key: key.clone(),
-        })
+        }
+    }
+
+    /// Releases a claim without handing the resource over.
+    fn release_claim(&mut self) {
+        match &mut self.state {
+            EntryState::Idle { claimed_by, .. } | EntryState::Discarded { claimed_by } => *claimed_by = None,
+            EntryState::Creating(_) | EntryState::Leased(_) => {}
+        }
+    }
+}
+
+/// What an acquisition that claimed an existing entry has to do once the entry's subleases settle.
+enum Claim {
+    /// The resource is in the entry, waiting to be handed over.
+    HandOver(Arc<SubleaseLedger>),
+
+    /// The entry is a tombstone for a discarded resource, and a replacement has to be built in its place.
+    Rebuild(Arc<SubleaseLedger>),
+}
+
+impl Claim {
+    /// The ledger whose subleases have to settle before this claim can be acted on.
+    fn subleases(&self) -> &SubleaseLedger {
+        match self {
+            Self::HandOver(subleases) | Self::Rebuild(subleases) => subleases,
+        }
     }
 }
 
@@ -391,10 +548,11 @@ impl RegistryState {
                 kind: key.kind,
                 key: key.key.to_string(),
                 spec: entry.spec_desc.clone(),
-                state: entry.state.as_str(),
+                state: entry.state_name(),
                 owner: entry.state.holder().map(|info| info.owner.to_string()),
                 acquisition_process_id: entry.state.holder().map(|info| info.acquisition_process_id.as_usize()),
                 acquisitions: entry.acquisitions,
+                outstanding_subleases: entry.subleases.outstanding(),
             })
             .collect::<Vec<_>>();
         statuses.sort_by(|a, b| (a.kind, &a.key).cmp(&(b.kind, &b.key)));
@@ -463,18 +621,66 @@ impl ResourceRegistry {
         let key = EntryKey::new(&spec);
         let lease_info = LeaseInfo::from_owner(owner);
 
-        // Attempt to lease the resource if it's already registered.
+        // Claim the resource if it's already registered.
         //
-        // Otherwise, start the registration process by insert an uninitialized entry that gives us lease ownership
+        // Otherwise, start the registration process by inserting an uninitialized entry that gives us lease ownership
         // prior to actually creating the resource and finalizing it.
-        {
+        let claim = {
             let mut state = self.inner.lock().unwrap();
-            if let Some(entry) = state.entries.get_mut(&key) {
-                return entry.lease(self, &key, &spec, lease_info);
+            match state.entries.get_mut(&key) {
+                Some(entry) => Some(entry.claim::<S>(&key, &spec, lease_info.clone())?),
+                None => {
+                    let new_entry = Entry::new(&spec, lease_info.clone());
+                    state.entries.insert(key.clone(), new_entry);
+                    None
+                }
             }
+        };
 
-            let new_entry = Entry::new(&spec, lease_info.clone());
-            state.entries.insert(key.clone(), new_entry);
+        if let Some(claim) = claim {
+            // Whichever way the claim goes, an entry that already existed has to settle its subleases first:
+            // whatever the previous holder lent out is still in use, and for a subdivided resource that means the
+            // underlying resource is still in use. A connectionless listener's socket is still bound and receiving
+            // until the stream holding a sublease on it is dropped, so neither handing that listener over nor binding
+            // a replacement for it is safe while one is outstanding.
+            //
+            // This resolves immediately for a resource that was never subdivided, which is most of them.
+            let claim_guard = ClaimedEntryGuard::from_key(self, &key);
+            claim.subleases().settled().await;
+            claim_guard.disarm();
+
+            let mut state = self.inner.lock().unwrap();
+            match claim {
+                Claim::HandOver(_) => {
+                    let entry = state
+                        .entries
+                        .get_mut(&key)
+                        .expect("entry was claimed above and a claimed entry is only removed by its holder");
+
+                    let mut lease = entry.hand_over::<S>(self, &key);
+
+                    // Clear whatever the previous holder accumulated, now that it and its subleases are all gone.
+                    //
+                    // Deliberately done here rather than in `hand_over`: the reset is implementor-supplied code, and
+                    // two things have to be true before it runs. The lock has to be released, or a panic in it would
+                    // poison the registry for every other key. And the resource has to already be owned by its lease,
+                    // so that the same panic unwinds through `ResourceLease::drop` and returns the resource to the
+                    // registry, still live, instead of dropping it and releasing the underlying resource.
+                    drop(state);
+                    S::reset(&mut lease);
+
+                    debug!(%key, %owner, "Acquired resource.");
+
+                    return Ok(lease);
+                }
+                Claim::Rebuild(_) => {
+                    // The discarded resource is finally gone in full, so the tombstone has done its job. Replace it
+                    // with an uninitialized entry of our own and fall through to creation, exactly as if the key had
+                    // been free all along.
+                    debug!(%key, "Discarded resource has fully returned. Recreating it for the next holder.");
+                    state.entries.insert(key.clone(), Entry::new(&spec, lease_info.clone()));
+                }
+            }
         }
 
         // Create the resource.
@@ -482,8 +688,14 @@ impl ResourceRegistry {
         // We establish a "creation guard" which is a drop guard that ensures we remove our pending entry if we fail to
         // create the resource, including if this asynchronous call is cancelled, so that we don't permanently tie up
         // the resource in an uninitialized state.
+        let subleases = {
+            let state = self.inner.lock().unwrap();
+            let entry = state.entries.get(&key).expect("entry was just inserted");
+            Subleases::from_ledger(&entry.subleases)
+        };
+
         let claim_guard = ClaimCreationGuard::from_key(self, &key);
-        let created = spec.create().await;
+        let created = spec.create(subleases).await;
         claim_guard.disarm();
 
         let mut state = self.inner.lock().unwrap();
@@ -534,23 +746,46 @@ impl ResourceRegistry {
     }
 
     /// Returns a resource to the registry, marking its entry idle.
-    fn return_value(&self, key: &EntryKey, mut value: Box<dyn Any + Send>) {
+    fn return_value(&self, key: &EntryKey, value: Box<dyn Any + Send>) {
         let mut state = self.inner.lock().unwrap();
         if let Some(entry) = state.entries.get_mut(key) {
-            debug!(%key, "Resource returned to registry.");
+            debug!(%key, outstanding_subleases = entry.subleases.outstanding(), "Resource returned to registry.");
 
-            // Reset on the way in rather than on the way out, so the registry is never holding a half-consumed
-            // resource that a snapshot could observe.
-            (entry.reset)(&mut *value);
-            entry.state = EntryState::Idle(value);
+            // Deliberately not reset here: subleases issued by the departing holder can still be outstanding, so the
+            // resource isn't finished being used yet. `Entry::hand_over` resets it once they have all come back.
+            entry.state = EntryState::Idle {
+                value,
+                claimed_by: None,
+            };
         }
     }
 
     /// Drops a resource instead of returning it, so that the next acquisition creates a fresh one.
+    ///
+    /// The resource itself is already gone by the time this runs -- [`ResourceLease::discard`] drops it -- but a
+    /// subdivided resource isn't released by that alone: its subresources hold the underlying resource open, so a
+    /// connectionless listener's socket stays bound until the last stream reading it is dropped. Dropping the entry
+    /// now would let the next acquisition bind a replacement alongside that socket, and with `SO_REUSEPORT` the two
+    /// would quietly split incoming datagrams between them. So the entry stays as a tombstone until its subleases
+    /// come back, keeping the key reserved without keeping anything alive.
     fn discard_value(&self, key: &EntryKey) {
         let mut state = self.inner.lock().unwrap();
-        if state.entries.remove(key).is_some() {
+        let Some(entry) = state.entries.get_mut(key) else {
+            return;
+        };
+
+        let outstanding = entry.subleases.outstanding();
+        if outstanding == 0 {
+            state.entries.remove(key);
             debug!(%key, "Resource discarded; it will be recreated on the next acquisition.");
+        } else {
+            entry.state = EntryState::Discarded { claimed_by: None };
+            debug!(
+                %key,
+                outstanding_subleases = outstanding,
+                "Resource discarded with subleases outstanding. Its key stays reserved until they are returned, \
+                 after which it will be recreated on the next acquisition."
+            );
         }
     }
 }
@@ -567,7 +802,10 @@ pub struct ResourceStatus {
     /// Rendered specification the resource was created from.
     pub spec: String,
 
-    /// Lifecycle state of the resource: `idle`, `creating`, or `leased`.
+    /// Lifecycle state of the resource: `creating`, `leased`, `idle`, `subleased`, or `discarded`.
+    ///
+    /// `subleased` is idle-but-unavailable: the head lease is back, but something the holder lent out is still in
+    /// use. `discarded` means the resource is gone and only its key is still reserved, for the same reason.
     pub state: &'static str,
 
     /// Subsystem holding the resource, if any.
@@ -585,12 +823,22 @@ pub struct ResourceStatus {
 
     /// Number of times the resource has been acquired.
     pub acquisitions: u64,
+
+    /// Number of subleases currently outstanding on the resource.
+    ///
+    /// Non-zero once a holder has released the resource while something it lent out is still in use. The resource
+    /// isn't handed to its next acquirer until this reaches zero.
+    pub outstanding_subleases: usize,
 }
 
 /// An exclusive lease on a resource.
 ///
 /// Dereferences to the resource itself. Dropping the lease returns the resource to the registry still live, so a lease
 /// is a loan, never ownership. See [`ResourceRegistry`] for the full model.
+///
+/// This is the *head* lease. Dropping it relinquishes the holder's claim, but doesn't end the resource's lease while
+/// [`Sublease`]s issued against it are still outstanding: the registry won't hand the resource to another acquirer
+/// until those come back too.
 pub struct ResourceLease<R: Send + 'static> {
     value: Option<R>,
     registry: ResourceRegistry,
@@ -617,6 +865,10 @@ impl<R: Send + 'static> ResourceLease<R> {
     ///
     /// Use this when the resource has hit an error it can't recover from and handing it to the next acquirer would pass
     /// the problem along.
+    ///
+    /// Discarding doesn't free the key any sooner than releasing would. Outstanding [`Sublease`]s are what hold a
+    /// subdivided resource open, so the key stays reserved until they come back, and only then does the next
+    /// acquisition build a replacement -- otherwise the replacement would exist alongside the thing being discarded.
     pub fn discard(mut self) {
         // Dropping the value here is the point: it is what releases the underlying resource.
         let _ = self.value.take();

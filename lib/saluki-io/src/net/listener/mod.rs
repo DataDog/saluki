@@ -1,10 +1,11 @@
 //! Network listeners.
 #[cfg(unix)]
 use std::path::PathBuf;
-use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize};
+use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize, sync::Arc};
 #[cfg(windows)]
 use std::{ffi::c_void, mem, ptr};
 
+use saluki_core::runtime::state::Subleases;
 use snafu::{ResultExt as _, Snafu};
 use socket2::SockRef;
 #[cfg(windows)]
@@ -30,7 +31,11 @@ use super::{
     addr::ListenAddress,
     stream::{Connection, Stream},
 };
-use crate::net::addr::BoundListenAddress;
+use crate::net::util::retry::ExponentialBackoff;
+use crate::net::{addr::BoundListenAddress, stream::SubleasedSocket};
+
+mod recovery;
+use self::recovery::AcceptRecovery;
 
 const SOCKET_RECV_BUFFER_SIZE_SETTING: &str = "SO_RCVBUF";
 
@@ -99,11 +104,23 @@ pub enum ListenerError {
 
 enum ListenerInner {
     Tcp(TcpListener, SocketAddr),
-    Udp(VecDeque<TokioUdpSocket>, SocketAddr),
+
+    Udp {
+        sockets: Vec<Arc<TokioUdpSocket>>,
+        handed_out: usize,
+        bound_addr: SocketAddr,
+    },
+
     #[cfg(unix)]
-    Unixgram(Option<UnixDatagram>, PathBuf),
+    Unixgram {
+        socket: Arc<UnixDatagram>,
+        handed_out: bool,
+        bound_path: PathBuf,
+    },
+
     #[cfg(unix)]
     Unix(UnixListener, PathBuf),
+
     #[cfg(windows)]
     NamedPipe {
         server: NamedPipeServer,
@@ -136,6 +153,8 @@ pub struct Listener {
     listen_address: ListenAddress,
     inner: ListenerInner,
     socket_receive_buffer_size: Option<usize>,
+    accept_recovery: AcceptRecovery,
+    subleases: Option<Subleases>,
 }
 
 impl Listener {
@@ -176,7 +195,11 @@ impl Listener {
                 let (sockets, bound_addr) = bind_udp_sockets(*addr, udp_streams).await.context(FailedToBind {
                     address: listen_address.clone(),
                 })?;
-                ListenerInner::Udp(sockets, bound_addr)
+                ListenerInner::Udp {
+                    sockets: sockets.into_iter().map(Arc::new).collect(),
+                    handed_out: 0,
+                    bound_addr,
+                }
             }
             #[cfg(unix)]
             ListenAddress::Unixgram(addr) => {
@@ -185,8 +208,11 @@ impl Listener {
                 })?;
 
                 let listener = UnixDatagram::bind(addr)
-                    .map(Some)
-                    .map(|listener| ListenerInner::Unixgram(listener, addr.clone()))
+                    .map(|socket| ListenerInner::Unixgram {
+                        socket: Arc::new(socket),
+                        handed_out: false,
+                        bound_path: addr.clone(),
+                    })
                     .context(FailedToBind {
                         address: listen_address.clone(),
                     })?;
@@ -258,7 +284,19 @@ impl Listener {
             listen_address,
             inner,
             socket_receive_buffer_size: None,
+            accept_recovery: AcceptRecovery::default(),
+            subleases: None,
         })
+    }
+
+    /// Sets the subleases issued for the connectionless sockets this listener lends out.
+    ///
+    /// Only meaningful for a listener owned by a
+    /// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry]: it is what stops the registry handing the
+    /// listener to another acquirer while a stream from the previous one is still reading the socket underneath it.
+    pub fn with_subleases(mut self, subleases: Subleases) -> Self {
+        self.subleases = Some(subleases);
+        self
     }
 
     /// Sets the socket receive buffer size for this listener.
@@ -266,6 +304,22 @@ impl Listener {
     /// The receive buffer size applies to accepted streams. `None` keeps the OS default.
     pub fn with_receive_buffer_size(mut self, socket_receive_buffer_size: Option<usize>) -> Self {
         self.socket_receive_buffer_size = socket_receive_buffer_size;
+        self
+    }
+
+    /// Sets the backoff strategy used when [`accept`](Self::accept) encounters a recoverable, system-wide error.
+    ///
+    /// In some cases, accepting a connection can return a transient error that corresponds with an underlying issue
+    /// with the system, such as too many file descriptors being open. While it is safe to retry accepting new
+    /// connections after encountering such an error, an acceptor could potentially busy loop since calls will return
+    /// immediately if not otherwise throttled in some way.
+    ///
+    /// Listeners will apply a backoff during subsequent `accept` calls to avoid excess resource consumption due to
+    /// this type of busy looping.
+    ///
+    /// Defaults to 10 milliseconds, doubling per consecutive failure up to 1 second, jittered down by up to half.
+    pub fn with_accept_backoff(mut self, accept_backoff: ExponentialBackoff) -> Self {
+        self.accept_recovery = AcceptRecovery::from_backoff(accept_backoff);
         self
     }
 
@@ -278,9 +332,9 @@ impl Listener {
     pub fn bound_listen_address(&self) -> BoundListenAddress {
         match &self.inner {
             ListenerInner::Tcp(_, bound_addr) => BoundListenAddress::Tcp(*bound_addr),
-            ListenerInner::Udp(_, bound_addr) => BoundListenAddress::Udp(*bound_addr),
+            ListenerInner::Udp { bound_addr, .. } => BoundListenAddress::Udp(*bound_addr),
             #[cfg(unix)]
-            ListenerInner::Unixgram(_, bound_addr) => BoundListenAddress::Unixgram(bound_addr.clone()),
+            ListenerInner::Unixgram { bound_path, .. } => BoundListenAddress::Unixgram(bound_path.clone()),
             #[cfg(unix)]
             ListenerInner::Unix(_, bound_addr) => BoundListenAddress::Unix(bound_addr.clone()),
             #[cfg(windows)]
@@ -295,9 +349,9 @@ impl Listener {
     pub fn min_buffer_reservation(&self) -> usize {
         match &self.inner {
             ListenerInner::Tcp(_, _) => 1,
-            ListenerInner::Udp(sockets, _) => sockets.len(),
+            ListenerInner::Udp { sockets, .. } => sockets.len(),
             #[cfg(unix)]
-            ListenerInner::Unixgram(_, _) => 1,
+            ListenerInner::Unixgram { .. } => 1,
             #[cfg(unix)]
             ListenerInner::Unix(_, _) => 1,
             #[cfg(windows)]
@@ -305,17 +359,62 @@ impl Listener {
         }
     }
 
+    /// Readies the listener for its next holder.
+    pub(crate) fn rearm(&mut self) {
+        self.accept_recovery.reset();
+
+        // Update our tracking of the connectionless streams we've handed out since we're being lent (overall) to a new
+        // holder.
+        match &mut self.inner {
+            ListenerInner::Udp { handed_out, .. } => *handed_out = 0,
+            #[cfg(unix)]
+            ListenerInner::Unixgram { handed_out, .. } => *handed_out = false,
+            ListenerInner::Tcp(_, _) => {}
+            #[cfg(unix)]
+            ListenerInner::Unix(_, _) => {}
+            #[cfg(windows)]
+            ListenerInner::NamedPipe { .. } => {}
+        }
+    }
+
     /// Accepts a new stream from the listener.
     ///
     /// For connection-oriented address families, this will accept a new connection and return a `Stream` that's bound
     /// to that remote peer. For connectionless address families, this will yield up to the configured number of
-    /// pre-bound `Stream`s—one per call—before returning pending forever.
+    /// pre-bound `Stream`s (one per call) before returning pending forever.
     ///
-    /// ## Errors
+    /// # Recoverable failures
     ///
-    /// If the listener fails to accept a new stream, or if the accepted stream can't be configured correctly, an error
+    /// Not every failed accept means anything is wrong with the listener. A connection can be reset between arriving
+    /// and being accepted, and the process or kernel can run out of descriptors or buffers while a connection sits
+    /// queued. In these cases, the listener is fine and the right response is to accept again -- immediately for the
+    /// former, and after a wait for the latter, since nothing changes until the resource frees up. Both are handled
+    /// here rather than being surfaced, so an error from this method always means the listener is done. See
+    /// [`with_accept_backoff`](Self::with_accept_backoff) for the wait.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. No stream is ever lost by dropping the returned future: a successful accept returns
+    /// straight away, so the only thing in flight at a cancellation point is a failure being recovered from.
+    ///
+    /// # Errors
+    ///
+    /// If the listener can no longer produce streams, or if an accepted stream can't be configured correctly, an error
     /// is returned.
     pub async fn accept(&mut self) -> Result<Stream, ListenerError> {
+        loop {
+            match self.accept_once().await {
+                Ok(stream) => {
+                    self.accept_recovery.accept_succeeded();
+                    return Ok(stream);
+                }
+                Err(error) => self.accept_recovery.recover(&self.listen_address, error).await?,
+            }
+        }
+    }
+
+    /// Makes a single attempt to accept a new stream, without recovering from a failure.
+    async fn accept_once(&mut self) -> Result<Stream, ListenerError> {
         let stream_type = self.listen_address.listener_type();
         match &mut self.inner {
             ListenerInner::Tcp(tcp, _) => {
@@ -325,26 +424,42 @@ impl Listener {
                 configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                 Ok((socket, addr).into())
             }
-            ListenerInner::Udp(udp, _) => {
-                if let Some(socket) = udp.pop_front() {
-                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
-                    Ok(socket.into())
-                } else {
-                    pending().await
+            ListenerInner::Udp {
+                sockets, handed_out, ..
+            } => {
+                match sockets.get(*handed_out) {
+                    Some(socket) => {
+                        *handed_out += 1;
+
+                        configure_stream_socket_receive_buffer_size(
+                            &**socket,
+                            self.socket_receive_buffer_size,
+                            stream_type,
+                        )?;
+
+                        let sublease = self.subleases.as_ref().and_then(Subleases::issue);
+                        Ok(SubleasedSocket::new(Arc::clone(socket), sublease).into())
+                    }
+                    // Every socket is already in use. There is nothing further to yield, but the caller is typically an
+                    // accept loop, so go quiet rather than returning an error.
+                    None => pending().await,
                 }
             }
             #[cfg(unix)]
-            ListenerInner::Unixgram(unix, _) => {
-                if let Some(socket) = unix.take() {
-                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
-                    enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
-                        setting: "SO_PASSCRED",
-                        stream_type,
-                    })?;
-                    Ok(socket.into())
-                } else {
-                    pending().await
+            ListenerInner::Unixgram { socket, handed_out, .. } => {
+                if *handed_out {
+                    return pending().await;
                 }
+                *handed_out = true;
+
+                configure_stream_socket_receive_buffer_size(&**socket, self.socket_receive_buffer_size, stream_type)?;
+                enable_uds_socket_credentials(&**socket).context(FailedToConfigureStream {
+                    setting: "SO_PASSCRED",
+                    stream_type,
+                })?;
+
+                let sublease = self.subleases.as_ref().and_then(Subleases::issue);
+                Ok(SubleasedSocket::new(Arc::clone(socket), sublease).into())
             }
             #[cfg(unix)]
             ListenerInner::Unix(unix, _) => unix
@@ -531,6 +646,7 @@ enum ConnectionOrientedListenerInner {
 pub struct ConnectionOrientedListener {
     listen_address: ListenAddress,
     inner: ConnectionOrientedListenerInner,
+    accept_recovery: AcceptRecovery,
 }
 
 impl ConnectionOrientedListener {
@@ -582,7 +698,19 @@ impl ConnectionOrientedListener {
             }
         };
 
-        Ok(Self { listen_address, inner })
+        Ok(Self {
+            listen_address,
+            inner,
+            accept_recovery: AcceptRecovery::default(),
+        })
+    }
+
+    /// Sets the backoff strategy used when [`accept`](Self::accept) encounters a recoverable, system-wide error.
+    ///
+    /// See [`Listener::with_accept_backoff`], which this mirrors.
+    pub fn with_accept_backoff(mut self, accept_backoff: ExponentialBackoff) -> Self {
+        self.accept_recovery = AcceptRecovery::from_backoff(accept_backoff);
+        self
     }
 
     /// Gets a reference to the listen address.
@@ -599,13 +727,42 @@ impl ConnectionOrientedListener {
         }
     }
 
+    /// Readies the listener for its next holder.
+    pub(crate) fn rearm(&mut self) {
+        self.accept_recovery.reset();
+    }
+
     /// Accepts a new connection from the listener.
+    ///
+    /// # Recoverable failures
+    ///
+    /// Failures that say nothing about the listener -- a connection reset before it could be accepted, a momentary
+    /// shortage of descriptors -- are recovered from here rather than surfaced, so an error from this method means the
+    /// listener is done. See [`with_accept_backoff`](Self::with_accept_backoff) for the wait applied to a shortage.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. No connection is ever lost by dropping the returned future: a successful accept
+    /// returns straight away, so the only thing in flight at a cancellation point is a failure being recovered from.
     ///
     /// # Errors
     ///
-    /// If the listener fails to accept a new connection, or if the accepted connection can't be configured correctly,
+    /// If the listener can no longer produce connections, or if an accepted connection can't be configured correctly,
     /// an error is returned.
     pub async fn accept(&mut self) -> Result<Connection, ListenerError> {
+        loop {
+            match self.accept_once().await {
+                Ok(connection) => {
+                    self.accept_recovery.accept_succeeded();
+                    return Ok(connection);
+                }
+                Err(error) => self.accept_recovery.recover(&self.listen_address, error).await?,
+            }
+        }
+    }
+
+    /// Makes a single attempt to accept a new connection, without recovering from a failure.
+    async fn accept_once(&mut self) -> Result<Connection, ListenerError> {
         match &mut self.inner {
             ConnectionOrientedListenerInner::Tcp(tcp, _) => tcp
                 .accept()
@@ -662,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_receive_buffer_size_preserves_udp_default() {
-        let default_address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let default_address = ListenAddress::udp_loopback(0);
         let mut default_listener = Listener::from_listen_address(default_address, None)
             .await
             .expect("default listener should bind");
@@ -674,7 +831,7 @@ mod tests {
             .recv_buffer_size()
             .expect("receive buffer size should be available");
 
-        let zero_address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let zero_address = ListenAddress::udp_loopback(0);
         let mut zero_listener = Listener::from_listen_address(zero_address, None)
             .await
             .expect("zero-sized listener should bind")
@@ -692,7 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn udp_listener_sets_receive_buffer_size() {
-        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let address = ListenAddress::udp_loopback(0);
         let mut listener = Listener::from_listen_address(address, None)
             .await
             .expect("listener should bind")
@@ -825,7 +982,7 @@ mod tests {
 
     #[tokio::test]
     async fn udp_listener_default_yields_single_stream_then_pends() {
-        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let address = ListenAddress::udp_loopback(0);
         let mut listener = Listener::from_listen_address(address, None)
             .await
             .expect("listener should bind");
@@ -841,7 +998,7 @@ mod tests {
     #[tokio::test]
     async fn udp_listener_with_streams_yields_n_streams_then_pends() {
         let count = NonZeroUsize::new(3).unwrap();
-        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let address = ListenAddress::udp_loopback(0);
         let mut listener = Listener::from_listen_address(address, Some(count))
             .await
             .expect("listener should bind with multiple sockets");
@@ -863,7 +1020,7 @@ mod tests {
     #[tokio::test]
     async fn udp_listener_port_zero_shares_port_across_sockets() {
         let count = NonZeroUsize::new(2).unwrap();
-        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let address = ListenAddress::udp_loopback(0);
         let listener = Listener::from_listen_address(address, Some(count))
             .await
             .expect("listener should bind two sockets to the same ephemeral port");
@@ -878,7 +1035,7 @@ mod tests {
     #[tokio::test]
     async fn udp_listener_with_streams_applies_receive_buffer_size_to_all_sockets() {
         let count = NonZeroUsize::new(3).unwrap();
-        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let address = ListenAddress::udp_loopback(0);
         let mut listener = Listener::from_listen_address(address, Some(count))
             .await
             .expect("listener should bind multiple sockets")
@@ -899,9 +1056,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn udp_socket_ports(listener: &Listener) -> Vec<u16> {
         match &listener.inner {
-            ListenerInner::Udp(sockets, _) => sockets
+            ListenerInner::Udp { sockets, .. } => sockets
                 .iter()
-                .map(|s| s.local_addr().expect("socket should have local addr").port())
+                .map(|socket| socket.local_addr().expect("socket should have local addr").port())
                 .collect(),
             _ => panic!("expected UDP listener"),
         }
@@ -916,7 +1073,7 @@ mod tests {
 
     fn udp_local_addr(listener: &Listener) -> SocketAddr {
         match &listener.inner {
-            ListenerInner::Udp(_, local_addr) => *local_addr,
+            ListenerInner::Udp { bound_addr, .. } => *bound_addr,
             _ => panic!("expected UDP listener"),
         }
     }
