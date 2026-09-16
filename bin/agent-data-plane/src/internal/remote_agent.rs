@@ -740,17 +740,16 @@ impl std::io::Write for RemoteCommandOutput {
     }
 }
 
-fn remote_command_stdout_chunks(output: &[u8]) -> Vec<String> {
-    let stdout = String::from_utf8_lossy(output);
+fn remote_command_output_chunks(output: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut start = 0;
 
-    while start < stdout.len() {
-        let mut end = (start + MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES).min(stdout.len());
-        while !stdout.is_char_boundary(end) {
+    while start < output.len() {
+        let mut end = (start + MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES).min(output.len());
+        while !output.is_char_boundary(end) {
             end -= 1;
         }
-        chunks.push(stdout[start..end].to_owned());
+        chunks.push(output[start..end].to_owned());
         start = end;
     }
 
@@ -819,8 +818,8 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
                     let result =
                         run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
                             .await;
-                    let stdout = output.into_bytes();
-                    for stdout in remote_command_stdout_chunks(&stdout) {
+                    let stdout = String::from_utf8_lossy(&output.into_bytes()).into_owned();
+                    for stdout in remote_command_output_chunks(&stdout) {
                         let _ = sender
                             .send(Ok(ExecuteCommandResponse {
                                 frame: Some(ExecuteCommandFrame::Stdout(stdout)),
@@ -830,21 +829,25 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
                     match result {
                         Ok(()) => 0,
                         Err(error) => {
-                            let _ = sender
-                                .send(Ok(ExecuteCommandResponse {
-                                    frame: Some(ExecuteCommandFrame::Stderr(format!("{error:#}\n"))),
-                                }))
-                                .await;
+                            for stderr in remote_command_output_chunks(&format!("{error:#}\n")) {
+                                let _ = sender
+                                    .send(Ok(ExecuteCommandResponse {
+                                        frame: Some(ExecuteCommandFrame::Stderr(stderr)),
+                                    }))
+                                    .await;
+                            }
                             1
                         }
                     }
                 }
                 Err(error) => {
-                    let _ = sender
-                        .send(Ok(ExecuteCommandResponse {
-                            frame: Some(ExecuteCommandFrame::Stderr(format!("{error:#}\n"))),
-                        }))
-                        .await;
+                    for stderr in remote_command_output_chunks(&format!("{error:#}\n")) {
+                        let _ = sender
+                            .send(Ok(ExecuteCommandResponse {
+                                frame: Some(ExecuteCommandFrame::Stderr(stderr)),
+                            }))
+                            .await;
+                    }
                     1
                 }
             };
@@ -1451,6 +1454,43 @@ mod tests {
         assert!(stream.next().await.is_none(), "stream should end after the exit code");
     }
 
+    #[tokio::test]
+    async fn execute_command_chunks_large_stderr_frames() {
+        let session_id = SessionIdHandle::empty();
+        session_id.update(Some(
+            SessionId::new("test-session-id").expect("session ID should be valid"),
+        ));
+        let service = RemoteCommandProviderImpl {
+            session_id,
+            current_config: Arc::new(arc_swap::ArcSwap::from_pointee(SalukiConfiguration::default())),
+        };
+        let provider_name = "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES * 2 + 1);
+        let expected_error = format!("unknown remote command provider `{provider_name}`\n");
+
+        let response = service
+            .execute_command(tonic::Request::new(ExecuteCommandRequest {
+                provider_name,
+                command_path: Vec::new(),
+                arguments: None,
+            }))
+            .await
+            .expect("invalid provider should return an execution stream");
+        let mut stream = response.into_inner();
+        let mut stderr = String::new();
+        while let Some(frame) = stream.next().await {
+            match frame.expect("frame should not be a transport error").frame {
+                Some(ExecuteCommandFrame::Stderr(message)) => {
+                    assert!(message.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES);
+                    stderr.push_str(&message);
+                }
+                Some(ExecuteCommandFrame::ExitCode(1)) => break,
+                frame => panic!("unexpected frame: {frame:?}"),
+            }
+        }
+
+        assert_eq!(stderr, expected_error);
+    }
+
     #[test]
     fn remote_command_output_rejects_data_beyond_its_limit() {
         let mut output = RemoteCommandOutput {
@@ -1460,26 +1500,37 @@ mod tests {
     }
 
     #[test]
-    fn remote_command_stdout_chunks_stay_below_the_grpc_go_default_message_limit() {
-        let output = vec![b'x'; MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES * 2 + 1];
+    fn remote_command_output_chunks_stay_below_the_grpc_go_default_message_limit() {
+        let output = "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES * 2 + 1);
 
-        let chunks = remote_command_stdout_chunks(&output);
+        let chunks = remote_command_output_chunks(&output);
 
         assert_eq!(chunks.len(), 3);
         assert!(chunks
             .iter()
             .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
-        assert_eq!(chunks.concat().as_bytes(), output);
+        assert_eq!(chunks.concat(), output);
     }
 
     #[test]
-    fn remote_command_stdout_chunks_preserve_utf8_characters_at_chunk_boundaries() {
-        let mut output = vec![b'x'; MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES - 1];
-        output.extend_from_slice("💚".as_bytes());
+    fn remote_command_output_chunks_preserve_utf8_characters_at_chunk_boundaries() {
+        let output = format!("{}💚", "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES - 1));
 
-        let chunks = remote_command_stdout_chunks(&output);
+        let chunks = remote_command_output_chunks(&output);
 
-        assert_eq!(chunks.concat().as_bytes(), output);
+        assert_eq!(chunks.concat(), output);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
+    }
+
+    #[test]
+    fn remote_command_error_chunks_preserve_utf8_characters_at_chunk_boundaries() {
+        let error = format!("{}💚\n", "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES - 1));
+
+        let chunks = remote_command_output_chunks(&error);
+
+        assert_eq!(chunks.concat(), error);
         assert!(chunks
             .iter()
             .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
