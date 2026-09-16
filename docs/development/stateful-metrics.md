@@ -98,6 +98,35 @@ from its existing configuration stream. The test-only standalone mode can also d
 Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_stream_failures_total`
 (with a failure-kind label), and `stateful_metrics_batches_abandoned_total`.
 
+## Planned flush signal
+
+The pinned Foldspace client immediately encodes each submitted logical batch. It does not yet expose
+a partial-payload buffer or an explicit flush operation. The following contract is planned for the
+separate Foldspace buffering change; it is not wired into this adapter yet.
+
+Each ADP sender worker owns its flush timer and signals only its own Foldspace core. ADP uses
+`shared.metrics_encoding.flush_timeout` (`flush_timeout_secs`, default 2 seconds), with the existing
+encoder's 10 millisecond fallback when configured as zero. The countdown starts when a partial
+payload first becomes pending. Later arrivals do not postpone the deadline, so continuous traffic
+cannot indefinitely delay a partial payload.
+
+On expiry, the worker calls an explicit sans-I/O flush operation and executes the returned transport
+effects. Foldspace owns payload construction, size-triggered emission, and protocol state; it does
+not own a clock or runtime task. The API must expose whether unsent buffered data remains, make an
+empty flush harmless, and retain buffered data safely when a stream or inflight capacity is
+unavailable. A requested flush must proceed when sending becomes possible without requiring another
+metric to arrive. Shutdown also requests a flush before waiting for outstanding acknowledgements.
+
+Buffering may combine or split ADP input batches. The API must preserve explicit ownership and
+provide enough acceptance, acknowledgement, and recovery information for ADP to release or return
+the corresponding original metrics. The current adapter's one-input-batch-per-acknowledgement FIFO
+must be updated if that relationship changes. Unsent buffered metrics must also participate in
+credential resets, retries, HTTP fallback, and queue limits.
+
+Once the API is available, adapter tests should cover sparse input, continuous arrivals without
+deadline extension, size-triggered emission, empty flushes, capacity recovery without new input,
+shutdown, and independent worker timers.
+
 ## Scope and validation
 
 This is an opt-in integration experiment. It supports one configured stateful destination and
