@@ -22,6 +22,21 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
+    SalukiKey {
+        yaml_path: "data_plane.stateful_metrics_endpoint",
+        description: "Experimental stateful series gRPC intake endpoint",
+        default: "unset (disabled)",
+        documentation: Some("Set an http://host:port endpoint for stateful metrics integration testing. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery."),
+        value_type: "ValueType::String",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp])",
+        filename: "data_plane.rs",
+    },
     // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",

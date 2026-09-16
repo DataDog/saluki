@@ -11,6 +11,7 @@ arc-swap = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
 figment = { workspace = true }
+http = { workspace = true, features = ["std"] }
 saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

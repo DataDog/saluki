@@ -239,6 +239,8 @@ pub struct SalukiOnly {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlane {
+    /// Experimental plaintext gRPC metrics endpoint; unset disables stateful delivery.
+    pub stateful_metrics_endpoint: Option<String>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
@@ -514,6 +516,7 @@ impl SalukiOnly {
     /// Absent values leave the field at its model default. The Datadog `drive` writes a disjoint set
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
+        config.domains.stateful_metrics.endpoint = self.data_plane.stateful_metrics_endpoint.clone();
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;

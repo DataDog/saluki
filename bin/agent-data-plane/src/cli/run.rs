@@ -62,8 +62,8 @@ use crate::{
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, static_tags::resolve_static_tags,
-        tag_filterlist::TagFilterlistConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, stateful_metrics::StatefulMetricsConfiguration,
+        static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -462,8 +462,27 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Components.
         .add_transform("metrics_enrich", metrics_enrich_config)?
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics, then forwarding.
-        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+        .connect_components("dd_metrics_encode", "dd_out")?;
+
+    if let Some(endpoint) = &config.domains.stateful_metrics.endpoint {
+        if !shared.endpoints.additional_endpoints.is_empty() {
+            return Err(generic_error!(
+                "stateful metrics testing does not support additional_endpoints"
+            ));
+        }
+        blueprint
+            .add_transform(
+                "stateful_metrics",
+                StatefulMetricsConfiguration {
+                    endpoint: endpoint.clone().into(),
+                    api_key: config_system.live(|config| &config.shared.endpoints.api_key),
+                    compression_level: shared.endpoints.compression.effective_zstd_level(),
+                },
+            )?
+            .connect_components_in_order(["metrics_enrich", "stateful_metrics", "dd_metrics_encode"])?;
+    } else {
+        blueprint.connect_components("metrics_enrich", "dd_metrics_encode")?;
+    }
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
