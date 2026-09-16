@@ -67,6 +67,9 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 zstd = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemallocator = { workspace = true, features = [
   "background_threads",
@@ -88,9 +91,6 @@ tower = { workspace = true, features = ["util"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 rcgen = { workspace = true, features = ["aws_lc_rs"] }
-
-[target.'cfg(unix)'.dev-dependencies]
-libc = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 rcgen = { workspace = true, features = ["ring"] }
