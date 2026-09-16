@@ -1635,8 +1635,8 @@ mod tests {
 
     #[test]
     fn apm_config_replace_tags_accepts_json_string_and_missing_fields() {
-        // The environment delivers the array as one JSON-encoded string (`DD_APM_REPLACE_TAGS`),
-        // and the core agent's lenient unmarshal reads a missing rule field as an empty string.
+        // The environment delivers the array as one JSON-encoded string; a missing rule field
+        // reads as an empty string.
         let (config, errors) = translate_explicit(json!({
             "apm_config": {
                 "replace_tags": "[{\"name\": \"http.url\", \"pattern\": \"p\"}]"
@@ -1648,10 +1648,7 @@ mod tests {
         assert_eq!(traces.replace_tags.len(), 1);
         assert_eq!(traces.replace_tags[0].name, "http.url");
         assert_eq!(traces.replace_tags[0].pattern, "p");
-        assert_eq!(
-            traces.replace_tags[0].repl, "",
-            "a missing field reads as empty, like the agent"
-        );
+        assert_eq!(traces.replace_tags[0].repl, "");
     }
 
     #[test]

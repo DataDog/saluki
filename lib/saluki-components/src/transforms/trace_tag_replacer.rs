@@ -1,11 +1,8 @@
 //! Trace tag replacer transform.
 //!
-//! Applies operator-declared, regex-based find-and-replace rules to trace tags, span resources,
-//! and span-event attributes, mirroring the core agent's `ReplaceV1`
-//! (`pkg/trace/filters/replacer.go`): rules run in the order they are listed, after obfuscation
-//! and truncation and before stats and sampling, so every value that becomes durable telemetry
-//! inherits the rewritten form. Tag keys prefixed with `_` are agent-internal metadata and are
-//! never rewritten, even by a `"*"` rule.
+//! Applies regex-based find-and-replace rules to trace tags, span resources, and span-event
+//! attributes. Rules run in order, after obfuscation and truncation and before stats and
+//! sampling, so durable telemetry only ever sees rewritten values.
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
@@ -25,23 +22,16 @@ use stringtheory::MetaString;
 /// The compiled form of one `apm_config.replace_tags` rule.
 #[derive(Clone, Debug)]
 struct CompiledRule {
-    /// Which fields the rule may rewrite.
     target: RuleTarget,
-    /// The compiled `pattern`.
     re: Regex,
-    /// The `repl` text spliced in place of each match.
     repl: String,
 }
 
 /// The set of fields a rule may rewrite, derived from the rule's `name`.
 #[derive(Clone, Debug, PartialEq)]
 enum RuleTarget {
-    /// Every span tag whose key does not start with `_`, the span resource, and every span-event
-    /// attribute (`name: "*"`).
     All,
-    /// Only the span resource (`name: "resource.name"`).
     Resource,
-    /// The exact tag key, on the span and its span events (any other `name`).
     Tag(String),
 }
 
@@ -54,9 +44,7 @@ pub struct TraceTagReplacerConfiguration {
 impl TraceTagReplacerConfiguration {
     /// Creates a new `TraceTagReplacerConfiguration` from the resolved trace configuration.
     ///
-    /// The rules are carried as plain data; their patterns are compiled when the transform is
-    /// built, so an invalid pattern fails startup with an actionable error rather than failing
-    /// translation for the whole configuration.
+    /// Patterns compile at build time, so an invalid one fails startup naming the rule.
     pub fn from_configuration(config: &domains::traces::Domain) -> Self {
         Self {
             rules: config.replace_tags.clone(),
@@ -144,7 +132,6 @@ impl SynchronousTransform for TraceTagReplacer {
     }
 }
 
-/// Rewrites every non-`_`-prefixed entry in an attributes iterator, storing replacements as strings.
 fn rewrite_non_hidden<'a, I>(entries: I, re: &Regex, repl: &str)
 where
     I: Iterator<Item = (&'a MetaString, &'a mut AttributeValue)>,
@@ -159,9 +146,8 @@ where
     }
 }
 
-/// Formats a scalar attribute value the way the agent's `AsString` does, ready for regex matching.
-///
-/// Composite values (`Bytes`, `Array`, `KeyValueList`) have no single string form and are skipped.
+/// Formats scalar values as strings for regex matching; composite values have no single string
+/// form and are skipped.
 fn value_as_string(value: &AttributeValue) -> Option<String> {
     match value {
         AttributeValue::String(s) => Some(s.as_ref().to_owned()),
@@ -172,27 +158,24 @@ fn value_as_string(value: &AttributeValue) -> Option<String> {
     }
 }
 
-/// Applies a rule to a value's string form; returns the replacement only when the text changed,
-/// mirroring `ReplaceV1`'s change-only write-back. Replacements are always stored as strings.
+/// Returns the replacement only when the text changed; replacements are stored as strings.
 fn replace_value(value: &AttributeValue, re: &Regex, repl: &str) -> Option<AttributeValue> {
     let as_string = value_as_string(value)?;
     let replaced = re.replace_all(&as_string, repl).into_owned();
     (replaced != as_string).then(|| AttributeValue::String(MetaString::from(replaced)))
 }
 
-/// Applies a rule to a string; returns the replacement only when the text changed.
 fn replace_str(value: &str, re: &Regex, repl: &str) -> Option<String> {
     let replaced = re.replace_all(value, repl).into_owned();
     (replaced != value).then_some(replaced)
 }
 
-/// Compiles the raw rules from configuration into their working form.
+/// Compiles the raw rules into their working form.
 ///
 /// # Errors
 ///
-/// Returns an error if any rule's `pattern` fails to compile, naming the offending rule's `name`
-/// and pattern. This fails the build, and therefore startup, mirroring the core agent's
-/// `compileReplaceRules` boot-time failure for the same condition.
+/// Returns an error if a rule's `pattern` fails to compile, naming the rule. Startup fails rather
+/// than dropping the rule.
 fn compile_rules(rules: &[domains::traces::ReplaceRule]) -> Result<Vec<CompiledRule>, GenericError> {
     let mut compiled = Vec::with_capacity(rules.len());
     for rule in rules {
@@ -261,8 +244,6 @@ mod tests {
         span.attributes.get(key)
     }
 
-    // A `*` rule rewrites attribute values but skips `_`-prefixed keys, and also rewrites the
-    // span resource and span-event attributes.
     #[test]
     fn wildcard_rule_rewrites_tags_resource_and_events_but_not_hidden() {
         let mut span = span_with(
@@ -303,7 +284,6 @@ mod tests {
         );
     }
 
-    // A `resource.name` rule rewrites only the resource.
     #[test]
     fn resource_name_rule_touches_only_the_resource() {
         let mut span = span_with(
@@ -331,7 +311,6 @@ mod tests {
         );
     }
 
-    // A named-key rule rewrites only that tag, on the span and its events.
     #[test]
     fn named_rule_touches_only_its_target_key() {
         let mut span = span_with(
@@ -380,8 +359,6 @@ mod tests {
         );
     }
 
-    // Replaced values are stored as strings, matching `SetAttributeFromString`: a matched numeric
-    // tag becomes a string even when the replacement is itself numeric.
     #[test]
     fn matched_numeric_tag_becomes_a_string() {
         let mut attrs: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
@@ -399,7 +376,6 @@ mod tests {
         assert_eq!(value.as_int(), None, "the numeric form does not survive a rewrite");
     }
 
-    // Rules run in order and compose: the second rule sees the first rule's output.
     #[test]
     fn rules_compose_in_order() {
         let mut span = span_with(
@@ -426,7 +402,6 @@ mod tests {
         );
     }
 
-    // A pattern that fails to compile is a configuration error that names the offending rule.
     #[test]
     fn invalid_pattern_fails_compilation_with_actionable_error() {
         let raw = vec![domains::traces::ReplaceRule {

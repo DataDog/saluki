@@ -63,11 +63,7 @@ pub struct Domain {
     /// Change this only if legitimate resources exceed the default.
     pub max_resource_len: usize,
 
-    /// Regex-based trace tag replacement rules. (not in Datadog Agent config schema)
-    ///
-    /// Defaults to no rules: tag values, resources, and span-event attributes pass through
-    /// unchanged. Rules run in the order they are listed, after obfuscation and truncation and
-    /// before stats and sampling, so aggregated values inherit the rewritten form.
+    /// Regex-based trace tag replacement rules. Defaults to no rules.
     pub replace_tags: Vec<ReplaceRule>,
 }
 
@@ -97,26 +93,16 @@ impl Default for Domain {
     }
 }
 
-/// A regex-based trace tag replacement rule. (not in Datadog Agent config schema)
+/// A regex-based trace tag replacement rule.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct ReplaceRule {
-    /// Tag key the rule targets (`apm_config.replace_tags[].name`).
-    ///
-    /// `"*"` targets every span tag whose key does not start with `_`, the span resource, and
-    /// span-event attributes; `"resource.name"` targets only the span resource; any other value
-    /// targets that exact tag key on the span and its span events.
+    /// Tag key the rule targets: `"*"`, `"resource.name"`, or a literal tag key.
     pub name: String,
 
-    /// Regular expression matched against each targeted value (`apm_config.replace_tags[].pattern`).
-    ///
-    /// Compiled once at startup. A pattern that fails to compile prevents startup, matching the
-    /// core agent's `compileReplaceRules` behavior.
+    /// Regular expression matched against each targeted value.
     pub pattern: String,
 
-    /// Text spliced in place of each match (`apm_config.replace_tags[].repl`).
-    ///
-    /// Supports `$1`-style capture-group references. An empty `repl` deletes each match. Matched
-    /// values are written back as strings.
+    /// Text spliced in place of each match; `$1`-style group references are supported.
     pub repl: String,
 }
 

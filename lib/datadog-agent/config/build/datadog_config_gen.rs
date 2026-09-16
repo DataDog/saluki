@@ -728,7 +728,7 @@ fn is_json_container(ty: &syn::Type) -> bool {
 }
 
 /// Returns whether `ty` is `Vec<HashMap<String, String>>`, the shape a typed object-array leaf
-/// (for example `apm_config.replace_tags`) keeps so its own consumer can interpret each item.
+/// keeps so its own consumer can interpret each item.
 fn is_vec_string_map(ty: &syn::Type) -> bool {
     let syn::Type::Path(tp) = ty else {
         return false;

@@ -45,10 +45,8 @@ where
 
 /// Deserialize a JSON array from either a sequence or a JSON-encoded string.
 ///
-/// The element type is inferred from the field: free-form object arrays keep `Vec<Value>`,
-/// while typed object arrays (for example `apm_config.replace_tags`) deserialize into
-/// `Vec<HashMap<String, String>>`. In both forms, an element that does not fit the target type
-/// is a type error, so the schema's item shape is enforced at the boundary.
+/// The element type is inferred from the field; an element that does not fit it is a type error,
+/// so the schema's item shape is enforced at the boundary.
 pub(crate) fn deserialize_json_array_or_string<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     T: DeserializeOwned,
