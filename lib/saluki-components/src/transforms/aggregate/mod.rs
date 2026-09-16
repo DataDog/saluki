@@ -455,10 +455,14 @@ impl MemoryBounds for AggregateConfiguration {
         // conservative per-context estimate: non-scalar metric values retain their existing,
         // workload-dependent accounting limitation.
         const INLINE_SCALAR_POINTS: usize = 4;
+        // Rules are validated when the transform is built, but bounds are specified during topology
+        // construction, which can happen first. Skip zero-second rules here rather than dividing by
+        // zero; `build` still rejects them with a configuration error.
         let minimum_interval_seconds = self
             .metric_intervals
             .iter()
             .map(|rule| rule.interval_seconds)
+            .filter(|seconds| *seconds != 0)
             .chain(std::iter::once(self.window_duration_seconds.get()))
             .min()
             .expect("the default aggregation interval is always present");
@@ -1615,6 +1619,19 @@ mod tests {
             bounds.total_firm_limit_bytes(),
             expected_minimum + aggregation_state_bytes + context_snapshot_bytes
         );
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_tolerate_zero_second_interval_rules() {
+        // Bounds are specified before `build` validates the rules, so an invalid zero-second rule
+        // must not panic the calculation; `build` is what rejects it.
+        let mut config = AggregateConfiguration::for_test();
+        config.metric_intervals = vec![MetricAggregationInterval {
+            metric_prefix: "invalid.".to_string(),
+            interval_seconds: 0,
+        }];
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
     }
 
     #[test]
