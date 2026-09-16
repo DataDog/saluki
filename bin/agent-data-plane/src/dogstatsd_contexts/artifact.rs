@@ -301,8 +301,15 @@ impl Error for ArtifactError {
     }
 }
 
-pub(crate) fn for_each_record(path: &Path, mut consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
+#[cfg(test)]
+pub(crate) fn for_each_record(path: &Path, consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
     let file = File::open(path).map_err(|error| ArtifactError::new(path, "open", 0, error))?;
+    for_each_record_from_file(path, file, consume)
+}
+
+pub(crate) fn for_each_record_from_file(
+    path: &Path, file: File, mut consume: impl FnMut(AgentContextRecord),
+) -> Result<(), ArtifactError> {
     let mut compressed_input = BufReader::new(file);
     let is_compressed = compressed_input
         .fill_buf()

@@ -377,7 +377,7 @@ async fn handle_dogstatsd_replay(
     let state = reader.read_state()?;
     let session_id = if stream_status {
         let Some(session_id) =
-            start_replay_session_cancellable(cancel, api_client.dogstatsd_replay_start_session(state.as_ref())).await?
+            start_replay_session(cancel, api_client.dogstatsd_replay_start_session(state.as_ref())).await?
         else {
             return Ok(());
         };
@@ -419,18 +419,16 @@ async fn handle_dogstatsd_replay(
     }
 }
 
-async fn start_replay_session_cancellable(
+async fn start_replay_session(
     cancellation: &CancellationToken, start_session: impl Future<Output = Result<String, GenericError>>,
 ) -> Result<Option<String>, GenericError> {
     if cancellation.is_cancelled() {
         return Ok(None);
     }
 
-    tokio::select! {
-        biased;
-        result = start_session => result.map(Some),
-        _ = cancellation.cancelled() => Ok(None),
-    }
+    // Once sent, a start request can create a server-side session even if the client is cancelled. Wait for its result
+    // so the caller can finish any session that was created.
+    start_session.await.map(Some)
 }
 
 async fn run_replay_with_session<'a, Replay, Finish, FinishFuture>(
@@ -538,12 +536,29 @@ where
         return Ok(None);
     }
 
+    run_cancellable_blocking(
+        cancellation,
+        tokio::task::spawn_blocking(load),
+        "DogStatsD replay capture loading",
+    )
+    .await
+}
+
+pub(super) async fn run_cancellable_blocking<T>(
+    cancellation: &CancellationToken, mut task: tokio::task::JoinHandle<Result<T, GenericError>>, task_name: &str,
+) -> Result<Option<T>, GenericError>
+where
+    T: Send + 'static,
+{
     tokio::select! {
         biased;
-        _ = cancellation.cancelled() => Ok(None),
-        result = tokio::task::spawn_blocking(load) => match result {
+        _ = cancellation.cancelled() => {
+            let _ = task.await;
+            Ok(None)
+        }
+        result = &mut task => match result {
             Ok(result) => result.map(Some),
-            Err(error) => Err(generic_error!("DogStatsD replay capture loading task failed: {error}")),
+            Err(error) => Err(generic_error!("{task_name} task failed: {error}")),
         },
     }
 }
@@ -860,35 +875,7 @@ pub(crate) fn parse_remote_dogstatsd_command(
     let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
     let command = DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], &argv_refs)
         .map_err(|error| generic_error!("invalid arguments for DogStatsD command `{command}`: {}", error.output))?;
-    validate_remote_file_paths(&command)?;
-
     Ok(command)
-}
-
-fn validate_remote_file_paths(command: &DogstatsdCommand) -> Result<(), GenericError> {
-    match &command.subcommand {
-        DogstatsdSubcommand::Top(command) => command
-            .offline_path()
-            .map_or(Ok(()), |path| validate_remote_regular_file("top --path", path)),
-        _ => Ok(()),
-    }
-}
-
-fn validate_remote_regular_file(argument: &str, path: &Path) -> Result<(), GenericError> {
-    let metadata = std::fs::metadata(path).with_error_context(|| {
-        format!(
-            "Remote DogStatsD {argument} must refer to a regular file; failed to inspect '{}'.",
-            path.display()
-        )
-    })?;
-    if metadata.is_file() {
-        Ok(())
-    } else {
-        Err(generic_error!(
-            "Remote DogStatsD {argument} must refer to a regular file; '{}' is not a regular file.",
-            path.display()
-        ))
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -970,15 +957,13 @@ mod tests {
     }
 
     #[test]
-    fn remote_command_parser_rejects_top_path_that_is_not_a_regular_file() {
+    fn remote_command_parser_defers_top_file_validation_to_execution() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let error =
+        let command =
             parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", directory.path()))
-                .expect_err("remote top should reject a directory");
+                .expect("remote top parsing should not inspect the file path");
 
-        let error = format!("{error:#}");
-        assert!(error.contains("regular file"), "{error}");
-        assert!(error.contains(&directory.path().display().to_string()), "{error}");
+        assert!(matches!(command.subcommand, DogstatsdSubcommand::Top(_)));
     }
 
     #[test]
@@ -999,17 +984,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn remote_command_parser_rejects_top_path_that_is_a_fifo() {
+    fn remote_command_parser_defers_top_fifo_validation_to_execution() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let fifo = directory.path().join("context-dump.fifo");
         create_fifo(&fifo);
 
-        let error = parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", &fifo))
-            .expect_err("remote top should reject a FIFO");
+        let command = parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", &fifo))
+            .expect("remote top parsing should not inspect the file path");
 
-        let error = format!("{error:#}");
-        assert!(error.contains("regular file"), "{error}");
-        assert!(error.contains(&fifo.display().to_string()), "{error}");
+        assert!(matches!(command.subcommand, DogstatsdSubcommand::Top(_)));
     }
 
     #[cfg(unix)]
@@ -1065,12 +1048,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_replay_load_waits_for_its_blocking_task_to_finish() {
+        let cancellation = CancellationToken::new();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (finish_tx, finish_rx) = std::sync::mpsc::sync_channel(1);
+        let mut task = tokio::spawn({
+            let cancellation = cancellation.clone();
+            async move {
+                super::run_cancellable_replay_load(&cancellation, move || {
+                    started_tx.send(()).expect("test should wait for the blocking task");
+                    finish_rx.recv().expect("test should release the blocking task");
+                    Ok::<_, GenericError>(())
+                })
+                .await
+            }
+        });
+
+        tokio::task::spawn_blocking(move || started_rx.recv().expect("blocking task should start"))
+            .await
+            .expect("wait task should not panic");
+        cancellation.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut task)
+                .await
+                .is_err(),
+            "cancellation must wait for the blocking task rather than detach it"
+        );
+        finish_tx.send(()).expect("blocking task should still be running");
+
+        assert!(task
+            .await
+            .expect("load task should not panic")
+            .expect("load should not fail")
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn remote_replay_session_started_before_cancellation_is_finished() {
         let cancellation = CancellationToken::new();
-        let session_id = super::start_replay_session_cancellable(&cancellation, {
+        let session_id = super::start_replay_session(&cancellation, {
             let cancellation = cancellation.clone();
             async move {
                 cancellation.cancel();
+                tokio::task::yield_now().await;
                 Ok::<_, GenericError>("replay-session".to_string())
             }
         })
