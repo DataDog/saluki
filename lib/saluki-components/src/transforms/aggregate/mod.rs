@@ -475,6 +475,23 @@ impl MemoryBounds for AggregateConfiguration {
             .min(usize::MAX as u128) as usize;
         let spilled_scalar_points = retained_scalar_points.saturating_sub(INLINE_SCALAR_POINTS);
         let scalar_point_size = std::mem::size_of::<Option<NonZeroU64>>() + std::mem::size_of::<f64>();
+        // The transform keeps a compiled copy of every rule, where each rule holds its prefix string on the heap,
+        // and one aggregation lane per distinct interval. Both are fixed by configuration. Invalid zero-second
+        // rules create no lane because `build` rejects the configuration, but we still reserve their prefix bytes so
+        // the estimate never undercounts a table the configuration could produce.
+        let prefix_table_bytes = self
+            .metric_intervals
+            .iter()
+            .map(|rule| std::mem::size_of::<MetricAggregationInterval>() + rule.metric_prefix.capacity())
+            .sum();
+        let lane_count = self
+            .metric_intervals
+            .iter()
+            .map(|rule| rule.interval_seconds)
+            .filter(|seconds| *seconds != 0)
+            .chain(std::iter::once(self.window_duration_seconds.get()))
+            .collect::<std::collections::HashSet<u64>>()
+            .len();
 
         builder
             .minimum()
@@ -500,6 +517,14 @@ impl MemoryBounds for AggregateConfiguration {
                     UsageExpr::constant("point count", spilled_scalar_points),
                 ),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ))
+            // Account for the compiled prefix table and the per-interval lane states, which exist even before any
+            // metric is aggregated.
+            .with_fixed_amount("metric interval prefix table", prefix_table_bytes)
+            .with_expr(UsageExpr::product(
+                "aggregation lane states",
+                UsageExpr::struct_size::<AggregationState>("aggregation lane state"),
+                UsageExpr::constant("lane count", lane_count),
             ))
             // A snapshot is constructed while the aggregation state remains live, so its peak allocation is additive.
             .with_expr(UsageExpr::product(
@@ -1613,11 +1638,12 @@ mod tests {
         let expected_minimum = size_of::<Aggregate>();
         let aggregation_state_bytes = context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
         let context_snapshot_bytes = context_limit * size_of::<AggregateContextSnapshotEntry>();
+        let lane_state_bytes = size_of::<AggregationState>();
 
         assert_eq!(bounds.total_minimum_required_bytes(), expected_minimum);
         assert_eq!(
             bounds.total_firm_limit_bytes(),
-            expected_minimum + aggregation_state_bytes + context_snapshot_bytes
+            expected_minimum + aggregation_state_bytes + lane_state_bytes + context_snapshot_bytes
         );
     }
 
@@ -1651,10 +1677,19 @@ mod tests {
         // A 15-second flush cadence retains at most 16 one-second buckets including the open
         // bucket. ScalarPoints stores four inline, leaving twelve heap slots per context.
         let scalar_spill_bytes = config.context_limit * 12 * (size_of::<Option<NonZeroU64>>() + size_of::<f64>());
+        // One lane for the default window plus one for the 1-second rule, and the compiled copy of the rule
+        // itself, prefix string included.
+        let lane_state_bytes = 2 * size_of::<AggregationState>();
+        let prefix_table_bytes = size_of::<MetricAggregationInterval>() + "high_resolution.".len();
 
         assert_eq!(
             bounds.total_firm_limit_bytes(),
-            size_of::<Aggregate>() + aggregation_state_bytes + context_snapshot_bytes + scalar_spill_bytes
+            size_of::<Aggregate>()
+                + aggregation_state_bytes
+                + lane_state_bytes
+                + prefix_table_bytes
+                + context_snapshot_bytes
+                + scalar_spill_bytes
         );
     }
 
