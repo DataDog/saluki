@@ -4201,9 +4201,11 @@ mod supervision {
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::components::test_util::TestComponentSupervisor;
+    #[cfg(unix)]
+    use saluki_core::components::{sources::SourceBuilder as _, BuildContext};
     use saluki_core::components::{
-        sources::{Source as _, SourceBuilder as _, SourceContext},
-        BuildContext, ComponentContext,
+        sources::{Source as _, SourceContext},
+        ComponentContext,
     };
     use saluki_core::health::HealthRegistry;
     use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
