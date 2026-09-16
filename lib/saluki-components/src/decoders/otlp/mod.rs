@@ -26,16 +26,35 @@ use crate::common::otlp::{
 };
 
 /// Configuration for the OTLP decoder.
-#[derive(Default)]
 pub struct OtlpDecoderConfiguration {
     /// Resolved OTLP trace ingestion settings.
     traces: domains::otlp::Traces,
+
+    /// Maximum length of a span's resource name, in bytes.
+    ///
+    /// Defaults to `usize::MAX`, meaning resource names are not truncated.
+    max_resource_len: usize,
 }
 
 impl OtlpDecoderConfiguration {
     /// Creates a new `OtlpDecoderConfiguration` from the resolved OTLP trace configuration.
     pub fn from_configuration(traces: &domains::otlp::Traces) -> Self {
-        Self { traces: traces.clone() }
+        Self {
+            traces: traces.clone(),
+            max_resource_len: usize::MAX,
+        }
+    }
+
+    /// Sets the maximum length of a span's resource name, in bytes.
+    ///
+    /// Resource names longer than this limit are truncated to the limit, on a UTF-8 boundary. Defaults to `usize::MAX`
+    /// (unbounded), which matches the decoder's behavior before resource name truncation was introduced.
+    ///
+    /// If set to `0`, every resource name is truncated to an empty string. Pass through the configured value
+    /// unmodified, including `0`, so the configured behavior is always honored.
+    pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
+        self.max_resource_len = max_resource_len;
+        self
     }
 }
 
@@ -51,7 +70,7 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(context.component_context());
-        let traces_translator = OtlpTracesTranslator::new(self.traces.clone());
+        let traces_translator = OtlpTracesTranslator::new(self.traces.clone(), self.max_resource_len);
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,

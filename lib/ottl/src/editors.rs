@@ -9,6 +9,7 @@
 //!
 //! # Example
 //!
+//! <!-- vale off -->
 //! ```ignore
 //! // Start with the standard editors…
 //! let mut editors = ottl::editors::standard();
@@ -18,6 +19,7 @@
 //!     todo!()
 //! }));
 //! ```
+//! <!-- vale on -->
 
 use std::sync::Arc;
 

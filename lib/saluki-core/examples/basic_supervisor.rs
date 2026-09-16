@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_core::runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture};
+use saluki_core::runtime::{self, InitializationError, ShutdownStrategy, Supervisable, Supervisor, SupervisorFuture};
 use saluki_error::GenericError;
 use tokio::{pin, select};
 use tracing::{error, info};
@@ -33,6 +33,13 @@ async fn main() -> Result<(), GenericError> {
         "failed to return response",
         Duration::from_secs(7),
     ));
+
+    // The workers above are all known up front, but a supervisor can also take on children while it runs. The
+    // acceptor below spawns one per simulated connection, which is the usual shape of dynamic supervision: work that
+    // only exists once the process is running, and that should stop when the subsystem it belongs to does.
+    admin_api_supervisor.add_worker(ConnectionAcceptor {
+        interval: Duration::from_secs(4),
+    });
     supervisor.add_worker(admin_api_supervisor);
 
     let mut telemetry_supervisor = Supervisor::new("telemetry-sup")?;
@@ -45,15 +52,16 @@ async fn main() -> Result<(), GenericError> {
     // Based on the timing of the simulated failures, we should see a few things happen:
     //
     // - the admin API supervisor will periodically restart the failed connection handler worker
+    // - the admin API acceptor will keep accepting connections, and each restart of that supervisor discards the
+    //   connections accepted since the last one, since dynamic children aren't restored by a restart
     // - the telemetry supervisor will periodically restart the panicked collector worker
     // - since the telemetry collector worker fails too often, the telemetry supervisor will eventually shutdown due to
     //   its restart strategy, which the parent supervisor will detect, causing it to restart the entire telemetry
     //   supervisor
-    // - when the telemetry supervisor shuts down, we should see the flusher worker shutdown as well, since we
-    //   shutdown all other workers on the telemetry supervisor (in an orderly fashion) before shutting down the
-    //   supervisor itself
-    // - since shutdown is orderly, we can notice a small delay when the supervisor shuts down due to having to wait
-    //   for the flusher to complete (2 seconds)
+    // - when the telemetry supervisor shuts down, we should see the flusher worker shutdown as well, since a
+    //   supervisor drains all of its workers before shutting down itself
+    // - workers are drained concurrently, so the drain takes as long as the slowest of them rather than the sum: we
+    //   can notice a small delay here from the flusher, which takes 2 seconds to finish once it observes shutdown
     // - this will keep repeating for the telemetry supervisor because we only allow one restart every 5 seconds before
     //   triggering shutdown (the collector panics every 3 seconds)
     // - however, since telemetry supervisor is only restarted every 6 seconds (two failures -> 6 seconds of runtime),
@@ -80,6 +88,69 @@ async fn main() -> Result<(), GenericError> {
     }
 
     Ok(())
+}
+
+/// A worker that simulates accepting connections, spawning a short-lived handler for each one.
+struct ConnectionAcceptor {
+    interval: Duration,
+}
+
+#[async_trait]
+impl Supervisable for ConnectionAcceptor {
+    fn name(&self) -> &str {
+        "admin-api-acceptor"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let worker_name = self.name().to_string();
+        let interval = self.interval;
+
+        Ok(Box::pin(async move {
+            pin!(process_shutdown);
+
+            info!(worker_name, "Worker started.");
+
+            let mut accepted = 0;
+            loop {
+                select! {
+                    biased;
+
+                    _ = &mut process_shutdown => {
+                        info!(worker_name, "Worker received shutdown signal.");
+                        break;
+                    }
+                    _ = tokio::time::sleep(interval) => {
+                        accepted += 1;
+                        info!(accepted, "Accepted connection; spawning handler.");
+
+                        // Spawned on the ambient supervisor, which is the one supervising *this* worker: the admin API
+                        // supervisor. Handlers are therefore siblings of the acceptor rather than tasks it has to
+                        // manage itself, and they're torn down whenever that supervisor stops or restarts -- including
+                        // the restarts the connection handler worker above triggers.
+                        //
+                        // Note that nothing had to be threaded here to make that work: no handle of any kind. Any code
+                        // running under supervision can do this, including helpers several calls deep.
+                        //
+                        // `Brutal` because this stand-in for a connection has no terminal condition of its own: it
+                        // sleeps for far longer than any shutdown would wait, and never looks at anything that would
+                        // tell it to stop. A worker like that has to say so, otherwise the supervisor waits out its
+                        // deadline and then reports having had to abort it. A real connection handler usually *does*
+                        // have a terminal condition -- the peer going away, or a drain signal from its listener -- and
+                        // so wouldn't need this.
+                        runtime::worker("admin-api-conn", async move {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                        })
+                        .with_shutdown_strategy(ShutdownStrategy::Brutal)
+                        .spawn();
+                    }
+                }
+            }
+
+            info!(worker_name, "Worker shutting down.");
+
+            Ok(())
+        }))
+    }
 }
 
 struct MockWorker {

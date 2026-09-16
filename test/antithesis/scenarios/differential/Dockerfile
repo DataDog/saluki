@@ -96,7 +96,7 @@ ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
 # ---------------------------------------------------------------------------
 FROM build-base AS agent-symbols
 # Version bumped by .github/workflows/update-agent-version.yml alongside .datadog-agent-version.
-ARG DD_AGENT_VERSION=7.82.3
+ARG DD_AGENT_VERSION=7.83.0
 ARG TARGETARCH=amd64
 RUN curl -fsSL -o /tmp/agent-dbg.deb \
         "https://s3.amazonaws.com/apt.datadoghq.com/pool/d/da/datadog-agent-dbg_${DD_AGENT_VERSION}-1_${TARGETARCH}.deb" && \

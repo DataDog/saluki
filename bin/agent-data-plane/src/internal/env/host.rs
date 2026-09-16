@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use datadog_agent_commons::ipc::client::RemoteAgentClient;
-use saluki_config::GenericConfiguration;
+use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
 use saluki_core::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_env::HostProvider;
 use saluki_error::GenericError;
@@ -25,10 +24,10 @@ impl RemoteAgentHostProvider {
     ///
     /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: &ComponentRegistry,
+    pub async fn new(
+        client_config: &RemoteAgentClientConfiguration, component_registry: &ComponentRegistry,
     ) -> Result<Self, GenericError> {
-        let client = RemoteAgentClient::from_configuration(config).await?;
+        let client = RemoteAgentClient::connect(client_config).await?;
 
         let host_provider = Self {
             client,

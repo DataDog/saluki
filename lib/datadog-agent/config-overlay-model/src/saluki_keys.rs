@@ -57,50 +57,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Otlp])",
         filename: "data_plane.rs",
     },
-    SalukiKey {
-        yaml_path: "data_plane.serializer_zstd_compressor_level",
-        description: "ADP zstd compression level",
-        default: "3",
-        documentation: Some(
-            "ADP-specific zstd compression level, taking precedence over the Core Agent's \
-             `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to \
-             `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its \
-             own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs \
-             69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can \
-             afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` \
-             or in ADP-specific configuration.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: Some("3"),
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["TYPED_CONFIG_SYSTEM"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
-    SalukiKey {
-        yaml_path: "data_plane.stop_timeout",
-        description: "ADP graceful shutdown timeout (s)",
-        default: "derived",
-        documentation: Some(
-            "### `data_plane.stop_timeout`
-
-\
-             ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. \
-             If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: None,
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["GET_TYPED"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
     // ── dogstatsd.rs ─────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",
@@ -234,9 +190,11 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
             "This ADP-only key is independent from `metric_tag_filterlist`. Remote Config updates to ",
             "`metric_tag_filterlist` therefore do not replace locally configured value allow-lists. Value allow-list ",
             "changes require an ADP restart in this initial implementation. Rules apply to counters and sketch-backed ",
-            "metrics before aggregation, including instrumented and origin tags. ADP matches `metric_prefix` after ",
-            "DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so configure the final metric name ",
-            "produced by those steps.\n\n",
+            "metrics before aggregation, including instrumented and origin tags. Like `metric_tag_filterlist`, value ",
+            "rules apply only to metrics that ADP aggregates. Metrics that carry an explicit client timestamp go ",
+            "through the no-aggregation pipeline (`dogstatsd_no_aggregation_pipeline`) and keep their tags unchanged. ",
+            "ADP matches `metric_prefix` after DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so ",
+            "configure the final metric name produced by those steps.\n\n",
             "Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered ",
             "tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not ",
             "operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value ",
@@ -513,23 +471,6 @@ DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_
         filename: "aggregate.rs",
     },
     SalukiKey {
-        yaml_path: "counter_expiry_seconds",
-        description: "Legacy idle counter keep-alive duration alias",
-        default: "300",
-        documentation: Some(
-            "Legacy ADP spelling for `dogstatsd_expiry_seconds`. If both spellings are set, configuration loading fails rather than choosing one.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: None,
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["TYPED_CONFIG_SYSTEM"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks])",
-        filename: "aggregate.rs",
-    },
-    SalukiKey {
         yaml_path: "aggregate_passthrough_idle_flush_timeout",
         description: "Passthrough buffer flush delay",
         default: "",
@@ -691,7 +632,7 @@ DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "accounting.rs",
@@ -706,7 +647,49 @@ DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "accounting.rs",
+    },
+    SalukiKey {
+        yaml_path: "enable_global_limiter",
+        description: "Global memory limiter toggle",
+        default: "true",
+        documentation: Some(
+            "Controls whether the global memory limiter exerts backpressure as memory usage \
+             approaches `memory_limit`. The default is `true`. When set to `false`, the limiter \
+             becomes a no-op and only the memory bounds of the running components influence \
+             memory usage.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("true"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "accounting.rs",
+    },
+    SalukiKey {
+        yaml_path: "memory_mode",
+        description: "Memory bounds validation mode",
+        default: "disabled",
+        documentation: Some(
+            "Controls how the calculated memory bounds are reconciled against `memory_limit`. The \
+             default is `disabled`. Accepted values: `disabled` skips bounds validation and applies \
+             no memory limiting; `permissive` logs a warning when the bounds do not fit within the \
+             limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, \
+             the global memory limiter is active only when a limit is in effect (configured or \
+             detected from cgroups) and `enable_global_limiter` is `true`.",
+        ),
+        value_type: "ValueType::String",
+        schema_default: Some("disabled"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "accounting.rs",

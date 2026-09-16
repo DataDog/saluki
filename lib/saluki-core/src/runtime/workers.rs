@@ -4,19 +4,19 @@ use std::{future::Future, sync::Mutex, time::Duration};
 use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, GenericError};
-use tracing::debug;
 
 use super::supervisor::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 
-/// Default graceful shutdown period for a function-based worker.
+/// Fallback graceful shutdown period for a function-based worker.
 ///
-/// Matches the [`Supervisable`] trait default, and applies only when nothing else sets a strategy for the child.
+/// Only consulted when nothing else bounds the worker: a child spawned through the builder defers to its supervisor's
+/// shutdown budget, and falls back to this when the supervisor has no budget at all.
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// An output type that a function-based worker can produce.
 ///
 /// Implemented for `()` (a worker that can't fail) and `Result<(), GenericError>` (one that can), so both forms can be
-/// passed to [`noninterruptible_worker`] and [`interruptible_worker`] without wrapping.
+/// passed to [`FnWorker::new`] without wrapping.
 pub trait IntoWorkerResult {
     /// Converts this output into a worker result.
     fn into_worker_result(self) -> Result<(), GenericError>;
@@ -34,31 +34,60 @@ impl IntoWorkerResult for Result<(), GenericError> {
     }
 }
 
-type WorkerBody = Box<dyn FnOnce(ShutdownHandle) -> SupervisorFuture + Send>;
+type WorkerBody = Box<dyn FnOnce() -> SupervisorFuture + Send>;
 
-/// A [`Supervisable`] worker built from a closure.
+/// A [`Supervisable`] worker built from a plain future.
 ///
-/// This worker cannot be restarted as the closure is consumed during initialization.
+/// This is the ordinary kind of supervised child: a piece of asynchronous work that runs until it reaches its own
+/// terminal condition -- an input channel closing, a loop finishing, a request completing.
+///
+/// # Shutdown
+///
+/// An `FnWorker` is never handed a shutdown signal, and reports as much through
+/// [`wants_shutdown_signal`][Supervisable::wants_shutdown_signal]. Shutdown of a subtree is a _trigger_, not an
+/// enforcement: the workers within it keep running until their terminal conditions are reached, which is what lets a
+/// set of tasks connected by channels drain in dependency order without any of them having to know that order. The
+/// supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] is the backstop for work that
+/// takes too long, and [`ShutdownStrategy::Brutal`] is the answer for work that has no terminal condition at all.
+///
+/// A worker that genuinely needs to observe shutdown -- to run cleanup, or because it has no other way to know it
+/// should stop -- should implement [`Supervisable`] directly, which does receive the signal.
+///
+/// This worker cannot be restarted, as the future is consumed during initialization.
 pub struct FnWorker {
     name: String,
-    shutdown_strategy: ShutdownStrategy,
     body: Mutex<Option<WorkerBody>>,
 }
 
 impl FnWorker {
-    fn new(name: String, body: WorkerBody) -> Self {
-        Self {
-            name,
-            shutdown_strategy: ShutdownStrategy::Graceful(DEFAULT_SHUTDOWN_TIMEOUT),
-            body: Mutex::new(Some(body)),
-        }
-    }
-
-    /// Sets the shutdown timeout for this worker.
+    /// Creates a worker that runs `fut` to completion.
+    ///
+    /// Workers may return either `()` or `Result<(), GenericError>`.
+    ///
+    /// Prefer [`worker`][crate::runtime::worker] and its counterparts on
+    /// [`SupervisorHandle`][crate::runtime::SupervisorHandle], which wrap this up with the defaults appropriate to a
+    /// dynamically spawned child.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use saluki_core::runtime::FnWorker;
+    /// # async fn drain_queue() {}
+    /// let worker = FnWorker::new("queue_drainer", drain_queue());
+    /// ```
     #[must_use]
-    pub const fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
-        self.shutdown_strategy = ShutdownStrategy::Graceful(timeout);
-        self
+    pub fn new<N, Fut>(name: N, fut: Fut) -> Self
+    where
+        N: Into<String>,
+        Fut: Future + Send + 'static,
+        Fut::Output: IntoWorkerResult,
+    {
+        Self {
+            name: name.into(),
+            body: Mutex::new(Some(Box::new(move || {
+                Box::pin(async move { fut.await.into_worker_result() })
+            }))),
+        }
     }
 }
 
@@ -69,10 +98,14 @@ impl Supervisable for FnWorker {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        self.shutdown_strategy
+        ShutdownStrategy::Graceful(DEFAULT_SHUTDOWN_TIMEOUT)
     }
 
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+    fn wants_shutdown_signal(&self) -> bool {
+        false
+    }
+
+    async fn initialize(&self, _process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let body = self
             .body
             .lock()
@@ -80,90 +113,8 @@ impl Supervisable for FnWorker {
             .take()
             .ok_or_else(|| InitializationError::from(generic_error!("worker already initialized")))?;
 
-        Ok(body(process_shutdown))
+        Ok(body())
     }
-}
-
-/// Creates a one-shot [`Supervisable`] worker that is never interrupted mid-operation.
-///
-/// The future that is created is solely responsible for handling the shutdown signal exposed to it via
-/// `ShutdownHandle`. Callers should ensure that they respond to shutdown signals in a timely manner otherwise they risk
-/// failing to run to completion when the supervisor forcefully exits. Use this for workers that need to drain in
-/// response to shutdown; for workers that are safe to stop at an arbitrary await point, [`interruptible_worker`] is
-/// simpler.
-///
-/// Workers may return either `()` or `Result<(), GenericError>`.
-///
-/// The worker cannot be restarted as the given closure is consumed during initialization.
-///
-/// # Examples
-///
-/// ```no_run
-/// # use saluki_core::runtime::noninterruptible_worker;
-/// # async fn drain_queue() {}
-/// let worker = noninterruptible_worker("queue_drainer", |shutdown| async move {
-///     tokio::select! {
-///         _ = shutdown => {},
-///         _ = drain_queue() => {},
-///     }
-/// });
-/// ```
-#[must_use]
-pub fn noninterruptible_worker<N, F, Fut>(name: N, f: F) -> FnWorker
-where
-    N: Into<String>,
-    F: FnOnce(ShutdownHandle) -> Fut + Send + 'static,
-    Fut: Future + Send + 'static,
-    Fut::Output: IntoWorkerResult,
-{
-    FnWorker::new(
-        name.into(),
-        Box::new(move |shutdown| Box::pin(async move { f(shutdown).await.into_worker_result() })),
-    )
-}
-
-/// Creates a one-shot [`Supervisable`] worker that runs `fut` until it completes or shutdown is signalled, whichever
-/// happens first.
-///
-/// The future that is given is subsequently wrapped such that shutdown is always handled: the underlying worker cannot
-/// ignore or defer honoring it. The future is dropped at whatever await point it happens to be parked on when shutdown
-/// fires, so use this only for work that is safe to interrupt: a server accept loop, a background refresher, a
-/// connection handler. Anything that must finish what it started should use [`noninterruptible_worker`] and observe the
-/// shutdown signal itself.
-///
-/// Workers may return either `()` or `Result<(), GenericError>`.
-///
-/// The worker cannot be restarted as the given future is consumed during initialization.
-///
-/// # Examples
-///
-/// ```no_run
-/// # use saluki_core::runtime::interruptible_worker;
-/// # async fn run_accept_loop() {}
-/// let worker = interruptible_worker("acceptor", run_accept_loop());
-/// ```
-#[must_use]
-pub fn interruptible_worker<N, Fut>(name: N, fut: Fut) -> FnWorker
-where
-    N: Into<String>,
-    Fut: Future + Send + 'static,
-    Fut::Output: IntoWorkerResult,
-{
-    let name = name.into();
-    FnWorker::new(
-        name.clone(),
-        Box::new(move |shutdown| {
-            Box::pin(async move {
-                tokio::select! {
-                    _ = shutdown => {
-                        debug!(worker_name = %name, "Worker interrupted by shutdown signal.");
-                        Ok(())
-                    },
-                    output = fut => output.into_worker_result(),
-                }
-            })
-        }),
-    )
 }
 
 #[cfg(test)]
@@ -173,46 +124,41 @@ mod tests {
         Arc,
     };
 
-    use saluki_common::sync::shutdown::ShutdownCoordinator;
     use tokio::time::timeout;
 
     use super::*;
 
     /// Bound on any worker-body await in these tests.
     ///
-    /// A worker that stops observing shutdown would otherwise hang the test process until the harness kills it, which
-    /// reads as a stall rather than a failure.
+    /// A worker that never finishes would otherwise hang the test process until the harness kills it, which reads as a
+    /// stall rather than a failure.
     const RUN_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[tokio::test]
-    async fn noninterruptible_worker_receives_shutdown_signal() {
-        // A non-interruptible worker is handed the shutdown signal and is expected to observe it and return.
-        let observed = Arc::new(AtomicUsize::new(0));
-        let worker_observed = Arc::clone(&observed);
+    async fn worker_runs_its_future_to_completion() {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let worker_ran = Arc::clone(&ran);
 
-        let worker = noninterruptible_worker("test", move |shutdown| async move {
-            shutdown.await;
-            worker_observed.fetch_add(1, Ordering::SeqCst);
+        let worker = FnWorker::new("test", async move {
+            worker_ran.fetch_add(1, Ordering::SeqCst);
         });
 
-        let mut coordinator = ShutdownCoordinator::default();
-        let handle = coordinator.register();
-        let run = worker.initialize(handle).await.expect("should initialize");
+        let run = worker
+            .initialize(ShutdownHandle::noop())
+            .await
+            .expect("should initialize");
 
-        coordinator.shutdown();
         timeout(RUN_TIMEOUT, run)
             .await
-            .expect("worker should observe shutdown and exit")
+            .expect("worker should run to completion")
             .expect("should exit cleanly");
 
-        assert_eq!(observed.load(Ordering::SeqCst), 1);
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn noninterruptible_worker_propagates_error() {
-        let worker = noninterruptible_worker("test", |_shutdown| async move {
-            Err::<(), _>(generic_error!("worker failed"))
-        });
+    async fn worker_propagates_error() {
+        let worker = FnWorker::new("test", async { Err::<(), _>(generic_error!("worker failed")) });
 
         let run = worker
             .initialize(ShutdownHandle::noop())
@@ -224,40 +170,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interruptible_worker_is_interrupted_at_shutdown() {
-        // The future never completes on its own, so the only way out is being interrupted -- which is reported as a
-        // clean exit rather than an error.
-        let worker = interruptible_worker("test", std::future::pending::<()>());
-
-        let mut coordinator = ShutdownCoordinator::default();
-        let handle = coordinator.register();
-        let run = worker.initialize(handle).await.expect("should initialize");
-
-        coordinator.shutdown();
-        timeout(RUN_TIMEOUT, run)
-            .await
-            .expect("worker should be interrupted by shutdown and exit")
-            .expect("being interrupted should be reported as a clean exit");
-    }
-
-    #[tokio::test]
-    async fn interruptible_worker_returns_future_output_when_it_completes_first() {
-        let worker = interruptible_worker("test", async { Err::<(), _>(generic_error!("boom")) });
-
-        let run = worker
-            .initialize(ShutdownHandle::noop())
-            .await
-            .expect("should initialize");
-
-        let error = run.await.expect_err("should surface the future's error");
-        assert!(error.to_string().contains("boom"));
+    async fn worker_does_not_want_the_shutdown_signal() {
+        // The supervisor uses this to skip allocating a shutdown coordinator it would never fire: an `FnWorker` runs
+        // until its own terminal condition regardless of what the supervisor signals.
+        assert!(!FnWorker::new("test", async {}).wants_shutdown_signal());
     }
 
     #[tokio::test]
     async fn second_initialization_fails() {
         // Function-based workers are one-shot: a restart would re-initialize, which must fail loudly rather than
         // silently running nothing.
-        let worker = noninterruptible_worker("test", |_shutdown| async {});
+        let worker = FnWorker::new("test", async {});
 
         // Drop the run-future without polling it; we only care that the body was consumed.
         drop(

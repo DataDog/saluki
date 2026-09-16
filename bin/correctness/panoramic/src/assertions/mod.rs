@@ -21,6 +21,7 @@ mod adp_config_key_equals;
 mod adp_exits;
 mod file_contains;
 mod http_check;
+mod intake_has_metric;
 mod log_contains;
 mod port_listening;
 mod process_stable;
@@ -29,6 +30,7 @@ pub use adp_config_key_equals::{default_adp_config_endpoint, AdpConfigKeyEqualsA
 pub use adp_exits::AdpExitsWithAssertion;
 pub use file_contains::FileContainsAssertion;
 pub use http_check::HttpCheckAssertion;
+pub use intake_has_metric::IntakeHasMetricAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
 pub use process_stable::ProcessStableForAssertion;
@@ -177,6 +179,10 @@ pub struct AssertionContext {
     /// exits. `None` on host-process runtimes; otherwise an empty cell that becomes populated
     /// when the docker wait stream completes.
     pub docker_container_exit_code: Option<DockerExitCodeCell>,
+    /// Published port of the Datadog intake sidecar's HTTP endpoint, when the test runs one.
+    ///
+    /// `None` when the test has no intake sidecar, including on host-process runtimes.
+    pub intake_host_port: Option<u16>,
     /// Core Agent auth token path for host-process runtimes.
     pub core_agent_auth_token_path: Option<PathBuf>,
     /// Runtime-specific prefix and host environment for invoking the tested ADP binary as a CLI.
@@ -263,6 +269,19 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             path.clone(),
             pattern.clone(),
             *regex,
+            timeout.0,
+        ))),
+        AssertionConfig::IntakeHasMetric {
+            name,
+            metric_type,
+            value,
+            tags,
+            timeout,
+        } => Ok(Box::new(IntakeHasMetricAssertion::new(
+            name.clone(),
+            *metric_type,
+            *value,
+            tags.clone(),
             timeout.0,
         ))),
         AssertionConfig::AdpConfigKeyEquals {

@@ -1,8 +1,10 @@
-use agent_data_plane_config::shared::SharedConfiguration;
+use std::collections::HashMap;
+
+use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
+use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, BuildContext},
@@ -16,9 +18,10 @@ use tokio::select;
 use tracing::debug;
 
 use crate::common::datadog::{
+    api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::SingleDestination,
-    io::TransactionForwarder,
+    io::{LiveForwarderConfiguration, TransactionForwarder},
     protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
@@ -38,40 +41,56 @@ pub struct DatadogForwarderConfiguration {
     /// See [`ForwarderConfiguration`] for more information about the available settings.
     forwarder_config: ForwarderConfiguration,
 
-    /// Live configuration, from which endpoints refresh their API keys.
-    configuration: GenericConfiguration,
+    /// Live views the endpoints take their API keys from.
+    api_keys: LiveApiKeys,
+
+    /// Live view of the secrets settings the retry policy's gate reads.
+    secrets: Live<Secrets>,
 }
 
 impl DatadogForwarderConfiguration {
     /// Creates a new `DatadogForwarderConfiguration` from the resolved shared configuration.
     ///
-    /// `config` is retained so that endpoints can refresh their API keys as configuration changes.
-    pub fn from_configuration(shared: &SharedConfiguration, config: &GenericConfiguration) -> Self {
+    /// `api_key` and `additional_endpoints` are the live views the endpoints take their API keys from, so that a key an
+    /// operator rotates while the process runs reaches the next request. `secrets` is the live view the retry policy's
+    /// gate reads to decide whether a rejected key is worth retrying.
+    pub fn from_configuration(
+        shared: &SharedConfiguration, api_key: Live<String>, additional_endpoints: Live<HashMap<String, Vec<String>>>,
+        secrets: Live<Secrets>,
+    ) -> Self {
         Self {
             forwarder_config: ForwarderConfiguration::from_configuration(shared),
-            configuration: config.clone(),
+            api_keys: LiveApiKeys {
+                primary: Some(ApiKeyView::Required(api_key)),
+                additional: Some(additional_endpoints),
+            },
+            secrets,
         }
     }
 
     /// Creates a new `DatadogForwarderConfiguration` that forwards to a single endpoint override.
     ///
-    /// The override replaces the configured endpoints entirely, and its API key refreshes from
-    /// `api_key_refresh_config_path` rather than the primary `api_key`, as Multi-Region Failover
-    /// requires.
+    /// The override replaces the configured endpoints entirely, and `api_key_view` is the live view its key comes from.
+    /// Multi-Region Failover needs this: it has its own key, not the primary one, and configuration can leave that key
+    /// unset. `secrets` serves the same purpose as in [`from_configuration`](Self::from_configuration): it decides
+    /// whether the override's rejected key is worth retrying.
     pub fn for_endpoint_override(
-        shared: &SharedConfiguration, config: &GenericConfiguration, dd_url: String, api_key: String,
-        api_key_refresh_config_path: &'static str,
+        shared: &SharedConfiguration, dd_url: String, api_key: String, api_key_view: Live<Option<String>>,
+        secrets: Live<Secrets>,
     ) -> Self {
         let destination = SingleDestination {
             url: dd_url,
             api_key,
-            api_key_refresh_config_path: Some(api_key_refresh_config_path),
             accepts_v3_series: true,
         };
 
         Self {
             forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
-            configuration: config.clone(),
+            api_keys: LiveApiKeys {
+                primary: Some(ApiKeyView::Optional(api_key_view)),
+                additional: None,
+            },
+            secrets,
         }
     }
 }
@@ -88,7 +107,10 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
         let forwarder = TransactionForwarder::from_config(
             context.component_context().clone(),
             self.forwarder_config.clone(),
-            Some(self.configuration.clone()),
+            LiveForwarderConfiguration {
+                api_keys: self.api_keys.clone(),
+                secrets: self.secrets.clone(),
+            },
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -206,11 +228,13 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
+    use agent_data_plane_config::SalukiConfiguration;
 
     use super::*;
-    use crate::common::datadog::test_util::shared_configuration;
+    use crate::common::datadog::{
+        api_key::ApiKeyRefresher,
+        test_util::{shared_configuration, LiveConfiguration},
+    };
 
     #[test]
     fn dd_endpoint_names_map_from_request_path() {
@@ -262,70 +286,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_override_refreshes_from_mrf_api_key() {
-        let (generic_config, sender) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-api-key",
-                "multi_region_failover": {
-                    "api_key": "mrf-api-key"
-                }
-            })),
-            None,
-            true,
-        )
-        .await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(saluki_config::dynamic::ConfigUpdate::snapshot([]))
-            .await
-            .expect("initial dynamic snapshot should be sent");
-        generic_config.ready().await;
+    async fn an_endpoint_override_follows_the_failover_key_and_not_the_primary_one() {
+        let mut live_config = SalukiConfiguration::default();
+        live_config.shared.endpoints.api_key = "primary-api-key".to_string();
+        live_config.domains.multi_region_failover.api_key = Some("mrf-api-key".to_string());
+        let live = LiveConfiguration::new(live_config.clone());
 
         let config = DatadogForwarderConfiguration::for_endpoint_override(
             &shared_configuration(),
-            &generic_config,
             "http://mrf.example.test".to_string(),
             "mrf-api-key".to_string(),
-            "multi_region_failover.api_key",
+            live.live(|config| &config.domains.multi_region_failover.api_key),
+            live.live(|config| &config.shared.secrets),
         );
 
-        let mut endpoints = config
+        let endpoints = config
             .forwarder_config
-            .build_routable_endpoints(Some(config.configuration.clone()))
+            .build_routable_endpoints()
             .expect("endpoint should resolve");
-
         assert_eq!(endpoints.len(), 1);
-        let (_, mut endpoint) = endpoints.pop().unwrap().into_parts();
-        assert_eq!(endpoint.cached_api_key(), "mrf-api-key");
-        assert!(endpoint.has_configuration());
-        assert_eq!(endpoint.api_key(), "mrf-api-key");
+        assert_eq!("mrf-api-key", &*endpoints[0].endpoint().api_key());
 
-        sender
-            .send(saluki_config::dynamic::ConfigUpdate::Partial(
-                saluki_config::dynamic::ConfigSetting::explicit("api_key", json!("rotated-primary-api-key")),
-            ))
-            .await
-            .expect("primary API key update should be sent");
-        sender
-            .send(saluki_config::dynamic::ConfigUpdate::Partial(
-                saluki_config::dynamic::ConfigSetting::explicit(
-                    "multi_region_failover.api_key",
-                    json!("rotated-mrf-api-key"),
-                ),
-            ))
-            .await
-            .expect("MRF API key update should be sent");
+        ApiKeyRefresher::new(&endpoints, &config.api_keys)
+            .expect("the destination should follow the failover view")
+            .spawn();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if endpoint.api_key() == "rotated-mrf-api-key" {
-                break;
+        // Rotate the primary key first: the override does not follow it.
+        live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();
+        live.store(live_config.clone());
+
+        live_config.domains.multi_region_failover.api_key = Some("rotated-mrf-api-key".to_string());
+        live.store(live_config);
+
+        let endpoint = endpoints[0].endpoint();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while &*endpoint.api_key() != "rotated-mrf-api-key" {
+                tokio::task::yield_now().await;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for endpoint override to refresh from MRF API key"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .expect("the endpoint override should follow the failover key");
     }
 }

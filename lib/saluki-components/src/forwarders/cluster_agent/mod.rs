@@ -23,7 +23,7 @@ use tracing::debug;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     endpoints::{ResolvedEndpoint, SingleDestination},
-    io::{EndpointRequestMapper, EndpointRequestMapperFactory, TransactionForwarder},
+    io::{EndpointRequestMapper, EndpointRequestMapperFactory, LiveForwarderConfiguration, TransactionForwarder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
@@ -60,7 +60,6 @@ impl ClusterAgentForwarderConfiguration {
         let destination = SingleDestination {
             url: endpoint_url,
             api_key: auth_token,
-            api_key_refresh_config_path: None,
             accepts_v3_series: false,
         };
         let forwarder_config =
@@ -86,7 +85,10 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
         let forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
             context.component_context().clone(),
             self.forwarder_config.clone(),
-            None,
+            // Nothing about this forwarder changes at runtime: the bearer token is not a configured API key, so
+            // nothing refreshes it, and a rejected token is not worth retrying on the chance that the Agent
+            // re-resolves a secret.
+            LiveForwarderConfiguration::default(),
             get_cluster_agent_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -284,7 +286,7 @@ mod tests {
         .expect("Cluster Agent forwarder configuration should parse");
         let endpoints = config
             .forwarder_config
-            .build_routable_endpoints(None)
+            .build_routable_endpoints()
             .expect("endpoint should resolve");
 
         assert_eq!(endpoints.len(), 1);
@@ -293,13 +295,12 @@ mod tests {
             endpoints[0].endpoint().endpoint().as_str(),
             "https://cluster-agent.example.com/"
         );
-        assert_eq!(endpoints[0].endpoint().cached_api_key(), "secret-token");
+        assert_eq!(&*endpoints[0].endpoint().api_key(), "secret-token");
         assert_eq!(
             V3SeriesMode::Disabled,
             config.forwarder_config.use_v3_api_series().enabled
         );
         assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
-        assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
         assert!(!config.forwarder_config.allow_arbitrary_tags());
     }
 }

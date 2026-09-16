@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 /// A wrapper over raw tags in their unprocessed form.
 ///
 /// This type is meant to handle raw tags that have been extracted from network payloads, such as DogStatsD, where the
@@ -11,17 +13,17 @@
 ///
 /// ## Cloning
 ///
-/// `RawTags` can be cloned to create a new iterator with its own iteration state. The same underlying input byte slice
-/// is retained.
+/// `RawTags` can be cloned to create a new iterator with its own iteration state. Borrowed tags retain their input
+/// slice, while normalized tags retain their owned backing string.
 #[derive(Clone)]
 pub struct RawTags<'a> {
-    raw_tags: &'a str,
+    raw_tags: Cow<'a, str>,
     max_tag_count: usize,
     max_tag_len: usize,
 }
 
 impl<'a> RawTags<'a> {
-    /// Creates a new `RawTags` from the given input byte slice.
+    /// Creates `RawTags` from a borrowed tag block.
     ///
     /// The maximum tag count and maximum tag length control how many tags are returned from the iterator and their
     /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
@@ -29,7 +31,16 @@ impl<'a> RawTags<'a> {
     /// length, or to a smaller length, whichever is closer to a valid UTF-8 character boundary.
     pub const fn new(raw_tags: &'a str, max_tag_count: usize, max_tag_len: usize) -> Self {
         Self {
-            raw_tags,
+            raw_tags: Cow::Borrowed(raw_tags),
+            max_tag_count,
+            max_tag_len,
+        }
+    }
+
+    /// Creates `RawTags` from an owned, normalized tag block.
+    pub fn from_owned(raw_tags: String, max_tag_count: usize, max_tag_len: usize) -> Self {
+        Self {
+            raw_tags: Cow::Owned(raw_tags),
             max_tag_count,
             max_tag_len,
         }
@@ -38,28 +49,20 @@ impl<'a> RawTags<'a> {
     /// Creates an empty `RawTags`.
     pub const fn empty() -> Self {
         Self {
-            raw_tags: "",
+            raw_tags: Cow::Borrowed(""),
             max_tag_count: 0,
             max_tag_len: 0,
         }
     }
 
-    fn tags_iter(&self) -> RawTagsIter<'a> {
+    /// Returns an iterator over the individual tags.
+    pub fn iter(&self) -> RawTagsIter<'_> {
         RawTagsIter {
-            raw_tags: self.raw_tags,
+            raw_tags: &self.raw_tags,
             parsed_tags: 0,
             max_tag_len: self.max_tag_len,
             max_tag_count: self.max_tag_count,
         }
-    }
-}
-
-impl<'a> IntoIterator for RawTags<'a> {
-    type Item = &'a str;
-    type IntoIter = RawTagsIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.tags_iter()
     }
 }
 
@@ -120,18 +123,18 @@ pub struct RawTagsFilter<'a, F> {
 
 impl<'a, F> RawTagsFilter<'a, F> {
     /// Creates a new `RawTagsFilter` that includes only the tags that match the given predicate.
-    pub fn include(raw: RawTags<'a>, predicate: F) -> RawTagsFilter<'a, F> {
+    pub fn include(raw: &'a RawTags<'_>, predicate: F) -> RawTagsFilter<'a, F> {
         Self {
-            raw: raw.into_iter(),
+            raw: raw.iter(),
             predicate,
             include: true,
         }
     }
 
     /// Creates a new `RawTagsFilter` that excludes any tags that match the given predicate.
-    pub fn exclude(raw: RawTags<'a>, predicate: F) -> RawTagsFilter<'a, F> {
+    pub fn exclude(raw: &'a RawTags<'_>, predicate: F) -> RawTagsFilter<'a, F> {
         Self {
-            raw: raw.into_iter(),
+            raw: raw.iter(),
             predicate,
             include: false,
         }
@@ -240,7 +243,7 @@ mod tests {
     fn raw_tags_filter_include() {
         let raw_tags_input = "key1:value1,key2:value2,key3:value3";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
-        let filtered_raw_tags = RawTagsFilter::include(raw_tags, filter_key2_tag);
+        let filtered_raw_tags = RawTagsFilter::include(&raw_tags, filter_key2_tag);
 
         let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
         assert_eq!(filtered_tags.len(), 1);
@@ -251,7 +254,7 @@ mod tests {
     fn raw_tags_filter_include_duplicates() {
         let raw_tags_input = "key1:value1,key2:value2,key3:value3,key2:value4";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
-        let filtered_raw_tags = RawTagsFilter::include(raw_tags, filter_key2_tag);
+        let filtered_raw_tags = RawTagsFilter::include(&raw_tags, filter_key2_tag);
 
         let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
         assert_eq!(filtered_tags.len(), 2);
@@ -263,7 +266,7 @@ mod tests {
     fn raw_tags_filter_exclude() {
         let raw_tags_input = "key1:value1,key2:value2,key3:value3";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
-        let filtered_raw_tags = RawTagsFilter::exclude(raw_tags, filter_key2_tag);
+        let filtered_raw_tags = RawTagsFilter::exclude(&raw_tags, filter_key2_tag);
 
         let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
         assert_eq!(filtered_tags.len(), 2);
@@ -275,7 +278,7 @@ mod tests {
     fn raw_tags_filter_exclude_duplicates() {
         let raw_tags_input = "key1:value1,key2:value2,key3:value3,key1:value9,key2:value6";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
-        let filtered_raw_tags = RawTagsFilter::exclude(raw_tags, filter_key2_tag);
+        let filtered_raw_tags = RawTagsFilter::exclude(&raw_tags, filter_key2_tag);
 
         let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
         assert_eq!(filtered_tags.len(), 3);
@@ -292,17 +295,15 @@ mod tests {
             // This is because we may have duplicate tags in the input, and so we need to discard all of those duplicates
             // when ensuring that the resulting filtered sets are disjoint, and that they both add up to the original
             // set of raw tags.
-
-            let raw_tags = RawTags::new(&inputs, usize::MAX, usize::MAX)
-                .into_iter()
-                .collect::<HashSet<_>>();
+            let raw_tags_input = RawTags::new(&inputs, usize::MAX, usize::MAX);
+            let raw_tags = raw_tags_input.iter().collect::<HashSet<_>>();
             let predicate = |tag: &str| filters.iter().any(|filter| tag.starts_with(filter));
 
             let raw_tags_include = RawTags::new(&inputs, usize::MAX, usize::MAX);
-            let filtered_raw_tags_include = RawTagsFilter::include(raw_tags_include, predicate);
+            let filtered_raw_tags_include = RawTagsFilter::include(&raw_tags_include, predicate);
 
             let raw_tags_exclude = RawTags::new(&inputs, usize::MAX, usize::MAX);
-            let filtered_raw_tags_exclude = RawTagsFilter::exclude(raw_tags_exclude, predicate);
+            let filtered_raw_tags_exclude = RawTagsFilter::exclude(&raw_tags_exclude, predicate);
 
             let filtered_tags_include = filtered_raw_tags_include.into_iter().collect::<HashSet<_>>();
             let filtered_tags_exclude = filtered_raw_tags_exclude.into_iter().collect::<HashSet<_>>();

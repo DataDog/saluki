@@ -3,9 +3,11 @@ target/
 .vscode/
 test/k8s/charts/
 test/build/
+test/output/
 test/ddprof
 test/lading
 test/one-off/__pycache__
+ci/tooling/__pycache__
 dhat-heap.json
 .DS_Store
 dist/

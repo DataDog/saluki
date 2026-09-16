@@ -1,0 +1,9 @@
+fixes:
+  - |
+    The DogStatsD metric filterlist (``metric_filterlist``, and the legacy
+    ``statsd_metric_blocklist``) now matches on the normalized metric name instead of the raw
+    submitted name. Metric names are normalized by the Datadog metrics intake on ingest, so a metric
+    submitted as ``my metric-name`` is stored and displayed as ``my_metric_name``. Previously a
+    filterlist entry using the normalized name that you see in Datadog would fail to match such a
+    metric, and the metric was submitted anyway. Filterlist entries themselves are matched as
+    written, so they should be the metric name as it appears in Datadog.

@@ -91,7 +91,7 @@ pub struct Reflector<P: Processor> {
 impl<P: Processor> Reflector<P> {
     /// Creates a new reflector with the given data source and processor.
     ///
-    /// A reflector composes a source of data with a processor that's used to transform the data, and then stores the
+    /// A reflector composes a source of data with a processor that's used to transform the data, and then stores
     /// the processed results. It can be listened to for updates, and cheaply shared. This allows multiple interested
     /// components to subscribe to the same data source without having to duplicate the processing or storage of the
     /// data.

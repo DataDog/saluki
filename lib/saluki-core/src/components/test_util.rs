@@ -1,22 +1,22 @@
 //! Test helpers for exercising components that spawn supervised children.
 //!
-//! A [`ComponentSpawner`] is only useful while its supervisor is actually running: spawning against a supervisor that
-//! was built but never run fails with [`SpawnError::SupervisorGone`][crate::runtime::SpawnError::SupervisorGone]. That
-//! makes the obvious test fixture -- `Supervisor::new("test").handle()` -- a trap, because it looks right and fails
-//! only once the component under test tries to spawn something.
+//! Spawning only starts a child while its supervisor is actually running, and
+//! [`runtime::spawn`][crate::runtime::spawn] needs an ambient supervisor at all. Neither is true of the obvious test
+//! fixture -- `Supervisor::new("test").handle()` -- which looks right but silently drops every child the component
+//! under test spawns, or panics outright if the component spawns on the ambient supervisor.
 //!
-//! [`TestComponentSupervisor`] runs a supervisor configured the way the topology configures a component's supervisor,
-//! and hands out a [`ComponentSpawner`] bound to it.
+//! [`TestComponentSupervisor`] runs a supervisor configured the way the topology configures a component's supervisor.
+//! Pass its [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns
+//! on the ambient supervisor inside [`scope`][TestComponentSupervisor::scope].
 
+use std::future::Future;
 use std::time::Duration;
 
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-use tokio::{runtime::Handle, task::JoinHandle};
+use tokio::task::futures::TaskLocalFuture;
+use tokio::task::JoinHandle;
 
-use crate::components::ComponentSpawner;
-use crate::runtime::{
-    state::DataspaceRegistry, AutoShutdown, ShutdownMode, Supervisor, SupervisorError, SupervisorHandle,
-};
+use crate::runtime::{state::DataspaceRegistry, AutoShutdown, Supervisor, SupervisorError, SupervisorHandle};
 
 /// Shutdown budget for the test supervisor.
 ///
@@ -34,7 +34,7 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// A running per-component supervisor for tests.
 ///
 /// Configured like the supervisor the topology builds for each component ([`AutoShutdown::AnySignificant`],
-/// [`ShutdownMode::Concurrent`], and a shutdown budget), minus the component worker itself -- the test drives the
+/// and a shutdown budget), minus the component worker itself -- the test drives the
 /// component directly.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
@@ -67,7 +67,6 @@ impl TestComponentSupervisor {
         let mut supervisor = Supervisor::new(id)
             .expect("test supervisor name should be valid")
             .with_auto_shutdown(AutoShutdown::AnySignificant)
-            .with_shutdown_mode(ShutdownMode::Concurrent)
             .with_shutdown_budget(budget);
 
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
@@ -95,11 +94,21 @@ impl TestComponentSupervisor {
         supervisor
     }
 
-    /// Returns a spawner bound to this supervisor.
+    /// Returns a handle to this supervisor.
+    pub fn handle(&self) -> SupervisorHandle {
+        self.handle.clone()
+    }
+
+    /// Runs `fut` with this supervisor installed as the ambient supervisor.
     ///
-    /// The current runtime stands in for the shared worker pool.
-    pub fn spawner(&self) -> ComponentSpawner {
-        ComponentSpawner::new(self.handle.clone(), Handle::current())
+    /// Use this to drive code that spawns through [`runtime::spawn`][crate::runtime::spawn] (or the ambient builders
+    /// alongside it), which is how a component spawns children when it isn't holding a handle. Outside a scope, that
+    /// code would panic for want of an ambient supervisor.
+    pub fn scope<F>(&self, fut: F) -> TaskLocalFuture<SupervisorHandle, F>
+    where
+        F: Future,
+    {
+        self.handle.scope(fut)
     }
 
     /// Returns the dataspace shared by the supervisor and its children.

@@ -208,7 +208,7 @@ mod tests {
         assert!(remaining.is_empty());
 
         let mut event_tags = TagSet::default();
-        for tag in packet.tags.into_iter() {
+        for tag in packet.tags.iter() {
             event_tags.insert_tag(tag);
         }
 
@@ -273,6 +273,20 @@ mod tests {
 
         let expected = EventD::new(event_title, event_text).with_tags(shared_tag_set);
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(expected, actual);
+    }
+
+    #[test]
+    fn event_tags_with_invalid_utf8_are_normalized() {
+        let mut input = b"_e{5,4}:title|text|#env:prod,tag:".to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+
+        let tags = ["env:prod", "tag:\u{FFFD}"];
+        let expected = EventD::new("title", "text").with_tags(SharedTagSet::from(TagSet::from_iter(
+            tags.iter().map(|&tag| tag.into()),
+        )));
+        let actual = parse_dsd_eventd(&input).expect("event with invalid tag bytes should parse");
+
         check_basic_eventd_eq(expected, actual);
     }
 
@@ -411,6 +425,6 @@ mod tests {
         assert_eq!(packet.local_data, None);
         assert_eq!(packet.external_data, None);
         assert_eq!(packet.cardinality, None);
-        assert!(packet.tags.into_iter().next().is_none());
+        assert!(packet.tags.iter().next().is_none());
     }
 }

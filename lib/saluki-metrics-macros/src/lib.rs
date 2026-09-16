@@ -48,6 +48,7 @@ use syn::{
 /// A field can be *mapped* by one or more labels whose values are supplied at emission time rather than at
 /// construction:
 ///
+/// <!-- vale off -->
 /// ```ignore
 /// #[static_metrics(prefix = component, labels(component_id))]
 /// #[derive(Clone)]
@@ -61,6 +62,7 @@ use syn::{
 ///     other_total: Counter,
 /// }
 /// ```
+/// <!-- vale on -->
 ///
 /// A mapped field's storage is rewritten to hold a concurrent map of the dynamic label values to lazily registered
 /// handles (the source keeps writing `Counter`/`Gauge`/`Histogram`). Its accessor accepts each label value either by

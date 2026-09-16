@@ -3,7 +3,17 @@ version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+  # RUSTSEC-2026-0285: the fix landed in rustls 0.23.45, but rustls has required aws-lc-rs
+  # >=1.18 since 0.23.44 (i.e. that floor predates the security fix, so no rustls release
+  # with the fix supports our pinned aws-lc-rs line). aws-lc-rs is intentionally pinned below
+  # 1.18 in the workspace Cargo.toml pending FIPS 140-3 certification of AWS-LC-FIPS 4.x (see
+  # the comment above the `aws-lc-rs` workspace dependency). The advisory has low practical
+  # impact here: it doesn't allow a network attacker to forge or alter a handshake. Revisit
+  # once AWS-LC-FIPS 4.x is certified, or if rustls backports the fix to a release built
+  # against aws-lc-rs 1.14.
+  { id = "RUSTSEC-2026-0285", reason = "blocked on aws-lc-rs FIPS pin; see comment in Cargo.toml" },
+]
 
 [bans]
 multiple-versions = "allow"
@@ -38,4 +48,8 @@ allow-git = [
 
   # Yet-to-be-published version of incremental Protocol Buffers encoding library.
   "https://github.com/tobz/piecemeal.git",
+
+  # Pinned to a specific revision so we can select our workspace's `rand` version, ahead of a crates.io release that
+  # supports it.
+  "https://github.com/antithesishq/antithesis-sdk-rust",
 ]

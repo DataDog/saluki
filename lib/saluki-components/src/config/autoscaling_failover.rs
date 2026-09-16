@@ -1,12 +1,5 @@
 //! Autoscaling failover configuration.
 
-use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
-
-fn default_metrics() -> Vec<String> {
-    vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
-}
-
 /// Autoscaling failover configuration for the metrics pipeline.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AutoscalingFailoverConfiguration {
@@ -15,14 +8,13 @@ pub struct AutoscalingFailoverConfiguration {
 }
 
 impl AutoscalingFailoverConfiguration {
-    /// Creates a new `AutoscalingFailoverConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
-            enabled: config.try_get_typed("autoscaling.failover.enabled")?.unwrap_or(false),
-            metrics: config
-                .try_get_typed("autoscaling.failover.metrics")?
-                .unwrap_or_else(default_metrics),
-        })
+    /// Creates a new `AutoscalingFailoverConfiguration`.
+    ///
+    /// `enabled` is whether autoscaling failover is requested (`is_branch_requested` also requires a non-empty
+    /// `metrics`), and `metrics` is the allowlist of metric names eligible for the failover branch. Both values arrive
+    /// already resolved: the configuration layer owns their defaults, so this constructor applies none of its own.
+    pub fn new(enabled: bool, metrics: Vec<String>) -> Self {
+        Self { enabled, metrics }
     }
 
     /// Returns whether the autoscaling failover branch is requested by configuration.
@@ -38,54 +30,27 @@ impl AutoscalingFailoverConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::config_from;
-    use serde_json::json;
-
     use super::*;
 
-    async fn autoscaling_config_from(value: serde_json::Value) -> AutoscalingFailoverConfiguration {
-        AutoscalingFailoverConfiguration::from_configuration(&config_from(value).await)
-            .expect("autoscaling failover configuration should deserialize")
-    }
-
-    #[tokio::test]
-    async fn defaults_to_disabled_with_default_metric_allowlist() {
-        let config = autoscaling_config_from(json!({})).await;
+    #[test]
+    fn branch_is_not_requested_when_disabled() {
+        let config = AutoscalingFailoverConfiguration::new(false, vec!["custom.metric".to_string()]);
 
         assert!(!config.is_branch_requested());
-        assert_eq!(
-            config.metrics(),
-            ["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
-        );
+        assert_eq!(config.metrics(), ["custom.metric".to_string()]);
     }
 
-    #[tokio::test]
-    async fn branch_is_requested_when_enabled_with_non_empty_metrics() {
-        let config = autoscaling_config_from(json!({
-            "autoscaling": {
-                "failover": {
-                    "enabled": true,
-                    "metrics": ["custom.metric"]
-                }
-            }
-        }))
-        .await;
+    #[test]
+    fn branch_is_requested_when_enabled_with_non_empty_metrics() {
+        let config = AutoscalingFailoverConfiguration::new(true, vec!["custom.metric".to_string()]);
 
         assert!(config.is_branch_requested());
         assert_eq!(config.metrics(), ["custom.metric".to_string()]);
     }
 
-    #[tokio::test]
-    async fn empty_metric_allowlist_disables_branch() {
-        let config = autoscaling_config_from(json!({
-            "autoscaling": {
-                "failover": {
-                    "enabled": true,
-                    "metrics": []
-                }
-            }
-        }))
-        .await;
+    #[test]
+    fn empty_metric_allowlist_disables_branch() {
+        let config = AutoscalingFailoverConfiguration::new(true, Vec::new());
 
         assert!(!config.is_branch_requested());
         assert!(config.metrics().is_empty());

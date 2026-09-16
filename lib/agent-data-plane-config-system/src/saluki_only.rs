@@ -73,10 +73,14 @@ use std::{
     time::Duration,
 };
 
-use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
+use agent_data_plane_config::control::MemoryMode;
+use agent_data_plane_config::defaults::{
+    DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
+    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+};
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
-use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
 use serde::de::Visitor;
@@ -146,7 +150,8 @@ pub struct SalukiOnly {
     /// Internal-telemetry verbosity (`metrics_level`).
     pub metrics_level: Option<String>,
     /// Remote-agent IPC string interner byte budget (`remote_agent_string_interner_size_bytes`).
-    pub remote_agent_string_interner_size_bytes: Option<usize>,
+    /// An explicit `0` fails the load: the interner cannot be built with no capacity.
+    pub remote_agent_string_interner_size_bytes: Option<NonZeroUsize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
     pub checks_ipc_endpoint: Option<String>,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
@@ -155,6 +160,10 @@ pub struct SalukiOnly {
     pub memory_limit: Option<ByteSize>,
     /// Memory-accounting slop fraction (`memory_slop_factor`).
     pub memory_slop_factor: Option<f64>,
+    /// Whether the global memory limiter is enabled (`enable_global_limiter`).
+    pub enable_global_limiter: Option<bool>,
+    /// Memory bounds validation and global limiter behavior (`memory_mode`).
+    pub memory_mode: MemoryModeSource,
     /// Encoder flush timeout, in seconds (`flush_timeout_secs`).
     pub flush_timeout_secs: Option<u64>,
     /// Maximum metrics per payload (`serializer_max_metrics_per_payload`).
@@ -274,16 +283,8 @@ impl ValidateJsonSequence for MetricAggregationIntervalSource {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlane {
-    /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout`).
-    ///
-    /// If present, this will override the Datadog schema's `aggregator_stop_timeout` and
-    /// `forwarder_stop_timeout` values.
-    pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
-    /// ADP-specific zstd compression level (`data_plane.serializer_zstd_compressor_level`), which
-    /// takes precedence over the Core Agent's `serializer_zstd_compressor_level`.
-    pub serializer_zstd_compressor_level: Option<i32>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
@@ -330,6 +331,10 @@ pub struct DataPlaneChecks {
 pub struct ApmConfig {
     /// Default trace environment (`apm_config.default_env`).
     pub default_env: Option<String>,
+    /// Maximum length of a span's resource name, in bytes (`apm_config.max_resource_len`).
+    ///
+    /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
+    pub max_resource_len: Option<usize>,
     /// Whether error sampling is enabled (`apm_config.error_sampling_enabled`).
     pub error_sampling_enabled: Option<bool>,
     /// Rare sampler tuning (`apm_config.rare_sampler.*`).
@@ -514,6 +519,29 @@ pub enum OttlErrorModeSource {
     Propagate,
 }
 
+/// Memory bounds behavior as written at `memory_mode`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryModeSource {
+    /// Skip bounds validation and apply no memory limiting.
+    #[default]
+    Disabled,
+    /// Log bounds validation failures and continue.
+    Permissive,
+    /// Treat bounds validation failures as fatal.
+    Strict,
+}
+
+impl From<MemoryModeSource> for MemoryMode {
+    fn from(mode: MemoryModeSource) -> Self {
+        match mode {
+            MemoryModeSource::Disabled => MemoryMode::Disabled,
+            MemoryModeSource::Permissive => MemoryMode::Permissive,
+            MemoryModeSource::Strict => MemoryMode::Strict,
+        }
+    }
+}
+
 impl From<OttlErrorModeSource> for OttlErrorMode {
     fn from(mode: OttlErrorModeSource) -> Self {
         match mode {
@@ -531,37 +559,30 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
-        config.control.stop_timeout = self.data_plane.stop_timeout.map(Duration::from_secs);
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
         }
         if let Some(v) = self.data_plane.checks.enabled {
             config.control.checks = v;
         }
-        if let Some(v) = self.memory_limit {
-            config.control.memory_limit = v.as_u64();
-        }
-        if let Some(v) = self.memory_slop_factor {
-            config.control.memory_slop_factor = v;
-        }
+        config.control.memory_limit = self.memory_limit.map(|v| v.as_u64());
+        config.control.memory_slop_factor = self.memory_slop_factor.unwrap_or(DEFAULT_MEMORY_SLOP_FACTOR);
+        config.control.enable_global_limiter = self.enable_global_limiter.unwrap_or(DEFAULT_ENABLE_GLOBAL_LIMITER);
+        config.control.memory_mode = self.memory_mode.into();
         if let Some(v) = self.remote_agent_string_interner_size_bytes {
             config.control.ipc.remote_agent_string_interner_size_bytes = v;
         }
 
         // shared
-        if let Some(v) = self.metrics_level.clone() {
-            config.shared.metrics_level = v;
-        }
+        config.shared.metrics_level = self
+            .metrics_level
+            .clone()
+            .unwrap_or_else(|| DEFAULT_METRICS_LEVEL.to_string());
         if let Some(v) = self.flush_timeout_secs {
             config.shared.metrics_encoding.flush_timeout = Duration::from_secs(v);
         }
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
-        }
-        // Highest precedence of the three inputs `Compression::zstd_compressor_level` resolves, so it
-        // is explicit when set and keeps ADP's default otherwise.
-        if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
-            config.shared.endpoints.compression.adp_zstd_level = ConfigValue::explicit(v);
         }
 
         // domains.dogstatsd
@@ -672,6 +693,7 @@ impl SalukiOnly {
         if let Some(v) = self.apm_config.default_env.clone() {
             traces.default_env = v;
         }
+        traces.max_resource_len = self.apm_config.max_resource_len.unwrap_or(DEFAULT_MAX_RESOURCE_LEN);
         if let Some(v) = self.apm_config.error_sampling_enabled {
             traces.error_sampling_enabled = v;
         }
@@ -723,9 +745,9 @@ impl SalukiOnly {
 mod tests {
     use agent_data_plane_config::defaults::{
         DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
-        DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY,
-        DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
-        MAX_STRING_INTERNER_SIZE_BYTES,
+        DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN,
+        DEFAULT_RARE_SAMPLER_CARDINALITY, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS,
+        DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES, DEFAULT_TRACE_ENV, MAX_STRING_INTERNER_SIZE_BYTES,
     };
     use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
     use serde_json::json;
@@ -745,6 +767,8 @@ mod tests {
             "checks_ipc_endpoint": "localhost:5006",
             "memory_limit": "512MB",
             "memory_slop_factor": 0.3,
+            "enable_global_limiter": false,
+            "memory_mode": "strict",
             "flush_timeout_secs": 7,
             "serializer_max_metrics_per_payload": 999,
             // dogstatsd listener/context/mapper
@@ -778,9 +802,7 @@ mod tests {
             "otlp_string_interner_size": 333,
             // nested: data_plane
             "data_plane": {
-                "stop_timeout": 45,
                 "standalone_mode": true,
-                "serializer_zstd_compressor_level": 9,
                 "checks": { "enabled": true },
                 // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
                 // canonical schema-provided endpoint keys.
@@ -792,6 +814,7 @@ mod tests {
             // nested: apm_config
             "apm_config": {
                 "default_env": "staging",
+                "max_resource_len": 1234,
                 "error_sampling_enabled": true,
                 "rare_sampler": { "cardinality": 9, "cooldown": 1.5, "tps": 3.0 },
                 "obfuscation": {
@@ -823,18 +846,18 @@ mod tests {
         saluki_only.seed(&mut config);
 
         // control
-        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
-        assert_eq!(config.control.memory_limit, ByteSize::mb(512).as_u64());
+        assert_eq!(config.control.memory_limit, Some(ByteSize::mb(512).as_u64()));
         assert_eq!(config.control.memory_slop_factor, 0.3);
-        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes, 4096);
+        assert!(!config.control.enable_global_limiter);
+        assert_eq!(config.control.memory_mode, MemoryMode::Strict);
+        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 4096);
 
         // shared
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert_eq!(config.shared.endpoints.compression.effective_zstd_level(), 9);
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
@@ -877,6 +900,7 @@ mod tests {
         // domains.traces
         let traces = &config.domains.traces;
         assert_eq!(traces.default_env, "staging");
+        assert_eq!(traces.max_resource_len, 1234);
         assert!(traces.error_sampling_enabled);
         assert_eq!(traces.rare_sampler.cardinality, 9);
         assert_eq!(traces.rare_sampler.cooldown, 1.5);
@@ -984,8 +1008,56 @@ mod tests {
             let saluki_only: SalukiOnly = serde_json::from_value(value).expect("memory_limit deserializes");
             let mut config = SalukiConfiguration::default();
             saluki_only.seed(&mut config);
+            assert_eq!(config.control.memory_limit, Some(expected));
+        }
+    }
+
+    #[test]
+    fn memory_limit_distinguishes_absence_from_an_explicit_zero() {
+        for (value, expected) in [(json!({}), None), (json!({ "memory_limit": 0 }), Some(0))] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("memory_limit deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
             assert_eq!(config.control.memory_limit, expected);
         }
+    }
+
+    #[test]
+    fn memory_accounting_defaults_resolve_and_explicit_values_seed() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.memory_slop_factor, DEFAULT_MEMORY_SLOP_FACTOR);
+        assert_eq!(config.control.enable_global_limiter, DEFAULT_ENABLE_GLOBAL_LIMITER);
+        assert_eq!(config.control.memory_mode, MemoryMode::Disabled);
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "memory_slop_factor": 0.0, "enable_global_limiter": false }))
+                .expect("explicit memory accounting values deserialize");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.memory_slop_factor, 0.0);
+        assert!(!config.control.enable_global_limiter);
+    }
+
+    #[test]
+    fn memory_mode_values_round_trip_and_reject_unknown_spellings() {
+        for (source, expected) in [
+            ("disabled", MemoryMode::Disabled),
+            ("permissive", MemoryMode::Permissive),
+            ("strict", MemoryMode::Strict),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(json!({ "memory_mode": source })).expect("valid memory_mode deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.control.memory_mode, expected, "memory_mode={source}");
+        }
+
+        assert!(
+            serde_json::from_value::<SalukiOnly>(json!({ "memory_mode": "disabeld" })).is_err(),
+            "an unrecognized memory_mode should fail the load"
+        );
     }
 
     /// An unrecognized `error_mode` must fail deserialization rather than silently resolving to
@@ -1028,6 +1100,29 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn remote_agent_string_interner_size_resolves_the_default_and_rejects_zero() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(
+            config.control.ipc.remote_agent_string_interner_size_bytes,
+            DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES
+        );
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "remote_agent_string_interner_size_bytes": 8192 }))
+                .expect("explicit interner budget deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 8192);
+
+        assert!(
+            serde_json::from_value::<SalukiOnly>(json!({ "remote_agent_string_interner_size_bytes": 0 })).is_err(),
+            "a zero remote-agent string interner budget must fail the load"
+        );
     }
 
     #[test]
@@ -1112,6 +1207,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn metrics_level_resolves_to_the_canonical_default_when_absent() {
+        for (value, expected) in [
+            (json!({}), DEFAULT_METRICS_LEVEL),
+            (json!({ "metrics_level": "warn" }), "warn"),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("metrics level deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.shared.metrics_level, expected);
+        }
+    }
+
     /// An absent key leaves the model default in place (the common case). `seed` writes only present
     /// options, so this exercises the `Option`-in-source / default-in-model split. A wrong value
     /// here means the model `Default` is wrong, not this struct.
@@ -1149,6 +1257,7 @@ mod tests {
         // ADP's historical sampler defaults in place.
         let traces = &config.domains.traces;
         assert_eq!(traces.default_env, DEFAULT_TRACE_ENV);
+        assert_eq!(traces.max_resource_len, DEFAULT_MAX_RESOURCE_LEN);
         assert_eq!(traces.error_sampling_enabled, DEFAULT_ERROR_SAMPLING_ENABLED);
         assert_eq!(traces.rare_sampler.tps, DEFAULT_RARE_SAMPLER_TPS);
         assert_eq!(traces.rare_sampler.cooldown, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS);

@@ -27,6 +27,9 @@ use tracing::{debug, error, trace};
 use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
+
+/// Default image for the shared-volume permission fix-up container.
+pub const DEFAULT_ALPINE_IMAGE: &str = "alpine:latest";
 const DATADOG_INTAKE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
 const DATADOG_INTAKE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
 const DATADOG_INTAKE_HEALTHCHECK_RETRIES: i64 = 30;
@@ -99,6 +102,11 @@ pub struct DriverConfig {
     /// started. Used to connect the shared millstone container to both agent networks so it can
     /// reach `baseline` and `comparison` by hostname.
     additional_networks: Vec<String>,
+
+    /// Image used for the shared-volume permission fix-up container.
+    ///
+    /// Defaults to [`DEFAULT_ALPINE_IMAGE`].
+    alpine_image: String,
 }
 
 impl DriverConfig {
@@ -187,7 +195,14 @@ impl DriverConfig {
             additional_volume_mounts: vec![],
             network_aliases: vec![],
             additional_networks: vec![],
+            alpine_image: DEFAULT_ALPINE_IMAGE.to_string(),
         }
+    }
+
+    /// Sets the image used for the shared-volume permission fix-up container.
+    pub fn with_alpine_image(mut self, alpine_image: impl Into<String>) -> Self {
+        self.alpine_image = alpine_image.into();
+        self
     }
 
     /// Sets the entrypoint for the container.
@@ -715,7 +730,7 @@ impl Driver {
         );
 
         // We spin up a minimal Alpine container, chmod the directory bind-mounted to the shared volume, and that's it.
-        let image = get_alpine_container_image();
+        let image = self.config.alpine_image.clone();
         self.create_image_if_missing_inner(&image).await?;
 
         let container_name = format!("airlock-{}-volume-fix-up", self.isolation_group_id);
@@ -1274,16 +1289,6 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
     out
 }
 
-fn get_alpine_container_image() -> String {
-    // Normally, we would just use `alpine:latest` and let Docker figure out the registry to pull it from (that is, Docker
-    // Hub) but in CI, we don't have Docker Hub available to us, so we need to use an internal registry.
-    //
-    // Rather than threading through this information from the top level, we simply look for an override environment
-    // variable here.. which lets us specify the right image reference to use in CI, while allowing normal users to just
-    // grab it from Docker Hub when running locally.
-    std::env::var("PANORAMIC_ALPINE_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
-}
-
 fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {
     let mut labels = HashMap::new();
     labels.insert("created_by".to_string(), "airlock".to_string());
@@ -1294,6 +1299,15 @@ fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpine_image_defaults_to_docker_hub_and_can_be_overridden() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string());
+        assert_eq!(config.alpine_image, "alpine:latest");
+
+        let config = config.with_alpine_image("registry.example/alpine:3.20");
+        assert_eq!(config.alpine_image, "registry.example/alpine:3.20");
+    }
 
     #[test]
     fn default_linux_container_binds_include_airlock_and_linux_host_resources() {

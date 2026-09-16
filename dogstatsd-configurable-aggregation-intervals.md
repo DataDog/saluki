@@ -82,8 +82,8 @@ This preserves one owner for routing and aggregation state while reusing the exi
 
 The existing shutdown policy applies to every lane:
 
-- If `aggregate_flush_open_windows` is `false`, ADP discards open windows during shutdown.
-- If `aggregate_flush_open_windows` is `true`, ADP emits open windows as partial windows.
+- If `dogstatsd_flush_incomplete_buckets` is `false`, ADP discards open windows during shutdown.
+- If `dogstatsd_flush_incomplete_buckets` is `true`, ADP emits open windows as partial windows.
 
 A configuration change takes effect only after restart. This version does not move live contexts between intervals or define an in-process policy transition. Any partial-window emission or discard during restart follows the existing shutdown policy.
 

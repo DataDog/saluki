@@ -4,12 +4,13 @@ use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
 use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::runtime;
 use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{event::EventType, payload::PayloadType},
     observability::ComponentMetricsExt,
 };
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::{pin, select, time::sleep};
 use tracing::{debug, error};
@@ -124,35 +125,32 @@ where
         // We're abusing `ShutdownCoordinator` here to basically detect when the encoder task exits: we immediately
         // call `shutdown_and_wait` after spawning the task, which will wait until the `ShutdownHandle` we've given to
         // the encoder tasks is dropped... which only happens when the task exits.
-        let spawner = context.spawner().clone();
+        let worker_pool = context.topology_context().global_thread_pool().clone();
 
         let mut shutdown_coordinator = ShutdownCoordinator::default();
         let task_shutdown_handle = shutdown_coordinator.register();
 
-        spawner
-            .noninterruptible("incremental_encoder", move |_shutdown| async move {
-                // TODO: Conceptually, all components downstream of sources/relays should drain their incoming events
-                // consumer until it's empty, so on and so forth until forwarders/destinations have done so and nothing
-                // is left to process.
-                //
-                // However, this isn't feasible if we ever want to support restarting individual components or stitching
-                // in new components to a topology... which we eventually do. We'd have to respond to shutdown (which
-                // we're ignoring here by aliasing the handle as `_shutdown`) to shut down in a timely fashion.
-                //
-                // We should consider a mechanism to expose consumers/dispatchers such that they're borrowed in an owned
-                // fashion, allowing a component to hold on to them when running, but then effectively release them when
-                // they exit. This would allow us to stop a component, and without dropping its interconnect channel and
-                // losing all of the events or payloads within it, reconnect it to the new instance of the component (or
-                // whatever component takes its place, etc) which would allow us to more cleanly respond to shutdown
-                // here as more of an exceptional thing: an immediate stoppage of work, without throwing away _pending_
-                // work.
-                let _task_shutdown_handle = task_shutdown_handle;
-                run_incremental_encoder(context, encoder, telemetry, flush_timeout).await
-            })
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn incremental encoder task.")?;
+        runtime::worker("incremental_encoder", async move {
+            // TODO: Conceptually, all components downstream of sources/relays should drain their incoming events
+            // consumer until it's empty, so on and so forth until forwarders/destinations have done so and nothing
+            // is left to process.
+            //
+            // However, this isn't feasible if we ever want to support restarting individual components or stitching
+            // in new components to a topology... which we eventually do. We'd have to respond to shutdown (which
+            // we're ignoring here by aliasing the handle as `_shutdown`) to shut down in a timely fashion.
+            //
+            // We should consider a mechanism to expose consumers/dispatchers such that they're borrowed in an owned
+            // fashion, allowing a component to hold on to them when running, but then effectively release them when
+            // they exit. This would allow us to stop a component, and without dropping its interconnect channel and
+            // losing all of the events or payloads within it, reconnect it to the new instance of the component (or
+            // whatever component takes its place, etc) which would allow us to more cleanly respond to shutdown
+            // here as more of an exceptional thing: an immediate stoppage of work, without throwing away _pending_
+            // work.
+            let _task_shutdown_handle = task_shutdown_handle;
+            run_incremental_encoder(context, encoder, telemetry, flush_timeout).await
+        })
+        .on_runtime(worker_pool)
+        .spawn();
 
         debug!("Buffered Incremental encoder started.");
 

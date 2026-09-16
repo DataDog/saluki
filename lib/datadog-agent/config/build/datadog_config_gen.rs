@@ -462,24 +462,31 @@ fn is_vec_json_value(ty: &syn::Type) -> bool {
 
 /// Returns whether `ty` is exactly `HashMap<String, Vec<String>>`.
 fn is_string_map_vec_string(ty: &syn::Type) -> bool {
-    let syn::Type::Path(tp) = ty else { return false };
-    let Some(last) = tp.path.segments.last() else {
-        return false;
-    };
+    map_types(ty).is_some_and(|(key, value)| is_string(key) && is_vec_string(value))
+}
+
+/// Returns whether `ty` is exactly `HashMap<String, String>`.
+fn is_string_map_string(ty: &syn::Type) -> bool {
+    map_types(ty).is_some_and(|(key, value)| is_string(key) && is_string(value))
+}
+
+fn map_types(ty: &syn::Type) -> Option<(&syn::Type, &syn::Type)> {
+    let syn::Type::Path(tp) = ty else { return None };
+    let last = tp.path.segments.last()?;
     if last.ident != "HashMap" {
-        return false;
+        return None;
     }
     let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
-        return false;
+        return None;
     };
     let mut args = args.args.iter();
-    let Some(syn::GenericArgument::Type(key)) = args.next() else {
-        return false;
+    let syn::GenericArgument::Type(key) = args.next()? else {
+        return None;
     };
-    let Some(syn::GenericArgument::Type(value)) = args.next() else {
-        return false;
+    let syn::GenericArgument::Type(value) = args.next()? else {
+        return None;
     };
-    is_string(key) && is_vec_string(value)
+    Some((key, value))
 }
 
 /// Returns whether `ty` is exactly `String`.
@@ -573,11 +580,10 @@ fn option_section_inner(ty: &syn::Type) -> Option<syn::Type> {
     }
 }
 
-/// Give every scalar leaf the coercion the Agent applies when it reads that leaf's declared type.
+/// Give each leaf the coercion the Agent applies when it reads the declared type.
 ///
-/// The Agent casts a stored value to the accessor's type, so a leaf's permissiveness follows from its
-/// schema type alone and needs no per-key metadata: `crate::cast_de` holds one coercion per type and
-/// this attaches it by the leaf's generated Rust type, which typify derived from that schema type.
+/// The Agent casts stored values to the accessor's type, including values inside string maps.
+/// `crate::cast_de` holds each coercion; this attaches it by the Rust type typify generated.
 ///
 /// Every field is classified, and an unrecognized shape fails the build. A schema change that
 /// introduces a new leaf type must then decide how that type coerces instead of silently shipping a
@@ -608,6 +614,7 @@ fn permissivize(file: &mut syn::File) {
                 LeafKind::Integer => "crate::cast_de::deserialize_i64",
                 LeafKind::Number => "crate::cast_de::deserialize_f64",
                 LeafKind::Text => "crate::cast_de::deserialize_string",
+                LeafKind::StringMap => "crate::cast_de::deserialize_string_map",
                 LeafKind::OptionalText => "crate::cast_de::deserialize_optional_string",
                 LeafKind::OptionalInteger => "crate::cast_de::deserialize_optional_i64",
                 LeafKind::Exempt => continue,
@@ -630,6 +637,7 @@ enum LeafKind {
     Integer,
     Number,
     Text,
+    StringMap,
     OptionalText,
     OptionalInteger,
     /// A nested section, or a leaf whose shape another pass or its own consumer handles.
@@ -647,6 +655,9 @@ fn leaf_kind(ty: &syn::Type, struct_names: &HashSet<String>) -> LeafKind {
     }
     if option_inner(ty).is_some_and(is_plain_string) {
         return LeafKind::OptionalText;
+    }
+    if is_string_map_string(ty) {
+        return LeafKind::StringMap;
     }
     // An optional `integer` leaf uses the same permissive coercion as a plain `i64`, while an
     // absent or null value stays `None`.

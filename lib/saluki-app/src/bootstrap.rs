@@ -1,7 +1,6 @@
 //! Bootstrap utilities.
 
 use metrics::Level;
-use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
 
@@ -63,16 +62,12 @@ impl AppBootstrapper {
     /// The bootstrapper is initialized with a [`simple`][LoggingConfiguration::simple] logging configuration. Callers
     /// that have application-specific logging requirements should follow up with
     /// [`with_logging_configuration`][Self::with_logging_configuration] to override this default.
-    ///
-    /// # Errors
-    ///
-    /// This currently doesn't fail, but the signature returns `Result` to leave room for future failures.
-    pub fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             logging_config: LoggingConfiguration::simple(),
             metrics_prefix: "saluki".to_string(),
             metrics_default_level: Level::INFO,
-        })
+        }
     }
 
     /// Sets the prefix to use for internal metrics.
@@ -96,8 +91,7 @@ impl AppBootstrapper {
 
     /// Sets the logging configuration to use during bootstrap.
     ///
-    /// Replaces the [`simple`][LoggingConfiguration::simple] default that
-    /// [`from_configuration`][Self::from_configuration] installs.
+    /// Replaces the [`simple`][LoggingConfiguration::simple] default that [`new`][Self::new] installs.
     pub fn with_logging_configuration(mut self, logging_config: LoggingConfiguration) -> Self {
         self.logging_config = logging_config;
         self

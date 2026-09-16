@@ -163,6 +163,7 @@ pub trait Track: Sized {
     ///
     /// # Examples
     ///
+    /// <!-- vale off -->
     /// ```rust
     /// use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
     ///
@@ -177,6 +178,8 @@ pub trait Track: Sized {
     ///     .track_resources(token)
     ///     .await
     /// # }
+    /// ```
+    /// <!-- vale on -->
     fn track_resources(self, token: ResourceGroupToken) -> Tracked<Self> {
         Tracked { token, inner: self }
     }
@@ -189,6 +192,7 @@ pub trait Track: Sized {
     ///
     /// # Examples
     ///
+    /// <!-- vale off -->
     /// ```rust
     /// use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
     ///
@@ -208,6 +212,7 @@ pub trait Track: Sized {
     /// tokio::spawn(future.in_current_resource_group());
     /// # }
     /// ```
+    /// <!-- vale on -->
     fn in_current_resource_group(self) -> Tracked<Self> {
         Tracked {
             token: ResourceGroupToken::current(),

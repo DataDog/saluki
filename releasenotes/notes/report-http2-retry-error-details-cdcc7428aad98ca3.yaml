@@ -1,0 +1,4 @@
+enhancements:
+  - |
+    Retry warnings for failed HTTP requests now report HTTP/2 details, such as whether the peer sent a GOAWAY or
+    reset the stream, and the HTTP/2 reason code. These logs previously reported only ``http2 error``.

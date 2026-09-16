@@ -5,7 +5,7 @@ use saluki_core::{
     components::BuildContext,
     data_model::event::{eventd::EventD, service_check::ServiceCheck},
 };
-use saluki_env::{EnvironmentProvider, HostProvider};
+use saluki_env::{EnvironmentProvider, HostProvider as _};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
@@ -28,7 +28,6 @@ impl<E> HostEnrichmentConfiguration<E> {
 impl<E> SynchronousTransformBuilder for HostEnrichmentConfiguration<E>
 where
     E: EnvironmentProvider + Send + Sync + 'static,
-    <E::Host as HostProvider>::Error: Into<GenericError>,
 {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(
@@ -60,7 +59,6 @@ impl HostEnrichment {
     pub async fn from_environment_provider<E>(env_provider: &E) -> Result<Self, GenericError>
     where
         E: EnvironmentProvider + Send + Sync + 'static,
-        <E::Host as HostProvider>::Error: Into<GenericError>,
     {
         Ok(Self {
             hostname: env_provider

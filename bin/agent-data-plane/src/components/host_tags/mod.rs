@@ -5,7 +5,6 @@ use std::{
 
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
-use saluki_config::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
@@ -22,21 +21,15 @@ pub struct HostTagsConfiguration {
     expected_tags_duration: Duration,
 }
 
-const DEFAULT_EXPECTED_TAGS_DURATION: Duration = Duration::ZERO;
-
 impl HostTagsConfiguration {
-    /// Creates a new `HostTagsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let client_config = RemoteAgentClientConfiguration::from_configuration(config)?;
-        let expected_tags_duration = config
-            .try_get_typed::<DurationString>("expected_tags_duration")?
-            .map(|ds| ds.as_duration())
-            .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
-
-        Ok(Self {
+    /// Creates a new `HostTagsConfiguration` that fetches host tags from the Core Agent over the given IPC client
+    /// configuration. A non-zero `expected_tags_duration` turns enrichment on and bounds how long the tags are
+    /// attached; the default of zero leaves the transform inert.
+    pub fn new(client_config: RemoteAgentClientConfiguration, expected_tags_duration: Duration) -> Self {
+        Self {
             client_config,
             expected_tags_duration,
-        })
+        }
     }
 
     /// Returns `true` if host tags enrichment is enabled.
@@ -56,7 +49,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         // on the Core Agent's slow `GetHostTags` RPC, delaying DogStatsD draining and starving origin detection.
         let host_tags = if self.enabled() {
             // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
-            let client = RemoteAgentClient::from_client_configuration(&self.client_config).await?;
+            let client = RemoteAgentClient::connect(&self.client_config).await?;
             let host_tags_reply = client.get_host_tags().await?.into_inner();
             let host_tags = host_tags_reply
                 .system

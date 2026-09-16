@@ -20,6 +20,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 fs4 = { workspace = true }
 futures = { workspace = true }
+h2 = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
@@ -66,7 +67,6 @@ tokio = { workspace = true, features = [
   "sync",
 ] }
 tokio-rustls = { workspace = true }
-tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["server"] }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
@@ -92,6 +92,7 @@ http-body-util = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 rand_distr = { workspace = true }
+saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

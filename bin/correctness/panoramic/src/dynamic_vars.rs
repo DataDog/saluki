@@ -11,6 +11,7 @@
 //! In a test's `config.yaml`, add a `PANORAMIC_DYNAMIC_<KEY>` env var whose value is a shell
 //! command. Reference the resolved value anywhere in the config with `{{PANORAMIC_DYNAMIC_<KEY>}}`:
 //!
+//! <!-- vale off -->
 //! ```yaml
 //! container:
 //!   env:
@@ -22,6 +23,7 @@
 //!     pattern: "listen_addr:{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:8125"
 //!     timeout: 15s
 //! ```
+//! <!-- vale on -->
 //!
 //! ## How resolution works
 //!

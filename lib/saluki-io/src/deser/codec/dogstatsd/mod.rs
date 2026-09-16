@@ -95,7 +95,8 @@ impl DogStatsDCodecConfiguration {
     /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
     ///
     /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-    /// that can't be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
+    /// that can't be safely handled internally (for example, invalid UTF-8 characters in a metric name). Invalid UTF-8 tag
+    /// bytes are normalized to U+FFFD before further processing.
     ///
     /// Defaults to `false`.
     pub fn with_permissive_mode(mut self, permissive: bool) -> Self {

@@ -8,13 +8,12 @@ mkfile_dir := $(dir $(mkfile_path))
 export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
 export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
-export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
+export APP_BUILD_TIME := $(or $(APP_BUILD_TIME),$(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
 # ADP-specific settings used during builds.
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
-export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
 # Datadog Agent version used by the project-wide comparison image.
 export DATADOG_AGENT_VERSION := $(shell cat .datadog-agent-version)
@@ -38,7 +37,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.82.3
+MACOS_TEST_AGENT_VERSION ?= 7.83.0
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -46,6 +45,9 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
+# TODO: move this to test/output when everyone has it in their gitignore
+SALUKI_TEST_OUTPUT_DIR ?= $(CURDIR)/target/test-output
+export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
@@ -123,7 +125,7 @@ build-adp-base: check-rust-build-tools
 build-adp-base:
 	@echo "[*] Building ADP locally (profile: $(BUILD_PROFILE))"
 	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-	APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
+	APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
 
 .PHONY: build-adp
@@ -225,6 +227,7 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		.
 
 
+# TODO: Use a suite-neutral name now that integration tests also use this image.
 .PHONY: build-correctness-tools-image
 build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
 	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."
@@ -511,6 +514,11 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 	@echo "[*] Checking for dependency advisories, license conflicts, and untrusted dependency sources..."
 	@cargo deny check --hide-inclusion-graph --show-stats
 
+.PHONY: check-deny-ci
+check-deny-ci: check-rust-build-tools cargo-install-cargo-deny
+check-deny-ci: ## Like check-deny, but on non-main branches only fails on advisories not already present on main
+	@./ci/tooling/check-deny.sh
+
 .PHONY: check-fmt
 check-fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly
@@ -606,7 +614,7 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@cargo build --profile release --package panoramic
 
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image
+test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
@@ -631,7 +639,7 @@ build-adp-host: $(if $(filter true,$(CI)),cargo-install-cargo-auditable)
 build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
 	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
 	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-		APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
+		APP_BUILD_TIME="$(APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: build-adp-aix
@@ -662,9 +670,9 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 test-integration-macos-run: BUILD_PROFILE ?= release
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
-	@ADP_BINARY_PATH="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
-		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
-		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+	@target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+		--adp-binary-path "$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
+		--core-agent-binary-path "$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
@@ -871,7 +879,7 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 .PHONY: emit-adp-build-metadata
 emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
 	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
-	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
+	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
 
 .PHONY: bump-adp-version
 bump-adp-version: ## Creates a PR branch that bumps the ADP patch version
@@ -923,6 +931,19 @@ VENV_PYTHON := $(VENV_DIR)/bin/python
 PYTHON_REQUIREMENTS := requirements.txt
 PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 
+.PHONY: test-release-notes
+test-release-notes: ## Runs unit tests for release-note tooling
+	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
+
+.PHONY: check-release-notes
+check-release-notes: ## Validates committed Reno release-note files
+	@$(PYTHON) ci/tooling/release_notes.py check $$(find releasenotes/notes -type f -name '*.yaml' 2>/dev/null)
+
+.PHONY: render-release-notes
+render-release-notes: ## Renders VERSION=X.Y.Z Reno notes as GitHub-flavored Markdown
+	@test -n "$(VERSION)" || { echo "Set VERSION=X.Y.Z" >&2; exit 2; }
+	@$(PYTHON) ci/tooling/release_notes.py render --version "$(VERSION)" --output -
+
 .PHONY: ensure-python-venv
 ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one
 	@echo "[*] Installing Python tooling dependencies into $(VENV_DIR)..."
@@ -938,10 +959,15 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	./ci/tooling/update-protos.sh
 
 .PHONY: clean
-clean: check-rust-build-tools
+clean: check-rust-build-tools clean-test-logs
 clean: ## Clean all build artifacts (debug/release)
 	@echo "[*] Cleaning Rust build artifacts..."
 	@cargo clean
+
+.PHONY: clean-test-logs
+clean-test-logs: ## Deletes Panoramic test logs
+	@echo "[*] Cleaning Panoramic test logs..."
+	@rm -rf "$(SALUKI_TEST_OUTPUT_DIR)/panoramic"
 
 .PHONY: clean-docker
 clean-docker: ## Cleans up Docker build cache

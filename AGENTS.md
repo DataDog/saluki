@@ -33,7 +33,9 @@ of software projects, in addition to making them harder to maintain and debug ov
   not for production use and supporting it need not be a blocker during feature development.
 - We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
 - Our Rust code wraps at 120 characters.
-- For configuration work, read `.claude/skills/config-system/SKILL.md`.
+- Some changes require a note in `releasenotes/notes/` using `reno new` in `reStructuredText`;
+  see `.agents/skills/create-release-note/SKILL.md`.
+- For configuration work, read `.agents/skills/config-system/SKILL.md`.
   - Keys in `lib/datadog-agent/config/schema/core/` are Datadog; absent keys are Saluki-only.
   - Edit `schema_overlay.yaml` for Datadog inventory; generated code files are output.
 - Name every proptest function with the literal `property_test_` prefix: the `test`/`test-property` Make targets run
@@ -61,24 +63,7 @@ you are editing Rust code, then when you think you are done, progress through th
 - Level 2: `make check-all` for lint checks.
 - Level 3: `make test-all` to run all unit tests.
 
-Level 4: At the user's discretion, proceed to integration testing. There are two integration test
-suites:
-- Name "integration": test definitions at `test/integration`.
-- Name "correctness": test definitions at `test/correctness/cases`.
-- The integration harness and libraries are in `bin/correctness`.
-
-Check these facts against the Makefile as this is a fast-moving project.
-- Suite "integration": `make test-integration`. Only use `make test-integration-quick` when we know that the images(s)
-  we depend on are up-to-date with the current state of the codebase. Failure to rebuild the images can lead to a
-  confusing experience for you and the user both.
-- Suite "correctness": `make test-correctness` or one test case by name
-  `make test-correctness-case CASE=dsd-mapper-blocklist`
-
-Alternatively, `panoramic` can be invoked directly, for example if the user requests certain command-line options like
-`--no-tui`. Examples:
-- `cargo run --release --bin panoramic -- run -d test/correctness/cases --no-tui`
-- `cargo run --release --bin panoramic -- run -d test/correctness/cases -t test-name-1 -t test-name-2`
-- `cargo run --release --bin panoramic -- --help`
+Use the `/panoramic` skill for integration and correctness testing.
 
 ## Agent guidelines
 

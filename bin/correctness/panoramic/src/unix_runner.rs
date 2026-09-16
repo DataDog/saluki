@@ -18,12 +18,15 @@
 //!
 //! # Binary discovery
 //!
-//! - ADP: `ADP_BINARY_PATH` env var, default `target/release/agent-data-plane` (resolved
-//!   relative to the current working directory).
-//! - Core Agent (converged only): `CORE_AGENT_BINARY_PATH` env var, default
+//! Both binaries come from the command line by way of [`TestContext`]. This runner never consults the process
+//! environment for them.
+//!
+//! - ADP: `--adp-binary-path`, default `target/release/agent-data-plane` (resolved relative to the current working
+//!   directory).
+//! - Core Agent (converged only): `--core-agent-binary-path`, default
 //!   `/tmp/saluki-dda/datadog-agent/bin/agent/agent` (the sandbox install written by
-//!   `make provision-macos-test-env`). Set the env var explicitly to point at a different
-//!   install (for example, a system-wide `/opt/datadog-agent` on a developer host).
+//!   `make provision-macos-test-env`). Pass the flag to point at a different install (for example, a system-wide
+//!   `/opt/datadog-agent` on a developer host).
 
 use std::sync::RwLock;
 use std::{
@@ -44,15 +47,9 @@ use tracing::{debug, error, info};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_port_spec, IntegrationConfig},
-    reporter::{PhaseTiming, TestResult},
+    reporter::{ErrorKind, PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
-
-const ADP_BINARY_ENV_VAR: &str = "ADP_BINARY_PATH";
-const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
-
-const CORE_AGENT_BINARY_ENV_VAR: &str = "CORE_AGENT_BINARY_PATH";
-const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/agent/agent";
 
 /// How long to wait for the Core Agent to write its `auth_token` and `ipc_cert.pem` before
 /// giving up and failing the test.
@@ -125,8 +122,22 @@ impl UnixIntegrationRunner {
 
         info!(test = %test_name, "Starting Unix integration test case.");
 
+        // Host-process runtimes have no container network, so there is nowhere for a sidecar to run.
+        if self.test_case.intake.enabled {
+            return make_error_result(
+                test_name,
+                started,
+                "validate_case",
+                saluki_error::generic_error!(
+                    "Intake sidecar is not supported on the '{}' runtime.",
+                    crate::config::MAC_RUNTIME
+                ),
+                phase_timings,
+            );
+        }
+
         // Phase: resolve binary path.
-        let binary_path = match resolve_adp_binary_path() {
+        let binary_path = match resolve_adp_binary_path(&self.tctx.settings.adp_binary_path) {
             Ok(p) => p,
             Err(e) => return make_error_result(test_name, started, "resolve_binary", e, phase_timings),
         };
@@ -172,8 +183,8 @@ impl UnixIntegrationRunner {
         // The Docker integration image always runs the Core Agent beside ADP via s6. Do the
         // same for the Unix runner so mac tests keep the same fixture shape: standalone-mode
         // tests still configure ADP not to use the Agent, but the Agent process exists.
-        let agent_spawn_start = Instant::now();
-        let agent_binary = match resolve_core_agent_binary_path() {
+        let phase = self.tctx.phases.enter("core_agent_spawn");
+        let agent_binary = match resolve_core_agent_binary_path(&self.tctx.settings.core_agent_binary_path) {
             Ok(p) => p,
             Err(e) => return make_error_result(test_name, started, "resolve_core_agent", e, phase_timings),
         };
@@ -207,37 +218,25 @@ impl UnixIntegrationRunner {
         let agent = match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
             Ok(p) => p,
             Err(e) => {
-                phase_timings.push(PhaseTiming {
-                    phase: "core_agent_spawn".to_string(),
-                    duration: agent_spawn_start.elapsed(),
-                });
+                phase_timings.push(phase.finish());
                 return make_error_result(test_name, started, "core_agent_spawn", e, phase_timings);
             }
         };
-        phase_timings.push(PhaseTiming {
-            phase: "core_agent_spawn".to_string(),
-            duration: agent_spawn_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
         info!(test = %test_name, "Core Agent process started.");
 
-        let wait_start = Instant::now();
+        let phase = self.tctx.phases.enter("core_agent_ipc_ready");
         if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
             agent.cleanup().await;
-            phase_timings.push(PhaseTiming {
-                phase: "core_agent_ipc_ready".to_string(),
-                duration: wait_start.elapsed(),
-            });
+            phase_timings.push(phase.finish());
             return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
         }
-        phase_timings.push(PhaseTiming {
-            phase: "core_agent_ipc_ready".to_string(),
-            duration: wait_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
         debug!(test = %test_name, "Core Agent IPC credentials present.");
         let mut core_agent = Some(agent);
 
         // Phase: spawn ADP.
-        let spawn_start = Instant::now();
+        let phase = self.tctx.phases.enter("spawn");
         let config_path_str = config_path.to_string_lossy().into_owned();
         let core_agent_auth_token_path = PathBuf::from(auth_token_path.clone());
         let adp_forced = build_adp_forced_env(auth_token_path);
@@ -253,22 +252,16 @@ impl UnixIntegrationRunner {
                 if let Some(agent) = core_agent.take() {
                     agent.cleanup().await;
                 }
-                phase_timings.push(PhaseTiming {
-                    phase: "spawn".to_string(),
-                    duration: spawn_start.elapsed(),
-                });
+                phase_timings.push(phase.finish());
                 return make_error_result(test_name, started, "spawn", e, phase_timings);
             }
         };
-        phase_timings.push(PhaseTiming {
-            phase: "spawn".to_string(),
-            duration: spawn_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         info!(test = %test_name, "ADP process started.");
 
         // Phase: run assertions.
-        let assertion_start = Instant::now();
+        let phase = self.tctx.phases.enter("assertions");
         let assertion_results = self
             .run_assertions(
                 process.name().to_string(),
@@ -279,45 +272,27 @@ impl UnixIntegrationRunner {
                 core_agent_cli_command,
             )
             .await;
-        phase_timings.push(PhaseTiming {
-            phase: "assertions".to_string(),
-            duration: assertion_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Phase: cleanup. ADP first, Core Agent second — in case the Agent's shutdown depends on
         // ADP releasing connections gracefully.
-        let cleanup_start = Instant::now();
+        let phase = self.tctx.phases.enter("cleanup");
         process.cleanup().await;
         if let Some(agent) = core_agent.take() {
             agent.cleanup().await;
         }
-        phase_timings.push(PhaseTiming {
-            phase: "cleanup".to_string(),
-            duration: cleanup_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
         // Phase: write captured logs to disk so the artifact upload picks them up. Matches the
         // Docker runner's behavior; without this the artifact only contains result.log and a
         // failed assertion's truncated context is all we have to debug from.
-        let write_logs_start = Instant::now();
+        let phase = self.tctx.phases.enter("write_logs");
         if let Err(e) = self.write_logs().await {
             debug!(test = %test_name, error = %e, "Failed to write captured logs to disk.");
         }
-        phase_timings.push(PhaseTiming {
-            phase: "write_logs".to_string(),
-            duration: write_logs_start.elapsed(),
-        });
+        phase_timings.push(phase.finish());
 
-        let passed = assertion_results.iter().all(|r| r.passed);
-        TestResult {
-            name: test_name,
-            passed,
-            duration: started.elapsed(),
-            assertion_results,
-            error: None,
-            phase_timings,
-            assertion_details: Vec::new(),
-        }
+        TestResult::from_assertions(test_name, started.elapsed(), assertion_results, phase_timings)
     }
 
     /// Builds the port mappings for assertions. In the Docker runner this maps container ports
@@ -374,6 +349,7 @@ impl UnixIntegrationRunner {
             is_host_process: true,
             host_process_exit_code: Some(exit_code_cell),
             docker_container_exit_code: None,
+            intake_host_port: None,
             core_agent_auth_token_path,
             adp_cli_command,
             core_agent_cli_command,
@@ -382,32 +358,30 @@ impl UnixIntegrationRunner {
     }
 }
 
-fn resolve_adp_binary_path() -> Result<PathBuf, GenericError> {
-    let raw = std::env::var(ADP_BINARY_ENV_VAR)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ADP_BINARY_PATH));
-
-    raw.canonicalize().with_error_context(|| {
+/// Resolves the ADP binary path that the command line supplied to an absolute path.
+///
+/// # Errors
+///
+/// Returns an error if the path doesn't resolve to an existing file.
+fn resolve_adp_binary_path(configured: &Path) -> Result<PathBuf, GenericError> {
+    configured.canonicalize().with_error_context(|| {
         format!(
-            "ADP binary not found at '{}'. Set {} or run `cargo build --release --bin agent-data-plane`.",
-            raw.display(),
-            ADP_BINARY_ENV_VAR
+            "ADP binary not found at '{}'. Pass --adp-binary-path or run `cargo build --release --bin agent-data-plane`.",
+            configured.display()
         )
     })
 }
 
-fn resolve_core_agent_binary_path() -> Result<PathBuf, GenericError> {
-    let raw = std::env::var(CORE_AGENT_BINARY_ENV_VAR)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_AGENT_BINARY_PATH));
-
-    raw.canonicalize().with_error_context(|| {
+/// Resolves the Core Agent binary path that the command line supplied to an absolute path.
+///
+/// # Errors
+///
+/// Returns an error if the path doesn't resolve to an existing file.
+fn resolve_core_agent_binary_path(configured: &Path) -> Result<PathBuf, GenericError> {
+    configured.canonicalize().with_error_context(|| {
         format!(
-            "Core Agent binary not found at '{}'. Set {} or install the Datadog Agent (https://docs.datadoghq.com/agent/).",
-            raw.display(),
-            CORE_AGENT_BINARY_ENV_VAR
+            "Core Agent binary not found at '{}'. Pass --core-agent-binary-path or install the Datadog Agent (https://docs.datadoghq.com/agent/).",
+            configured.display()
         )
     })
 }
@@ -495,15 +469,13 @@ fn make_error_result(
     name: String, started: Instant, phase: &str, e: GenericError, phase_timings: Vec<PhaseTiming>,
 ) -> TestResult {
     error!(test = %name, error = %e, phase, "Unix integration test setup failed.");
-    TestResult {
+    TestResult::errored(
         name,
-        passed: false,
-        duration: started.elapsed(),
-        assertion_results: vec![],
-        error: Some(format!("Failed in phase '{}': {}", phase, e)),
+        ErrorKind::Setup,
+        format!("Failed in phase '{}': {}", phase, e),
+        started.elapsed(),
         phase_timings,
-        assertion_details: vec![],
-    }
+    )
 }
 
 /// Bridges [`airlock::unix::LogSink`] to the panoramic [`LogBuffer`].

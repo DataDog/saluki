@@ -10,6 +10,15 @@ use std::{
     time::Duration,
 };
 
+/// Default internal telemetry verbosity.
+pub const DEFAULT_METRICS_LEVEL: &str = "info";
+
+/// Default memory-accounting slop factor.
+pub const DEFAULT_MEMORY_SLOP_FACTOR: f64 = 0.25;
+
+/// Default global memory limiter state.
+pub const DEFAULT_ENABLE_GLOBAL_LIMITER: bool = true;
+
 /// Default Checks IPC endpoint.
 pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
 
@@ -27,6 +36,9 @@ pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration:
 
 /// Default byte capacity of the DogStatsD mapper's string interner.
 pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
+
+/// Default remote-agent IPC string interner budget.
+pub const DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();
 
 /// Default DogStatsD TCP listen port.
 ///
@@ -78,6 +90,9 @@ pub const DEFAULT_MAX_METRICS_PER_PAYLOAD: usize = 10_000;
 
 /// Default environment for traces that do not provide one.
 pub const DEFAULT_TRACE_ENV: &str = "none";
+
+/// Default maximum length of a span's resource name, in bytes (`apm_config.max_resource_len`).
+pub const DEFAULT_MAX_RESOURCE_LEN: usize = 5000;
 
 /// Whether error traces are sampled independently of the base sampler by default.
 pub const DEFAULT_ERROR_SAMPLING_ENABLED: bool = true;

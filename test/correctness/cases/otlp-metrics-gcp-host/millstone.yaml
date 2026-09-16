@@ -1,0 +1,8 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "grpc://$GROUP:54317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+aggregation_bucket_width_secs: 10
+volume: 1
+corpus:
+  size: 1
+  payload:
+    static_base64: "CrsBCo0BChsKDHNlcnZpY2UubmFtZRILCglvdGxwLXRlc3QKFwoOY2xvdWQucHJvdmlkZXISBQoDZ2NwCjAKCWhvc3QubmFtZRIjCiFteS1pbnN0YW5jZS5jLm15LXByb2plY3QuaW50ZXJuYWwKIwoQY2xvdWQuYWNjb3VudC5pZBIPCg1teS1wcm9qZWN0LWlkEikSJwoPb3RscC5nY3AubWV0cmljKhQKEhkAypo7AAAAACEAAAAAAADwPw=="

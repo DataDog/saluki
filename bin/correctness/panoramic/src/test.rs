@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::reporter::TestResult;
+use crate::reporter::{PhaseTracker, TestResult};
 
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///
@@ -24,6 +24,26 @@ pub(crate) enum TestSuite {
     Correctness,
 }
 
+/// Settings shared by every test in a run.
+#[derive(Debug, Clone)]
+pub(crate) struct RunnerSettings {
+    /// A directory from which files should be mounted into one or more of the domain-specific containers used in a
+    /// test.
+    // TODO: this is a hack introduced to support the PANORAMIC_DYNAMIC feature. Consider generalizing if needed.
+    // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
+    // runtime to a test.
+    pub(crate) mounts_dir: PathBuf,
+
+    /// The `agent-data-plane` binary that host-process tests spawn.
+    pub(crate) adp_binary_path: PathBuf,
+
+    /// The Datadog Agent binary that converged host-process tests spawn.
+    pub(crate) core_agent_binary_path: PathBuf,
+
+    /// The Alpine image used for the short-lived shared-volume permission fix-up container.
+    pub(crate) alpine_image: String,
+}
+
 /// Carries information that a test needs at runtime such as the logging directory and the cancellation channel.
 #[derive(Debug, Clone)]
 pub(crate) struct TestContext {
@@ -37,25 +57,25 @@ pub(crate) struct TestContext {
     /// A directory, which has been created for them, into which tests may write their logs.
     log_dir: PathBuf,
 
-    /// A directory from which files should be mounted into one or more of the domain-specific containers used in this
-    /// test.
-    // TODO: this is a hack introduced to support the PANORAMIC_DYNAMIC feature. Consider generalizing if needed.
-    // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
-    // runtime to a test.
-    mounts_dir: PathBuf,
+    /// Settings shared by every test in the run.
+    pub(crate) settings: RunnerSettings,
 
     /// For kind-runtime tests: a shared channel that fires when the cluster is ready (or has failed).
     /// Non-kind tests leave this as `None` and proceed immediately.
     pub(crate) kind_ready: Option<KindReadyReceiver>,
+
+    /// Where a test marks the phase it is executing, so the runner can name it if a deadline fires.
+    pub(crate) phases: PhaseTracker,
 }
 
 impl TestContext {
-    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, mounts_dir: PathBuf) -> Self {
+    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, settings: RunnerSettings) -> Self {
         Self {
             test_cancel_token: cancel,
             log_dir,
-            mounts_dir,
+            settings,
             kind_ready: None,
+            phases: PhaseTracker::default(),
         }
     }
 
@@ -73,7 +93,7 @@ impl TestContext {
     }
 
     pub(crate) fn mounts_dir(&self) -> &Path {
-        &self.mounts_dir
+        &self.settings.mounts_dir
     }
 }
 
@@ -87,6 +107,9 @@ pub(crate) trait Test: Send + Sync {
 
     /// A description of the test for reporting and documentation purposes.
     fn description(&self) -> Option<String>;
+
+    /// The directory the test case was loaded from, for reporting.
+    fn case_path(&self) -> PathBuf;
 
     /// How long the test should be allowed to run for before it's considered a failure.
     fn timeout(&self) -> Duration;

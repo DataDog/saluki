@@ -10,14 +10,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
 pub enum ConfigurationStruct {
     AggregateConfiguration,
-    ContainerdConfiguration,
     DatadogEventsConfiguration,
     DatadogLogsConfiguration,
     DatadogServiceChecksConfiguration,
     DogStatsDDebugLogConfiguration,
     DogStatsDMapperConfiguration,
     DogStatsDPrefixFilterConfiguration,
-    RemoteAgentClientConfiguration,
 
     /// Keys consumed through the typed configuration translation system.
     TypedConfigSystem,
@@ -41,14 +39,12 @@ impl ConfigurationStruct {
     pub fn as_smoke_test_const(&self) -> &'static str {
         match self {
             ConfigurationStruct::AggregateConfiguration => "AGGREGATE_CONFIGURATION",
-            ConfigurationStruct::ContainerdConfiguration => "CONTAINERD_CONFIGURATION",
             ConfigurationStruct::DatadogEventsConfiguration => "DATADOG_EVENTS_CONFIGURATION",
             ConfigurationStruct::DatadogLogsConfiguration => "DATADOG_LOGS_CONFIGURATION",
             ConfigurationStruct::DatadogServiceChecksConfiguration => "DATADOG_SERVICE_CHECKS_CONFIGURATION",
             ConfigurationStruct::DogStatsDDebugLogConfiguration => "DOGSTATSD_DEBUG_LOG_CONFIGURATION",
             ConfigurationStruct::DogStatsDMapperConfiguration => "DOGSTATSD_MAPPER_CONFIGURATION",
             ConfigurationStruct::DogStatsDPrefixFilterConfiguration => "DOGSTATSD_PREFIX_FILTER_CONFIGURATION",
-            ConfigurationStruct::RemoteAgentClientConfiguration => "REMOTE_AGENT_CLIENT_CONFIGURATION",
             ConfigurationStruct::TypedConfigSystem => "TYPED_CONFIG_SYSTEM",
             ConfigurationStruct::GetTyped => "GET_TYPED",
             ConfigurationStruct::NoSmoke => "NO_SMOKE",

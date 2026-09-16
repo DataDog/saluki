@@ -34,6 +34,7 @@ use super::{Poolable, ReclaimStrategy};
 ///
 /// ## Usage
 ///
+/// <!-- vale off -->
 /// ```rust
 /// use saluki_core::pooling::helpers::pooled;
 ///
@@ -69,6 +70,7 @@ use super::{Poolable, ReclaimStrategy};
 ///     assert_eq!(doubled_value, original_value * 2);
 /// }
 /// ```
+/// <!-- vale on -->
 #[macro_export]
 macro_rules! pooled {
     ($(#[$outer:meta])* struct $name:ident {
@@ -148,6 +150,7 @@ macro_rules! pooled {
 ///
 /// ## Usage
 ///
+/// <!-- vale off -->
 /// ```rust
 /// use saluki_core::{pooled_newtype, pooling::Clearable};
 ///
@@ -193,6 +196,7 @@ macro_rules! pooled {
 ///     assert_eq!(buf.len(), 13);
 /// }
 /// ```
+/// <!-- vale on -->
 #[macro_export]
 macro_rules! pooled_newtype {
     (outer => $name:ident, inner => $inner_ty:ty $(,)?) => {

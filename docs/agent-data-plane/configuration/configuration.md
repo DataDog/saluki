@@ -19,6 +19,36 @@ If you find an error on this page, please [open an issue].
 
 ## Unsupported Settings
 
+<!-- section:unsupported-in-progress -->
+### Being Worked On
+
+The following settings are not yet supported in ADP but are planned with GitHub issue links for
+tracking.
+
+| Config Key                                                       | Description                               | Issue   |
+| ---------------------------------------------------------------- | ----------------------------------------- | ------- |
+| `dogstatsd_experimental_http.max_concurrent_requests`            | DogStatsD HTTP concurrent request limit   | [#1682] |
+| `dogstatsd_experimental_http.max_payload_size`                   | DogStatsD HTTP request body size limit    | [#1682] |
+| `dogstatsd_experimental_http.read_timeout`                       | DogStatsD HTTP request read timeout       | [#1682] |
+| `dogstatsd_require_listener`                                     | Require an active DogStatsD listener      | [#2556] |
+| `forwarder_stop_wait_for_inflight`                               | Wait for in-flight forwarder requests     | [#2560] |
+| `metric_lookback.capacity`                                       | Metric lookback ring capacity             | [#2558] |
+| `metric_lookback.dogstatsd.metric_names`                         | DogStatsD metric lookback selection       | [#2558] |
+| `metric_lookback.egress.post_recovery_window`                    | Lookback post-recovery replay window      | [#2558] |
+| `metric_lookback.egress.pre_trigger_window`                      | Lookback pre-trigger replay window        | [#2558] |
+| `metric_lookback.enabled`                                        | Enable metric lookback                    | [#2558] |
+| `metric_lookback.monitor.evaluation_interval`                    | Lookback monitor evaluation window        | [#2558] |
+| `metric_lookback.monitor.metric_name`                            | Metric watched by lookback monitor        | [#2558] |
+| `metric_lookback.monitor.mode`                                   | Metric lookback monitor mode              | [#2558] |
+| `metric_lookback.monitor.partition_tags`                         | Lookback monitor tag partitions           | [#2558] |
+| `metric_lookback.monitor.range_epsilon`                          | Lookback monitor range threshold          | [#2558] |
+| `metric_lookback.shard_count`                                    | Metric lookback ring shards               | [#2558] |
+| `otlp_config.metrics.infra_attributes.as_tags`                   | Promote infrastructure attributes to tags | [#2559] |
+| `otlp_config.traces.infra_attributes.container_tag_promotion`    | OTLP trace container-tag promotion        | [#2338] |
+| `serializer_experimental_use_v3_api.sketches.beta_route`         | V3 sketches beta intake route             | [#2555] |
+| `serializer_experimental_use_v3_api.sketches.shadow_sample_rate` | V3 sketches shadow sample rate            | [#2555] |
+| `serializer_experimental_use_v3_api.sketches.shadow_sites`       | V3 sketches shadow sites                  | [#2555] |
+
 <!-- section:unsupported-not-planned -->
 ### Not Planned
 
@@ -47,6 +77,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`                           | Memory rate limiter FreeOS check max               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
 | `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`                           | Memory rate limiter FreeOS check min               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
 | `dogstatsd_no_aggregation_pipeline_batch_size`                                           | No-aggregation pipeline batch size                 | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
+| `dogstatsd_no_aggregation_pipeline_workers_count`                                        | No-aggregation pipeline worker count               | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_packet_buffer_flush_timeout`                                                  | Packet buffer flush timeout                        | ADP queues individual datagrams without packet batching.                                                                                                                                                                                                                  |
 | `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
 | `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
@@ -64,9 +95,11 @@ architecture is fundamentally different or the feature is platform-specific.
 | `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.max_size`                                                     | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.min_size`                                                     | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.include_metadata`                                   | gRPC metadata propagation (not supported)          | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`              | gRPC keepalive: min time between pings             | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream` | gRPC keepalive: allow no-stream pings              | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`    | gRPC keepalive: max connection idle                | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.read_buffer_size`                                   | gRPC read buffer size (not supported)              | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.tls.ca_pem`                                         | gRPC TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.                                                                                                                                                                |
 | `otlp_config.receiver.protocols.grpc.tls.cert_pem`                                       | gRPC TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.                                                                                                                                                                               |
 | `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                                  | gRPC TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
@@ -82,6 +115,8 @@ architecture is fundamentally different or the feature is platform-specific.
 | `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`                                    | gRPC TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
 | `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`                                 | gRPC TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
 | `otlp_config.receiver.protocols.grpc.tls.tpm.path`                                       | gRPC TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.write_buffer_size`                                  | gRPC write buffer size (not supported)             | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.http.include_metadata`                                   | HTTP metadata propagation (not supported)          | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.http.tls.ca_pem`                                         | HTTP TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.                                                                                                                                                                |
 | `otlp_config.receiver.protocols.http.tls.cert_pem`                                       | HTTP TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.                                                                                                                                                                               |
 | `otlp_config.receiver.protocols.http.tls.cipher_suites`                                  | HTTP TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
@@ -186,6 +221,13 @@ ADP takes a different approach to the same problem using explicit static memory 
 and a process-level RSS limit. All 11 `dogstatsd_mem_based_rate_limiter.*` keys are not
 planned. See [Memory Management](../memory.md) for details.
 
+### `dogstatsd_no_aggregation_pipeline_workers_count`
+
+ADP handles timestamped metrics through the aggregate transform's passthrough path, not a
+separate no-aggregation worker pool. This setting has no effect in ADP.
+
+`dogstatsd_workers_count` configures packet-decoding workers, not passthrough concurrency.
+
 ### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 
 The core agent has two DogStatsD statistics mechanisms with different scopes.
@@ -251,6 +293,16 @@ ADP's architecture does not have the same batching mechanism and is unaffected b
 
 The core Agent batches OTLP metric input before translation through its serializer exporter queue.
 ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+### `otlp_config.receiver.protocols.grpc.include_metadata`
+
+The Datadog Agent uses `include_metadata` to control whether incoming gRPC request metadata
+(headers) is propagated to downstream consumers in the OpenTelemetry Collector pipeline
+context. ADP does not support this setting.
+
+ADP's OTLP receiver does not propagate request metadata to downstream components. The gRPC
+and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+setting has no effect in ADP.
 
 ### `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`
 
@@ -320,6 +372,44 @@ supports. At the default configuration, ADP's behavior matches the Core Agent on
 Setting `max_connection_idle` has no effect in ADP. The default (infinity) is accepted silently;
 a non-default value emits a warning.
 
+### `otlp_config.receiver.protocols.grpc.read_buffer_size`
+
+The Datadog Agent uses `read_buffer_size` to set the gRPC server's per-connection read buffer
+size in bytes (default `524288`). ADP does not support this setting.
+
+Tonic (the gRPC library ADP uses) does not expose a fixed read buffer size. Its I/O stack
+(hyper → h2 → tokio) uses a expandable `BytesMut` buffer that starts at 8 KiB and expands
+dynamically to accommodate incoming frames, then retains the larger size for subsequent
+reads. This auto-tunes to the typical message size per connection without configuration.
+
+Setting `read_buffer_size` has no effect in ADP.
+
+### `otlp_config.receiver.protocols.grpc.write_buffer_size`
+
+The Datadog Agent uses `write_buffer_size` to set the gRPC server's per-connection write buffer
+size in bytes (default `0`, which selects grpc-go's built-in default). ADP does not support this
+setting.
+
+Tonic (the gRPC library ADP uses) does not expose a fixed write buffer size. Its I/O stack
+(hyper → h2 → tokio) manages write buffering internally with adaptive defaults. The closest
+available knob, h2's `max_send_buffer_size`, controls backpressure rather than per-syscall write
+sizing and is not surfaced by Tonic.
+
+Setting `write_buffer_size` has no effect in ADP.
+
+### `otlp_config.receiver.protocols.http.include_metadata`
+
+The Datadog Agent uses `include_metadata` to control whether incoming HTTP request headers
+are propagated to downstream consumers in the OpenTelemetry Collector pipeline context. ADP
+does not support this setting.
+
+ADP's OTLP receiver does not propagate request headers to downstream components. The gRPC
+and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+setting has no effect in ADP.
+
+
+
+---
 
 ## Behavioral Differences
 
@@ -328,22 +418,26 @@ a non-default value emits a warning.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                             | Description                               |
-| -------------------------------------- | ----------------------------------------- |
-| `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
-| `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
-| `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
-| `dogstatsd_workers_count`              | Number of DSD processing workers          |
-| `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
-| `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
-| `forwarder_num_workers`                | Concurrent forwarder workers              |
-| `forwarder_stop_timeout`               | Timeout (s) for forwarder graceful stop   |
-| `log_level`                            | Log verbosity directives                  |
-| `min_tls_version`                      | Minimum TLS version for HTTPS connections |
-| `multi_region_failover.enabled`        | Enable multi-region failover mode         |
-| `serializer_zstd_compressor_level`     | Zstd compression level (Agent)            |
-| `skip_ssl_validation`                  | Skip TLS cert validation                  |
-| `statsd_forward_host`                  | UDP packet forwarding destination host    |
+| Config Key                                   | Description                                  |
+| -------------------------------------------- | -------------------------------------------- |
+| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `cri_socket_path`                            | containerd/CRI socket path                   |
+| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
+| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
+| `dogstatsd_workers_count`                    | Number of DSD processing workers             |
+| `env`                                        | Agent environment name                       |
+| `forwarder_apikey_validation_interval`       | API key check interval (minutes)             |
+| `forwarder_high_prio_buffer_size`            | High-priority request queue size             |
+| `forwarder_num_workers`                      | Concurrent forwarder workers                 |
+| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop      |
+| `log_level`                                  | Log verbosity directives                     |
+| `min_tls_version`                            | Minimum TLS version for HTTPS connections    |
+| `multi_region_failover.enabled`              | Enable multi-region failover mode            |
+| `secret_backend_command`                     | Path to the Agent secret-fetch executable    |
+| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403 |
+| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)               |
+| `skip_ssl_validation`                        | Skip TLS cert validation                     |
+| `statsd_forward_host`                        | UDP packet forwarding destination host       |
 
 ### `aggregator_stop_timeout`
 
@@ -361,6 +455,22 @@ Support is partial because ADP does not apply this timeout only to an aggregator
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
+
+### `cri_socket_path`
+
+The core Agent uses this key to enable both its CRI and containerd integrations, classifying
+the socket by path: a path containing `containerd` selects containerd, a path containing
+`crio` selects CRI-O, and any other reachable CRI socket is treated as a nonstandard CRI
+runtime. When the key is unset, the core Agent probes well-known containerd and CRI-O paths.
+
+ADP implements the containerd runtime only. Setting this path enables the containerd
+integration against that socket, but only when the path contains `containerd`. A CRI-O or
+otherwise nonstandard CRI socket path leaves containerd undetected, and ADP starts no
+container runtime metadata collector for it. When the key is not set explicitly, ADP probes
+the well-known containerd socket paths only. An explicitly empty path leaves containerd
+undetected.
+
+Container ID resolution through cgroups is independent of this key and is unaffected.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -392,6 +502,14 @@ ADP uses the same explicit override for one decoder worker pool shared by all co
 UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
 pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
 workers. Connection-oriented listeners continue to use one decoder per connection.
+
+### `env`
+
+The core Agent defaults `env` to an empty string and attaches the configured environment to
+every metric, event, log, trace, and service check it emits.
+
+ADP uses `env` for traces and APM stats only, and substitutes `none` when the setting is empty.
+It does not apply this setting directly to the DogStatsD metrics path.
 
 ### `forwarder_apikey_validation_interval`
 
@@ -488,6 +606,35 @@ is enabled.
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
+### `secret_backend_command`
+
+ADP resolves no secrets of its own. The core Agent runs `secret_backend_command` to resolve `ENC[...]`
+handles, and ADP receives configuration the Agent has already resolved.
+
+ADP reads this key for exactly one purpose: deciding whether an API key that an intake rejected
+with `403 Forbidden` is worth retrying. A configured command means the rejected key may be a secret
+that the Agent can re-resolve, so ADP retries the request; with no command configured, nothing is
+going to replace the key, so the 403 stays non-retriable and the request is dropped.
+
+ADP never executes the command and never inspects the path, so the settings that govern how the
+Agent runs it (`secret_backend_arguments`, `secret_backend_timeout`, `secret_backend_type`, and the
+rest of the `secret_*` family) have no effect in ADP.
+
+### `secret_refresh_on_api_key_failure_interval`
+
+The core Agent uses `secret_refresh_on_api_key_failure_interval` to rate-limit the secret refresh it
+triggers when an intake rejects an API key: at most one refresh per interval, expressed in minutes,
+with `0` disabling those refreshes. Secret resolution and refresh both belong to the Agent; ADP
+defers to it and triggers nothing.
+
+ADP reads this key only as a second signal that secret resolution might replace a rejected API key. A
+positive value makes a `403 Forbidden` response retriable, exactly as a configured
+`secret_backend_command` does, and either signal alone is enough.
+
+ADP does not observe the interval itself: it does not pace, delay, or count retries by it, and retry
+timing continues to come from the forwarder's own `forwarder_backoff_*` settings. A negative value is
+clamped to `0` with a warning, matching the Agent's own tolerance of the value.
+
 ### `serializer_zstd_compressor_level`
 
 The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
@@ -512,6 +659,9 @@ be split differently while carrying the same DogStatsD messages. ADP logs setup 
 and tracks send failures through telemetry.
 
 
+
+---
+
 ## Compatibility Unknown
 
 <!-- section:compatibility-unknown -->
@@ -519,26 +669,23 @@ and tracks send failures through telemetry.
 The following settings need further investigation. ADP behavior may differ from the core agent in
 ways that are not yet fully characterized.
 
-| Config Key                                                   | Description                      | Issue   |
-| ------------------------------------------------------------ | -------------------------------- | ------- |
-| `forwarder_low_prio_buffer_size`                             | Low-priority request queue size  | [#1362] |
-| `otlp_config.receiver.protocols.grpc.dialer.timeout`         | gRPC dialer timeout              |         |
-| `otlp_config.receiver.protocols.grpc.include_metadata`       | gRPC include metadata in context |         |
-| `otlp_config.receiver.protocols.grpc.max_concurrent_streams` | gRPC max concurrent streams      |         |
-| `otlp_config.receiver.protocols.grpc.read_buffer_size`       | gRPC read buffer size            |         |
-| `otlp_config.receiver.protocols.grpc.write_buffer_size`      | gRPC write buffer size           |         |
-| `otlp_config.receiver.protocols.http.compression_algorithms` | HTTP compression algorithms      |         |
-| `otlp_config.receiver.protocols.http.idle_timeout`           | HTTP idle timeout                |         |
-| `otlp_config.receiver.protocols.http.include_metadata`       | HTTP include metadata in context |         |
-| `otlp_config.receiver.protocols.http.keep_alives_enabled`    | HTTP keep-alives enabled         |         |
-| `otlp_config.receiver.protocols.http.logs_url_path`          | HTTP logs URL path               |         |
-| `otlp_config.receiver.protocols.http.max_request_body_size`  | HTTP max request body size       |         |
-| `otlp_config.receiver.protocols.http.metrics_url_path`       | HTTP metrics URL path            |         |
-| `otlp_config.receiver.protocols.http.read_header_timeout`    | HTTP read header timeout         |         |
-| `otlp_config.receiver.protocols.http.read_timeout`           | HTTP read timeout                |         |
-| `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers            |         |
-| `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path             |         |
-| `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout               |         |
+| Config Key                                                   | Description                     | Issue   |
+| ------------------------------------------------------------ | ------------------------------- | ------- |
+| `forwarder_low_prio_buffer_size`                             | Low-priority request queue size | [#1362] |
+| `otlp_config.receiver.protocols.grpc.dialer.timeout`         | gRPC dialer timeout             |         |
+| `otlp_config.receiver.protocols.http.compression_algorithms` | HTTP compression algorithms     |         |
+| `otlp_config.receiver.protocols.http.idle_timeout`           | HTTP idle timeout               |         |
+| `otlp_config.receiver.protocols.http.keep_alives_enabled`    | HTTP keep-alives enabled        |         |
+| `otlp_config.receiver.protocols.http.logs_url_path`          | HTTP logs URL path              |         |
+| `otlp_config.receiver.protocols.http.metrics_url_path`       | HTTP metrics URL path           |         |
+| `otlp_config.receiver.protocols.http.read_header_timeout`    | HTTP read header timeout        |         |
+| `otlp_config.receiver.protocols.http.read_timeout`           | HTTP read timeout               |         |
+| `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers           |         |
+| `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path            |         |
+| `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout              |         |
+
+
+---
 
 ## ADP-Only Settings
 
@@ -546,47 +693,46 @@ ways that are not yet fully characterized.
 
 The following settings are specific to ADP and have no equivalent in the core agent.
 
-| Config Key                                                      | Description                                   | Default        |
-| --------------------------------------------------------------- | --------------------------------------------- | -------------- |
-| `aggregate_context_limit`                                       | Max contexts across aggregation windows       |                |
-| `aggregate_flush_interval`                                      | Aggregator flush period                       |                |
-| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay                |                |
-| `aggregate_window_duration_seconds`                             | Aggregation window size                       |                |
-| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect                  |                |
-| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions          |                |
-| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation           |                |
-| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation             |                |
-| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation        |                |
-| `counter_expiry_seconds`                                        | Legacy idle counter keep-alive duration alias | 300            |
-| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                 | localhost:6317 |
-| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                 | localhost:6318 |
-| `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                    | 3              |
-| `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)             | derived        |
-| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts           | true           |
-| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT    | false          |
-| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                  | 32768          |
-| `dogstatsd_buffer_count`                                        | Baseline receive buffers                      | 128            |
-| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                    | 500000         |
-| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                            | 500000         |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity          | 64KiB          |
-| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates                 | 0.000000003845 |
-| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                    | true           |
-| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner     |                |
-| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP     | 0              |
-| `flush_timeout_secs`                                            | Encoder flush timeout (secs)                  |                |
-| `memory_limit`                                                  | Process memory limit                          |                |
-| `memory_slop_factor`                                            | Memory accounting slop fraction               | 0.25           |
-| `metric_aggregation_intervals`                                  | Per-prefix DogStatsD aggregation windows      | []             |
-| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list               | []             |
-| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts      |                |
-| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts               |                |
-| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                       |                |
-| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport                  |                |
-| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind            |                |
-| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP         |                |
-| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity           |                |
-| `otlp_string_interner_size`                                     | OTLP context interner capacity                |                |
-| `serializer_max_metrics_per_payload`                            | Max metrics per payload                       |                |
+| Config Key                                                      | Description                                | Default        |
+| --------------------------------------------------------------- | ------------------------------------------ | -------------- |
+| `aggregate_context_limit`                                       | Max contexts across aggregation windows    |                |
+| `aggregate_flush_interval`                                      | Aggregator flush period                    |                |
+| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay             |                |
+| `aggregate_window_duration_seconds`                             | Aggregation window size                    |                |
+| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect               |                |
+| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions       |                |
+| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation        |                |
+| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |                |
+| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
+| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
+| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
+| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        | true           |
+| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT | false          |
+| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count               | 32768          |
+| `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
+| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 | 500000         |
+| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         | 500000         |
+| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity       | 64KiB          |
+| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              | 0.000000003845 |
+| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
+| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
+| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP  | 0              |
+| `enable_global_limiter`                                         | Global memory limiter toggle               | true           |
+| `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
+| `memory_limit`                                                  | Process memory limit                       |                |
+| `memory_mode`                                                   | Memory bounds validation mode              | disabled       |
+| `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
+| `metric_aggregation_intervals`                                  | Per-prefix DogStatsD aggregation windows   | []             |
+| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list            | []             |
+| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
+| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts            |                |
+| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                    |                |
+| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport               |                |
+| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind         |                |
+| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP      |                |
+| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |                |
+| `otlp_string_interner_size`                                     | OTLP context interner capacity             |                |
+| `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |                |
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 
@@ -595,14 +741,6 @@ Temporary development key for setting ADP's OTLP listen endpoints independently 
 ### `data_plane.otlp.receiver_http_endpoint_temporary`
 
 Temporary development key for setting ADP's OTLP listen endpoints independently from the Agent's.
-
-### `data_plane.serializer_zstd_compressor_level`
-
-ADP-specific zstd compression level, taking precedence over the Core Agent's `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` or in ADP-specific configuration.
-
-### `data_plane.stop_timeout`
-
-ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.
 
 ### `dogstatsd_minimum_sample_rate`
 
@@ -621,7 +759,7 @@ metric_tag_value_allowlist:
     replacement: other
 ```
 
-This ADP-only key is independent from `metric_tag_filterlist`. Remote Config updates to `metric_tag_filterlist` therefore do not replace locally configured value allow-lists. Value allow-list changes require an ADP restart in this initial implementation. Rules apply to counters and sketch-backed metrics before aggregation, including instrumented and origin tags. ADP matches `metric_prefix` after DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so configure the final metric name produced by those steps.
+This ADP-only key is independent from `metric_tag_filterlist`. Remote Config updates to `metric_tag_filterlist` therefore do not replace locally configured value allow-lists. Value allow-list changes require an ADP restart in this initial implementation. Rules apply to counters and sketch-backed metrics before aggregation, including instrumented and origin tags. Like `metric_tag_filterlist`, value rules apply only to metrics that ADP aggregates. Metrics that carry an explicit client timestamp go through the no-aggregation pipeline (`dogstatsd_no_aggregation_pipeline`) and keep their tags unchanged. ADP matches `metric_prefix` after DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so configure the final metric name produced by those steps.
 
 Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
 
@@ -653,10 +791,6 @@ Set `DD_METRIC_AGGREGATION_INTERVALS` to the equivalent JSON array when configur
 DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_seconds":1}]'
 ```
 
-### `counter_expiry_seconds`
-
-Legacy ADP spelling for `dogstatsd_expiry_seconds`. If both spellings are set, configuration loading fails rather than choosing one.
-
 ### `dogstatsd_mapper_string_interner_size`
 
 Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable byte-size string such as `64KiB`. Larger values increase memory usage.
@@ -669,114 +803,23 @@ ADP uses an explicit process memory limit (`memory_limit`) rather than relying o
 
 See `memory_limit` above.
 
+### `enable_global_limiter`
 
-## Transparent Settings
+Controls whether the global memory limiter exerts backpressure as memory usage approaches `memory_limit`. The default is `true`. When set to `false`, the limiter becomes a no-op and only the memory bounds of the running components influence memory usage.
+
+### `memory_mode`
+
+Controls how the calculated memory bounds are reconciled against `memory_limit`. The default is `disabled`. Accepted values: `disabled` skips bounds validation and applies no memory limiting; `permissive` logs a warning when the bounds do not fit within the limit and starts anyway; `strict` refuses to start. Under `permissive` and `strict`, the global memory limiter is active only when a limit is in effect (configured or detected from cgroups) and `enable_global_limiter` is `true`.
+
+
+
+---
+
+## Fully Supported Settings
 
 <!-- section:reference -->
 
 The following settings work in ADP with the same behavior as the core agent.
-
-To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
-`log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is empty
-while syslog logging is enabled, ADP uses the platform default local syslog socket:
-`unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
-when the receiving syslog daemon expects the Agent's RFC-style header.
-
-### DogStatsD metric blocklists
-
-A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
-uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
-restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
-
-Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
-changes to any of these settings update filtering.
-
-### UDS origin detection on macOS
-
-ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
-Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()` provide
-UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but it cannot
-derive a process ID from the socket and therefore cannot use that path for origin enrichment.
-
-When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP logs a
-startup warning and treats the missing PID as a static platform limitation rather than a per-packet
-origin detection error.
-
-The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
-metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which covers
-steady-state tagging when another source provides a PID, but macOS UDS origin detection cannot
-obtain that PID from the socket.
-
-### DogStatsD metric debug log
-
-ADP supports the core agent's DogStatsD metric debug log. To write this file, set
-`dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it defaults
-to `true`, so most configurations only need to enable `dogstatsd_metrics_stats_enable`.
-
-When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination to the
-decoded metric stream. The destination writes one line per metric sample with the metric name, tags,
-count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
-`dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops them.
-This lets runtime configuration changes start and stop the debug log without rebuilding the
-topology. This feature is for support and troubleshooting. It does not change normal metric
-forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
-
-Use these settings to control the file:
-
-| Config Key                     | Behavior                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------- |
-| `dogstatsd_log_file`           | Output path. If empty, ADP uses the platform default DogStatsD stats log path.              |
-| `dogstatsd_log_file_max_rolls` | Number of rotated files to keep. Defaults to `3`.                                           |
-| `dogstatsd_log_file_max_size`  | Maximum active file size before rotation. Defaults to `10Mb`.                               |
-| `dogstatsd_logging_enabled`    | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
-
-The default `dogstatsd_log_file` path is
-`/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
-`/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
-`%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
-
-This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded metric
-summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
-investigation, and they remain tracked separately under [#1381].
-
-### Payload debug logging (`log_payloads`)
-
-ADP supports `log_payloads` for debugging metric, event, and service check payload contents before
-they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with debug-level
-logging enabled.
-
-When enabled, ADP logs decoded payload objects: scalar series metrics, sketches/distributions,
-events, and service checks. These logs can contain high-volume customer data, including metric names,
-tags, host and container metadata, event text, and service check messages. Use this setting only
-while diagnosing payload content.
-
-ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
-compressed wire payload bytes.
-
-### Privileged API authentication
-
-`data_plane.secure_api_listen_address` configures the listener for ADP's privileged HTTP and gRPC API. The address
-uses a transport scheme, such as `tcp://`, to select the underlying socket type. Every client must present the Agent IPC certificate
-from the configured `ipc_cert.pem` during the TLS handshake. ADP accepts the client only when the
-presented leaf certificate's DER encoding exactly matches that certificate and the handshake proves
-possession of its private key. Authentication completes before ADP selects an HTTP route or gRPC
-service, so an unauthenticated request never reaches a route.
-
-The ADP CLI and the Core Agent use this shared IPC identity. All holders therefore act as one
-principal; ADP does not distinguish individual clients. Because the transport authenticates every
-privileged connection, routes do not need a bearer token solely to compensate for anonymous TLS
-access. A route can still enforce separate authorization when its policy requires it.
-
-Exact certificate matching does not allow an issuing CA to broaden trust, and it does not provide an
-overlap window for old and new certificates. Coordinate replacement of `ipc_cert.pem` with restarts
-so ADP and every client use the same certificate throughout a rotation.
-
-For machine-readable configuration inspection, use these commands:
-
-- `agent-data-plane config --json` prints the source/effective configuration view.
-- `agent-data-plane config --json --runtime` prints the translated runtime configuration view.
-
-Both commands scrub recognized secret values before writing JSON to standard output.
 
 | Config Key                                                                                 | Description                                        |
 | ------------------------------------------------------------------------------------------ | -------------------------------------------------- |
@@ -813,6 +856,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `apm_config.probabilistic_sampler.enabled`                                                 | Enable APM probabilistic sampler                   |
 | `apm_config.probabilistic_sampler.sampling_percentage`                                     | Probabilistic sampler percentage                   |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
+| `auth_token_file_path`                                                                     | Agent authentication token file path               |
 | `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                                             | Metric names forwarded to DCA for failover         |
 | `basic_telemetry_add_container_tags`                                                       | Add container tags to basic telemetry signals      |
@@ -823,6 +867,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
+| `container_cgroup_root`                                                                    | cgroupfs root for container metadata               |
+| `container_proc_root`                                                                      | procfs root for container metadata                 |
 | `cri_connection_timeout`                                                                   | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                                                        | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                                            | Unprivileged API listen address                    |
@@ -838,6 +884,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `data_plane.otlp.proxy.traces.enabled`                                                     | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                                                          | Enable remote agent mode                           |
 | `data_plane.secure_api_listen_address`                                                     | mTLS-authenticated privileged API address          |
+| `data_plane.serializer_zstd_compressor_level`                                              | ADP zstd compression level                         |
+| `data_plane.stop_timeout`                                                                  | ADP graceful shutdown timeout                      |
 | `data_plane.use_new_config_stream_endpoint`                                                | Use new config stream endpoint                     |
 | `dd_url`                                                                                   | Override intake endpoint URL                       |
 | `disable_file_logging`                                                                     | Disable writing logs to a file                     |
@@ -875,7 +923,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `enable_payloads.series`                                                                   | Allow sending series payloads                      |
 | `enable_payloads.service_checks`                                                           | Allow sending service check payloads               |
 | `enable_payloads.sketches`                                                                 | Allow sending sketch payloads                      |
-| `env`                                                                                      | Agent environment name                             |
 | `expected_tags_duration`                                                                   | How long startup host tags are attached            |
 | `extra_tags`                                                                               | Additional EKS Fargate OTLP metric tags            |
 | `forwarder_backoff_base`                                                                   | Retry backoff base (secs)                          |
@@ -899,6 +946,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `histogram_copy_to_distribution`                                                           | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
+| `hostname`                                                                                 | Forced hostname for emitted data                   |
+| `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |
 | `log_file_max_size`                                                                        | Max log file size before rolling                   |
@@ -937,6 +986,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace` | gRPC keepalive: max conn age grace                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`                     | gRPC keepalive: ping time                          |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`                  | gRPC keepalive: ping timeout                       |
+| `otlp_config.receiver.protocols.grpc.max_concurrent_streams`                               | HTTP/2 max concurrent streams (0 = unlimited)      |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`                                | Max OTLP inbound gRPC message size (MiB)           |
 | `otlp_config.receiver.protocols.grpc.tls.ca_file`                                          | gRPC TLS CA file path                              |
 | `otlp_config.receiver.protocols.grpc.tls.cert_file`                                        | gRPC TLS cert file path                            |
@@ -947,6 +997,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.receiver.protocols.http.cors.exposed_headers`                                 | HTTP CORS exposed headers                          |
 | `otlp_config.receiver.protocols.http.cors.max_age`                                         | HTTP CORS max age                                  |
 | `otlp_config.receiver.protocols.http.endpoint`                                             | otlp_config.receiver.protocols.http.endpoint       |
+| `otlp_config.receiver.protocols.http.max_request_body_size`                                | HTTP max request body size in bytes (0 = 20 MiB)   |
 | `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                              |
 | `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
 | `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                             |
@@ -960,7 +1011,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `run_path`                                                                                 | Runtime state directory                            |
 | `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |
-| `serializer_experimental_use_v3_api.series.endpoints`                                      | Endpoints enabled for V3 series API                |
 | `serializer_experimental_use_v3_api.sketches.endpoints`                                    | Endpoints enabling v3 sketches API                 |
 | `serializer_max_payload_size`                                                              | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                                                       | Max compressed V2 series payload size              |
@@ -989,6 +1039,266 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `vsock_addr`                                                                               | vsock address for Agent IPC endpoint               |
 
 
+## Additional Notes
+
+### `container_cgroup_root`
+
+ADP reads the cgroups hierarchy from this root. When the key is not set explicitly, ADP
+selects the root from detected features: the host-mapped `/host/sys/fs/cgroup` when a
+host-mapped cgroupfs is detected, the legacy `/cgroup` root when ADP runs directly on a host
+whose cgroups v1 `memory` controller is found there, and `/sys/fs/cgroup` otherwise. Like the
+core Agent, ADP considers the legacy root only when it is not containerized. That detection is
+independent of the procfs mount. The core Agent reports its own detected root as a default
+value, which ADP can't tell apart from a schema default, so ADP repeats the detection instead
+of consuming it.
+
+### `container_proc_root`
+
+ADP inspects container processes under this root. When the key is not set explicitly, ADP
+selects the root from detected features: the host-mapped `/host/proc` when a host-mapped
+procfs is detected, and `/proc` otherwise.
+
+### `data_plane.api_listen_address`
+
+This is the unprivileged (internal) API endpoint. Addresses must include a URL scheme
+(for example, `tcp://`). See `data_plane.secure_api_listen_address` for the privileged
+endpoint.
+
+### `data_plane.log_file`
+
+ADP writes to its own log file, separate from the Core Agent. The Core Agent's `log_file`
+key is deliberately not consulted. Set `disable_file_logging: true` to disable file logging
+entirely, which causes this key to have no effect.
+
+### `data_plane.remote_agent_enabled` / `data_plane.use_new_config_stream_endpoint`
+
+These two keys are transitional flags being phased out. Both will be implied by
+`data_plane.standalone_mode=false` in a future release. Do not rely on them for
+new deployments.
+
+### Privileged API authentication
+
+`data_plane.secure_api_listen_address` configures the listener for ADP's privileged HTTP and
+gRPC API. The address uses a transport scheme, such as `tcp://`, to select the underlying
+socket type. See `data_plane.api_listen_address` for the unprivileged endpoint.
+
+Every client must present the Agent IPC certificate from the configured `ipc_cert.pem` during
+the TLS handshake. ADP accepts the client only when the presented leaf certificate's DER
+encoding exactly matches that certificate and the handshake proves possession of its private
+key. Authentication completes before ADP selects an HTTP route or gRPC service, so an
+unauthenticated request never reaches a route.
+
+The ADP CLI and the Core Agent use this shared IPC identity. All holders therefore act as one
+principal; ADP does not distinguish individual clients. Because the transport authenticates
+every privileged connection, routes do not need a bearer token solely to compensate for
+anonymous TLS access. A route can still enforce separate authorization when its policy
+requires it.
+
+Exact certificate matching does not allow an issuing CA to broaden trust, and it does not
+provide an overlap window for old and new certificates. Coordinate replacement of
+`ipc_cert.pem` with restarts so ADP and every client use the same certificate throughout a
+rotation.
+
+### `data_plane.serializer_zstd_compressor_level`
+
+ADP-specific zstd compression level, taking precedence over the Core Agent's
+`serializer_zstd_compressor_level`. When this key is unset, ADP uses that setting if you set
+it explicitly, and otherwise uses its own default of 3. Level 3 achieves approximately 6%
+smaller payloads (65.3 MB versus 69.3 MB) without a net CPU increase, since ADP is more
+efficient than the Agent and can afford higher compression. Configure it under `data_plane`
+or with `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL`.
+
+### `data_plane.stop_timeout`
+
+ADP uses an explicitly configured value as its topology-wide graceful shutdown timeout. When
+unset, it derives the timeout from `aggregator_stop_timeout + forwarder_stop_timeout`.
+
+### `data_plane.use_new_config_stream_endpoint`
+
+See `data_plane.remote_agent_enabled` above.
+
+### DogStatsD metric debug log
+
+ADP supports the core agent's DogStatsD metric debug log. To write this file, set
+`dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it
+defaults to `true`, so most configurations only need to enable
+`dogstatsd_metrics_stats_enable`.
+
+When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination to the
+decoded metric stream. The destination writes one line per metric sample with the metric
+name, tags, count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
+`dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops
+them. This lets runtime configuration changes start and stop the debug log without rebuilding
+the topology. This feature is for support and troubleshooting. It does not change normal
+metric forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
+
+Use these settings to control the file:
+
+| Config Key                     | Behavior                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------- |
+| `dogstatsd_log_file`           | Output path. If empty, ADP uses the platform default DogStatsD stats log path.              |
+| `dogstatsd_log_file_max_rolls` | Number of rotated files to keep. Defaults to `3`.                                           |
+| `dogstatsd_log_file_max_size`  | Maximum active file size before rotation. Defaults to `10Mb`.                               |
+| `dogstatsd_logging_enabled`    | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
+
+The default `dogstatsd_log_file` path is
+`/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
+`/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
+`%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
+
+This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded
+metric summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic
+for packet-level investigation, and they remain tracked separately under [#1381].
+
+### UDS origin detection on macOS
+
+ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
+Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()`
+provide UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but
+it cannot derive a process ID from the socket and therefore cannot use that path for origin
+enrichment.
+
+When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP
+logs a startup warning and treats the missing PID as a static platform limitation rather than
+a per-packet origin detection error.
+
+The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
+metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which
+covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
+cannot obtain that PID from the socket.
+
+### `hostname`
+
+ADP uses this only in standalone mode, where the fixed host provider requires a configured
+hostname. In connected mode the hostname comes from the Datadog Agent.
+
+### Payload debug logging (`log_payloads`)
+
+ADP supports `log_payloads` for debugging metric, event, and service check payload contents
+before they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with
+debug-level logging enabled.
+
+When enabled, ADP logs decoded payload objects: scalar series metrics,
+sketches/distributions, events, and service checks. These logs can contain high-volume
+customer data, including metric names, tags, host and container metadata, event text, and
+service check messages. Use this setting only while diagnosing payload content.
+
+ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
+compressed wire payload bytes.
+
+### Syslog logging
+
+To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
+`log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is
+empty while syslog logging is enabled, ADP uses the platform default local syslog socket:
+`unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set
+`syslog_rfc: true` when the receiving syslog daemon expects the Agent's RFC-style header.
+
+### DogStatsD metric blocklists
+
+A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`:
+ADP uses `metric_filterlist_match_prefix` as the active match mode. Clearing
+`metric_filterlist` restores `statsd_metric_blocklist` and
+`statsd_metric_blocklist_match_prefix`.
+
+Both lists default to empty, and both match-prefix settings default to `false`. Accepted
+runtime changes to any of these settings update filtering.
+
+Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
+metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
+`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
+matched as written, so an entry that is not itself a normalized name matches nothing. Metric
+names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
+containing no ASCII letter, never match.
+
+### `otlp_config.metrics.delta_ttl`
+
+Controls how long previously seen data points are kept in memory when converting cumulative
+monotonic sums to deltas. Once a series' cached prior value is older than this TTL, it is
+evicted and the next value is treated as an initial value again. Defaults to `3600` seconds.
+Raise this for high-cardinality or low-frequency series that report infrequently enough to
+trip spurious "initial value" resets; lower it to bound memory use when many short-lived
+series are seen.
+
+### `otlp_config.metrics.summaries.mode`
+
+Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
+to `noquantiles` to omit quantile metrics.
+
+### `otlp_config.metrics.sums.cumulative_monotonic_mode`
+
+Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
+deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
+
+### `otlp_config.metrics.sums.initial_cumulative_monotonic_value`
+
+Controls how the first cumulative monotonic sum value is reported. The default `auto` reports the value only
+when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
+or `keep` to always report it.
+
+### `otlp_config.metrics.tag_cardinality`
+
+Controls the cardinality of entity and global tags added to OTLP metrics. The default `low` adds
+low-cardinality workload tags. Set this to `orchestrator` or `high` only when the resulting additional metric
+series are acceptable. Set it to `none` to disable entity and global tag enrichment.
+
+### `otlp_config.receiver.protocols.grpc.tls.ca_file`
+
+Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
+When set, the server requests client certificates and verifies them if presented, but does not require them.
+Defaults to empty (no client certificate verification).
+
+### `otlp_config.receiver.protocols.grpc.tls.cert_file`
+
+Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
+`key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+
+### `otlp_config.receiver.protocols.grpc.tls.key_file`
+
+Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
+certificate in `cert_file`. Defaults to empty (TLS disabled).
+
+### `otlp_config.receiver.protocols.http.tls.ca_file`
+
+Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
+When set, the server requests client certificates and verifies them if presented, but does not require them.
+Defaults to empty (no client certificate verification).
+
+### `otlp_config.receiver.protocols.http.tls.cert_file`
+
+Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
+`key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+
+### `otlp_config.receiver.protocols.http.tls.key_file`
+
+Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
+certificate in `cert_file`. Defaults to empty (TLS disabled).
+
+### `sslkeylogfile`
+
+To write TLS session secrets in NSS key log format, set `sslkeylogfile` to a file path or
+set `DD_SSLKEYLOGFILE`. The file is opened once per path with owner read/write permissions
+on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
+key logging. Protect the generated file as sensitive data.
+
+### `tls_handshake_timeout`
+
+ADP applies `tls_handshake_timeout` to the TLS handshake step of outbound Datadog intake connections,
+independent of `forwarder_timeout`, which bounds the full request. ADP owns the TLS layer directly rather than
+delegating the handshake to an opaque connect-and-handshake future, so it can time out the handshake without
+also aborting an in-progress TCP connect.
+
+
+### Configuration inspection
+
+For machine-readable configuration inspection, use these commands:
+
+- `agent-data-plane config --json` prints the source/effective configuration view.
+- `agent-data-plane config --json --runtime` prints the translated runtime configuration view.
+
+Both commands scrub recognized secret values before writing JSON to standard output.
+
+
 [#178]: https://github.com/DataDog/saluki/issues/178
 [#1350]: https://github.com/DataDog/saluki/issues/1350
 [#1352]: https://github.com/DataDog/saluki/issues/1352
@@ -1001,9 +1311,17 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
+[#1682]: https://github.com/DataDog/saluki/issues/1682
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
 [#2079]: https://github.com/DataDog/saluki/issues/2079
+[#2338]: https://github.com/DataDog/saluki/issues/2338
+[#2555]: https://github.com/DataDog/saluki/issues/2555
+[#2556]: https://github.com/DataDog/saluki/issues/2556
+[#2557]: https://github.com/DataDog/saluki/issues/2557
+[#2558]: https://github.com/DataDog/saluki/issues/2558
+[#2559]: https://github.com/DataDog/saluki/issues/2559
+[#2560]: https://github.com/DataDog/saluki/issues/2560

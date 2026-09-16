@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use agent_data_plane_config::domains::dogstatsd::Listeners;
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
@@ -11,7 +12,7 @@ use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
 use saluki_components::sources::{TimestampResolution, TrafficCaptureReader};
-use saluki_config::{DurationString, GenericConfiguration};
+use saluki_config::DurationString;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 #[cfg(target_os = "windows")]
 use saluki_io::net::ListenAddress;
@@ -189,8 +190,8 @@ async fn run_dogstatsd_command(local_config: &LoadedConfiguration, cmd: Dogstats
         }
         DogstatsdSubcommand::Replay(config) => {
             let mut api_client = get_api_client_or_exit(local_config).await;
-            let raw_config = local_config.raw_config();
-            handle_dogstatsd_replay(&mut api_client, &raw_config, config)
+            let listeners = &local_config.local().domains.dogstatsd.listeners;
+            handle_dogstatsd_replay(&mut api_client, listeners, config)
                 .await
                 .error_context("Failed to replay DogStatsD traffic")
         }
@@ -259,9 +260,9 @@ async fn handle_dogstatsd_capture(
 }
 
 async fn handle_dogstatsd_replay(
-    api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
+    api_client: &mut DataPlaneAPIClient, listeners: &Listeners, cmd: ReplayCommand,
 ) -> Result<(), GenericError> {
-    let target = dogstatsd_replay_target(config)?;
+    let target = dogstatsd_replay_target(listeners)?;
 
     info!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display());
 
@@ -314,10 +315,10 @@ async fn handle_dogstatsd_replay(
 }
 
 #[cfg(any(unix, test))]
-fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
-    match config.try_get_typed::<String>("dogstatsd_socket")? {
-        Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
-        _ => Err(generic_error!(
+fn dogstatsd_socket_path(listeners: &Listeners) -> Result<PathBuf, GenericError> {
+    match listeners.socket.as_deref() {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => Err(generic_error!(
             "DogStatsD replay requires `dogstatsd_socket` to be configured."
         )),
     }
@@ -331,21 +332,18 @@ enum ReplayTarget {
     NamedPipe(String),
 }
 
-fn dogstatsd_replay_target(config: &GenericConfiguration) -> Result<ReplayTarget, GenericError> {
+fn dogstatsd_replay_target(listeners: &Listeners) -> Result<ReplayTarget, GenericError> {
     #[cfg(unix)]
     {
-        Ok(ReplayTarget::UnixDatagram(dogstatsd_socket_path(config)?))
+        Ok(ReplayTarget::UnixDatagram(dogstatsd_socket_path(listeners)?))
     }
 
     #[cfg(target_os = "windows")]
     {
-        let pipe_name = match config.try_get_typed::<String>("dogstatsd_pipe_name")? {
-            Some(name) if !name.is_empty() => name,
-            _ => {
-                return Err(generic_error!(
-                    "DogStatsD replay requires `dogstatsd_pipe_name` to be configured."
-                ))
-            }
+        let Some(pipe_name) = listeners.pipe_name.clone() else {
+            return Err(generic_error!(
+                "DogStatsD replay requires `dogstatsd_pipe_name` to be configured."
+            ));
         };
         let pipe_path = ListenAddress::named_pipe(pipe_name, String::new())
             .as_windows_named_pipe_path()
@@ -641,8 +639,7 @@ where
 mod tests {
     use std::time::Duration;
 
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
+    use agent_data_plane_config::domains::dogstatsd::Listeners;
 
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
@@ -671,28 +668,38 @@ mod tests {
         assert_eq!(clamped, Duration::ZERO);
     }
 
-    #[tokio::test]
-    async fn dogstatsd_socket_path_requires_configured_socket() {
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "" })), None, false).await;
-        let err = dogstatsd_socket_path(&config).expect_err("empty socket should fail");
-        assert!(err.to_string().contains("dogstatsd_socket"));
+    fn listeners_with(socket: Option<&str>, pipe_name: Option<&str>) -> Listeners {
+        Listeners {
+            socket: socket.map(String::from),
+            pipe_name: pipe_name.map(String::from),
+            ..Default::default()
+        }
     }
 
-    #[tokio::test]
-    async fn dogstatsd_socket_path_reads_configured_socket() {
-        let (config, _) =
-            ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
-        let path = dogstatsd_socket_path(&config).expect("socket should be configured");
+    #[test]
+    fn dogstatsd_socket_path_requires_configured_socket() {
+        let listeners = listeners_with(None, None);
+
+        let error = dogstatsd_socket_path(&listeners).expect_err("unset socket should fail");
+
+        assert!(error.to_string().contains("dogstatsd_socket"));
+    }
+
+    #[test]
+    fn dogstatsd_socket_path_reads_configured_socket() {
+        let listeners = listeners_with(Some("/tmp/dsd.sock"), None);
+
+        let path = dogstatsd_socket_path(&listeners).expect("socket should be configured");
+
         assert_eq!(path, std::path::PathBuf::from("/tmp/dsd.sock"));
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn dogstatsd_replay_target_uses_configured_unix_datagram_socket() {
-        let (config, _) =
-            ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
+    #[test]
+    fn dogstatsd_replay_target_uses_configured_unix_datagram_socket() {
+        let listeners = listeners_with(Some("/tmp/dsd.sock"), None);
 
-        let target = dogstatsd_replay_target(&config).expect("socket should be configured");
+        let target = dogstatsd_replay_target(&listeners).expect("socket should be configured");
 
         assert!(
             matches!(target, ReplayTarget::UnixDatagram(path) if path.as_path() == std::path::Path::new("/tmp/dsd.sock"))
@@ -700,26 +707,21 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[tokio::test]
-    async fn dogstatsd_replay_target_requires_configured_named_pipe() {
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_pipe_name": "" })), None, false).await;
+    #[test]
+    fn dogstatsd_replay_target_requires_configured_named_pipe() {
+        let listeners = listeners_with(None, None);
 
-        let error = dogstatsd_replay_target(&config).expect_err("empty pipe name should fail");
+        let error = dogstatsd_replay_target(&listeners).expect_err("unset pipe name should fail");
 
         assert!(error.to_string().contains("dogstatsd_pipe_name"));
     }
 
     #[cfg(windows)]
-    #[tokio::test]
-    async fn dogstatsd_replay_target_uses_configured_named_pipe() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "dogstatsd_pipe_name": r"\\.\pipe\datadog-dogstatsd" })),
-            None,
-            false,
-        )
-        .await;
+    #[test]
+    fn dogstatsd_replay_target_uses_configured_named_pipe() {
+        let listeners = listeners_with(None, Some(r"\\.\pipe\datadog-dogstatsd"));
 
-        let target = dogstatsd_replay_target(&config).expect("pipe should be configured");
+        let target = dogstatsd_replay_target(&listeners).expect("pipe should be configured");
 
         assert!(matches!(target, ReplayTarget::NamedPipe(path) if path == r"\\.\pipe\datadog-dogstatsd"));
     }

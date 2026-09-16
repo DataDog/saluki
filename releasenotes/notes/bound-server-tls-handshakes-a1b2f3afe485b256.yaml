@@ -1,0 +1,11 @@
+---
+security:
+  - |
+    TLS handshakes on server endpoints are now bounded by a 10 second deadline. This applies to
+    every TLS-enabled server, including the OTLP receiver's HTTP and gRPC endpoints. A peer that
+    connects but does not complete the handshake within that window is disconnected, which bounds
+    the resources a client can hold by opening connections it never completes.
+fixes:
+  - |
+    TLS handshakes in HTTP servers are now performed concurrently to avoid head-of-line blocking
+    issues when accepting new connections.

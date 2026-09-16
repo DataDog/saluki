@@ -140,28 +140,31 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         .with_original_tags(["message_type", "origin"])
         .with_additional_tags(["state:error"])
         .with_help_text("Count of service checks/events/metrics processed by dogstatsd"),
-        // DogStatsD client byte telemetry. These counters mirror the post-aggregation metric stream without
-        // client-provided dimensions, so COAT receives the same byte totals that ADP sends to customer intake while
-        // retaining bounded cardinality.
+        // DogStatsD client byte telemetry. These counters mirror the post-aggregation metric stream and retain the
+        // client library and transport dimensions supplied by the DogStatsD client.
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_sent",
             "dogstatsd_client.bytes_sent",
         )
+        .with_original_tags(["client", "client_transport"])
         .with_help_text("Total bytes sent by DogStatsD clients"),
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_dropped",
             "dogstatsd_client.bytes_dropped",
         )
+        .with_original_tags(["client", "client_transport"])
         .with_help_text("Total bytes dropped by DogStatsD clients"),
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_dropped_queue",
             "dogstatsd_client.bytes_dropped_queue",
         )
+        .with_original_tags(["client", "client_transport"])
         .with_help_text("Total bytes dropped because the DogStatsD client sender queue is full"),
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_dropped_writer",
             "dogstatsd_client.bytes_dropped_writer",
         )
+        .with_original_tags(["client", "client_transport"])
         .with_help_text("Total bytes dropped because the DogStatsD client writer cannot send"),
     ]
 }

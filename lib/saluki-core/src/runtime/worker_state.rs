@@ -12,14 +12,16 @@ use saluki_common::collections::FastIndexMap;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::TaskInstrument as _;
 use tokio::{
-    pin, select,
+    select,
     task::{AbortHandle, Id, JoinSet},
 };
 use tracing::{debug, warn};
 
 use super::process::{Process, ProcessExt as _};
+use super::spawn::CURRENT_SUPERVISOR;
 use super::supervisor::{
-    ChildConfig, ProcessError, ShutdownMode, ShutdownStrategy, SupervisedChild, SupervisorError, WorkerError,
+    ChildConfig, ChildShutdown, ProcessError, ShutdownStrategy, SupervisedChild, SupervisorError, SupervisorHandle,
+    WorkerError,
 };
 
 /// Per-worker bookkeeping held by a [`WorkerState`].
@@ -39,14 +41,24 @@ struct ProcessState {
     /// off mid-drain, and -- for a supervisor on a dedicated runtime, whose work lives on another OS thread -- would
     /// not even stop it, while still reporting it as stopped.
     budget_applies: bool,
-    shutdown_coordinator: ShutdownCoordinator,
+    /// Coordinator for signalling this worker, if it observes the signal at all.
+    ///
+    /// `None` for a worker that reports [`wants_shutdown_signal`][super::Supervisable::wants_shutdown_signal] as
+    /// false -- a closure-based worker, typically -- which was handed a [`ShutdownHandle::noop`] and would never see
+    /// anything we fired. Only the `Graceful` shutdown paths read this, and only a worker that wanted the signal can
+    /// reach them with anything to signal.
+    shutdown_coordinator: Option<ShutdownCoordinator>,
     abort_handle: AbortHandle,
 }
 
 /// Tracks the set of running child tasks for a supervisor.
 pub(super) struct WorkerState {
     process: Process,
-    shutdown_mode: ShutdownMode,
+    /// Handle to the supervisor these workers belong to.
+    ///
+    /// Installed as the ambient supervisor for every worker task, so anything a worker spawns through
+    /// [`spawn`][crate::runtime::spawn] becomes a sibling of that worker rather than needing a handle threaded to it.
+    handle: SupervisorHandle,
     /// Ceiling on the whole shutdown, if the supervisor configured one.
     ///
     /// Applied on top of each child's own strategy, so a child with no finite deadline of its own is still bounded,
@@ -57,10 +69,10 @@ pub(super) struct WorkerState {
 }
 
 impl WorkerState {
-    pub(super) fn new(process: Process, shutdown_mode: ShutdownMode, shutdown_budget: Option<Duration>) -> Self {
+    pub(super) fn new(process: Process, handle: SupervisorHandle, shutdown_budget: Option<Duration>) -> Self {
         Self {
             process,
-            shutdown_mode,
+            handle,
             shutdown_budget,
             worker_tasks: JoinSet::new(),
             worker_map: FastIndexMap::default(),
@@ -70,17 +82,38 @@ impl WorkerState {
     /// Spawns the child described by `child_spec`, tracking it under the given `worker_id`.
     ///
     /// `config` supplies the per-child overrides chosen at registration time: which runtime to spawn the child's task
-    /// on, and whether to override the shutdown strategy the child reports for itself.
+    /// on, and how the child's shutdown strategy is determined.
     pub(super) fn add_worker(
         &mut self, worker_id: u64, child_spec: &SupervisedChild, config: &ChildConfig,
     ) -> Result<(), SupervisorError> {
-        let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
-        let process = child_spec.create_process(&self.process)?;
+        let process = child_spec.create_process(&self.process);
         let worker_name = process.name().to_string();
+
+        // Only create a coordinator for a child that actually observes the signal. Most workers don't: they run until
+        // their own terminal condition and ignore whatever we fire at them, so a coordinator for them is an
+        // allocation and a wake-up that buy nothing.
+        let (shutdown_coordinator, shutdown_handle) = if child_spec.wants_shutdown_signal() {
+            let (coordinator, handle) = ShutdownHandle::paired();
+            (Some(coordinator), handle)
+        } else {
+            (None, ShutdownHandle::noop())
+        };
+
         let worker_future = child_spec.create_worker_future(process.clone(), shutdown_handle)?;
-        let shutdown_strategy = config
-            .shutdown_strategy()
-            .unwrap_or_else(|| child_spec.shutdown_strategy());
+        let shutdown_strategy = match config.shutdown() {
+            ChildShutdown::Worker => child_spec.shutdown_strategy(),
+            ChildShutdown::Explicit(strategy) => strategy,
+            // The child has no deadline of its own, so the supervisor's budget is what bounds it. If nothing bounds
+            // it after all, it would be free to stall the drain forever, so fall back to whatever the worker asks
+            // for. Note that this asks whether the budget yields a *deadline*, not merely whether one was set: a
+            // budget too large to represent as an instant bounds nothing, and is no better than having none.
+            ChildShutdown::BudgetBounded => {
+                match resolve_budget_deadline(tokio::time::Instant::now(), self.shutdown_budget) {
+                    Some(_) => ShutdownStrategy::Graceful(Duration::MAX),
+                    None => child_spec.shutdown_strategy(),
+                }
+            }
+        };
 
         // Every worker's task is timed, keyed on its fully qualified process name -- the same name
         // `spawn_traced_named` would have recorded for an equivalent standalone task. A worker is a top-level task, so
@@ -89,6 +122,11 @@ impl WorkerState {
         let task = worker_future
             .into_process_future(process)
             .with_task_instrumentation(worker_name.clone());
+
+        // Make ourselves the ambient supervisor for the worker's whole task, initialization included, so the worker
+        // can spawn siblings without being handed a handle.
+        let task = CURRENT_SUPERVISOR.scope(self.handle.clone(), task);
+
         let abort_handle = match config.runtime() {
             Some(handle) => self.worker_tasks.spawn_on(task, handle),
             None => self.worker_tasks.spawn(task),
@@ -146,18 +184,29 @@ impl WorkerState {
         }
     }
 
-    /// Shuts down all workers, honoring each worker's shutdown strategy and the configured [`ShutdownMode`].
+    /// Shuts down all workers, honoring each worker's shutdown strategy.
+    ///
+    /// Every worker is signalled up front and then awaited concurrently under its **own** graceful deadline, so a
+    /// worker that ignores shutdown is aborted at its configured timeout regardless of its siblings. Total shutdown
+    /// time is therefore bounded by the slowest individual worker rather than the sum of all timeouts.
+    ///
+    /// Ordering between workers is deliberately not the supervisor's concern. A supervisor has no way to know what
+    /// depends on what, so workers that must stop in a particular order arrange it themselves through the ordinary
+    /// means -- an input channel closing, a barrier, a notification -- which is also what makes the order visible in
+    /// the code that establishes the dependency rather than in a distant list of registrations.
+    ///
+    /// A worker whose graceful timeout is effectively unbounded (such as a nested supervisor, which uses
+    /// `Duration::MAX` because it bounds itself via its own children's deadlines) is waited on indefinitely and is
+    /// never aborted here.
     ///
     /// Returns the number of workers that had to be forcefully aborted because they exceeded their graceful shutdown
     /// timeout. The count includes aborts reported by nested child supervisors (which surface their own tally via
-    /// [`WorkerError::ShutdownTimedOut`]), so the value reflects the entire supervision tree rooted at this supervisor.
+    /// [`WorkerError::ShutdownTimedOut`]), so the value reflects the entire supervision tree rooted at this
+    /// supervisor.
     pub(super) async fn shutdown_workers(&mut self) -> usize {
-        debug!(shutdown_mode = ?self.shutdown_mode, "Shutting down all processes.");
+        debug!("Shutting down all processes.");
 
-        let aborted = match self.shutdown_mode {
-            ShutdownMode::Ordered => self.shutdown_workers_ordered().await,
-            ShutdownMode::Concurrent => self.shutdown_workers_concurrent().await,
-        };
+        let aborted = self.shutdown_workers_inner().await;
 
         debug_assert!(self.worker_map.is_empty(), "worker map should be empty after shutdown");
         debug_assert!(
@@ -168,125 +217,7 @@ impl WorkerState {
         aborted
     }
 
-    /// Shuts down all workers one at a time, in reverse order of insertion, honoring each worker's shutdown strategy.
-    ///
-    /// Returns the number of workers forcefully aborted after exceeding their graceful timeout, including counts
-    /// merged from nested child supervisors that timed out.
-    async fn shutdown_workers_ordered(&mut self) -> usize {
-        // Pop entries from the worker map, which grabs us workers in the reverse order they were added. This lets us
-        // ensure we're shutting down any _dependent_ processes (processes which depend on previously-started processes)
-        // first.
-        //
-        // For each entry, we trigger shutdown in whatever way necessary, and then wait for the process to exit by
-        // driving the `JoinSet`. If other workers complete while we're waiting, we'll simply remove them from the
-        // worker map and continue waiting for the current worker we're shutting down.
-        //
-        // We do this until the worker map is empty, at which point we can be sure that all processes have exited.
-        //
-        // A shutdown budget, if set, bounds the sequence as a whole rather than each worker in turn: it is measured
-        // from the start of the drain, so the workers shut down later in the order inherit whatever is left of it.
-        let budget_deadline = resolve_budget_deadline(tokio::time::Instant::now(), self.shutdown_budget);
-
-        let mut aborted_total = 0;
-        while let Some((current_worker_task_id, process_state)) = self.worker_map.pop() {
-            let ProcessState {
-                worker_id,
-                worker_name,
-                shutdown_strategy,
-                budget_applies,
-                shutdown_coordinator,
-                abort_handle,
-            } = process_state;
-
-            let budget_deadline = budget_applies.then_some(budget_deadline).flatten();
-
-            // Trigger the process to shutdown based on the configured shutdown strategy.
-            let shutdown_deadline = match shutdown_strategy {
-                ShutdownStrategy::Graceful(timeout) => {
-                    debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
-                    shutdown_coordinator.shutdown();
-
-                    match resolve_abort_deadline(tokio::time::Instant::now(), timeout, budget_deadline) {
-                        Some(deadline) => tokio::time::sleep_until(deadline),
-                        // Nothing bounds this worker, so wait for it to exit on its own. `sleep` clamps an
-                        // effectively-infinite duration internally, where `sleep_until` would overflow the instant.
-                        None => tokio::time::sleep(Duration::MAX),
-                    }
-                }
-                ShutdownStrategy::Brutal => {
-                    debug!(worker_id, "Forcefully aborting process.");
-                    abort_handle.abort();
-
-                    // We have to return a future that never resolves, since we're already aborting it. This is a little
-                    // hacky but it's also difficult to do an optional future, so this is what we're going with for now.
-                    tokio::time::sleep(Duration::MAX)
-                }
-            };
-            pin!(shutdown_deadline);
-
-            // Wait for the process to exit by driving the `JoinSet`. If other workers complete while we're waiting,
-            // we'll simply remove them from the worker map and continue waiting.
-            let mut aborted = false;
-            loop {
-                select! {
-                    worker_result = self.worker_tasks.join_next_with_id() => {
-                        match worker_result {
-                            Some(Ok((worker_task_id, output))) => {
-                                // A nested child supervisor that timed out reports its own abort tally here; merge it.
-                                aborted_total += reported_abort_count(&output);
-                                if worker_task_id == current_worker_task_id {
-                                    debug!(?worker_task_id, "Target process exited successfully.");
-                                    break;
-                                } else {
-                                    debug!(?worker_task_id, "Non-target process exited successfully. Continuing to wait.");
-                                    let removed = self.worker_map.shift_remove(&worker_task_id);
-                                    debug_assert!(removed.is_some(), "non-target worker must be in the worker map");
-                                }
-                            },
-                            Some(Err(e)) => {
-                                let worker_task_id = e.id();
-                                if worker_task_id == current_worker_task_id {
-                                    debug!(?worker_task_id, "Target process exited with error.");
-                                    break;
-                                } else {
-                                    debug!(?worker_task_id, "Non-target process exited with error. Continuing to wait.");
-                                    let removed = self.worker_map.shift_remove(&worker_task_id);
-                                    debug_assert!(removed.is_some(), "non-target worker must be in the worker map");
-                                }
-                            }
-                            None => unreachable!("worker task must exist in join set if we are waiting for it"),
-                        }
-                    },
-                    // We've exceeded the shutdown timeout, so we abort the process. The `if !aborted` guard stops this
-                    // arm from re-firing on every poll once the deadline has elapsed (an elapsed `Sleep` stays ready),
-                    // which would otherwise spin re-aborting until the task is reaped.
-                    _ = &mut shutdown_deadline, if !aborted => {
-                        warn!(worker_id, worker_name = %worker_name, "Worker ignored graceful shutdown; forcefully aborting after timeout.");
-                        abort_handle.abort();
-                        aborted = true;
-                        aborted_total += 1;
-                    }
-                }
-            }
-        }
-
-        aborted_total
-    }
-
-    /// Shuts down all workers at once, waiting for them concurrently.
-    ///
-    /// Each worker is signalled up front, then awaited concurrently under its **own** graceful deadline, so a worker
-    /// that ignores shutdown is aborted at its configured timeout regardless of its siblings. Total shutdown time is
-    /// therefore bounded by the slowest individual worker rather than the sum of all timeouts, which suits large,
-    /// independent worker sets (for example, one task per network connection).
-    ///
-    /// A worker whose graceful timeout is effectively unbounded (such as a nested supervisor, which uses
-    /// `Duration::MAX` because it bounds itself via its own children's deadlines) is waited on indefinitely and is
-    /// never aborted by this method.
-    ///
-    /// Returns the number of workers forcefully aborted after exceeding their graceful timeout, including counts
-    /// merged from nested child supervisors that timed out.
-    async fn shutdown_workers_concurrent(&mut self) -> usize {
+    async fn shutdown_workers_inner(&mut self) -> usize {
         // Take ownership of all worker bookkeeping so we can consume each worker's shutdown coordinator. Signal every
         // graceful worker and immediately abort brutal ones, recording a per-worker abort deadline so each is held to
         // its own timeout rather than a single shared one.
@@ -307,7 +238,10 @@ impl WorkerState {
             match shutdown_strategy {
                 ShutdownStrategy::Graceful(timeout) => {
                     debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
-                    shutdown_coordinator.shutdown();
+                    // Absent for a worker that never observes the signal; we still wait for it to finish on its own.
+                    if let Some(shutdown_coordinator) = shutdown_coordinator {
+                        shutdown_coordinator.shutdown();
+                    }
                     let budget_deadline = budget_applies.then_some(budget_deadline).flatten();
                     let deadline = resolve_abort_deadline(now, timeout, budget_deadline);
                     pending.insert(task_id, (worker_id, worker_name, abort_handle, deadline));

@@ -34,7 +34,7 @@ impl<'a> WellKnownTags<'a> {
     /// Extracts well-known tags from the raw tags of a DogStatsD payload.
     ///
     /// All fields default to `None`.
-    pub fn from_raw_tags(tags: RawTags<'a>) -> Self {
+    pub fn from_raw_tags(tags: &'a RawTags<'_>) -> Self {
         let mut well_known_tags = Self {
             hostname: None,
             pod_uid: None,
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn well_known_tags_empty() {
         let tags = RawTags::new("", usize::MAX, usize::MAX);
-        let wkt = WellKnownTags::from_raw_tags(tags);
+        let wkt = WellKnownTags::from_raw_tags(&tags);
 
         assert_eq!(wkt.cardinality, None);
         assert_eq!(wkt.hostname, None);
@@ -105,7 +105,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let card_tag = format!("{}:{}", CARDINALITY_TAG_KEY, tag_value);
             let tags = RawTags::new(&card_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(tags);
+            let wkt = WellKnownTags::from_raw_tags(&tags);
 
             assert_eq!(wkt.cardinality, expected);
         }
@@ -118,7 +118,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let host_tag = format!("{}:{}", HOST_TAG_KEY, tag_value);
             let tags = RawTags::new(&host_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(tags);
+            let wkt = WellKnownTags::from_raw_tags(&tags);
 
             assert_eq!(wkt.hostname, expected);
         }
@@ -131,7 +131,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let jmx_tag = format!("{}:{}", JMX_CHECK_NAME_TAG_KEY, tag_value);
             let tags = RawTags::new(&jmx_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(tags);
+            let wkt = WellKnownTags::from_raw_tags(&tags);
 
             assert_eq!(wkt.jmx_check_name, expected);
         }
@@ -144,7 +144,7 @@ mod tests {
         for (tag_value, expected) in cases {
             let pod_tag = format!("{}:{}", ENTITY_ID_TAG_KEY, tag_value);
             let tags = RawTags::new(&pod_tag, usize::MAX, usize::MAX);
-            let wkt = WellKnownTags::from_raw_tags(tags);
+            let wkt = WellKnownTags::from_raw_tags(&tags);
 
             assert_eq!(wkt.pod_uid, expected);
         }

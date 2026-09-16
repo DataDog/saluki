@@ -125,7 +125,7 @@ impl Tui {
                 let total_assertions = result.assertion_results.len();
                 let passed_assertions = result.assertion_results.iter().filter(|a| a.passed).count();
 
-                if result.passed {
+                if result.outcome.is_passed() {
                     self.passed_tests += 1;
                     self.add_line_with_prefix(
                         "PASS",
@@ -148,7 +148,7 @@ impl Tui {
 
                     // Add error details if present.
                     if let Some(ref error) = result.error {
-                        let mut lines = error.lines();
+                        let mut lines = error.message.lines();
                         if let Some(first) = lines.next() {
                             self.add_line(format!("  Error: {}", first));
                             for line in lines {

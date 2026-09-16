@@ -1,2 +1,10 @@
 # NDJSON fixtures are byte-compared with compressed streams and must not be translated to CRLF.
 *.ndjson text eol=lf
+
+# Generated configuration data tables. These are committed so that a change to the schema or to
+# codegen is visible locally, but they restate the schema and the overlay rather than saying
+# anything new, so GitHub collapses them in diffs. The configuration model itself
+# (datadog_configuration.rs) is deliberately absent: its diff is the point.
+lib/datadog-agent/config/src/generated/witness.rs linguist-generated=true
+lib/datadog-agent/config/src/generated/classifier_data.rs linguist-generated=true
+lib/datadog-agent/config/src/generated/env_keys.rs linguist-generated=true

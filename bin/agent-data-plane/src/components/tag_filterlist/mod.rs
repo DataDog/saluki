@@ -6,6 +6,10 @@
 //! Whole-tag configuration is read from `metric_tag_filterlist` and can be updated at runtime via
 //! Remote Config. Value allow-list configuration is read independently from the static
 //! `metric_tag_value_allowlist` key.
+//!
+//! Both forms of filtering exist to merge samples that differ only in a filtered tag into a single aggregated
+//! context, so they only apply to metrics that are aggregated. The `dogstatsd_no_agg_split` transform routes
+//! timestamped metrics around this transform, leaving their tags untouched.
 
 mod telemetry;
 
@@ -493,7 +497,6 @@ mod tests {
         Context, TagSetMutViewState,
     };
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-    use saluki_core::components::ComponentSpawner;
     use saluki_core::components::{
         transforms::{TransformBuilder, TransformContext},
         BuildContext, ComponentContext,
@@ -503,10 +506,7 @@ mod tests {
         Event,
     };
     use saluki_core::health::HealthRegistry;
-    use saluki_core::runtime::{
-        state::{DataspaceRegistry, ResourceRegistry},
-        Supervisor,
-    };
+    use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
     use saluki_core::topology::interconnect::{Consumer, Dispatcher};
     use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
@@ -1438,11 +1438,6 @@ mod tests {
         let health = HealthRegistry::new()
             .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
             .expect("component was not previously registered");
-        // This component doesn't spawn supervised children yet, so a spawner over a never-run supervisor is
-        // sufficient. Anything that does spawn needs `TestComponentSupervisor` (saluki_core::components::test_util)
-        // instead, otherwise the spawn fails with `SupervisorGone`.
-        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
-        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
 
         let context = TransformContext::new(
             &topology_context,
@@ -1451,7 +1446,6 @@ mod tests {
             health,
             dispatcher,
             consumer,
-            spawner,
         );
 
         transform.run(context).await.expect("tag filterlist run should succeed");

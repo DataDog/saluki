@@ -1,7 +1,6 @@
 use std::{num::NonZeroUsize, time::Duration};
 
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Gauge};
 use stringtheory::interning::{GenericMapInterner, Interner as _};
@@ -9,7 +8,7 @@ use tokio::time::sleep;
 use tracing::{debug, trace};
 
 use crate::workload::helpers::cgroups::{get_self_container_id, CgroupsConfiguration, CgroupsReader};
-use crate::{features::FeatureDetector, workload::EntityId};
+use crate::workload::EntityId;
 
 #[static_metrics(prefix = pid_resolver)]
 #[derive(Clone)]
@@ -30,21 +29,18 @@ pub struct ResolverImpl {
 }
 
 impl ResolverImpl {
-    /// Creates a new `ResolverImpl` from the given configuration.
+    /// Creates a new `ResolverImpl` from the given cgroups configuration.
     ///
     /// # Errors
     ///
     /// If a cgroups hierarchy can't be found, or the internal cache can't be created, an error is returned.
-    pub fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
-    ) -> Result<Self, GenericError> {
+    pub fn new(cgroups_config: &CgroupsConfiguration, interner: GenericMapInterner) -> Result<Self, GenericError> {
         let telemetry = Telemetry::new();
         telemetry
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
-        let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
-        let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner.clone())? {
+        let cgroups_reader = match CgroupsReader::try_from_config(cgroups_config, interner.clone())? {
             Some(reader) => reader,
             None => {
                 return Err(GenericError::msg("Failed to detect any cgroups v1/v2 hierarchy."));

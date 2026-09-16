@@ -17,6 +17,7 @@ use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::runtime;
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{
@@ -29,7 +30,7 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::{server::grpc::GrpcKeepalive, ListenAddress};
+use saluki_io::net::{server::http::Http2Config, ListenAddress};
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -38,7 +39,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, resolve_grpc_keepalive, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    build_metrics, resolve_grpc_http2_config, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
     OtlpTlsConfiguration,
 };
 
@@ -128,12 +129,18 @@ pub struct OtlpConfiguration {
     /// Resolved OTLP domain slice.
     otlp: domains::otlp::Domain,
 
+    /// Maximum length of a span's resource name, in bytes.
+    ///
+    /// Defaults to `usize::MAX`, meaning resource names are not truncated.
+    max_resource_len: usize,
+
     /// Workload provider to utilize for origin detection/enrichment.
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
 
 impl OtlpConfiguration {
     /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration and workload provider.
+    ///
     pub fn from_configuration<W>(otlp: &domains::otlp::Domain, workload_provider: W) -> Self
     where
         W: WorkloadProvider + Send + Sync + 'static,
@@ -141,6 +148,7 @@ impl OtlpConfiguration {
         Self {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
+            max_resource_len: usize::MAX,
             workload_provider: Arc::new(workload_provider),
         }
     }
@@ -168,6 +176,18 @@ impl OtlpConfiguration {
     /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
+        self
+    }
+
+    /// Sets the maximum length of a span's resource name, in bytes.
+    ///
+    /// Resource names longer than this limit are truncated to the limit, on a UTF-8 boundary. Defaults to `usize::MAX`
+    /// (unbounded), which matches the source's behavior before resource name truncation was introduced.
+    ///
+    /// If set to `0`, every resource name is truncated to an empty string. Pass through the configured value
+    /// unmodified, including `0`, so the configured behavior is always honored.
+    pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
+        self.max_resource_len = max_resource_len;
         self
     }
 }
@@ -216,13 +236,19 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
+        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone(), self.max_resource_len);
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
-        let grpc_keepalive = resolve_grpc_keepalive(&self.otlp.receiver.grpc.keepalive);
+        let grpc_http2_config = resolve_grpc_http2_config(
+            &self.otlp.receiver.grpc.keepalive,
+            self.otlp.receiver.grpc.max_concurrent_streams,
+        );
+        let http_max_request_body_size = self.otlp.receiver.http.max_request_body_size;
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
         let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
         let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
         let metrics = build_metrics(context.component_context());
+        let translator_metrics =
+            metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -230,7 +256,8 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive,
+            grpc_http2_config,
+            http_max_request_body_size,
             metrics_translator_config,
             metric_tags,
             default_hostname: self.default_hostname.clone(),
@@ -239,6 +266,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_tls_config,
             grpc_tls_config,
             metrics,
+            translator_metrics,
         }))
     }
 }
@@ -258,7 +286,8 @@ pub struct Otlp {
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
-    grpc_keepalive: GrpcKeepalive,
+    grpc_http2_config: Http2Config,
+    http_max_request_body_size: u64,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,
     default_hostname: MetaString,
@@ -267,6 +296,7 @@ pub struct Otlp {
     http_tls_config: Option<OtlpTlsConfiguration>,
     grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
+    translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
 }
 
 #[async_trait]
@@ -278,7 +308,8 @@ impl Source for Otlp {
             grpc_endpoint,
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive,
+            grpc_http2_config,
+            http_max_request_body_size,
             metrics_translator_config,
             metric_tags,
             default_hostname,
@@ -287,6 +318,7 @@ impl Source for Otlp {
             http_tls_config,
             grpc_tls_config,
             metrics,
+            translator_metrics,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -304,14 +336,16 @@ impl Source for Otlp {
             context_resolver,
             origin_tag_resolver.clone(),
             metric_tags,
+            translator_metrics,
         )?;
 
         // Build our gRPC and HTTP servers and spawn them.
-        let handler = SourceHandler::new(tx);
+        let handler = SourceHandler::new(tx, metrics.clone());
         let mut server_config =
             OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
                 .with_cors(cors)
-                .with_grpc_keepalive(grpc_keepalive);
+                .with_grpc_http2_config(grpc_http2_config)
+                .with_http_max_request_body_size(http_max_request_body_size);
 
         if let Some(tls) = http_tls_config {
             server_config = server_config.with_http_tls(tls);
@@ -321,7 +355,12 @@ impl Source for Otlp {
         }
 
         server_config
-            .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
+            .build(
+                handler,
+                memory_limiter.clone(),
+                metrics.clone(),
+                context.topology_context().global_thread_pool(),
+            )
             .await?;
 
         // Run the converter task on the worker pool: translating OTLP resources is highly compute-bound.
@@ -330,23 +369,20 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
         let converter_shutdown = converter_shutdown_coordinator.register();
 
-        context
-            .spawner()
-            .noninterruptible("resource_converter", |_shutdown| {
-                run_converter(
-                    rx,
-                    converter_context,
-                    origin_tag_resolver,
-                    converter_shutdown,
-                    metrics_translator,
-                    metrics,
-                    traces_translator,
-                )
-            })
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn OTLP resource converter.")?;
+        runtime::worker(
+            "resource_converter",
+            run_converter(
+                rx,
+                converter_context,
+                origin_tag_resolver,
+                converter_shutdown,
+                metrics_translator,
+                metrics,
+                traces_translator,
+            ),
+        )
+        .on_runtime(context.topology_context().global_thread_pool().clone())
+        .spawn();
 
         health.mark_ready();
         debug!("OTLP source started.");
@@ -381,27 +417,30 @@ enum OtlpSignal {
 /// Handler that decodes OTLP bytes and sends resources to the converter.
 struct SourceHandler {
     tx: mpsc::Sender<OtlpSignal>,
+    metrics: Metrics,
 }
 
 impl SourceHandler {
-    fn new(tx: mpsc::Sender<OtlpSignal>) -> Self {
-        Self { tx }
+    fn new(tx: mpsc::Sender<OtlpSignal>, metrics: Metrics) -> Self {
+        Self { tx, metrics }
     }
 }
 
 #[async_trait]
 impl OtlpHandler for SourceHandler {
     async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError> {
-        let request =
-            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request")?;
+        let request = ExportMetricsServiceRequest::decode(body).map_err(|e| {
+            self.metrics.metrics_errors_decode().increment(1);
+            generic_error!("Failed to decode metrics export request: {}", e)
+        })?;
 
         // Send the entire request as a single channel message so the converter processes it
         // atomically. This preserves the request boundary for usage beacon emission without
         // needing control markers or shared state across concurrent requests.
-        self.tx
-            .send(OtlpSignal::Metrics(request))
-            .await
-            .error_context("Failed to send metrics request to converter: channel is closed.")?;
+        self.tx.send(OtlpSignal::Metrics(request)).await.map_err(|e| {
+            self.metrics.metrics_errors_channel().increment(1);
+            generic_error!("Failed to send metrics request to converter: channel is closed: {}", e)
+        })?;
         Ok(())
     }
 
@@ -469,6 +508,7 @@ async fn run_converter(
                                         });
                                         if let Err(e) = dispatcher.push(event).await {
                                             error!(error = %e, "Failed to dispatch metric event.");
+                                            metrics.metrics_errors_dispatch().increment(1);
                                         }
                                     }
                                 }
@@ -526,6 +566,7 @@ async fn run_converter(
                 if let Some(dispatcher) = metrics_dispatcher.take() {
                     if let Err(e) = dispatcher.flush().await {
                         error!(error = %e, "Failed to flush metric events.");
+                        metrics.metrics_errors_flush().increment(1);
                     }
                 }
                 if let Some(dispatcher) = logs_dispatcher.take() {
@@ -549,6 +590,7 @@ async fn run_converter(
     if let Some(dispatcher) = metrics_dispatcher.take() {
         if let Err(e) = dispatcher.flush().await {
             error!(error = %e, "Failed to flush metric events.");
+            metrics.metrics_errors_flush().increment(1);
         }
     }
     if let Some(dispatcher) = logs_dispatcher.take() {
@@ -573,8 +615,12 @@ mod tests {
     use agent_data_plane_config::domains::otlp::{
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
+    use prost::Message;
+    use saluki_core::components::ComponentContext;
+    use saluki_metrics::test::TestRecorder;
 
     use super::{apply_static_metric_tags, parse_configured_metric_tags, OtlpConfiguration};
+    use crate::common::otlp::{build_metrics, OtlpHandler};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -804,5 +850,63 @@ mod tests {
             tags("env:prod,,team:core"),
             vec!["env:prod".to_string(), "team:core".to_string()]
         );
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Self-telemetry: server-level decode and channel error counters.
+    // -----------------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn source_handler_increments_decode_error_on_malformed_body() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<super::OtlpSignal>(1);
+        let handler = super::SourceHandler::new(tx, metrics);
+
+        // Invalid protobuf bytes cause decode to fail.
+        let result = handler.handle_metrics(bytes::Bytes::from_static(b"not protobuf")).await;
+        assert!(result.is_err());
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("reason", "decode"),
+        ];
+        assert_eq!(recorder.counter(("component_errors_total", tags)), Some(1));
+    }
+
+    #[tokio::test]
+    async fn source_handler_increments_channel_error_on_closed_channel() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+        // Create a channel with no receiver, then drop the receiver so the send fails.
+        let (tx, rx) = tokio::sync::mpsc::channel::<super::OtlpSignal>(1);
+        drop(rx);
+        let handler = super::SourceHandler::new(tx, metrics);
+
+        // A valid (empty) request that decodes fine but can't be sent because the channel is closed.
+        let request = otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest::default();
+        let body = bytes::Bytes::from(request.encode_to_vec());
+        let result = handler.handle_metrics(body).await;
+        assert!(result.is_err());
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("reason", "channel"),
+        ];
+        assert_eq!(recorder.counter(("component_errors_total", tags)), Some(1));
+
+        // The decode counter should not have been incremented.
+        let decode_tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("reason", "decode"),
+        ];
+        assert_eq!(recorder.counter(("component_errors_total", decode_tags)), Some(0));
     }
 }

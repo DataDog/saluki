@@ -1,0 +1,39 @@
+---
+default_branch: main
+collapse_pre_releases: true
+release_tag_re: '^\d+\.\d+\.\d+$'
+template: |
+  ---
+  upgrade:
+    - |
+      Describe a required customer action or major behavior change, or remove this section.
+  features:
+    - |
+      Describe a customer-visible capability, or remove this section.
+  enhancements:
+    - |
+      Describe a customer-visible improvement, or remove this section.
+  issues:
+    - |
+      Describe a known customer-visible limitation, or remove this section.
+  deprecations:
+    - |
+      Describe a planned customer-visible removal, or remove this section.
+  security:
+    - |
+      Describe a customer-relevant security change, or remove this section.
+  fixes:
+    - |
+      Describe a customer-visible correction, or remove this section.
+  other:
+    - |
+      Describe customer-visible release information that does not fit another section, or remove this section.
+sections:
+  - [upgrade, Upgrade Notes]
+  - [features, New Features]
+  - [enhancements, Enhancement Notes]
+  - [issues, Known Issues]
+  - [deprecations, Deprecation Notes]
+  - [security, Security Notes]
+  - [fixes, Bug Fixes]
+  - [other, Other Notes]

@@ -5,6 +5,7 @@
 ///
 /// # Example
 ///
+/// <!-- vale off -->
 /// ```ignore
 /// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolverMap, EvalContextFamily};
 ///
@@ -22,6 +23,7 @@
 /// let mut ctx = MyContext { /* ... */ };
 /// let result = parser.execute(&mut ctx);
 /// ```
+/// <!-- vale on -->
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -69,6 +71,7 @@ pub type Result<T> = std::result::Result<T, BoxError>;
 ///
 /// # Example
 ///
+/// <!-- vale off -->
 /// ```ignore
 /// struct SpanFamily;
 ///
@@ -81,6 +84,7 @@ pub type Result<T> = std::result::Result<T, BoxError>;
 ///     resource: &'a Resource,
 /// }
 /// ```
+/// <!-- vale on -->
 pub trait EvalContextFamily: 'static {
     /// The concrete context type for a given borrow lifetime.
     type Context<'a>;
@@ -241,6 +245,7 @@ pub type EnumMap = HashMap<String, i64>;
 ///
 /// # Example
 ///
+/// <!-- vale off -->
 /// ```ignore
 /// use ottl::{OttlParser, Parser, EvalContextFamily};
 ///
@@ -253,6 +258,7 @@ pub type EnumMap = HashMap<String, i64>;
 /// let mut ctx = MyContext { /* ... */ };
 /// let result = parser.execute(&mut ctx)?;
 /// ```
+/// <!-- vale on -->
 pub trait OttlParser<F: EvalContextFamily> {
     /// Checks if the parser encountered any errors during creation.
     ///

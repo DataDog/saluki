@@ -1,11 +1,11 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use agent_data_plane_config::{
+    control::MemoryMode,
     domains::{dogstatsd, multi_region_failover},
     shared::SharedConfiguration,
     SalukiConfiguration,
@@ -13,10 +13,9 @@ use agent_data_plane_config::{
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
-use datadog_agent_commons::platform::PlatformSettings;
-use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
+use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use saluki_app::{
-    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
     util::wait_for_shutdown_signal,
@@ -47,7 +46,6 @@ use saluki_components::{
         TraceSamplerConfiguration,
     },
 };
-use saluki_config::GenericConfiguration;
 use saluki_context::origin::OriginTagCardinality;
 use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
@@ -57,11 +55,11 @@ use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use stringtheory::MetaString;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
@@ -74,7 +72,10 @@ use crate::{
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
-use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
+use crate::{
+    config::{remote_agent_client_configuration, DataPlaneConfiguration},
+    internal::env::ADPEnvironmentProvider,
+};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -116,7 +117,8 @@ pub async fn handle_run_command(
         (config_sys, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&local_config.raw_config(), &bootstrap_dp_config)
+        let client_config = remote_agent_client_configuration(local_config.local())?;
+        let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
 
@@ -139,7 +141,7 @@ pub async fn handle_run_command(
     // config, so reload logging to match. Standalone resolves the same local sources seen at
     // bootstrap, making a reload redundant.
     if !standalone {
-        match LoggingConfigurationTranslator::translate(&config_sys.raw_map()) {
+        match LoggingConfigurationTranslator::translate(&config_sys.config().control.logging) {
             Ok(logging_config) => {
                 if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                     warn!(
@@ -166,7 +168,15 @@ pub async fn handle_run_command(
         return Ok(());
     }
 
-    check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
+    config_sys
+        .check_compatibility(&active_pipelines)
+        .error_context("Incompatible configuration detected.")?;
+
+    let remote_agent_client_config = if standalone {
+        None
+    } else {
+        Some(remote_agent_client_configuration(&config_sys.config())?)
+    };
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -174,14 +184,22 @@ pub async fn handle_run_command(
     let resource_registry = ResourceRegistry::new();
     let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
         standalone,
-        &config_sys.raw_map(),
+        config_sys.config().control.ipc.remote_agent_string_interner_size_bytes,
+        &config_sys.config().shared.environment,
+        remote_agent_client_config.as_ref(),
         &component_registry,
         &health_registry,
     )
     .await?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) = create_topology(&config_sys, &env_provider, &component_registry).await?;
+    let (mut blueprint, control_surfaces) = create_topology(
+        &config_sys,
+        remote_agent_client_config.as_ref(),
+        &env_provider,
+        &component_registry,
+    )
+    .await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -197,7 +215,19 @@ pub async fn handle_run_command(
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config_sys.raw_map())?;
+    let bounds_config = {
+        let control = &config_sys.config().control;
+        MemoryBoundsConfiguration {
+            memory_limit: control.memory_limit.map(ByteSize::b),
+            memory_slop_factor: control.memory_slop_factor,
+            enable_global_limiter: control.enable_global_limiter,
+            memory_mode: match control.memory_mode {
+                MemoryMode::Disabled => AppMemoryMode::Disabled,
+                MemoryMode::Permissive => AppMemoryMode::Permissive,
+                MemoryMode::Strict => AppMemoryMode::Strict,
+            },
+        }
+    };
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
@@ -273,100 +303,9 @@ pub async fn handle_run_command(
     }
 }
 
-/// Check the resolved configuration against the config registry for incompatibilities.
-///
-/// Classifies each flattened key in `config` with the config registry `Classifier`. Returns an
-/// `Error` if one or more high severity incompatibility is discovered. Emits warnings for less
-/// severe incompatibilities. Keys are only considered incompatible when they have non-default
-/// values and the pipelines they affect are active.
-///
-/// # Input
-///
-/// - `config`: the state of our configuration which we will flatten and consider all keys from.
-/// - `active_pipelines`: the list of pipelines that are enabled based on the configuration.
-///
-/// # Error
-///
-/// To provide a better debugging experience in the presence of multiple high-severity incompatible
-/// keys, all keys are checked before returning. The error reports the count of incompatible keys;
-/// individual keys are logged at error level during iteration.
-///
-fn check_and_warn_config(
-    config: &ConfigurationSystem, active_pipelines: &HashSet<Pipeline>,
-) -> Result<(), GenericError> {
-    let classifier = ConfigClassifier::new();
-    let mut high_severity_incompatibilities = 0u32;
-    debug!("Analyzing configuration.");
-    // TODO: transfer this functionality to the config system
-    let config = config.raw_map();
-    for (key, val) in config
-        .flattened_keys()
-        .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
-    {
-        // Get the classification. The classifier returns None if the config key is invalid or not-applicable to ADP.
-        let Some(classification) = classifier.classify(&key, &val) else {
-            continue;
-        };
-
-        // Ignore it if none of the affected pipelines are active.
-        if !is_a_pipeline_affected(active_pipelines, &classification.pipeline_affinity) {
-            continue;
-        }
-
-        // The Agent populates default values into the config, so we do not consider keys with default values.
-        if classification.is_default {
-            trace!(key = %key, "Configuration key has a default value.");
-            continue;
-        }
-
-        match classification.support_level {
-            SupportLevel::Incompatible(Severity::Low) => debug!("Low-severity incompatible key detected. Proceeding."),
-            SupportLevel::Partial => {
-                warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")
-            }
-            SupportLevel::Incompatible(Severity::Medium) => {
-                warn!(key = %key, "Unsupported configuration key. Proceeding.")
-            }
-            SupportLevel::Incompatible(Severity::High) => {
-                error!(key = %key, "Unsupported configuration key with non-default value. ADP cannot run safely with \
-                this setting.");
-                high_severity_incompatibilities += 1;
-            }
-            SupportLevel::Ignored | SupportLevel::Unrecognized => {
-                trace!(key = %key, "Configuration key not-applicable. Silently ignoring.")
-            }
-        }
-    }
-
-    if high_severity_incompatibilities > 0 {
-        return Err(generic_error!(
-            "{high_severity_incompatibilities} incompatible configuration detected. ADP cannot start. Review error \
-            logs for details."
-        ));
-    }
-
-    Ok(())
-}
-
-/// Returns `true` if at least one of the `active_pipelines` is affected based on `pipeline_affinity`.
-fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinity: &PipelineAffinity) -> bool {
-    match pipeline_affinity {
-        PipelineAffinity::Pipelines(affected_pipelines) => {
-            for affected_pipeline in *affected_pipelines {
-                if active_pipelines.contains(affected_pipeline) {
-                    // We found an active pipeline that is in the affected list. Early return true.
-                    return true;
-                }
-            }
-            // We checked all affected pipelines against those that are active and none matched.
-            false
-        }
-        PipelineAffinity::CrossCutting => true,
-    }
-}
-
 async fn create_topology(
-    config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
+    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -397,12 +336,24 @@ async fn create_topology(
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(&shared, &config_system.raw_map());
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
+            &shared,
+            config_system.live(|config| &config.shared.endpoints.api_key),
+            config_system.live(|config| &config.shared.endpoints.additional_endpoints),
+            config_system.live(|config| &config.shared.secrets),
+        );
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
     if dp.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config_system, &shared, env_provider).await?;
+        add_baseline_metrics_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            remote_agent_client_config,
+            &shared,
+            env_provider,
+        )
+        .await?;
     }
 
     if dp.logs_pipeline_required() {
@@ -483,7 +434,8 @@ async fn add_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
@@ -494,7 +446,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
     if !dp.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(&config_system.raw_map())?;
+        let client_config = remote_agent_client_config
+            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
+        let host_tags_config = HostTagsConfiguration::new(client_config.clone(), shared.tags.expected_tags_duration);
         if host_tags_config.enabled() {
             metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
         }
@@ -509,19 +463,14 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(
-        blueprint,
-        &config_system.raw_map(),
-        shared,
-        &config.domains.multi_region_failover,
-    )?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), shared)?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
     mrf: &multi_region_failover::Domain,
 ) -> Result<(), GenericError> {
     let mrf_config = MrfConfiguration::from_configuration(mrf);
@@ -539,16 +488,19 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(
+        mrf_config.is_enabled(),
+        config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
+    );
     let mrf_metrics_config =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
-        config,
         mrf_dd_url,
         mrf_api_key,
-        "multi_region_failover.api_key",
+        config_system.live(|config| &config.domains.multi_region_failover.api_key),
+        config_system.live(|config| &config.shared.secrets),
     );
 
     blueprint
@@ -566,12 +518,19 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
-    let ca_config = ClusterAgentConfiguration::from_configuration(config)
-        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
+    let af_config = AutoscalingFailoverConfiguration::new(
+        shared.autoscaling_failover.enabled,
+        shared.autoscaling_failover.metrics.clone(),
+    );
+    let cluster_agent = &shared.cluster_agent;
+    let ca_config = ClusterAgentConfiguration {
+        enabled: cluster_agent.enabled,
+        url: cluster_agent.url.clone(),
+        auth_token: cluster_agent.auth_token.clone(),
+        kubernetes_service_name: cluster_agent.kubernetes_service_name.clone(),
+    };
 
     let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
         if af_config.is_branch_requested() {
@@ -941,11 +900,13 @@ async fn add_dsd_pipeline_to_blueprint(
         context_limit: aggregation.context_limit,
         flush_open_windows: aggregation.flush_open_windows,
         counter_expiry_seconds: aggregation.counter_expiry_seconds,
-        passthrough_timestamped_metrics: aggregation.no_aggregation_pipeline,
-        passthrough_idle_flush_timeout: aggregation.passthrough_idle_flush_timeout,
         hist_config: dsd_hist_config,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
+    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(
+        aggregation.passthrough_idle_flush_timeout,
+        aggregation.window_duration_seconds,
+    );
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system.live(|config| &config.domains.dogstatsd.metric_filter),
         &histogram.aggregates,
@@ -1002,16 +963,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         .add_destination("dsd_client_telemetry_out", DogStatsDClientTelemetryConfiguration)?
-        // Metrics.
-        .connect_components_in_order([
-            "dsd_in.metrics",
-            "dsd_enrich",
-            "dsd_prefix_filter",
-            "dsd_tag_filterlist",
-            "dsd_agg",
-            "dsd_post_agg_filter",
-            "metrics_enrich",
-        ])?
         // Events.
         .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
         // Service checks.
@@ -1024,6 +975,39 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_components("dsd_in.metrics", "dsd_stats_out")?
         // Post-aggregation client telemetry for RAR/COAT.
         .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
+
+    // Metrics.
+    //
+    // `dsd_no_agg_split` only earns a place in the pipeline when the no-aggregation pipeline is enabled. With it
+    // disabled, every metric is aggregated, so the split would have nothing to route out of the aggregation path and
+    // would sit in the hottest part of the process as a pure forwarder.
+    if aggregation.no_aggregation_pipeline {
+        blueprint
+            .add_transform("dsd_no_agg_split", dsd_no_agg_split_config)?
+            .connect_components_in_order([
+                "dsd_in.metrics",
+                "dsd_enrich",
+                "dsd_prefix_filter",
+                "dsd_no_agg_split",
+                "dsd_tag_filterlist",
+                "dsd_agg",
+                "dsd_post_agg_filter",
+                "metrics_enrich",
+            ])?
+            // Timestamped metrics skip tag filtering and aggregation, rejoining the pipeline after the aggregate
+            // transform.
+            .connect_components("dsd_no_agg_split.passthrough", "dsd_post_agg_filter")?;
+    } else {
+        blueprint.connect_components_in_order([
+            "dsd_in.metrics",
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_tag_filterlist",
+            "dsd_agg",
+            "dsd_post_agg_filter",
+            "metrics_enrich",
+        ])?;
+    }
 
     if debug_log.logging_enabled {
         blueprint
@@ -1060,7 +1044,8 @@ async fn add_otlp_pipeline_to_blueprint(
 
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces);
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces)
+            .with_max_resource_len(config.domains.traces.max_resource_len);
 
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
@@ -1095,6 +1080,7 @@ async fn add_otlp_pipeline_to_blueprint(
             features::is_ecs_fargate(),
         );
         let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
+            .with_max_resource_len(config.domains.traces.max_resource_len)
             .with_static_metric_tags(static_tags)
             .with_default_hostname(default_hostname);
 
@@ -1179,6 +1165,7 @@ mod tests {
 
     use crate::{
         components::{
+            dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
             dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
         },
         dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
@@ -1275,8 +1262,6 @@ mod tests {
                 context_limit: 1_000_000,
                 flush_open_windows: false,
                 counter_expiry_seconds: Some(300),
-                passthrough_timestamped_metrics: true,
-                passthrough_idle_flush_timeout: Duration::from_secs(1),
                 hist_config,
                 context_snapshot_receiver,
             };
@@ -1404,6 +1389,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(
+                Duration::from_millis(50),
+                NonZeroU64::new(10).expect("not zero"),
+            );
+            let tag_filter = TagFilterlistConfiguration::new(
+                Live::new_fixed(vec![MetricTagFilterEntry {
+                    metric_name: "app.requests".to_string(),
+                    action: FilterAction::Exclude,
+                    tags: vec!["remove".to_string()],
+                }]),
+                &[],
+                0,
+            )
+            .expect("tag filter configuration should be valid");
+            let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
+                .expect("histogram settings should be valid");
+            let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+            let aggregate = AggregateConfiguration {
+                window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                // Longer than the test, so the window stays open and contexts stay retained.
+                metric_intervals: Vec::new(),
+                primary_flush_interval: Duration::from_secs(60),
+                context_limit: 1_000_000,
+                flush_open_windows: false,
+                counter_expiry_seconds: Some(300),
+                hist_config,
+                context_snapshot_receiver,
+            };
+
+            let (events_tx, events_rx) = mpsc::channel(2);
+            let source = ControlledMetricSourceBuilder {
+                events: Mutex::new(Some(events_rx)),
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            };
+            let (passthrough_tx, mut passthrough_rx) = mpsc::unbounded_channel();
+            let passthrough_destination = CollectingMetricDestinationBuilder { sender: passthrough_tx };
+
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("dogstatsd_no_agg_split_filterlist", &component_registry);
+            blueprint
+                .add_source("source", source)
+                .expect("controlled source should be accepted")
+                .add_transform("no_agg_split", no_agg_split)
+                .expect("no-agg split should be accepted")
+                .add_transform("tag_filter", tag_filter)
+                .expect("tag filter should be accepted")
+                .add_transform("aggregate", aggregate)
+                .expect("aggregate should be accepted")
+                .add_destination("aggregate_out", DrainingMetricDestinationBuilder)
+                .expect("draining destination should be accepted")
+                .add_destination("passthrough_out", passthrough_destination)
+                .expect("collecting destination should be accepted");
+            blueprint
+                .connect_components_in_order(["source", "no_agg_split", "tag_filter", "aggregate", "aggregate_out"])
+                .expect("no-agg split topology should connect")
+                .connect_components("no_agg_split.passthrough", "passthrough_out")
+                .expect("passthrough output should connect");
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new())
+                .with_ambient_worker_pool();
+
+            let mut supervisor =
+                Supervisor::new("dogstatsd-no-agg-split-filterlist").expect("test supervisor should be created");
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            let timestamped_context =
+                Context::from_static_parts("app.requests", &["keep:client", "remove:secret", "which:timestamped"]);
+            events_tx
+                .send(Event::Metric(Metric::counter(
+                    timestamped_context.clone(),
+                    (1_700_000_000, 1.0),
+                )))
+                .await
+                .expect("controlled source should accept the timestamped metric");
+
+            let non_timestamped_context = Context::from_static_parts(
+                "app.requests",
+                &["keep:client", "remove:secret", "which:non_timestamped"],
+            );
+            events_tx
+                .send(Event::Metric(Metric::counter(non_timestamped_context.clone(), 1.0)))
+                .await
+                .expect("controlled source should accept the non-timestamped metric");
+
+            // The timestamped metric bypasses the tag filterlist entirely, so it should reach the passthrough
+            // destination with its `remove` tag intact.
+            let passthrough_metric = passthrough_rx
+                .recv()
+                .await
+                .expect("passthrough destination should receive the timestamped metric");
+            assert_eq!(
+                passthrough_metric
+                    .context()
+                    .tags()
+                    .get_single_tag("remove")
+                    .and_then(|tag| tag.value()),
+                Some("secret"),
+                "timestamped metrics must not be filtered by the tag filterlist"
+            );
+
+            // The non-timestamped metric goes through the tag filterlist before aggregation, so its `remove` tag
+            // should be stripped from the resulting aggregated context.
+            let expected_context =
+                Context::from_static_parts("app.requests", &["keep:client", "which:non_timestamped"]);
+            let snapshot = loop {
+                let snapshot = snapshot_handle
+                    .snapshot()
+                    .await
+                    .expect("running aggregate should fulfill snapshots");
+                if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            };
+            assert!(snapshot.iter().all(|entry| entry.context() != &non_timestamped_context));
+            assert_eq!(snapshot.len(), 1);
+            assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).expect("test topology should still be running");
+            let topology_result = topology_task.await.expect("topology task should not panic");
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+        })
+        .await
+        .expect("no-agg split filterlist exclusion test should complete without hanging");
+    }
+
+    #[tokio::test]
     async fn context_dump_handler_uses_supplied_run_path_and_owner() {
         let run_directory = tempfile::tempdir().expect("run directory should be created");
         let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
@@ -1520,6 +1643,45 @@ mod tests {
     }
 
     impl MemoryBounds for DrainingMetricDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    struct CollectingMetricDestination {
+        sender: mpsc::UnboundedSender<Metric>,
+    }
+
+    #[async_trait]
+    impl Destination for CollectingMetricDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while let Some(events) = context.events().next().await {
+                for event in events {
+                    if let Some(metric) = event.try_into_metric() {
+                        let _ = self.sender.send(metric);
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct CollectingMetricDestinationBuilder {
+        sender: mpsc::UnboundedSender<Metric>,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for CollectingMetricDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(CollectingMetricDestination {
+                sender: self.sender.clone(),
+            }))
+        }
+    }
+
+    impl MemoryBounds for CollectingMetricDestinationBuilder {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 

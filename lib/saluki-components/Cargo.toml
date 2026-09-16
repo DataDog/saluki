@@ -53,6 +53,7 @@ prost = { workspace = true }
 protobuf = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
+rmp = { workspace = true }
 rmp-serde = { workspace = true }
 
 # TLS dependencies used by the OTLP receiver to configure server-side TLS.
@@ -71,8 +72,6 @@ saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_with = { workspace = true, features = ["alloc"] }
-serde_yaml = { workspace = true }
 simdutf8 = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }

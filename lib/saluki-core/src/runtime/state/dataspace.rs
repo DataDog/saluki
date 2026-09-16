@@ -18,6 +18,7 @@
 //!
 //! # Example
 //!
+//! <!-- vale off -->
 //! ```
 //! use saluki_core::runtime::state::{DataspaceUpdate, Identifier, IdentifierFilter, DataspaceRegistry};
 //!
@@ -37,6 +38,7 @@
 //! assert_eq!(value, Some(DataspaceUpdate::Asserted(id, 42)));
 //! # }
 //! ```
+//! <!-- vale on -->
 
 use std::{
     any::{Any, TypeId},

@@ -48,6 +48,12 @@ impl From<&str> for Identifier {
     }
 }
 
+impl From<String> for Identifier {
+    fn from(s: String) -> Self {
+        Self::Named(MetaString::from(s))
+    }
+}
+
 impl From<MetaString> for Identifier {
     fn from(s: MetaString) -> Self {
         Self::Named(s)

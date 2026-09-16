@@ -277,9 +277,12 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
 }
 
 /// Builds an `RawOrigin` object from the given metric packet.
-pub fn origin_from_metric_packet<'packet>(
-    packet: &MetricPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
-) -> RawOrigin<'packet> {
+pub fn origin_from_metric_packet<'packet, 'tags>(
+    packet: &'tags MetricPacket<'packet>, well_known_tags: &'tags WellKnownTags<'tags>,
+) -> RawOrigin<'tags>
+where
+    'packet: 'tags,
+{
     let cardinality = packet.cardinality.or(well_known_tags.cardinality);
 
     let mut origin = RawOrigin::default();
@@ -291,9 +294,12 @@ pub fn origin_from_metric_packet<'packet>(
 }
 
 /// Builds an `RawOrigin` object from the given event packet.
-pub fn origin_from_event_packet<'packet>(
-    packet: &EventPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
-) -> RawOrigin<'packet> {
+pub fn origin_from_event_packet<'packet, 'tags>(
+    packet: &'tags EventPacket<'packet>, well_known_tags: &'tags WellKnownTags<'tags>,
+) -> RawOrigin<'tags>
+where
+    'packet: 'tags,
+{
     let cardinality = packet.cardinality.or(well_known_tags.cardinality);
 
     let mut origin = RawOrigin::default();
@@ -305,9 +311,12 @@ pub fn origin_from_event_packet<'packet>(
 }
 
 /// Builds an `RawOrigin` object from the given service check packet.
-pub fn origin_from_service_check_packet<'packet>(
-    packet: &ServiceCheckPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
-) -> RawOrigin<'packet> {
+pub fn origin_from_service_check_packet<'packet, 'tags>(
+    packet: &'tags ServiceCheckPacket<'packet>, well_known_tags: &'tags WellKnownTags<'tags>,
+) -> RawOrigin<'tags>
+where
+    'packet: 'tags,
+{
     let cardinality = packet.cardinality.or(well_known_tags.cardinality);
 
     let mut origin = RawOrigin::default();
@@ -392,7 +401,7 @@ mod tests {
         let raw_tags_input = "dd.internal.card:high";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 
-        let well_known_tags = WellKnownTags::from_raw_tags(raw_tags.clone());
+        let well_known_tags = WellKnownTags::from_raw_tags(&raw_tags);
         assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::High));
 
         let packet_with_card = MetricPacket {
@@ -435,7 +444,7 @@ mod tests {
         let raw_tags_input = "dd.internal.card:low";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 
-        let well_known_tags = WellKnownTags::from_raw_tags(raw_tags.clone());
+        let well_known_tags = WellKnownTags::from_raw_tags(&raw_tags);
         assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Low));
 
         let packet_with_card = EventPacket {
@@ -484,7 +493,7 @@ mod tests {
         let raw_tags_input = "dd.internal.card:orchestrator";
         let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
 
-        let well_known_tags = WellKnownTags::from_raw_tags(raw_tags.clone());
+        let well_known_tags = WellKnownTags::from_raw_tags(&raw_tags);
         assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Orchestrator));
 
         let packet_with_card = ServiceCheckPacket {

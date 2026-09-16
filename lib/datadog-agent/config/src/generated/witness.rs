@@ -47,6 +47,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool);
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
+    fn consume_auth_token_file_path(&mut self, value: String);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
     fn consume_basic_telemetry_add_container_tags(&mut self, value: bool);
@@ -57,8 +58,11 @@ pub trait DatadogConfigWitness {
     fn consume_cluster_agent_url(&mut self, value: String);
     fn consume_cluster_name(&mut self, value: String);
     fn consume_cmd_port(&mut self, value: i64);
+    fn consume_container_cgroup_root(&mut self, value: String);
+    fn consume_container_proc_root(&mut self, value: String);
     fn consume_cri_connection_timeout(&mut self, value: i64);
     fn consume_cri_query_timeout(&mut self, value: i64);
+    fn consume_cri_socket_path(&mut self, value: String);
     fn consume_data_plane_api_listen_address(&mut self, value: String);
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64);
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool);
@@ -72,6 +76,8 @@ pub trait DatadogConfigWitness {
     fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: bool);
     fn consume_data_plane_remote_agent_enabled(&mut self, value: bool);
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String);
+    fn consume_data_plane_serializer_zstd_compressor_level(&mut self, value: i64);
+    fn consume_data_plane_stop_timeout(&mut self, value: i64);
     fn consume_data_plane_use_new_config_stream_endpoint(&mut self, value: bool);
     fn consume_dd_url(&mut self, value: String);
     fn consume_disable_file_logging(&mut self, value: bool);
@@ -116,9 +122,9 @@ pub trait DatadogConfigWitness {
     fn consume_expected_tags_duration(&mut self, value: std::time::Duration);
     fn consume_extra_tags(&mut self, value: Vec<String>);
     fn consume_forwarder_apikey_validation_interval(&mut self, value: i64);
-    fn consume_forwarder_backoff_base(&mut self, value: i64);
-    fn consume_forwarder_backoff_factor(&mut self, value: i64);
-    fn consume_forwarder_backoff_max(&mut self, value: i64);
+    fn consume_forwarder_backoff_base(&mut self, value: f64);
+    fn consume_forwarder_backoff_factor(&mut self, value: f64);
+    fn consume_forwarder_backoff_max(&mut self, value: f64);
     fn consume_forwarder_connection_reset_interval(&mut self, value: i64);
     fn consume_forwarder_flush_to_disk_mem_ratio(&mut self, value: f64);
     fn consume_forwarder_high_prio_buffer_size(&mut self, value: i64);
@@ -140,6 +146,8 @@ pub trait DatadogConfigWitness {
     fn consume_histogram_copy_to_distribution(&mut self, value: bool);
     fn consume_histogram_copy_to_distribution_prefix(&mut self, value: String);
     fn consume_histogram_percentiles(&mut self, value: Vec<String>);
+    fn consume_hostname(&mut self, value: String);
+    fn consume_ipc_cert_file_path(&mut self, value: String);
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String);
     fn consume_log_file_max_rolls(&mut self, value: i64);
     fn consume_log_file_max_size(&mut self, value: String);
@@ -189,6 +197,7 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
         &mut self, value: std::time::Duration,
     );
+    fn consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_grpc_tls_cert_file(&mut self, value: Option<String>);
@@ -199,6 +208,7 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_receiver_protocols_http_cors_exposed_headers(&mut self, value: Vec<String>);
     fn consume_otlp_config_receiver_protocols_http_cors_max_age(&mut self, value: Option<i64>);
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_max_request_body_size(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_http_tls_cert_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_http_tls_key_file(&mut self, value: Option<String>);
@@ -210,9 +220,10 @@ pub trait DatadogConfigWitness {
     fn consume_proxy_https(&mut self, value: String);
     fn consume_proxy_no_proxy(&mut self, value: Vec<String>);
     fn consume_run_path(&mut self, value: String);
+    fn consume_secret_backend_command(&mut self, value: String);
+    fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64);
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
-    fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
@@ -237,7 +248,7 @@ pub trait DatadogConfigWitness {
     fn consume_use_proxy_for_cloud_metadata(&mut self, value: bool);
     fn consume_use_v2_api_series(&mut self, value: bool);
     fn consume_use_v3_api_series_enabled(&mut self, value: String);
-    fn consume_use_v3_api_series_endpoints(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>);
+    fn consume_use_v3_api_series_endpoints(&mut self, value: HashMap<String, String>);
     fn consume_vector_metrics_enabled(&mut self, value: bool);
     fn consume_vector_metrics_url(&mut self, value: String);
     fn consume_vector_metrics_use_v3_api_series(&mut self, value: bool);
@@ -322,6 +333,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
         config.apm_config.probabilistic_sampler.sampling_percentage.clone(),
     );
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
+    consumer.consume_auth_token_file_path(config.auth_token_file_path.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());
     consumer.consume_basic_telemetry_add_container_tags(config.basic_telemetry_add_container_tags.clone());
@@ -332,8 +344,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_cluster_agent_url(config.cluster_agent.url.clone());
     consumer.consume_cluster_name(config.cluster_name.clone());
     consumer.consume_cmd_port(config.cmd_port.clone());
+    consumer.consume_container_cgroup_root(config.container_cgroup_root.clone());
+    consumer.consume_container_proc_root(config.container_proc_root.clone());
     consumer.consume_cri_connection_timeout(config.cri_connection_timeout.clone());
     consumer.consume_cri_query_timeout(config.cri_query_timeout.clone());
+    consumer.consume_cri_socket_path(config.cri_socket_path.clone());
     consumer.consume_data_plane_api_listen_address(config.data_plane.api_listen_address.clone());
     consumer.consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(
         config.data_plane.dogstatsd.aggregator_tag_filter_cache_capacity.clone(),
@@ -351,6 +366,10 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_data_plane_otlp_proxy_traces_enabled(config.data_plane.otlp.proxy.traces.enabled.clone());
     consumer.consume_data_plane_remote_agent_enabled(config.data_plane.remote_agent_enabled.clone());
     consumer.consume_data_plane_secure_api_listen_address(config.data_plane.secure_api_listen_address.clone());
+    consumer.consume_data_plane_serializer_zstd_compressor_level(
+        config.data_plane.serializer_zstd_compressor_level.clone(),
+    );
+    consumer.consume_data_plane_stop_timeout(config.data_plane.stop_timeout.clone());
     consumer
         .consume_data_plane_use_new_config_stream_endpoint(config.data_plane.use_new_config_stream_endpoint.clone());
     consumer.consume_dd_url(config.dd_url.clone());
@@ -423,6 +442,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_histogram_copy_to_distribution(config.histogram_copy_to_distribution.clone());
     consumer.consume_histogram_copy_to_distribution_prefix(config.histogram_copy_to_distribution_prefix.clone());
     consumer.consume_histogram_percentiles(config.histogram_percentiles.clone());
+    consumer.consume_hostname(config.hostname.clone());
+    consumer.consume_ipc_cert_file_path(config.ipc_cert_file_path.clone());
     consumer.consume_kubernetes_kubelet_nodename(config.kubernetes_kubelet_nodename.clone());
     consumer.consume_log_file_max_rolls(config.log_file_max_rolls.clone());
     consumer.consume_log_file_max_size(config.log_file_max_size.clone());
@@ -530,6 +551,15 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .timeout
             .clone(),
     );
+    consumer.consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .max_concurrent_streams
+            .clone(),
+    );
     consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(
         config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone(),
     );
@@ -560,6 +590,9 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_otlp_config_receiver_protocols_http_endpoint(
         config.otlp_config.receiver.protocols.http.endpoint.clone(),
     );
+    consumer.consume_otlp_config_receiver_protocols_http_max_request_body_size(
+        config.otlp_config.receiver.protocols.http.max_request_body_size.clone(),
+    );
     consumer.consume_otlp_config_receiver_protocols_http_tls_ca_file(
         config.otlp_config.receiver.protocols.http.tls.ca_file.clone(),
     );
@@ -584,12 +617,12 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_proxy_https(config.proxy.https.clone());
     consumer.consume_proxy_no_proxy(config.proxy.no_proxy.clone());
     consumer.consume_run_path(config.run_path.clone());
+    consumer.consume_secret_backend_command(config.secret_backend_command.clone());
+    consumer
+        .consume_secret_refresh_on_api_key_failure_interval(config.secret_refresh_on_api_key_failure_interval.clone());
     consumer.consume_serializer_compressor_kind(config.serializer_compressor_kind.clone());
     consumer.consume_serializer_experimental_use_v3_api_compression_level(
         config.serializer_experimental_use_v3_api.compression_level.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_endpoints(
-        config.serializer_experimental_use_v3_api.series.endpoints.clone(),
     );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),

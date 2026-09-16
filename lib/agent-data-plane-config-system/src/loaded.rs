@@ -255,40 +255,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_counter_expiry_key_reaches_typed_configuration() {
-        let path = std::env::temp_dir().join(format!("adp_counter_expiry_{}.yaml", std::process::id()));
-        std::fs::write(&path, "counter_expiry_seconds: 42\n").unwrap();
-
-        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
-            .await
-            .expect("legacy counter expiry key loads");
-
-        std::fs::remove_file(&path).ok();
-        assert_eq!(
-            loaded.local().domains.dogstatsd.aggregation.counter_expiry_seconds,
-            Some(42)
-        );
-    }
-
-    #[test]
-    fn legacy_counter_expiry_environment_variable_reaches_typed_configuration() {
-        let _guard = test_env_lock();
-        let path = std::env::temp_dir().join(format!("adp_counter_expiry_env_{}.yaml", std::process::id()));
-        std::fs::write(&path, "{}\n").unwrap();
-        std::env::set_var("DD_COUNTER_EXPIRY_SECONDS", "43");
-
-        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile))
-            .expect("legacy counter expiry environment variable loads");
-
-        std::env::remove_var("DD_COUNTER_EXPIRY_SECONDS");
-        std::fs::remove_file(&path).ok();
-        assert_eq!(
-            loaded.local().domains.dogstatsd.aggregation.counter_expiry_seconds,
-            Some(43)
-        );
-    }
-
-    #[tokio::test]
     async fn load_rejects_translation_invalid_local_sources() {
         let path = std::env::temp_dir().join(format!("adp_local_bad_{}.yaml", std::process::id()));
         // The compatibility loader accepts this value, but typed translation rejects it.
@@ -497,6 +463,23 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(from_by_key, Some(7));
         assert_eq!(from_typed, 7);
+    }
+
+    #[test]
+    fn the_adp_stop_timeout_override_reaches_both_views_from_the_environment() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_stop_timeout_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_DATA_PLANE_STOP_TIMEOUT", "45");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+        let from_by_key = loaded.raw_config().try_get_typed::<u64>("data_plane.stop_timeout");
+        let from_typed = loaded.local().control.stop_timeout;
+
+        std::env::remove_var("DD_DATA_PLANE_STOP_TIMEOUT");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(from_by_key.expect("key reads"), Some(45));
+        assert_eq!(from_typed, Some(std::time::Duration::from_secs(45)));
     }
 
     #[test]

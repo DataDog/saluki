@@ -1,6 +1,7 @@
-use std::future::Future;
+use std::{future::Future, num::NonZeroUsize};
 
-use saluki_config::GenericConfiguration;
+use agent_data_plane_config::shared::Environment;
+use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
@@ -10,7 +11,7 @@ use saluki_env::{
     host::providers::{BoxedHostProvider, FixedHostProvider},
     EnvironmentProvider,
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use tracing::warn;
 
 mod autodiscovery;
@@ -54,15 +55,23 @@ impl ADPEnvironmentProvider {
     /// In standalone mode, no supervisor is returned as all behavior/functionality is either provided via
     /// fixed configuration or operates in a no-op fashion.
     pub async fn from_configuration(
-        standalone: bool, raw_map: &GenericConfiguration, component_registry: &ComponentRegistry,
+        standalone: bool, string_interner_size_bytes: NonZeroUsize, environment: &Environment,
+        client_config: Option<&RemoteAgentClientConfiguration>, component_registry: &ComponentRegistry,
         health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
         // When we're in standalone mode, all of our functionality is either fixed or a no-op.
         if standalone {
             warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
 
+            let hostname = environment.hostname.value.clone();
+            if !environment.hostname.is_explicit() || hostname.is_empty() {
+                return Err(generic_error!(
+                    "A non-empty hostname must be configured (`hostname`) when running in standalone mode."
+                ));
+            }
+
             let env = Self {
-                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(raw_map)?),
+                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::new(hostname)),
                 workload_provider: None,
                 autodiscovery_provider: None,
                 health_registry: health_registry.clone(),
@@ -71,16 +80,24 @@ impl ADPEnvironmentProvider {
         }
 
         // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
+        let client_config = client_config
+            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
-        let host_provider = RemoteAgentHostProvider::from_configuration(raw_map, component_registry).await?;
+        let host_provider = RemoteAgentHostProvider::new(client_config, component_registry).await?;
 
-        let (workload_provider, workload_supervisor) =
-            RemoteAgentWorkloadProvider::from_configuration(raw_map, component_registry, health_registry).await?;
+        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::new(
+            string_interner_size_bytes,
+            environment,
+            client_config,
+            component_registry,
+            health_registry,
+        )
+        .await?;
         env_supervisor.add_worker(workload_supervisor);
 
         let (autodiscovery_provider, autodiscovery_supervisor) =
-            RemoteAgentAutodiscoveryProvider::from_configuration(raw_map).await?;
+            RemoteAgentAutodiscoveryProvider::new(client_config).await?;
         env_supervisor.add_worker(autodiscovery_supervisor);
 
         let env = Self {

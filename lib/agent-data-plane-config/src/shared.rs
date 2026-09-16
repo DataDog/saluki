@@ -34,6 +34,12 @@ pub struct SharedConfiguration {
     /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.
     pub autoscaling_failover: AutoscalingFailover,
 
+    /// Secrets management, read by the Datadog intake forwarders.
+    pub secrets: Secrets,
+
+    /// Host and container runtime discovery, read by the environment providers.
+    pub environment: Environment,
+
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
@@ -44,6 +50,48 @@ pub struct SharedConfiguration {
     /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
     /// `run_path`.
     pub run_path: Option<PathBuf>,
+}
+
+/// Host identity and container runtime discovery inputs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Environment {
+    /// Hostname reported for all emitted data.
+    ///
+    /// Only read in standalone mode, where it is reported verbatim. In connected mode the hostname comes from the
+    /// Datadog Agent and this value is ignored.
+    ///
+    /// Defaults to empty, and a defaulted or empty value is treated as absent. Operators running standalone must set
+    /// it explicitly; startup fails otherwise.
+    pub hostname: ConfigValue<String>,
+
+    /// containerd runtime discovery and client timeouts.
+    pub containerd: Containerd,
+
+    /// Filesystem roots describing container workloads.
+    pub container_roots: ContainerRoots,
+}
+
+/// containerd runtime discovery and client timeouts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Containerd {
+    /// containerd gRPC socket. A defaulted empty value enables path probing.
+    pub socket_path: ConfigValue<PathBuf>,
+
+    /// Timeout for establishing a containerd gRPC connection. Defaults to 1 second; `0` never connects.
+    pub connection_timeout: Duration,
+
+    /// Per-RPC timeout for containerd API calls. Defaults to 5 seconds; `0` fails every call.
+    pub query_timeout: Duration,
+}
+
+/// Filesystem roots describing container workloads.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ContainerRoots {
+    /// procfs root. Defaults to `/host/proc`, which is only used when set explicitly.
+    pub proc_root: ConfigValue<PathBuf>,
+
+    /// cgroupfs root. Defaults to `/host/sys/fs/cgroup/`, which is only used when set explicitly.
+    pub cgroup_root: ConfigValue<PathBuf>,
 }
 
 /// Inputs used to derive deployment-wide static tags.
@@ -414,7 +462,7 @@ pub struct MetricsEncoding {
     /// Histogram aggregation and encoding settings.
     pub histogram: HistogramEncoding,
 
-    /// V3 metrics-intake protocol settings (`serializer_experimental_use_v3_api.*`).
+    /// Experimental V3 sketches settings (`serializer_experimental_use_v3_api.*`).
     pub v3_api: V3ApiEncoding,
 
     /// Global V3 series routing mode (`use_v3_api.series.enabled`).
@@ -447,21 +495,17 @@ impl Default for MetricsEncoding {
     }
 }
 
-/// V3 metrics-intake protocol settings for the series and sketches payloads
-/// (`serializer_experimental_use_v3_api.*`).
+/// Experimental V3 sketches settings (`serializer_experimental_use_v3_api.*`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiEncoding {
-    /// V3 series intake settings.
-    pub series: V3ApiSettings,
-
-    /// V3 sketches intake settings (the series-only fields stay at their defaults).
+    /// Endpoints using the V3 sketches intake.
     pub sketches: V3ApiSettings,
 
     /// zstd compression level for V3 payloads.
     pub compression_level: i32,
 }
 
-/// Per-payload V3 intake settings, reused for both series and sketches.
+/// V3 sketches intake settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
     /// Endpoints enabled for the V3 intake.
@@ -521,28 +565,89 @@ pub struct HistogramEncoding {
 }
 
 /// Cluster Agent connection, shared by checks, DogStatsD, and OTLP.
+///
+/// The defaults named on each field are the Datadog schema defaults, which translation writes whenever the key is
+/// absent. They are not the values `Default` produces: that is the zero value of each field, which for
+/// `kubernetes_service_name` is the empty string and therefore not the schema default.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ClusterAgent {
     /// Whether the Cluster Agent connection is used.
+    ///
+    /// Defaults to `false`. Turn it on in a deployment that runs a Cluster Agent; while it is off, nothing talks to it.
     pub enabled: bool,
 
     /// URL of the Cluster Agent.
+    ///
+    /// Defaults to unset, which leaves the endpoint to Kubernetes service discovery through
+    /// `kubernetes_service_name`. A blank value is normalized to unset. Set this in a deployment where the Cluster
+    /// Agent is not reachable through an injected Kubernetes service, and give an `https` endpoint: consumers use only
+    /// `https`.
     pub url: Option<String>,
 
     /// Token used to authenticate to the Cluster Agent.
+    ///
+    /// Defaults to unset, which leaves the Cluster Agent unreachable: there is no anonymous access. Set it wherever the
+    /// Cluster Agent is enabled, to that Agent's own token; a blank value is normalized to unset.
     pub auth_token: Option<String>,
 
     /// Kubernetes service name used to discover the Cluster Agent.
-    pub kubernetes_service_name: Option<String>,
+    ///
+    /// Defaults to `datadog-cluster-agent`. The name is turned into the `<NAME>_SERVICE_HOST` and
+    /// `<NAME>_SERVICE_PORT` environment variables that Kubernetes injects into the pod. Set this when the Cluster
+    /// Agent runs under a different service name, or set it to the empty string to turn the lookup off, which leaves
+    /// `url` as the only way to reach the Cluster Agent.
+    pub kubernetes_service_name: String,
+}
+
+/// Secrets management, as configured for the Core Agent.
+///
+/// ADP resolves no secrets itself; the Core Agent does. These settings mirror the Agent's own configuration, and ADP
+/// reads them for one purpose: to decide whether a rejected API key might be replaced. See
+/// [`in_use`](Self::in_use).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Secrets {
+    /// Path to the executable the Core Agent runs to fetch secrets.
+    ///
+    /// Defaults to unset, and a blank value is normalized to unset. ADP does not run it. A configured command makes
+    /// [`in_use`](Self::in_use) true, which makes an intake's `403 Forbidden` response retriable. Set this only to match
+    /// the Core Agent's own configuration.
+    pub backend_command: Option<String>,
+
+    /// Minutes between the secret refreshes the Core Agent triggers after an API key is rejected.
+    ///
+    /// Defaults to `0`, which turns those refreshes off. A negative value from the source means the same thing and is
+    /// clamped to `0`. A positive value makes [`in_use`](Self::in_use) true on its own, and `0` does not make it false
+    /// when [`backend_command`](Self::backend_command) is set. Set this only to match the Core Agent's own
+    /// configuration.
+    pub refresh_on_api_key_failure_interval: u64,
+}
+
+impl Secrets {
+    /// Returns whether secret resolution might replace a rejected API key.
+    ///
+    /// This is true when a [`backend_command`](Self::backend_command) is configured or
+    /// [`refresh_on_api_key_failure_interval`](Self::refresh_on_api_key_failure_interval) is positive. Either says the
+    /// key an intake just rejected may be a secret that gets re-resolved, so the same request is worth retrying. When
+    /// neither is configured, nothing is going to replace the key, and retrying the request only wastes it.
+    pub const fn in_use(&self) -> bool {
+        self.refresh_on_api_key_failure_interval > 0 || self.backend_command.is_some()
+    }
 }
 
 /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct AutoscalingFailover {
-    /// Whether autoscaling metrics failover is active.
+    /// Whether metrics designated for autoscaling failover are forwarded to the Cluster Agent.
+    ///
+    /// Defaults to `false`. Also needs `cluster_agent.enabled`, `cluster_agent.auth_token`, a resolvable Cluster Agent
+    /// endpoint, and a non-empty `metrics`; otherwise the branch is not built and primary forwarding continues.
     pub enabled: bool,
 
-    /// Metrics designated for failover.
+    /// Names of the metrics designated for autoscaling failover.
+    ///
+    /// Defaults to `container.memory.usage` and `container.cpu.usage`. An empty list turns the failover branch off even
+    /// when `enabled` is set, because there is nothing left to forward. Set this when autoscaling reads metrics other
+    /// than the two defaults.
     pub metrics: Vec<String>,
 }
 

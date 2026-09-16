@@ -47,6 +47,7 @@ pub fn set_app_details(details: AppDetails) {
 ///
 /// # Examples
 ///
+/// <!-- vale off -->
 /// ```
 /// # use saluki_metadata::{declare_app_details, AppDetails};
 /// pub const APP_DETAILS: AppDetails = declare_app_details!(
@@ -55,6 +56,7 @@ pub fn set_app_details(details: AppDetails) {
 ///     identifier = "ex",
 /// );
 /// ```
+/// <!-- vale on -->
 #[macro_export]
 macro_rules! declare_app_details {
     (full_name = $full_name:expr, short_name = $short_name:expr, identifier = $identifier:expr $(,)?) => {
