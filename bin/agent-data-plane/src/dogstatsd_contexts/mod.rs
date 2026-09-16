@@ -1,9 +1,11 @@
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 use saluki_error::GenericError;
 
 pub(crate) use self::api::DogStatsDContextDumpAPIHandler;
-pub(crate) use self::artifact::{for_each_record, publish_context_dump};
+#[cfg(test)]
+pub(crate) use self::artifact::for_each_record;
+pub(crate) use self::artifact::publish_context_dump;
 pub(crate) use self::report::ContextReport;
 
 mod api;
@@ -13,9 +15,16 @@ mod report;
 /// Agent-compatible command API route for requesting a DogStatsD context dump.
 pub(crate) const CONTEXT_DUMP_ROUTE: &str = "/agent/dogstatsd-contexts-dump";
 
+#[cfg(test)]
 pub(crate) fn read_report(path: &Path) -> Result<ContextReport, GenericError> {
     let mut report = ContextReport::new();
     for_each_record(path, |record| report.ingest(record))?;
+    Ok(report)
+}
+
+pub(crate) fn read_report_from_file(path: &Path, file: File) -> Result<ContextReport, GenericError> {
+    let mut report = ContextReport::new();
+    artifact::for_each_record_from_file(path, file, |record| report.ingest(record))?;
     Ok(report)
 }
 
