@@ -23,7 +23,7 @@ use saluki_core::{
         EventsBuffer, OutputName, TopologyContext,
     },
 };
-use tokio::{net::TcpListener, runtime::Handle, sync::Mutex, task::JoinHandle};
+use tokio::{net::TcpListener, runtime::Handle, sync::Mutex, task::JoinHandle, time::advance};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Response};
 
@@ -36,6 +36,8 @@ fn worker() -> StatefulMetricsWorker {
         Endpoint::from_static("http://127.0.0.1:8080"),
         parse_api_key("test-key").unwrap(),
         3,
+        Duration::from_secs(2),
+        512,
     )
 }
 
@@ -54,11 +56,38 @@ fn open_worker() -> (StatefulMetricsWorker, mpsc::Receiver<StatefulBatch>, Strea
     (worker, receiver, stream_id)
 }
 
-fn submit(worker: &mut StatefulMetricsWorker, name: &'static str) {
+fn buffer(worker: &mut StatefulMetricsWorker, name: &'static str) {
     assert!(worker
         .accept([Event::Metric(Metric::gauge(name, (123, 2.0)))])
         .is_empty());
     worker.pump().unwrap();
+}
+
+fn submit(worker: &mut StatefulMetricsWorker, name: &'static str) {
+    buffer(worker, name);
+    worker.flush().unwrap();
+}
+
+fn pending_names(worker: &StatefulMetricsWorker) -> Vec<&str> {
+    worker
+        .pending
+        .iter()
+        .flat_map(|batch| batch.logical.series().iter().map(|series| series.name()))
+        .collect()
+}
+
+fn original_names(worker: &StatefulMetricsWorker) -> Vec<&str> {
+    worker
+        .pending
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .originals
+                .metrics
+                .iter()
+                .map(|metric| metric.context().name().as_ref())
+        })
+        .collect()
 }
 
 fn sequence(batch: &StatefulBatch) -> MetricDatumSequence {
@@ -245,6 +274,7 @@ async fn inflight_limit_keeps_work_logical_until_capacity_returns() {
         .on_transport(TransportEvent::Ack(BatchStatus { batch_id: 1, status: 1 }))
         .unwrap();
     worker.pump().unwrap();
+    worker.flush().unwrap();
     assert!(worker.pending.is_empty());
     assert_eq!(worker.core.inflight_len(), MAX_INFLIGHT_BATCHES);
 }
@@ -296,7 +326,7 @@ async fn failed_send_returns_ownership_to_the_worker() {
     assert_eq!(worker.core.inflight_len(), 0);
     assert_eq!(worker.inflight.len(), 0);
     assert_eq!(worker.pending.len(), 1);
-    assert_eq!(worker.pending[0].originals[0].context().name(), "metric");
+    assert_eq!(worker.pending[0].originals.metrics[0].context().name(), "metric");
     assert_eq!(worker.timers.len(), 1);
 }
 
@@ -385,7 +415,13 @@ impl Harness {
                 .await
                 .unwrap();
         });
-        let mut worker = StatefulMetricsWorker::new(endpoint, parse_api_key("test-key").unwrap(), 3);
+        let mut worker = StatefulMetricsWorker::new(
+            endpoint,
+            parse_api_key("test-key").unwrap(),
+            3,
+            Duration::from_secs(2),
+            512,
+        );
         let effects = worker.core.start();
         worker.apply(effects).unwrap();
         let mut harness = Self {
@@ -466,6 +502,7 @@ async fn grpc_disconnect_reconnects_with_snapshot_and_reencodes_unacknowledged_b
     assert!(has_name(&sequence(&snapshot)));
     harness.ack(0).await;
     harness.worker.pump().unwrap();
+    harness.worker.flush().unwrap();
     let replay = harness.receive().await;
     assert_eq!(replay.batch_id, 1);
     assert!(has_name(&sequence(&replay)));
@@ -489,14 +526,19 @@ async fn grpc_capability_failure_returns_original_metrics_for_http_encoding() {
     assert!(harness.worker.timers.is_empty());
 }
 
-#[tokio::test]
-async fn component_run_routes_sketches_and_waits_for_series_ack_before_shutdown() {
-    let mut harness = Harness::new().await;
-    harness.worker.transport = None;
+async fn start_component(
+    endpoint: MetaString, flush_timeout: Duration,
+) -> (
+    mpsc::Sender<EventsBuffer>,
+    mpsc::Receiver<EventsBuffer>,
+    JoinHandle<Result<(), GenericError>>,
+) {
     let configuration = StatefulMetricsConfiguration {
-        endpoint: harness.worker.endpoint.uri().to_string().into(),
+        endpoint,
         api_key: Live::new_fixed("test-key".to_string()),
         compression_level: 3,
+        flush_timeout,
+        batch_capacity: 512,
     };
     let component = ComponentContext::test_transform("stateful_metrics");
     let transform = configuration
@@ -504,7 +546,7 @@ async fn component_run_routes_sketches_and_waits_for_series_ack_before_shutdown(
         .await
         .unwrap();
     let mut dispatcher = Dispatcher::new(component.clone());
-    let (out_tx, mut out_rx) = mpsc::channel(4);
+    let (out_tx, out_rx) = mpsc::channel(4);
     dispatcher.add_output(OutputName::Default).unwrap();
     dispatcher
         .attach_sender_to_output(&OutputName::Default, out_tx)
@@ -529,6 +571,19 @@ async fn component_run_routes_sketches_and_waits_for_series_ack_before_shutdown(
         dispatcher,
         Consumer::new(component.clone(), in_rx),
     );
+    let task = tokio::spawn(transform.run(context));
+    (in_tx, out_rx, task)
+}
+
+#[tokio::test]
+async fn component_run_routes_sketches_and_waits_for_series_ack_before_shutdown() {
+    let mut harness = Harness::new().await;
+    harness.worker.transport = None;
+    let (in_tx, mut out_rx, task) = start_component(
+        harness.worker.endpoint.uri().to_string().into(),
+        Duration::from_secs(60),
+    )
+    .await;
     let mut events = EventsBuffer::default();
     assert!(events
         .try_push(Event::Metric(Metric::gauge("series", (123, 1.0))))
@@ -538,7 +593,6 @@ async fn component_run_routes_sketches_and_waits_for_series_ack_before_shutdown(
         .is_none());
     in_tx.send(events).await.unwrap();
     drop(in_tx);
-    let task = tokio::spawn(transform.run(context));
     let sketches = timeout(TEST_TIMEOUT, out_rx.recv()).await.unwrap().unwrap();
     assert_eq!(sketches.len(), 1);
     assert_eq!(
@@ -562,5 +616,256 @@ async fn component_run_routes_sketches_and_waits_for_series_ack_before_shutdown(
         }))
         .await
         .unwrap();
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn first_pending_metric_sets_deadline_and_flush_coalesces_originals() {
+    let (mut worker, mut wire, _) = open_worker();
+    buffer(&mut worker, "first");
+    let deadline = worker.flush_deadline().unwrap();
+    assert!(wire.try_recv().is_err());
+    assert!(worker.ack_deadline.is_none());
+    advance(Duration::from_secs(1)).await;
+    buffer(&mut worker, "second");
+    assert_eq!(worker.flush_deadline(), Some(deadline));
+    assert_eq!(worker.buffered_batches(), 2);
+    assert_eq!(worker.core.inflight_len(), 0);
+    wait_deadline(worker.flush_deadline()).await;
+    worker.flush().unwrap();
+    let batch = wire.try_recv().unwrap();
+    let names: Vec<_> = sequence(&batch)
+        .data
+        .into_iter()
+        .filter_map(|datum| match datum.data {
+            Some(metric_datum::Data::MetricNameDefine(definition)) => Some(definition.value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["first", "second"]);
+    assert_eq!(
+        worker.inflight[0]
+            .metrics
+            .iter()
+            .map(|metric| metric.context().name().as_ref())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(worker.core.inflight_len(), 1);
+    assert_eq!(worker.inflight.front().unwrap().input_batches, 2);
+    assert_eq!(worker.buffered_batches(), 2);
+    assert!(worker.flush_deadline().is_none());
+    worker.flush().unwrap();
+    assert!(wire.try_recv().is_err());
+    worker
+        .on_transport(TransportEvent::Ack(BatchStatus {
+            batch_id: batch.batch_id,
+            status: 1,
+        }))
+        .unwrap();
+    assert_eq!(worker.buffered_batches(), 0);
+}
+
+#[tokio::test]
+async fn threshold_flush_tracks_one_payload_and_preserves_input_buffer_bound() {
+    let (mut worker, mut wire, _) = open_worker();
+    worker.core = StatefulMetricsClient::new(
+        CoreConfig {
+            batch_capacity: 2,
+            ..CoreConfig::default()
+        },
+        ZstdBatchCompressor::new(3),
+    );
+    let effects = worker.core.start().unwrap();
+    let MetricClientEffect::OpenStream { stream_id } = effects[0] else {
+        unreachable!()
+    };
+    worker.core.handle_stream_opened(stream_id).unwrap();
+    buffer(&mut worker, "first");
+    buffer(&mut worker, "second");
+    assert_eq!(wire.try_recv().unwrap().batch_id, 1);
+    assert_eq!(worker.inflight.len(), 1);
+    assert_eq!(worker.inflight[0].metrics.len(), 2);
+    assert!(worker.buffered.is_none());
+    assert!(worker.flush_deadline().is_none());
+
+    let (mut worker, _wire, _) = open_worker();
+    for _ in 0..MAX_BUFFERED_BATCHES {
+        buffer(&mut worker, "metric");
+    }
+    assert_eq!(worker.buffered_batches(), MAX_BUFFERED_BATCHES);
+    worker.flush().unwrap();
+    assert_eq!(worker.core.inflight_len(), 1);
+    assert_eq!(worker.buffered_batches(), MAX_BUFFERED_BATCHES);
+}
+
+#[tokio::test]
+async fn recovery_preserves_coalesced_inflight_then_partial_then_queued_input() {
+    for kind in [
+        MetricStreamFailureKind::Unavailable,
+        MetricStreamFailureKind::DeadlineExceeded,
+        MetricStreamFailureKind::ResourceExhausted,
+        MetricStreamFailureKind::Unauthenticated,
+        MetricStreamFailureKind::InvalidArgument,
+        MetricStreamFailureKind::FailedPrecondition,
+    ] {
+        let (mut worker, _wire, _) = open_worker();
+        buffer(&mut worker, "sent-one");
+        submit(&mut worker, "sent-two");
+        buffer(&mut worker, "partial");
+        worker.accept([Event::Metric(Metric::gauge("queued", 3.0))]);
+        worker.fail(kind, "injected failure").unwrap();
+        assert!(worker.buffered.is_none());
+        assert!(worker.inflight.is_empty());
+        if kind == MetricStreamFailureKind::FailedPrecondition {
+            assert_eq!(
+                worker
+                    .fallback
+                    .iter()
+                    .map(|metric| metric.context().name().as_ref())
+                    .collect::<Vec<_>>(),
+                ["sent-one", "sent-two", "partial", "queued"]
+            );
+        } else {
+            let expected: &[&str] = if kind == MetricStreamFailureKind::InvalidArgument {
+                &["partial", "queued"]
+            } else {
+                &["sent-one", "sent-two", "partial", "queued"]
+            };
+            assert_eq!(pending_names(&worker), expected);
+            assert_eq!(original_names(&worker), expected);
+            assert_eq!(worker.buffered_batches(), expected.len());
+        }
+    }
+}
+
+#[tokio::test]
+async fn rejected_flush_during_rotation_preserves_unsent_data_after_inflight() {
+    let (mut worker, _wire, id) = open_worker();
+    submit(&mut worker, "sent");
+    buffer(&mut worker, "partial");
+    worker.accept([Event::Metric(Metric::gauge("queued", 3.0))]);
+    let effects = worker.core.handle_timer(id, TimerKind::RotateStream);
+    worker.apply(effects).unwrap();
+    assert!(worker.flush_deadline().is_none());
+    worker.flush().unwrap();
+    assert!(worker.buffered.is_none());
+    assert_eq!(pending_names(&worker), ["partial", "queued"]);
+    let effects = worker.core.handle_timer(id, TimerKind::DrainExpired);
+    worker.apply(effects).unwrap();
+    assert_eq!(pending_names(&worker), ["sent", "partial", "queued"]);
+    assert_eq!(original_names(&worker), ["sent", "partial", "queued"]);
+}
+
+#[tokio::test]
+async fn last_ack_during_rotation_releases_sent_originals_and_returns_partial() {
+    let (mut worker, _wire, id) = open_worker();
+    submit(&mut worker, "sent");
+    buffer(&mut worker, "partial");
+    let effects = worker.core.handle_timer(id, TimerKind::RotateStream);
+    worker.apply(effects).unwrap();
+    worker
+        .on_transport(TransportEvent::Ack(BatchStatus { batch_id: 1, status: 1 }))
+        .unwrap();
+    assert!(worker.inflight.is_empty());
+    assert!(worker.buffered.is_none());
+    assert_eq!(pending_names(&worker), ["partial"]);
+    assert_eq!(worker.buffered_batches(), 1);
+}
+
+#[tokio::test]
+async fn reset_and_invalid_ack_return_unsent_metrics_in_order() {
+    for reset in [false, true] {
+        let (mut worker, _wire, _) = open_worker();
+        submit(&mut worker, "sent");
+        buffer(&mut worker, "partial");
+        worker.accept([Event::Metric(Metric::gauge("queued", 3.0))]);
+        if reset {
+            worker.update_credentials("replacement").unwrap();
+        } else {
+            worker
+                .on_transport(TransportEvent::Ack(BatchStatus {
+                    batch_id: 99,
+                    status: 1,
+                }))
+                .unwrap();
+        }
+        assert_eq!(pending_names(&worker), ["sent", "partial", "queued"]);
+        assert_eq!(original_names(&worker), ["sent", "partial", "queued"]);
+        assert_eq!(worker.buffered_batches(), 3);
+        assert!(worker.buffered.is_none());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_queued_input_flushes_when_capacity_returns_without_new_input() {
+    let (mut worker, mut wire, _) = open_worker();
+    for _ in 0..MAX_INFLIGHT_BATCHES {
+        submit(&mut worker, "sent");
+        wire.try_recv().unwrap();
+    }
+    buffer(&mut worker, "queued");
+    assert_eq!(worker.pending.len(), 1);
+    assert!(worker.flush_deadline().is_none());
+    advance(Duration::from_secs(3)).await;
+    worker
+        .on_transport(TransportEvent::Ack(BatchStatus { batch_id: 1, status: 1 }))
+        .unwrap();
+    worker.pump().unwrap();
+    assert_eq!(wire.try_recv().unwrap().batch_id, (MAX_INFLIGHT_BATCHES + 1) as u32);
+    assert!(worker.pending.is_empty());
+    assert!(worker.buffered.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn worker_flush_timers_are_independent_and_zero_timeout_uses_encoder_minimum() {
+    let (mut first, mut first_wire, _) = open_worker();
+    let (mut second, mut second_wire, _) = open_worker();
+    buffer(&mut first, "first");
+    advance(Duration::from_secs(1)).await;
+    buffer(&mut second, "second");
+    advance(Duration::from_secs(1)).await;
+    first.pump().unwrap();
+    second.pump().unwrap();
+    assert!(first_wire.try_recv().is_ok());
+    assert!(second_wire.try_recv().is_err());
+    assert!(second.buffered.is_some());
+    let worker = StatefulMetricsWorker::new(
+        Endpoint::from_static("http://localhost:8080"),
+        parse_api_key("test-key").unwrap(),
+        3,
+        Duration::ZERO,
+        512,
+    );
+    assert_eq!(worker.flush_timeout, MIN_FLUSH_TIMEOUT);
+}
+
+#[tokio::test]
+async fn component_flushes_sparse_metrics_without_new_input_or_shutdown() {
+    let mut harness = Harness::new().await;
+    harness.worker.transport = None;
+    let (in_tx, _out_rx, task) = start_component(
+        harness.worker.endpoint.uri().to_string().into(),
+        Duration::from_millis(50),
+    )
+    .await;
+    let mut events = EventsBuffer::default();
+    let metric = Metric::rate("rate", (123, 20.0), Duration::from_secs(10));
+    assert!(events.try_push(Event::Metric(metric)).is_none());
+    in_tx.send(events).await.unwrap();
+    let batch = harness.receive().await;
+    assert!(sequence(&batch).data.iter().any(|datum| matches!(
+        &datum.data, Some(metric_datum::Data::MetricNameDefine(definition)) if definition.value == "rate"
+    )));
+    assert!(!task.is_finished());
+    harness
+        .replies
+        .send(Ok(BatchStatus {
+            batch_id: batch.batch_id,
+            status: 1,
+        }))
+        .await
+        .unwrap();
+    drop(in_tx);
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
 }

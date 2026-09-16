@@ -477,6 +477,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
                     endpoint: endpoint.clone().into(),
                     api_key: config_system.live(|config| &config.shared.endpoints.api_key),
                     compression_level: shared.endpoints.compression.effective_zstd_level(),
+                    flush_timeout: shared.metrics_encoding.flush_timeout,
+                    batch_capacity: shared.metrics_encoding.max_metrics_per_payload,
                 },
             )?
             .connect_components_in_order(["metrics_enrich", "stateful_metrics", "dd_metrics_encode"])?;
