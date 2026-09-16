@@ -118,12 +118,12 @@ pub const MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(1024 
 /// other containers must set both the endpoint and that gate.
 pub const DEFAULT_APM_RECEIVER_ENDPOINT: &str = "localhost:8127";
 
-/// Default maximum accepted v1.0 trace request body size, in bytes: 25 MB.
+/// Default maximum accepted v1.0 trace request body size, in bytes: 25 MB (26,214,400 bytes).
 ///
 /// Matches `MaxRequestBytes` in the reference trace-agent, which `apm_config.max_payload_size` sets.
 /// This bounds the request body before any decoding, so raising it raises peak memory per in-flight
 /// request; high-volume tracers that batch aggressively may need a larger value, at that cost.
-pub const DEFAULT_APM_MAX_PAYLOAD_SIZE: usize = 25_000_000;
+pub const DEFAULT_APM_MAX_PAYLOAD_SIZE: usize = 25 * 1024 * 1024;
 
 /// Whether the APM v1.0 trace receiver accepts non-local traffic by default.
 ///

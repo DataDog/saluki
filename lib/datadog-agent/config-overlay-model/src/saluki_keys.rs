@@ -78,10 +78,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
         yaml_path: "data_plane.apm.max_payload_size",
         description: "Maximum accepted v1.0 trace request body size",
-        default: "25000000",
+        default: "26214400",
         documentation: None,
         value_type: "ValueType::String",
-        schema_default: Some("25000000"),
+        schema_default: Some("26214400"),
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],

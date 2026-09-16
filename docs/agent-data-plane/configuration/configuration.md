@@ -706,7 +706,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                                      |                |
 | `data_plane.apm.dispatch_timeout`                               | How long the v1.0 trace receiver waits for the pipeline to accept a payload | 1 second       |
 | `data_plane.apm.enabled`                                        | Enable the ADP v1.0 APM trace pipeline                                      | false          |
-| `data_plane.apm.max_payload_size`                               | Maximum accepted v1.0 trace request body size                               | 25000000       |
+| `data_plane.apm.max_payload_size`                               | Maximum accepted v1.0 trace request body size                               | 26214400       |
 | `data_plane.apm.non_local_traffic`                              | Allow the v1.0 trace receiver to bind a non-loopback address                | false          |
 | `data_plane.apm.receiver_endpoint`                              | ADP v1.0 trace receiver TCP endpoint                                        | localhost:8127 |
 | `data_plane.apm.receiver_socket`                                | ADP v1.0 trace receiver Unix domain socket path                             |                |
