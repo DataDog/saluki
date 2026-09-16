@@ -129,12 +129,18 @@ pub struct OtlpConfiguration {
     /// Resolved OTLP domain slice.
     otlp: domains::otlp::Domain,
 
+    /// Maximum length of a span's resource name, in bytes.
+    ///
+    /// Defaults to `usize::MAX`, meaning resource names are not truncated.
+    max_resource_len: usize,
+
     /// Workload provider to utilize for origin detection/enrichment.
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
 
 impl OtlpConfiguration {
     /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration and workload provider.
+    ///
     pub fn from_configuration<W>(otlp: &domains::otlp::Domain, workload_provider: W) -> Self
     where
         W: WorkloadProvider + Send + Sync + 'static,
@@ -142,6 +148,7 @@ impl OtlpConfiguration {
         Self {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
+            max_resource_len: usize::MAX,
             workload_provider: Arc::new(workload_provider),
         }
     }
@@ -169,6 +176,18 @@ impl OtlpConfiguration {
     /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
+        self
+    }
+
+    /// Sets the maximum length of a span's resource name, in bytes.
+    ///
+    /// Resource names longer than this limit are truncated to the limit, on a UTF-8 boundary. Defaults to `usize::MAX`
+    /// (unbounded), which matches the source's behavior before resource name truncation was introduced.
+    ///
+    /// If set to `0`, every resource name is truncated to an empty string. Pass through the configured value
+    /// unmodified, including `0`, so the configured behavior is always honored.
+    pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
+        self.max_resource_len = max_resource_len;
         self
     }
 }
@@ -217,7 +236,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
+        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone(), self.max_resource_len);
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = resolve_grpc_http2_config(
             &self.otlp.receiver.grpc.keepalive,

@@ -92,13 +92,19 @@ impl ResourceStatsSnapshot {
     }
 
     /// Returns the number of live allocated bytes.
+    ///
+    /// Saturates at zero rather than underflowing. The allocation and deallocation counters this is derived from are
+    /// read independently, so a deallocation landing between the two reads can momentarily make the difference
+    /// negative.
     pub fn live_bytes(&self) -> usize {
-        self.allocated_bytes - self.deallocated_bytes
+        self.allocated_bytes.saturating_sub(self.deallocated_bytes)
     }
 
     /// Returns the number of live allocated objects.
+    ///
+    /// Saturates at zero, for the same reason as [`live_bytes`][Self::live_bytes].
     pub fn live_objects(&self) -> usize {
-        self.allocated_objects - self.deallocated_objects
+        self.allocated_objects.saturating_sub(self.deallocated_objects)
     }
 
     /// Merges `other` into `self`.
