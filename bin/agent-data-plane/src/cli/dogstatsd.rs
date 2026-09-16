@@ -926,7 +926,6 @@ mod tests {
 
     use agent_data_plane_config::domains::dogstatsd::Listeners;
     use prost_types::Value;
-    #[cfg(unix)]
     use tokio_util::sync::CancellationToken;
 
     use super::{
