@@ -41,4 +41,4 @@ The startup-only configuration discourages frequent interval changes, but it doe
 - **Rules cannot overlap.** For example, `requests.` and `requests.api.` cannot both be configured. This avoids precedence rules and ambiguous behavior.
 - **Matching uses the final metric name.** Rules apply after DogStatsD mapper rewrites and metric namespace prefixing.
 - **Timestamped passthrough metrics are unaffected.** Metrics configured to bypass aggregation continue to do so.
-- **Restart behavior follows the existing shutdown policy.** Open windows are either discarded or emitted as partial windows according to `aggregate_flush_open_windows`.
+- **Restart behavior follows the existing shutdown policy.** Open windows are either discarded or emitted as partial windows according to `dogstatsd_flush_incomplete_buckets`.
