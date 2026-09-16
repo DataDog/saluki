@@ -13,7 +13,7 @@ pub use self::dataspace::{DataspaceRegistry, DataspaceUpdate, Subscription};
 mod resources;
 pub use self::resources::{
     AcquireError, ResourceKind, ResourceLease, ResourceRegistry, ResourceRegistryAPIHandler, ResourceRegistryState,
-    ResourceRegistryWorker, ResourceSpecification, ResourceStatus,
+    ResourceRegistryWorker, ResourceSpecification, ResourceStatus, Sublease, Subleases,
 };
 
 /// An identifier used to key values in a [`DataspaceRegistry`].

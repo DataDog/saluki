@@ -384,8 +384,6 @@ fn error_tags(
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-
     use saluki_core::components::ComponentContext;
     use saluki_metrics::test::TestRecorder;
 
@@ -396,7 +394,7 @@ mod tests {
     }
 
     fn udp_listen_addr() -> ListenAddress {
-        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+        ListenAddress::udp_loopback(8125)
     }
 
     #[test]
