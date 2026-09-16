@@ -102,7 +102,7 @@ protobuf = { version = "3.7", default-features = false, features = [
 protobuf-codegen = { version = "3.7", default-features = false }
 piecemeal = { git = "https://github.com/tobz/piecemeal" }
 piecemeal-build = { git = "https://github.com/tobz/piecemeal" }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog.git", rev = "e0a0134bbf0896603db615344e9b2950e7a2b2b9", default-features = false }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog.git", rev = "3c2afd0cabe165c97c6f0eefa7a667352cec14dc", default-features = false }
 serde = { version = "1", default-features = false, features = [
   "derive",
   "std",

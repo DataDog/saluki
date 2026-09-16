@@ -3521,7 +3521,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libdd-capabilities"
 version = "3.0.1"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3534,7 +3534,7 @@ dependencies = [
 [[package]]
 name = "libdd-common"
 version = "6.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3558,7 +3558,7 @@ dependencies = [
 [[package]]
 name = "libdd-tinybytes"
 version = "1.1.3"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "serde",
 ]
@@ -3566,7 +3566,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-normalization"
 version = "4.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "anyhow",
  "libdd-trace-protobuf",
@@ -3575,7 +3575,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-obfuscation"
 version = "8.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "anyhow",
  "fluent-uri",
@@ -3591,7 +3591,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-protobuf"
 version = "5.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "prost",
  "serde",
@@ -3601,7 +3601,7 @@ dependencies = [
 [[package]]
 name = "libdd-trace-utils"
 version = "12.0.0"
-source = "git+https://github.com/DataDog/libdatadog.git?rev=e0a0134bbf0896603db615344e9b2950e7a2b2b9#e0a0134bbf0896603db615344e9b2950e7a2b2b9"
+source = "git+https://github.com/DataDog/libdatadog.git?rev=3c2afd0cabe165c97c6f0eefa7a667352cec14dc#3c2afd0cabe165c97c6f0eefa7a667352cec14dc"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5887,7 +5887,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",
