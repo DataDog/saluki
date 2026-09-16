@@ -708,6 +708,9 @@ impl RemoteCommandProviderImpl {
 }
 
 const MAX_REMOTE_COMMAND_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+// Leave room for protobuf and gRPC framing below grpc-go's default 4 MiB inbound message limit.
+const MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES: usize = 3 * 1024 * 1024;
+const _: () = assert!(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES < 4 * 1024 * 1024);
 
 struct RemoteCommandOutput {
     bytes: Vec<u8>,
@@ -735,6 +738,23 @@ impl std::io::Write for RemoteCommandOutput {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+fn remote_command_stdout_chunks(output: &[u8]) -> Vec<String> {
+    let stdout = String::from_utf8_lossy(output);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < stdout.len() {
+        let mut end = (start + MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES).min(stdout.len());
+        while !stdout.is_char_boundary(end) {
+            end -= 1;
+        }
+        chunks.push(stdout[start..end].to_owned());
+        start = end;
+    }
+
+    chunks
 }
 
 struct CancellableCommandStream {
@@ -800,12 +820,10 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
                         run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
                             .await;
                     let stdout = output.into_bytes();
-                    if !stdout.is_empty() {
+                    for stdout in remote_command_stdout_chunks(&stdout) {
                         let _ = sender
                             .send(Ok(ExecuteCommandResponse {
-                                frame: Some(ExecuteCommandFrame::Stdout(
-                                    String::from_utf8_lossy(&stdout).into_owned(),
-                                )),
+                                frame: Some(ExecuteCommandFrame::Stdout(stdout)),
                             }))
                             .await;
                     }
@@ -1439,6 +1457,32 @@ mod tests {
             bytes: vec![0; MAX_REMOTE_COMMAND_OUTPUT_BYTES],
         };
         assert!(std::io::Write::write(&mut output, b"x").is_err());
+    }
+
+    #[test]
+    fn remote_command_stdout_chunks_stay_below_the_grpc_go_default_message_limit() {
+        let output = vec![b'x'; MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES * 2 + 1];
+
+        let chunks = remote_command_stdout_chunks(&output);
+
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
+        assert_eq!(chunks.concat().as_bytes(), output);
+    }
+
+    #[test]
+    fn remote_command_stdout_chunks_preserve_utf8_characters_at_chunk_boundaries() {
+        let mut output = vec![b'x'; MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES - 1];
+        output.extend_from_slice("💚".as_bytes());
+
+        let chunks = remote_command_stdout_chunks(&output);
+
+        assert_eq!(chunks.concat().as_bytes(), output);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
     }
 
     #[test]
