@@ -4,7 +4,8 @@
 //! attributes. Rules run in order, after obfuscation and truncation and before stats and
 //! sampling, so durable telemetry only ever sees rewritten values.
 
-use agent_data_plane_config::domains;
+use std::borrow::Cow;
+
 use async_trait::async_trait;
 use regex::Regex;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -19,7 +20,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
 
-/// The compiled form of one `apm_config.replace_tags` rule.
+/// The compiled form of one [`ReplaceRule`].
 #[derive(Clone, Debug)]
 struct CompiledRule {
     target: RuleTarget,
@@ -35,20 +36,30 @@ enum RuleTarget {
     Tag(String),
 }
 
+/// A regex-based trace tag replacement rule.
+#[derive(Clone, Debug)]
+pub struct ReplaceRule {
+    /// Tag key the rule targets: `"*"`, `"resource.name"`, or a literal tag key.
+    pub name: String,
+
+    /// Regular expression matched against each targeted value.
+    pub pattern: String,
+
+    /// Text spliced in place of each match; `$1`-style group references are supported.
+    pub repl: String,
+}
+
 /// Trace tag replacer configuration.
 pub struct TraceTagReplacerConfiguration {
-    /// The raw replacement rules from the resolved trace configuration.
-    rules: Vec<domains::traces::ReplaceRule>,
+    rules: Vec<ReplaceRule>,
 }
 
 impl TraceTagReplacerConfiguration {
-    /// Creates a new `TraceTagReplacerConfiguration` from the resolved trace configuration.
+    /// Creates a new `TraceTagReplacerConfiguration` from the given rules.
     ///
     /// Patterns compile at build time, so an invalid one fails startup naming the rule.
-    pub fn from_configuration(config: &domains::traces::Domain) -> Self {
-        Self {
-            rules: config.replace_tags.clone(),
-        }
+    pub fn new(rules: Vec<ReplaceRule>) -> Self {
+        Self { rules }
     }
 }
 
@@ -65,7 +76,7 @@ impl MemoryBounds for TraceTagReplacerConfiguration {
         builder
             .minimum()
             .with_single_value::<TraceTagReplacer>("component struct")
-            .with_single_value::<Vec<domains::traces::ReplaceRule>>("replacement rules");
+            .with_single_value::<Vec<ReplaceRule>>("replacement rules");
     }
 }
 
@@ -146,28 +157,41 @@ where
     }
 }
 
-/// Formats scalar values as strings for regex matching; composite values have no single string
-/// form and are skipped.
-fn value_as_string(value: &AttributeValue) -> Option<String> {
+/// Formats a scalar value for regex matching; string values borrow, and composite values have no
+/// single string form and are skipped.
+fn value_as_cow(value: &AttributeValue) -> Option<Cow<'_, str>> {
     match value {
-        AttributeValue::String(s) => Some(s.as_ref().to_owned()),
-        AttributeValue::Bool(b) => Some(b.to_string()),
-        AttributeValue::Int(i) => Some(i.to_string()),
-        AttributeValue::Float(f) => Some(format!("{}", f)),
+        AttributeValue::String(s) => Some(Cow::Borrowed(s.as_ref())),
+        AttributeValue::Bool(b) => Some(Cow::Owned(b.to_string())),
+        AttributeValue::Int(i) => Some(Cow::Owned(i.to_string())),
+        AttributeValue::Float(f) => Some(Cow::Owned(format!("{}", f))),
         _ => None,
     }
 }
 
-/// Returns the replacement only when the text changed; replacements are stored as strings.
+/// Returns the replacement only when the text changed; replacements are stored as strings. An
+/// unmatched value never allocates: the regex runs over the borrowed form, and only a changed
+/// value is materialized.
 fn replace_value(value: &AttributeValue, re: &Regex, repl: &str) -> Option<AttributeValue> {
-    let as_string = value_as_string(value)?;
-    let replaced = re.replace_all(&as_string, repl).into_owned();
-    (replaced != as_string).then(|| AttributeValue::String(MetaString::from(replaced)))
+    let as_string = value_as_cow(value)?;
+    match re.replace_all(as_string.as_ref(), repl) {
+        // A borrowed result means the regex matched nothing.
+        Cow::Borrowed(_) => None,
+        Cow::Owned(replaced) => {
+            if replaced != as_string.as_ref() {
+                Some(AttributeValue::String(MetaString::from(replaced)))
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn replace_str(value: &str, re: &Regex, repl: &str) -> Option<String> {
-    let replaced = re.replace_all(value, repl).into_owned();
-    (replaced != value).then_some(replaced)
+    match re.replace_all(value, repl) {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(replaced) => (replaced != value).then_some(replaced),
+    }
 }
 
 /// Compiles the raw rules into their working form.
@@ -176,7 +200,7 @@ fn replace_str(value: &str, re: &Regex, repl: &str) -> Option<String> {
 ///
 /// Returns an error if a rule's `pattern` fails to compile, naming the rule. Startup fails rather
 /// than dropping the rule.
-fn compile_rules(rules: &[domains::traces::ReplaceRule]) -> Result<Vec<CompiledRule>, GenericError> {
+fn compile_rules(rules: &[ReplaceRule]) -> Result<Vec<CompiledRule>, GenericError> {
     let mut compiled = Vec::with_capacity(rules.len());
     for rule in rules {
         let re = Regex::new(&rule.pattern).map_err(|e| {
@@ -223,7 +247,7 @@ mod tests {
     fn replacer(rules: &[(&str, &str, &str)]) -> TraceTagReplacer {
         let raw = rules
             .iter()
-            .map(|(name, pattern, repl)| domains::traces::ReplaceRule {
+            .map(|(name, pattern, repl)| ReplaceRule {
                 name: (*name).to_owned(),
                 pattern: (*pattern).to_owned(),
                 repl: (*repl).to_owned(),
@@ -363,9 +387,11 @@ mod tests {
     fn matched_numeric_tag_becomes_a_string() {
         let mut attrs: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
         attrs.insert(MetaString::from("http.status_code"), AttributeValue::Int(200));
+        attrs.insert(MetaString::from("http.port"), AttributeValue::Int(8080));
+        attrs.insert(MetaString::from("http.retry"), AttributeValue::Int(3));
 
         let mut span = span_with("POST /pay/checkout", attrs, vec![]);
-        replacer(&[("*", "20", "2x")]).replace_span(&mut span);
+        replacer(&[("*", "20", "2x"), ("*", "3", "3")]).replace_span(&mut span);
 
         let value = attr(&span, "http.status_code").expect("tag survives");
         assert_eq!(
@@ -374,6 +400,16 @@ mod tests {
             "written back as a string"
         );
         assert_eq!(value.as_int(), None, "the numeric form does not survive a rewrite");
+        assert_eq!(
+            attr(&span, "http.port").and_then(|v| v.as_int()),
+            Some(8080),
+            "an unmatched numeric stays numeric"
+        );
+        assert_eq!(
+            attr(&span, "http.retry").and_then(|v| v.as_int()),
+            Some(3),
+            "a match whose replacement equals the matched text is left as-is"
+        );
     }
 
     #[test]
@@ -404,7 +440,7 @@ mod tests {
 
     #[test]
     fn invalid_pattern_fails_compilation_with_actionable_error() {
-        let raw = vec![domains::traces::ReplaceRule {
+        let raw = vec![ReplaceRule {
             name: "http.url".to_owned(),
             pattern: "([".to_owned(),
             repl: "x".to_owned(),

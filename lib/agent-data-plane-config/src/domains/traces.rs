@@ -63,7 +63,13 @@ pub struct Domain {
     /// Change this only if legitimate resources exceed the default.
     pub max_resource_len: usize,
 
-    /// Regex-based trace tag replacement rules. Defaults to no rules.
+    /// Regex-based trace tag replacement rules, used to scrub sensitive values the built-in
+    /// obfuscation passes through. Defaults to no rules.
+    ///
+    /// Rules run in order after obfuscation and before stats and sampling. A `"*"` rule rewrites
+    /// every non-`_`-prefixed tag, the resource, and span events; `"resource.name"` only the
+    /// resource; any other name only that tag. Matched values are stored as strings, and a
+    /// pattern that fails to compile prevents startup.
     pub replace_tags: Vec<ReplaceRule>,
 }
 

@@ -42,7 +42,7 @@ use saluki_components::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
         AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        MrfMetricsGatewayConfiguration, ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration,
         TraceTagReplacerConfiguration,
     },
 };
@@ -648,7 +648,20 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 
     let trace_obfuscation_config =
         TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
-    let trace_tag_replacer_config = TraceTagReplacerConfiguration::from_configuration(&config.domains.traces);
+    let trace_tag_replacer_config = TraceTagReplacerConfiguration::new(
+        config
+            .domains
+            .traces
+            .replace_tags
+            .iter()
+            .cloned()
+            .map(|rule| ReplaceRule {
+                name: rule.name,
+                pattern: rule.pattern,
+                repl: rule.repl,
+            })
+            .collect(),
+    );
 
     let ottl_filter_config = OttlFilterConfiguration::from_configuration(&config.domains.traces.ottl_filter);
 

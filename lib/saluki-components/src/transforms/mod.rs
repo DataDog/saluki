@@ -38,4 +38,4 @@ pub use self::apm_stats::ApmStatsTransformConfiguration;
 mod trace_obfuscation;
 pub use self::trace_obfuscation::TraceObfuscationConfiguration;
 mod trace_tag_replacer;
-pub use self::trace_tag_replacer::TraceTagReplacerConfiguration;
+pub use self::trace_tag_replacer::{ReplaceRule, TraceTagReplacerConfiguration};
