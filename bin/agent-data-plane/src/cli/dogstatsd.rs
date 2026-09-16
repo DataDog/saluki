@@ -368,8 +368,14 @@ async fn handle_dogstatsd_replay(
          receive origin tags from client-supplied metadata and the current live workload state."
     );
 
-    let reader = TrafficCaptureReader::from_path(&cmd.replay_file_path)?;
-    let state = reader.read_state()?;
+    let state = if stream_status {
+        let Some(state) = load_replay_state_cancellable(&cmd.replay_file_path, cancel).await? else {
+            return Ok(());
+        };
+        state
+    } else {
+        load_replay_state(&cmd.replay_file_path)?
+    };
     let session_id = api_client.dogstatsd_replay_start_session(state.as_ref()).await?;
     if state.is_some() {
         report_status(
@@ -385,9 +391,7 @@ async fn handle_dogstatsd_replay(
                 .to_string(),
         )?;
     }
-    drop(reader);
-
-    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, target, cmd.loops, cancel).await;
+    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, target, cmd.loops, cancel, stream_status).await;
 
     let finish_result = api_client.dogstatsd_replay_finish_session(&session_id).await;
     match (replay_result, finish_result) {
@@ -444,6 +448,48 @@ fn dogstatsd_replay_target(listeners: &Listeners) -> Result<ReplayTarget, Generi
             .as_windows_named_pipe_path()
             .expect("named pipe address should produce a named pipe path");
         Ok(ReplayTarget::NamedPipe(pipe_path))
+    }
+}
+
+fn load_replay_state(replay_file_path: &Path) -> Result<Option<datadog_protos::agent::TaggerState>, GenericError> {
+    TrafficCaptureReader::from_path(replay_file_path)?.read_state()
+}
+
+async fn load_replay_state_cancellable(
+    replay_file_path: &Path, cancellation: &CancellationToken,
+) -> Result<Option<Option<datadog_protos::agent::TaggerState>>, GenericError> {
+    let replay_file_path = replay_file_path.to_path_buf();
+    run_cancellable_replay_load(cancellation, move || load_replay_state(&replay_file_path)).await
+}
+
+async fn load_replay_capture(
+    replay_file_path: &Path, cancellation: &CancellationToken, stream_status: bool,
+) -> Result<Option<TrafficCaptureReader>, GenericError> {
+    if stream_status {
+        let replay_file_path = replay_file_path.to_path_buf();
+        run_cancellable_replay_load(cancellation, move || TrafficCaptureReader::from_path(&replay_file_path)).await
+    } else {
+        TrafficCaptureReader::from_path(replay_file_path).map(Some)
+    }
+}
+
+async fn run_cancellable_replay_load<T>(
+    cancellation: &CancellationToken, load: impl FnOnce() -> Result<T, GenericError> + Send + 'static,
+) -> Result<Option<T>, GenericError>
+where
+    T: Send + 'static,
+{
+    if cancellation.is_cancelled() {
+        return Ok(None);
+    }
+
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Ok(None),
+        result = tokio::task::spawn_blocking(load) => match result {
+            Ok(result) => result.map(Some),
+            Err(error) => Err(generic_error!("DogStatsD replay capture loading task failed: {error}")),
+        },
     }
 }
 
@@ -524,7 +570,7 @@ impl ReplaySender {
 }
 
 async fn run_dogstatsd_replay(
-    replay_file_path: &Path, target: ReplayTarget, loops: u32, cancel: &CancellationToken,
+    replay_file_path: &Path, target: ReplayTarget, loops: u32, cancel: &CancellationToken, stream_status: bool,
 ) -> Result<(), GenericError> {
     let mut sender = ReplaySender::connect(target).await?;
     let mut iteration: u32 = 0;
@@ -540,7 +586,7 @@ async fn run_dogstatsd_replay(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Ok(()),
-            r = replay_one_iteration(replay_file_path, &mut sender, cancel) => {
+            r = replay_one_iteration(replay_file_path, &mut sender, cancel, stream_status) => {
                 r?;
             }
         }
@@ -548,9 +594,11 @@ async fn run_dogstatsd_replay(
 }
 
 async fn replay_one_iteration(
-    replay_file_path: &Path, sender: &mut ReplaySender, cancel: &CancellationToken,
+    replay_file_path: &Path, sender: &mut ReplaySender, cancel: &CancellationToken, stream_status: bool,
 ) -> Result<(), GenericError> {
-    let mut reader = TrafficCaptureReader::from_path(replay_file_path)?;
+    let Some(mut reader) = load_replay_capture(replay_file_path, cancel, stream_status).await? else {
+        return Ok(());
+    };
     let resolution = reader.timestamp_resolution();
 
     let start = Instant::now();
@@ -833,10 +881,14 @@ fn remote_argument_value(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::Listeners;
     use prost_types::Value;
+    #[cfg(unix)]
+    use tokio_util::sync::CancellationToken;
 
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
@@ -916,6 +968,56 @@ mod tests {
         let error = format!("{error:#}");
         assert!(error.contains("regular file"), "{error}");
         assert!(error.contains(&fifo.display().to_string()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remote_replay_capture_load_stops_when_client_disconnects() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let fifo = directory.path().join("capture.fifo");
+        create_fifo(&fifo);
+
+        let (writer_opened_tx, writer_opened_rx) = mpsc::sync_channel(1);
+        let (release_writer_tx, release_writer_rx) = mpsc::sync_channel(1);
+        let writer = std::thread::spawn({
+            let fifo = fifo.clone();
+            move || {
+                let file = std::fs::File::options()
+                    .write(true)
+                    .open(&fifo)
+                    .expect("FIFO writer should open after the replay loader starts");
+                writer_opened_tx
+                    .send(())
+                    .expect("test should await FIFO writer opening");
+                release_writer_rx.recv().expect("test should release FIFO writer");
+                drop(file);
+            }
+        });
+
+        let cancellation = CancellationToken::new();
+        let load = tokio::spawn({
+            let cancellation = cancellation.clone();
+            let fifo = fifo.clone();
+            async move { super::load_replay_capture(&fifo, &cancellation, true).await }
+        });
+        tokio::task::spawn_blocking(move || writer_opened_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("wait for FIFO writer task should not panic")
+            .expect("replay loader should open the FIFO within the timeout");
+
+        cancellation.cancel();
+        let load_result = tokio::time::timeout(Duration::from_secs(1), load).await;
+        release_writer_tx.send(()).expect("FIFO writer should still be waiting");
+        writer.join().expect("FIFO writer thread should not panic");
+
+        assert!(
+            load_result
+                .expect("remote replay load should finish after cancellation")
+                .expect("remote replay load task should not panic")
+                .expect("cancelled remote replay load should not return an error")
+                .is_none(),
+            "remote replay load should stop without waiting for the FIFO read"
+        );
     }
 
     #[test]
