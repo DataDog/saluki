@@ -71,6 +71,10 @@ pub struct Metrics {
     metrics_errors_dispatch: Counter,
     metrics_errors_flush: Counter,
     spans_dropped_foreign_trace: Counter,
+    spans_malformed_peer_service_truncate: Counter,
+    spans_malformed_peer_service_invalid: Counter,
+    spans_malformed_base_service_truncate: Counter,
+    spans_malformed_base_service_invalid: Counter,
 }
 
 impl Metrics {
@@ -124,6 +128,22 @@ impl Metrics {
         &self.spans_dropped_foreign_trace
     }
 
+    pub fn spans_malformed_peer_service_truncate(&self) -> &Counter {
+        &self.spans_malformed_peer_service_truncate
+    }
+
+    pub fn spans_malformed_peer_service_invalid(&self) -> &Counter {
+        &self.spans_malformed_peer_service_invalid
+    }
+
+    pub fn spans_malformed_base_service_truncate(&self) -> &Counter {
+        &self.spans_malformed_base_service_truncate
+    }
+
+    pub fn spans_malformed_base_service_invalid(&self) -> &Counter {
+        &self.spans_malformed_base_service_invalid
+    }
+
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_tests() -> Self {
@@ -139,6 +159,10 @@ impl Metrics {
             metrics_errors_dispatch: Counter::noop(),
             metrics_errors_flush: Counter::noop(),
             spans_dropped_foreign_trace: Counter::noop(),
+            spans_malformed_peer_service_truncate: Counter::noop(),
+            spans_malformed_peer_service_invalid: Counter::noop(),
+            spans_malformed_base_service_truncate: Counter::noop(),
+            spans_malformed_base_service_invalid: Counter::noop(),
         }
     }
 }
@@ -174,6 +198,22 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         spans_dropped_foreign_trace: builder.register_counter_with_tags(
             "component_events_dropped_total",
             [("message_type", "otlp_spans"), ("reason", "foreign_span")],
+        ),
+        spans_malformed_peer_service_truncate: builder.register_counter_with_tags(
+            "component_spans_malformed_total",
+            [("tag", "peer.service"), ("reason", "truncate")],
+        ),
+        spans_malformed_peer_service_invalid: builder.register_counter_with_tags(
+            "component_spans_malformed_total",
+            [("tag", "peer.service"), ("reason", "invalid")],
+        ),
+        spans_malformed_base_service_truncate: builder.register_counter_with_tags(
+            "component_spans_malformed_total",
+            [("tag", "_dd.base_service"), ("reason", "truncate")],
+        ),
+        spans_malformed_base_service_invalid: builder.register_counter_with_tags(
+            "component_spans_malformed_total",
+            [("tag", "_dd.base_service"), ("reason", "invalid")],
         ),
     }
 }
