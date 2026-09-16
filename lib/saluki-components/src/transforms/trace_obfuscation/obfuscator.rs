@@ -3,7 +3,7 @@
 use stringtheory::MetaString;
 
 use super::credit_cards::CreditCardObfuscator;
-use super::http::{obfuscate_url, should_obfuscate_url};
+use super::http::obfuscate_url;
 use super::json::JsonObfuscator;
 use super::memcached::obfuscate_memcached_command;
 use super::redis::{obfuscate_redis_string, obfuscate_valkey_string, quantize_redis_string};
@@ -81,12 +81,6 @@ impl Obfuscator {
             open_search_obfuscator,
             mongo_obfuscator,
         }
-    }
-
-    /// Returns whether [`Obfuscator::obfuscate_url`] could change `url`.
-    /// Allocates nothing, and `false` means the URL is left alone.
-    pub fn should_obfuscate_url(&self, url: &str) -> bool {
-        should_obfuscate_url(url, &self.config.http)
     }
 
     /// Obfuscates a URL string.

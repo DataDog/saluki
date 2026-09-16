@@ -94,20 +94,15 @@ impl TraceObfuscation {
     }
 
     fn obfuscate_http_span(&mut self, span: &mut Span) {
-        let url = match span.attributes.get(tags::HTTP_URL).and_then(AttributeValue::as_string) {
-            Some(v) if !v.is_empty() => v,
+        // Every URL goes to the rewrite. Screening with a cheap byte scan first would save the work on URLs with
+        // nothing to redact, but no scan we have says whether the rewrite changes a URL, and the one upstream offers
+        // misses the URLs the rewrite redacts wholesale. See `http::obfuscate_url`.
+        let obfuscated = match span.attributes.get(tags::HTTP_URL).and_then(AttributeValue::as_string) {
+            Some(url) if !url.is_empty() => self.obfuscator.obfuscate_url(url),
             _ => return,
         };
 
-        // Screen the borrowed URL first: obfuscating it needs an owned copy to release the borrow on the span, and most
-        // URLs have nothing to obfuscate. The screen is approximate in one direction, so a URL whose authority cannot
-        // be parsed is forwarded instead of being redacted wholesale; see `http::should_obfuscate_url`.
-        if !self.obfuscator.should_obfuscate_url(url) {
-            return;
-        }
-        let url_value = url.as_ref().to_owned();
-
-        if let Some(obfuscated) = self.obfuscator.obfuscate_url(&url_value) {
+        if let Some(obfuscated) = obfuscated {
             span.attributes
                 .insert(tags::HTTP_URL.into(), AttributeValue::String(obfuscated));
         }
@@ -285,5 +280,62 @@ impl SynchronousTransform for TraceObfuscation {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn http_span(url: &str) -> Span {
+        let mut span = Span::new("svc", "http.request", "GET /x", "http", 1, 0, 0, 0, 0);
+        span.attributes
+            .insert(tags::HTTP_URL.into(), AttributeValue::String(url.into()));
+        span
+    }
+
+    fn transform(remove_query_string: bool, remove_paths_with_digits: bool) -> TraceObfuscation {
+        let mut config = ObfuscationConfig::default();
+        config.http.remove_query_string = remove_query_string;
+        config.http.remove_paths_with_digits = remove_paths_with_digits;
+
+        TraceObfuscation {
+            obfuscator: Obfuscator::new(config),
+        }
+    }
+
+    fn obfuscated_url(url: &str, remove_query_string: bool, remove_paths_with_digits: bool) -> String {
+        let mut span = http_span(url);
+        transform(remove_query_string, remove_paths_with_digits).obfuscate_span(&mut span);
+
+        span.attributes
+            .get(tags::HTTP_URL)
+            .and_then(AttributeValue::as_string)
+            .map(|s| s.as_ref().to_owned())
+            .expect("http.url was removed from the span")
+    }
+
+    // The reference implementation redacts a URL it cannot parse wholesale as soon as either option is on, so the span
+    // path has to reach the rewrite for these URLs rather than screening them out first.
+    #[test]
+    fn unparseable_url_is_redacted_on_the_span() {
+        for url in ["https://example.com:port/x", "http://foo:bar.com/x", ":"] {
+            for (remove_query_string, remove_paths_with_digits) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    obfuscated_url(url, remove_query_string, remove_paths_with_digits),
+                    "?",
+                    "expected wholesale redaction for {url:?}"
+                );
+            }
+        }
+    }
+
+    // With both options off the rewrite only strips userinfo, and an unparseable URL keeps everything else.
+    #[test]
+    fn unparseable_url_is_kept_when_both_options_are_off() {
+        assert_eq!(
+            obfuscated_url("https://example.com:port/x", false, false),
+            "https://example.com:port/x"
+        );
     }
 }
