@@ -1,5 +1,5 @@
 use std::{
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
     time::Duration,
 };
 
@@ -202,6 +202,63 @@ impl ResourceSpecification for DispenserSpec {
 
     fn reset(resource: &mut Self::Resource) {
         resource.handed_out = 0;
+    }
+}
+
+/// A resource whose reset panics while its switch is on, standing in for an implementor-supplied reset with a bug
+/// in it.
+#[derive(Debug)]
+struct Fragile {
+    serial: usize,
+    mutated: u32,
+    panic_on_reset: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct FragileSpec {
+    key: MetaString,
+    panic_on_reset: Arc<AtomicBool>,
+}
+
+impl FragileSpec {
+    fn new(key: &str) -> Self {
+        Self {
+            key: MetaString::from(key),
+            panic_on_reset: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+/// Hand-written so the switch stays out of the rendered specification: the registry compares those renderings across
+/// acquisitions, and a switch that the test flips partway through would read as a changed specification.
+impl fmt::Debug for FragileSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FragileSpec").field("key", &self.key).finish()
+    }
+}
+
+#[async_trait]
+impl ResourceSpecification for FragileSpec {
+    type Resource = Fragile;
+
+    const KIND: ResourceKind = ResourceKind::Socket;
+
+    fn key(&self) -> MetaString {
+        self.key.clone()
+    }
+
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
+        Ok(Fragile {
+            serial: next_serial(),
+            mutated: 0,
+            panic_on_reset: Arc::clone(&self.panic_on_reset),
+        })
+    }
+
+    fn reset(resource: &mut Self::Resource) {
+        assert!(!resource.panic_on_reset.load(Relaxed), "reset is broken");
+
+        resource.mutated = 0;
     }
 }
 
@@ -589,6 +646,45 @@ async fn per_lease_state_is_reset_before_the_next_holder_gets_it() {
     // ... but state that only made sense to the previous holder starts clean, so a re-acquired listener hands out its
     // sockets again rather than looking exhausted.
     assert_eq!(lease.handed_out, 0);
+}
+
+#[tokio::test]
+async fn a_panicking_reset_leaves_the_resource_in_the_registry() {
+    let registry = ResourceRegistry::new();
+    let spec = FragileSpec::new("fragile://a");
+
+    // Creation doesn't reset, so the first acquisition gets through.
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let serial = lease.serial;
+    lease.mutated = 7;
+    drop(lease);
+
+    // The second acquisition does reset, and this one panics. The acquisition dies with it.
+    let acquisition = {
+        let registry = registry.clone();
+        let spec = spec.clone();
+        tokio::spawn(async move { registry.acquire(&owner("second"), spec).await.map(|_| ()) })
+    };
+    let error = acquisition.await.expect_err("acquisition should panic");
+    assert!(error.is_panic());
+
+    // It takes nothing with it, though. Answering at all means the registry lock survived the unwind rather than
+    // being poisoned by it, and the resource is idle rather than gone: it was already owned by its lease when the
+    // reset ran, so unwinding returned it here instead of dropping it and releasing the underlying resource.
+    let statuses = registry.snapshot();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, "idle");
+    assert_eq!(statuses[0].owner, None);
+
+    // And it really is the same resource, not a replacement built in its place.
+    spec.panic_on_reset.store(false, Relaxed);
+
+    let lease = registry.acquire(&owner("third"), spec).await.expect("should reacquire");
+    assert_eq!(lease.serial, serial);
+    assert_eq!(lease.mutated, 0);
 }
 
 /// How long to wait before concluding an acquisition is genuinely blocked.

@@ -116,15 +116,12 @@ pub trait ResourceSpecification: Clone + fmt::Debug + Send + Sync + 'static {
     ///
     /// This is deliberately infallible. A resource that can't be made fit for reuse should be
     /// [`discard`][ResourceLease::discard]ed by its holder instead, so the next acquisition builds a fresh one.
+    ///
+    /// # Panics
+    ///
+    /// Don't. A panic here aborts the acquisition that triggered it, and the resource goes back to the registry
+    /// intact but only partly reset, so the next acquisition gets the same resource and runs the same reset again.
     fn reset(_resource: &mut Self::Resource) {}
-}
-
-/// Erases the specification type so [`Entry`] can reset a resource it only knows as `dyn Any`.
-fn reset_shim<S: ResourceSpecification>(resource: &mut (dyn Any + Send)) {
-    match resource.downcast_mut::<S::Resource>() {
-        Some(resource) => S::reset(resource),
-        None => unreachable!("entry only ever holds the resource type its specification names"),
-    }
 }
 
 /// An error that occurred while acquiring a resource.
@@ -375,7 +372,6 @@ impl EntryState {
 struct Entry {
     type_id: TypeId,
     type_name: &'static str,
-    reset: fn(&mut (dyn Any + Send)),
     spec_desc: String,
     state: EntryState,
     acquisitions: u64,
@@ -392,7 +388,6 @@ impl Entry {
         Self {
             type_id: TypeId::of::<S::Resource>(),
             type_name: std::any::type_name::<S::Resource>(),
-            reset: reset_shim::<S>,
             spec_desc: format!("{:?}", spec),
             state: EntryState::Creating(lease_info),
             acquisitions: 0,
@@ -478,8 +473,12 @@ impl Entry {
 
     /// Hands a claimed resource to its acquirer.
     ///
-    /// Runs once every sublease has been returned, so the resource is prepared for its new holder knowing the previous
-    /// one is genuinely finished with it -- including anything it lent out.
+    /// Runs once every sublease has been returned, so the previous holder is genuinely finished with the resource --
+    /// including with anything it lent out.
+    ///
+    /// Resetting the resource is the caller's job, not this method's: [`ResourceSpecification::reset`] is
+    /// implementor-supplied code, and running it here would run it while the registry lock is held and while the
+    /// resource is owned by nothing but a local. See [`ResourceRegistry::acquire`].
     fn hand_over<S: ResourceSpecification>(
         &mut self, registry: &ResourceRegistry, key: &EntryKey,
     ) -> ResourceLease<S::Resource> {
@@ -490,13 +489,10 @@ impl Entry {
             _ => unreachable!("a claimed entry is idle"),
         };
 
-        let mut value = match mem::replace(&mut self.state, EntryState::Leased(lease_info)) {
+        let value = match mem::replace(&mut self.state, EntryState::Leased(lease_info)) {
             EntryState::Idle { value, .. } => value,
             _ => unreachable!("a claimed entry is idle and holds its value"),
         };
-
-        // Clear whatever the previous holder accumulated, now that it and its subleases are all gone.
-        (self.reset)(&mut *value);
 
         self.acquisitions += 1;
 
@@ -661,9 +657,21 @@ impl ResourceRegistry {
                         .get_mut(&key)
                         .expect("entry was claimed above and a claimed entry is only removed by its holder");
 
+                    let mut lease = entry.hand_over::<S>(self, &key);
+
+                    // Clear whatever the previous holder accumulated, now that it and its subleases are all gone.
+                    //
+                    // Deliberately done here rather than in `hand_over`: the reset is implementor-supplied code, and
+                    // two things have to be true before it runs. The lock has to be released, or a panic in it would
+                    // poison the registry for every other key. And the resource has to already be owned by its lease,
+                    // so that the same panic unwinds through `ResourceLease::drop` and returns the resource to the
+                    // registry, still live, instead of dropping it and releasing the underlying resource.
+                    drop(state);
+                    S::reset(&mut lease);
+
                     debug!(%key, %owner, "Acquired resource.");
 
-                    return Ok(entry.hand_over::<S>(self, &key));
+                    return Ok(lease);
                 }
                 Claim::Rebuild(_) => {
                     // The discarded resource is finally gone in full, so the tombstone has done its job. Replace it
