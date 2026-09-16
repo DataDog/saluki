@@ -269,12 +269,22 @@ impl AggregateContextSnapshotReceiver {
 }
 
 /// An aggregation-window override selected by metric-name prefix.
+///
+/// A metric name that starts with `metric_prefix` is aggregated into an `interval_seconds`-wide window instead of
+/// the transform's default window. Matching is case-sensitive, and because prefixes must not overlap, at most one
+/// rule can match a given metric name.
 #[derive(Clone, Debug)]
 pub struct MetricAggregationInterval {
     /// Case-sensitive metric-name prefix used for matching.
+    ///
+    /// Must be non-empty. Rules whose prefixes overlap, where one starts with the other, are rejected when the
+    /// transform is built, since the intended match would be ambiguous.
     pub metric_prefix: String,
 
     /// Aggregation window length in whole seconds, from 1 through 60 inclusive.
+    ///
+    /// A value of `0` is invalid. It is not a way to disable aggregation for the prefix; every metric is aggregated
+    /// into some window.
     pub interval_seconds: u64,
 }
 
@@ -336,6 +346,19 @@ pub struct AggregateConfiguration {
     pub window_duration_seconds: NonZeroU64,
 
     /// Metric-name prefix rules that override the default aggregation window.
+    ///
+    /// Each rule maps a metric-name prefix to its own aggregation window. A metric whose name starts with a rule's
+    /// prefix is aggregated into that window, while metrics that match no rule keep using `window_duration_seconds`.
+    ///
+    /// The default is an empty list, which applies `window_duration_seconds` to every metric.
+    ///
+    /// Rules are validated when the transform is built, and invalid configuration stops startup rather than being
+    /// silently ignored: prefixes must be non-empty and must not overlap each other, and `interval_seconds` must be a
+    /// whole number of seconds from 1 through 60 inclusive.
+    ///
+    /// Shorter intervals emit more points downstream and retain more buckets between flushes, which raises memory
+    /// use under the same context limit. Only narrow the interval for prefixes that genuinely need finer-grained
+    /// resolution, such as gauges feeding live dashboards, and keep everything else on the default window.
     pub metric_intervals: Vec<MetricAggregationInterval>,
 
     /// How often to flush buckets.
