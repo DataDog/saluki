@@ -116,13 +116,11 @@
 <a href=#116 id=116 data-nosnippet>116</a>/// ## Errors
 <a href=#117 id=117 data-nosnippet>117</a>///
 <a href=#118 id=118 data-nosnippet>118</a>/// If the underlying system call fails, an error is returned.
-<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">pub async fn </span>unixgram_recvmsg&lt;B: BufMut&gt;(
-<a href=#120 id=120 data-nosnippet>120</a>    socket: <span class="kw-2">&amp;mut </span>UnixDatagram, buf: <span class="kw-2">&amp;mut </span>B,
-<a href=#121 id=121 data-nosnippet>121</a>) -&gt; io::Result&lt;(usize, ConnectionAddress)&gt; {
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="comment">// We manually call `recvmsg` on our domain socket as stdlib/`mio`/`tokio` don't yet expose a way to do out-of-band
-<a href=#123 id=123 data-nosnippet>123</a>    // reads to get ancillary data such as the socket credentials used to shuttle origin detection information.
-<a href=#124 id=124 data-nosnippet>124</a>    </span>socket
-<a href=#125 id=125 data-nosnippet>125</a>        .async_io(tokio::io::Interest::READABLE, || uds_recvmsg(socket, buf))
-<a href=#126 id=126 data-nosnippet>126</a>        .<span class="kw">await
-<a href=#127 id=127 data-nosnippet>127</a></span>}
+<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">pub async fn </span>unixgram_recvmsg&lt;B: BufMut&gt;(socket: <span class="kw-2">&amp;</span>UnixDatagram, buf: <span class="kw-2">&amp;mut </span>B) -&gt; io::Result&lt;(usize, ConnectionAddress)&gt; {
+<a href=#120 id=120 data-nosnippet>120</a>    <span class="comment">// We manually call `recvmsg` on our domain socket as stdlib/`mio`/`tokio` don't yet expose a way to do out-of-band
+<a href=#121 id=121 data-nosnippet>121</a>    // reads to get ancillary data such as the socket credentials used to shuttle origin detection information.
+<a href=#122 id=122 data-nosnippet>122</a>    </span>socket
+<a href=#123 id=123 data-nosnippet>123</a>        .async_io(tokio::io::Interest::READABLE, || uds_recvmsg(socket, buf))
+<a href=#124 id=124 data-nosnippet>124</a>        .<span class="kw">await
+<a href=#125 id=125 data-nosnippet>125</a></span>}
 </code></pre></div></section></main></body></html>
