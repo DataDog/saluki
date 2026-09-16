@@ -786,6 +786,10 @@ pub struct ApmConfig {
     #[serde(default)]
     pub probabilistic_sampler: ApmConfigProbabilisticSampler,
 
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
+    pub replace_tags: Vec<HashMap<String, String>>,
+
     #[serde(
         default = "defaults::datadog_configuration_apm_config_target_traces_per_second"
     )]
@@ -804,6 +808,7 @@ impl Default for ApmConfig {
             peer_tags: Default::default(),
             peer_tags_aggregation: defaults::default_bool::<true>(),
             probabilistic_sampler: Default::default(),
+            replace_tags: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
         }
     }

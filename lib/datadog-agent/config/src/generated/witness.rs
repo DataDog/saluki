@@ -46,6 +46,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_peer_tags_aggregation(&mut self, value: bool);
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool);
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
+    fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     fn consume_auth_token_file_path(&mut self, value: String);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
@@ -332,6 +333,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_probabilistic_sampler_sampling_percentage(
         config.apm_config.probabilistic_sampler.sampling_percentage.clone(),
     );
+    consumer.consume_apm_config_replace_tags(config.apm_config.replace_tags.clone());
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
     consumer.consume_auth_token_file_path(config.auth_token_file_path.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());

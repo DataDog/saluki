@@ -385,7 +385,9 @@ fn duration_defaults_module(durations: &BTreeMap<String, u64>) -> String {
 /// String lists arrive as a real sequence from a file or the remote Agent stream, but as a single
 /// space-separated string from an environment variable (`DD_DOGSTATSD_TAGS="a b"`), so each field
 /// must accept both. Map values containing string lists may likewise arrive as either one scalar or
-/// a sequence. Free-form object arrays also accept a JSON-encoded string.
+/// a sequence. Object arrays also accept a JSON-encoded string, whether their items stay
+/// free-form (`serde_json::Value`) or are typed (`Vec<HashMap<String, String>>`, for example
+/// `apm_config.replace_tags`).
 ///
 /// We push an extra `#[serde(deserialize_with = ...)]` attribute rather than replacing the field's
 /// existing serde attributes: serde merges multiple `#[serde(...)]`, so the field keeps its
@@ -409,7 +411,7 @@ fn listize(file: &mut syn::File) {
                 field.attrs.push(parse_quote!(
                     #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
                 ));
-            } else if is_vec_json_value(&field.ty) {
+            } else if is_vec_json_value(&field.ty) || is_vec_string_map(&field.ty) {
                 field.attrs.push(parse_quote!(
                     #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
                 ));
@@ -667,7 +669,12 @@ fn leaf_kind(ty: &syn::Type, struct_names: &HashSet<String>) -> LeafKind {
     {
         return LeafKind::OptionalInteger;
     }
-    if is_vec_string(ty) || is_string_map_vec_string(ty) || is_json_container(ty) || is_duration(ty) {
+    if is_vec_string(ty)
+        || is_string_map_vec_string(ty)
+        || is_vec_string_map(ty)
+        || is_json_container(ty)
+        || is_duration(ty)
+    {
         return LeafKind::Exempt;
     }
     match plain_ident(ty) {
@@ -718,6 +725,27 @@ fn is_json_container(ty: &syn::Type) -> bool {
         return false;
     };
     matches!(args.args.first(), Some(syn::GenericArgument::Type(inner)) if is_json_container(inner))
+}
+
+/// Returns whether `ty` is `Vec<HashMap<String, String>>`, the shape a typed object-array leaf
+/// (for example `apm_config.replace_tags`) keeps so its own consumer can interpret each item.
+fn is_vec_string_map(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else {
+        return false;
+    };
+    let Some(last) = tp.path.segments.last() else {
+        return false;
+    };
+    if last.ident != "Vec" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return false;
+    };
+    match args.args.first() {
+        Some(syn::GenericArgument::Type(inner)) => is_string_map_string(inner),
+        _ => false,
+    }
 }
 
 /// Returns whether `ty` is the `std::time::Duration` that `durationize` installs.

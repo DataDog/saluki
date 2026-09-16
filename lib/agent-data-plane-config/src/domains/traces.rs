@@ -1,6 +1,6 @@
 //! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::defaults::{
     DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
@@ -62,6 +62,13 @@ pub struct Domain {
     /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
     /// Change this only if legitimate resources exceed the default.
     pub max_resource_len: usize,
+
+    /// Regex-based trace tag replacement rules. (not in Datadog Agent config schema)
+    ///
+    /// Defaults to no rules: tag values, resources, and span-event attributes pass through
+    /// unchanged. Rules run in the order they are listed, after obfuscation and truncation and
+    /// before stats and sampling, so aggregated values inherit the rewritten form.
+    pub replace_tags: Vec<ReplaceRule>,
 }
 
 impl Default for Domain {
@@ -81,12 +88,36 @@ impl Default for Domain {
             // Saluki-only fields own their absent-key behavior here.
             default_env: DEFAULT_TRACE_ENV.to_owned(),
             max_resource_len: DEFAULT_MAX_RESOURCE_LEN,
+            replace_tags: Vec::new(),
             error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
             rare_sampler: RareSampler::default(),
             ottl_filter: OttlFilter::default(),
             ottl_transform: OttlTransform::default(),
         }
     }
+}
+
+/// A regex-based trace tag replacement rule. (not in Datadog Agent config schema)
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct ReplaceRule {
+    /// Tag key the rule targets (`apm_config.replace_tags[].name`).
+    ///
+    /// `"*"` targets every span tag whose key does not start with `_`, the span resource, and
+    /// span-event attributes; `"resource.name"` targets only the span resource; any other value
+    /// targets that exact tag key on the span and its span events.
+    pub name: String,
+
+    /// Regular expression matched against each targeted value (`apm_config.replace_tags[].pattern`).
+    ///
+    /// Compiled once at startup. A pattern that fails to compile prevents startup, matching the
+    /// core agent's `compileReplaceRules` behavior.
+    pub pattern: String,
+
+    /// Text spliced in place of each match (`apm_config.replace_tags[].repl`).
+    ///
+    /// Supports `$1`-style capture-group references. An empty `repl` deletes each match. Matched
+    /// values are written back as strings.
+    pub repl: String,
 }
 
 /// Rare-span sampler.

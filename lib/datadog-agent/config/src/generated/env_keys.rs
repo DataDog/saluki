@@ -173,6 +173,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_APM_REPLACE_TAGS"],
+        path: &["apm_config", "replace_tags"],
+        decode: EnvDecode::Json,
+    },
+    EnvKey {
         env_vars: &["DD_APM_TARGET_TPS"],
         path: &["apm_config", "target_traces_per_second"],
         decode: EnvDecode::Float,

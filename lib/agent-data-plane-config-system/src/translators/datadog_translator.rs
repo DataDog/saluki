@@ -29,6 +29,7 @@ use agent_data_plane_config::domains::otlp::{
     CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
+use agent_data_plane_config::domains::traces::ReplaceRule;
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
@@ -396,6 +397,19 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
         self.config.domains.traces.probabilistic_sampler.sampling_percentage = value;
+    }
+
+    fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
+        // The schema models each rule as a free string map; this gives it the typed
+        // `name`/`pattern`/`repl` shape the replacer consumes.
+        self.config.domains.traces.replace_tags = value
+            .into_iter()
+            .map(|rule| ReplaceRule {
+                name: rule.get("name").cloned().unwrap_or_default(),
+                pattern: rule.get("pattern").cloned().unwrap_or_default(),
+                repl: rule.get("repl").cloned().unwrap_or_default(),
+            })
+            .collect();
     }
 
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
@@ -1595,6 +1609,49 @@ mod tests {
             serde_json::from_value(sources.to_value()).expect("datadog source deserializes");
 
         DatadogTranslator::new(&datadog, sources).translate()
+    }
+
+    #[test]
+    fn apm_config_replace_tags_transports_as_typed_rules() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "replace_tags": [
+                    { "name": "*", "pattern": "token=[A-Za-z0-9]+", "repl": "token=?" },
+                    { "name": "resource.name", "pattern": "^POST /pay/", "repl": "POST /v1/payments/" }
+                ]
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.replace_tags.len(), 2);
+        assert_eq!(traces.replace_tags[0].name, "*");
+        assert_eq!(traces.replace_tags[0].pattern, "token=[A-Za-z0-9]+");
+        assert_eq!(traces.replace_tags[0].repl, "token=?");
+        assert_eq!(traces.replace_tags[1].name, "resource.name");
+        assert_eq!(traces.replace_tags[1].pattern, "^POST /pay/");
+        assert_eq!(traces.replace_tags[1].repl, "POST /v1/payments/");
+    }
+
+    #[test]
+    fn apm_config_replace_tags_accepts_json_string_and_missing_fields() {
+        // The environment delivers the array as one JSON-encoded string (`DD_APM_REPLACE_TAGS`),
+        // and the core agent's lenient unmarshal reads a missing rule field as an empty string.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "replace_tags": "[{\"name\": \"http.url\", \"pattern\": \"p\"}]"
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.replace_tags.len(), 1);
+        assert_eq!(traces.replace_tags[0].name, "http.url");
+        assert_eq!(traces.replace_tags[0].pattern, "p");
+        assert_eq!(
+            traces.replace_tags[0].repl, "",
+            "a missing field reads as empty, like the agent"
+        );
     }
 
     #[test]

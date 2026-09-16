@@ -836,6 +836,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.peer_tags_aggregation`                                                         | Aggregate APM stats by peer tags                   |
 | `apm_config.probabilistic_sampler.enabled`                                                 | Enable APM probabilistic sampler                   |
 | `apm_config.probabilistic_sampler.sampling_percentage`                                     | Probabilistic sampler percentage                   |
+| `apm_config.replace_tags`                                                                  | Regex-based trace tag replacement rules            |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
 | `auth_token_file_path`                                                                     | Agent authentication token file path               |
 | `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |

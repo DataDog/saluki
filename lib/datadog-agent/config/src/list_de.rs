@@ -7,9 +7,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::de::{self, Deserializer, SeqAccess, Visitor};
+use serde::de::{self, DeserializeOwned, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
-use serde_json::Value;
 
 /// Deserialize a `Vec<String>` from either a sequence or a space-separated string.
 ///
@@ -44,19 +43,25 @@ where
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
 
-/// Deserialize a free-form JSON array from either a sequence or a JSON-encoded string.
-pub(crate) fn deserialize_json_array_or_string<'de, D>(deserializer: D) -> Result<Vec<Value>, D::Error>
+/// Deserialize a JSON array from either a sequence or a JSON-encoded string.
+///
+/// The element type is inferred from the field: free-form object arrays keep `Vec<Value>`,
+/// while typed object arrays (for example `apm_config.replace_tags`) deserialize into
+/// `Vec<HashMap<String, String>>`. In both forms, an element that does not fit the target type
+/// is a type error, so the schema's item shape is enforced at the boundary.
+pub(crate) fn deserialize_json_array_or_string<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
+    T: DeserializeOwned,
     D: Deserializer<'de>,
 {
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum JsonArrayOrString {
-        Array(Vec<Value>),
+    enum JsonArrayOrString<T> {
+        Array(Vec<T>),
         String(String),
     }
 
-    match JsonArrayOrString::deserialize(deserializer)? {
+    match JsonArrayOrString::<T>::deserialize(deserializer)? {
         JsonArrayOrString::Array(values) => Ok(values),
         JsonArrayOrString::String(value) => serde_json::from_str(&value).map_err(de::Error::custom),
     }
@@ -94,6 +99,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     #[derive(serde::Deserialize)]
