@@ -1,0 +1,12 @@
+fixes:
+  - |
+    Obfuscate MongoDB, Elasticsearch, and OpenSearch queries that are not valid JSON. Such a query
+    was previously left as received, which could send raw query values to Datadog. Output that
+    could not be read to the end now ends in ``...``.
+  - |
+    Keep the key order and text of obfuscated MongoDB, Elasticsearch, and OpenSearch queries. Keys
+    were previously sorted alphabetically, which changed the resource that trace statistics are
+    aggregated on.
+  - |
+    Report a SQL value inside a MongoDB, Elasticsearch, or OpenSearch query that could not be
+    obfuscated with the same message the Datadog Agent uses, rather than replacing it with ``?``.
