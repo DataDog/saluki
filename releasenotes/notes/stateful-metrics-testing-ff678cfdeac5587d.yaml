@@ -1,0 +1,6 @@
+features:
+  - |
+    Add an opt-in plaintext gRPC path for testing stateful metric series delivery
+    with ``data_plane.stateful_metrics_endpoint``. Sketches and sets continue
+    over HTTP. This experimental path is disabled by default and is not intended
+    for production traffic.

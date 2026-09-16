@@ -6,6 +6,7 @@ use std::sync::Arc;
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+use http::Uri;
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_config::{ConfigurationError, GenericConfiguration};
 use saluki_error::GenericError;
@@ -61,6 +62,10 @@ pub enum Error {
          be submitted without one"
     ))]
     MissingApiKey,
+
+    /// The experimental stateful metrics intake is not a plaintext HTTP origin.
+    #[snafu(display("data_plane.stateful_metrics_endpoint requires an http://host:port intake origin for testing"))]
+    InvalidStatefulMetricsEndpoint,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -291,6 +296,19 @@ pub(crate) fn translate_authoritative(merged: &SourceTree) -> Result<SalukiConfi
 /// forwarder then retries. Failing here names the cause once instead of leaving an operator to infer
 /// it from a stream of authentication failures.
 pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
+    if let Some(endpoint) = &config.domains.stateful_metrics.endpoint {
+        let uri: Uri = endpoint.parse().map_err(|_| Error::InvalidStatefulMetricsEndpoint)?;
+        if uri.scheme_str() != Some("http")
+            || uri.host().is_none()
+            || uri
+                .authority()
+                .is_some_and(|authority| authority.as_str().contains('@'))
+            || uri.path() != "/"
+            || uri.query().is_some()
+        {
+            return Err(Error::InvalidStatefulMetricsEndpoint);
+        }
+    }
     // A blank key is as unusable as an absent one, and a padded key is a typo we should name rather
     // than send.
     if config.shared.endpoints.api_key.trim().is_empty() {
@@ -367,6 +385,74 @@ mod tests {
     /// the base rather than in a streamed snapshot keeps it in place across the snapshot replacements
     /// these tests exercise.
     const TEST_API_KEY: &str = "test-api-key";
+
+    #[tokio::test]
+    async fn stateful_metrics_is_opt_in_and_reachable_from_file_and_environment() {
+        let default = standalone_system(None, None).await.unwrap();
+        assert!(default.config().domains.stateful_metrics.endpoint.is_none());
+
+        let endpoint = "http://127.0.0.1:8080";
+        let from_file = standalone_system(
+            Some(json!({
+                "api_key": TEST_API_KEY,
+                "data_plane": { "stateful_metrics_endpoint": endpoint },
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            from_file.config().domains.stateful_metrics.endpoint.as_deref(),
+            Some(endpoint)
+        );
+        super::validate(&from_file.config()).unwrap();
+
+        let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            None,
+            Some(&[
+                ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                (
+                    "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
+                    endpoint.to_string(),
+                ),
+            ]),
+            false,
+            |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
+        )
+        .await;
+        let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
+        assert_eq!(from_env.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
+        super::validate(&from_env).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_rejects_unsupported_endpoint_forms() {
+        for endpoint in [
+            "",
+            "localhost:8080",
+            "https://localhost:8080",
+            "http://key@localhost:8080",
+            "http://localhost:8080/path",
+            "http://localhost:8080/?key=value",
+        ] {
+            let system = standalone_system(
+                Some(json!({
+                    "api_key": TEST_API_KEY,
+                    "data_plane": { "stateful_metrics_endpoint": endpoint },
+                })),
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(
+                    super::validate(&system.config()),
+                    Err(Error::InvalidStatefulMetricsEndpoint)
+                ),
+                "{endpoint}"
+            );
+        }
+    }
 
     /// Builds a standalone system whose authority is the local sources (`file` + `env`).
     ///

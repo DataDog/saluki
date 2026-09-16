@@ -27,6 +27,7 @@ comfy-table = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-config = { workspace = true }
 datadog-protos = { workspace = true }
+foldspace-core = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
@@ -61,6 +62,7 @@ tokio = { workspace = true, features = [
   "signal",
   "time",
 ] }
+tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
@@ -76,6 +78,7 @@ tikv-jemallocator = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+async-stream = { workspace = true }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
@@ -84,7 +87,7 @@ saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]

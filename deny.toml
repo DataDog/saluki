@@ -37,7 +37,10 @@ allow = [
 ]
 
 [sources]
+allow-registry = ["https://github.com/rust-lang/crates.io-index", "sparse+https://depot-read-api-rust.us1.ddbuild.io/datadog/rust-testing/"]
 allow-git = [
+  # Stateful metrics client pinned to the Foldspace metrics stack.
+  "https://github.com/DataDog/foldspace",
   # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
   # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
   "https://github.com/DataDog/lading",
