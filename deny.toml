@@ -52,4 +52,7 @@ allow-git = [
   # Pinned to a specific revision so we can select our workspace's `rand` version, ahead of a crates.io release that
   # supports it.
   "https://github.com/antithesishq/antithesis-sdk-rust",
+
+  # Unmerged fix for byteorder's AIX alignment assertion; see the `[patch.crates-io]` entry in Cargo.toml for details.
+  "https://github.com/amy-kwan/byteorder",
 ]

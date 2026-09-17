@@ -732,8 +732,7 @@ checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
 [[package]]
 name = "byteorder"
 version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+source = "git+https://github.com/amy-kwan/byteorder?branch=amyk%2Fupdate-byteorder-aix#073bdbc6809f46eb336af3d4721b6a8b48786dd2"
 
 [[package]]
 name = "bytes"
