@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use metrics::{Counter, Gauge, Histogram};
+use metrics::{Counter, Gauge};
 use saluki_context::Context;
 use saluki_core::data_model::event::metric::MetricValues;
 use saluki_metrics::MetricsBuilder;
@@ -60,9 +58,6 @@ pub struct Telemetry {
     flushes: Counter,
     series_flushed: Counter,
     sketches_flushed: Counter,
-    passthrough_metrics: Counter,
-    passthrough_flushes: Counter,
-    passthrough_batch_duration: Histogram,
 }
 
 impl Telemetry {
@@ -75,9 +70,6 @@ impl Telemetry {
             flushes: builder.register_debug_counter("aggregate_flushes_total"),
             series_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:series"]),
             sketches_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:sketches"]),
-            passthrough_metrics: builder.register_counter("aggregate_passthrough_metrics_total"),
-            passthrough_flushes: builder.register_counter("aggregate_passthrough_flushes_total"),
-            passthrough_batch_duration: builder.register_debug_histogram("aggregate_passthrough_batch_duration_secs"),
         }
     }
 
@@ -91,9 +83,6 @@ impl Telemetry {
             flushes: Counter::noop(),
             series_flushed: Counter::noop(),
             sketches_flushed: Counter::noop(),
-            passthrough_metrics: Counter::noop(),
-            passthrough_flushes: Counter::noop(),
-            passthrough_batch_duration: Histogram::noop(),
         }
     }
 
@@ -127,17 +116,5 @@ impl Telemetry {
         } else if values.is_sketch() {
             self.sketches_flushed.increment(1);
         }
-    }
-
-    pub fn increment_passthrough_metrics(&self) {
-        self.passthrough_metrics.increment(1);
-    }
-
-    pub fn increment_passthrough_flushes(&self) {
-        self.passthrough_flushes.increment(1);
-    }
-
-    pub fn record_passthrough_batch_duration(&self, duration: Duration) {
-        self.passthrough_batch_duration.record(duration.as_secs_f64());
     }
 }

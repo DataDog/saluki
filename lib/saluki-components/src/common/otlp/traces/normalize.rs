@@ -1,4 +1,5 @@
 /// Normalization functions for OTLP traces
+use std::borrow::Cow;
 use std::char;
 
 use saluki_common::strings::StringBuilder;
@@ -8,7 +9,6 @@ use tracing::debug;
 // Max length in bytes.
 pub const MAX_NAME_LEN: usize = 100;
 pub const MAX_SERVICE_LEN: usize = 100;
-pub const MAX_RESOURCE_LEN: usize = 5000;
 pub const MAX_TAG_LEN: usize = 200;
 
 /// Maximum length of `span.type`, mirroring `MaxTypeLen` (`pkg/trace/agent/normalizer.go`).
@@ -23,6 +23,14 @@ const MAX_START_PLUS_DURATION: u64 = i64::MAX as u64;
 /// Used as the fallback when the system clock is unavailable, so a rewritten start still clears the
 /// year-2000 floor it exists to enforce.
 pub const YEAR_2000_NANOSEC_TS: u64 = 946_684_800_000_000_000;
+
+// Attribute key and value caps applied to every OTLP span.
+pub const MAX_META_KEY_LEN: usize = 200;
+pub const MAX_META_VAL_LEN: usize = 25_000;
+const ELLIPSIS: &str = "...";
+
+// Structured meta tag suffixes, which also name the serialization format in use.
+const STRUCTURED_SUFFIXES: [&str; 3] = [".json", ".msgpack", ".protobuf"];
 
 // default service name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
@@ -70,8 +78,8 @@ static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
 /// Normalizes a span name.
 ///
 /// This function truncates the name to `MAX_NAME_LEN`, replaces invalid characters with underscores,
-/// and handles consecutive underscores and underscores after periods.
-#[allow(dead_code)]
+/// and handles consecutive underscores and underscores after periods. An already-normalized name is
+/// returned unchanged, without allocating.
 pub fn normalize_name(mut name: MetaString) -> MetaString {
     if name.is_empty() {
         debug!(
@@ -83,6 +91,11 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
     if name.len() > MAX_NAME_LEN {
         name = MetaString::from(truncate_utf8(&name, MAX_NAME_LEN));
         debug!("normalize_name: name is too long,truncated name: {}", name);
+    }
+
+    // Fast path: already normalized, so return the input without allocating.
+    if is_valid_metric_name(&name) {
+        return name;
     }
 
     // Normalize the name according to the following rules:
@@ -273,7 +286,7 @@ fn is_valid_metric_name(name: &str) -> bool {
 
     let mut chars = name.chars();
     if let Some(c) = chars.next() {
-        if !IS_ALPHA_LOOKUP[c as usize] {
+        if (c as u32) >= 256 || !IS_ALPHA_LOOKUP[c as usize] {
             return false;
         }
     }
@@ -392,6 +405,33 @@ pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
 /// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
 pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     truncate_utf8_str(s, max_len)
+}
+
+/// Returns `true` when the key is a structured meta tag, which is never truncated.
+///
+/// Structured meta tags carry serialized payloads. They are prefixed with `_dd.` and suffixed with
+/// the serialization format in use.
+pub fn is_structured_meta_key(key: &str) -> bool {
+    key.starts_with("_dd.") && STRUCTURED_SUFFIXES.iter().any(|suffix| key.ends_with(suffix))
+}
+
+/// Truncates `s` to at most `max_len` bytes, appending an ellipsis when truncation happens.
+///
+/// Returns the input borrowed when it is already within the limit, so only repairs allocate.
+pub fn truncate_with_ellipses<'a>(s: &'a str, max_len: usize) -> Cow<'a, str> {
+    if s.len() <= max_len {
+        return Cow::Borrowed(s);
+    }
+    let mut truncated = truncate_utf8_str(s, max_len).to_owned();
+    truncated.push_str(ELLIPSIS);
+    Cow::Owned(truncated)
+}
+
+/// Returns `true` when a span name needs repair by [`normalize_name`].
+///
+/// Use this on borrowed names to avoid allocating a `MetaString` for names that are already fine.
+pub fn needs_name_normalization(name: &str) -> bool {
+    name.is_empty() || name.len() > MAX_NAME_LEN || !is_valid_metric_name(name)
 }
 
 fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
@@ -551,6 +591,10 @@ mod tests {
                 MetaString::from("_"),
                 MetaString::from("unnamed_operation"),
             ),
+            // Multi-byte leading characters are repaired away, never a panic.
+            (MetaString::from("中文query"), MetaString::from("query")),
+            (MetaString::from("日本語"), MetaString::from("unnamed_operation")),
+            (MetaString::from("éxample"), MetaString::from("xample")),
         ];
 
         for (name, expected) in cases.iter() {
@@ -608,6 +652,55 @@ mod tests {
                 MetaString::from("bad_service"),
             ),
         ]
+    }
+
+    #[test]
+    fn test_truncate_with_ellipses() {
+        // Within the limit: borrowed, unchanged, no ellipsis.
+        assert_eq!(truncate_with_ellipses("short", 200).as_ref(), "short");
+        assert_eq!(truncate_with_ellipses("", 0).as_ref(), "");
+
+        // Over the limit: truncated to the limit, then the ellipsis is appended.
+        let long = "a".repeat(250);
+        let truncated = truncate_with_ellipses(&long, 200);
+        assert_eq!(truncated.len(), 200 + 3);
+        assert_eq!(truncated.as_ref(), format!("{}{}", "a".repeat(200), "..."));
+
+        // Truncation respects UTF-8 boundaries: a 2-byte character straddling the limit is dropped.
+        let unicode = "é".repeat(150); // 300 bytes
+        assert_eq!(
+            truncate_with_ellipses(&unicode, 201).as_ref(),
+            format!("{}...", "é".repeat(100))
+        );
+    }
+
+    #[test]
+    fn test_is_structured_meta_key() {
+        for key in ["_dd.appsec.json", "_dd.iast.msgpack", "_dd.something.protobuf"] {
+            assert!(is_structured_meta_key(key), "{key} should be structured");
+        }
+        for key in [
+            "_dd.span_links",
+            "_dd.p.dm",
+            "http.url",
+            "_dd.appsec.jsonx",
+            "dd.appsec.json",
+            "_dd.appsec.json.payload",
+        ] {
+            assert!(!is_structured_meta_key(key), "{key} should not be structured");
+        }
+    }
+
+    #[test]
+    fn test_needs_name_normalization() {
+        assert!(!needs_name_normalization("good.name"));
+        assert!(!needs_name_normalization("a"));
+        assert!(needs_name_normalization(""));
+        assert!(needs_name_normalization("bad name"));
+        assert!(needs_name_normalization("中文query"));
+        assert!(needs_name_normalization("a".repeat(101).as_str()));
+        assert!(!needs_name_normalization("a".repeat(100).as_str()));
+        assert!(needs_name_normalization("trailing_"));
     }
 
     #[test]

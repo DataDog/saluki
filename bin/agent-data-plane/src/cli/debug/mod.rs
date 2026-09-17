@@ -4,6 +4,11 @@ use tracing::{error, info};
 
 use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
+mod runtime;
+use self::runtime::{handle_runtime_command, RuntimeCommand};
+
+mod runtime_render;
+
 mod workload;
 use self::workload::{handle_workload_command, WorkloadCommand};
 
@@ -22,6 +27,7 @@ enum DebugSubcommand {
     SetLogLevel(SetLogLevelCommand),
     ResetMetricLevel(ResetMetricLevelCommand),
     SetMetricLevel(SetMetricLevelCommand),
+    Runtime(RuntimeCommand),
     Workload(WorkloadCommand),
 }
 
@@ -70,6 +76,7 @@ pub async fn handle_debug_command(local_config: LoadedConfiguration, cmd: DebugC
         DebugSubcommand::SetLogLevel(cmd) => set_log_level(&mut api_client, cmd).await,
         DebugSubcommand::ResetMetricLevel(_) => reset_metric_level(&mut api_client).await,
         DebugSubcommand::SetMetricLevel(cmd) => set_metric_level(&mut api_client, cmd).await,
+        DebugSubcommand::Runtime(cmd) => handle_runtime_command(&mut api_client, cmd).await,
         DebugSubcommand::Workload(cmd) => handle_workload_command(&mut api_client, cmd).await,
     }
 }

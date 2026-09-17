@@ -1,9 +1,10 @@
 use std::{
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
     time::Duration,
 };
 
 use saluki_error::generic_error;
+use tokio::time::timeout;
 
 use super::*;
 
@@ -78,7 +79,7 @@ impl ResourceSpecification for CounterSpec {
         self.key.clone()
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
         if let Some(delay) = self.create_delay {
             tokio::time::sleep(delay).await;
         }
@@ -115,7 +116,7 @@ impl ResourceSpecification for WidgetSpec {
         self.key.clone()
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
         Ok(Widget)
     }
 }
@@ -144,17 +145,28 @@ impl ResourceSpecification for OtherKindSpec {
         self.key.clone()
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
         Ok(Widget)
     }
 }
 
-/// A resource carrying state that accumulates within a single lease, standing in for a listener's cursor over the
-/// sockets it has handed out.
+/// A resource that subdivides itself, standing in for a connectionless listener lending out its bound socket.
+///
+/// Carries state accumulating within a single lease (the hand-out cursor), and hands out items that hold a sublease
+/// for as long as they live.
 #[derive(Debug)]
 struct Dispenser {
     serial: usize,
     handed_out: usize,
+    subleases: Subleases,
+}
+
+impl Dispenser {
+    /// Hands out an item, subleased for as long as the returned value lives.
+    fn dispense(&mut self) -> Sublease {
+        self.handed_out += 1;
+        self.subleases.issue().expect("resource is still registered")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -180,15 +192,73 @@ impl ResourceSpecification for DispenserSpec {
         self.key.clone()
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, subleases: Subleases) -> Result<Self::Resource, GenericError> {
         Ok(Dispenser {
             serial: next_serial(),
             handed_out: 0,
+            subleases,
         })
     }
 
     fn reset(resource: &mut Self::Resource) {
         resource.handed_out = 0;
+    }
+}
+
+/// A resource whose reset panics while its switch is on, standing in for an implementor-supplied reset with a bug
+/// in it.
+#[derive(Debug)]
+struct Fragile {
+    serial: usize,
+    mutated: u32,
+    panic_on_reset: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct FragileSpec {
+    key: MetaString,
+    panic_on_reset: Arc<AtomicBool>,
+}
+
+impl FragileSpec {
+    fn new(key: &str) -> Self {
+        Self {
+            key: MetaString::from(key),
+            panic_on_reset: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+/// Hand-written so the switch stays out of the rendered specification: the registry compares those renderings across
+/// acquisitions, and a switch that the test flips partway through would read as a changed specification.
+impl fmt::Debug for FragileSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FragileSpec").field("key", &self.key).finish()
+    }
+}
+
+#[async_trait]
+impl ResourceSpecification for FragileSpec {
+    type Resource = Fragile;
+
+    const KIND: ResourceKind = ResourceKind::Socket;
+
+    fn key(&self) -> MetaString {
+        self.key.clone()
+    }
+
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
+        Ok(Fragile {
+            serial: next_serial(),
+            mutated: 0,
+            panic_on_reset: Arc::clone(&self.panic_on_reset),
+        })
+    }
+
+    fn reset(resource: &mut Self::Resource) {
+        assert!(!resource.panic_on_reset.load(Relaxed), "reset is broken");
+
+        resource.mutated = 0;
     }
 }
 
@@ -215,7 +285,7 @@ impl ResourceSpecification for BundleSpec {
         self.key.clone()
     }
 
-    async fn create(&self) -> Result<Self::Resource, GenericError> {
+    async fn create(&self, _subleases: Subleases) -> Result<Self::Resource, GenericError> {
         Ok(Bundle {
             serials: (0..BUNDLE_HANDLES).map(|_| next_serial()).collect(),
         })
@@ -553,7 +623,7 @@ async fn mutations_through_a_lease_survive_the_round_trip() {
 }
 
 #[tokio::test]
-async fn per_lease_state_is_reset_when_the_resource_returns() {
+async fn per_lease_state_is_reset_before_the_next_holder_gets_it() {
     let registry = ResourceRegistry::new();
     let spec = DispenserSpec::new("dispenser://a");
 
@@ -576,6 +646,348 @@ async fn per_lease_state_is_reset_when_the_resource_returns() {
     // ... but state that only made sense to the previous holder starts clean, so a re-acquired listener hands out its
     // sockets again rather than looking exhausted.
     assert_eq!(lease.handed_out, 0);
+}
+
+#[tokio::test]
+async fn a_panicking_reset_leaves_the_resource_in_the_registry() {
+    let registry = ResourceRegistry::new();
+    let spec = FragileSpec::new("fragile://a");
+
+    // Creation doesn't reset, so the first acquisition gets through.
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let serial = lease.serial;
+    lease.mutated = 7;
+    drop(lease);
+
+    // The second acquisition does reset, and this one panics. The acquisition dies with it.
+    let acquisition = {
+        let registry = registry.clone();
+        let spec = spec.clone();
+        tokio::spawn(async move { registry.acquire(&owner("second"), spec).await.map(|_| ()) })
+    };
+    let error = acquisition.await.expect_err("acquisition should panic");
+    assert!(error.is_panic());
+
+    // It takes nothing with it, though. Answering at all means the registry lock survived the unwind rather than
+    // being poisoned by it, and the resource is idle rather than gone: it was already owned by its lease when the
+    // reset ran, so unwinding returned it here instead of dropping it and releasing the underlying resource.
+    let statuses = registry.snapshot();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, "idle");
+    assert_eq!(statuses[0].owner, None);
+
+    // And it really is the same resource, not a replacement built in its place.
+    spec.panic_on_reset.store(false, Relaxed);
+
+    let lease = registry.acquire(&owner("third"), spec).await.expect("should reacquire");
+    assert_eq!(lease.serial, serial);
+    assert_eq!(lease.mutated, 0);
+}
+
+/// How long to wait before concluding an acquisition is genuinely blocked.
+const BLOCKED: Duration = Duration::from_millis(100);
+
+/// Upper bound on an acquisition that should complete promptly.
+const PROMPTLY: Duration = Duration::from_secs(5);
+
+#[tokio::test]
+async fn an_outstanding_sublease_holds_the_lease_open() {
+    // The property subleases exist for. Releasing the head lease isn't enough on its own: something the holder lent
+    // out is still in use, and handing the resource to the next acquirer now would let both use it at once.
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://sublease_holds");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let serial = lease.serial;
+    let sublease = lease.dispense();
+    drop(lease);
+
+    // The head lease is gone, so the entry is idle -- but not available.
+    assert!(
+        timeout(BLOCKED, registry.acquire(&owner("second"), spec.clone()))
+            .await
+            .is_err(),
+        "acquisition should block while a sublease is outstanding"
+    );
+
+    drop(sublease);
+
+    let reacquired = timeout(PROMPTLY, registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should complete once the sublease is returned")
+        .expect("should reacquire");
+    assert_eq!(reacquired.serial, serial);
+}
+
+#[tokio::test]
+async fn per_lease_state_is_reset_only_once_subleases_are_returned() {
+    // `reset` runs at hand-over rather than on return, so it sees a resource whose previous holder is genuinely
+    // finished -- including with whatever it lent out.
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://reset_after_subleases");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let sublease = lease.dispense();
+    assert_eq!(lease.handed_out, 1);
+    drop(lease);
+
+    drop(sublease);
+
+    let reacquired = timeout(PROMPTLY, registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should complete")
+        .expect("should reacquire");
+    assert_eq!(reacquired.handed_out, 0);
+}
+
+#[tokio::test]
+async fn a_resource_that_never_subdivides_is_handed_over_without_waiting() {
+    // The common case must not pay for the mechanism: with nothing subleased, the wait resolves on its first look.
+    let registry = ResourceRegistry::new();
+    let spec = CounterSpec::new("counter://no_subleases");
+
+    drop(
+        registry
+            .acquire(&owner("first"), spec.clone())
+            .await
+            .expect("should acquire"),
+    );
+
+    timeout(BLOCKED, registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should not wait when nothing is subleased")
+        .expect("should reacquire");
+}
+
+#[tokio::test]
+async fn a_cancelled_acquisition_releases_its_claim_on_the_resource() {
+    // An acquisition blocked on a sublease is a cancellation point: a supervisor aborting a component mid-build drops
+    // it. The claim must not outlive it, or the resource is unreachable for the life of the process.
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://cancelled_claim");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let serial = lease.serial;
+    let sublease = lease.dispense();
+    drop(lease);
+
+    // Blocks on the outstanding sublease, then gets dropped when the timeout elapses.
+    assert!(
+        timeout(BLOCKED, registry.acquire(&owner("second"), spec.clone()))
+            .await
+            .is_err(),
+        "acquisition should block while a sublease is outstanding"
+    );
+
+    drop(sublease);
+
+    // The abandoned claim would otherwise still be recorded, and this would fail with `AlreadyLeased`.
+    let reacquired = timeout(PROMPTLY, registry.acquire(&owner("third"), spec))
+        .await
+        .expect("acquisition should complete once the sublease is returned")
+        .expect("should acquire after the cancelled attempt released its claim");
+    assert_eq!(reacquired.serial, serial);
+}
+
+#[tokio::test]
+async fn discarding_with_an_outstanding_sublease_holds_the_key() {
+    // Discarding drops the resource, but that alone doesn't release a subdivided one: its subresources are what hold
+    // the underlying resource open. Building the replacement now would stand it up alongside the resource being
+    // discarded -- for a connectionless listener, a second socket bound to the same address, splitting traffic with
+    // the first.
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://discard_holds");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let discarded = lease.serial;
+    let sublease = lease.dispense();
+    lease.discard();
+
+    assert!(
+        timeout(BLOCKED, registry.acquire(&owner("second"), spec.clone()))
+            .await
+            .is_err(),
+        "acquisition should block while a sublease on the discarded resource is outstanding"
+    );
+
+    drop(sublease);
+
+    // Only now is the old resource gone in full, so only now is a replacement safe to build -- and it is a
+    // replacement, not the resource that was discarded.
+    let rebuilt = timeout(PROMPTLY, registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should complete once the sublease is returned")
+        .expect("should acquire");
+    assert_ne!(rebuilt.serial, discarded);
+}
+
+#[tokio::test]
+async fn discarding_with_every_sublease_returned_frees_the_key_at_once() {
+    // Holding the key is only for subleases that are still out. With none outstanding, nothing is keeping the
+    // underlying resource open, so there is nothing to wait for and the discard is final immediately.
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://discard_settled");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let discarded = lease.serial;
+    let sublease = lease.dispense();
+    drop(sublease);
+    lease.discard();
+
+    assert!(
+        registry.snapshot().is_empty(),
+        "a discarded resource with nothing outstanding should leave no entry behind"
+    );
+
+    let rebuilt = timeout(PROMPTLY, registry.acquire(&owner("second"), spec))
+        .await
+        .expect("acquisition should not wait when nothing is subleased")
+        .expect("should acquire");
+    assert_ne!(rebuilt.serial, discarded);
+}
+
+#[tokio::test]
+async fn a_cancelled_acquisition_releases_its_claim_on_a_discarded_resource() {
+    // The same cancellation point as for an idle resource: an acquisition waiting on the discarded resource's
+    // subleases can be dropped, and its claim must not outlive it, or the key could never be rebuilt.
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://cancelled_discard_claim");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let discarded = lease.serial;
+    let sublease = lease.dispense();
+    lease.discard();
+
+    // Blocks on the outstanding sublease, then gets dropped when the timeout elapses.
+    assert!(
+        timeout(BLOCKED, registry.acquire(&owner("second"), spec.clone()))
+            .await
+            .is_err(),
+        "acquisition should block while a sublease on the discarded resource is outstanding"
+    );
+
+    drop(sublease);
+
+    // The abandoned claim would otherwise still be recorded, and this would fail with `AlreadyLeased`.
+    let rebuilt = timeout(PROMPTLY, registry.acquire(&owner("third"), spec))
+        .await
+        .expect("acquisition should complete once the sublease is returned")
+        .expect("should acquire after the cancelled attempt released its claim");
+    assert_ne!(rebuilt.serial, discarded);
+}
+
+#[tokio::test]
+async fn a_discarded_resource_holds_its_key_without_holding_its_type() {
+    // What survives a discard is the key, not the resource, so there is nothing left to type-check against: refusing
+    // the acquisition below would be refusing it on the basis of a resource that no longer exists. The wait still
+    // applies, because that is about the subresources, which are still very much real.
+    let registry = ResourceRegistry::new();
+
+    let mut lease = registry
+        .acquire(&owner("first"), DispenserSpec::new("dispenser://discard_retype"))
+        .await
+        .expect("should acquire");
+    let sublease = lease.dispense();
+    lease.discard();
+
+    assert!(
+        timeout(
+            BLOCKED,
+            registry.acquire(&owner("second"), WidgetSpec::new("dispenser://discard_retype"))
+        )
+        .await
+        .is_err(),
+        "acquisition should block while a sublease on the discarded resource is outstanding"
+    );
+
+    drop(sublease);
+
+    timeout(
+        PROMPTLY,
+        registry.acquire(&owner("second"), WidgetSpec::new("dispenser://discard_retype")),
+    )
+    .await
+    .expect("acquisition should complete once the sublease is returned")
+    .expect("a discarded resource should not hold its key to the type it used to be");
+}
+
+#[tokio::test]
+async fn snapshot_reports_outstanding_subleases() {
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://snapshot_subleases");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let sublease = lease.dispense();
+    drop(lease);
+
+    // The head lease is back, so this isn't `leased` -- but it isn't available either, and the snapshot says why.
+    let statuses = registry.snapshot();
+    let status = statuses
+        .iter()
+        .find(|status| status.key == "dispenser://snapshot_subleases")
+        .expect("resource should be registered");
+    assert_eq!(status.state, "subleased");
+    assert_eq!(status.outstanding_subleases, 1);
+
+    drop(sublease);
+
+    let statuses = registry.snapshot();
+    let status = statuses
+        .iter()
+        .find(|status| status.key == "dispenser://snapshot_subleases")
+        .expect("resource should be registered");
+    assert_eq!(status.state, "idle");
+    assert_eq!(status.outstanding_subleases, 0);
+}
+
+#[tokio::test]
+async fn snapshot_reports_a_discarded_resource_holding_its_key() {
+    let registry = ResourceRegistry::new();
+    let spec = DispenserSpec::new("dispenser://snapshot_discarded");
+
+    let mut lease = registry
+        .acquire(&owner("first"), spec.clone())
+        .await
+        .expect("should acquire");
+    let sublease = lease.dispense();
+    lease.discard();
+
+    // The resource itself is gone, so this isn't `subleased`: the key alone is reserved, and only until the sublease
+    // that is keeping the underlying resource alive comes back.
+    let statuses = registry.snapshot();
+    let status = statuses
+        .iter()
+        .find(|status| status.key == "dispenser://snapshot_discarded")
+        .expect("a discarded resource should still hold its key");
+    assert_eq!(status.state, "discarded");
+    assert_eq!(status.outstanding_subleases, 1);
+    assert_eq!(status.owner, None);
+
+    drop(sublease);
 }
 
 #[tokio::test]

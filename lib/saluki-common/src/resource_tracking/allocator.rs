@@ -4,7 +4,10 @@
 // likely will be for a while, but would be a limitation in a world where we dynamically launched
 // data pipelines and wanted to clean up removed components, and so on.
 
-use std::alloc::{GlobalAlloc, Layout};
+use std::{
+    alloc::{GlobalAlloc, Layout},
+    ptr,
+};
 
 use super::{groups::CURRENT_GROUP, stats::ResourceStats};
 
@@ -67,7 +70,7 @@ where
         }
 
         // Store the pointer to the current resource group in the trailer, and also update the statistics.
-        let trailer_ptr = ptr.add(trailer_start) as *mut *mut ResourceStats;
+        let trailer_ptr = trailer_ptr_from(ptr, trailer_start);
         CURRENT_GROUP.with(|current_group| {
             let group_ptr = current_group.borrow();
             group_ptr.as_ref().track_allocation(layout_size);
@@ -81,13 +84,33 @@ where
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // Read the pointer to the owning resource group from the trailer and update the statistics.
         let (layout, trailer_start) = get_layout_with_group_trailer(layout);
-        let trailer_ptr = ptr.add(trailer_start) as *mut *mut ResourceStats;
+        let trailer_ptr = trailer_ptr_from(ptr, trailer_start);
         let group = (*trailer_ptr).as_ref().unwrap();
         group.track_deallocation(layout.size());
 
         // Deallocate the memory.
         self.allocator.dealloc(ptr, layout);
     }
+}
+
+/// Returns a pointer to the group trailer of the allocation based at `ptr`.
+///
+/// # Provenance
+///
+/// The trailer sits past the end of the layout the caller asked for, and the caller's pointer does not carry provenance
+/// that reaches it. `<*mut u8>::add` requires its result to stay within the allocated object, and the object the
+/// compiler believes it is offsetting within is exactly `layout.size()` bytes: the allocation shim generated for a
+/// global allocator advertises the requested size to the optimizer, not whatever larger block the allocator actually
+/// carved out. Reaching the trailer with ordinary pointer arithmetic is therefore out of bounds, and the resulting
+/// offset folds to a poison value wherever the optimizer can see both the allocation and the offset -- which it can
+/// whenever the shim is inlined into the allocating function. A poisoned pointer then fails checks it should pass,
+/// including the alignment check inserted under debug assertions.
+///
+/// Synthesizing the pointer from the address instead keeps the trailer reachable. `alloc` exposes the provenance of the
+/// whole padded block, so a pointer recovered from an address within that block carries provenance for all of it,
+/// trailer included, on both the allocation and deallocation paths.
+fn trailer_ptr_from(ptr: *mut u8, trailer_start: usize) -> *mut *mut ResourceStats {
+    ptr::with_exposed_provenance_mut(ptr.expose_provenance().wrapping_add(trailer_start))
 }
 
 fn get_layout_with_group_trailer(layout: Layout) -> (Layout, usize) {

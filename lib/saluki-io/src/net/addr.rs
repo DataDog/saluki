@@ -51,14 +51,24 @@ pub enum ListenAddress {
 }
 
 impl ListenAddress {
-    /// Creates a TCP address for the given port that listens on all interfaces.
+    /// Creates a TCP address for the given port that listens on all IPv4 interfaces.
     pub const fn tcp_any(port: u16) -> Self {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
     }
 
-    /// Creates a TCP address for the given port that listens on the loopback interface.
+    /// Creates a TCP address for the given port that listens on the IPv4 loopback interface.
     pub const fn tcp_loopback(port: u16) -> Self {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)))
+    }
+
+    /// Creates a UDP address for the given port that listens on all IPv4 interfaces.
+    pub const fn udp_any(port: u16) -> Self {
+        Self::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
+    }
+
+    /// Creates a UDP address for the given port that listens on the IPv4 loopback interface.
+    pub const fn udp_loopback(port: u16) -> Self {
+        Self::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)))
     }
 
     /// Creates a Windows named pipe listen address.
