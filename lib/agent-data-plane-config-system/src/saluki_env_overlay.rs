@@ -457,6 +457,15 @@ mod tests {
     }
 
     #[test]
+    fn metric_aggregation_intervals_uses_json_environment_decoding() {
+        let (_, decode) = leaf_specs()
+            .iter()
+            .find(|(path, _)| path.as_slice() == ["metric_aggregation_intervals"])
+            .expect("metric aggregation intervals must be a discovered leaf");
+        assert_eq!(*decode, EnvDecode::JsonValue);
+    }
+
+    #[test]
     fn a_top_level_key_deserializes_from_its_own_name() {
         let v = json!({ "aggregate_context_limit": 250000 });
         let parsed: SalukiOnly = serde_json::from_value(v).expect("deserializes");

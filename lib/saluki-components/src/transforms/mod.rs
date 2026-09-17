@@ -7,13 +7,13 @@ mod aggregate;
 pub use self::aggregate::{
     aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotEntry,
     AggregateContextSnapshotHandle, AggregateContextSnapshotReceiver, AggregateMetricType, HistogramConfiguration,
+    MetricAggregationInterval,
 };
 #[cfg(feature = "test-util")]
 pub use self::aggregate::{
     aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotPendingResponse,
     AggregateContextSnapshotResponder,
 };
-
 mod chained;
 pub use self::chained::ChainedConfiguration;
 
