@@ -487,9 +487,9 @@ experiments:
         - unix_datagram:
             bytes_per_second: "500 MiB"
 
-  # Measure the cost of evaluating the experimental endpoint allowlist when every
-  # aggregated series misses. This deliberately matches the 500 MiB/s baseline above so its CPU,
-  # memory, and ingress-throughput results are directly comparable.
+  # Measure the cost of evaluating the experimental endpoint allowlist when every aggregated
+  # metric misses, including both series and sketches. This deliberately matches the 500 MiB/s
+  # baseline above so its CPU, memory, and ingress-throughput results are directly comparable.
   - name: metric_mirroring_drop_all_500mb_3k_contexts
     extends: dsd_base
     optimization_goals:
