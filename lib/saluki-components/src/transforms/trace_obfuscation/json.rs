@@ -665,6 +665,34 @@ mod tests {
     }
 
     #[test]
+    fn sql_value_with_json_only_escapes_is_still_obfuscated() {
+        // Unlike every other expected value in this module, these are deliberately not what the
+        // Datadog Agent returns. The Agent unescapes a SQL value with Go's `strconv.Unquote`,
+        // which is Go string syntax rather than JSON, and it rejects `\/` and surrogate pairs.
+        // It then falls back to the raw literal with its quotes, the SQL tokenizer reads the whole
+        // thing as one quoted identifier, and the query passes through unobfuscated. We unescape
+        // with serde instead, so a JSON-valid value always reaches the SQL tokenizer. That
+        // matters because `\/` is ordinary production traffic: PHP's `json_encode` escapes
+        // every `/` as `\/` by default. Leaking every literal in the value is worse than the
+        // resource string differing from the Agent's, so we keep our behaviour.
+        assert_obfuscated(
+            r#"{"query": "select * from t where path = 'a\/b'"}"#,
+            &[],
+            &["query"],
+            r#"{"query":"select * from t where path = ?"}"#,
+        );
+
+        // A surrogate pair is the other JSON escape `strconv.Unquote` rejects, which the Agent
+        // then leaks as `ud83dude00`.
+        assert_obfuscated(
+            r#"{"query": "select 1 where x = '\\ud83d\\ude00'"}"#,
+            &[],
+            &["query"],
+            r#"{"query":"select ? where x = ?"}"#,
+        );
+    }
+
+    #[test]
     fn mysql_plan() {
         assert_obfuscated(
             MYSQL_PLAN,
