@@ -21,7 +21,6 @@ use foldspace_core::{
     StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
-use metrics::counter;
 use saluki_components::forwarders::queue::{DeliveryQueueConfiguration, PendingTransaction, PendingTransactions};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -49,13 +48,15 @@ use tracing::{debug, warn};
 mod conversion;
 mod retry;
 mod router;
+mod telemetry;
 #[cfg(test)]
 mod tests;
 mod transport;
 
 pub use self::router::StatefulMetricsRouterConfiguration;
 use self::{
-    retry::{build_queue, track_drops, track_enqueue, RetryBatch},
+    retry::{build_queue, RetryBatch},
+    telemetry::Telemetry,
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
 
@@ -101,6 +102,7 @@ impl DestinationBuilder for StatefulMetricsConfiguration {
             self.flush_timeout,
             self.batch_capacity,
             queue,
+            builder,
         );
         Ok(Box::new(StatefulMetrics {
             client,
@@ -173,6 +175,7 @@ impl Destination for StatefulMetrics {
 
 struct StatefulMetricsWorker {
     core: StatefulMetricsClient<ZstdBatchCompressor>,
+    telemetry: Telemetry,
     endpoint: Endpoint,
     api_key: MetadataValue<Ascii>,
     transport: Option<Transport>,
@@ -189,7 +192,7 @@ struct StatefulMetricsWorker {
 impl StatefulMetricsWorker {
     fn new(
         endpoint: Endpoint, api_key: MetadataValue<Ascii>, compression_level: i32, flush_timeout: Duration,
-        batch_capacity: usize, queue: PendingTransactions<RetryBatch>,
+        batch_capacity: usize, queue: PendingTransactions<RetryBatch>, builder: MetricsBuilder,
     ) -> Self {
         let config = CoreConfig {
             batch_capacity,
@@ -201,6 +204,7 @@ impl StatefulMetricsWorker {
         let stream_lifetime = config.sender.stream_lifetime;
         Self {
             core: StatefulMetricsClient::new(config, ZstdBatchCompressor::new(compression_level)),
+            telemetry: Telemetry::new(builder),
             endpoint,
             api_key,
             transport: None,
@@ -230,7 +234,8 @@ impl StatefulMetricsWorker {
         let batch = LogicalMetricBatch::new(series);
         if !batch.is_empty() {
             let points = batch.point_count() as u64;
-            track_enqueue(self.queue.push_high_priority(RetryBatch(batch)).await, points);
+            self.telemetry
+                .track_enqueue(self.queue.push_high_priority(RetryBatch(batch)).await, points);
         }
     }
 
@@ -265,7 +270,7 @@ impl StatefulMetricsWorker {
             let batch = match attempt {
                 PendingTransaction::HighPriority(batch) => batch,
                 PendingTransaction::LowPriority(batch) => {
-                    counter!("stateful_metrics_batches_retried_total").increment(1);
+                    self.telemetry.batches_retried.increment(1);
                     batch
                 }
             };
@@ -330,7 +335,7 @@ impl StatefulMetricsWorker {
                 }) && self.core.inflight_len() < before;
                 if accepted {
                     self.backoff = INITIAL_BACKOFF;
-                    counter!("stateful_metrics_batches_acked_total").increment(1);
+                    self.telemetry.batches_acked.increment(1);
                 }
                 self.apply(effects).await?;
                 if self.core.inflight_len() == 0 {
@@ -356,7 +361,8 @@ impl StatefulMetricsWorker {
 
     async fn requeue(&mut self, batch: LogicalMetricBatch) {
         let points = batch.point_count() as u64;
-        track_enqueue(self.queue.push_low_priority(RetryBatch(batch)).await, points);
+        self.telemetry
+            .track_enqueue(self.queue.push_low_priority(RetryBatch(batch)).await, points);
     }
 
     async fn apply(&mut self, result: Result<Vec<MetricClientEffect>, MetricClientError>) -> Result<(), GenericError> {
@@ -422,12 +428,11 @@ impl StatefulMetricsWorker {
                     unacknowledged,
                 } => {
                     warn!(kind = ?failure.kind(), ?action, batches = unacknowledged.len(), "Stateful metrics stream failed.");
-                    counter!("stateful_metrics_stream_failures_total", "kind" => format!("{:?}", failure.kind()))
-                        .increment(1);
+                    self.telemetry.stream_failed(failure.kind());
                     for batch in unacknowledged {
                         if action == MetricFailureAction::DoNotRetry {
-                            counter!("stateful_metrics_batches_abandoned_total").increment(1);
-                            counter!("stateful_metrics_points_dropped_total").increment(batch.point_count() as u64);
+                            self.telemetry.batches_abandoned.increment(1);
+                            self.telemetry.points_dropped.increment(batch.point_count() as u64);
                         } else {
                             self.requeue(batch).await;
                         }
@@ -482,7 +487,7 @@ impl StatefulMetricsWorker {
             }
         }
         self.transport = None;
-        track_drops(self.queue.flush().await?);
+        self.telemetry.track_drops(self.queue.flush().await?);
         Ok(())
     }
 }

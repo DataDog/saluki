@@ -71,6 +71,7 @@ async fn worker() -> StatefulMetricsWorker {
         Duration::from_secs(2),
         512,
         queue().await,
+        MetricsBuilder::default(),
     )
 }
 
@@ -248,6 +249,7 @@ impl Harness {
             Duration::from_secs(2),
             512,
             queue().await,
+            MetricsBuilder::default(),
         );
         let effects = worker.core.start();
         worker.apply(effects).await.unwrap();
@@ -793,6 +795,7 @@ async fn threshold_flush_and_rejected_partial_remain_recoverable() {
         Duration::from_secs(2),
         2,
         queue().await,
+        MetricsBuilder::default(),
     );
     let effects = worker.core.start().unwrap();
     let MetricClientEffect::OpenStream { stream_id } = effects[0] else {
