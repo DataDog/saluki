@@ -31,6 +31,7 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
+    forwarders::queue::DeliveryQueueConfiguration,
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{
@@ -58,12 +59,17 @@ use tracing::{debug, info, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration,
+        dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, stateful_metrics::StatefulMetricsConfiguration,
-        static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
+        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration,
+        host_tags::HostTagsConfiguration,
+        liveness::LivenessConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration,
+        stateful_metrics::{StatefulMetricsConfiguration, StatefulMetricsRouterConfiguration},
+        static_tags::resolve_static_tags,
+        tag_filterlist::TagFilterlistConfiguration,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -471,7 +477,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
             ));
         }
         blueprint
-            .add_transform(
+            .add_transform("stateful_metrics_route", StatefulMetricsRouterConfiguration)?
+            .add_destination(
                 "stateful_metrics",
                 StatefulMetricsConfiguration {
                     endpoint: endpoint.clone().into(),
@@ -479,9 +486,13 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
                     compression_level: shared.endpoints.compression.effective_zstd_level(),
                     flush_timeout: shared.metrics_encoding.flush_timeout,
                     batch_capacity: shared.metrics_encoding.max_metrics_per_payload,
+                    queue: DeliveryQueueConfiguration::from_configuration(shared),
+                    stop_timeout: dp.stop_timeout(),
                 },
             )?
-            .connect_components_in_order(["metrics_enrich", "stateful_metrics", "dd_metrics_encode"])?;
+            .connect_components("metrics_enrich", "stateful_metrics_route")?
+            .connect_components("stateful_metrics_route.stateful", "stateful_metrics")?
+            .connect_components("stateful_metrics_route.http", "dd_metrics_encode")?;
     } else {
         blueprint.connect_components("metrics_enrich", "dd_metrics_encode")?;
     }

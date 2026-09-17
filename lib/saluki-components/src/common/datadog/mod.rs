@@ -7,7 +7,7 @@ pub mod obfuscation;
 pub mod protocol;
 mod proxy;
 pub mod request_builder;
-mod retry;
+pub(crate) mod retry;
 mod retry_capacity;
 pub mod telemetry;
 #[cfg(test)]

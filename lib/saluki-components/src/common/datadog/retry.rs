@@ -184,7 +184,7 @@ impl RetryConfiguration {
     /// When no retry-queue storage path is configured, one is derived from `run_path`, matching the
     /// Datadog Agent's own layout. Both may be absent, in which case there is no storage path and
     /// disk persistence cannot be used.
-    pub(super) fn from_configuration(forwarder: &shared::Forwarder, run_path: Option<&Path>) -> Self {
+    pub(crate) fn from_configuration(forwarder: &shared::Forwarder, run_path: Option<&Path>) -> Self {
         Self {
             backoff_factor: forwarder.backoff_factor,
             backoff_base: forwarder.backoff_base,

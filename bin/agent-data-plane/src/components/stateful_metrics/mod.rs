@@ -1,71 +1,73 @@
-//! Experimental ADP client for Foldspace series delivery.
+//! Experimental ADP destination for configuration-selected Foldspace series delivery.
 //!
-//! Foldspace is a linked library: it owns encoding, dictionary state, and recovery decisions.
-//! Each sender worker owns its own core, transport, timers, and bounded logical retries.
-//! No dictionary, stream ID, or inflight state is shared between workers, even for the same endpoint.
-//! The initial topology starts one worker; future sharding can route metrics to more worker instances.
-//! Original metrics are moved into a parallel FIFO until ACK so stateless fallback can use the existing HTTP encoder unchanged.
+//! Each sender worker owns one sans-I/O core, gRPC stream, and ADP priority queue. Logical
+//! batches enter the low-priority retry queue on recovery and can spill to disk. Retried data
+//! is encoded against the current core state; original ADP metrics are not retained.
+//! The initial topology starts one worker; future sharding can route to additional workers.
 //!
 //! # Missing
 //!
 //! - TODO: Add TLS/proxy support before using this path beyond plaintext integration tests.
-//! - TODO: Add durable retries and a byte budget for retained metrics and dictionary state.
+//! - TODO: Add a byte budget for core inflight metrics and dictionary state.
 //! - TODO: Support additional destinations; this experiment supports one stateful destination.
 
 use std::{collections::VecDeque, future::pending, time::Duration};
 
 use agent_data_plane_config::Live;
 use async_trait::async_trait;
-use foldspace_core::proto::stateful::{
-    batch_status, stateful_intake_client::StatefulIntakeClient, BatchStatus, StatefulBatch,
-};
 use foldspace_core::{
-    CoreConfig, LogicalMetricBatch, MetricClientEffect, MetricClientError, MetricFailureAction, MetricStreamError,
-    MetricStreamFailure, MetricStreamFailureKind, SenderConfig, StatefulMetricsClient, StreamId, TimerKind,
-    ZstdBatchCompressor,
+    proto::stateful::batch_status, CoreConfig, LogicalMetricBatch, MetricClientEffect, MetricClientError,
+    MetricFailureAction, MetricStreamError, MetricStreamFailure, MetricStreamFailureKind, SenderConfig,
+    StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
 use metrics::counter;
+use saluki_components::forwarders::queue::{DeliveryQueueConfiguration, PendingTransaction, PendingTransactions};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
-        transforms::{Transform, TransformBuilder, TransformContext},
+        destinations::{Destination, DestinationBuilder, DestinationContext},
         BuildContext,
     },
-    data_model::event::{metric::Metric, Event, EventType},
-    topology::OutputDefinition,
+    data_model::event::{Event, EventType},
+    observability::ComponentMetricsExt as _,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::mpsc,
-    time::{sleep, sleep_until, timeout, Instant},
+    time::{sleep, sleep_until, Instant},
 };
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     metadata::{Ascii, MetadataValue},
     transport::Endpoint,
-    Code, Request, Status, Streaming,
+    Code, Status,
 };
 use tracing::{debug, warn};
 
 mod conversion;
+mod retry;
+mod router;
 #[cfg(test)]
 mod tests;
+mod transport;
 
-const MAX_BUFFERED_BATCHES: usize = 32;
+pub use self::router::StatefulMetricsRouterConfiguration;
+use self::{
+    retry::{build_queue, track_drops, track_enqueue, RetryBatch},
+    transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
+};
+
 const MIN_FLUSH_TIMEOUT: Duration = Duration::from_millis(10);
 const MAX_INFLIGHT_BATCHES: usize = 8;
-const REQUESTED_STATE_BYTES: &str = "5242880";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-const OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Metric)];
 
-/// Opt-in stateful series client; its output feeds the existing HTTP metrics encoder.
+/// Opt-in destination for stateful series; delivery never switches automatically to HTTP.
 pub struct StatefulMetricsConfiguration {
     /// Explicit plaintext test intake origin. There is no default endpoint.
     pub endpoint: MetaString,
@@ -73,33 +75,37 @@ pub struct StatefulMetricsConfiguration {
     pub api_key: Live<String>,
     /// Zstd level, supplied from the existing serializer configuration (default 3).
     pub compression_level: i32,
-    /// Maximum wait from the first pending metric; zero uses the encoder's 10 millisecond fallback.
+    /// Maximum wait for a partial batch; zero uses the encoder's 10 millisecond fallback.
     pub flush_timeout: Duration,
     /// Series-count threshold for automatic flushing; an input buffer may exceed this threshold.
     pub batch_capacity: usize,
+    /// Existing forwarder settings for high-priority capacity, retry memory, and disk storage.
+    pub queue: DeliveryQueueConfiguration,
+    /// Total component stop budget. At most half (capped at 30 seconds) is used waiting for delivery.
+    pub stop_timeout: Duration,
 }
 
 #[async_trait]
-impl TransformBuilder for StatefulMetricsConfiguration {
+impl DestinationBuilder for StatefulMetricsConfiguration {
     fn input_event_type(&self) -> EventType {
         EventType::Metric
     }
-    fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        OUTPUTS
-    }
-
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let endpoint = Endpoint::from_shared(self.endpoint.to_string())?.connect_timeout(CONNECT_TIMEOUT);
+        let builder = MetricsBuilder::from_component_context(context.component_context());
+        let queue = build_queue(&self.queue, &self.endpoint, 0, &builder).await?;
         let client = StatefulMetricsWorker::new(
             endpoint,
             parse_api_key(&self.api_key)?,
             self.compression_level,
             self.flush_timeout,
             self.batch_capacity,
+            queue,
         );
         Ok(Box::new(StatefulMetrics {
             client,
             api_key: self.api_key.clone(),
+            delivery_shutdown_timeout: (self.stop_timeout / 2).min(SHUTDOWN_TIMEOUT),
         }))
     }
 }
@@ -115,99 +121,53 @@ impl MemoryBounds for StatefulMetricsConfiguration {
 struct StatefulMetrics {
     client: StatefulMetricsWorker,
     api_key: Live<String>,
+    delivery_shutdown_timeout: Duration,
 }
 
 #[async_trait]
-impl Transform for StatefulMetrics {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+impl Destination for StatefulMetrics {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         let effects = self.client.core.start();
-        self.client.apply(effects)?;
+        self.client.apply(effects).await?;
         let mut input_closed = false;
         let mut shutdown_deadline = None;
         health.mark_ready();
 
         loop {
-            self.client.pump()?;
-            if input_closed && self.client.core.has_send_capacity() {
-                self.client.flush()?;
+            self.client.pump().await?;
+            if input_closed {
+                if self.client.core.has_send_capacity() {
+                    self.client.flush().await?;
+                }
+                if self.client.is_empty() || self.client.suspended {
+                    break;
+                }
             }
-            if !self.client.fallback.is_empty() {
-                context
-                    .dispatcher()
-                    .buffered()?
-                    .send_all(self.client.fallback.drain(..).map(Event::Metric))
-                    .await?;
-            }
-            if input_closed && self.client.buffered_batches() == 0 {
-                break;
-            }
-
             let flush_deadline = self.client.flush_deadline();
             select! {
                 _ = health.live() => {},
-                key = self.api_key.changed() => {
-                    self.client.update_credentials(&key)?;
-                }
-                event = next_transport_event(&mut self.client.transport) => {
-                    self.client.on_transport(event)?;
-                }
+                _ = tokio::task::yield_now(), if !self.client.suspended && self.client.core.has_send_capacity() && !self.client.queue.is_empty() => {},
+                key = self.api_key.changed() => { self.client.update_credentials(&key).await?; },
+                event = next_transport_event(&mut self.client.transport) => { self.client.on_transport(event).await?; },
                 Some((stream_id, kind)) = self.client.timers.next(), if !self.client.timers.is_empty() => {
                     let effects = self.client.core.handle_timer(stream_id, kind);
-                    self.client.apply(effects)?;
-                }
-                _ = wait_deadline(flush_deadline) => {
-                    self.client.flush()?;
-                }
+                    self.client.apply(effects).await?;
+                },
+                _ = wait_deadline(flush_deadline) => { self.client.flush().await?; },
                 _ = wait_deadline(self.client.ack_deadline) => {
-                    self.client.fail(MetricStreamFailureKind::DeadlineExceeded, "acknowledgement timed out")?;
-                }
-                _ = wait_deadline(shutdown_deadline) => {
-                    return Err(generic_error!("stateful metrics shutdown timed out with {} unacknowledged or queued batches", self.client.buffered_batches()));
-                }
-                events = context.events().next(), if !input_closed && self.client.buffered_batches() < MAX_BUFFERED_BATCHES => {
+                    self.client.fail(MetricStreamFailureKind::DeadlineExceeded, "acknowledgement timed out").await?;
+                },
+                _ = wait_deadline(shutdown_deadline) => break,
+                events = context.events().next(), if !input_closed => {
                     match events {
-                        Some(events) => {
-                            let passthrough = self.client.accept(events);
-                            if !passthrough.is_empty() {
-                                context.dispatcher().buffered()?.send_all(passthrough).await?;
-                            }
-                        }
-                        None => {
-                            input_closed = true;
-                            shutdown_deadline = Some(Instant::now() + SHUTDOWN_TIMEOUT);
-                        }
+                        Some(events) => self.client.accept(events).await,
+                        None => { input_closed = true; shutdown_deadline = Some(Instant::now() + self.delivery_shutdown_timeout); },
                     }
-                }
+                },
             }
         }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DeliveryMode {
-    Stateful,
-    Suspended,
-    Http,
-}
-
-struct PendingBatch {
-    logical: LogicalMetricBatch,
-    originals: OriginalMetrics,
-}
-
-struct OriginalMetrics {
-    metrics: Vec<Metric>,
-    input_batches: usize,
-    flush_at: Instant,
-}
-
-impl OriginalMetrics {
-    fn append(&mut self, mut other: Self) {
-        self.metrics.append(&mut other.metrics);
-        self.input_batches += other.input_batches;
-        self.flush_at = self.flush_at.min(other.flush_at);
+        self.client.shutdown().await
     }
 }
 
@@ -217,12 +177,10 @@ struct StatefulMetricsWorker {
     api_key: MetadataValue<Ascii>,
     transport: Option<Transport>,
     timers: FuturesUnordered<BoxFuture<'static, (StreamId, TimerKind)>>,
-    pending: VecDeque<PendingBatch>,
-    inflight: VecDeque<OriginalMetrics>,
-    buffered: Option<OriginalMetrics>,
+    queue: PendingTransactions<RetryBatch>,
     flush_timeout: Duration,
-    fallback: Vec<Metric>,
-    mode: DeliveryMode,
+    buffered_deadline: Option<Instant>,
+    suspended: bool,
     ack_deadline: Option<Instant>,
     backoff: Duration,
     stream_lifetime: Duration,
@@ -231,7 +189,7 @@ struct StatefulMetricsWorker {
 impl StatefulMetricsWorker {
     fn new(
         endpoint: Endpoint, api_key: MetadataValue<Ascii>, compression_level: i32, flush_timeout: Duration,
-        batch_capacity: usize,
+        batch_capacity: usize, queue: PendingTransactions<RetryBatch>,
     ) -> Self {
         let config = CoreConfig {
             batch_capacity,
@@ -247,195 +205,141 @@ impl StatefulMetricsWorker {
             api_key,
             transport: None,
             timers: FuturesUnordered::new(),
-            pending: VecDeque::new(),
-            inflight: VecDeque::new(),
-            buffered: None,
+            queue,
             flush_timeout: if flush_timeout.is_zero() {
                 MIN_FLUSH_TIMEOUT
             } else {
                 flush_timeout
             },
-            fallback: Vec::new(),
-            mode: DeliveryMode::Stateful,
+            buffered_deadline: None,
+            suspended: false,
             ack_deadline: None,
             backoff: INITIAL_BACKOFF,
             stream_lifetime,
         }
     }
 
-    fn accept(&mut self, events: impl IntoIterator<Item = Event>) -> Vec<Event> {
-        let mut passthrough = Vec::new();
-        let mut originals = Vec::new();
-        let mut series = Vec::new();
-        for event in events {
-            let Event::Metric(metric) = event else { continue };
-            if self.mode != DeliveryMode::Http {
-                if let Some(logical) = conversion::convert(&metric) {
-                    if !logical.name().is_empty() && !logical.points().is_empty() {
-                        originals.push(metric);
-                        series.push(logical);
-                    }
-                    continue;
-                }
-            }
-            passthrough.push(Event::Metric(metric));
+    async fn accept(&mut self, events: impl IntoIterator<Item = Event>) {
+        let series = events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Metric(metric) => conversion::convert(&metric).filter(|series| !series.name().is_empty()),
+                _ => None,
+            })
+            .collect();
+        let batch = LogicalMetricBatch::new(series);
+        if !batch.is_empty() {
+            let points = batch.point_count() as u64;
+            track_enqueue(self.queue.push_high_priority(RetryBatch(batch)).await, points);
         }
-        if !series.is_empty() {
-            self.pending.push_back(PendingBatch {
-                logical: LogicalMetricBatch::new(series),
-                originals: OriginalMetrics {
-                    metrics: originals,
-                    input_batches: 1,
-                    flush_at: Instant::now() + self.flush_timeout,
-                },
-            });
-        }
-        passthrough
     }
 
-    fn buffered_batches(&self) -> usize {
-        self.pending
-            .iter()
-            .map(|batch| batch.originals.input_batches)
-            .sum::<usize>()
-            + self
-                .inflight
-                .iter()
-                .map(|originals| originals.input_batches)
-                .sum::<usize>()
-            + self.buffered.as_ref().map_or(0, |originals| originals.input_batches)
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty() && self.core.inflight_len() == 0 && self.core.buffered_series_len() == 0
     }
 
     fn flush_deadline(&self) -> Option<Instant> {
-        if self.mode == DeliveryMode::Stateful && self.core.has_send_capacity() {
-            self.buffered.as_ref().map(|originals| originals.flush_at)
-        } else {
-            None
-        }
+        (!self.suspended && self.core.has_send_capacity())
+            .then_some(self.buffered_deadline)
+            .flatten()
     }
 
-    fn update_credentials(&mut self, key: &str) -> Result<(), GenericError> {
+    async fn update_credentials(&mut self, key: &str) -> Result<(), GenericError> {
         self.api_key = parse_api_key(key)?;
-        self.mode = DeliveryMode::Stateful;
+        self.suspended = false;
         self.backoff = INITIAL_BACKOFF;
         let effects = self.core.reset_destination_state();
-        self.apply(effects)
+        self.apply(effects).await
     }
 
-    fn pump(&mut self) -> Result<(), GenericError> {
+    async fn pump(&mut self) -> Result<(), GenericError> {
         if self.flush_deadline().is_some_and(|deadline| deadline <= Instant::now()) {
-            self.flush()?;
+            self.flush().await?;
         }
-        while self.mode == DeliveryMode::Stateful && self.core.has_send_capacity() {
-            let Some(PendingBatch { logical, originals }) = self.pending.pop_front() else {
+        // Bound each turn even when many small batches coalesce; keep timers and input responsive.
+        for _ in 0..MAX_INFLIGHT_BATCHES {
+            if self.suspended || !self.core.has_send_capacity() {
                 break;
-            };
-            match self.core.push_batch(logical) {
-                Err(MetricClientError::Push(error)) => {
-                    self.pending.push_front(PendingBatch {
-                        logical: error.into_batch(),
-                        originals,
-                    });
-                    break;
-                }
-                result => {
-                    match &mut self.buffered {
-                        Some(buffered) => buffered.append(originals),
-                        None => self.buffered = Some(originals),
-                    }
-                    self.track_flushed_payload();
-                    self.apply(result)?;
-                }
             }
+            let Some(attempt) = self.queue.pop().await else { break };
+            let batch = match attempt {
+                PendingTransaction::HighPriority(batch) => batch,
+                PendingTransaction::LowPriority(batch) => {
+                    counter!("stateful_metrics_batches_retried_total").increment(1);
+                    batch
+                }
+            };
+            let result = self.core.push_batch(batch.0);
+            self.buffered_deadline
+                .get_or_insert_with(|| Instant::now() + self.flush_timeout);
+            self.apply(result).await?;
         }
         if self.flush_deadline().is_some_and(|deadline| deadline <= Instant::now()) {
-            self.flush()?;
+            self.flush().await?;
         }
         Ok(())
     }
 
-    fn track_flushed_payload(&mut self) {
-        // Threshold and explicit flushes consume the entire partial batch, including on encoding failure.
-        if self.core.buffered_series_len() == 0 {
-            if let Some(originals) = self.buffered.take() {
-                self.inflight.push_back(originals);
-            }
-        }
+    async fn flush(&mut self) -> Result<(), GenericError> {
+        let result = self.core.flush();
+        self.apply(result).await
     }
 
-    fn flush(&mut self) -> Result<(), GenericError> {
-        match self.core.flush() {
-            Err(MetricClientError::Push(error)) => {
-                let originals = self
-                    .buffered
-                    .take()
-                    .ok_or_else(|| generic_error!("rejected flush has no original metrics"))?;
-                self.pending.push_front(PendingBatch {
-                    logical: error.into_batch(),
-                    originals,
-                });
-                Ok(())
-            }
-            result => {
-                self.track_flushed_payload();
-                self.apply(result)
-            }
-        }
-    }
-
-    fn fail(&mut self, kind: MetricStreamFailureKind, message: &str) -> Result<(), GenericError> {
+    async fn fail(&mut self, kind: MetricStreamFailureKind, message: &str) -> Result<(), GenericError> {
         if let Some(stream_id) = self.core.current_stream_id() {
             let effects = self
                 .core
                 .handle_stream_error(stream_id, MetricStreamFailure::new(kind, message));
-            self.apply(effects)?;
+            self.apply(effects).await?;
         }
         Ok(())
     }
 
-    fn on_transport(&mut self, event: TransportEvent) -> Result<(), GenericError> {
-        let Some(stream_id) = self.core.current_stream_id() else {
+    async fn on_transport(&mut self, event: TransportEvent) -> Result<(), GenericError> {
+        let stream_id = event.stream_id;
+        if self.core.current_stream_id() != Some(stream_id) {
             return Ok(());
-        };
-        match event {
-            TransportEvent::Opened(stream) => {
+        }
+        match event.kind {
+            TransportEventKind::Opened(stream) => {
                 if let Some(transport) = &mut self.transport {
                     transport.state = TransportState::Open(stream);
                 }
                 self.schedule(stream_id, TimerKind::RotateStream, self.stream_lifetime);
                 let effects = self.core.handle_stream_opened(stream_id);
-                self.apply(effects)?;
+                self.apply(effects).await?;
             }
-            TransportEvent::Ack(ack) => {
+            TransportEventKind::Ack(ack) => {
                 if ack.status != i32::from(batch_status::Status::Ok) {
-                    return self.fail(
-                        MetricStreamFailureKind::InvalidArgument,
-                        "invalid acknowledgement status",
-                    );
+                    return self
+                        .fail(
+                            MetricStreamFailureKind::InvalidArgument,
+                            "invalid acknowledgement status",
+                        )
+                        .await;
                 }
                 let before = self.core.inflight_len();
                 let effects = self.core.handle_ack(stream_id, u64::from(ack.batch_id));
-                if let Ok(effects) = &effects {
-                    let returned = effects.iter().any(|effect| {
+                let accepted = effects.as_ref().is_ok_and(|effects| {
+                    !effects.iter().any(|effect| {
                         matches!(
                             effect,
                             MetricClientEffect::StreamFailed { .. } | MetricClientEffect::ReturnUnacknowledged { .. }
                         )
-                    });
-                    if !returned && self.core.inflight_len() < before {
-                        self.inflight.pop_front();
-                        self.backoff = INITIAL_BACKOFF;
-                        counter!("stateful_metrics_batches_acked_total").increment(1);
-                    }
+                    })
+                }) && self.core.inflight_len() < before;
+                if accepted {
+                    self.backoff = INITIAL_BACKOFF;
+                    counter!("stateful_metrics_batches_acked_total").increment(1);
                 }
-                self.apply(effects)?;
+                self.apply(effects).await?;
                 if self.core.inflight_len() == 0 {
                     self.ack_deadline = None;
-                } else if self.core.inflight_len() < before {
+                } else if accepted {
                     self.ack_deadline = Some(Instant::now() + ACK_TIMEOUT);
                 }
             }
-            TransportEvent::Failed(status) => self.fail(classify(status.code()), status.message())?,
+            TransportEventKind::Failed(status) => self.fail(classify(status.code()), status.message()).await?,
         }
         Ok(())
     }
@@ -450,9 +354,21 @@ impl StatefulMetricsWorker {
         );
     }
 
-    fn apply(&mut self, result: Result<Vec<MetricClientEffect>, MetricClientError>) -> Result<(), GenericError> {
-        let effects = match result {
-            Ok(effects) => effects,
+    async fn requeue(&mut self, batch: LogicalMetricBatch) {
+        let points = batch.point_count() as u64;
+        track_enqueue(self.queue.push_low_priority(RetryBatch(batch)).await, points);
+    }
+
+    async fn apply(&mut self, result: Result<Vec<MetricClientEffect>, MetricClientError>) -> Result<(), GenericError> {
+        let mut effects: VecDeque<_> = match result {
+            Ok(effects) => effects.into(),
+            Err(MetricClientError::Push(error)) => {
+                self.requeue(error.into_batch()).await;
+                if self.core.buffered_series_len() == 0 {
+                    self.buffered_deadline = None;
+                }
+                return Ok(());
+            }
             Err(MetricClientError::Encode { stream_id, .. }) => self
                 .core
                 .handle_stream_error(
@@ -462,60 +378,30 @@ impl StatefulMetricsWorker {
                         "local stateful encoding failed",
                     ),
                 )
-                .map_err(|error| generic_error!("failed to recover stateful encoding: {error:?}"))?,
-            Err(MetricClientError::Push(_)) => return Err(generic_error!("unexpected stateful push rejection")),
+                .map_err(|error| generic_error!("stateful recovery failed: {error:?}"))?
+                .into(),
         };
-        let mut returned = VecDeque::new();
-        for effect in effects {
+        while let Some(effect) = effects.pop_front() {
             match effect {
-                MetricClientEffect::OpenStream { .. } => {
+                MetricClientEffect::OpenStream { stream_id } => {
                     self.timers.clear();
-                    let (sender, receiver) = mpsc::channel(MAX_INFLIGHT_BATCHES + 1);
-                    let endpoint = self.endpoint.clone();
-                    let mut request = Request::new(ReceiverStream::new(receiver));
-                    request.metadata_mut().insert("dd-api-key", self.api_key.clone());
-                    request
-                        .metadata_mut()
-                        .insert("dd-content-encoding", MetadataValue::from_static("zstd"));
-                    request.metadata_mut().insert(
-                        "dd-state-request-bytes",
-                        MetadataValue::from_static(REQUESTED_STATE_BYTES),
-                    );
-                    let opening = async move {
-                        timeout(CONNECT_TIMEOUT, async move {
-                            let channel = endpoint
-                                .connect()
-                                .await
-                                .map_err(|_| Status::unavailable("connection failed"))?;
-                            StatefulIntakeClient::new(channel)
-                                .stateful_stream(request)
-                                .await
-                                .map(|response| response.into_inner())
-                        })
-                        .await
-                        .unwrap_or_else(|_| Err(Status::deadline_exceeded("opening stream timed out")))
-                    }
-                    .boxed();
-                    self.transport = Some(Transport {
-                        sender,
-                        state: TransportState::Connecting(opening),
-                    });
+                    self.transport = Some(Transport::open(stream_id, self.endpoint.clone(), self.api_key.clone()));
                 }
                 MetricClientEffect::SendPayload { stream_id, payload } => {
-                    let sent = self
-                        .transport
-                        .as_ref()
-                        .is_some_and(|transport| transport.sender.try_send(payload).is_ok());
-                    if !sent {
-                        let effects = self.core.handle_stream_error(
-                            stream_id,
-                            MetricStreamFailure::new(
-                                MetricStreamFailureKind::Unavailable,
-                                "outbound stream closed or full",
-                            ),
-                        );
-                        self.apply(effects)?;
-                        break;
+                    let sent = match &mut self.transport {
+                        Some(transport) if transport.stream_id == stream_id => transport.send(payload),
+                        _ => Err(Status::unavailable("outbound stream missing")),
+                    };
+                    if let Err(status) = sent {
+                        effects = self
+                            .core
+                            .handle_stream_error(
+                                stream_id,
+                                MetricStreamFailure::new(MetricStreamFailureKind::Unavailable, status.message()),
+                            )
+                            .map_err(|error| generic_error!("stateful recovery failed: {error:?}"))?
+                            .into();
+                        continue;
                     }
                     self.ack_deadline.get_or_insert_with(|| Instant::now() + ACK_TIMEOUT);
                 }
@@ -524,17 +410,12 @@ impl StatefulMetricsWorker {
                     self.timers.clear();
                     self.ack_deadline = None;
                 }
-                MetricClientEffect::ReturnUnacknowledged { batches } => returned.extend(self.take_inflight(batches)?),
-                MetricClientEffect::ReturnBuffered { batch } => {
-                    let originals = self
-                        .buffered
-                        .take()
-                        .ok_or_else(|| generic_error!("returned partial batch has no original metrics"))?;
-                    returned.push_back(PendingBatch {
-                        logical: batch,
-                        originals,
-                    });
+                MetricClientEffect::ReturnUnacknowledged { batches } => {
+                    for batch in batches {
+                        self.requeue(batch).await;
+                    }
                 }
+                MetricClientEffect::ReturnBuffered { batch } => self.requeue(batch).await,
                 MetricClientEffect::StreamFailed {
                     failure,
                     action,
@@ -543,23 +424,16 @@ impl StatefulMetricsWorker {
                     warn!(kind = ?failure.kind(), ?action, batches = unacknowledged.len(), "Stateful metrics stream failed.");
                     counter!("stateful_metrics_stream_failures_total", "kind" => format!("{:?}", failure.kind()))
                         .increment(1);
-                    let returned_count = unacknowledged.len();
-                    let batches = self.take_inflight(unacknowledged)?;
-                    if action != MetricFailureAction::DoNotRetry {
-                        returned.extend(batches);
-                    }
-                    match action {
-                        MetricFailureAction::RetryWithBackoff => {}
-                        MetricFailureAction::WaitForCredentials => self.mode = DeliveryMode::Suspended,
-                        MetricFailureAction::DoNotRetry => {
-                            // The core returns every speculative batch. None can be retried unchanged on this stream.
-                            self.mode = DeliveryMode::Suspended;
-                            counter!("stateful_metrics_batches_abandoned_total").increment(returned_count as u64);
-                        }
-                        MetricFailureAction::UseStatelessDelivery => {
-                            self.mode = DeliveryMode::Http;
+                    for batch in unacknowledged {
+                        if action == MetricFailureAction::DoNotRetry {
+                            counter!("stateful_metrics_batches_abandoned_total").increment(1);
+                            counter!("stateful_metrics_points_dropped_total").increment(batch.point_count() as u64);
+                        } else {
+                            self.requeue(batch).await;
                         }
                     }
+                    // Configuration alone selects delivery. Unsupported stateful intake suspends retries.
+                    self.suspended = action != MetricFailureAction::RetryWithBackoff;
                 }
                 MetricClientEffect::ScheduleReconnect { stream_id } => {
                     self.schedule(stream_id, TimerKind::Reconnect, self.backoff);
@@ -573,66 +447,43 @@ impl StatefulMetricsWorker {
                         error,
                         MetricStreamError::AckMismatch { .. } | MetricStreamError::AckWithoutInflightBatch
                     ) {
-                        self.mode = DeliveryMode::Suspended;
-                        warn!(?error, "Stateful metrics suspended after invalid acknowledgement.");
+                        self.suspended = true;
+                        warn!(
+                            ?error,
+                            "Stateful protocol rejected acknowledgement; delivery suspended."
+                        );
                     } else {
                         debug!(?error, "Stateful protocol event rejected.");
                     }
                 }
             }
         }
-        if !returned.is_empty() {
-            returned.append(&mut self.pending);
-            self.pending = returned;
-        }
-        if self.mode == DeliveryMode::Http {
-            for batch in self.pending.drain(..) {
-                self.fallback.extend(batch.originals.metrics);
-            }
+        if self.core.buffered_series_len() == 0 {
+            self.buffered_deadline = None;
         }
         Ok(())
     }
 
-    fn take_inflight(&mut self, batches: Vec<LogicalMetricBatch>) -> Result<VecDeque<PendingBatch>, GenericError> {
-        if batches.len() != self.inflight.len() {
-            return Err(generic_error!("stateful logical and original batch ownership diverged"));
+    async fn shutdown(mut self) -> Result<(), GenericError> {
+        // Reset transfers all logical work out of the core. Do not open its replacement stream.
+        let effects = self
+            .core
+            .reset_destination_state()
+            .map_err(|error| generic_error!("stateful shutdown failed: {error:?}"))?;
+        for effect in effects {
+            match effect {
+                MetricClientEffect::ReturnUnacknowledged { batches } => {
+                    for batch in batches {
+                        self.requeue(batch).await;
+                    }
+                }
+                MetricClientEffect::ReturnBuffered { batch } => self.requeue(batch).await,
+                _ => {}
+            }
         }
-        Ok(batches
-            .into_iter()
-            .zip(self.inflight.drain(..))
-            .map(|(logical, originals)| PendingBatch { logical, originals })
-            .collect())
-    }
-}
-
-struct Transport {
-    sender: mpsc::Sender<StatefulBatch>,
-    state: TransportState,
-}
-
-enum TransportState {
-    Connecting(BoxFuture<'static, Result<Streaming<BatchStatus>, Status>>),
-    Open(Box<Streaming<BatchStatus>>),
-}
-
-enum TransportEvent {
-    Opened(Box<Streaming<BatchStatus>>),
-    Ack(BatchStatus),
-    Failed(Status),
-}
-
-async fn next_transport_event(transport: &mut Option<Transport>) -> TransportEvent {
-    match transport.as_mut().map(|transport| &mut transport.state) {
-        Some(TransportState::Connecting(opening)) => match opening.await {
-            Ok(stream) => TransportEvent::Opened(Box::new(stream)),
-            Err(status) => TransportEvent::Failed(status),
-        },
-        Some(TransportState::Open(stream)) => match stream.message().await {
-            Ok(Some(ack)) => TransportEvent::Ack(ack),
-            Ok(None) => TransportEvent::Failed(Status::unavailable("stream ended")),
-            Err(status) => TransportEvent::Failed(status),
-        },
-        None => pending().await,
+        self.transport = None;
+        track_drops(self.queue.flush().await?);
+        Ok(())
     }
 }
 

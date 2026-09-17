@@ -962,8 +962,11 @@ fn build_diagnostics_layer(emitter: DiagnosticsEmitter, endpoint_url: String) ->
     HttpInspectionLayer::new().with_inspector(StatusCode::FORBIDDEN, forbidden_inspector)
 }
 
-enum PendingTransaction<T> {
+/// A queued delivery attempt and its scheduling priority.
+pub enum PendingTransaction<T> {
+    /// Fresh work, dispatched before retries.
     HighPriority(T),
+    /// A retry or input that overflowed the high-priority queue.
     LowPriority(T),
 }
 
@@ -977,7 +980,7 @@ enum PendingTransaction<T> {
 /// Ultimately, we use this construction to provide a fast path for new transactions, while limiting the overall number
 /// of outstanding transactions that are waiting to be processed, with a bias towards preserving the most recent
 /// transactions so that fresh data can be sent as soon as any temporary networking issues are resolved.
-struct PendingTransactions<T> {
+pub struct PendingTransactions<T> {
     high_priority: VecDeque<T>,
     low_priority: RetryQueue<T>,
     telemetry: TransactionQueueTelemetry,

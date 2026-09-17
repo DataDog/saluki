@@ -2,5 +2,6 @@ features:
   - |
     Add an opt-in plaintext gRPC path for testing stateful metric series delivery
     with ``data_plane.stateful_metrics_endpoint``. Sketches and sets continue
-    over HTTP. This experimental path is disabled by default and is not intended
+    over HTTP. Stateful retries use the existing low-priority queue and optional
+    disk storage; delivery does not automatically fall back to HTTP. This experimental path is disabled by default and is not intended
     for production traffic.
