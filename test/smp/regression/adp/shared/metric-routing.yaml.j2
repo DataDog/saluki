@@ -1,0 +1,18 @@
+{# Use the same named corpus as Lading, including every post-aggregation histogram name.
+   Pin histogram outputs so a default change cannot silently turn all-match into partial-match. #}
+{% set aggregates = ["max", "median", "avg", "count"] %}
+histogram_aggregates: {{ aggregates | tojson }}
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+{% if exp_vars.routing_enabled %}
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      {{ exp_vars.filtered_endpoint | tojson }}:
+{% for name in lading_names(exp_vars.allowlist_prefix, exp_vars.metric_first, exp_vars.traffic_metrics) %}
+        - {{ name }}
+{% for suffix in aggregates + ["95percentile"] %}
+        - {{ name }}.{{ suffix }}
+{% endfor %}
+{% endfor %}
+{% endif %}

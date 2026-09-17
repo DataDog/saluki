@@ -131,6 +131,42 @@ templates:
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
 
+  # Endpoint routing comparisons use the same named corpus, tags, metric mix, and context count.
+  # All-match and all-miss policies contain the same number of entries; only their prefixes differ.
+  metric_routing_base:
+    extends: dsd_base
+    variables:
+      metric_prefix: routing.metric.
+      metric_first: 10000
+      traffic_metrics: 100
+      allowlist_prefix: routing.metric.
+      routing_enabled: false
+      filtered_endpoint: http://127.0.0.1:9092
+
+    target:
+      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/metric-routing.yaml run
+      files:
+        empty.yaml: null
+        metric-routing.yaml:
+          source: shared/metric-routing.yaml.j2
+      environment:
+        DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
+        DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true","http://127.0.0.1:9092":"true"}'
+
+    lading:
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+        - http:
+            binding_addr: "127.0.0.1:9092"
+      generator:
+        - unix_datagram:
+            bytes_per_second: "500 MiB"
+            variant:
+              dogstatsd:
+                metric_names:
+                  - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}"
+
   # Base template for the tag filtering experiments.
   tagfilter_base:
     variables:
@@ -487,60 +523,60 @@ experiments:
         - unix_datagram:
             bytes_per_second: "500 MiB"
 
-  # Measure the cost of evaluating the experimental endpoint allowlist when every aggregated
-  # metric misses, including both series and sketches. This deliberately matches the 500 MiB/s
-  # baseline above so its CPU, memory, and ingress-throughput results are directly comparable.
-  - name: metric_mirroring_drop_all_500mb_3k_contexts
-    extends: dsd_base
+  # Unfiltered dual-shipping baseline for the all-match case below. Both destinations receive
+  # the same traffic without an extra filtering/encoding branch.
+  - name: metric_routing_dual_ship_500mb_3k_contexts
+    extends: metric_routing_base
     optimization_goals:
       - cpu
       - memory
       - ingress_throughput
 
+  # Every generated metric passes the secondary's allowlist, including histogram-derived names.
+  # Comparing with dual-shipping isolates the extra filtering and encoding work at equal output.
+  - name: metric_routing_all_match_500mb_3k_contexts
+    extends: metric_routing_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    variables:
+      routing_enabled: true
+
+  # Every aggregated metric misses the secondary's nonempty allowlist, including sketches.
+  # Use a disjoint prefix with the same policy size and workload as the all-match case.
+  - name: metric_mirroring_drop_all_500mb_3k_contexts
+    extends: metric_routing_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+
+    variables:
+      routing_enabled: true
+      allowlist_prefix: routing.absent.
     target:
       environment:
-        DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
-        # Keep this non-empty so ADP builds and exercises the filtering branch. A colon separates
-        # the metric name from its value in DogStatsD, so this cannot equal an emitted metric name.
-        DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST: '{"http://127.0.0.1:9092":["metric_mirroring:never_matches"]}'
-
-    lading:
-      blackhole:
-        - http:
-            binding_addr: "127.0.0.1:9091"
-        - http:
-            binding_addr: "127.0.0.1:9092"
-      generator:
-        - unix_datagram:
-            bytes_per_second: "500 MiB"
+        # Only the ordinary primary branch produces payloads in this case.
+        DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true"}'
 
   # Measure the same guaranteed-miss policy when it selects the primary endpoint instead. The
   # additional endpoint remains on the full-stream path. Force that remaining destination onto V3
   # so this stays comparable to the ordinary V3 baseline rather than measuring a V3-to-V2 change.
   - name: metric_mirroring_primary_drop_all_500mb_3k_contexts
-    extends: dsd_base
+    extends: metric_routing_base
     optimization_goals:
       - cpu
       - memory
       - ingress_throughput
 
+    variables:
+      routing_enabled: true
+      allowlist_prefix: routing.absent.
+      filtered_endpoint: http://127.0.0.1:9091
     target:
       environment:
-        DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
         DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9092":"true"}'
-        # Keep this non-empty so ADP builds and exercises the filtering branch. A colon separates
-        # the metric name from its value in DogStatsD, so this cannot equal an emitted metric name.
-        DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST: '{"http://127.0.0.1:9091":["metric_mirroring:never_matches"]}'
-
-    lading:
-      blackhole:
-        - http:
-            binding_addr: "127.0.0.1:9091"
-        - http:
-            binding_addr: "127.0.0.1:9092"
-      generator:
-        - unix_datagram:
-            bytes_per_second: "500 MiB"
 
   # ============================================================================
   # DogStatsD: quality gates (memory)

@@ -305,6 +305,30 @@ so a filter can't silently name metrics or values that the generator never sends
 > is the configuration under test, and it compresses to well under a megabyte in git, but it is
 > worth knowing before adding another size variant.
 
+### Endpoint metric routing
+
+The endpoint routing experiments share a 500 MiB/s DogStatsD workload with approximately 3,000
+contexts drawn from 100 metric names and randomized tags. Each scenario measures CPU, memory,
+and ingress throughput:
+
+- `metric_routing_dual_ship_500mb_3k_contexts`: both endpoints receive everything without filtering.
+- `metric_routing_all_match_500mb_3k_contexts`: the secondary has an allowlist matching every
+  generated metric; both endpoints receive everything.
+- `metric_mirroring_drop_all_500mb_3k_contexts`: the secondary's allowlist matches nothing;
+  only the primary receives metrics.
+- `metric_mirroring_primary_drop_all_500mb_3k_contexts`: the primary's allowlist matches nothing;
+  only the secondary receives metrics.
+
+`shared/metric-routing.yaml.j2` includes the base names and histogram-derived names in each
+600-entry policy. All-miss policies use a disjoint prefix of the same length. Histogram outputs
+are pinned, and every destination receiving traffic uses V3 series encoding. The all-match and
+dual-shipping cases produce equivalent output, exposing the extra filtering and encoding cost.
+The drop-all cases exercise filtering without producing payloads on the filtered branch.
+
+Compare these named-corpus cases with each other, not directly with earlier random-name runs or
+the ordinary `dsd_uds_500mb_3k_contexts` case. These experiments belong to the full suite and do
+not define pass/fail quality gates or assert on received metric contents.
+
 ## Regenerating Experiments
 
 After modifying `experiments.yaml`, regenerate the case directories:
