@@ -59,8 +59,10 @@ You can also set `DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT`. The endpoint must be
 origin without a path, query, or embedded credentials. It is a startup-only setting: restart ADP to
 change it. Leaving it unset preserves the existing HTTP pipeline.
 
-From a Foldspace checkout at revision `560c5086c9bea00f36d5df05c5c32ab20c84802e`, build and run
-its separate metrics intake binary:
+From a Foldspace checkout at revision `9d4b57edee8095b2fc827b6480dcda39df749a4f`, build and run
+its separate metrics intake binary. This is the tested revision of
+[Foldspace PR #80](https://github.com/DataDog/foldspace/pull/80), which includes the metrics intake
+from [Foldspace PR #79](https://github.com/DataDog/foldspace/pull/79):
 
 ```sh
 cargo build -p foldspace-grpc-server --bin foldspace-intake
@@ -166,3 +168,65 @@ validation, run the separate intake process and inspect its JSONL journal.
 
 Keep decoder tests in the separate intake process: linking `foldspace-server` into ADP's test graph
 currently enables `serde_json/arbitrary_precision`, which conflicts with ADP's configuration tests.
+
+## Repeatable binary tests
+
+These scripts are experimental development tooling for local integration testing. They are not
+part of the ADP runtime or a CI job. Their interfaces and assertions can change with the Foldspace
+integration.
+
+- [Binary harness](../../ci/tooling/test-stateful-metrics-binaries.py): starts the binaries, sends
+  metrics, checks decoded output, and stops the processes.
+- [Fault proxy](../../ci/tooling/stateful_metrics_proxy.py): injects connection failures and pauses
+  traffic or acknowledgements to check client recovery.
+- [Python requirements](../../ci/tooling/stateful-metrics-requirements.txt): pins the proxy's HTTP/2
+  dependency.
+
+The local harness starts actual ADP and Foldspace intake processes, sends timestamped DogStatsD
+packets, and checks the intake's decoded JSONL journal. It also starts Saluki's `datadog-intake`
+binary to compare the same inputs through the existing HTTP V3 route. Build the Foldspace intake
+at the revision above, then run these commands from the Saluki checkout:
+
+```sh
+cargo build --locked --bin agent-data-plane --bin datadog-intake
+python3 -m venv /tmp/foldspace-binary-venv
+/tmp/foldspace-binary-venv/bin/python -m pip install -r ci/tooling/stateful-metrics-requirements.txt
+/tmp/foldspace-binary-venv/bin/python ci/tooling/test-stateful-metrics-binaries.py \
+  --adp target/debug/agent-data-plane \
+  --intake /path/to/foldspace/target/debug/foldspace-intake \
+  --http-intake target/debug/datadog-intake
+```
+
+Use Python 3.11 or newer and install `openssl`. The process needs permission to bind local sockets.
+The HTTP comparison uses ports 2049 and 9125, which must be available; the other listeners use
+automatically selected ports. All test traffic uses loopback addresses and a dummy API key.
+The harness removes inherited `DD_` settings from subprocess environments.
+
+The harness prints its artifact directory and writes `result.json`, binary hashes, configurations,
+process logs, telemetry snapshots, and decoded journals. Pass `--output` with a new directory to
+choose where it writes these files. Use repeated `--case` arguments to select individual cases.
+
+| Case | Verification |
+|------|--------------|
+| `timer_and_metadata` | Sparse timer flushing, values, timestamps, tags, resources, origin, dictionary reuse, and ACK counters surviving idle periods. |
+| `http_comparison` | Six points match HTTP V3 after normalization of batching and ordering: names, tags, host, type, interval, timestamp, and value. |
+| `threshold` | Two series flush before a 60-second timer when the threshold is two. |
+| `shutdown` | A partial batch reaches the intake after SIGTERM, and ADP exits successfully. |
+| `reconnect` | Delivery resumes after stopping and restarting the separate intake process. |
+| `disk_restart` | Shutdown during an intake outage persists logical retries; a new ADP process delivers them. |
+| `rejected_stream` | Injected gRPC `UNAVAILABLE` on stream opening retains work and reconnects. |
+| `lost_ack` | Withholding an ACK and disconnecting triggers replay, including the expected duplicate. |
+| `stalled_reads` | Paused intake consumption retains 600 points and delivers them after consumption resumes. |
+| `ack_timeout` | Withheld acknowledgements trigger ADP's 30-second deadline and replay on a new stream. |
+| `sustained_load` | 30,000 points at a target 1,000 points per second, with a 12-second consumption pause, drain without loss or duplicates. |
+
+Fault cases use a local proxy. Healthy connections relay bytes to the separate Foldspace intake;
+the proxy can reject stream openings, pause reads or responses, and disconnect sockets. These cases
+test ADP's response to failures. They do not reproduce a production metrics server's load-shedding
+algorithm. The load case samples process memory, CPU, queue entries, acknowledgements, failures, and drops; a
+short run with debug binaries is not a throughput benchmark or evidence of a hard memory bound.
+
+The HTTP decoder's comparison model preserves host, tags, types, intervals, and points but omits
+other resource and origin fields. Those fields have explicit expectations in `timer_and_metadata`.
+Retries can duplicate points after a lost ACK; the two ACK-failure cases check that behavior explicitly.
+The remaining stateful cases also check that series never reach the HTTP receiver.
