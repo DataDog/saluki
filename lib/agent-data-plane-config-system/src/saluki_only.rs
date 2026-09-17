@@ -244,7 +244,7 @@ pub struct SalukiOnly {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Experimental {
-    /// Startup-only per-endpoint series filtering (`experimental.metrics_endpoint_routing.*`).
+    /// Startup-only per-endpoint metric filtering (`experimental.metrics_endpoint_routing.*`).
     pub metrics_endpoint_routing: MetricsEndpointRouting,
 }
 
@@ -252,11 +252,11 @@ pub struct Experimental {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct MetricsEndpointRouting {
-    /// Exact series names permitted per configured primary or additional endpoint
+    /// Exact metric names permitted per configured primary or additional endpoint
     /// (`experimental.metrics_endpoint_routing.metric_allowlist`).
     ///
-    /// Defaults to absent, leaving routing unchanged. An empty allowlist drops all series for that endpoint;
-    /// sketches retain normal delivery. Operators can use this to reduce series volume at selected destinations.
+    /// Defaults to absent, leaving routing unchanged. An empty allowlist drops all metrics for that endpoint,
+    /// including sketches. Operators can use this to reduce metric volume at selected destinations.
     pub metric_allowlist: Option<HashMap<String, Vec<String>>>,
 }
 

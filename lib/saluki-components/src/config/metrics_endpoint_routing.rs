@@ -1,17 +1,17 @@
-//! Builds endpoint routing groups from exact-name series allow lists.
+//! Builds endpoint routing groups from exact-name metric allow lists.
 
 use std::collections::{BTreeMap, HashMap};
 
 use agent_data_plane_config::shared;
 use saluki_error::{generic_error, GenericError};
 
-/// A group of configured endpoints that share one exact-name series allowlist.
+/// A group of configured endpoints that share one exact-name metric allowlist.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndpointAllowlistGroup {
     /// Configured endpoint identities targeted by this policy.
     pub endpoints: Vec<String>,
 
-    /// Exact series metric names permitted to reach these endpoints.
+    /// Exact metric names permitted to reach these endpoints.
     pub metric_allowlist: Vec<String>,
 }
 
@@ -83,15 +83,14 @@ impl MetricsEndpointRoutingConfiguration {
         })
     }
 
-    /// Returns every configured endpoint removed from the ordinary unfiltered series path.
+    /// Returns every configured endpoint removed from the ordinary unfiltered metric path.
     pub fn selected_endpoints(&self) -> &[String] {
         &self.selected_endpoints
     }
 
     /// Returns the filtered routing groups that require an encoder branch.
     ///
-    /// Selected endpoints with an empty allowlist are absent because they receive no series payloads.
-    /// Sketches retain ordinary delivery, regardless of the series allowlist.
+    /// Selected endpoints with an empty allowlist are absent because they receive no metric payloads.
     pub fn policy_groups(&self) -> &[EndpointAllowlistGroup] {
         &self.policy_groups
     }

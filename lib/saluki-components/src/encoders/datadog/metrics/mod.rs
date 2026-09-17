@@ -47,8 +47,8 @@ use crate::{
         protocol::{MetricsEndpointRouting, MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
         telemetry::ComponentTelemetry,
-        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V1_PATH,
-        METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH, METRICS_SKETCHES_V3_PATH,
+        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
+        METRICS_SKETCHES_V3_PATH,
     },
     encoders::datadog::metrics::v2::MetricsEndpointEncoder,
 };
@@ -226,7 +226,7 @@ pub struct DatadogMetricsConfiguration {
     /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
     additional_endpoints: HashMap<String, Vec<String>>,
 
-    /// Optional targeting applied only to series payloads emitted by this encoder.
+    /// Optional targeting applied to series and sketch payloads emitted by this encoder.
     endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
@@ -264,7 +264,7 @@ impl DatadogMetricsConfiguration {
         self
     }
 
-    /// Restricts series payloads to the configured endpoint routing policy. Sketch routing is unchanged.
+    /// Restricts series and sketch payloads to the configured endpoint routing policy.
     pub fn with_endpoint_routing(mut self, endpoint_routing: MetricsEndpointRouting) -> Self {
         self.endpoint_routing = Some(Arc::new(endpoint_routing));
         self
@@ -660,14 +660,7 @@ fn apply_endpoint_routing(payload: Payload, endpoint_routing: Option<&Arc<Metric
     match payload {
         Payload::Http(http_payload) => {
             let (mut metadata, request) = http_payload.into_parts();
-            // Restrict series only; sketches must retain normal endpoint delivery.
-            // V2-only payloads can lack MetricsPayloadInfo, so use the request path to distinguish them.
-            if matches!(
-                request.uri().path(),
-                METRICS_SERIES_V1_PATH | METRICS_SERIES_V2_PATH | METRICS_SERIES_V3_BETA_PATH | METRICS_SERIES_V3_PATH
-            ) {
-                metadata.set(Arc::clone(endpoint_routing));
-            }
+            metadata.set(Arc::clone(endpoint_routing));
             Payload::Http(HttpPayload::new(metadata, request))
         }
         payload => payload,
@@ -1845,8 +1838,10 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_routing_restricts_series_but_preserves_sketch_delivery() {
-        use crate::common::datadog::METRICS_SKETCHES_PATH;
+    fn endpoint_routing_restricts_series_and_sketch_payloads() {
+        use crate::common::datadog::{
+            METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SKETCHES_PATH,
+        };
 
         for routing in [
             MetricsEndpointRouting::AllExcept(["https://selected.example.com".to_string()].into()),
@@ -1874,11 +1869,7 @@ mod tests {
                         .unwrap();
                     let (metadata, _) = routed.into_parts();
                     let payload_routing = metadata.get::<Arc<MetricsEndpointRouting>>();
-                    if info.is_sketch() {
-                        assert!(payload_routing.is_none());
-                    } else {
-                        assert!(Arc::ptr_eq(payload_routing.unwrap(), &routing));
-                    }
+                    assert!(Arc::ptr_eq(payload_routing.unwrap(), &routing));
                     assert_eq!(metadata.get::<MetricsPayloadInfo>(), tagged.then_some(&info));
                 }
             }

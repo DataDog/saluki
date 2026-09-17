@@ -10,7 +10,7 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{metric::MetricValues, Event, EventType},
+    data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
@@ -19,7 +19,7 @@ use tracing::{debug, error};
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
-/// MRF follows live settings for activation and its allowlist. Endpoint routing uses a fixed series allowlist.
+/// MRF follows live settings for activation and its allowlist. Endpoint routing uses a fixed metric allowlist.
 pub struct MetricFilterConfiguration {
     source: FilterSource,
 }
@@ -35,10 +35,10 @@ impl MetricFilterConfiguration {
         }
     }
 
-    /// Creates a fixed series filter. Sketches and unlisted names are dropped; an empty list drops everything.
-    pub fn for_series_allowlist(allowlist: Vec<String>) -> Self {
+    /// Creates a fixed metric filter. Unlisted names are dropped; an empty list drops everything.
+    pub fn for_allowlist(allowlist: Vec<String>) -> Self {
         Self {
-            source: FilterSource::SeriesAllowlist(allowlist),
+            source: FilterSource::Allowlist(allowlist),
         }
     }
 }
@@ -50,31 +50,28 @@ enum FilterSource {
         enabled: bool,
         routing: Live<MetricMirroring>,
     },
-    SeriesAllowlist(Vec<String>),
+    Allowlist(Vec<String>),
 }
 
 impl FilterSource {
     fn filter(&self) -> Filter {
         match self {
             Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, routing),
-            Self::SeriesAllowlist(names) => Filter::Allowlist {
-                names: names.iter().cloned().collect(),
-                series_only: true,
-            },
+            Self::Allowlist(names) => Filter::Allowlist(names.iter().cloned().collect()),
         }
     }
 
     fn allowlist(&self) -> &[String] {
         match self {
             Self::Mrf { routing, .. } => &routing.allowlist,
-            Self::SeriesAllowlist(names) => names,
+            Self::Allowlist(names) => names,
         }
     }
 
     async fn changed(&mut self) -> Filter {
         match self {
             Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, &routing.changed().await),
-            Self::SeriesAllowlist(_) => std::future::pending().await,
+            Self::Allowlist(_) => std::future::pending().await,
         }
     }
 }
@@ -83,7 +80,7 @@ impl FilterSource {
 enum Filter {
     DropAll,
     All,
-    Allowlist { names: HashSet<String>, series_only: bool },
+    Allowlist(HashSet<String>),
 }
 
 impl Filter {
@@ -93,10 +90,7 @@ impl Filter {
         } else if routing.allowlist.is_empty() {
             Self::All
         } else {
-            Self::Allowlist {
-                names: routing.allowlist.iter().cloned().collect(),
-                series_only: false,
-            }
+            Self::Allowlist(routing.allowlist.iter().cloned().collect())
         }
     }
 
@@ -107,17 +101,7 @@ impl Filter {
         match self {
             Self::DropAll => false,
             Self::All => true,
-            Self::Allowlist { names, series_only } => {
-                (!series_only
-                    || matches!(
-                        metric.values(),
-                        MetricValues::Counter(..)
-                            | MetricValues::Rate(..)
-                            | MetricValues::Gauge(..)
-                            | MetricValues::Set(..)
-                    ))
-                    && names.contains(metric.context().name().as_ref())
-            }
+            Self::Allowlist(names) => names.contains(metric.context().name().as_ref()),
         }
     }
 
@@ -277,16 +261,20 @@ mod tests {
     }
 
     #[test]
-    fn static_series_constructor_filters_and_fails_closed_for_an_empty_list() {
+    fn static_constructor_filters_and_fails_closed_for_an_empty_list() {
         for allowlist in [vec![], vec!["allowed.metric".to_string()]] {
-            let config = MetricFilterConfiguration::for_series_allowlist(allowlist.clone());
+            let config = MetricFilterConfiguration::for_allowlist(allowlist.clone());
             let routing = config.source.filter();
             assert_eq!(
                 routing.should_forward(&counter("allowed.metric")),
                 !allowlist.is_empty()
             );
             assert!(!routing.should_forward(&counter("blocked.metric")));
-            assert!(!routing.should_forward(&distribution("allowed.metric")));
+            assert_eq!(
+                routing.should_forward(&distribution("allowed.metric")),
+                !allowlist.is_empty()
+            );
+            assert!(!routing.should_forward(&distribution("blocked.metric")));
         }
     }
 
@@ -362,6 +350,8 @@ mod tests {
         let routing = routing(true, &source);
 
         assert!(routing.should_forward(&counter("any.metric")));
+        assert!(routing.should_forward(&histogram("any.metric")));
+        assert!(routing.should_forward(&distribution("any.metric")));
     }
 
     #[tokio::test]
@@ -374,8 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn series_only_scope_forwards_allowed_series_and_drops_sketches() {
-        let routing = MetricFilterConfiguration::for_series_allowlist(vec!["allowed".to_string()])
+    fn fixed_allowlist_filters_series_and_sketches_by_name() {
+        let routing = MetricFilterConfiguration::for_allowlist(vec!["allowed".to_string()])
             .source
             .filter();
 
@@ -383,9 +373,11 @@ mod tests {
         assert!(routing.should_forward(&gauge("allowed")));
         assert!(routing.should_forward(&rate("allowed")));
         assert!(routing.should_forward(&set("allowed")));
-        assert!(!routing.should_forward(&histogram("allowed")));
-        assert!(!routing.should_forward(&distribution("allowed")));
+        assert!(routing.should_forward(&histogram("allowed")));
+        assert!(routing.should_forward(&distribution("allowed")));
         assert!(!routing.should_forward(&counter("blocked.counter")));
+        assert!(!routing.should_forward(&histogram("blocked.histogram")));
+        assert!(!routing.should_forward(&distribution("blocked.distribution")));
     }
 
     #[test]

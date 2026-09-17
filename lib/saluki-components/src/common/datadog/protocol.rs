@@ -8,15 +8,15 @@ use agent_data_plane_config::shared::{
 };
 use serde::{Deserialize, Serialize};
 
-/// How an encoded series payload is targeted within the normal Datadog endpoint set.
+/// How an encoded metric payload is targeted within the normal Datadog endpoint set.
 ///
 /// Endpoint names are compared against the resolved endpoint's configured identity exactly as it appeared in
 /// configuration. Targeting applies to primary, metrics-primary, and additional endpoints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetricsEndpointRouting {
-    /// The full series stream goes to endpoints without an allowlist policy.
+    /// The full metric stream goes to endpoints without an allowlist policy.
     AllExcept(BTreeSet<String>),
-    /// A filtered series stream goes only to the endpoints sharing its allowlist.
+    /// A filtered metric stream goes only to the endpoints sharing its allowlist.
     Only(BTreeSet<String>),
 }
 

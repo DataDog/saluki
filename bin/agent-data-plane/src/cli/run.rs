@@ -521,8 +521,8 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-// Build both sides of series filtering together: ordinary series exclude selected endpoints, and each filtered
-// stream targets only its policy's endpoints. Sketches keep ordinary routing through dd_metrics_encode.
+// Build both sides of metric filtering together: the ordinary stream excludes selected endpoints, and each
+// filtered stream targets only its policy's endpoints. This applies to both series and sketches.
 fn add_metrics_output_pipelines_to_blueprint(
     blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, routing: &MetricsEndpointRoutingConfiguration,
 ) -> Result<(), GenericError> {
@@ -540,7 +540,7 @@ fn add_metrics_output_pipelines_to_blueprint(
     for (index, policy) in routing.policy_groups().iter().enumerate() {
         let filter_id = format!("endpoint_allowlist_filter_{index}");
         let encoder_id = format!("endpoint_allowlist_encode_{index}");
-        let filter_config = MetricFilterConfiguration::for_series_allowlist(policy.metric_allowlist.clone());
+        let filter_config = MetricFilterConfiguration::for_allowlist(policy.metric_allowlist.clone());
         let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
             .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
 

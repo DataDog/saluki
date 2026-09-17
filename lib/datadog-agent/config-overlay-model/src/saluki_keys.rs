@@ -25,11 +25,11 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     // ── metrics_endpoint_routing.rs ───────────────────────────────────────
     SalukiKey {
         yaml_path: "experimental.metrics_endpoint_routing.metric_allowlist",
-        description: "Per-endpoint series metric allow lists",
+        description: "Per-endpoint metric allow lists",
         default: "{}",
         documentation: Some(concat!(
             "### `experimental.metrics_endpoint_routing.metric_allowlist`\n\n",
-            "ADP can route a selected subset of series metrics to the primary intake or to specific additional ",
+            "ADP can route a selected subset of metrics to the primary intake or to specific additional ",
             "endpoints. This experimental routing is independent of Multi-Region Failover.\n\n",
             "> [!WARNING]\n",
             "> Settings under `experimental` are unstable and may change, move, or be removed. ",
@@ -38,8 +38,8 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
             "For the ",
             "primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure ",
             "additional destinations and their API keys through `additional_endpoints`, and use those exact map ",
-            "keys. The allowlist filters only series: counters, rates, gauges, and sets. Histogram and distribution ",
-            "sketch payloads retain ordinary delivery. An empty endpoint allowlist sends no series to that endpoint. ",
+            "keys. The allowlist filters both series and sketches by metric name. ",
+            "An empty endpoint allowlist sends no metrics to that endpoint. ",
             "Endpoints absent from the policy map retain their ordinary behavior.\n\n",
             "ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in ",
             "`additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies ",
