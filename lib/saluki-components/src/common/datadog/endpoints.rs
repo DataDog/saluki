@@ -266,6 +266,11 @@ pub struct EndpointConfiguration {
 }
 
 impl EndpointConfiguration {
+    /// Returns the configured primary endpoint identity, before any metrics-only override.
+    pub(crate) fn primary_endpoint(&self) -> &str {
+        &self.primary_endpoint
+    }
+
     /// Creates a new `EndpointConfiguration` from the resolved endpoint configuration.
     pub(crate) fn from_configuration(endpoints: &shared::Endpoints) -> Self {
         Self {

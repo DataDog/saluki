@@ -513,7 +513,7 @@ async fn run_io_loop<B>(
         let (route, resolved_endpoint) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
-        let configured_endpoint = resolved_endpoint.configured_endpoint().to_string();
+        let policy_endpoint = config.metrics_policy_endpoint(route, &resolved_endpoint).to_string();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
@@ -548,7 +548,7 @@ async fn run_io_loop<B>(
         endpoint_txs.push(EndpointSender {
             endpoint_url,
             endpoint_domain,
-            configured_endpoint,
+            policy_endpoint,
             route,
             tx: endpoint_tx,
         });
@@ -561,7 +561,7 @@ async fn run_io_loop<B>(
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
             }
-            if !matches_metrics_endpoint_routing(&endpoint_sender.configured_endpoint, transaction.metadata()) {
+            if !matches_metrics_endpoint_routing(&endpoint_sender.policy_endpoint, transaction.metadata()) {
                 continue;
             }
 
@@ -599,7 +599,7 @@ where
 {
     endpoint_url: String,
     endpoint_domain: String,
-    configured_endpoint: String,
+    policy_endpoint: String,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
 }
@@ -1234,6 +1234,52 @@ mod tests {
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    #[test]
+    fn alternate_metrics_intakes_inherit_primary_policy_for_dispatch() {
+        const ALTERNATE: &str = "https://alternate.example.com";
+        for use_vector in [false, true] {
+            let mut shared = shared_configuration();
+            let alternate = agent_data_plane_config::shared::AltMetricsIntake {
+                enabled: true,
+                url: ALTERNATE.to_string(),
+                use_v3_series: false,
+            };
+            if use_vector {
+                shared.endpoints.vector_intake = alternate;
+            } else {
+                shared.endpoints.opw_intake = alternate;
+            }
+            // An additional route to the same URL must still retain its own policy identity.
+            shared.endpoints.additional_endpoints = HashMap::from([(ALTERNATE.to_string(), vec!["key".to_string()])]);
+            let primary = shared.endpoints.primary_endpoint();
+            let config = ForwarderConfiguration::from_configuration(&shared);
+            let endpoints = config.build_routable_endpoints().unwrap();
+            assert!(endpoints
+                .iter()
+                .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary));
+            for endpoint in endpoints {
+                let policy_endpoint = config.metrics_policy_endpoint(endpoint.route(), endpoint.endpoint());
+                let mut metadata = TxnMetadata::from_event_and_data_point_count(1, 1);
+                // Without an endpoint policy, payloads retain ordinary delivery.
+                assert!(matches_metrics_endpoint_routing(policy_endpoint, &metadata));
+                metadata.metrics_endpoint_routing =
+                    Some(MetricsEndpointRouting::AllExcept([primary.clone()].into()).into());
+                assert_eq!(
+                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    endpoint.route() == EndpointRoute::Additional
+                );
+                metadata.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([primary.clone()].into()).into());
+                assert_eq!(
+                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    endpoint.route() != EndpointRoute::Additional
+                );
+                if endpoint.route() == EndpointRoute::MetricsPrimary {
+                    assert_eq!(endpoint.endpoint().configured_endpoint(), ALTERNATE);
+                }
+            }
+        }
     }
 
     #[test]

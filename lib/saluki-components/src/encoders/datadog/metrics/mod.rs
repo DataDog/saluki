@@ -320,14 +320,15 @@ impl DatadogMetricsConfiguration {
             let metrics_primary = ResolvedEndpoint::from_raw_endpoint(metrics_primary_url, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
             let settings = self.endpoint_v3_settings(&metrics_primary, Some(metrics_primary_v3_override));
-            if self.routes_to_endpoint(&metrics_primary) && predicate(&settings) {
+            // The alternate intake replaces the primary stream, so it inherits the primary's allowlist policy.
+            if self.routes_to_endpoint(&self.primary_endpoint) && predicate(&settings) {
                 return Ok(true);
             }
         } else {
             let primary = ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
             let settings = self.endpoint_v3_settings(&primary, None);
-            if self.routes_to_endpoint(&primary) && predicate(&settings) {
+            if self.routes_to_endpoint(&self.primary_endpoint) && predicate(&settings) {
                 return Ok(true);
             }
         }
@@ -336,7 +337,7 @@ impl DatadogMetricsConfiguration {
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
             let settings = self.endpoint_v3_settings(&endpoint, None);
-            if self.routes_to_endpoint(&endpoint) && predicate(&settings) {
+            if self.routes_to_endpoint(endpoint.configured_endpoint()) && predicate(&settings) {
                 return Ok(true);
             }
         }
@@ -344,10 +345,10 @@ impl DatadogMetricsConfiguration {
         Ok(false)
     }
 
-    fn routes_to_endpoint(&self, endpoint: &ResolvedEndpoint) -> bool {
+    fn routes_to_endpoint(&self, policy_endpoint: &str) -> bool {
         self.endpoint_routing
             .as_ref()
-            .is_none_or(|routing| routing.should_route_to(endpoint.configured_endpoint()))
+            .is_none_or(|routing| routing.should_route_to(policy_endpoint))
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
@@ -1975,6 +1976,44 @@ mod tests {
             let config = metrics_config_from(&shared).with_endpoint_routing(routing);
             assert_eq!(config.requires_v2_series(false).unwrap(), expects_v2);
             assert_eq!(config.requires_v3_series(false).unwrap(), !expects_v2);
+        }
+    }
+
+    #[test]
+    fn alternate_metrics_intakes_inherit_primary_routing_but_keep_their_protocol() {
+        for use_vector in [false, true] {
+            for use_v3_series in [false, true] {
+                let mut shared = shared_configuration();
+                // Give ordinary endpoints the opposite protocol so using the wrong destination is observable.
+                shared.metrics_encoding.v3_series_mode = if use_v3_series {
+                    V3SeriesMode::Disabled
+                } else {
+                    V3SeriesMode::Enabled
+                };
+                let alternate = AltMetricsIntake {
+                    enabled: true,
+                    url: "https://alternate.example.com".to_string(),
+                    use_v3_series,
+                };
+                if use_vector {
+                    shared.endpoints.vector_intake = alternate;
+                } else {
+                    shared.endpoints.opw_intake = alternate;
+                }
+                shared.endpoints.additional_endpoints = HashMap::from([(
+                    "https://alternate.example.com".to_string(),
+                    vec!["additional-key".to_string()],
+                )]);
+                let primary = shared.endpoints.primary_endpoint();
+                for (routing, expects_v3) in [
+                    (MetricsEndpointRouting::Only([primary.clone()].into()), use_v3_series),
+                    (MetricsEndpointRouting::AllExcept([primary].into()), !use_v3_series),
+                ] {
+                    let config = metrics_config_from(&shared).with_endpoint_routing(routing);
+                    assert_eq!(config.requires_v2_series(false).unwrap(), !expects_v3);
+                    assert_eq!(config.requires_v3_series(false).unwrap(), expects_v3);
+                }
+            }
         }
     }
 

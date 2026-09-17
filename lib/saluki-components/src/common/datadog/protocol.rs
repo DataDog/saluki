@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// How an encoded metric payload is targeted within the normal Datadog endpoint set.
 ///
-/// Endpoint names are compared against the resolved endpoint's configured identity exactly as it appeared in
-/// configuration. Targeting applies to primary, metrics-primary, and additional endpoints.
+/// Endpoint names match the configured primary or additional endpoint identity. A metrics-only primary override
+/// inherits the normal primary's policy identity, while retaining its own destination and protocol settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetricsEndpointRouting {
     /// The full metric stream goes to endpoints without an allowlist policy.
