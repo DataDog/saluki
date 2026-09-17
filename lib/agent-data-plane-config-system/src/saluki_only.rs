@@ -226,8 +226,8 @@ pub struct SalukiOnly {
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
     pub data_plane: DataPlane,
-    /// Experimental metrics endpoint-routing settings (`metrics_endpoint_routing_experimental.*`).
-    pub metrics_endpoint_routing_experimental: MetricsEndpointRoutingExperimental,
+    /// Unstable settings (`experimental.*`) that may change, move, or be removed without backward compatibility.
+    pub experimental: Experimental,
     /// APM trace knobs (`apm_config.*`).
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
@@ -238,12 +238,25 @@ pub struct SalukiOnly {
     pub ottl_transform_config: Option<OttlTransformConfig>,
 }
 
-/// Experimental metrics endpoint-routing settings (`metrics_endpoint_routing_experimental.*`).
+/// Shared namespace for experimental settings (`experimental.*`).
+///
+/// Keys in this section may change, move, or be removed. Do not rely on backward compatibility.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
-pub struct MetricsEndpointRoutingExperimental {
+pub struct Experimental {
+    /// Startup-only per-endpoint series filtering (`experimental.metrics_endpoint_routing.*`).
+    pub metrics_endpoint_routing: MetricsEndpointRouting,
+}
+
+/// Experimental metrics endpoint-routing settings (`experimental.metrics_endpoint_routing.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct MetricsEndpointRouting {
     /// Exact series names permitted per configured primary or additional endpoint
-    /// (`metrics_endpoint_routing_experimental.metric_allowlist`).
+    /// (`experimental.metrics_endpoint_routing.metric_allowlist`).
+    ///
+    /// Defaults to absent, leaving routing unchanged. An empty allowlist drops all series for that endpoint;
+    /// sketches retain normal delivery. Operators can use this to reduce series volume at selected destinations.
     pub metric_allowlist: Option<HashMap<String, Vec<String>>>,
 }
 
@@ -587,7 +600,7 @@ impl SalukiOnly {
         }
 
         // domains.metrics_endpoint_routing
-        let routing = &self.metrics_endpoint_routing_experimental;
+        let routing = &self.experimental.metrics_endpoint_routing;
         let destination = &mut config.domains.metrics_endpoint_routing;
         if let Some(v) = &routing.metric_allowlist {
             destination.metric_allowlists.clone_from(v);
@@ -836,10 +849,12 @@ mod tests {
                     "dispatch_timeout": "3s"
                 }
             },
-            // nested: metrics_endpoint_routing_experimental
-            "metrics_endpoint_routing_experimental": {
-                "metric_allowlist": {
-                    "https://app.us5.datadoghq.com": ["allowed.metric", "also.allowed"]
+            // nested: experimental.metrics_endpoint_routing
+            "experimental": {
+                "metrics_endpoint_routing": {
+                    "metric_allowlist": {
+                        "https://app.us5.datadoghq.com": ["allowed.metric", "also.allowed"]
+                    }
                 }
             },
             // nested: apm_config

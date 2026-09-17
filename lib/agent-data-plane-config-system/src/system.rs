@@ -638,6 +638,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn experimental_metric_allowlists_seed_the_model() {
+        let policies = json!({
+            "https://primary.example.com": ["allowed.metric"],
+            "https://secondary.example.com": []
+        });
+        let system = standalone_system(
+            Some(json!({
+                "experimental": {
+                    "metrics_endpoint_routing": { "metric_allowlist": policies.clone() }
+                }
+            })),
+            None,
+        )
+        .await
+        .expect("system builds");
+
+        assert_eq!(
+            serde_json::to_value(&system.config().domains.metrics_endpoint_routing.metric_allowlists).unwrap(),
+            policies
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_experimental_sections_preserve_default_routing() {
+        for source in [
+            json!({}),
+            json!({ "experimental": {} }),
+            json!({ "experimental": { "metrics_endpoint_routing": {} } }),
+            json!({ "experimental": { "metrics_endpoint_routing": { "metric_allowlist": {} } } }),
+        ] {
+            let system = standalone_system(Some(source), None).await.expect("system builds");
+            assert!(system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_allowlists
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn a_flattened_spelling_of_a_nested_key_is_not_read() {
         // Nothing translates `autoscaling_failover_enabled` into the nested slot: resolving an
         // environment variable to its canonical path is the environment readers' job, and they do it

@@ -125,15 +125,15 @@ mod tests {
     fn endpoint_metric_allowlists_decode_from_json() {
         let _guard = test_env_lock();
         std::env::set_var(
-            "DD_METRICS_ENDPOINT_ROUTING_EXPERIMENTAL_METRIC_ALLOWLIST",
+            "DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST",
             r#"{"https://secondary.example.com":["allowed.metric"]}"#,
         );
 
         let provider = EnvironmentProvider::new().expect("environment reads");
 
-        std::env::remove_var("DD_METRICS_ENDPOINT_ROUTING_EXPERIMENTAL_METRIC_ALLOWLIST");
+        std::env::remove_var("DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST");
         assert_eq!(
-            values_of(&provider).pointer("/metrics_endpoint_routing_experimental/metric_allowlist"),
+            values_of(&provider).pointer("/experimental/metrics_endpoint_routing/metric_allowlist"),
             Some(&serde_json::json!({
                 "https://secondary.example.com": ["allowed.metric"]
             }))

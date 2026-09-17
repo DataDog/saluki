@@ -47,7 +47,7 @@ impl MetricsEndpointRoutingConfiguration {
                     "Experimental metrics endpoint-routing policy endpoint '{}' does not match the configured primary \
                      endpoint and is not present in `additional_endpoints`; correct the endpoint, add it and its API \
                      key to `additional_endpoints`, or remove it from \
-                     `metrics_endpoint_routing_experimental.metric_allowlist`.",
+                     `experimental.metrics_endpoint_routing.metric_allowlist`.",
                     endpoint
                 ));
             }
