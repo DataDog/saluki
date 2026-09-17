@@ -46,7 +46,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.94"
+rust-version = "1.96"
 license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
@@ -299,3 +299,9 @@ mutable_key_type = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(system_allocator)'] }
+
+[patch.crates-io]
+# byteorder's `read_f64_into` asserts `align_of::<u64>() <= align_of::<f64>()`, which does not hold
+# on AIX, breaking the build. This unmerged fix (unlikely to land upstream) works around it; remove
+# once we can shed the byteorder dependency: https://github.com/BurntSushi/byteorder/pull/223
+byteorder = { git = "https://github.com/amy-kwan/byteorder", branch = "amyk/update-byteorder-aix" }

@@ -59,4 +59,7 @@ allow-git = [
   # obfuscation implementations. The version we need is not on crates.io yet, so it is consumed from GitHub and pinned
   # to a specific revision in Cargo.toml.
   "https://github.com/DataDog/libdatadog.git",
+
+  # Unmerged fix for byteorder's AIX alignment assertion; see the `[patch.crates-io]` entry in Cargo.toml for details.
+  "https://github.com/amy-kwan/byteorder",
 ]

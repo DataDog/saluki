@@ -514,6 +514,11 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 	@echo "[*] Checking for dependency advisories, license conflicts, and untrusted dependency sources..."
 	@cargo deny check --hide-inclusion-graph --show-stats
 
+.PHONY: check-deny-ci
+check-deny-ci: check-rust-build-tools cargo-install-cargo-deny
+check-deny-ci: ## Like check-deny, but on non-main branches only fails on advisories not already present on main
+	@./ci/tooling/check-deny.sh
+
 .PHONY: check-fmt
 check-fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly

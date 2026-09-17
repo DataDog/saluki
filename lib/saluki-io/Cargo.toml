@@ -65,6 +65,7 @@ tokio = { workspace = true, features = [
   "rt-multi-thread",
   "signal",
   "sync",
+  "time",
 ] }
 tokio-rustls = { workspace = true }
 tonic = { workspace = true, features = ["server"] }

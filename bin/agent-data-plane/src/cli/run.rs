@@ -58,7 +58,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
@@ -200,6 +200,11 @@ pub async fn handle_run_command(
     )
     .await?;
 
+    // Create the root supervisor up front so that a handle to the whole supervision tree can be handed to the
+    // control plane below, which serves it over the API. Nothing is added to it until the rest of the tree is built.
+    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
+    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
+
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
         &config_sys,
@@ -209,6 +214,7 @@ pub async fn handle_run_command(
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
         config_sys.current_handle(),
+        root_supervisor.tree_handle(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
@@ -254,9 +260,6 @@ pub async fn handle_run_command(
     // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
     // and potentially observing an empty/already-ready registry before the topology's components even exist.
     let topology_ready = blueprint.topology_ready();
-
-    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
-    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
 
     root_supervisor.add_worker(bootstrap_supervisor);
     internal_supervisor.add_worker(resource_registry.worker());
@@ -891,11 +894,13 @@ async fn add_dsd_pipeline_to_blueprint(
         context_limit: aggregation.context_limit,
         flush_open_windows: aggregation.flush_open_windows,
         counter_expiry_seconds: aggregation.counter_expiry_seconds,
-        passthrough_timestamped_metrics: aggregation.no_aggregation_pipeline,
-        passthrough_idle_flush_timeout: aggregation.passthrough_idle_flush_timeout,
         hist_config: dsd_hist_config,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
+    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(
+        aggregation.passthrough_idle_flush_timeout,
+        aggregation.window_duration_seconds,
+    );
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
         config_system.live(|config| &config.domains.dogstatsd.metric_filter),
         &histogram.aggregates,
@@ -952,16 +957,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         .add_destination("dsd_client_telemetry_out", DogStatsDClientTelemetryConfiguration)?
-        // Metrics.
-        .connect_components_in_order([
-            "dsd_in.metrics",
-            "dsd_enrich",
-            "dsd_prefix_filter",
-            "dsd_tag_filterlist",
-            "dsd_agg",
-            "dsd_post_agg_filter",
-            "metrics_enrich",
-        ])?
         // Events.
         .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
         // Service checks.
@@ -974,6 +969,39 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_components("dsd_in.metrics", "dsd_stats_out")?
         // Post-aggregation client telemetry for RAR/COAT.
         .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
+
+    // Metrics.
+    //
+    // `dsd_no_agg_split` only earns a place in the pipeline when the no-aggregation pipeline is enabled. With it
+    // disabled, every metric is aggregated, so the split would have nothing to route out of the aggregation path and
+    // would sit in the hottest part of the process as a pure forwarder.
+    if aggregation.no_aggregation_pipeline {
+        blueprint
+            .add_transform("dsd_no_agg_split", dsd_no_agg_split_config)?
+            .connect_components_in_order([
+                "dsd_in.metrics",
+                "dsd_enrich",
+                "dsd_prefix_filter",
+                "dsd_no_agg_split",
+                "dsd_tag_filterlist",
+                "dsd_agg",
+                "dsd_post_agg_filter",
+                "metrics_enrich",
+            ])?
+            // Timestamped metrics skip tag filtering and aggregation, rejoining the pipeline after the aggregate
+            // transform.
+            .connect_components("dsd_no_agg_split.passthrough", "dsd_post_agg_filter")?;
+    } else {
+        blueprint.connect_components_in_order([
+            "dsd_in.metrics",
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_tag_filterlist",
+            "dsd_agg",
+            "dsd_post_agg_filter",
+            "metrics_enrich",
+        ])?;
+    }
 
     if debug_log.logging_enabled {
         blueprint
@@ -1010,7 +1038,8 @@ async fn add_otlp_pipeline_to_blueprint(
 
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces);
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces)
+            .with_max_resource_len(config.domains.traces.max_resource_len);
 
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
@@ -1045,6 +1074,7 @@ async fn add_otlp_pipeline_to_blueprint(
             features::is_ecs_fargate(),
         );
         let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
+            .with_max_resource_len(config.domains.traces.max_resource_len)
             .with_static_metric_tags(static_tags)
             .with_default_hostname(default_hostname);
 
@@ -1129,6 +1159,7 @@ mod tests {
 
     use crate::{
         components::{
+            dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
             dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
         },
         dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
@@ -1224,8 +1255,6 @@ mod tests {
                 context_limit: 1_000_000,
                 flush_open_windows: false,
                 counter_expiry_seconds: Some(300),
-                passthrough_timestamped_metrics: true,
-                passthrough_idle_flush_timeout: Duration::from_secs(1),
                 hist_config,
                 context_snapshot_receiver,
             };
@@ -1353,6 +1382,143 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_agg_split_excludes_timestamped_metrics_from_tag_filterlist() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let no_agg_split = DogStatsDNoAggSplitConfiguration::new(
+                Duration::from_millis(50),
+                NonZeroU64::new(10).expect("not zero"),
+            );
+            let tag_filter = TagFilterlistConfiguration::new(
+                Live::new_fixed(vec![MetricTagFilterEntry {
+                    metric_name: "app.requests".to_string(),
+                    action: FilterAction::Exclude,
+                    tags: vec!["remove".to_string()],
+                }]),
+                &[],
+                0,
+            )
+            .expect("tag filter configuration should be valid");
+            let hist_config = HistogramConfiguration::try_new(&[], &[], false, String::new())
+                .expect("histogram settings should be valid");
+            let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+            let aggregate = AggregateConfiguration {
+                window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                // Longer than the test, so the window stays open and contexts stay retained.
+                primary_flush_interval: Duration::from_secs(60),
+                context_limit: 1_000_000,
+                flush_open_windows: false,
+                counter_expiry_seconds: Some(300),
+                hist_config,
+                context_snapshot_receiver,
+            };
+
+            let (events_tx, events_rx) = mpsc::channel(2);
+            let source = ControlledMetricSourceBuilder {
+                events: Mutex::new(Some(events_rx)),
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            };
+            let (passthrough_tx, mut passthrough_rx) = mpsc::unbounded_channel();
+            let passthrough_destination = CollectingMetricDestinationBuilder { sender: passthrough_tx };
+
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("dogstatsd_no_agg_split_filterlist", &component_registry);
+            blueprint
+                .add_source("source", source)
+                .expect("controlled source should be accepted")
+                .add_transform("no_agg_split", no_agg_split)
+                .expect("no-agg split should be accepted")
+                .add_transform("tag_filter", tag_filter)
+                .expect("tag filter should be accepted")
+                .add_transform("aggregate", aggregate)
+                .expect("aggregate should be accepted")
+                .add_destination("aggregate_out", DrainingMetricDestinationBuilder)
+                .expect("draining destination should be accepted")
+                .add_destination("passthrough_out", passthrough_destination)
+                .expect("collecting destination should be accepted");
+            blueprint
+                .connect_components_in_order(["source", "no_agg_split", "tag_filter", "aggregate", "aggregate_out"])
+                .expect("no-agg split topology should connect")
+                .connect_components("no_agg_split.passthrough", "passthrough_out")
+                .expect("passthrough output should connect");
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new())
+                .with_ambient_worker_pool();
+
+            let mut supervisor =
+                Supervisor::new("dogstatsd-no-agg-split-filterlist").expect("test supervisor should be created");
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            let timestamped_context =
+                Context::from_static_parts("app.requests", &["keep:client", "remove:secret", "which:timestamped"]);
+            events_tx
+                .send(Event::Metric(Metric::counter(
+                    timestamped_context.clone(),
+                    (1_700_000_000, 1.0),
+                )))
+                .await
+                .expect("controlled source should accept the timestamped metric");
+
+            let non_timestamped_context = Context::from_static_parts(
+                "app.requests",
+                &["keep:client", "remove:secret", "which:non_timestamped"],
+            );
+            events_tx
+                .send(Event::Metric(Metric::counter(non_timestamped_context.clone(), 1.0)))
+                .await
+                .expect("controlled source should accept the non-timestamped metric");
+
+            // The timestamped metric bypasses the tag filterlist entirely, so it should reach the passthrough
+            // destination with its `remove` tag intact.
+            let passthrough_metric = passthrough_rx
+                .recv()
+                .await
+                .expect("passthrough destination should receive the timestamped metric");
+            assert_eq!(
+                passthrough_metric
+                    .context()
+                    .tags()
+                    .get_single_tag("remove")
+                    .and_then(|tag| tag.value()),
+                Some("secret"),
+                "timestamped metrics must not be filtered by the tag filterlist"
+            );
+
+            // The non-timestamped metric goes through the tag filterlist before aggregation, so its `remove` tag
+            // should be stripped from the resulting aggregated context.
+            let expected_context =
+                Context::from_static_parts("app.requests", &["keep:client", "which:non_timestamped"]);
+            let snapshot = loop {
+                let snapshot = snapshot_handle
+                    .snapshot()
+                    .await
+                    .expect("running aggregate should fulfill snapshots");
+                if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            };
+            assert!(snapshot.iter().all(|entry| entry.context() != &non_timestamped_context));
+            assert_eq!(snapshot.len(), 1);
+            assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).expect("test topology should still be running");
+            let topology_result = topology_task.await.expect("topology task should not panic");
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+        })
+        .await
+        .expect("no-agg split filterlist exclusion test should complete without hanging");
+    }
+
+    #[tokio::test]
     async fn context_dump_handler_uses_supplied_run_path_and_owner() {
         let run_directory = tempfile::tempdir().expect("run directory should be created");
         let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
@@ -1469,6 +1635,45 @@ mod tests {
     }
 
     impl MemoryBounds for DrainingMetricDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    struct CollectingMetricDestination {
+        sender: mpsc::UnboundedSender<Metric>,
+    }
+
+    #[async_trait]
+    impl Destination for CollectingMetricDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while let Some(events) = context.events().next().await {
+                for event in events {
+                    if let Some(metric) = event.try_into_metric() {
+                        let _ = self.sender.send(metric);
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct CollectingMetricDestinationBuilder {
+        sender: mpsc::UnboundedSender<Metric>,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for CollectingMetricDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(CollectingMetricDestination {
+                sender: self.sender.clone(),
+            }))
+        }
+    }
+
+    impl MemoryBounds for CollectingMetricDestinationBuilder {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
