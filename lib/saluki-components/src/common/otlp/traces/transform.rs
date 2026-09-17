@@ -114,9 +114,6 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // the Agent version meets that threshold.
 const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
 
-// otel_span_to_dd_span converts an OTLP span to DD span and is based on the logic defined in the agent.
-// https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
-#[allow(clippy::too_many_arguments)]
 /// Resolves `peer.service` and `_dd.base_service` on a converted span and writes each normalized
 /// value back under its canonical key.
 ///
