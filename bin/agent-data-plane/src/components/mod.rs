@@ -5,6 +5,7 @@ pub mod dogstatsd_post_aggregate_filter;
 pub mod dogstatsd_prefix_filter;
 pub mod host_tags;
 pub mod liveness;
+pub mod metric_filter;
 pub mod ottl_filter_processor;
 pub mod ottl_transform_processor;
 pub(crate) mod static_tags;

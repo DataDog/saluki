@@ -45,8 +45,7 @@ use saluki_components::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
         AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        MetricFilterConfiguration, ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration,
-        TraceTagReplacerConfiguration,
+        ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
 use saluki_context::origin::OriginTagCardinality;
@@ -65,9 +64,9 @@ use crate::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, static_tags::resolve_static_tags,
-        tag_filterlist::TagFilterlistConfiguration,
+        liveness::LivenessConfiguration, metric_filter::MetricFilterConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -538,8 +537,8 @@ fn add_metrics_output_pipelines_to_blueprint(
 
     // Each policy group needs unique component IDs; indices keep endpoint names out of those IDs.
     for (index, policy) in routing.policy_groups().iter().enumerate() {
-        let filter_id = format!("endpoint_allowlist_filter_{index}");
-        let encoder_id = format!("endpoint_allowlist_encode_{index}");
+        let filter_id = format!("metrics_routing_filter_{index}");
+        let encoder_id = format!("metrics_routing_encode_{index}");
         let filter_config = MetricFilterConfiguration::for_allowlist(policy.metric_allowlist.clone());
         let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
             .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
