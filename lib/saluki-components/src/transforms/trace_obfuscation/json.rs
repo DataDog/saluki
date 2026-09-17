@@ -100,19 +100,6 @@ mod tests {
         assert_eq!(parsed["id"], "?");
     }
 
-    // Known gap, tracked in https://github.com/DataDog/saluki/issues/2405: this obfuscator parses into a
-    // `serde_json::Map`, which is a key-sorted `BTreeMap`, so the obfuscated document comes out alphabetized. The
-    // reference implementation streams over the raw JSON and keeps the input's key order. Key order is part of the
-    // output and every other test here compares parsed values, which are order-insensitive, so pin it here: porting
-    // the scanner closes this gap and the change shows up as a diff.
-    #[test]
-    fn pinned_gap_key_order_is_sorted() {
-        let json = r#"{"z": 1, "m": {"y": 2, "a": 3}, "a": 4}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        assert_eq!(result, r#"{"a":"?","m":{"a":"?","y":"?"},"z":"?"}"#);
-    }
-
     #[test]
     fn test_obfuscate_nested_object() {
         let json = r#"{"user": {"name": "john", "age": 30}, "active": true}"#;

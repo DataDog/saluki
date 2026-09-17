@@ -94,9 +94,9 @@ impl TraceObfuscation {
     }
 
     fn obfuscate_http_span(&mut self, span: &mut Span) {
-        // Every URL goes to the rewrite. Screening with a cheap byte scan first would save the work on URLs with
-        // nothing to redact, but no scan we have says whether the rewrite changes a URL, and the one upstream offers
-        // misses the URLs the rewrite redacts wholesale. See `http::obfuscate_url`.
+        // Every URL goes through the algorithm. Screening with a cheap byte scan first would save the work on URLs
+        // with nothing to redact, but no scan we have says whether the algorithm changes a URL, and the one upstream
+        // offers misses the URLs it redacts wholesale. See `http::obfuscate_url`.
         let obfuscated = match span.attributes.get(tags::HTTP_URL).and_then(AttributeValue::as_string) {
             Some(url) if !url.is_empty() => self.obfuscator.obfuscate_url(url),
             _ => return,
@@ -316,7 +316,7 @@ mod tests {
     }
 
     // The reference implementation redacts a URL it cannot parse wholesale as soon as either option is on, so the span
-    // path has to reach the rewrite for these URLs rather than screening them out first.
+    // path has to reach the algorithm for these URLs rather than screening them out first.
     #[test]
     fn unparseable_url_is_redacted_on_the_span() {
         for url in ["https://example.com:port/x", "http://foo:bar.com/x", ":"] {
@@ -330,7 +330,7 @@ mod tests {
         }
     }
 
-    // With both options off the rewrite only strips userinfo, and an unparseable URL keeps everything else.
+    // With both options off the algorithm only strips userinfo, and an unparseable URL keeps everything else.
     #[test]
     fn unparseable_url_is_kept_when_both_options_are_off() {
         assert_eq!(
