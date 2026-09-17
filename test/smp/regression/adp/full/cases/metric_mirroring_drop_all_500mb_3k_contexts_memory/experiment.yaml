@@ -9,7 +9,7 @@ target:
     DD_HOSTNAME: smp-regression
     DD_API_KEY: foo00000001
     DD_DD_URL: http://127.0.0.1:9091
-    DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS: http://127.0.0.1:9091
+    DD_USE_V3_API_SERIES_ENDPOINTS: "{\"http://127.0.0.1:9091\":\"true\"}"
     DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
     DD_LOG_FORMAT_JSON: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "true"
@@ -19,7 +19,7 @@ target:
     DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
     DD_AGGREGATE_CONTEXT_LIMIT: "3100"
     DD_ADDITIONAL_ENDPOINTS: "{\"http://127.0.0.1:9092\":[\"foo00000002\"]}"
-    DD_METRICS_ENDPOINT_ROUTING_EXPERIMENTAL_METRIC_ALLOWLIST: "{\"http://127.0.0.1:9092\":[\"metric_mirroring:never_matches\"\
+    DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST: "{\"http://127.0.0.1:9092\":[\"metric_mirroring:never_matches\"\
       ]}"
   profiling_environment:
     DD_SERVICE: agent-data-plane

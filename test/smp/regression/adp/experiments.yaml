@@ -502,7 +502,7 @@ experiments:
         DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
         # Keep this non-empty so ADP builds and exercises the filtering branch. A colon separates
         # the metric name from its value in DogStatsD, so this cannot equal an emitted metric name.
-        DD_METRICS_ENDPOINT_ROUTING_EXPERIMENTAL_METRIC_ALLOWLIST: '{"http://127.0.0.1:9092":["metric_mirroring:never_matches"]}'
+        DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST: '{"http://127.0.0.1:9092":["metric_mirroring:never_matches"]}'
 
     lading:
       blackhole:
@@ -527,10 +527,10 @@ experiments:
     target:
       environment:
         DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
-        DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS: "http://127.0.0.1:9092"
+        DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9092":"true"}'
         # Keep this non-empty so ADP builds and exercises the filtering branch. A colon separates
         # the metric name from its value in DogStatsD, so this cannot equal an emitted metric name.
-        DD_METRICS_ENDPOINT_ROUTING_EXPERIMENTAL_METRIC_ALLOWLIST: '{"http://127.0.0.1:9091":["metric_mirroring:never_matches"]}'
+        DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST: '{"http://127.0.0.1:9091":["metric_mirroring:never_matches"]}'
 
     lading:
       blackhole:
