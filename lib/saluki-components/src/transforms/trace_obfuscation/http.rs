@@ -2,8 +2,7 @@
 //!
 //! The algorithm lives in `libdd_trace_obfuscation::http`, a shared crate that tracks the reference implementation's
 //! URL handling: its escaping rules, its acceptance of relative references, and its decoding of percent-encoded path
-//! characters before the digit scan. This module adapts that leaf API to [`HttpObfuscationConfig`] and
-//! [`MetaString`].
+//! characters before the digit scan.
 
 use libdd_trace_obfuscation::http;
 use stringtheory::MetaString;
