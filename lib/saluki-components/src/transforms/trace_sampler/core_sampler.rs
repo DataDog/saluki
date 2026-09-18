@@ -267,3 +267,21 @@ impl Sampler {
         self.seen.len() as i64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extra_rate_scales_learned_signature_rates() {
+        let mut sampler = Sampler::new(2.0, 10.0);
+        sampler.rates.insert(Signature(1), 0.02);
+
+        // A learned rate is multiplied by the extra rate: 2% becomes 4%.
+        let scaled = sampler.get_signature_sample_rate(&Signature(1));
+        assert!((scaled - 0.04).abs() < 1e-12, "scaled rate was {scaled}");
+
+        // An unknown signature falls to the default rate, which the extra rate does not scale.
+        assert_eq!(sampler.get_signature_sample_rate(&Signature(2)), 1.0);
+    }
+}

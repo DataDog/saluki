@@ -53,9 +53,24 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONFIG_EXTRA_SAMPLE_RATE"],
+        path: &["apm_config", "extra_sample_rate"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
         env_vars: &["DD_APM_FEATURES"],
         path: &["apm_config", "features"],
         decode: EnvDecode::CommaThenSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_CONFIG_MAX_CATALOG_ENTRIES"],
+        path: &["apm_config", "max_catalog_entries"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],
+        path: &["apm_config", "max_traces_per_second"],
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_CREDIT_CARDS_ENABLED"],
