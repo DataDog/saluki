@@ -9,7 +9,10 @@ use futures::TryStreamExt as _;
 use reqwest::ClientBuilder;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::assertions::{
+    polling::{run_poll_attempt, PollAttemptResult, PROBE_ATTEMPT_TIMEOUT},
+    Assertion, AssertionContext, AssertionResult,
+};
 use crate::config::HttpStatusMatcher;
 
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
@@ -141,7 +144,29 @@ impl Assertion for HttpCheckAssertion {
                 };
             }
 
-            let response_status = probe.get_status(&endpoint).await;
+            let response_status = match run_poll_attempt(
+                deadline,
+                PROBE_ATTEMPT_TIMEOUT,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+                probe.get_status(&endpoint),
+            )
+            .await
+            {
+                PollAttemptResult::Completed(result) => result,
+                PollAttemptResult::TimedOut => {
+                    trace!(endpoint = %endpoint, "HTTP check attempt timed out, retrying...");
+                    continue;
+                }
+                PollAttemptResult::Cancelled => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: "Assertion cancelled because container exited.".to_string(),
+                        duration: started.elapsed(),
+                    };
+                }
+            };
 
             match response_status {
                 Ok(Some(actual)) => {
