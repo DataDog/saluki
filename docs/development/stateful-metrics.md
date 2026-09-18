@@ -161,10 +161,12 @@ A worker continues accepting input during a transport outage using the existing 
 If queue processing itself stalls (for example, during slow disk I/O), bounded mailboxes eventually
 backpressure shared input. This is not a promise of isolation from shared CPU, memory, or disk exhaustion.
 
-Routing preserves input order for each worker, and healthy streams encode fresh batches in that
-order. There is no global ordering across workers. Existing priority scheduling can deliver fresh
-work before retries, and memory retries before disk retries, so retries do not promise timestamp
-order or exactly once delivery. A count change can remap every series.
+Routing preserves input order within each worker's mailbox and each logical batch. The
+high-priority queue is FIFO. There is no global ordering across workers. High-priority overflow
+joins the low-priority queue, so newer high-priority work can overtake both retries and older
+overflow. Memory retries can also overtake disk retries. Delivery under queue pressure or recovery
+therefore does not guarantee timestamp order or exactly once delivery. A count change can remap
+every series.
 
 ### Persistent layout changes
 
