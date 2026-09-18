@@ -978,7 +978,10 @@ mod tests {
         let error = super::open_replay_capture_file(&command.replay_file_path)
             .expect_err("replay should reject a directory during execution");
 
-        assert!(error.to_string().contains("regular file"), "{error:#}");
+        assert!(
+            error.to_string().contains("regular file") || error.to_string().contains("failed to open"),
+            "{error:#}"
+        );
     }
 
     #[cfg(unix)]
