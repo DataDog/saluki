@@ -3,6 +3,7 @@
 mod credit_cards;
 mod http;
 mod json;
+mod json_scanner;
 mod memcached;
 mod obfuscator;
 mod redis;

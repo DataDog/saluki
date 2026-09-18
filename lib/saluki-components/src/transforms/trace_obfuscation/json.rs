@@ -1,11 +1,31 @@
 //! JSON obfuscation for MongoDB, Elasticsearch, and OpenSearch queries.
+//!
+//! Obfuscation is a single pass that copies the characters it keeps, so keys come out in the order
+//! they were sent and malformed input can still be obfuscated up to the point where it breaks.
+//! Whitespace between tokens is dropped, which is what the Datadog Agent does.
+//!
+//! Ported from the Datadog Agent's `pkg/obfuscate/json.go`.
 
 use saluki_common::collections::FastHashSet;
-use serde_json::{Map, Value};
 use stringtheory::MetaString;
+use tracing::debug;
 
+use super::json_scanner::{Op, Scanner};
 use super::obfuscator::SqlObfuscationConfig;
 use super::sql::obfuscate_sql_string;
+
+/// Replaces a value whose SQL obfuscation failed.
+///
+/// Kept identical to the Datadog Agent's message: the value reaches the backend as part of the
+/// resource string that stats are aggregated on, so a different message would split the aggregation.
+const SQL_OBFUSCATION_FAILURE: &str =
+    "Datadog-agent failed to obfuscate SQL string. Enable agent debug logs for more info.";
+
+/// The value written in place of anything that is obfuscated.
+const OBFUSCATED_VALUE: &str = "\"?\"";
+
+/// Appended to output that was cut short by a syntax error.
+const TRUNCATION_MARKER: &str = "...";
 
 /// Pre-initialized JSON obfuscator with computed sets.
 pub struct JsonObfuscator {
@@ -27,56 +47,201 @@ impl JsonObfuscator {
         }
     }
 
-    /// Obfuscates a JSON string by replacing all values with "?" except for keys in `keep_values`.
+    /// Obfuscates a JSON string by replacing every value with `?`.
+    ///
+    /// Keys are always kept. A value whose key is in `keep_values` is kept as sent, along with
+    /// everything nested under it, and a string value whose key is in `obfuscate_sql_values` is
+    /// replaced by its SQL obfuscation.
+    ///
+    /// Malformed input is obfuscated as far as it parses and the result ends in `...`. Returning
+    /// the part we understood is safer than returning the input, which would leak the values we
+    /// could not reach.
     pub fn obfuscate(&self, json_str: &str) -> String {
         if json_str.is_empty() {
             return String::new();
         }
 
-        let value: Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return json_str.to_string(),
-        };
-
-        let obfuscated = self.obfuscate_value(&value, None);
-        serde_json::to_string(&obfuscated).unwrap_or_else(|_| json_str.to_string())
-    }
-
-    fn obfuscate_value(&self, value: &Value, current_key: Option<&str>) -> Value {
-        if let Some(key) = current_key {
-            if self.keep_keys.contains(key) {
-                return value.clone();
-            }
-
-            if self.sql_keys.contains(key) {
-                if let Value::String(s) = value {
-                    if let Ok(obfuscated) = obfuscate_sql_string(s, &self.sql_config) {
-                        return Value::String(obfuscated.query);
-                    }
-                }
-            }
+        let (obfuscated, err) = ObfuscationPass::new(self, json_str.len()).run(json_str);
+        if let Some(err) = err {
+            debug!(
+                error = err,
+                "Failed to scan JSON string; obfuscated output was truncated."
+            );
         }
 
-        match value {
-            Value::Object(map) => {
-                let mut new_map = Map::new();
-                for (key, val) in map {
-                    let obfuscated_val = self.obfuscate_value(val, Some(key));
-                    new_map.insert(key.clone(), obfuscated_val);
+        obfuscated
+    }
+}
+
+/// The composite value the pass is inside of.
+enum Closure {
+    Object,
+    Array,
+}
+
+/// One pass of a [`JsonObfuscator`] over an input string.
+struct ObfuscationPass<'a> {
+    obfuscator: &'a JsonObfuscator,
+
+    /// The obfuscated output built so far.
+    out: String,
+
+    /// The current key, or the value of a key awaiting SQL obfuscation.
+    buf: String,
+
+    closures: Vec<Closure>,
+
+    /// The depth at which `keeping` stops.
+    keep_depth: usize,
+
+    /// True while scanning a key rather than a value.
+    key: bool,
+
+    /// True once the current value has been replaced, so a value spanning several characters is
+    /// replaced once rather than per character.
+    wiped: bool,
+
+    /// True while inside a value that is kept as sent.
+    keeping: bool,
+
+    /// True while collecting a value for SQL obfuscation.
+    transforming: bool,
+}
+
+impl<'a> ObfuscationPass<'a> {
+    fn new(obfuscator: &'a JsonObfuscator, input_len: usize) -> Self {
+        Self {
+            obfuscator,
+            out: String::with_capacity(input_len),
+            buf: String::new(),
+            closures: Vec::new(),
+            keep_depth: 0,
+            key: false,
+            wiped: false,
+            keeping: false,
+            transforming: false,
+        }
+    }
+
+    /// Obfuscates `input`, returning the output and the syntax error that cut it short, if any.
+    fn run(mut self, input: &str) -> (String, Option<String>) {
+        let mut scanner = Scanner::new();
+
+        for c in input.chars() {
+            let op = scanner.step(c);
+
+            // The depth before this character is applied, which is the depth the value or key that
+            // just ended belongs to.
+            let depth = self.closures.len();
+
+            match op {
+                Op::BeginObject => {
+                    self.closures.push(Closure::Object);
+                    self.set_key();
+                    self.transforming = false;
                 }
-                Value::Object(new_map)
+                Op::BeginArray => {
+                    self.closures.push(Closure::Array);
+                    self.set_key();
+                    self.transforming = false;
+                }
+                Op::EndObject | Op::EndArray => {
+                    // The outermost closure is left in place, which is what decides whether a value
+                    // following a complete document is read as a key or as a value.
+                    if self.closures.len() > 1 {
+                        self.closures.pop();
+                    }
+                    self.set_key();
+                    self.finish_value(depth);
+                }
+                Op::ObjectValue | Op::ArrayValue => {
+                    self.set_key();
+                    self.finish_value(depth);
+                }
+                Op::BeginLiteral | Op::Continue => {
+                    if self.transforming {
+                        self.buf.push(c);
+                        continue;
+                    } else if self.key {
+                        self.buf.push(c);
+                    } else if !self.keeping {
+                        if !self.wiped {
+                            self.out.push_str(OBFUSCATED_VALUE);
+                            self.wiped = true;
+                        }
+                        continue;
+                    }
+                }
+                Op::ObjectKey => {
+                    let key = self.buf.trim_matches('"');
+                    if !self.keeping && self.obfuscator.keep_keys.contains(key) {
+                        self.keeping = true;
+                        self.keep_depth = depth + 1;
+                    } else if !self.transforming && self.obfuscator.sql_keys.contains(key) {
+                        // Only a string value is obfuscated as SQL. Anything else ends the attempt
+                        // and is obfuscated as usual.
+                        self.transforming = true;
+                    }
+                    self.buf.clear();
+                    self.key = false;
+                }
+                Op::SkipSpace => continue,
+                Op::Error => {
+                    self.out.push_str(TRUNCATION_MARKER);
+                    return (self.out, scanner.err);
+                }
+                // Whitespace after a document ended, which is kept.
+                Op::End => {}
             }
-            Value::Array(arr) => {
-                let obfuscated_arr: Vec<Value> = arr.iter().map(|v| self.obfuscate_value(v, None)).collect();
-                Value::Array(obfuscated_arr)
-            }
-            Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => Value::String("?".to_string()),
+
+            self.out.push(c);
+        }
+
+        if scanner.eof() == Op::Error {
+            self.out.push_str(TRUNCATION_MARKER);
+        }
+
+        (self.out, scanner.err)
+    }
+
+    /// A key follows at the top level and inside an object, but not inside an array.
+    fn set_key(&mut self) {
+        self.key = matches!(self.closures.last(), None | Some(Closure::Object));
+        self.wiped = false;
+    }
+
+    /// Handles the end of a value: writes its SQL obfuscation if one was collected, or leaves a
+    /// kept subtree once the pass climbs back out of it.
+    fn finish_value(&mut self, depth: usize) {
+        if self.transforming {
+            // The collected characters are a JSON literal. A string is unescaped before
+            // obfuscation; anything else is passed on as written.
+            let query = serde_json::from_str::<String>(&self.buf).unwrap_or_else(|_| self.buf.clone());
+            let obfuscated = match obfuscate_sql_string(&query, &self.obfuscator.sql_config) {
+                Ok(sql) => sql.query,
+                Err(err) => {
+                    // The query is logged because the message written in its place tells the user
+                    // to look for it in the debug logs.
+                    debug!(error = err, query = query, "Failed to obfuscate SQL string.");
+                    SQL_OBFUSCATION_FAILURE.to_owned()
+                }
+            };
+
+            self.out.push('"');
+            self.out.push_str(&obfuscated);
+            self.out.push('"');
+            self.transforming = false;
+            self.buf.clear();
+        } else if self.keeping && depth < self.keep_depth {
+            self.keeping = false;
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn default_sql_config() -> SqlObfuscationConfig {
@@ -90,171 +255,27 @@ mod tests {
         JsonObfuscator::new(keep_values, obfuscate_sql_values, sql_config).obfuscate(json_str)
     }
 
-    #[test]
-    fn test_obfuscate_simple_object() {
-        let json = r#"{"user": "john", "id": 123}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["user"], "?");
-        assert_eq!(parsed["id"], "?");
+    fn keys(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_owned()).collect()
     }
 
-    #[test]
-    fn test_obfuscate_nested_object() {
-        let json = r#"{"user": {"name": "john", "age": 30}, "active": true}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["user"]["name"], "?");
-        assert_eq!(parsed["user"]["age"], "?");
-        assert_eq!(parsed["active"], "?");
-    }
-
-    #[test]
-    fn test_obfuscate_array() {
-        let json = r#"{"items": [1, 2, 3], "names": ["alice", "bob"]}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["items"][0], "?");
-        assert_eq!(parsed["items"][1], "?");
-        assert_eq!(parsed["items"][2], "?");
-        assert_eq!(parsed["names"][0], "?");
-        assert_eq!(parsed["names"][1], "?");
-    }
-
-    #[test]
-    fn test_keep_values() {
-        let keep = vec!["status".to_string(), "version".to_string()];
-        let json = r#"{"user": "john", "status": "active", "version": "1.0"}"#;
-        let result = obfuscate_json_string(json, &keep, &[], &default_sql_config());
-
-        let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["user"], "?");
-        assert_eq!(parsed["status"], "active");
-        assert_eq!(parsed["version"], "1.0");
-    }
-
-    #[test]
-    fn test_mongodb_query() {
-        let json = r#"{"find": "users", "filter": {"age": {"$gt": 25}}, "limit": 10}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["find"], "?");
-        assert_eq!(parsed["filter"]["age"]["$gt"], "?");
-        assert_eq!(parsed["limit"], "?");
-    }
-
-    #[test]
-    fn test_elasticsearch_query() {
-        let json = r#"{"query": {"match": {"title": "search term"}}, "size": 20}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        let parsed: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["query"]["match"]["title"], "?");
-        assert_eq!(parsed["size"], "?");
-    }
-
-    #[test]
-    fn test_invalid_json() {
-        let json = r#"{"invalid": json}"#;
-        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
-
-        // Should return original string on parse error
-        assert_eq!(result, json);
-    }
-
-    #[test]
-    fn test_empty_string() {
-        let result = obfuscate_json_string("", &[], &[], &default_sql_config());
-        assert_eq!(result, "");
-    }
-
-    fn assert_json_eq(actual: &str, expected: &str) {
-        let actual_val: Value = serde_json::from_str(actual).unwrap();
-        let expected_val: Value = serde_json::from_str(expected).unwrap();
-        assert_eq!(
-            actual_val, expected_val,
-            "\nActual:\n{}\nExpected:\n{}",
-            actual, expected
+    /// Every expected value below is what the Datadog Agent's obfuscator returns for the same
+    /// input, compared character for character.
+    fn assert_obfuscated(input: &str, keep_values: &[&str], obfuscate_sql_values: &[&str], expected: &str) {
+        let result = obfuscate_json_string(
+            input,
+            &keys(keep_values),
+            &keys(obfuscate_sql_values),
+            &default_sql_config(),
         );
+        assert_eq!(result, expected, "\ninput:\n{}", input);
     }
 
-    #[test]
-    fn test_agent_elasticsearch_body_1() {
-        let input = r#"{ "query": { "multi_match" : { "query" : "guide", "fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"] } } }"#;
-        let expected = r#"{ "query": { "multi_match": { "query": "?", "fields" : ["?", { "key": "?", "other": ["?", "?", {"k": "?"}] }, "?"] } } }"#;
-        let result = obfuscate_json_string(input, &[], &[], &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
+    const ES_BODY_MULTI_MATCH: &str = r#"{ "query": { "multi_match" : { "query" : "guide", "fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"] } } }"#;
 
-    #[test]
-    fn test_agent_elasticsearch_body_2() {
-        let input = r#"{
-  "highlight": {
-    "pre_tags": [ "<em>" ],
-    "post_tags": [ "</em>" ],
-    "index": 1
-  }
-}"#;
-        let expected = r#"{
-  "highlight": {
-    "pre_tags": [ "?" ],
-    "post_tags": [ "?" ],
-    "index": "?"
-  }
-}"#;
-        let result = obfuscate_json_string(input, &[], &[], &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
+    const ES_BODY_FIELDS: &str = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
 
-    #[test]
-    fn test_agent_elasticsearch_body_3_keep_other() {
-        let keep = vec!["other".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{ "query": { "multi_match" : { "query" : "guide", "fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"] } } }"#;
-        let expected = r#"{ "query": { "multi_match": { "query": "?", "fields" : ["?", { "key": "?", "other": ["1", "2", {"k": "v"}] }, "?"] } } }"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_elasticsearch_body_4_keep_fields() {
-        let keep = vec!["fields".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
-        let expected = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_elasticsearch_body_5_keep_k() {
-        let keep = vec!["k".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
-        let expected = r#"{"fields" : ["?", { "key": "?", "other": ["?", "?", {"k": "v"}] }, "?"]}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_elasticsearch_body_6_keep_c() {
-        let keep = vec!["C".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{"fields" : [{"A": 1, "B": {"C": 3}}, "2"]}"#;
-        let expected = r#"{"fields" : [{"A": "?", "B": {"C": 3}}, "?"]}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_elasticsearch_body_7() {
-        let keep: Vec<String> = vec![];
-        let obfuscate_sql: Vec<String> = vec![];
-        let input = r#"{
+    const ES_BODY_SEARCH: &str = r#"{
     "query": {
        "match" : {
           "title" : "in action"
@@ -269,200 +290,8 @@ mod tests {
        }
     }
 }"#;
-        let expected = r#"{
-    "query": {
-       "match" : {
-          "title" : "?"
-       }
-    },
-    "size": "?",
-    "from": "?",
-    "_source": [ "?", "?", "?" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
 
-    #[test]
-    fn test_agent_elasticsearch_body_8_keep_source() {
-        let keep = vec!["_source".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{
-    "query": {
-       "match" : {
-          "title" : "in action"
-       }
-    },
-    "size": 2,
-    "from": 0,
-    "_source": [ "title", "summary", "publish_date" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let expected = r#"{
-    "query": {
-       "match" : {
-          "title" : "?"
-       }
-    },
-    "size": "?",
-    "from": "?",
-    "_source": [ "title", "summary", "publish_date" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_elasticsearch_body_9_keep_query() {
-        let keep = vec!["query".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{
-    "query": {
-       "match" : {
-          "title" : "in action"
-       }
-    },
-    "size": 2,
-    "from": 0,
-    "_source": [ "title", "summary", "publish_date" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let expected = r#"{
-    "query": {
-       "match" : {
-          "title" : "in action"
-       }
-    },
-    "size": "?",
-    "from": "?",
-    "_source": [ "?", "?", "?" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_elasticsearch_body_10_keep_match() {
-        let keep = vec!["match".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{
-    "query": {
-       "match" : {
-          "title" : "in action"
-       }
-    },
-    "size": 2,
-    "from": 0,
-    "_source": [ "title", "summary", "publish_date" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let expected = r#"{
-    "query": {
-       "match" : {
-          "title" : "in action"
-       }
-    },
-    "size": "?",
-    "from": "?",
-    "_source": [ "?", "?", "?" ],
-    "highlight": {
-       "fields" : {
-          "title" : {}
-       }
-    }
-}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_mongo_keep_company_wallet() {
-        let keep = vec!["company_wallet_configuration_id".to_string()];
-        let obfuscate_sql = Vec::new();
-        let input = r#"{"email":"dev@datadoghq.com","company_wallet_configuration_id":1}"#;
-        let expected = r#"{"email":"?","company_wallet_configuration_id":1}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_sql_json_basic() {
-        let keep = vec!["hello".to_string()];
-        let obfuscate_sql = vec!["query".to_string()];
-        let sql_config = default_sql_config();
-        let input = r#"{"query": "select * from table where id = 2", "hello": "world", "hi": "there"}"#;
-        let expected = r#"{"query": "select * from table where id = ?", "hello": "world", "hi": "?"}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_sql_json_tried_sql_obfuscate_an_object() {
-        let keep = Vec::new();
-        let obfuscate_sql = vec!["object".to_string()];
-        let sql_config = default_sql_config();
-        let input = r#"{"object": {"not a": "query"}}"#;
-        let expected = r#"{"object": {"not a": "?"}}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_sql_json_tried_sql_obfuscate_an_array() {
-        let keep = Vec::new();
-        let obfuscate_sql = vec!["object".to_string()];
-        let sql_config = default_sql_config();
-        let input = r#"{"object": ["not", "a", "query"]}"#;
-        let expected = r#"{"object": ["?", "?", "?"]}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
-        assert_json_eq(&result, expected);
-    }
-
-    #[test]
-    fn test_agent_sql_plan_mysql() {
-        let keep = vec![
-            "select_id".to_string(),
-            "using_filesort".to_string(),
-            "table_name".to_string(),
-            "access_type".to_string(),
-            "possible_keys".to_string(),
-            "key".to_string(),
-            "key_length".to_string(),
-            "used_key_parts".to_string(),
-            "used_columns".to_string(),
-            "ref".to_string(),
-            "update".to_string(),
-        ];
-        let obfuscate_sql = vec!["attached_condition".to_string()];
-        let sql_config = default_sql_config();
-        let input = r#"{
+    const MYSQL_PLAN: &str = r#"{
   "query_block": {
 	"select_id": 1,
 	"cost_info": {
@@ -502,47 +331,405 @@ mod tests {
 	}
   }
 }"#;
-        let expected = r#"{
-  "query_block": {
-	"select_id": 1,
-	"cost_info": {
-	  "query_cost": "?"
-	},
-	"ordering_operation": {
-	  "using_filesort": true,
-	  "cost_info": {
-		"sort_cost": "?"
-	  },
-	  "table": {
-		"table_name": "sbtest1",
-		"access_type": "range",
-		"possible_keys": [
-		  "PRIMARY"
-		],
-		"key": "PRIMARY",
-		"used_key_parts": [
-		  "id"
-		],
-		"key_length": "4",
-		"rows_examined_per_scan": "?",
-		"rows_produced_per_join": "?",
-		"filtered": "?",
-		"cost_info": {
-		  "read_cost": "?",
-		  "eval_cost": "?",
-		  "prefix_cost": "?",
-		  "data_read_per_join": "?"
-		},
-		"used_columns": [
-		  "id",
-		  "c"
-		],
-		"attached_condition": "( sbtest . sbtest1 . id between ? and ? )"
-	  }
-	}
-  }
-}"#;
-        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
-        assert_json_eq(&result, expected);
+
+    #[test]
+    fn simple_object() {
+        assert_obfuscated(r#"{"user": "john", "id": 123}"#, &[], &[], r#"{"user":"?","id":"?"}"#);
+    }
+
+    #[test]
+    fn nested_object() {
+        assert_obfuscated(
+            r#"{"user": {"name": "john", "age": 30}, "active": true}"#,
+            &[],
+            &[],
+            r#"{"user":{"name":"?","age":"?"},"active":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn array() {
+        assert_obfuscated(
+            r#"{"items": [1, 2, 3], "names": ["alice", "bob"]}"#,
+            &[],
+            &[],
+            r#"{"items":["?","?","?"],"names":["?","?"]}"#,
+        );
+    }
+
+    #[test]
+    fn keep_values() {
+        assert_obfuscated(
+            r#"{"user": "john", "status": "active", "version": "1.0"}"#,
+            &["status", "version"],
+            &[],
+            r#"{"user":"?","status":"active","version":"1.0"}"#,
+        );
+    }
+
+    #[test]
+    fn mongodb_query() {
+        assert_obfuscated(
+            r#"{"find": "users", "filter": {"age": {"$gt": 25}}, "limit": 10}"#,
+            &[],
+            &[],
+            r#"{"find":"?","filter":{"age":{"$gt":"?"}},"limit":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn elasticsearch_query() {
+        assert_obfuscated(
+            r#"{"query": {"match": {"title": "search term"}}, "size": 20}"#,
+            &[],
+            &[],
+            r#"{"query":{"match":{"title":"?"}},"size":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn empty_string() {
+        assert_obfuscated("", &[], &[], "");
+    }
+
+    #[test]
+    fn key_order_is_kept() {
+        // Alphabetizing the keys would change the resource string that stats aggregate on.
+        assert_obfuscated(
+            r#"{"z": 1, "a": 2, "m": {"y": 3, "b": 4}}"#,
+            &[],
+            &[],
+            r#"{"z":"?","a":"?","m":{"y":"?","b":"?"}}"#,
+        );
+    }
+
+    #[test]
+    fn whitespace_between_tokens_is_dropped() {
+        assert_obfuscated(
+            "{\n  \"a\": [ 1, 2 ],\n  \"b\": {\"z\": true}\n}",
+            &[],
+            &[],
+            r#"{"a":["?","?"],"b":{"z":"?"}}"#,
+        );
+    }
+
+    #[test]
+    fn whitespace_after_a_document_is_kept() {
+        assert_obfuscated(r#"  {"a":"b"}  "#, &[], &[], r#"{"a":"?"}  "#);
+    }
+
+    #[test]
+    fn several_documents_are_each_obfuscated() {
+        assert_obfuscated(
+            r#"{"index":{"_index":"traces"}} {"value":1}"#,
+            &[],
+            &[],
+            r#"{"index":{"_index":"?"}} {"value":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn malformed_json_is_obfuscated_up_to_the_error() {
+        // Returning the input untouched would leak the values before the error.
+        assert_obfuscated(r#"{"invalid": json}"#, &[], &[], r#"{"invalid":..."#);
+        assert_obfuscated(r#"{"a": [1, 2}"#, &[], &[], r#"{"a":["?","?"..."#);
+        assert_obfuscated("nope", &[], &[], r#""?"..."#);
+        assert_obfuscated(r#"{"a": tru}"#, &[], &[], r#"{"a":"?"..."#);
+    }
+
+    #[test]
+    fn truncated_json_is_obfuscated_up_to_the_end() {
+        assert_obfuscated(r#"{"a": "b", "c": "#, &[], &[], r#"{"a":"?","c":..."#);
+        assert_obfuscated(r#"{"a": "b""#, &[], &[], r#"{"a":"?"..."#);
+        assert_obfuscated(
+            r#"{"a": "b", "keepme": "c""#,
+            &["keepme"],
+            &[],
+            r#"{"a":"?","keepme":"c"..."#,
+        );
+    }
+
+    #[test]
+    fn keys_are_kept_as_sent() {
+        assert_obfuscated(
+            r#"{"que\"ry": 1, "sp ace": 2}"#,
+            &[],
+            &[],
+            r#"{"que\"ry":"?","sp ace":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn escaped_and_multibyte_values_are_obfuscated() {
+        assert_obfuscated(
+            r#"{"a": "he said \"hi\"", "b": "héllo ☃"}"#,
+            &[],
+            &[],
+            r#"{"a":"?","b":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn keep_values_keeps_the_whole_subtree() {
+        assert_obfuscated(
+            r#"{"keepme": {"x": 1, "y": [2, {"z": 3}]}, "other": 4}"#,
+            &["keepme"],
+            &[],
+            r#"{"keepme":{"x":1,"y":[2,{"z":3}]},"other":"?"}"#,
+        );
+        assert_obfuscated(
+            r#"{"keepme": [1, {"a": "b"}], "c": "d"}"#,
+            &["keepme"],
+            &[],
+            r#"{"keepme":[1,{"a":"b"}],"c":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn keep_values_stops_at_the_end_of_the_subtree() {
+        assert_obfuscated(
+            r#"{"a": {"keepme": {"b": 1}}, "c": 2}"#,
+            &["keepme"],
+            &[],
+            r#"{"a":{"keepme":{"b":1}},"c":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_multi_match() {
+        assert_obfuscated(
+            ES_BODY_MULTI_MATCH,
+            &[],
+            &[],
+            r#"{"query":{"multi_match":{"query":"?","fields":["?",{"key":"?","other":["?","?",{"k":"?"}]},"?"]}}}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_multi_match_keep_other() {
+        assert_obfuscated(
+            ES_BODY_MULTI_MATCH,
+            &["other"],
+            &[],
+            r#"{"query":{"multi_match":{"query":"?","fields":["?",{"key":"?","other":["1","2",{"k":"v"}]},"?"]}}}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_highlight() {
+        assert_obfuscated(
+            "{\n  \"highlight\": {\n    \"pre_tags\": [ \"<em>\" ],\n    \"post_tags\": [ \"</em>\" ],\n    \"index\": 1\n  }\n}",
+            &[],
+            &[],
+            r#"{"highlight":{"pre_tags":["?"],"post_tags":["?"],"index":"?"}}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_fields_keep_fields() {
+        assert_obfuscated(
+            ES_BODY_FIELDS,
+            &["fields"],
+            &[],
+            r#"{"fields":["_all",{"key":"value","other":["1","2",{"k":"v"}]},"2"]}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_fields_keep_k() {
+        assert_obfuscated(
+            ES_BODY_FIELDS,
+            &["k"],
+            &[],
+            r#"{"fields":["?",{"key":"?","other":["?","?",{"k":"v"}]},"?"]}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_fields_keep_nested_key() {
+        assert_obfuscated(
+            r#"{"fields" : [{"A": 1, "B": {"C": 3}}, "2"]}"#,
+            &["C"],
+            &[],
+            r#"{"fields":[{"A":"?","B":{"C":3}},"?"]}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_search() {
+        assert_obfuscated(
+            ES_BODY_SEARCH,
+            &[],
+            &[],
+            r#"{"query":{"match":{"title":"?"}},"size":"?","from":"?","_source":["?","?","?"],"highlight":{"fields":{"title":{}}}}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_search_keep_source() {
+        assert_obfuscated(
+            ES_BODY_SEARCH,
+            &["_source"],
+            &[],
+            r#"{"query":{"match":{"title":"?"}},"size":"?","from":"?","_source":["title","summary","publish_date"],"highlight":{"fields":{"title":{}}}}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_search_keep_query() {
+        assert_obfuscated(
+            ES_BODY_SEARCH,
+            &["query"],
+            &[],
+            r#"{"query":{"match":{"title":"in action"}},"size":"?","from":"?","_source":["?","?","?"],"highlight":{"fields":{"title":{}}}}"#,
+        );
+    }
+
+    #[test]
+    fn es_body_search_keep_match() {
+        assert_obfuscated(
+            ES_BODY_SEARCH,
+            &["match"],
+            &[],
+            r#"{"query":{"match":{"title":"in action"}},"size":"?","from":"?","_source":["?","?","?"],"highlight":{"fields":{"title":{}}}}"#,
+        );
+    }
+
+    #[test]
+    fn mongo_keep_company_wallet() {
+        assert_obfuscated(
+            r#"{"email":"dev@datadoghq.com","company_wallet_configuration_id":1}"#,
+            &["company_wallet_configuration_id"],
+            &[],
+            r#"{"email":"?","company_wallet_configuration_id":1}"#,
+        );
+    }
+
+    #[test]
+    fn sql_value_is_obfuscated() {
+        assert_obfuscated(
+            r#"{"query": "select * from table where id = 2", "hello": "world", "hi": "there"}"#,
+            &["hello"],
+            &["query"],
+            r#"{"query":"select * from table where id = ?","hello":"world","hi":"?"}"#,
+        );
+    }
+
+    #[test]
+    fn sql_key_with_object_value_falls_back_to_obfuscation() {
+        assert_obfuscated(
+            r#"{"object": {"not a": "query"}}"#,
+            &[],
+            &["object"],
+            r#"{"object":{"not a":"?"}}"#,
+        );
+    }
+
+    #[test]
+    fn sql_key_with_array_value_falls_back_to_obfuscation() {
+        assert_obfuscated(
+            r#"{"object": ["not", "a", "query"]}"#,
+            &[],
+            &["object"],
+            r#"{"object":["?","?","?"]}"#,
+        );
+    }
+
+    #[test]
+    fn failed_sql_obfuscation_reports_the_failure() {
+        // An unterminated string literal cannot be tokenized.
+        assert_obfuscated(
+            r#"{"query": "select * from t where x = '"}"#,
+            &[],
+            &["query"],
+            &format!(r#"{{"query":"{}"}}"#, SQL_OBFUSCATION_FAILURE),
+        );
+
+        // An unterminated comment cannot be tokenized either.
+        assert_obfuscated(
+            r#"{"query": "/* comment"}"#,
+            &[],
+            &["query"],
+            &format!(r#"{{"query":"{}"}}"#, SQL_OBFUSCATION_FAILURE),
+        );
+    }
+
+    #[test]
+    fn sql_key_with_escaped_string_value_is_unescaped_first() {
+        assert_obfuscated(
+            r#"{"query": "select \"a\" from t where b = 'lit'"}"#,
+            &[],
+            &["query"],
+            r#"{"query":"select a from t where b = ?"}"#,
+        );
+    }
+
+    #[test]
+    fn sql_value_with_json_only_escapes_is_still_obfuscated() {
+        // Unlike every other expected value in this module, these are deliberately not what the
+        // Datadog Agent returns. The Agent unescapes a SQL value with Go's `strconv.Unquote`,
+        // which is Go string syntax rather than JSON, and it rejects `\/` and surrogate pairs.
+        // It then falls back to the raw literal with its quotes, the SQL tokenizer reads the whole
+        // thing as one quoted identifier, and the query passes through unobfuscated. We unescape
+        // with serde instead, so a JSON-valid value always reaches the SQL tokenizer. That
+        // matters because `\/` is ordinary production traffic: PHP's `json_encode` escapes
+        // every `/` as `\/` by default. Leaking every literal in the value is worse than the
+        // resource string differing from the Agent's, so we keep our behaviour.
+        assert_obfuscated(
+            r#"{"query": "select * from t where path = 'a\/b'"}"#,
+            &[],
+            &["query"],
+            r#"{"query":"select * from t where path = ?"}"#,
+        );
+
+        // A surrogate pair is the other JSON escape `strconv.Unquote` rejects, which the Agent
+        // then leaks as `ud83dude00`.
+        assert_obfuscated(
+            r#"{"query": "select 1 where x = '\\ud83d\\ude00'"}"#,
+            &[],
+            &["query"],
+            r#"{"query":"select ? where x = ?"}"#,
+        );
+    }
+
+    #[test]
+    fn mysql_plan() {
+        assert_obfuscated(
+            MYSQL_PLAN,
+            &[
+                "select_id",
+                "using_filesort",
+                "table_name",
+                "access_type",
+                "possible_keys",
+                "key",
+                "key_length",
+                "used_key_parts",
+                "used_columns",
+                "ref",
+                "update",
+            ],
+            &["attached_condition"],
+            r#"{"query_block":{"select_id":1,"cost_info":{"query_cost":"?"},"ordering_operation":{"using_filesort":true,"cost_info":{"sort_cost":"?"},"table":{"table_name":"sbtest1","access_type":"range","possible_keys":["PRIMARY"],"key":"PRIMARY","used_key_parts":["id"],"key_length":"4","rows_examined_per_scan":"?","rows_produced_per_join":"?","filtered":"?","cost_info":{"read_cost":"?","eval_cost":"?","prefix_cost":"?","data_read_per_join":"?"},"used_columns":["id","c"],"attached_condition":"( sbtest . sbtest1 . id between ? and ? )"}}}}"#,
+        );
+    }
+
+    #[test]
+    fn a_value_after_a_document_follows_the_first_document() {
+        // Whether a second top-level value is read as a key or as a value depends on the closure
+        // left over from the first document, so a string after an object is kept while the same
+        // string after an array is obfuscated. Both match the Datadog Agent.
+        assert_obfuscated(r#"{"a":1} "secret""#, &[], &[], r#"{"a":"?"} "secret""#);
+        assert_obfuscated(r#"[1,2] "secret""#, &[], &[], r#"["?","?"] "?""#);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn property_test_arbitrary_input_never_panics(input in ".*") {
+            // The scanner walks whatever a tracer sent, so it must not panic on any input. Not
+            // exhaustive, but it catches simple robustness regressions on every test run.
+            let _ = obfuscate_json_string(&input, &keys(&["a"]), &keys(&["query"]), &default_sql_config());
+        }
     }
 }
