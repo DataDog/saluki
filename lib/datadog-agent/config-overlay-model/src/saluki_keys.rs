@@ -23,6 +23,21 @@ pub struct SalukiKey {
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
+        yaml_path: "data_plane.stateful_metrics_workers",
+        description: "Number of independent stateful metrics sender workers",
+        default: "1",
+        documentation: Some("Positive worker count, default 1. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting."),
+        value_type: "ValueType::Integer",
+        schema_default: Some("1"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
         yaml_path: "data_plane.stateful_metrics_endpoint",
         description: "Experimental stateful series gRPC intake endpoint",
         default: "unset (disabled)",

@@ -76,7 +76,7 @@ use std::{
 use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
-    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -236,17 +236,31 @@ pub struct SalukiOnly {
 }
 
 /// `data_plane.*` Saluki-only knobs.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct DataPlane {
     /// Experimental plaintext gRPC metrics endpoint; unset disables stateful delivery.
     pub stateful_metrics_endpoint: Option<String>,
+    /// Independent stateful sender tasks; defaults to one and rejects zero.
+    pub stateful_metrics_workers: NonZeroUsize,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
     pub otlp: DataPlaneOtlp,
+}
+
+impl Default for DataPlane {
+    fn default() -> Self {
+        Self {
+            stateful_metrics_endpoint: None,
+            stateful_metrics_workers: DEFAULT_STATEFUL_METRICS_WORKERS,
+            standalone_mode: None,
+            checks: DataPlaneChecks::default(),
+            otlp: DataPlaneOtlp::default(),
+        }
+    }
 }
 
 // TODO(#2177): Delete these ADP-only defaults when receiver endpoints return to the canonical
@@ -517,6 +531,7 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         config.domains.stateful_metrics.endpoint = self.data_plane.stateful_metrics_endpoint.clone();
+        config.domains.stateful_metrics.workers = self.data_plane.stateful_metrics_workers;
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;

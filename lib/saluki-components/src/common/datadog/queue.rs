@@ -1,6 +1,6 @@
 //! Shared priority scheduling and persistent retry storage for delivery components.
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use agent_data_plane_config::shared::SharedConfiguration;
 use saluki_error::GenericError;
@@ -27,6 +27,13 @@ impl DeliveryQueueConfiguration {
             high_priority_capacity: shared.endpoints.forwarder.high_prio_buffer_size,
             retry: RetryConfiguration::from_configuration(&shared.endpoints.forwarder, shared.run_path.as_deref()),
         }
+    }
+
+    /// Returns the storage root when disk persistence is enabled.
+    ///
+    /// Delivery components may validate persistent worker layouts before opening any queues.
+    pub fn storage_path(&self) -> Option<&Path> {
+        (self.retry.storage_max_size_bytes() > 0).then(|| self.retry.storage_path())
     }
 
     /// Builds a queue with a distinct storage namespace and endpoint telemetry.

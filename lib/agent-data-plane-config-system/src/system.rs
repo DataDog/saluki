@@ -390,12 +390,13 @@ mod tests {
     async fn stateful_metrics_is_opt_in_and_reachable_from_file_and_environment() {
         let default = standalone_system(None, None).await.unwrap();
         assert!(default.config().domains.stateful_metrics.endpoint.is_none());
+        assert_eq!(default.config().domains.stateful_metrics.workers.get(), 1);
 
         let endpoint = "http://127.0.0.1:8080";
         let from_file = standalone_system(
             Some(json!({
                 "api_key": TEST_API_KEY,
-                "data_plane": { "stateful_metrics_endpoint": endpoint },
+                "data_plane": { "stateful_metrics_endpoint": endpoint, "stateful_metrics_workers": 3 },
             })),
             None,
         )
@@ -405,12 +406,14 @@ mod tests {
             from_file.config().domains.stateful_metrics.endpoint.as_deref(),
             Some(endpoint)
         );
+        assert_eq!(from_file.config().domains.stateful_metrics.workers.get(), 3);
         super::validate(&from_file.config()).unwrap();
 
         let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
             None,
             Some(&[
                 ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                ("DD_DATA_PLANE_STATEFUL_METRICS_WORKERS".to_string(), "4".to_string()),
                 (
                     "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
                     endpoint.to_string(),
@@ -422,7 +425,23 @@ mod tests {
         .await;
         let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
         assert_eq!(from_env.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
+        assert_eq!(from_env.domains.stateful_metrics.workers.get(), 4);
         super::validate(&from_env).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_rejects_invalid_worker_counts() {
+        for count in [json!(0), json!(-1), json!(1.5), json!("invalid")] {
+            assert!(
+                standalone_system(
+                    Some(json!({ "api_key": TEST_API_KEY, "data_plane": { "stateful_metrics_workers": count } })),
+                    None,
+                )
+                .await
+                .is_err(),
+                "{count}"
+            );
+        }
     }
 
     #[tokio::test]
