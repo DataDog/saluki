@@ -47,6 +47,6 @@ generator:
           set: 9
           histogram: 1
         metric_names:
-        - routing.metric.{{10000-10099}}
+        - routing.metric.{{10000-10009}}
     maximum_prebuild_cache_size_bytes: 500 Mb
     bytes_per_second: 500 MiB

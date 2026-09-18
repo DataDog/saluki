@@ -138,7 +138,7 @@ templates:
     variables:
       metric_prefix: routing.metric.
       metric_first: 10000
-      traffic_metrics: 100
+      traffic_metrics: 10
       allowlist_prefix: routing.metric.
       routing_enabled: false
       filtered_endpoint: http://127.0.0.1:9092
