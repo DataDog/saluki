@@ -33,7 +33,7 @@ flowchart TB
 ```
 
 Each sender worker task owns one core and one stream. Workers never share dictionaries or inflight
-state. The topology starts `data_plane.stateful_metrics_workers` workers (default 1).
+state. The topology starts `data_plane.stateful_metrics_workers` workers (default 3).
 Ownership is per async task, without OS-thread affinity. The transport is internal to the destination,
 not a separate topology component, and never retries encoded payloads independently.
 
@@ -54,7 +54,7 @@ For local testing, add this setting to your ADP configuration:
 ```yaml
 data_plane:
   stateful_metrics_endpoint: http://127.0.0.1:8080
-  stateful_metrics_workers: 2
+  stateful_metrics_workers: 3
 ```
 
 You can also set `DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT`. The endpoint must be a plaintext HTTP
@@ -143,7 +143,7 @@ Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_bat
 
 ## Series routing and worker count
 
-`data_plane.stateful_metrics_workers` is a positive integer, defaulting to `1`. You can also set
+`data_plane.stateful_metrics_workers` is a positive integer, defaulting to `3`. You can also set
 `DD_DATA_PLANE_STATEFUL_METRICS_WORKERS`. Zero and negative values are rejected. This setting is
 startup-only: restart ADP to change it. It has no effect when the stateful endpoint is unset.
 
@@ -174,6 +174,8 @@ Each worker uses `stateful-metrics-v1-<destination-hash>-<worker-index>` beneath
 `forwarder_storage_path`. Worker zero retains the original single-worker namespace. A separate
 manifest records the worker count; an existing layout without a manifest is treated as one worker.
 The namespace never includes credentials, so refreshing the API key preserves retries.
+When upgrading with persisted single-worker retries, explicitly set `stateful_metrics_workers: 1`
+to drain them before using the new default of three workers.
 
 If the requested count differs and any worker directory for that destination contains files,
 startup fails before opening the queues. The error names the previous count and directory.

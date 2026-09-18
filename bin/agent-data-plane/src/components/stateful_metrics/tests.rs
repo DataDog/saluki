@@ -971,7 +971,7 @@ fn sharding_routes_series_independently_of_points_and_tag_order() {
         first_hash,
         sharding::series_hash(&conversion::convert(&second).unwrap())
     );
-    for count in [1, 2, 3, 8, 17] {
+    for count in [1, 2, 3, 4, 8, 17] {
         let shards = sharding::partition([Event::Metric(first.clone()), Event::Metric(second.clone())], count);
         let shard = &shards[(first_hash % count as u64) as usize];
         assert_eq!(shard.series().len(), 2);
@@ -1017,7 +1017,8 @@ async fn sharding_storage_rejects_count_changes_without_consuming_retries() {
     let config = DeliveryQueueConfiguration::from_configuration(&settings);
     let endpoint = "http://127.0.0.1:8080";
     let one = NonZeroUsize::new(1).unwrap();
-    let three = NonZeroUsize::new(3).unwrap();
+    let three = SalukiConfiguration::default().domains.stateful_metrics.workers;
+    assert_eq!(three.get(), 3);
     // A legacy queue has no count manifest and belongs to worker zero.
     let mut legacy = build_queue(&config, endpoint, 0, &MetricsBuilder::default())
         .await
@@ -1164,9 +1165,15 @@ impl ShardedHarness {
     async fn start(
         &self, settings: &SharedConfiguration, key: Live<String>,
     ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
+        self.start_with_workers(settings, key, 2).await
+    }
+
+    async fn start_with_workers(
+        &self, settings: &SharedConfiguration, key: Live<String>, workers: usize,
+    ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
         start_configured_destination(StatefulMetricsConfiguration {
             endpoint: self.endpoint.clone(),
-            workers: NonZeroUsize::new(2).unwrap(),
+            workers: NonZeroUsize::new(workers).unwrap(),
             api_key: key,
             compression_level: 3,
             flush_timeout: Duration::from_millis(10),
@@ -1185,16 +1192,20 @@ impl Drop for ShardedHarness {
 }
 
 async fn send_both_shards(input: &mpsc::Sender<EventsBuffer>, timestamp: u64) {
+    send_all_shards(input, 2, timestamp).await;
+}
+
+async fn send_all_shards(input: &mpsc::Sender<EventsBuffer>, workers: usize, timestamp: u64) {
     let mut events = EventsBuffer::default();
-    for id in 0..2 {
-        let metric = (0..100)
+    for id in 0..workers {
+        let metric = (0..1000)
             .map(|n| {
                 Metric::gauge(
                     Context::from_parts(format!("sharded.{n}"), TagSet::default()),
                     (timestamp, 1.0),
                 )
             })
-            .find(|m| sharding::series_hash(&conversion::convert(m).unwrap()) % 2 == id)
+            .find(|m| sharding::series_hash(&conversion::convert(m).unwrap()) % workers as u64 == id as u64)
             .unwrap();
         assert!(events.try_push(Event::Metric(metric)).is_none());
     }
@@ -1263,40 +1274,52 @@ async fn sharding_tasks_isolate_stream_failure_and_refresh_all_credentials() {
 
 #[tokio::test]
 async fn sharding_destination_shutdown_and_restart_preserve_each_streams_retries() {
-    let mut harness = ShardedHarness::new().await;
-    let dir = TempDir::new().unwrap();
-    let settings = persisted_settings(&dir, 1024 * 1024);
-    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
-    let mut first = harness.session().await;
-    let mut second = harness.session().await;
-    send_both_shards(&input, 123).await;
-    let original_one = sequence(&first.receive().await);
-    let original_two = sequence(&second.receive().await);
-    drop(input);
-    // Neither stream acknowledges; both must exhaust their delivery budget and persist.
-    timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
-    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
-    let mut first = harness.session().await;
-    let mut second = harness.session().await;
-    let one = first.receive().await;
-    let two = second.receive().await;
-    let replay_one = sequence(&one);
-    let replay_two = sequence(&two);
-    assert!(
-        (replay_one == original_one && replay_two == original_two)
-            || (replay_two == original_one && replay_one == original_two)
-    );
-    first.acknowledge(&one).await;
-    second.acknowledge(&two).await;
-    drop(input);
-    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
-    prepare_storage(
-        &DeliveryQueueConfiguration::from_configuration(&settings),
-        &harness.endpoint,
-        NonZeroUsize::new(1).unwrap(),
-    )
-    .await
-    .unwrap();
+    for workers in [1, 2, 3, 4, 8] {
+        let mut harness = ShardedHarness::new().await;
+        let dir = TempDir::new().unwrap();
+        let settings = persisted_settings(&dir, 1024 * 1024);
+        let (input, task) = harness
+            .start_with_workers(&settings, Live::new_fixed("test-key".to_owned()), workers)
+            .await;
+        let mut sessions = Vec::new();
+        for _ in 0..workers {
+            sessions.push(harness.session().await);
+        }
+        send_all_shards(&input, workers, 123).await;
+        let mut original = Vec::new();
+        for session in &mut sessions {
+            original.push(sequence(&session.receive().await));
+        }
+        drop(input);
+        // No stream acknowledges; every worker must exhaust its delivery budget and persist.
+        timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
+        let (input, task) = harness
+            .start_with_workers(&settings, Live::new_fixed("test-key".to_owned()), workers)
+            .await;
+        for _ in 0..workers {
+            let mut session = harness.session().await;
+            let batch = session.receive().await;
+            let replay = sequence(&batch);
+            let matched = original
+                .iter()
+                .position(|expected| *expected == replay)
+                .expect("restart must replay each worker's original logical data exactly once");
+            original.swap_remove(matched);
+            session.acknowledge(&batch).await;
+            // Keep the reply channel alive until the destination closes the stream.
+            sessions.push(session);
+        }
+        assert!(original.is_empty());
+        drop(input);
+        timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+        prepare_storage(
+            &DeliveryQueueConfiguration::from_configuration(&settings),
+            &harness.endpoint,
+            NonZeroUsize::new(1).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]

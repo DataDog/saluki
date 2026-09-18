@@ -707,7 +707,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                         | localhost:6317   |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                         | localhost:6318   |
 | `data_plane.stateful_metrics_endpoint`                          | Experimental stateful series gRPC intake endpoint     | unset (disabled) |
-| `data_plane.stateful_metrics_workers`                           | Number of independent stateful metrics sender workers | 1                |
+| `data_plane.stateful_metrics_workers`                           | Number of independent stateful metrics sender workers | 3                |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                   | true             |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT            | false            |
 | `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                          | 32768            |
@@ -737,7 +737,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 ### `data_plane.stateful_metrics_workers`
 
-Positive worker count, default 1. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting.
+Positive worker count, default 3. Requires a restart. Each worker owns its queues, dictionaries, and inflight state, increasing memory and disk budgets. Drain persisted retries at the previous count before changing this setting.
 
 ### `data_plane.stateful_metrics_endpoint`
 
