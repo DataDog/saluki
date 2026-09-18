@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
 use agent_data_plane_config::Live;
@@ -22,7 +22,7 @@ use crate::common::datadog::{
     config::ForwarderConfiguration,
     endpoints::SingleDestination,
     io::{LiveForwarderConfiguration, TransactionForwarder},
-    protocol::MetricsPayloadInfo,
+    protocol::{MetricsEndpointRouting, MetricsPayloadInfo},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
@@ -207,6 +207,7 @@ fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) ->
     let mut transaction_meta =
         Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
     transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
+    transaction_meta.metrics_endpoint_routing = payload_meta.get::<Arc<MetricsEndpointRouting>>().cloned();
     transaction_meta
 }
 
@@ -270,19 +271,34 @@ mod tests {
 
     #[test]
     fn transaction_metadata_carries_counts_and_metrics_payload_info() {
-        // A non-metrics payload propagates the event/data-point counts and leaves `payload_info` as `None`.
+        // A non-metrics payload propagates the counts and leaves metrics metadata unset.
         let payload_meta = PayloadMetadata::from_event_and_data_point_count(3, 11);
         let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
         assert_eq!(3, transaction_meta.event_count);
         assert_eq!(11, transaction_meta.data_point_count);
         assert_eq!(None, transaction_meta.payload_info);
+        assert_eq!(None, transaction_meta.metrics_endpoint_routing);
 
-        // A metrics payload additionally copies the `MetricsPayloadInfo` extension through unchanged.
-        let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7).with(MetricsPayloadInfo::v3_series());
+        // A metrics payload preserves protocol info and shares routing through dispatch and transaction clones.
+        let endpoint_routing = Arc::new(MetricsEndpointRouting::Only(
+            ["https://secondary.example.com".to_string()].into(),
+        ));
+        let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7)
+            .with(MetricsPayloadInfo::v3_series())
+            .with(Arc::clone(&endpoint_routing));
         let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
         assert_eq!(2, transaction_meta.event_count);
         assert_eq!(7, transaction_meta.data_point_count);
         assert_eq!(Some(MetricsPayloadInfo::v3_series()), transaction_meta.payload_info);
+        assert!(Arc::ptr_eq(
+            transaction_meta.metrics_endpoint_routing.as_ref().unwrap(),
+            &endpoint_routing
+        ));
+        let cloned_meta = transaction_meta.clone();
+        assert!(Arc::ptr_eq(
+            cloned_meta.metrics_endpoint_routing.as_ref().unwrap(),
+            &endpoint_routing
+        ));
     }
 
     #[tokio::test]

@@ -1,12 +1,34 @@
 //! Protocol version types for Datadog payloads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use agent_data_plane_config::shared::{
     MetricsEncoding as TypedMetricsEncoding, V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings,
     V3SeriesMode,
 };
 use serde::{Deserialize, Serialize};
+
+/// How an encoded metric payload is targeted within the normal Datadog endpoint set.
+///
+/// Endpoint names match the configured primary or additional endpoint identity. A metrics-only primary override
+/// inherits the normal primary's policy identity, while retaining its own destination and protocol settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetricsEndpointRouting {
+    /// The full metric stream goes to endpoints without an allowlist policy.
+    AllExcept(BTreeSet<String>),
+    /// A filtered metric stream goes only to the endpoints sharing its allowlist.
+    Only(BTreeSet<String>),
+}
+
+impl MetricsEndpointRouting {
+    /// Returns whether this payload targets the given configured endpoint.
+    pub(crate) fn should_route_to(&self, configured_endpoint: &str) -> bool {
+        match self {
+            Self::AllExcept(endpoints) => !endpoints.contains(configured_endpoint),
+            Self::Only(endpoints) => endpoints.contains(configured_endpoint),
+        }
+    }
+}
 
 /// The type of metrics payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

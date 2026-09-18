@@ -724,6 +724,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner                                   |                |
 | `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP                                   | 0              |
 | `enable_global_limiter`                                         | Global memory limiter toggle                                                | true           |
+| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                                             | {}             |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)                                                |                |
 | `memory_limit`                                                  | Process memory limit                                                        |                |
 | `memory_mode`                                                   | Memory bounds validation mode                                               | disabled       |
@@ -738,6 +739,52 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                                         |                |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity                                              |                |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                                                     |                |
+
+### `experimental.metrics_endpoint_routing.metric_allowlist`
+
+ADP can route a selected subset of metrics to the primary intake or to specific additional endpoints. This experimental routing is independent of Multi-Region Failover.
+
+> [!WARNING]
+> Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
+
+Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string. For the primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure additional destinations and their API keys through `additional_endpoints`, and use those exact map keys. The allowlist filters both series and sketches by metric name. An empty endpoint allowlist sends no metrics to that endpoint. Endpoints absent from the policy map retain their ordinary behavior.
+
+ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies are read when the topology is built, so changing the map requires an ADP restart. An absent or empty policy map leaves ordinary endpoint routing unchanged.
+
+To filter the primary while leaving an additional endpoint on its ordinary full stream:
+
+```yaml
+api_key: <primary-api-key>
+dd_url: https://app.us5.datadoghq.com
+additional_endpoints:
+  https://app.datadoghq.com:
+    - <secondary-api-key>
+# Experimental keys may change, move, or be removed without backward compatibility.
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://app.us5.datadoghq.com:
+        - allowed.metric
+```
+
+To leave the primary on its ordinary full stream while filtering only additional endpoints, omit the primary URL from the policy map:
+
+```yaml
+api_key: <primary-api-key>
+dd_url: https://app.us5.datadoghq.com
+additional_endpoints:
+  https://app.datadoghq.com:
+    - <us1-api-key>
+  https://app.datadoghq.eu:
+    - <eu1-api-key>
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://app.datadoghq.com:
+        - critical.slo
+      https://app.datadoghq.eu:
+        - billing.latency
+```
 
 ### `data_plane.apm.*`
 

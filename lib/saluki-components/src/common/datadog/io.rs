@@ -513,6 +513,7 @@ async fn run_io_loop<B>(
         let (route, resolved_endpoint) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
+        let policy_endpoint = config.metrics_policy_endpoint(route, &resolved_endpoint).to_string();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
@@ -547,6 +548,7 @@ async fn run_io_loop<B>(
         endpoint_txs.push(EndpointSender {
             endpoint_url,
             endpoint_domain,
+            policy_endpoint,
             route,
             tx: endpoint_tx,
         });
@@ -557,6 +559,9 @@ async fn run_io_loop<B>(
         let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
+                continue;
+            }
+            if !matches_metrics_endpoint_routing(&endpoint_sender.policy_endpoint, transaction.metadata()) {
                 continue;
             }
 
@@ -594,6 +599,7 @@ where
 {
     endpoint_url: String,
     endpoint_domain: String,
+    policy_endpoint: String,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
 }
@@ -627,6 +633,13 @@ fn track_transaction_input_for_endpoint(
     let transaction_input_telemetry = telemetry.register_transaction_input_telemetry(endpoint_domain, &endpoint_name);
     transaction_input_telemetry.track(transaction_size);
     telemetry_by_endpoint.insert(endpoint_name, transaction_input_telemetry);
+}
+
+fn matches_metrics_endpoint_routing(configured_endpoint: &str, metadata: &Metadata) -> bool {
+    metadata
+        .metrics_endpoint_routing
+        .as_ref()
+        .is_none_or(|routing| routing.should_route_to(configured_endpoint))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -748,7 +761,7 @@ async fn run_endpoint_io_loop<B>(
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => {
-                    // Filter transactions based on endpoint's V3 settings and the transaction's payload info.
+                    // Endpoint targeting was checked before dispatch to this task. Filter by protocol before queuing.
                     let payload_info = txn.metadata().payload_info;
                     if !endpoint_v3_settings.should_receive_payload(payload_info) {
                         debug!(
@@ -1207,6 +1220,7 @@ mod tests {
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
     use crate::common::datadog::{
         endpoints::resolve_additional_endpoints,
+        protocol::MetricsEndpointRouting,
         test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
     };
     use crate::common::datadog::{
@@ -1220,6 +1234,72 @@ mod tests {
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    #[test]
+    fn alternate_metrics_intakes_inherit_primary_policy_for_dispatch() {
+        const ALTERNATE: &str = "https://alternate.example.com";
+        for use_vector in [false, true] {
+            let mut shared = shared_configuration();
+            let alternate = agent_data_plane_config::shared::AltMetricsIntake {
+                enabled: true,
+                url: ALTERNATE.to_string(),
+                use_v3_series: false,
+            };
+            if use_vector {
+                shared.endpoints.vector_intake = alternate;
+            } else {
+                shared.endpoints.opw_intake = alternate;
+            }
+            // An additional route to the same URL must still retain its own policy identity.
+            shared.endpoints.additional_endpoints = HashMap::from([(ALTERNATE.to_string(), vec!["key".to_string()])]);
+            let primary = shared.endpoints.primary_endpoint();
+            let config = ForwarderConfiguration::from_configuration(&shared);
+            let endpoints = config.build_routable_endpoints().unwrap();
+            assert!(endpoints
+                .iter()
+                .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary));
+            for endpoint in endpoints {
+                let policy_endpoint = config.metrics_policy_endpoint(endpoint.route(), endpoint.endpoint());
+                let mut metadata = TxnMetadata::from_event_and_data_point_count(1, 1);
+                // Without an endpoint policy, payloads retain ordinary delivery.
+                assert!(matches_metrics_endpoint_routing(policy_endpoint, &metadata));
+                metadata.metrics_endpoint_routing =
+                    Some(MetricsEndpointRouting::AllExcept([primary.clone()].into()).into());
+                assert_eq!(
+                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    endpoint.route() == EndpointRoute::Additional
+                );
+                metadata.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([primary.clone()].into()).into());
+                assert_eq!(
+                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    endpoint.route() != EndpointRoute::Additional
+                );
+                if endpoint.route() == EndpointRoute::MetricsPrimary {
+                    assert_eq!(endpoint.endpoint().configured_endpoint(), ALTERNATE);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_routing_selects_whole_payloads_before_dispatch() {
+        const SELECTED: &str = "https://secondary.example.com";
+
+        let mut baseline = TxnMetadata::from_event_and_data_point_count(2, 2);
+        assert!(matches_metrics_endpoint_routing(SELECTED, &baseline));
+        baseline.metrics_endpoint_routing =
+            Some(MetricsEndpointRouting::AllExcept([SELECTED.to_string()].into()).into());
+        assert!(!matches_metrics_endpoint_routing(SELECTED, &baseline));
+        assert!(matches_metrics_endpoint_routing("https://other.example.com", &baseline));
+
+        let mut filtered = TxnMetadata::from_event_and_data_point_count(1, 1);
+        filtered.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([SELECTED.to_string()].into()).into());
+        assert!(matches_metrics_endpoint_routing(SELECTED, &filtered));
+        assert!(!matches_metrics_endpoint_routing(
+            "https://other.example.com",
+            &filtered
+        ));
     }
 
     fn is_metrics_request_path(path: &'static str) -> bool {

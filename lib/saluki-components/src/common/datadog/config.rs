@@ -6,7 +6,7 @@ use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
 use super::{
-    endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint, SingleDestination},
+    endpoints::{EndpointConfiguration, EndpointRoute, ResolvedEndpoint, RoutableEndpoint, SingleDestination},
     protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
@@ -403,6 +403,16 @@ impl ForwarderConfiguration {
     /// Returns the HTTP protocol selection for outgoing forwarder requests.
     pub fn http_protocol(&self) -> HttpProtocol {
         self.http_protocol.into()
+    }
+
+    /// Returns the allowlist policy identity without changing the endpoint's delivery or protocol settings.
+    pub(crate) fn metrics_policy_endpoint<'a>(
+        &'a self, route: EndpointRoute, endpoint: &'a ResolvedEndpoint,
+    ) -> &'a str {
+        match route {
+            EndpointRoute::MetricsPrimary => self.endpoint.primary_endpoint(),
+            EndpointRoute::Primary | EndpointRoute::Additional => endpoint.configured_endpoint(),
+        }
     }
 
     /// Builds resolved endpoints with routing metadata.
