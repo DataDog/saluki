@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["apm","checks","dogstatsd","multi_region_failover","otlp","traces"],"struct":["DomainConfiguration"]};
+window.SIDEBAR_ITEMS = {"mod":["apm","checks","dogstatsd","metrics_endpoint_routing","multi_region_failover","otlp","traces"],"struct":["DomainConfiguration"]};

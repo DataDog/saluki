@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["autoscaling_failover","cluster_agent","mrf"]};
+window.SIDEBAR_ITEMS = {"mod":["autoscaling_failover","cluster_agent","metrics_endpoint_routing","mrf"]};

@@ -17,378 +17,382 @@
 <a href=#17 id=17 data-nosnippet>17</a>        ValueType::String =&gt; <span class="macro">json!</span>(TEST_STRING_VALUE),
 <a href=#18 id=18 data-nosnippet>18</a>        ValueType::Bool =&gt; <span class="macro">json!</span>(TEST_BOOL_VALUE),
 <a href=#19 id=19 data-nosnippet>19</a>        ValueType::StringList =&gt; <span class="macro">json!</span>(TEST_STRING_LIST_VALUE),
-<a href=#20 id=20 data-nosnippet>20</a>        ValueType::Integer =&gt; <span class="macro">json!</span>(<span class="number">42i64</span>),
-<a href=#21 id=21 data-nosnippet>21</a>        ValueType::Float =&gt; <span class="macro">json!</span>(<span class="number">1.5f64</span>),
-<a href=#22 id=22 data-nosnippet>22</a>        ValueType::Duration =&gt; <span class="macro">json!</span>(<span class="string">"42s"</span>),
-<a href=#23 id=23 data-nosnippet>23</a>    }
-<a href=#24 id=24 data-nosnippet>24</a>}
-<a href=#25 id=25 data-nosnippet>25</a>
-<a href=#26 id=26 data-nosnippet>26</a><span class="kw">fn </span>effective_test_value(annotation: <span class="kw-2">&amp;</span>SalukiAnnotation) -&gt; serde_json::Value {
-<a href=#27 id=27 data-nosnippet>27</a>    <span class="kw">let </span>v = test_json_value(annotation.value_type());
-<a href=#28 id=28 data-nosnippet>28</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(default_raw) = annotation.schema.default {
-<a href=#29 id=29 data-nosnippet>29</a>        <span class="kw">if let </span><span class="prelude-val">Ok</span>(default_val) = serde_json::from_str::&lt;serde_json::Value&gt;(default_raw) {
-<a href=#30 id=30 data-nosnippet>30</a>            <span class="kw">if </span>v == default_val {
-<a href=#31 id=31 data-nosnippet>31</a>                <span class="kw">return match </span>annotation.value_type() {
-<a href=#32 id=32 data-nosnippet>32</a>                    ValueType::Bool =&gt; <span class="macro">json!</span>(!default_val.as_bool().unwrap_or(<span class="bool-val">false</span>)),
-<a href=#33 id=33 data-nosnippet>33</a>                    <span class="kw">_ </span>=&gt; v,
-<a href=#34 id=34 data-nosnippet>34</a>                };
-<a href=#35 id=35 data-nosnippet>35</a>            }
-<a href=#36 id=36 data-nosnippet>36</a>        }
-<a href=#37 id=37 data-nosnippet>37</a>    }
-<a href=#38 id=38 data-nosnippet>38</a>    v
-<a href=#39 id=39 data-nosnippet>39</a>}
-<a href=#40 id=40 data-nosnippet>40</a>
-<a href=#41 id=41 data-nosnippet>41</a><span class="kw">fn </span>json_value_to_env_string(value: <span class="kw-2">&amp;</span>serde_json::Value, value_type: ValueType) -&gt; String {
-<a href=#42 id=42 data-nosnippet>42</a>    <span class="kw">match </span>value_type {
-<a href=#43 id=43 data-nosnippet>43</a>        ValueType::Bool =&gt; value
-<a href=#44 id=44 data-nosnippet>44</a>            .as_bool()
-<a href=#45 id=45 data-nosnippet>45</a>            .map(|b| b.to_string())
-<a href=#46 id=46 data-nosnippet>46</a>            .unwrap_or_else(|| <span class="string">"true"</span>.to_string()),
-<a href=#47 id=47 data-nosnippet>47</a>        ValueType::Integer =&gt; value
-<a href=#48 id=48 data-nosnippet>48</a>            .as_i64()
-<a href=#49 id=49 data-nosnippet>49</a>            .map(|n| n.to_string())
-<a href=#50 id=50 data-nosnippet>50</a>            .unwrap_or_else(|| <span class="string">"42"</span>.to_string()),
-<a href=#51 id=51 data-nosnippet>51</a>        ValueType::Float =&gt; value
-<a href=#52 id=52 data-nosnippet>52</a>            .as_f64()
-<a href=#53 id=53 data-nosnippet>53</a>            .map(|f| f.to_string())
-<a href=#54 id=54 data-nosnippet>54</a>            .unwrap_or_else(|| <span class="string">"1.5"</span>.to_string()),
-<a href=#55 id=55 data-nosnippet>55</a>        ValueType::String =&gt; value.as_str().unwrap_or(TEST_STRING_VALUE).to_string(),
-<a href=#56 id=56 data-nosnippet>56</a>        ValueType::StringList =&gt; value
-<a href=#57 id=57 data-nosnippet>57</a>            .as_array()
-<a href=#58 id=58 data-nosnippet>58</a>            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;().join(<span class="string">" "</span>))
-<a href=#59 id=59 data-nosnippet>59</a>            .unwrap_or_else(|| TEST_STRING_LIST_VALUE.join(<span class="string">" "</span>)),
-<a href=#60 id=60 data-nosnippet>60</a>        ValueType::Duration =&gt; value.as_str().unwrap_or(<span class="string">"42s"</span>).to_string(),
-<a href=#61 id=61 data-nosnippet>61</a>    }
-<a href=#62 id=62 data-nosnippet>62</a>}
-<a href=#63 id=63 data-nosnippet>63</a>
-<a href=#64 id=64 data-nosnippet>64</a><span class="kw">fn </span>collect_unchanged_leaves(
-<a href=#65 id=65 data-nosnippet>65</a>    full: <span class="kw-2">&amp;</span>serde_json::Value, default: <span class="kw-2">&amp;</span>serde_json::Value, path: <span class="kw-2">&amp;</span>str, unchanged: <span class="kw-2">&amp;mut </span>Vec&lt;String&gt;,
-<a href=#66 id=66 data-nosnippet>66</a>) {
-<a href=#67 id=67 data-nosnippet>67</a>    <span class="kw">match </span>(full, default) {
-<a href=#68 id=68 data-nosnippet>68</a>        (serde_json::Value::Object(f), serde_json::Value::Object(d)) =&gt; {
-<a href=#69 id=69 data-nosnippet>69</a>            <span class="kw">for </span>(key, full_val) <span class="kw">in </span>f {
-<a href=#70 id=70 data-nosnippet>70</a>                <span class="kw">let </span>child_path = <span class="kw">if </span>path.is_empty() {
-<a href=#71 id=71 data-nosnippet>71</a>                    key.clone()
-<a href=#72 id=72 data-nosnippet>72</a>                } <span class="kw">else </span>{
-<a href=#73 id=73 data-nosnippet>73</a>                    <span class="macro">format!</span>(<span class="string">"{}.{}"</span>, path, key)
-<a href=#74 id=74 data-nosnippet>74</a>                };
-<a href=#75 id=75 data-nosnippet>75</a>                <span class="kw">let </span>def_val = d.get(key).unwrap_or(<span class="kw-2">&amp;</span>serde_json::Value::Null);
-<a href=#76 id=76 data-nosnippet>76</a>                collect_unchanged_leaves(full_val, def_val, <span class="kw-2">&amp;</span>child_path, unchanged);
-<a href=#77 id=77 data-nosnippet>77</a>            }
-<a href=#78 id=78 data-nosnippet>78</a>        }
-<a href=#79 id=79 data-nosnippet>79</a>        (full_val, def_val) =&gt; {
-<a href=#80 id=80 data-nosnippet>80</a>            <span class="kw">if </span>full_val == def_val {
-<a href=#81 id=81 data-nosnippet>81</a>                unchanged.push(path.to_string());
-<a href=#82 id=82 data-nosnippet>82</a>            }
-<a href=#83 id=83 data-nosnippet>83</a>        }
-<a href=#84 id=84 data-nosnippet>84</a>    }
-<a href=#85 id=85 data-nosnippet>85</a>}
-<a href=#86 id=86 data-nosnippet>86</a>
-<a href=#87 id=87 data-nosnippet>87</a><span class="kw">fn </span>yaml_path_to_json(yaml_path: <span class="kw-2">&amp;</span>str, value: serde_json::Value) -&gt; serde_json::Value {
-<a href=#88 id=88 data-nosnippet>88</a>    <span class="kw">let </span><span class="kw-2">mut </span>root = <span class="macro">json!</span>({});
-<a href=#89 id=89 data-nosnippet>89</a>    saluki_config::upsert(<span class="kw-2">&amp;mut </span>root, yaml_path, value);
-<a href=#90 id=90 data-nosnippet>90</a>    root
-<a href=#91 id=91 data-nosnippet>91</a>}
-<a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a><span class="kw">fn </span>merge_over_base(base: <span class="kw-2">&amp;</span>serde_json::Value, overlay: serde_json::Value) -&gt; serde_json::Value {
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="kw">let </span><span class="kw-2">mut </span>merged = base.clone();
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="kw">if let </span>(<span class="prelude-val">Some</span>(base_obj), <span class="prelude-val">Some</span>(overlay_obj)) = (merged.as_object_mut(), overlay.as_object()) {
-<a href=#96 id=96 data-nosnippet>96</a>        <span class="kw">for </span>(k, v) <span class="kw">in </span>overlay_obj {
-<a href=#97 id=97 data-nosnippet>97</a>            base_obj.insert(k.clone(), v.clone());
-<a href=#98 id=98 data-nosnippet>98</a>        }
-<a href=#99 id=99 data-nosnippet>99</a>    }
-<a href=#100 id=100 data-nosnippet>100</a>    merged
-<a href=#101 id=101 data-nosnippet>101</a>}
-<a href=#102 id=102 data-nosnippet>102</a>
-<a href=#103 id=103 data-nosnippet>103</a><span class="kw">fn </span>dd_env_var_to_test_key(env_var: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#104 id=104 data-nosnippet>104</a>    env_var.strip_prefix(<span class="string">"DD_"</span>).unwrap_or(env_var)
+<a href=#20 id=20 data-nosnippet>20</a>        ValueType::StringMapList =&gt; <span class="macro">json!</span>({
+<a href=#21 id=21 data-nosnippet>21</a>            <span class="string">"https://smoke-secondary.example.com"</span>: [<span class="string">"smoke.metric"</span>]
+<a href=#22 id=22 data-nosnippet>22</a>        }),
+<a href=#23 id=23 data-nosnippet>23</a>        ValueType::Integer =&gt; <span class="macro">json!</span>(<span class="number">42i64</span>),
+<a href=#24 id=24 data-nosnippet>24</a>        ValueType::Float =&gt; <span class="macro">json!</span>(<span class="number">1.5f64</span>),
+<a href=#25 id=25 data-nosnippet>25</a>        ValueType::Duration =&gt; <span class="macro">json!</span>(<span class="string">"42s"</span>),
+<a href=#26 id=26 data-nosnippet>26</a>    }
+<a href=#27 id=27 data-nosnippet>27</a>}
+<a href=#28 id=28 data-nosnippet>28</a>
+<a href=#29 id=29 data-nosnippet>29</a><span class="kw">fn </span>effective_test_value(annotation: <span class="kw-2">&amp;</span>SalukiAnnotation) -&gt; serde_json::Value {
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="kw">let </span>v = test_json_value(annotation.value_type());
+<a href=#31 id=31 data-nosnippet>31</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(default_raw) = annotation.schema.default {
+<a href=#32 id=32 data-nosnippet>32</a>        <span class="kw">if let </span><span class="prelude-val">Ok</span>(default_val) = serde_json::from_str::&lt;serde_json::Value&gt;(default_raw) {
+<a href=#33 id=33 data-nosnippet>33</a>            <span class="kw">if </span>v == default_val {
+<a href=#34 id=34 data-nosnippet>34</a>                <span class="kw">return match </span>annotation.value_type() {
+<a href=#35 id=35 data-nosnippet>35</a>                    ValueType::Bool =&gt; <span class="macro">json!</span>(!default_val.as_bool().unwrap_or(<span class="bool-val">false</span>)),
+<a href=#36 id=36 data-nosnippet>36</a>                    <span class="kw">_ </span>=&gt; v,
+<a href=#37 id=37 data-nosnippet>37</a>                };
+<a href=#38 id=38 data-nosnippet>38</a>            }
+<a href=#39 id=39 data-nosnippet>39</a>        }
+<a href=#40 id=40 data-nosnippet>40</a>    }
+<a href=#41 id=41 data-nosnippet>41</a>    v
+<a href=#42 id=42 data-nosnippet>42</a>}
+<a href=#43 id=43 data-nosnippet>43</a>
+<a href=#44 id=44 data-nosnippet>44</a><span class="kw">fn </span>json_value_to_env_string(value: <span class="kw-2">&amp;</span>serde_json::Value, value_type: ValueType) -&gt; String {
+<a href=#45 id=45 data-nosnippet>45</a>    <span class="kw">match </span>value_type {
+<a href=#46 id=46 data-nosnippet>46</a>        ValueType::Bool =&gt; value
+<a href=#47 id=47 data-nosnippet>47</a>            .as_bool()
+<a href=#48 id=48 data-nosnippet>48</a>            .map(|b| b.to_string())
+<a href=#49 id=49 data-nosnippet>49</a>            .unwrap_or_else(|| <span class="string">"true"</span>.to_string()),
+<a href=#50 id=50 data-nosnippet>50</a>        ValueType::Integer =&gt; value
+<a href=#51 id=51 data-nosnippet>51</a>            .as_i64()
+<a href=#52 id=52 data-nosnippet>52</a>            .map(|n| n.to_string())
+<a href=#53 id=53 data-nosnippet>53</a>            .unwrap_or_else(|| <span class="string">"42"</span>.to_string()),
+<a href=#54 id=54 data-nosnippet>54</a>        ValueType::Float =&gt; value
+<a href=#55 id=55 data-nosnippet>55</a>            .as_f64()
+<a href=#56 id=56 data-nosnippet>56</a>            .map(|f| f.to_string())
+<a href=#57 id=57 data-nosnippet>57</a>            .unwrap_or_else(|| <span class="string">"1.5"</span>.to_string()),
+<a href=#58 id=58 data-nosnippet>58</a>        ValueType::String =&gt; value.as_str().unwrap_or(TEST_STRING_VALUE).to_string(),
+<a href=#59 id=59 data-nosnippet>59</a>        ValueType::StringList =&gt; value
+<a href=#60 id=60 data-nosnippet>60</a>            .as_array()
+<a href=#61 id=61 data-nosnippet>61</a>            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;().join(<span class="string">" "</span>))
+<a href=#62 id=62 data-nosnippet>62</a>            .unwrap_or_else(|| TEST_STRING_LIST_VALUE.join(<span class="string">" "</span>)),
+<a href=#63 id=63 data-nosnippet>63</a>        ValueType::StringMapList =&gt; value.to_string(),
+<a href=#64 id=64 data-nosnippet>64</a>        ValueType::Duration =&gt; value.as_str().unwrap_or(<span class="string">"42s"</span>).to_string(),
+<a href=#65 id=65 data-nosnippet>65</a>    }
+<a href=#66 id=66 data-nosnippet>66</a>}
+<a href=#67 id=67 data-nosnippet>67</a>
+<a href=#68 id=68 data-nosnippet>68</a><span class="kw">fn </span>collect_unchanged_leaves(
+<a href=#69 id=69 data-nosnippet>69</a>    full: <span class="kw-2">&amp;</span>serde_json::Value, default: <span class="kw-2">&amp;</span>serde_json::Value, path: <span class="kw-2">&amp;</span>str, unchanged: <span class="kw-2">&amp;mut </span>Vec&lt;String&gt;,
+<a href=#70 id=70 data-nosnippet>70</a>) {
+<a href=#71 id=71 data-nosnippet>71</a>    <span class="kw">match </span>(full, default) {
+<a href=#72 id=72 data-nosnippet>72</a>        (serde_json::Value::Object(f), serde_json::Value::Object(d)) =&gt; {
+<a href=#73 id=73 data-nosnippet>73</a>            <span class="kw">for </span>(key, full_val) <span class="kw">in </span>f {
+<a href=#74 id=74 data-nosnippet>74</a>                <span class="kw">let </span>child_path = <span class="kw">if </span>path.is_empty() {
+<a href=#75 id=75 data-nosnippet>75</a>                    key.clone()
+<a href=#76 id=76 data-nosnippet>76</a>                } <span class="kw">else </span>{
+<a href=#77 id=77 data-nosnippet>77</a>                    <span class="macro">format!</span>(<span class="string">"{}.{}"</span>, path, key)
+<a href=#78 id=78 data-nosnippet>78</a>                };
+<a href=#79 id=79 data-nosnippet>79</a>                <span class="kw">let </span>def_val = d.get(key).unwrap_or(<span class="kw-2">&amp;</span>serde_json::Value::Null);
+<a href=#80 id=80 data-nosnippet>80</a>                collect_unchanged_leaves(full_val, def_val, <span class="kw-2">&amp;</span>child_path, unchanged);
+<a href=#81 id=81 data-nosnippet>81</a>            }
+<a href=#82 id=82 data-nosnippet>82</a>        }
+<a href=#83 id=83 data-nosnippet>83</a>        (full_val, def_val) =&gt; {
+<a href=#84 id=84 data-nosnippet>84</a>            <span class="kw">if </span>full_val == def_val {
+<a href=#85 id=85 data-nosnippet>85</a>                unchanged.push(path.to_string());
+<a href=#86 id=86 data-nosnippet>86</a>            }
+<a href=#87 id=87 data-nosnippet>87</a>        }
+<a href=#88 id=88 data-nosnippet>88</a>    }
+<a href=#89 id=89 data-nosnippet>89</a>}
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a><span class="kw">fn </span>yaml_path_to_json(yaml_path: <span class="kw-2">&amp;</span>str, value: serde_json::Value) -&gt; serde_json::Value {
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="kw">let </span><span class="kw-2">mut </span>root = <span class="macro">json!</span>({});
+<a href=#93 id=93 data-nosnippet>93</a>    saluki_config::upsert(<span class="kw-2">&amp;mut </span>root, yaml_path, value);
+<a href=#94 id=94 data-nosnippet>94</a>    root
+<a href=#95 id=95 data-nosnippet>95</a>}
+<a href=#96 id=96 data-nosnippet>96</a>
+<a href=#97 id=97 data-nosnippet>97</a><span class="kw">fn </span>merge_over_base(base: <span class="kw-2">&amp;</span>serde_json::Value, overlay: serde_json::Value) -&gt; serde_json::Value {
+<a href=#98 id=98 data-nosnippet>98</a>    <span class="kw">let </span><span class="kw-2">mut </span>merged = base.clone();
+<a href=#99 id=99 data-nosnippet>99</a>    <span class="kw">if let </span>(<span class="prelude-val">Some</span>(base_obj), <span class="prelude-val">Some</span>(overlay_obj)) = (merged.as_object_mut(), overlay.as_object()) {
+<a href=#100 id=100 data-nosnippet>100</a>        <span class="kw">for </span>(k, v) <span class="kw">in </span>overlay_obj {
+<a href=#101 id=101 data-nosnippet>101</a>            base_obj.insert(k.clone(), v.clone());
+<a href=#102 id=102 data-nosnippet>102</a>        }
+<a href=#103 id=103 data-nosnippet>103</a>    }
+<a href=#104 id=104 data-nosnippet>104</a>    merged
 <a href=#105 id=105 data-nosnippet>105</a>}
 <a href=#106 id=106 data-nosnippet>106</a>
-<a href=#107 id=107 data-nosnippet>107</a><span class="kw">async fn </span>make_config_from_file(file_values: serde_json::Value) -&gt; GenericConfiguration {
-<a href=#108 id=108 data-nosnippet>108</a>    make_config(file_values, <span class="kw-2">&amp;</span>[], Vec::new()).<span class="kw">await
-<a href=#109 id=109 data-nosnippet>109</a></span>}
+<a href=#107 id=107 data-nosnippet>107</a><span class="kw">fn </span>dd_env_var_to_test_key(env_var: <span class="kw-2">&amp;</span>str) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#108 id=108 data-nosnippet>108</a>    env_var.strip_prefix(<span class="string">"DD_"</span>).unwrap_or(env_var)
+<a href=#109 id=109 data-nosnippet>109</a>}
 <a href=#110 id=110 data-nosnippet>110</a>
-<a href=#111 id=111 data-nosnippet>111</a><span class="doccomment">/// Builds a configuration from `base_file_values` plus one environment variable.
-<a href=#112 id=112 data-nosnippet>112</a>///
-<a href=#113 id=113 data-nosnippet>113</a>/// `env_var` is the variable's real name, as the Datadog Agent spells it. It is fed to
-<a href=#114 id=114 data-nosnippet>114</a>/// [`DatadogEnvProvider`] under that name so the schema-driven reader can resolve it to the key's
-<a href=#115 id=115 data-nosnippet>115</a>/// canonical path, exactly as it does in production. The same value is additionally handed to the
-<a href=#116 id=116 data-nosnippet>116</a>/// test loader's prefix-scanning environment provider under the `DD_`-stripped name, which is the
-<a href=#117 id=117 data-nosnippet>117</a>/// only spelling that provider can consume.
-<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">async fn </span>make_config_from_env(
-<a href=#119 id=119 data-nosnippet>119</a>    base_file_values: <span class="kw-2">&amp;</span>serde_json::Value, env_var: <span class="kw-2">&amp;</span>str, value: <span class="kw-2">&amp;</span>str,
-<a href=#120 id=120 data-nosnippet>120</a>) -&gt; GenericConfiguration {
-<a href=#121 id=121 data-nosnippet>121</a>    <span class="kw">let </span>scanned = [(dd_env_var_to_test_key(env_var).to_string(), value.to_string())];
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="kw">let </span>modeled = <span class="macro">vec!</span>[(env_var.to_string(), value.to_string())];
-<a href=#123 id=123 data-nosnippet>123</a>    make_config(base_file_values.clone(), <span class="kw-2">&amp;</span>scanned, modeled).<span class="kw">await
-<a href=#124 id=124 data-nosnippet>124</a></span>}
-<a href=#125 id=125 data-nosnippet>125</a>
-<a href=#126 id=126 data-nosnippet>126</a><span class="kw">async fn </span>make_config(
-<a href=#127 id=127 data-nosnippet>127</a>    file_values: serde_json::Value, scanned_env_vars: <span class="kw-2">&amp;</span>[(String, String)], modeled_env_vars: Vec&lt;(String, String)&gt;,
-<a href=#128 id=128 data-nosnippet>128</a>) -&gt; GenericConfiguration {
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">let </span>(cfg, <span class="kw">_</span>) =
-<a href=#130 id=130 data-nosnippet>130</a>        ConfigurationLoader::for_tests_with_provider_factory(<span class="prelude-val">Some</span>(file_values), <span class="prelude-val">Some</span>(scanned_env_vars), <span class="bool-val">false</span>, |<span class="kw">_</span>| {
-<a href=#131 id=131 data-nosnippet>131</a>            DatadogEnvProvider::from_env_vars(modeled_env_vars)
-<a href=#132 id=132 data-nosnippet>132</a>                .expect(<span class="string">"test environment values should decode into their declared shapes"</span>)
-<a href=#133 id=133 data-nosnippet>133</a>        })
-<a href=#134 id=134 data-nosnippet>134</a>        .<span class="kw">await</span>;
-<a href=#135 id=135 data-nosnippet>135</a>    cfg
-<a href=#136 id=136 data-nosnippet>136</a>}
-<a href=#137 id=137 data-nosnippet>137</a>
-<a href=#138 id=138 data-nosnippet>138</a><span class="doccomment">/// Runs smoke tests for all annotations registered to `struct_name` against a deserialized config struct `T`.
-<a href=#139 id=139 data-nosnippet>139</a>///
-<a href=#140 id=140 data-nosnippet>140</a>/// Verifies three properties:
-<a href=#141 id=141 data-nosnippet>141</a>///
-<a href=#142 id=142 data-nosnippet>142</a>/// **Supported keys**: loading the struct with the test value set via the annotation's `yaml_path`
-<a href=#143 id=143 data-nosnippet>143</a>/// and via each of its effective env vars must all produce identical structs, and each must differ
-<a href=#144 id=144 data-nosnippet>144</a>/// from the default (empty-config) struct.
+<a href=#111 id=111 data-nosnippet>111</a><span class="kw">async fn </span>make_config_from_file(file_values: serde_json::Value) -&gt; GenericConfiguration {
+<a href=#112 id=112 data-nosnippet>112</a>    make_config(file_values, <span class="kw-2">&amp;</span>[], Vec::new()).<span class="kw">await
+<a href=#113 id=113 data-nosnippet>113</a></span>}
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a><span class="doccomment">/// Builds a configuration from `base_file_values` plus one environment variable.
+<a href=#116 id=116 data-nosnippet>116</a>///
+<a href=#117 id=117 data-nosnippet>117</a>/// `env_var` is the variable's real name, as the Datadog Agent spells it. It is fed to
+<a href=#118 id=118 data-nosnippet>118</a>/// [`DatadogEnvProvider`] under that name so the schema-driven reader can resolve it to the key's
+<a href=#119 id=119 data-nosnippet>119</a>/// canonical path, exactly as it does in production. The same value is additionally handed to the
+<a href=#120 id=120 data-nosnippet>120</a>/// test loader's prefix-scanning environment provider under the `DD_`-stripped name, which is the
+<a href=#121 id=121 data-nosnippet>121</a>/// only spelling that provider can consume.
+<a href=#122 id=122 data-nosnippet>122</a></span><span class="kw">async fn </span>make_config_from_env(
+<a href=#123 id=123 data-nosnippet>123</a>    base_file_values: <span class="kw-2">&amp;</span>serde_json::Value, env_var: <span class="kw-2">&amp;</span>str, value: <span class="kw-2">&amp;</span>str,
+<a href=#124 id=124 data-nosnippet>124</a>) -&gt; GenericConfiguration {
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="kw">let </span>scanned = [(dd_env_var_to_test_key(env_var).to_string(), value.to_string())];
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="kw">let </span>modeled = <span class="macro">vec!</span>[(env_var.to_string(), value.to_string())];
+<a href=#127 id=127 data-nosnippet>127</a>    make_config(base_file_values.clone(), <span class="kw-2">&amp;</span>scanned, modeled).<span class="kw">await
+<a href=#128 id=128 data-nosnippet>128</a></span>}
+<a href=#129 id=129 data-nosnippet>129</a>
+<a href=#130 id=130 data-nosnippet>130</a><span class="kw">async fn </span>make_config(
+<a href=#131 id=131 data-nosnippet>131</a>    file_values: serde_json::Value, scanned_env_vars: <span class="kw-2">&amp;</span>[(String, String)], modeled_env_vars: Vec&lt;(String, String)&gt;,
+<a href=#132 id=132 data-nosnippet>132</a>) -&gt; GenericConfiguration {
+<a href=#133 id=133 data-nosnippet>133</a>    <span class="kw">let </span>(cfg, <span class="kw">_</span>) =
+<a href=#134 id=134 data-nosnippet>134</a>        ConfigurationLoader::for_tests_with_provider_factory(<span class="prelude-val">Some</span>(file_values), <span class="prelude-val">Some</span>(scanned_env_vars), <span class="bool-val">false</span>, |<span class="kw">_</span>| {
+<a href=#135 id=135 data-nosnippet>135</a>            DatadogEnvProvider::from_env_vars(modeled_env_vars)
+<a href=#136 id=136 data-nosnippet>136</a>                .expect(<span class="string">"test environment values should decode into their declared shapes"</span>)
+<a href=#137 id=137 data-nosnippet>137</a>        })
+<a href=#138 id=138 data-nosnippet>138</a>        .<span class="kw">await</span>;
+<a href=#139 id=139 data-nosnippet>139</a>    cfg
+<a href=#140 id=140 data-nosnippet>140</a>}
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// Runs smoke tests for all annotations registered to `struct_name` against a deserialized config struct `T`.
+<a href=#143 id=143 data-nosnippet>143</a>///
+<a href=#144 id=144 data-nosnippet>144</a>/// Verifies three properties:
 <a href=#145 id=145 data-nosnippet>145</a>///
-<a href=#146 id=146 data-nosnippet>146</a>/// **Unsupported keys**: loading the struct with that key set must produce a struct identical to the
-<a href=#147 id=147 data-nosnippet>147</a>/// default struct.
-<a href=#148 id=148 data-nosnippet>148</a>///
-<a href=#149 id=149 data-nosnippet>149</a>/// **Full field coverage**: loading the struct with all supported keys set simultaneously must
-<a href=#150 id=150 data-nosnippet>150</a>/// produce a struct where every serialized leaf field differs from the default.
-<a href=#151 id=151 data-nosnippet>151</a>///
-<a href=#152 id=152 data-nosnippet>152</a>/// Environment values are supplied per test case rather than read from the ambient process
-<a href=#153 id=153 data-nosnippet>153</a>/// environment, so an unrelated variable set by the surrounding shell cannot influence a result.
-<a href=#154 id=154 data-nosnippet>154</a></span><span class="kw">pub async fn </span>run_config_smoke_tests&lt;T, Factory&gt;(
-<a href=#155 id=155 data-nosnippet>155</a>    struct_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, non_config_fields: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str], base_config: serde_json::Value, config_factory: Factory,
-<a href=#156 id=156 data-nosnippet>156</a>) <span class="kw">where
-<a href=#157 id=157 data-nosnippet>157</a>    </span>T: PartialEq + Serialize,
-<a href=#158 id=158 data-nosnippet>158</a>    Factory: Fn(GenericConfiguration) -&gt; T,
-<a href=#159 id=159 data-nosnippet>159</a>{
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="kw">let </span>keys: Vec&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>SalukiAnnotation&gt; = SUPPORTED_ANNOTATIONS
-<a href=#161 id=161 data-nosnippet>161</a>        .iter()
-<a href=#162 id=162 data-nosnippet>162</a>        .copied()
-<a href=#163 id=163 data-nosnippet>163</a>        .filter(|a| a.used_by.contains(<span class="kw-2">&amp;</span>struct_name))
-<a href=#164 id=164 data-nosnippet>164</a>        .collect();
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="kw">let </span>default_struct = config_factory(make_config_from_file(base_config.clone()).<span class="kw">await</span>);
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="kw">let </span><span class="kw-2">mut </span>failures: Vec&lt;String&gt; = Vec::new();
-<a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a>    <span class="kw">for </span>annotation <span class="kw">in </span><span class="kw-2">&amp;</span>keys {
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span>canonical_path = annotation.yaml_path();
-<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">let </span>injected_value = <span class="kw">match </span>annotation.test_json {
-<a href=#172 id=172 data-nosnippet>172</a>            <span class="prelude-val">Some</span>(raw) =&gt; serde_json::from_str(raw).expect(<span class="string">"test_json is not valid JSON"</span>),
-<a href=#173 id=173 data-nosnippet>173</a>            <span class="prelude-val">None </span>=&gt; effective_test_value(annotation),
-<a href=#174 id=174 data-nosnippet>174</a>        };
-<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">let </span>reference = config_factory(
-<a href=#176 id=176 data-nosnippet>176</a>            make_config_from_file(merge_over_base(
-<a href=#177 id=177 data-nosnippet>177</a>                <span class="kw-2">&amp;</span>base_config,
-<a href=#178 id=178 data-nosnippet>178</a>                yaml_path_to_json(canonical_path, injected_value.clone()),
-<a href=#179 id=179 data-nosnippet>179</a>            ))
-<a href=#180 id=180 data-nosnippet>180</a>            .<span class="kw">await</span>,
-<a href=#181 id=181 data-nosnippet>181</a>        );
-<a href=#182 id=182 data-nosnippet>182</a>
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="kw">if </span>reference == default_struct {
-<a href=#184 id=184 data-nosnippet>184</a>            failures.push(<span class="macro">format!</span>(
-<a href=#185 id=185 data-nosnippet>185</a>                <span class="string">"yaml_path '{}': struct did not change from its default—\
-<a href=#186 id=186 data-nosnippet>186</a>                 is the test value the same as the default, or is the key not wired up?"</span>,
-<a href=#187 id=187 data-nosnippet>187</a>                canonical_path,
-<a href=#188 id=188 data-nosnippet>188</a>            ));
-<a href=#189 id=189 data-nosnippet>189</a>            <span class="kw">continue</span>;
-<a href=#190 id=190 data-nosnippet>190</a>        }
-<a href=#191 id=191 data-nosnippet>191</a>
-<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">for </span>yaml_path <span class="kw">in </span>annotation.additional_yaml_paths {
-<a href=#193 id=193 data-nosnippet>193</a>            <span class="kw">let </span>from_path = config_factory(
-<a href=#194 id=194 data-nosnippet>194</a>                make_config_from_file(merge_over_base(
-<a href=#195 id=195 data-nosnippet>195</a>                    <span class="kw-2">&amp;</span>base_config,
-<a href=#196 id=196 data-nosnippet>196</a>                    yaml_path_to_json(yaml_path, injected_value.clone()),
-<a href=#197 id=197 data-nosnippet>197</a>                ))
-<a href=#198 id=198 data-nosnippet>198</a>                .<span class="kw">await</span>,
-<a href=#199 id=199 data-nosnippet>199</a>            );
-<a href=#200 id=200 data-nosnippet>200</a>            <span class="kw">if </span><span class="macro">from_path !</span>= reference {
-<a href=#201 id=201 data-nosnippet>201</a>                failures.push(<span class="macro">format!</span>(
-<a href=#202 id=202 data-nosnippet>202</a>                    <span class="string">"yaml_path '{}' produced a different struct than canonical yaml_path '{}'"</span>,
-<a href=#203 id=203 data-nosnippet>203</a>                    yaml_path, canonical_path,
-<a href=#204 id=204 data-nosnippet>204</a>                ));
-<a href=#205 id=205 data-nosnippet>205</a>            }
-<a href=#206 id=206 data-nosnippet>206</a>        }
-<a href=#207 id=207 data-nosnippet>207</a>
-<a href=#208 id=208 data-nosnippet>208</a>        <span class="kw">for </span>env_var <span class="kw">in </span>annotation.effective_env_vars() {
-<a href=#209 id=209 data-nosnippet>209</a>            <span class="kw">let </span>value = json_value_to_env_string(<span class="kw-2">&amp;</span>injected_value, annotation.value_type());
-<a href=#210 id=210 data-nosnippet>210</a>            <span class="kw">let </span>from_env = config_factory(make_config_from_env(<span class="kw-2">&amp;</span>base_config, env_var, <span class="kw-2">&amp;</span>value).<span class="kw">await</span>);
-<a href=#211 id=211 data-nosnippet>211</a>            <span class="kw">if </span><span class="macro">from_env !</span>= reference {
-<a href=#212 id=212 data-nosnippet>212</a>                failures.push(<span class="macro">format!</span>(
-<a href=#213 id=213 data-nosnippet>213</a>                    <span class="string">"env var '{}' produced a different struct than yaml_path '{}'"</span>,
-<a href=#214 id=214 data-nosnippet>214</a>                    env_var, canonical_path,
-<a href=#215 id=215 data-nosnippet>215</a>                ));
-<a href=#216 id=216 data-nosnippet>216</a>            }
-<a href=#217 id=217 data-nosnippet>217</a>        }
-<a href=#218 id=218 data-nosnippet>218</a>    }
-<a href=#219 id=219 data-nosnippet>219</a>
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">for </span>annotation <span class="kw">in </span>SUPPORTED_ANNOTATIONS
-<a href=#221 id=221 data-nosnippet>221</a>        .iter()
-<a href=#222 id=222 data-nosnippet>222</a>        .filter(|a| !a.used_by.contains(<span class="kw-2">&amp;</span>struct_name))
-<a href=#223 id=223 data-nosnippet>223</a>    {
-<a href=#224 id=224 data-nosnippet>224</a>        <span class="kw">for </span>yaml_path <span class="kw">in </span>annotation.all_yaml_paths() {
-<a href=#225 id=225 data-nosnippet>225</a>            <span class="kw">let </span>with_foreign = config_factory(
-<a href=#226 id=226 data-nosnippet>226</a>                make_config_from_file(merge_over_base(
-<a href=#227 id=227 data-nosnippet>227</a>                    <span class="kw-2">&amp;</span>base_config,
-<a href=#228 id=228 data-nosnippet>228</a>                    yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
-<a href=#229 id=229 data-nosnippet>229</a>                ))
-<a href=#230 id=230 data-nosnippet>230</a>                .<span class="kw">await</span>,
-<a href=#231 id=231 data-nosnippet>231</a>            );
-<a href=#232 id=232 data-nosnippet>232</a>            <span class="kw">if </span><span class="macro">with_foreign !</span>= default_struct {
-<a href=#233 id=233 data-nosnippet>233</a>                failures.push(<span class="macro">format!</span>(
-<a href=#234 id=234 data-nosnippet>234</a>                    <span class="string">"yaml_path '{}' is not registered for '{}' but unexpectedly changed the struct"</span>,
-<a href=#235 id=235 data-nosnippet>235</a>                    yaml_path, struct_name,
-<a href=#236 id=236 data-nosnippet>236</a>                ));
-<a href=#237 id=237 data-nosnippet>237</a>            }
-<a href=#238 id=238 data-nosnippet>238</a>        }
-<a href=#239 id=239 data-nosnippet>239</a>    }
-<a href=#240 id=240 data-nosnippet>240</a>
-<a href=#241 id=241 data-nosnippet>241</a>    <span class="kw">let </span><span class="kw-2">mut </span>all_vals = base_config.clone();
-<a href=#242 id=242 data-nosnippet>242</a>    <span class="kw">for </span>annotation <span class="kw">in </span>keys {
-<a href=#243 id=243 data-nosnippet>243</a>        <span class="kw">let </span>val = <span class="kw">match </span>annotation.test_json {
-<a href=#244 id=244 data-nosnippet>244</a>            <span class="prelude-val">Some</span>(raw) =&gt; serde_json::from_str(raw).expect(<span class="string">"test_json is not valid JSON"</span>),
-<a href=#245 id=245 data-nosnippet>245</a>            <span class="prelude-val">None </span>=&gt; effective_test_value(annotation),
-<a href=#246 id=246 data-nosnippet>246</a>        };
-<a href=#247 id=247 data-nosnippet>247</a>        saluki_config::upsert(<span class="kw-2">&amp;mut </span>all_vals, annotation.yaml_path(), val);
-<a href=#248 id=248 data-nosnippet>248</a>    }
-<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">let </span>all_keys_struct = config_factory(make_config_from_file(all_vals).<span class="kw">await</span>);
-<a href=#250 id=250 data-nosnippet>250</a>    <span class="kw">let </span>full_map = serde_json::to_value(<span class="kw-2">&amp;</span>all_keys_struct).expect(<span class="string">"failed to serialize struct with all keys set"</span>);
-<a href=#251 id=251 data-nosnippet>251</a>    <span class="kw">let </span>default_map = serde_json::to_value(<span class="kw-2">&amp;</span>default_struct).expect(<span class="string">"failed to serialize default struct"</span>);
-<a href=#252 id=252 data-nosnippet>252</a>    <span class="kw">let </span><span class="kw-2">mut </span>unchanged = Vec::new();
-<a href=#253 id=253 data-nosnippet>253</a>    collect_unchanged_leaves(<span class="kw-2">&amp;</span>full_map, <span class="kw-2">&amp;</span>default_map, <span class="string">""</span>, <span class="kw-2">&amp;mut </span>unchanged);
-<a href=#254 id=254 data-nosnippet>254</a>    unchanged.retain(|path| !non_config_fields.contains(<span class="kw-2">&amp;</span>path.as_str()));
-<a href=#255 id=255 data-nosnippet>255</a>    <span class="kw">if </span>!unchanged.is_empty() {
-<a href=#256 id=256 data-nosnippet>256</a>        failures.push(<span class="macro">format!</span>(
-<a href=#257 id=257 data-nosnippet>257</a>            <span class="string">"{} serialized field(s) are never changed by any registered config key: [{}]\n  \
-<a href=#258 id=258 data-nosnippet>258</a>             Fix: add a SalukiAnnotation for each field and include '{}' in its used_by list.\n  \
-<a href=#259 id=259 data-nosnippet>259</a>             Fix: if a field is intentionally not config-driven (for example, injected at runtime), \
-<a href=#260 id=260 data-nosnippet>260</a>             add its serialized name to the `non_config_fields` slice in this test call."</span>,
-<a href=#261 id=261 data-nosnippet>261</a>            unchanged.len(),
-<a href=#262 id=262 data-nosnippet>262</a>            unchanged.join(<span class="string">", "</span>),
-<a href=#263 id=263 data-nosnippet>263</a>            struct_name,
-<a href=#264 id=264 data-nosnippet>264</a>        ));
-<a href=#265 id=265 data-nosnippet>265</a>    }
-<a href=#266 id=266 data-nosnippet>266</a>
-<a href=#267 id=267 data-nosnippet>267</a>    <span class="kw">if </span>!failures.is_empty() {
-<a href=#268 id=268 data-nosnippet>268</a>        <span class="macro">panic!</span>(
-<a href=#269 id=269 data-nosnippet>269</a>            <span class="string">"config smoke tests for '{}' failed with {} error(s):\n\n{}"</span>,
-<a href=#270 id=270 data-nosnippet>270</a>            struct_name,
-<a href=#271 id=271 data-nosnippet>271</a>            failures.len(),
-<a href=#272 id=272 data-nosnippet>272</a>            failures
-<a href=#273 id=273 data-nosnippet>273</a>                .iter()
-<a href=#274 id=274 data-nosnippet>274</a>                .enumerate()
-<a href=#275 id=275 data-nosnippet>275</a>                .map(|(i, msg)| <span class="macro">format!</span>(<span class="string">"  [{}] {}"</span>, i + <span class="number">1</span>, msg))
-<a href=#276 id=276 data-nosnippet>276</a>                .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
-<a href=#277 id=277 data-nosnippet>277</a>                .join(<span class="string">"\n\n"</span>),
-<a href=#278 id=278 data-nosnippet>278</a>        );
-<a href=#279 id=279 data-nosnippet>279</a>    }
-<a href=#280 id=280 data-nosnippet>280</a>}
-<a href=#281 id=281 data-nosnippet>281</a>
-<a href=#282 id=282 data-nosnippet>282</a><span class="attr">#[cfg(test)]
-<a href=#283 id=283 data-nosnippet>283</a></span><span class="kw">mod </span>tests {
-<a href=#284 id=284 data-nosnippet>284</a>    <span class="doccomment">//! Meta-tests for the [`run_config_smoke_tests`] harness itself.
-<a href=#285 id=285 data-nosnippet>285</a>    //!
-<a href=#286 id=286 data-nosnippet>286</a>    //! [`run_config_smoke_tests`] documents three guarantees (supported keys, unsupported keys, full
-<a href=#287 id=287 data-nosnippet>287</a>    //! field coverage). These tests verify the harness actually *enforces* each guarantee by feeding it a
-<a href=#288 id=288 data-nosnippet>288</a>    //! `config_factory` that deliberately violates exactly one and asserting the harness reports that
-<a href=#289 id=289 data-nosnippet>289</a>    //! guarantee's specific failure, plus one case where no guarantee is violated and the harness passes.
-<a href=#290 id=290 data-nosnippet>290</a>    //!
-<a href=#291 id=291 data-nosnippet>291</a>    //! We drive the negative cases against a struct name with no registered keys (so every registered key
-<a href=#292 id=292 data-nosnippet>292</a>    //! is "foreign") or an ignore-everything factory, rather than a real config type. Faithfully
-<a href=#293 id=293 data-nosnippet>293</a>    //! reproducing a *passing* struct here would require a real component config type, which lives in
-<a href=#294 id=294 data-nosnippet>294</a>    //! `saluki-components` and isn't a dependency of this crate; the guarantee-1 passing path is therefore
-<a href=#295 id=295 data-nosnippet>295</a>    //! left to the real per-component smoke tests that call this harness.
-<a href=#296 id=296 data-nosnippet>296</a>
-<a href=#297 id=297 data-nosnippet>297</a>    </span><span class="kw">use </span>saluki_config::GenericConfiguration;
-<a href=#298 id=298 data-nosnippet>298</a>    <span class="kw">use </span>serde_json::json;
-<a href=#299 id=299 data-nosnippet>299</a>
-<a href=#300 id=300 data-nosnippet>300</a>    <span class="kw">use </span><span class="kw">super</span>::run_config_smoke_tests;
-<a href=#301 id=301 data-nosnippet>301</a>    <span class="kw">use </span><span class="kw">crate</span>::config_registry::structs;
-<a href=#302 id=302 data-nosnippet>302</a>
-<a href=#303 id=303 data-nosnippet>303</a>    <span class="doccomment">/// Struct name that no annotation's `used_by` references, so every registered key is "foreign" to it.
-<a href=#304 id=304 data-nosnippet>304</a>    </span><span class="kw">const </span>UNREGISTERED_STRUCT: <span class="kw-2">&amp;</span>str = <span class="string">"NonExistentConfiguration"</span>;
-<a href=#305 id=305 data-nosnippet>305</a>
-<a href=#306 id=306 data-nosnippet>306</a>    <span class="kw">fn </span>panic_message(payload: Box&lt;<span class="kw">dyn </span>std::any::Any + Send&gt;) -&gt; String {
-<a href=#307 id=307 data-nosnippet>307</a>        payload
-<a href=#308 id=308 data-nosnippet>308</a>            .downcast_ref::&lt;String&gt;()
-<a href=#309 id=309 data-nosnippet>309</a>            .cloned()
-<a href=#310 id=310 data-nosnippet>310</a>            .or_else(|| payload.downcast_ref::&lt;<span class="kw-2">&amp;</span>str&gt;().map(|s| s.to_string()))
-<a href=#311 id=311 data-nosnippet>311</a>            .unwrap_or_else(|| <span class="string">"&lt;non-string panic payload&gt;"</span>.to_string())
-<a href=#312 id=312 data-nosnippet>312</a>    }
-<a href=#313 id=313 data-nosnippet>313</a>
-<a href=#314 id=314 data-nosnippet>314</a>    <span class="attr">#[tokio::test]
-<a href=#315 id=315 data-nosnippet>315</a>    </span><span class="kw">async fn </span>flags_a_supported_key_that_never_changes_the_struct() {
-<a href=#316 id=316 data-nosnippet>316</a>        <span class="comment">// This case needs a consumer with registered (supported) keys. No struct-deserializing consumer has
-<a href=#317 id=317 data-nosnippet>317</a>        // any left, so it uses the `TYPED_CONFIG_SYSTEM` sentinel. A factory that ignores the config entirely
-<a href=#318 id=318 data-nosnippet>318</a>        // means each supported key "produces the default struct", violating the supported-key guarantee, which
-<a href=#319 id=319 data-nosnippet>319</a>        // the harness must flag.
-<a href=#320 id=320 data-nosnippet>320</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
-<a href=#321 id=321 data-nosnippet>321</a>            run_config_smoke_tests(
-<a href=#322 id=322 data-nosnippet>322</a>                structs::TYPED_CONFIG_SYSTEM,
-<a href=#323 id=323 data-nosnippet>323</a>                <span class="kw-2">&amp;</span>[],
-<a href=#324 id=324 data-nosnippet>324</a>                <span class="macro">json!</span>({}),
-<a href=#325 id=325 data-nosnippet>325</a>                |_cfg: GenericConfiguration| <span class="macro">json!</span>({}),
-<a href=#326 id=326 data-nosnippet>326</a>            )
-<a href=#327 id=327 data-nosnippet>327</a>            .<span class="kw">await
-<a href=#328 id=328 data-nosnippet>328</a>        </span>})
-<a href=#329 id=329 data-nosnippet>329</a>        .<span class="kw">await</span>;
-<a href=#330 id=330 data-nosnippet>330</a>
-<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">let </span>panic = outcome.expect_err(<span class="string">"harness should panic when a supported key never changes the struct"</span>);
-<a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">let </span>message = panic_message(panic.into_panic());
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="macro">assert!</span>(
-<a href=#334 id=334 data-nosnippet>334</a>            message.contains(<span class="string">"did not change from its default"</span>),
-<a href=#335 id=335 data-nosnippet>335</a>            <span class="string">"expected supported-key failure, got: {message}"
-<a href=#336 id=336 data-nosnippet>336</a>        </span>);
-<a href=#337 id=337 data-nosnippet>337</a>    }
-<a href=#338 id=338 data-nosnippet>338</a>
-<a href=#339 id=339 data-nosnippet>339</a>    <span class="attr">#[tokio::test]
-<a href=#340 id=340 data-nosnippet>340</a>    </span><span class="kw">async fn </span>flags_a_foreign_key_that_changes_the_struct() {
-<a href=#341 id=341 data-nosnippet>341</a>        <span class="comment">// For a struct with no registered keys, every key is foreign and must leave the struct at its
-<a href=#342 id=342 data-nosnippet>342</a>        // default. A factory that reflects the entire merged config changes for any foreign key, violating
-<a href=#343 id=343 data-nosnippet>343</a>        // the unsupported-key guarantee.
-<a href=#344 id=344 data-nosnippet>344</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
-<a href=#345 id=345 data-nosnippet>345</a>            run_config_smoke_tests(UNREGISTERED_STRUCT, <span class="kw-2">&amp;</span>[], <span class="macro">json!</span>({}), |cfg: GenericConfiguration| {
-<a href=#346 id=346 data-nosnippet>346</a>                cfg.as_typed::&lt;serde_json::Value&gt;().unwrap_or(serde_json::Value::Null)
-<a href=#347 id=347 data-nosnippet>347</a>            })
-<a href=#348 id=348 data-nosnippet>348</a>            .<span class="kw">await
-<a href=#349 id=349 data-nosnippet>349</a>        </span>})
-<a href=#350 id=350 data-nosnippet>350</a>        .<span class="kw">await</span>;
-<a href=#351 id=351 data-nosnippet>351</a>
-<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span>panic = outcome.expect_err(<span class="string">"harness should panic when a foreign key changes the struct"</span>);
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>message = panic_message(panic.into_panic());
-<a href=#354 id=354 data-nosnippet>354</a>        <span class="macro">assert!</span>(
-<a href=#355 id=355 data-nosnippet>355</a>            message.contains(<span class="string">"unexpectedly changed the struct"</span>),
-<a href=#356 id=356 data-nosnippet>356</a>            <span class="string">"expected unsupported-key failure, got: {message}"
-<a href=#357 id=357 data-nosnippet>357</a>        </span>);
-<a href=#358 id=358 data-nosnippet>358</a>    }
-<a href=#359 id=359 data-nosnippet>359</a>
-<a href=#360 id=360 data-nosnippet>360</a>    <span class="attr">#[tokio::test]
-<a href=#361 id=361 data-nosnippet>361</a>    </span><span class="kw">async fn </span>flags_a_serialized_field_no_key_ever_changes() {
-<a href=#362 id=362 data-nosnippet>362</a>        <span class="comment">// A factory that always serializes a constant field means that field is never driven by any
-<a href=#363 id=363 data-nosnippet>363</a>        // registered key, violating the full-field-coverage guarantee.
-<a href=#364 id=364 data-nosnippet>364</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
-<a href=#365 id=365 data-nosnippet>365</a>            run_config_smoke_tests(
-<a href=#366 id=366 data-nosnippet>366</a>                UNREGISTERED_STRUCT,
-<a href=#367 id=367 data-nosnippet>367</a>                <span class="kw-2">&amp;</span>[],
-<a href=#368 id=368 data-nosnippet>368</a>                <span class="macro">json!</span>({}),
-<a href=#369 id=369 data-nosnippet>369</a>                |_cfg: GenericConfiguration| <span class="macro">json!</span>({ <span class="string">"phantom"</span>: <span class="string">"constant" </span>}),
-<a href=#370 id=370 data-nosnippet>370</a>            )
-<a href=#371 id=371 data-nosnippet>371</a>            .<span class="kw">await
-<a href=#372 id=372 data-nosnippet>372</a>        </span>})
-<a href=#373 id=373 data-nosnippet>373</a>        .<span class="kw">await</span>;
-<a href=#374 id=374 data-nosnippet>374</a>
-<a href=#375 id=375 data-nosnippet>375</a>        <span class="kw">let </span>panic = outcome.expect_err(<span class="string">"harness should panic about a serialized field no key changes"</span>);
-<a href=#376 id=376 data-nosnippet>376</a>        <span class="kw">let </span>message = panic_message(panic.into_panic());
-<a href=#377 id=377 data-nosnippet>377</a>        <span class="macro">assert!</span>(
-<a href=#378 id=378 data-nosnippet>378</a>            message.contains(<span class="string">"never changed by any registered config key"</span>),
-<a href=#379 id=379 data-nosnippet>379</a>            <span class="string">"expected full-field-coverage failure, got: {message}"
-<a href=#380 id=380 data-nosnippet>380</a>        </span>);
-<a href=#381 id=381 data-nosnippet>381</a>    }
-<a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>    <span class="attr">#[tokio::test]
-<a href=#384 id=384 data-nosnippet>384</a>    </span><span class="kw">async fn </span>passes_when_no_guarantee_is_violated() {
-<a href=#385 id=385 data-nosnippet>385</a>        <span class="comment">// A factory that ignores every (foreign) key and serializes no fields satisfies both the
-<a href=#386 id=386 data-nosnippet>386</a>        // unsupported-key and full-field-coverage guarantees for a struct with no registered keys, so the
-<a href=#387 id=387 data-nosnippet>387</a>        // harness returns without panicking.
-<a href=#388 id=388 data-nosnippet>388</a>        </span>run_config_smoke_tests(UNREGISTERED_STRUCT, <span class="kw-2">&amp;</span>[], <span class="macro">json!</span>({}), |_cfg: GenericConfiguration| {
-<a href=#389 id=389 data-nosnippet>389</a>            <span class="macro">json!</span>({})
-<a href=#390 id=390 data-nosnippet>390</a>        })
-<a href=#391 id=391 data-nosnippet>391</a>        .<span class="kw">await</span>;
-<a href=#392 id=392 data-nosnippet>392</a>    }
-<a href=#393 id=393 data-nosnippet>393</a>}
+<a href=#146 id=146 data-nosnippet>146</a>/// **Supported keys**: loading the struct with the test value set via the annotation's `yaml_path`
+<a href=#147 id=147 data-nosnippet>147</a>/// and via each of its effective env vars must all produce identical structs, and each must differ
+<a href=#148 id=148 data-nosnippet>148</a>/// from the default (empty-config) struct.
+<a href=#149 id=149 data-nosnippet>149</a>///
+<a href=#150 id=150 data-nosnippet>150</a>/// **Unsupported keys**: loading the struct with that key set must produce a struct identical to the
+<a href=#151 id=151 data-nosnippet>151</a>/// default struct.
+<a href=#152 id=152 data-nosnippet>152</a>///
+<a href=#153 id=153 data-nosnippet>153</a>/// **Full field coverage**: loading the struct with all supported keys set simultaneously must
+<a href=#154 id=154 data-nosnippet>154</a>/// produce a struct where every serialized leaf field differs from the default.
+<a href=#155 id=155 data-nosnippet>155</a>///
+<a href=#156 id=156 data-nosnippet>156</a>/// Environment values are supplied per test case rather than read from the ambient process
+<a href=#157 id=157 data-nosnippet>157</a>/// environment, so an unrelated variable set by the surrounding shell cannot influence a result.
+<a href=#158 id=158 data-nosnippet>158</a></span><span class="kw">pub async fn </span>run_config_smoke_tests&lt;T, Factory&gt;(
+<a href=#159 id=159 data-nosnippet>159</a>    struct_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, non_config_fields: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str], base_config: serde_json::Value, config_factory: Factory,
+<a href=#160 id=160 data-nosnippet>160</a>) <span class="kw">where
+<a href=#161 id=161 data-nosnippet>161</a>    </span>T: PartialEq + Serialize,
+<a href=#162 id=162 data-nosnippet>162</a>    Factory: Fn(GenericConfiguration) -&gt; T,
+<a href=#163 id=163 data-nosnippet>163</a>{
+<a href=#164 id=164 data-nosnippet>164</a>    <span class="kw">let </span>keys: Vec&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>SalukiAnnotation&gt; = SUPPORTED_ANNOTATIONS
+<a href=#165 id=165 data-nosnippet>165</a>        .iter()
+<a href=#166 id=166 data-nosnippet>166</a>        .copied()
+<a href=#167 id=167 data-nosnippet>167</a>        .filter(|a| a.used_by.contains(<span class="kw-2">&amp;</span>struct_name))
+<a href=#168 id=168 data-nosnippet>168</a>        .collect();
+<a href=#169 id=169 data-nosnippet>169</a>
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="kw">let </span>default_struct = config_factory(make_config_from_file(base_config.clone()).<span class="kw">await</span>);
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="kw">let </span><span class="kw-2">mut </span>failures: Vec&lt;String&gt; = Vec::new();
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="kw">for </span>annotation <span class="kw">in </span><span class="kw-2">&amp;</span>keys {
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span>canonical_path = annotation.yaml_path();
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">let </span>injected_value = <span class="kw">match </span>annotation.test_json {
+<a href=#176 id=176 data-nosnippet>176</a>            <span class="prelude-val">Some</span>(raw) =&gt; serde_json::from_str(raw).expect(<span class="string">"test_json is not valid JSON"</span>),
+<a href=#177 id=177 data-nosnippet>177</a>            <span class="prelude-val">None </span>=&gt; effective_test_value(annotation),
+<a href=#178 id=178 data-nosnippet>178</a>        };
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">let </span>reference = config_factory(
+<a href=#180 id=180 data-nosnippet>180</a>            make_config_from_file(merge_over_base(
+<a href=#181 id=181 data-nosnippet>181</a>                <span class="kw-2">&amp;</span>base_config,
+<a href=#182 id=182 data-nosnippet>182</a>                yaml_path_to_json(canonical_path, injected_value.clone()),
+<a href=#183 id=183 data-nosnippet>183</a>            ))
+<a href=#184 id=184 data-nosnippet>184</a>            .<span class="kw">await</span>,
+<a href=#185 id=185 data-nosnippet>185</a>        );
+<a href=#186 id=186 data-nosnippet>186</a>
+<a href=#187 id=187 data-nosnippet>187</a>        <span class="kw">if </span>reference == default_struct {
+<a href=#188 id=188 data-nosnippet>188</a>            failures.push(<span class="macro">format!</span>(
+<a href=#189 id=189 data-nosnippet>189</a>                <span class="string">"yaml_path '{}': struct did not change from its default—\
+<a href=#190 id=190 data-nosnippet>190</a>                 is the test value the same as the default, or is the key not wired up?"</span>,
+<a href=#191 id=191 data-nosnippet>191</a>                canonical_path,
+<a href=#192 id=192 data-nosnippet>192</a>            ));
+<a href=#193 id=193 data-nosnippet>193</a>            <span class="kw">continue</span>;
+<a href=#194 id=194 data-nosnippet>194</a>        }
+<a href=#195 id=195 data-nosnippet>195</a>
+<a href=#196 id=196 data-nosnippet>196</a>        <span class="kw">for </span>yaml_path <span class="kw">in </span>annotation.additional_yaml_paths {
+<a href=#197 id=197 data-nosnippet>197</a>            <span class="kw">let </span>from_path = config_factory(
+<a href=#198 id=198 data-nosnippet>198</a>                make_config_from_file(merge_over_base(
+<a href=#199 id=199 data-nosnippet>199</a>                    <span class="kw-2">&amp;</span>base_config,
+<a href=#200 id=200 data-nosnippet>200</a>                    yaml_path_to_json(yaml_path, injected_value.clone()),
+<a href=#201 id=201 data-nosnippet>201</a>                ))
+<a href=#202 id=202 data-nosnippet>202</a>                .<span class="kw">await</span>,
+<a href=#203 id=203 data-nosnippet>203</a>            );
+<a href=#204 id=204 data-nosnippet>204</a>            <span class="kw">if </span><span class="macro">from_path !</span>= reference {
+<a href=#205 id=205 data-nosnippet>205</a>                failures.push(<span class="macro">format!</span>(
+<a href=#206 id=206 data-nosnippet>206</a>                    <span class="string">"yaml_path '{}' produced a different struct than canonical yaml_path '{}'"</span>,
+<a href=#207 id=207 data-nosnippet>207</a>                    yaml_path, canonical_path,
+<a href=#208 id=208 data-nosnippet>208</a>                ));
+<a href=#209 id=209 data-nosnippet>209</a>            }
+<a href=#210 id=210 data-nosnippet>210</a>        }
+<a href=#211 id=211 data-nosnippet>211</a>
+<a href=#212 id=212 data-nosnippet>212</a>        <span class="kw">for </span>env_var <span class="kw">in </span>annotation.effective_env_vars() {
+<a href=#213 id=213 data-nosnippet>213</a>            <span class="kw">let </span>value = json_value_to_env_string(<span class="kw-2">&amp;</span>injected_value, annotation.value_type());
+<a href=#214 id=214 data-nosnippet>214</a>            <span class="kw">let </span>from_env = config_factory(make_config_from_env(<span class="kw-2">&amp;</span>base_config, env_var, <span class="kw-2">&amp;</span>value).<span class="kw">await</span>);
+<a href=#215 id=215 data-nosnippet>215</a>            <span class="kw">if </span><span class="macro">from_env !</span>= reference {
+<a href=#216 id=216 data-nosnippet>216</a>                failures.push(<span class="macro">format!</span>(
+<a href=#217 id=217 data-nosnippet>217</a>                    <span class="string">"env var '{}' produced a different struct than yaml_path '{}'"</span>,
+<a href=#218 id=218 data-nosnippet>218</a>                    env_var, canonical_path,
+<a href=#219 id=219 data-nosnippet>219</a>                ));
+<a href=#220 id=220 data-nosnippet>220</a>            }
+<a href=#221 id=221 data-nosnippet>221</a>        }
+<a href=#222 id=222 data-nosnippet>222</a>    }
+<a href=#223 id=223 data-nosnippet>223</a>
+<a href=#224 id=224 data-nosnippet>224</a>    <span class="kw">for </span>annotation <span class="kw">in </span>SUPPORTED_ANNOTATIONS
+<a href=#225 id=225 data-nosnippet>225</a>        .iter()
+<a href=#226 id=226 data-nosnippet>226</a>        .filter(|a| !a.used_by.contains(<span class="kw-2">&amp;</span>struct_name))
+<a href=#227 id=227 data-nosnippet>227</a>    {
+<a href=#228 id=228 data-nosnippet>228</a>        <span class="kw">for </span>yaml_path <span class="kw">in </span>annotation.all_yaml_paths() {
+<a href=#229 id=229 data-nosnippet>229</a>            <span class="kw">let </span>with_foreign = config_factory(
+<a href=#230 id=230 data-nosnippet>230</a>                make_config_from_file(merge_over_base(
+<a href=#231 id=231 data-nosnippet>231</a>                    <span class="kw-2">&amp;</span>base_config,
+<a href=#232 id=232 data-nosnippet>232</a>                    yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
+<a href=#233 id=233 data-nosnippet>233</a>                ))
+<a href=#234 id=234 data-nosnippet>234</a>                .<span class="kw">await</span>,
+<a href=#235 id=235 data-nosnippet>235</a>            );
+<a href=#236 id=236 data-nosnippet>236</a>            <span class="kw">if </span><span class="macro">with_foreign !</span>= default_struct {
+<a href=#237 id=237 data-nosnippet>237</a>                failures.push(<span class="macro">format!</span>(
+<a href=#238 id=238 data-nosnippet>238</a>                    <span class="string">"yaml_path '{}' is not registered for '{}' but unexpectedly changed the struct"</span>,
+<a href=#239 id=239 data-nosnippet>239</a>                    yaml_path, struct_name,
+<a href=#240 id=240 data-nosnippet>240</a>                ));
+<a href=#241 id=241 data-nosnippet>241</a>            }
+<a href=#242 id=242 data-nosnippet>242</a>        }
+<a href=#243 id=243 data-nosnippet>243</a>    }
+<a href=#244 id=244 data-nosnippet>244</a>
+<a href=#245 id=245 data-nosnippet>245</a>    <span class="kw">let </span><span class="kw-2">mut </span>all_vals = base_config.clone();
+<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">for </span>annotation <span class="kw">in </span>keys {
+<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span>val = <span class="kw">match </span>annotation.test_json {
+<a href=#248 id=248 data-nosnippet>248</a>            <span class="prelude-val">Some</span>(raw) =&gt; serde_json::from_str(raw).expect(<span class="string">"test_json is not valid JSON"</span>),
+<a href=#249 id=249 data-nosnippet>249</a>            <span class="prelude-val">None </span>=&gt; effective_test_value(annotation),
+<a href=#250 id=250 data-nosnippet>250</a>        };
+<a href=#251 id=251 data-nosnippet>251</a>        saluki_config::upsert(<span class="kw-2">&amp;mut </span>all_vals, annotation.yaml_path(), val);
+<a href=#252 id=252 data-nosnippet>252</a>    }
+<a href=#253 id=253 data-nosnippet>253</a>    <span class="kw">let </span>all_keys_struct = config_factory(make_config_from_file(all_vals).<span class="kw">await</span>);
+<a href=#254 id=254 data-nosnippet>254</a>    <span class="kw">let </span>full_map = serde_json::to_value(<span class="kw-2">&amp;</span>all_keys_struct).expect(<span class="string">"failed to serialize struct with all keys set"</span>);
+<a href=#255 id=255 data-nosnippet>255</a>    <span class="kw">let </span>default_map = serde_json::to_value(<span class="kw-2">&amp;</span>default_struct).expect(<span class="string">"failed to serialize default struct"</span>);
+<a href=#256 id=256 data-nosnippet>256</a>    <span class="kw">let </span><span class="kw-2">mut </span>unchanged = Vec::new();
+<a href=#257 id=257 data-nosnippet>257</a>    collect_unchanged_leaves(<span class="kw-2">&amp;</span>full_map, <span class="kw-2">&amp;</span>default_map, <span class="string">""</span>, <span class="kw-2">&amp;mut </span>unchanged);
+<a href=#258 id=258 data-nosnippet>258</a>    unchanged.retain(|path| !non_config_fields.contains(<span class="kw-2">&amp;</span>path.as_str()));
+<a href=#259 id=259 data-nosnippet>259</a>    <span class="kw">if </span>!unchanged.is_empty() {
+<a href=#260 id=260 data-nosnippet>260</a>        failures.push(<span class="macro">format!</span>(
+<a href=#261 id=261 data-nosnippet>261</a>            <span class="string">"{} serialized field(s) are never changed by any registered config key: [{}]\n  \
+<a href=#262 id=262 data-nosnippet>262</a>             Fix: add a SalukiAnnotation for each field and include '{}' in its used_by list.\n  \
+<a href=#263 id=263 data-nosnippet>263</a>             Fix: if a field is intentionally not config-driven (for example, injected at runtime), \
+<a href=#264 id=264 data-nosnippet>264</a>             add its serialized name to the `non_config_fields` slice in this test call."</span>,
+<a href=#265 id=265 data-nosnippet>265</a>            unchanged.len(),
+<a href=#266 id=266 data-nosnippet>266</a>            unchanged.join(<span class="string">", "</span>),
+<a href=#267 id=267 data-nosnippet>267</a>            struct_name,
+<a href=#268 id=268 data-nosnippet>268</a>        ));
+<a href=#269 id=269 data-nosnippet>269</a>    }
+<a href=#270 id=270 data-nosnippet>270</a>
+<a href=#271 id=271 data-nosnippet>271</a>    <span class="kw">if </span>!failures.is_empty() {
+<a href=#272 id=272 data-nosnippet>272</a>        <span class="macro">panic!</span>(
+<a href=#273 id=273 data-nosnippet>273</a>            <span class="string">"config smoke tests for '{}' failed with {} error(s):\n\n{}"</span>,
+<a href=#274 id=274 data-nosnippet>274</a>            struct_name,
+<a href=#275 id=275 data-nosnippet>275</a>            failures.len(),
+<a href=#276 id=276 data-nosnippet>276</a>            failures
+<a href=#277 id=277 data-nosnippet>277</a>                .iter()
+<a href=#278 id=278 data-nosnippet>278</a>                .enumerate()
+<a href=#279 id=279 data-nosnippet>279</a>                .map(|(i, msg)| <span class="macro">format!</span>(<span class="string">"  [{}] {}"</span>, i + <span class="number">1</span>, msg))
+<a href=#280 id=280 data-nosnippet>280</a>                .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
+<a href=#281 id=281 data-nosnippet>281</a>                .join(<span class="string">"\n\n"</span>),
+<a href=#282 id=282 data-nosnippet>282</a>        );
+<a href=#283 id=283 data-nosnippet>283</a>    }
+<a href=#284 id=284 data-nosnippet>284</a>}
+<a href=#285 id=285 data-nosnippet>285</a>
+<a href=#286 id=286 data-nosnippet>286</a><span class="attr">#[cfg(test)]
+<a href=#287 id=287 data-nosnippet>287</a></span><span class="kw">mod </span>tests {
+<a href=#288 id=288 data-nosnippet>288</a>    <span class="doccomment">//! Meta-tests for the [`run_config_smoke_tests`] harness itself.
+<a href=#289 id=289 data-nosnippet>289</a>    //!
+<a href=#290 id=290 data-nosnippet>290</a>    //! [`run_config_smoke_tests`] documents three guarantees (supported keys, unsupported keys, full
+<a href=#291 id=291 data-nosnippet>291</a>    //! field coverage). These tests verify the harness actually *enforces* each guarantee by feeding it a
+<a href=#292 id=292 data-nosnippet>292</a>    //! `config_factory` that deliberately violates exactly one and asserting the harness reports that
+<a href=#293 id=293 data-nosnippet>293</a>    //! guarantee's specific failure, plus one case where no guarantee is violated and the harness passes.
+<a href=#294 id=294 data-nosnippet>294</a>    //!
+<a href=#295 id=295 data-nosnippet>295</a>    //! We drive the negative cases against a struct name with no registered keys (so every registered key
+<a href=#296 id=296 data-nosnippet>296</a>    //! is "foreign") or an ignore-everything factory, rather than a real config type. Faithfully
+<a href=#297 id=297 data-nosnippet>297</a>    //! reproducing a *passing* struct here would require a real component config type, which lives in
+<a href=#298 id=298 data-nosnippet>298</a>    //! `saluki-components` and isn't a dependency of this crate; the guarantee-1 passing path is therefore
+<a href=#299 id=299 data-nosnippet>299</a>    //! left to the real per-component smoke tests that call this harness.
+<a href=#300 id=300 data-nosnippet>300</a>
+<a href=#301 id=301 data-nosnippet>301</a>    </span><span class="kw">use </span>saluki_config::GenericConfiguration;
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="kw">use </span>serde_json::json;
+<a href=#303 id=303 data-nosnippet>303</a>
+<a href=#304 id=304 data-nosnippet>304</a>    <span class="kw">use </span><span class="kw">super</span>::run_config_smoke_tests;
+<a href=#305 id=305 data-nosnippet>305</a>    <span class="kw">use </span><span class="kw">crate</span>::config_registry::structs;
+<a href=#306 id=306 data-nosnippet>306</a>
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="doccomment">/// Struct name that no annotation's `used_by` references, so every registered key is "foreign" to it.
+<a href=#308 id=308 data-nosnippet>308</a>    </span><span class="kw">const </span>UNREGISTERED_STRUCT: <span class="kw-2">&amp;</span>str = <span class="string">"NonExistentConfiguration"</span>;
+<a href=#309 id=309 data-nosnippet>309</a>
+<a href=#310 id=310 data-nosnippet>310</a>    <span class="kw">fn </span>panic_message(payload: Box&lt;<span class="kw">dyn </span>std::any::Any + Send&gt;) -&gt; String {
+<a href=#311 id=311 data-nosnippet>311</a>        payload
+<a href=#312 id=312 data-nosnippet>312</a>            .downcast_ref::&lt;String&gt;()
+<a href=#313 id=313 data-nosnippet>313</a>            .cloned()
+<a href=#314 id=314 data-nosnippet>314</a>            .or_else(|| payload.downcast_ref::&lt;<span class="kw-2">&amp;</span>str&gt;().map(|s| s.to_string()))
+<a href=#315 id=315 data-nosnippet>315</a>            .unwrap_or_else(|| <span class="string">"&lt;non-string panic payload&gt;"</span>.to_string())
+<a href=#316 id=316 data-nosnippet>316</a>    }
+<a href=#317 id=317 data-nosnippet>317</a>
+<a href=#318 id=318 data-nosnippet>318</a>    <span class="attr">#[tokio::test]
+<a href=#319 id=319 data-nosnippet>319</a>    </span><span class="kw">async fn </span>flags_a_supported_key_that_never_changes_the_struct() {
+<a href=#320 id=320 data-nosnippet>320</a>        <span class="comment">// This case needs a consumer with registered (supported) keys. No struct-deserializing consumer has
+<a href=#321 id=321 data-nosnippet>321</a>        // any left, so it uses the `TYPED_CONFIG_SYSTEM` sentinel. A factory that ignores the config entirely
+<a href=#322 id=322 data-nosnippet>322</a>        // means each supported key "produces the default struct", violating the supported-key guarantee, which
+<a href=#323 id=323 data-nosnippet>323</a>        // the harness must flag.
+<a href=#324 id=324 data-nosnippet>324</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
+<a href=#325 id=325 data-nosnippet>325</a>            run_config_smoke_tests(
+<a href=#326 id=326 data-nosnippet>326</a>                structs::TYPED_CONFIG_SYSTEM,
+<a href=#327 id=327 data-nosnippet>327</a>                <span class="kw-2">&amp;</span>[],
+<a href=#328 id=328 data-nosnippet>328</a>                <span class="macro">json!</span>({}),
+<a href=#329 id=329 data-nosnippet>329</a>                |_cfg: GenericConfiguration| <span class="macro">json!</span>({}),
+<a href=#330 id=330 data-nosnippet>330</a>            )
+<a href=#331 id=331 data-nosnippet>331</a>            .<span class="kw">await
+<a href=#332 id=332 data-nosnippet>332</a>        </span>})
+<a href=#333 id=333 data-nosnippet>333</a>        .<span class="kw">await</span>;
+<a href=#334 id=334 data-nosnippet>334</a>
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>panic = outcome.expect_err(<span class="string">"harness should panic when a supported key never changes the struct"</span>);
+<a href=#336 id=336 data-nosnippet>336</a>        <span class="kw">let </span>message = panic_message(panic.into_panic());
+<a href=#337 id=337 data-nosnippet>337</a>        <span class="macro">assert!</span>(
+<a href=#338 id=338 data-nosnippet>338</a>            message.contains(<span class="string">"did not change from its default"</span>),
+<a href=#339 id=339 data-nosnippet>339</a>            <span class="string">"expected supported-key failure, got: {message}"
+<a href=#340 id=340 data-nosnippet>340</a>        </span>);
+<a href=#341 id=341 data-nosnippet>341</a>    }
+<a href=#342 id=342 data-nosnippet>342</a>
+<a href=#343 id=343 data-nosnippet>343</a>    <span class="attr">#[tokio::test]
+<a href=#344 id=344 data-nosnippet>344</a>    </span><span class="kw">async fn </span>flags_a_foreign_key_that_changes_the_struct() {
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="comment">// For a struct with no registered keys, every key is foreign and must leave the struct at its
+<a href=#346 id=346 data-nosnippet>346</a>        // default. A factory that reflects the entire merged config changes for any foreign key, violating
+<a href=#347 id=347 data-nosnippet>347</a>        // the unsupported-key guarantee.
+<a href=#348 id=348 data-nosnippet>348</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
+<a href=#349 id=349 data-nosnippet>349</a>            run_config_smoke_tests(UNREGISTERED_STRUCT, <span class="kw-2">&amp;</span>[], <span class="macro">json!</span>({}), |cfg: GenericConfiguration| {
+<a href=#350 id=350 data-nosnippet>350</a>                cfg.as_typed::&lt;serde_json::Value&gt;().unwrap_or(serde_json::Value::Null)
+<a href=#351 id=351 data-nosnippet>351</a>            })
+<a href=#352 id=352 data-nosnippet>352</a>            .<span class="kw">await
+<a href=#353 id=353 data-nosnippet>353</a>        </span>})
+<a href=#354 id=354 data-nosnippet>354</a>        .<span class="kw">await</span>;
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">let </span>panic = outcome.expect_err(<span class="string">"harness should panic when a foreign key changes the struct"</span>);
+<a href=#357 id=357 data-nosnippet>357</a>        <span class="kw">let </span>message = panic_message(panic.into_panic());
+<a href=#358 id=358 data-nosnippet>358</a>        <span class="macro">assert!</span>(
+<a href=#359 id=359 data-nosnippet>359</a>            message.contains(<span class="string">"unexpectedly changed the struct"</span>),
+<a href=#360 id=360 data-nosnippet>360</a>            <span class="string">"expected unsupported-key failure, got: {message}"
+<a href=#361 id=361 data-nosnippet>361</a>        </span>);
+<a href=#362 id=362 data-nosnippet>362</a>    }
+<a href=#363 id=363 data-nosnippet>363</a>
+<a href=#364 id=364 data-nosnippet>364</a>    <span class="attr">#[tokio::test]
+<a href=#365 id=365 data-nosnippet>365</a>    </span><span class="kw">async fn </span>flags_a_serialized_field_no_key_ever_changes() {
+<a href=#366 id=366 data-nosnippet>366</a>        <span class="comment">// A factory that always serializes a constant field means that field is never driven by any
+<a href=#367 id=367 data-nosnippet>367</a>        // registered key, violating the full-field-coverage guarantee.
+<a href=#368 id=368 data-nosnippet>368</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
+<a href=#369 id=369 data-nosnippet>369</a>            run_config_smoke_tests(
+<a href=#370 id=370 data-nosnippet>370</a>                UNREGISTERED_STRUCT,
+<a href=#371 id=371 data-nosnippet>371</a>                <span class="kw-2">&amp;</span>[],
+<a href=#372 id=372 data-nosnippet>372</a>                <span class="macro">json!</span>({}),
+<a href=#373 id=373 data-nosnippet>373</a>                |_cfg: GenericConfiguration| <span class="macro">json!</span>({ <span class="string">"phantom"</span>: <span class="string">"constant" </span>}),
+<a href=#374 id=374 data-nosnippet>374</a>            )
+<a href=#375 id=375 data-nosnippet>375</a>            .<span class="kw">await
+<a href=#376 id=376 data-nosnippet>376</a>        </span>})
+<a href=#377 id=377 data-nosnippet>377</a>        .<span class="kw">await</span>;
+<a href=#378 id=378 data-nosnippet>378</a>
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>panic = outcome.expect_err(<span class="string">"harness should panic about a serialized field no key changes"</span>);
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">let </span>message = panic_message(panic.into_panic());
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="macro">assert!</span>(
+<a href=#382 id=382 data-nosnippet>382</a>            message.contains(<span class="string">"never changed by any registered config key"</span>),
+<a href=#383 id=383 data-nosnippet>383</a>            <span class="string">"expected full-field-coverage failure, got: {message}"
+<a href=#384 id=384 data-nosnippet>384</a>        </span>);
+<a href=#385 id=385 data-nosnippet>385</a>    }
+<a href=#386 id=386 data-nosnippet>386</a>
+<a href=#387 id=387 data-nosnippet>387</a>    <span class="attr">#[tokio::test]
+<a href=#388 id=388 data-nosnippet>388</a>    </span><span class="kw">async fn </span>passes_when_no_guarantee_is_violated() {
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="comment">// A factory that ignores every (foreign) key and serializes no fields satisfies both the
+<a href=#390 id=390 data-nosnippet>390</a>        // unsupported-key and full-field-coverage guarantees for a struct with no registered keys, so the
+<a href=#391 id=391 data-nosnippet>391</a>        // harness returns without panicking.
+<a href=#392 id=392 data-nosnippet>392</a>        </span>run_config_smoke_tests(UNREGISTERED_STRUCT, <span class="kw-2">&amp;</span>[], <span class="macro">json!</span>({}), |_cfg: GenericConfiguration| {
+<a href=#393 id=393 data-nosnippet>393</a>            <span class="macro">json!</span>({})
+<a href=#394 id=394 data-nosnippet>394</a>        })
+<a href=#395 id=395 data-nosnippet>395</a>        .<span class="kw">await</span>;
+<a href=#396 id=396 data-nosnippet>396</a>    }
+<a href=#397 id=397 data-nosnippet>397</a>}
 </code></pre></div></section></main></body></html>
