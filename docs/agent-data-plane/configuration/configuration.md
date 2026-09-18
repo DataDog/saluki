@@ -724,7 +724,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner                                   |                |
 | `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP                                   | 0              |
 | `enable_global_limiter`                                         | Global memory limiter toggle                                                | true           |
-| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists            | {}             |
+| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                                             | {}             |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)                                                |                |
 | `memory_limit`                                                  | Process memory limit                                                        |                |
 | `memory_mode`                                                   | Memory bounds validation mode                                               | disabled       |
