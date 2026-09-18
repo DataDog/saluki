@@ -14,7 +14,7 @@ pub struct Domain {
     /// Set an `http://host:port` endpoint only for integration testing. An empty value is invalid.
     /// Changing this startup-only setting requires a restart; sketches still use the HTTP intake.
     pub endpoint: Option<String>,
-    /// Independent sender workers. Defaults to `1`; zero is invalid.
+    /// Independent sender workers. Defaults to `3`; zero is invalid.
     ///
     /// High-throughput workloads may increase this at the cost of per-worker queues, dictionaries,
     /// and inflight memory. Requires a restart. Drain persisted retries with the previous count

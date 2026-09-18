@@ -241,7 +241,7 @@ pub struct SalukiOnly {
 pub struct DataPlane {
     /// Experimental plaintext gRPC metrics endpoint; unset disables stateful delivery.
     pub stateful_metrics_endpoint: Option<String>,
-    /// Independent stateful sender tasks; defaults to one and rejects zero.
+    /// Independent stateful sender tasks; defaults to three and rejects zero.
     pub stateful_metrics_workers: NonZeroUsize,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,

@@ -77,7 +77,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 pub struct StatefulMetricsConfiguration {
     /// Explicit plaintext test intake origin. There is no default endpoint.
     pub endpoint: MetaString,
-    /// Independent sender tasks. Defaults to one; changing this requires a restart.
+    /// Independent sender tasks. Defaults to three; changing this requires a restart.
     pub workers: NonZeroUsize,
     /// Live primary API key. A change clears dictionary state and resumes suspended delivery.
     pub api_key: Live<String>,

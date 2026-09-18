@@ -390,43 +390,56 @@ mod tests {
     async fn stateful_metrics_is_opt_in_and_reachable_from_file_and_environment() {
         let default = standalone_system(None, None).await.unwrap();
         assert!(default.config().domains.stateful_metrics.endpoint.is_none());
-        assert_eq!(default.config().domains.stateful_metrics.workers.get(), 1);
+        assert_eq!(default.config().domains.stateful_metrics.workers.get(), 3);
 
         let endpoint = "http://127.0.0.1:8080";
-        let from_file = standalone_system(
-            Some(json!({
-                "api_key": TEST_API_KEY,
-                "data_plane": { "stateful_metrics_endpoint": endpoint, "stateful_metrics_workers": 3 },
-            })),
+        let endpoint_only = standalone_system(
+            Some(json!({ "api_key": TEST_API_KEY, "data_plane": { "stateful_metrics_endpoint": endpoint } })),
             None,
         )
         .await
         .unwrap();
-        assert_eq!(
-            from_file.config().domains.stateful_metrics.endpoint.as_deref(),
-            Some(endpoint)
-        );
-        assert_eq!(from_file.config().domains.stateful_metrics.workers.get(), 3);
-        super::validate(&from_file.config()).unwrap();
+        assert_eq!(endpoint_only.config().domains.stateful_metrics.workers.get(), 3);
 
-        let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            None,
-            Some(&[
-                ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
-                ("DD_DATA_PLANE_STATEFUL_METRICS_WORKERS".to_string(), "4".to_string()),
-                (
-                    "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
-                    endpoint.to_string(),
-                ),
-            ]),
-            false,
-            |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
-        )
-        .await;
-        let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
-        assert_eq!(from_env.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
-        assert_eq!(from_env.domains.stateful_metrics.workers.get(), 4);
-        super::validate(&from_env).unwrap();
+        for workers in [1, 2, 3, 4, 8] {
+            let from_file = standalone_system(
+                Some(json!({
+                    "api_key": TEST_API_KEY,
+                    "data_plane": { "stateful_metrics_endpoint": endpoint, "stateful_metrics_workers": workers },
+                })),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                from_file.config().domains.stateful_metrics.endpoint.as_deref(),
+                Some(endpoint)
+            );
+            assert_eq!(from_file.config().domains.stateful_metrics.workers.get(), workers);
+            super::validate(&from_file.config()).unwrap();
+
+            let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
+                None,
+                Some(&[
+                    ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                    (
+                        "DD_DATA_PLANE_STATEFUL_METRICS_WORKERS".to_string(),
+                        workers.to_string(),
+                    ),
+                    (
+                        "DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT".to_string(),
+                        endpoint.to_string(),
+                    ),
+                ]),
+                false,
+                |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
+            )
+            .await;
+            let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
+            assert_eq!(from_env.domains.stateful_metrics.endpoint.as_deref(), Some(endpoint));
+            assert_eq!(from_env.domains.stateful_metrics.workers.get(), workers);
+            super::validate(&from_env).unwrap();
+        }
     }
 
     #[tokio::test]
