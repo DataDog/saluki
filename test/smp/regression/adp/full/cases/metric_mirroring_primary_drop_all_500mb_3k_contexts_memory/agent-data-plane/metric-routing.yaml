@@ -1,0 +1,67 @@
+histogram_aggregates: ["max", "median", "avg", "count"]
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      "http://127.0.0.1:9091":
+        - routing.absent.10000
+        - routing.absent.10000.max
+        - routing.absent.10000.median
+        - routing.absent.10000.avg
+        - routing.absent.10000.count
+        - routing.absent.10000.95percentile
+        - routing.absent.10001
+        - routing.absent.10001.max
+        - routing.absent.10001.median
+        - routing.absent.10001.avg
+        - routing.absent.10001.count
+        - routing.absent.10001.95percentile
+        - routing.absent.10002
+        - routing.absent.10002.max
+        - routing.absent.10002.median
+        - routing.absent.10002.avg
+        - routing.absent.10002.count
+        - routing.absent.10002.95percentile
+        - routing.absent.10003
+        - routing.absent.10003.max
+        - routing.absent.10003.median
+        - routing.absent.10003.avg
+        - routing.absent.10003.count
+        - routing.absent.10003.95percentile
+        - routing.absent.10004
+        - routing.absent.10004.max
+        - routing.absent.10004.median
+        - routing.absent.10004.avg
+        - routing.absent.10004.count
+        - routing.absent.10004.95percentile
+        - routing.absent.10005
+        - routing.absent.10005.max
+        - routing.absent.10005.median
+        - routing.absent.10005.avg
+        - routing.absent.10005.count
+        - routing.absent.10005.95percentile
+        - routing.absent.10006
+        - routing.absent.10006.max
+        - routing.absent.10006.median
+        - routing.absent.10006.avg
+        - routing.absent.10006.count
+        - routing.absent.10006.95percentile
+        - routing.absent.10007
+        - routing.absent.10007.max
+        - routing.absent.10007.median
+        - routing.absent.10007.avg
+        - routing.absent.10007.count
+        - routing.absent.10007.95percentile
+        - routing.absent.10008
+        - routing.absent.10008.max
+        - routing.absent.10008.median
+        - routing.absent.10008.avg
+        - routing.absent.10008.count
+        - routing.absent.10008.95percentile
+        - routing.absent.10009
+        - routing.absent.10009.max
+        - routing.absent.10009.median
+        - routing.absent.10009.avg
+        - routing.absent.10009.count
+        - routing.absent.10009.95percentile
