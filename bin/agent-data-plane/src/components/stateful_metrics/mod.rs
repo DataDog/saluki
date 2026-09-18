@@ -21,6 +21,7 @@ use foldspace_core::{
     StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
+use saluki_common::task::JoinSetExt as _;
 use saluki_components::forwarders::queue::{DeliveryQueueConfiguration, PendingTransaction, PendingTransactions};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
@@ -145,10 +146,13 @@ impl Destination for StatefulMetrics {
         let mut health = context.take_health_handle();
         let mut tasks = JoinSet::new();
         let mut inputs = Vec::with_capacity(self.workers.len());
-        for worker in self.workers {
+        for (worker_id, worker) in self.workers.into_iter().enumerate() {
             let (tx, rx) = mpsc::channel(WORKER_INPUT_CAPACITY);
             inputs.push(tx);
-            tasks.spawn(worker.run(rx, self.api_key.clone(), self.delivery_shutdown_timeout));
+            tasks.spawn_traced_named(
+                format!("stateful-metrics-worker-{worker_id}"),
+                worker.run(rx, self.api_key.clone(), self.delivery_shutdown_timeout),
+            );
         }
         health.mark_ready();
         let mut result = Ok(());
