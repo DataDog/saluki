@@ -1,0 +1,29 @@
+hostname: "correctness-testing"
+api_key: dummy-api-key-correctness-testing
+health_port: 5555
+log_level: debug
+
+process_config:
+  process_collection:
+    enabled: false
+  container_collection:
+    enabled: false
+
+dd_url: "http://datadog-intake:2049"
+
+apm_config:
+  enabled: true
+  apm_dd_url: "http://datadog-intake:2049"
+  features: ["enable_otlp_compute_top_level_by_span_kind", "probabilistic_sampler_full_trace_id"]
+  probabilistic_sampler:
+    enabled: true
+    hash_seed: 22
+    sampling_percentage: 50
+
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+  traces:
+    enable_otlp_compute_top_level_by_span_kind: true
