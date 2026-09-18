@@ -15,7 +15,8 @@ flowchart TB
         Route -->|Count, rate, gauge| Sender[stateful_metrics destination]
         Route -->|Other metric types| Encode[dd_metrics_encode]
         Encode --> Out[dd_out]
-        Sender --> High[High-priority logical batches]
+        Sender --> Shard[Stable series hash modulo worker count]
+        Shard --> High[Per-worker high-priority logical batches]
         High --> Worker[Sender worker task]
         Low[Low-priority logical retries] --> Worker
         Low <--> Disk[Retry disk storage]
@@ -32,7 +33,7 @@ flowchart TB
 ```
 
 Each sender worker task owns one core and one stream. Workers never share dictionaries or inflight
-state. This topology starts one worker; future sharding can route metrics to additional workers.
+state. The topology starts `data_plane.stateful_metrics_workers` workers (default 1).
 Ownership is per async task, without OS-thread affinity. The transport is internal to the destination,
 not a separate topology component, and never retries encoded payloads independently.
 
@@ -53,6 +54,7 @@ For local testing, add this setting to your ADP configuration:
 ```yaml
 data_plane:
   stateful_metrics_endpoint: http://127.0.0.1:8080
+  stateful_metrics_workers: 2
 ```
 
 You can also set `DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT`. The endpoint must be a plaintext HTTP
@@ -139,6 +141,64 @@ Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_bat
 `stateful_metrics_stream_failures_total`, `stateful_metrics_batches_abandoned_total`, and
 `stateful_metrics_points_dropped_total`, alongside the shared priority-queue telemetry.
 
+## Series routing and worker count
+
+`data_plane.stateful_metrics_workers` is a positive integer, defaulting to `1`. You can also set
+`DD_DATA_PLANE_STATEFUL_METRICS_WORKERS`. Zero and negative values are rejected. This setting is
+startup-only: restart ADP to change it. It has no effect when the stateful endpoint is unset.
+
+ADP converts metrics before routing, then uses Saluki's stable hash modulo the worker count.
+The identity includes the name, type, interval, canonical tags and resources (including host),
+unit, source type, origin, and indexing flag. Tag and resource ordering and duplicates do not
+change the worker. Timestamps and values are excluded. A fixed count keeps a series on the same
+worker across input buffers and restarts. The sender does not use the context's process-local hash.
+
+Each worker runs its own async task and independently owns its core, dictionaries, gRPC transport,
+priority/retry queues, reconnect and flush timers, acknowledgement deadline, and credential watcher.
+A stalled, rejected, or reconnecting stream does not suspend its peers. The dispatcher sends to
+all selected workers concurrently through bounded mailboxes of two logical batches per worker.
+A worker continues accepting input during a transport outage using the existing spill/drop policy.
+If queue processing itself stalls (for example, during slow disk I/O), bounded mailboxes eventually
+backpressure shared input. This is not a promise of isolation from shared CPU, memory, or disk exhaustion.
+
+Routing preserves input order within each worker's mailbox and each logical batch. The
+high-priority queue is FIFO. There is no global ordering across workers. High-priority overflow
+joins the low-priority queue, so newer high-priority work can overtake both retries and older
+overflow. Memory retries can also overtake disk retries. Delivery under queue pressure or recovery
+therefore does not guarantee timestamp order or exactly once delivery. A count change can remap
+every series.
+
+### Persistent layout changes
+
+Each worker uses `stateful-metrics-v1-<destination-hash>-<worker-index>` beneath
+`forwarder_storage_path`. Worker zero retains the original single-worker namespace. A separate
+manifest records the worker count; an existing layout without a manifest is treated as one worker.
+The namespace never includes credentials, so refreshing the API key preserves retries.
+
+If the requested count differs and any worker directory for that destination contains files,
+startup fails before opening the queues. The error names the previous count and directory.
+Restart with the previous count, allow retries to drain, and stop ADP cleanly before changing
+`data_plane.stateful_metrics_workers`. This applies to both increases and decreases, including
+an upgrade from the original single-worker sender. The check leaves the retry files intact;
+it does not silently strand retired workers or send old retries through a different worker.
+Once all worker directories are empty, a restart accepts the new count. Other destinations and
+HTTP retry directories are unaffected. Use a separate storage root for each ADP process.
+
+### Memory and shutdown
+
+The existing forwarder queue capacities and disk limits apply **per worker**. Increasing the count
+multiplies the aggregate high-priority capacity, retry-memory budget, disk budget, and maximum
+number of inflight payloads (8 per worker). Each worker also adds a transport, compression state,
+dictionaries, a partial batch, and a two-batch input mailbox. Series distribution and dictionary
+reuse affect actual memory; these limits do not bound total process memory or dictionary bytes.
+The configured series threshold and flush timeout apply independently to each worker.
+
+Closing destination input closes all worker mailboxes before waiting for completion. Workers drain
+accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush
+their own retry storage. Increasing the worker count does not serialize delivery timeouts. Disk
+flush time still depends on the storage system. A worker error is reported after the other workers
+finish their shutdown paths. Telemetry carries a `worker` label to distinguish worker state.
+
 ## Worker flush timing
 
 ADP owns the flush timer. The first logical batch accepted into a partial core buffer starts the
@@ -150,9 +210,9 @@ Foldspace itself reads no clock and creates no runtime task.
 
 ## Scope and validation
 
-This is an opt-in plaintext integration experiment with one destination and one worker.
+This is an opt-in plaintext integration experiment with one destination and configurable sender workers.
 `additional_endpoints` is rejected. Existing MRF and autoscaling-failover branches remain separate
-from this primary path. TLS, proxy support, sharding, and byte limits on core inflight data and
+from this primary path. TLS, proxy support, dictionary eviction, and byte limits on core inflight data and
 protocol dictionaries remain future work.
 
 Run focused tests with:
@@ -162,7 +222,8 @@ cargo nextest run -p agent-data-plane -p agent-data-plane-config-system -E 'test
 ```
 
 Tests cover routing, conversion, priority scheduling, disk spill/reload, shutdown recovery, worker
-isolation, timer flushing, inflight limits, failure policies, and local gRPC exchanges. The gRPC tests
+isolation, deterministic series routing, worker-count changes with persisted retries, credential
+refresh across workers, timer flushing, inflight limits, failure policies, and local gRPC exchanges. The gRPC tests
 verify compression, acknowledgements, dictionary reuse, and re-encoding after reconnect. For decoded-output
 validation, run the separate intake process and inspect its JSONL journal.
 
