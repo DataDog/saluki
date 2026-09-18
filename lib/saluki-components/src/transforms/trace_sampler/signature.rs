@@ -22,9 +22,13 @@ fn write_hash(mut hash: u32, bytes: &[u8]) -> u32 {
     hash
 }
 
-pub(super) fn fnv1a_32(seed: &[u8], bytes: &[u8]) -> u32 {
-    let hash = write_hash(OFFSET_32, seed);
-    write_hash(hash, bytes)
+pub(super) fn fnv1a_32_start(seed: &[u8]) -> u32 {
+    write_hash(OFFSET_32, seed)
+}
+
+/// Continues an FNV-1a-32 hash from a precomputed state.
+pub(super) fn fnv1a_32_continue(state: u32, bytes: &[u8]) -> u32 {
+    write_hash(state, bytes)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
