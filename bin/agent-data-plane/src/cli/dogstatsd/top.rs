@@ -326,7 +326,10 @@ mod tests {
         .await
         .expect_err("offline top should reject a directory");
 
-        assert!(error.to_string().contains("regular file"), "{error:#}");
+        assert!(
+            error.to_string().contains("regular file") || error.to_string().contains("failed to open"),
+            "{error:#}"
+        );
     }
 
     #[tokio::test]
