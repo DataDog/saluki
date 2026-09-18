@@ -1,6 +1,6 @@
 //! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::defaults::{
     DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
@@ -62,6 +62,15 @@ pub struct Domain {
     /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
     /// Change this only if legitimate resources exceed the default.
     pub max_resource_len: usize,
+
+    /// Regex-based trace tag replacement rules, used to scrub sensitive values the built-in
+    /// obfuscation passes through. Defaults to no rules.
+    ///
+    /// Rules run in order after obfuscation and before stats and sampling. A `"*"` rule rewrites
+    /// every non-`_`-prefixed tag, the resource, and span events; `"resource.name"` only the
+    /// resource; any other name only that tag. Matched values are stored as strings, and a
+    /// pattern that fails to compile prevents startup.
+    pub replace_tags: Vec<ReplaceRule>,
 }
 
 impl Default for Domain {
@@ -81,12 +90,26 @@ impl Default for Domain {
             // Saluki-only fields own their absent-key behavior here.
             default_env: DEFAULT_TRACE_ENV.to_owned(),
             max_resource_len: DEFAULT_MAX_RESOURCE_LEN,
+            replace_tags: Vec::new(),
             error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
             rare_sampler: RareSampler::default(),
             ottl_filter: OttlFilter::default(),
             ottl_transform: OttlTransform::default(),
         }
     }
+}
+
+/// A regex-based trace tag replacement rule.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct ReplaceRule {
+    /// Tag key the rule targets: `"*"`, `"resource.name"`, or a literal tag key.
+    pub name: String,
+
+    /// Regular expression matched against each targeted value.
+    pub pattern: String,
+
+    /// Text spliced in place of each match; `$1`-style group references are supported.
+    pub repl: String,
 }
 
 /// Rare-span sampler.

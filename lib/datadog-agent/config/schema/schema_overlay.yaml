@@ -439,6 +439,16 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  apm_config.replace_tags:
+    support: full
+    pipelines: [traces]
+    description: "Regex-based trace tag replacement rules"
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: '[{"name": "*", "pattern": "token=[A-Za-z0-9]+", "repl": "token=?"}]'
+      additional_attributes:
+        config_registry_filename: trace_tag_replacer.rs
+
   apm_config.target_traces_per_second:
     support: full
     pipelines: [traces]
@@ -3998,7 +4008,6 @@ excluded:
   apm_config.receiver_port: "ignored in initial audit 2026-04-23"
   apm_config.receiver_socket: "ignored in initial audit 2026-04-23"
   apm_config.receiver_timeout: "ignored in initial audit 2026-04-23"
-  apm_config.replace_tags: "ignored in initial audit 2026-04-23"
   apm_config.send_all_internal_stats: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.handle_tcp_probe: "ignored in initial audit 2026-04-23"
