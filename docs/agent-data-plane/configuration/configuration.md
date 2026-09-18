@@ -825,6 +825,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
 | `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
 | `apm_config.errors_per_second`                                                             | APM error-span sampling rate (per sec)             |
+| `apm_config.extra_sample_rate`                                                             | Extra sample rate multiplier                       |
+| `apm_config.max_catalog_entries`                                                           | Priority sampler service-signature catalog cap     |
+| `apm_config.max_traces_per_second`                                                         | Deprecated alias for target_traces_per_second      |
 | `apm_config.obfuscation.credit_cards.enabled`                                              | apm_config.obfuscation.credit_cards.enabled        |
 | `apm_config.obfuscation.credit_cards.keep_values`                                          | apm_config.obfuscation.credit_cards.keep_values    |
 | `apm_config.obfuscation.credit_cards.luhn`                                                 | apm_config.obfuscation.credit_cards.luhn           |

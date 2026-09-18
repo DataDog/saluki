@@ -39,6 +39,18 @@ pub struct Domain {
     /// Target number of traces sampled per second.
     pub target_traces_per_second: f64,
 
+    /// Multiplier applied to every learned keep-rate of the adaptive samplers.
+    ///
+    /// Defaults to 1.0, leaving the computed rates unchanged. A value of `0` keeps nothing from
+    /// the adaptive samplers, and values above 1.0 keep proportionally more.
+    pub extra_sample_rate: f64,
+
+    /// Maximum number of service signatures the priority sampler tracks rates for.
+    ///
+    /// Defaults to 5000. If set to `0`, the default of 5000 applies. Distinct services beyond the
+    /// cap evict the least recently used entries and lose their learned rates.
+    pub max_catalog_entries: usize,
+
     /// Beta APM feature flags enabled for traces.
     ///
     /// Recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
@@ -94,6 +106,8 @@ impl Default for Domain {
             error_tracking_standalone_enabled: false,
             errors_per_second: 0.0,
             target_traces_per_second: 0.0,
+            extra_sample_rate: 1.0,
+            max_catalog_entries: 0,
             features: Vec::new(),
             enable_rare_sampler: false,
             probabilistic_sampler: ProbabilisticSampler::default(),

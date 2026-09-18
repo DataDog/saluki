@@ -38,11 +38,6 @@ pub(super) struct ServiceKeyCatalog {
 }
 
 impl ServiceKeyCatalog {
-    /// Creates a new ServiceKeyCatalog with the default maximum entries.
-    pub fn new() -> Self {
-        Self::with_max_entries(MAX_CATALOG_ENTRIES)
-    }
-
     /// Creates a new ServiceKeyCatalog with a custom maximum entries limit.
     ///
     /// If `max_entries` is 0, uses the default of 5000.
