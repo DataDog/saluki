@@ -1,13 +1,14 @@
 use std::{mem::replace, pin::Pin, sync::Arc};
 
-use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
+use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue, SalukiConfiguration};
+use arc_swap::ArcSwap;
 use foldspace_core::{
     proto::stateful::{
         metric_datum,
         stateful_intake_server::{StatefulIntake, StatefulIntakeServer},
         BatchStatus, MetricDatumSequence, StatefulBatch, StatelessRequest, StatelessResponse,
     },
-    MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType,
+    LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType, MetricTagSet,
 };
 use futures::Stream;
 use prost::Message as _;
@@ -18,7 +19,10 @@ use saluki_core::{
         transforms::{TransformBuilder, TransformContext},
         ComponentContext,
     },
-    data_model::event::metric::{Metric, MetricMetadata, MetricOrigin, MetricValues},
+    data_model::event::{
+        metric::{Metric, MetricMetadata, MetricOrigin, MetricValues},
+        Event,
+    },
     health::HealthRegistry,
     runtime::state::{DataspaceRegistry, ResourceRegistry},
     support::SubsystemIdentifier,
@@ -32,7 +36,7 @@ use tempfile::TempDir;
 use tokio::{
     net::TcpListener,
     runtime::Handle,
-    sync::{mpsc, Mutex},
+    sync::{mpsc, watch, Mutex},
     task::JoinHandle,
     time::{advance, timeout},
 };
@@ -704,6 +708,7 @@ async fn start_destination(
 ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
     let configuration = StatefulMetricsConfiguration {
         endpoint,
+        workers: NonZeroUsize::new(1).unwrap(),
         api_key: Live::new_fixed("test-key".to_string()),
         compression_level: 3,
         flush_timeout,
@@ -711,6 +716,12 @@ async fn start_destination(
         queue: DeliveryQueueConfiguration::from_configuration(settings),
         stop_timeout: TEST_TIMEOUT,
     };
+    start_configured_destination(configuration).await
+}
+
+async fn start_configured_destination(
+    configuration: StatefulMetricsConfiguration,
+) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
     let component = ComponentContext::test_destination("stateful_metrics");
     let destination = configuration
         .build(BuildContext::new(component.clone(), ResourceRegistry::new()))
@@ -929,4 +940,382 @@ async fn destination_shutdown_timeout_persists_missing_ack() {
     };
     assert_eq!(batch.0.series()[0].name(), "unacknowledged");
     assert!(queue.is_empty());
+}
+
+impl StatefulMetricsWorker {
+    async fn accept(&mut self, events: impl IntoIterator<Item = Event>) {
+        self.enqueue(sharding::partition(events, 1).pop().unwrap()).await;
+    }
+}
+
+#[test]
+fn sharding_routes_series_independently_of_points_and_tag_order() {
+    let first = Metric::from_parts(
+        Context::from_parts(
+            "requests",
+            ["z:1", "a:2"].into_iter().map(Into::into).collect::<TagSet>(),
+        ),
+        MetricValues::gauge([(123, 2.0)]),
+        MetricMetadata::default(),
+    );
+    let second = Metric::from_parts(
+        Context::from_parts(
+            "requests",
+            ["a:2", "z:1", "a:2"].into_iter().map(Into::into).collect::<TagSet>(),
+        ),
+        MetricValues::gauge([(456, 3.0)]),
+        MetricMetadata::default(),
+    );
+    let first_hash = sharding::series_hash(&conversion::convert(&first).unwrap());
+    assert_eq!(
+        first_hash,
+        sharding::series_hash(&conversion::convert(&second).unwrap())
+    );
+    for count in [1, 2, 3, 8, 17] {
+        let shards = sharding::partition([Event::Metric(first.clone()), Event::Metric(second.clone())], count);
+        let shard = &shards[(first_hash % count as u64) as usize];
+        assert_eq!(shard.series().len(), 2);
+        assert_eq!(shard.series()[0].points()[0].timestamp, 123);
+        assert_eq!(shard.series()[1].points()[0].timestamp, 456);
+        assert_eq!(shards.iter().map(LogicalMetricBatch::point_count).sum::<usize>(), 2);
+    }
+}
+
+#[test]
+fn sharding_identity_includes_metadata_and_canonical_resources() {
+    let base = LogicalMetricSeries::new("requests", MetricSeriesType::Gauge, vec![MetricPoint::new(1, 2.0)]);
+    let hash = sharding::series_hash(&base);
+    for series in [
+        LogicalMetricSeries::new("other", MetricSeriesType::Gauge, vec![MetricPoint::new(1, 2.0)]),
+        LogicalMetricSeries::new("requests", MetricSeriesType::Count, vec![MetricPoint::new(1, 2.0)]),
+        base.clone().with_interval(10),
+        base.clone().with_unit("request"),
+        base.clone().with_source_type_name(Some("integration".to_owned())),
+        base.clone().with_origin(FoldspaceOrigin::new(1, 2, 3)),
+        base.clone().with_no_index(true),
+        base.clone()
+            .with_tags(MetricTagSet::standalone(vec!["env:test".to_owned()])),
+        base.clone().with_resources(vec![MetricResource::new("host", "a")]),
+    ] {
+        assert_ne!(hash, sharding::series_hash(&series));
+    }
+    let one = base.clone().with_resources(vec![
+        MetricResource::new("host", "a"),
+        MetricResource::new("device", "b"),
+    ]);
+    let two = base.with_resources(vec![
+        MetricResource::new("device", "b"),
+        MetricResource::new("host", "a"),
+    ]);
+    assert_eq!(sharding::series_hash(&one), sharding::series_hash(&two));
+}
+
+#[tokio::test]
+async fn sharding_storage_rejects_count_changes_without_consuming_retries() {
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let config = DeliveryQueueConfiguration::from_configuration(&settings);
+    let endpoint = "http://127.0.0.1:8080";
+    let one = NonZeroUsize::new(1).unwrap();
+    let three = NonZeroUsize::new(3).unwrap();
+    // A legacy queue has no count manifest and belongs to worker zero.
+    let mut legacy = build_queue(&config, endpoint, 0, &MetricsBuilder::default())
+        .await
+        .unwrap();
+    assert!(!legacy.push_low_priority(logical("legacy")).await.unwrap().had_drops());
+    assert!(!legacy.flush().await.unwrap().had_drops());
+    assert!(prepare_storage(&config, endpoint, three).await.is_err());
+    prepare_storage(&config, endpoint, one).await.unwrap();
+    let mut legacy = build_queue(&config, endpoint, 0, &MetricsBuilder::default())
+        .await
+        .unwrap();
+    assert!(legacy.pop().await.is_some());
+    assert!(legacy.is_empty());
+    drop(legacy);
+    prepare_storage(&config, endpoint, three).await.unwrap();
+    for id in 0..3 {
+        let (mut worker, _wire, _) = open_worker().await;
+        worker.queue = build_queue(&config, endpoint, id, &MetricsBuilder::default())
+            .await
+            .unwrap();
+        submit(&mut worker, "inflight").await;
+        buffer(&mut worker, "partial").await;
+        worker
+            .accept([Event::Metric(Metric::gauge("queued", (123, 1.0)))])
+            .await;
+        worker.shutdown().await.unwrap();
+    }
+    for count in [1, 2, 4] {
+        let error = prepare_storage(&config, endpoint, NonZeroUsize::new(count).unwrap())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Restart with 3 workers"));
+    }
+    prepare_storage(&config, endpoint, three).await.unwrap();
+    for id in 0..3 {
+        let mut worker = worker().await;
+        worker.queue = build_queue(&config, endpoint, id, &MetricsBuilder::default())
+            .await
+            .unwrap();
+        let mut names = queued_names(&mut worker).await;
+        names.sort();
+        assert_eq!(names, ["inflight", "partial", "queued"]);
+    }
+    prepare_storage(&config, endpoint, one).await.unwrap();
+    // Other destinations have independent layouts.
+    prepare_storage(&config, "http://127.0.0.1:8081", three).await.unwrap();
+}
+
+struct TestSession {
+    key: String,
+    received: mpsc::Receiver<StatefulBatch>,
+    replies: mpsc::Sender<Result<BatchStatus, Status>>,
+}
+
+impl TestSession {
+    async fn receive(&mut self) -> StatefulBatch {
+        timeout(TEST_TIMEOUT, self.received.recv()).await.unwrap().unwrap()
+    }
+
+    async fn acknowledge(&self, batch: &StatefulBatch) {
+        self.replies
+            .send(Ok(BatchStatus {
+                batch_id: batch.batch_id,
+                status: 1,
+            }))
+            .await
+            .unwrap();
+    }
+}
+
+#[derive(Clone)]
+struct ShardedIntake {
+    sessions: mpsc::Sender<TestSession>,
+}
+
+#[tonic::async_trait]
+impl StatefulIntake for ShardedIntake {
+    type StatefulStreamStream = Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send>>;
+
+    async fn stateful_stream(
+        &self, request: Request<Streaming<StatefulBatch>>,
+    ) -> Result<Response<Self::StatefulStreamStream>, Status> {
+        let key = request
+            .metadata()
+            .get("dd-api-key")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (received, received_rx) = mpsc::channel(32);
+        let (replies_tx, mut replies) = mpsc::channel(32);
+        self.sessions
+            .send(TestSession {
+                key,
+                received: received_rx,
+                replies: replies_tx,
+            })
+            .await
+            .unwrap();
+        let mut inbound = request.into_inner();
+        let stream = async_stream::try_stream! {
+            while let Some(batch) = inbound.message().await? {
+                received.send(batch).await.map_err(|_| Status::cancelled("test finished"))?;
+                yield replies.recv().await.ok_or_else(|| Status::cancelled("test finished"))??;
+            }
+        };
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn stateless(&self, _: Request<StatelessRequest>) -> Result<Response<StatelessResponse>, Status> {
+        Err(Status::unimplemented("stateless"))
+    }
+}
+
+struct ShardedHarness {
+    endpoint: MetaString,
+    sessions: mpsc::Receiver<TestSession>,
+    server: JoinHandle<()>,
+}
+
+impl ShardedHarness {
+    async fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap()).into();
+        let (sessions, sessions_rx) = mpsc::channel(32);
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(StatefulIntakeServer::new(ShardedIntake { sessions }))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        Self {
+            endpoint,
+            sessions: sessions_rx,
+            server,
+        }
+    }
+
+    async fn session(&mut self) -> TestSession {
+        timeout(TEST_TIMEOUT, self.sessions.recv()).await.unwrap().unwrap()
+    }
+
+    async fn start(
+        &self, settings: &SharedConfiguration, key: Live<String>,
+    ) -> (mpsc::Sender<EventsBuffer>, JoinHandle<Result<(), GenericError>>) {
+        start_configured_destination(StatefulMetricsConfiguration {
+            endpoint: self.endpoint.clone(),
+            workers: NonZeroUsize::new(2).unwrap(),
+            api_key: key,
+            compression_level: 3,
+            flush_timeout: Duration::from_millis(10),
+            batch_capacity: 512,
+            queue: DeliveryQueueConfiguration::from_configuration(settings),
+            stop_timeout: Duration::from_millis(200),
+        })
+        .await
+    }
+}
+
+impl Drop for ShardedHarness {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+async fn send_both_shards(input: &mpsc::Sender<EventsBuffer>, timestamp: u64) {
+    let mut events = EventsBuffer::default();
+    for id in 0..2 {
+        let metric = (0..100)
+            .map(|n| {
+                Metric::gauge(
+                    Context::from_parts(format!("sharded.{n}"), TagSet::default()),
+                    (timestamp, 1.0),
+                )
+            })
+            .find(|m| sharding::series_hash(&conversion::convert(m).unwrap()) % 2 == id)
+            .unwrap();
+        assert!(events.try_push(Event::Metric(metric)).is_none());
+    }
+    input.send(events).await.unwrap();
+}
+
+#[tokio::test]
+async fn sharding_tasks_isolate_stream_failure_and_refresh_all_credentials() {
+    let mut harness = ShardedHarness::new().await;
+    let mut config = SalukiConfiguration::default();
+    config.shared.endpoints.api_key = "test-key".to_owned();
+    let cell = Arc::new(ArcSwap::from_pointee(config));
+    let (tick, rx) = watch::channel(());
+    let key = Live::new_dynamic(cell.clone(), rx, |c| &c.shared.endpoints.api_key);
+    let (input, task) = harness.start(&shared(), key).await;
+    let mut failed = harness.session().await;
+    let mut healthy = harness.session().await;
+    assert_eq!(failed.key, "test-key");
+    assert_eq!(healthy.key, "test-key");
+    send_both_shards(&input, 123).await;
+    let bad = failed.receive().await;
+    let good = healthy.receive().await;
+    assert_eq!(bad.batch_id, 1);
+    assert_eq!(good.batch_id, 1);
+    assert!(has_name(&sequence(&bad)) && has_name(&sequence(&good)));
+    failed
+        .replies
+        .send(Err(Status::unauthenticated("rotate key")))
+        .await
+        .unwrap();
+    healthy.acknowledge(&good).await;
+    send_both_shards(&input, 124).await;
+    let next = healthy.receive().await;
+    assert_eq!(next.batch_id, 2);
+    assert!(!has_name(&sequence(&next)));
+    healthy.acknowledge(&next).await;
+
+    let mut updated = (**cell.load()).clone();
+    updated.shared.endpoints.api_key = " ".to_owned();
+    cell.store(Arc::new(updated));
+    tick.send(()).unwrap();
+    send_both_shards(&input, 125).await;
+    let next = healthy.receive().await;
+    assert_eq!(next.batch_id, 3);
+    healthy.acknowledge(&next).await;
+
+    let mut updated = (**cell.load()).clone();
+    updated.shared.endpoints.api_key = "new-key".to_owned();
+    cell.store(Arc::new(updated));
+    tick.send(()).unwrap();
+    let mut first = harness.session().await;
+    let mut second = harness.session().await;
+    assert_eq!(first.key, "new-key");
+    assert_eq!(second.key, "new-key");
+    send_both_shards(&input, 126).await;
+    let one = first.receive().await;
+    let two = second.receive().await;
+    assert_eq!(one.batch_id, 1);
+    assert_eq!(two.batch_id, 1);
+    assert!(has_name(&sequence(&one)) && has_name(&sequence(&two)));
+    first.acknowledge(&one).await;
+    second.acknowledge(&two).await;
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn sharding_destination_shutdown_and_restart_preserve_each_streams_retries() {
+    let mut harness = ShardedHarness::new().await;
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    let mut first = harness.session().await;
+    let mut second = harness.session().await;
+    send_both_shards(&input, 123).await;
+    let original_one = sequence(&first.receive().await);
+    let original_two = sequence(&second.receive().await);
+    drop(input);
+    // Neither stream acknowledges; both must exhaust their delivery budget and persist.
+    timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
+    let (input, task) = harness.start(&settings, Live::new_fixed("test-key".to_owned())).await;
+    let mut first = harness.session().await;
+    let mut second = harness.session().await;
+    let one = first.receive().await;
+    let two = second.receive().await;
+    let replay_one = sequence(&one);
+    let replay_two = sequence(&two);
+    assert!(
+        (replay_one == original_one && replay_two == original_two)
+            || (replay_two == original_one && replay_one == original_two)
+    );
+    first.acknowledge(&one).await;
+    second.acknowledge(&two).await;
+    drop(input);
+    timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
+    prepare_storage(
+        &DeliveryQueueConfiguration::from_configuration(&settings),
+        &harness.endpoint,
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn sharding_stalled_acknowledgements_do_not_fill_healthy_workers_window() {
+    let mut harness = ShardedHarness::new().await;
+    let (input, task) = harness.start(&shared(), Live::new_fixed("test-key".to_owned())).await;
+    let mut stalled = harness.session().await;
+    let mut healthy = harness.session().await;
+    send_both_shards(&input, 123).await;
+    let _unacknowledged = stalled.receive().await;
+    let first = healthy.receive().await;
+    healthy.acknowledge(&first).await;
+    // Fill the stalled core's entire inflight window and keep accepting input on both shards.
+    for offset in 1..=MAX_INFLIGHT_BATCHES + WORKER_INPUT_CAPACITY + 1 {
+        send_both_shards(&input, 123 + offset as u64).await;
+        let batch = healthy.receive().await;
+        assert_eq!(batch.batch_id, 1 + offset as u32);
+        healthy.acknowledge(&batch).await;
+    }
+    drop(input);
+    timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
 }

@@ -482,6 +482,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
                 "stateful_metrics",
                 StatefulMetricsConfiguration {
                     endpoint: endpoint.clone().into(),
+                    workers: config.domains.stateful_metrics.workers,
                     api_key: config_system.live(|config| &config.shared.endpoints.api_key),
                     compression_level: shared.endpoints.compression.effective_zstd_level(),
                     flush_timeout: shared.metrics_encoding.flush_timeout,

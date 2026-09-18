@@ -10,6 +10,9 @@ use std::{
     time::Duration,
 };
 
+/// Default number of independent stateful metrics sender workers.
+pub const DEFAULT_STATEFUL_METRICS_WORKERS: NonZeroUsize = NonZeroUsize::new(1).unwrap();
+
 /// Default internal telemetry verbosity.
 pub const DEFAULT_METRICS_LEVEL: &str = "info";
 
