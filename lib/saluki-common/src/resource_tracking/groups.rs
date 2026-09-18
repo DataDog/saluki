@@ -335,23 +335,16 @@ mod tests {
         future::Future,
         pin::Pin,
         rc::Rc,
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll, Waker},
     };
 
     use super::{ResourceGroupRegistry, ResourceGroupToken, Track};
 
-    struct NoopWaker;
-
-    impl Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-    }
-
     /// Polls a future to completion on the current thread using a no-op `waker`.
     fn poll_to_completion<F: Future>(future: F) -> F::Output {
         let mut future = Box::pin(future);
-        let waker = Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
         loop {
             if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
                 return output;

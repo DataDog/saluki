@@ -31,6 +31,8 @@ allow = [
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  # MIT No Attribution: OSI approved, and MIT without the attribution clause.
+  "MIT-0",
   "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
@@ -52,4 +54,12 @@ allow-git = [
   # Pinned to a specific revision so we can select our workspace's `rand` version, ahead of a crates.io release that
   # supports it.
   "https://github.com/antithesishq/antithesis-sdk-rust",
+
+  # Datadog-maintained trace obfuscation crate (`libdd-trace-obfuscation`), shared with Datadog's other trace
+  # obfuscation implementations. The version we need is not on crates.io yet, so it is consumed from GitHub and pinned
+  # to a specific revision in Cargo.toml.
+  "https://github.com/DataDog/libdatadog.git",
+
+  # Unmerged fix for byteorder's AIX alignment assertion; see the `[patch.crates-io]` entry in Cargo.toml for details.
+  "https://github.com/amy-kwan/byteorder",
 ]
