@@ -5,23 +5,24 @@ baseline:
   image: saluki-images/datadog-agent:testing-release
   files:
     - datadog-base.yaml:/etc/datadog-agent/datadog.yaml
-  additional_env_vars:
-    - DD_API_KEY=correctness-test
+  env:
+    DD_API_KEY: correctness-test
 comparison:
   image: saluki-images/datadog-agent:testing-release
   files:
     - datadog-base.yaml:/etc/datadog-agent/datadog.yaml
-  additional_env_vars:
-    - DD_API_KEY=correctness-test
-    - DD_DATA_PLANE_ENABLED=true
-    - DD_DATA_PLANE_DOGSTATSD_ENABLED=true
-    - DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
-    - DD_DATA_PLANE_STANDALONE_MODE=false
+  env:
+    DD_API_KEY: correctness-test
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
 
 # Each variant expands into an independent correctness test. All variants share the same base
 # agent config (datadog-base.yaml) and millstone corpus; only the origin detection settings differ.
 #
-# The variant's additional_env_vars are appended to both the baseline and comparison targets.
+# The variant's env is overlaid on both the baseline and comparison targets; a variable named in
+# both places takes the variant's value.
 # Because the Datadog Agent (and ADP) map DD_<UPPERCASE_KEY> env vars directly to config keys,
 # these override the corresponding fields from datadog-base.yaml.
 variants:
@@ -29,8 +30,8 @@ variants:
   # fields are parsed; entity_id_precedence is off, so both process ID tags and client-provided
   # pod UID tags are collected when present.
   - name: legacy
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
 
   # NOTE: dogstatsd_entity_id_precedence is not tested here. It only has an effect when a metric
   # carries a dd.internal.entity_id tag (the client-provided pod UID), which millstone's
@@ -42,40 +43,40 @@ variants:
   # dd.internal.entity_id) are evaluated in priority order. The first source that resolves to a
   # non-empty tag set wins; tags from multiple sources are never merged.
   - name: unified
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_ORIGIN_DETECTION_UNIFIED=true
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_ORIGIN_DETECTION_UNIFIED: "true"
 
   # Legacy origin detection with client origin fields enabled. The |c: (container ID), |e:
   # (external data), and |card: (cardinality override) DogStatsD protocol extensions are parsed
   # and used alongside UDS PID-based origin detection.
   - name: legacy-with-client-fields
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT=true
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT: "true"
 
   # Unified origin detection with client origin fields enabled. Combines the unified priority
   # waterfall with parsing of the full set of client-provided protocol extension fields.
   - name: unified-with-client-fields
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_ORIGIN_DETECTION_UNIFIED=true
-      - DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT=true
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_ORIGIN_DETECTION_UNIFIED: "true"
+      DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT: "true"
 
   # Legacy origin detection with high tag cardinality. Verifies that the cardinality setting is
   # respected in the legacy code path.
   - name: legacy-high-cardinality
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_DOGSTATSD_TAG_CARDINALITY=high
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_DOGSTATSD_TAG_CARDINALITY: high
 
   # Unified origin detection with high tag cardinality. Verifies that the cardinality setting is
   # respected end-to-end and that both agents return the same set of high-cardinality tags.
   - name: unified-high-cardinality
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_ORIGIN_DETECTION_UNIFIED=true
-      - DD_DOGSTATSD_TAG_CARDINALITY=high
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_ORIGIN_DETECTION_UNIFIED: "true"
+      DD_DOGSTATSD_TAG_CARDINALITY: high
 
   # Legacy origin detection with the cardinality opt-out disabled. By default
   # (dogstatsd_origin_optout_enabled=true), metrics that explicitly request cardinality=none via
@@ -83,6 +84,6 @@ variants:
   # disabled those metrics are enriched at the configured default cardinality instead. This variant
   # verifies both agents agree on that boundary.
   - name: legacy-optout-disabled
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED=false
+    env:
+      DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+      DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED: "false"

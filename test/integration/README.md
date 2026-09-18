@@ -105,6 +105,15 @@ timeout: 60s
 intake:
   enabled: false
 
+# Optional: environment variables for the target process(es), as a mapping of
+# variable name to value. Quote values that would otherwise parse as a boolean
+# or a number. This block is top-level, not under `container`, because every
+# runtime applies it the same way.
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+
 # Optional: container configuration
 #
 # The container image is selected by the active runtime, not the test case:
@@ -117,12 +126,6 @@ container:
 
   # Optional: override command
   command: []
-
-  # Environment variables
-  env:
-    DD_API_KEY: "00000000000000000000000000000000"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "true"
 
   # Files to mount (host_path:container_path)
   # Paths are relative to the test case directory

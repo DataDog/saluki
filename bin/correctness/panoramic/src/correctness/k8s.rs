@@ -449,7 +449,7 @@ async fn prepare_agent_group(
             .binary_path
             .unwrap_or_else(|| "/usr/local/bin/datadog-intake".to_string()),
         target_image: &target_config.image,
-        target_env_strs: &target_config.additional_env_vars,
+        target_env: &target_config.env,
         agent_extra_volumes: agent_volumes,
         agent_extra_mounts: agent_volume_mounts,
         socket_dir,
@@ -598,7 +598,7 @@ struct AgentPodConfig<'a> {
     intake_image: &'a str,
     intake_binary: &'a str,
     target_image: &'a str,
-    target_env_strs: &'a [String],
+    target_env: &'a BTreeMap<String, String>,
     agent_extra_volumes: Vec<Volume>,
     agent_extra_mounts: Vec<VolumeMount>,
     /// HostPath directory on the kind node where the agent creates its DSD socket.
@@ -616,7 +616,7 @@ fn build_agent_pod(cfg: AgentPodConfig<'_>) -> Pod {
         intake_image,
         intake_binary,
         target_image,
-        target_env_strs,
+        target_env,
         agent_extra_volumes,
         agent_extra_mounts,
         socket_dir,
@@ -666,18 +666,12 @@ fn build_agent_pod(cfg: AgentPodConfig<'_>) -> Pod {
     ];
     volumes.extend(agent_extra_volumes);
 
-    let target_env: Vec<EnvVar> = target_env_strs
+    let target_env: Vec<EnvVar> = target_env
         .iter()
-        .filter_map(|s| match s.split_once('=') {
-            Some((k, v)) => Some(EnvVar {
-                name: k.to_string(),
-                value: Some(v.to_string()),
-                ..Default::default()
-            }),
-            None => {
-                warn!("Ignoring malformed env var (no '=' found): {:?}", s);
-                None
-            }
+        .map(|(name, value)| EnvVar {
+            name: name.clone(),
+            value: Some(value.clone()),
+            ..Default::default()
         })
         .collect();
 
@@ -1334,4 +1328,45 @@ async fn exec_write_file(
 
 fn generate_isolation_id() -> String {
     Alphanumeric.sample_string(&mut rng(), 8).to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_pod_target_env_mirrors_the_target_environment_map() {
+        let mut env = BTreeMap::new();
+        env.insert("DD_API_KEY".to_string(), "correctness-test".to_string());
+        // A value containing '=' has no special meaning to the pod spec, unlike the encoded
+        // assignment strings this used to be built from.
+        env.insert("DD_TAGS".to_string(), "a=1,b=2".to_string());
+
+        let pod = build_agent_pod(AgentPodConfig {
+            namespace: "correctness-test",
+            intake_image: "saluki-images/correctness-tools:latest",
+            intake_binary: "/usr/local/bin/datadog-intake",
+            target_image: "saluki-images/datadog-agent:testing-release",
+            target_env: &env,
+            agent_extra_volumes: Vec::new(),
+            agent_extra_mounts: Vec::new(),
+            socket_dir: "/tmp/airlock",
+        });
+
+        let containers = pod.spec.expect("pod should have a spec").containers;
+        let target = containers
+            .iter()
+            .find(|c| c.name == "target")
+            .expect("pod should have a target container");
+        let target_env = target.env.as_ref().expect("target should have environment variables");
+
+        let actual: Vec<(&str, Option<&str>)> = target_env
+            .iter()
+            .map(|var| (var.name.as_str(), var.value.as_deref()))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![("DD_API_KEY", Some("correctness-test")), ("DD_TAGS", Some("a=1,b=2")),]
+        );
+    }
 }
