@@ -224,6 +224,23 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  apm_config.features:
+    support: partial
+    pipelines: [traces]
+    description: "Beta APM feature flags"
+    documentation: |-
+      The core Agent uses `apm_config.features` to toggle beta APM behaviors.
+
+      ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
+      probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
+      128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
+      other value is ignored, without a warning: the flag inventory is not stable across agent
+      versions, so unrecognized entries are inert rather than errors. Operators running multiple
+      probabilistic samplers in one ingestion path should enable the flag consistently on every
+      sampler that supports it.
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.obfuscation.credit_cards.enabled:
     support: full
     pipelines: [traces]
@@ -429,6 +446,13 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Enable APM probabilistic sampler"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.probabilistic_sampler.hash_seed:
+    support: full
+    pipelines: [traces]
+    description: "Probabilistic sampler hash seed"
     test_support:
       used_by: [NO_SMOKE]
 
@@ -3957,7 +3981,6 @@ excluded:
   apm_config.enabled: "ignored in initial audit 2026-04-23"
   apm_config.env: "ignored in initial audit 2026-04-23"
   apm_config.extra_sample_rate: "ignored in initial audit 2026-04-23"
-  apm_config.features: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
@@ -3998,7 +4021,6 @@ excluded:
   apm_config.obfuscation.sql_exec_plan_normalize.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
   apm_config.peer_service_aggregation: "ignored in initial audit 2026-04-23"
-  apm_config.probabilistic_sampler.hash_seed: "ignored in initial audit 2026-04-23"
   apm_config.profiling_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.profiling_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.profiling_max_request_bytes: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."

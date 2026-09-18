@@ -298,6 +298,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.errors_per_second = value;
     }
 
+    fn consume_apm_config_features(&mut self, value: Vec<String>) {
+        self.config.domains.traces.features = value;
+    }
+
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.credit_cards.enabled = value;
     }
@@ -393,6 +397,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool) {
         self.config.domains.traces.probabilistic_sampler.enabled = value;
+    }
+
+    fn consume_apm_config_probabilistic_sampler_hash_seed(&mut self, value: i64) {
+        match u32::try_from(value) {
+            Ok(hash_seed) => self.config.domains.traces.probabilistic_sampler.hash_seed = hash_seed,
+            Err(error) => self.record_error(TranslateError::new("apm_config.probabilistic_sampler.hash_seed", error)),
+        }
     }
 
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
@@ -1649,6 +1660,45 @@ mod tests {
         assert_eq!(traces.replace_tags[0].name, "http.url");
         assert_eq!(traces.replace_tags[0].pattern, "p");
         assert_eq!(traces.replace_tags[0].repl, "");
+    }
+
+    #[test]
+    fn apm_config_features_and_probabilistic_hash_seed_translate() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "features": ["probabilistic_sampler_full_trace_id", "unrelated_feature"],
+                "probabilistic_sampler": { "hash_seed": 22 }
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.probabilistic_sampler.hash_seed, 22);
+        assert_eq!(
+            traces.features,
+            ["probabilistic_sampler_full_trace_id", "unrelated_feature"]
+        );
+
+        // Unset, both arrive at their schema defaults.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.probabilistic_sampler.hash_seed, 0);
+        assert!(config.domains.traces.features.is_empty());
+    }
+
+    #[test]
+    fn out_of_range_probabilistic_hash_seed_records_translation_error() {
+        // The sampler hashes the seed as four bytes, so values outside u32 are configuration
+        // failures rather than clamps.
+        for value in [-1, u32::MAX as i64 + 1] {
+            let (_, errors) = translate_explicit(json!({
+                "apm_config": { "probabilistic_sampler": { "hash_seed": value } }
+            }));
+            let errors = errors.unwrap_or_else(|| panic!("{value} should record a translation error"));
+            assert!(errors
+                .to_string()
+                .contains("apm_config.probabilistic_sampler.hash_seed"));
+        }
     }
 
     #[test]

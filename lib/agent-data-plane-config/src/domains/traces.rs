@@ -39,6 +39,16 @@ pub struct Domain {
     /// Target number of traces sampled per second.
     pub target_traces_per_second: f64,
 
+    /// Beta APM feature flags enabled for traces.
+    ///
+    /// Recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
+    /// probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
+    /// 128-bit ID. Empty by default. Values other than the recognized flag are ignored without a
+    /// warning: the flag inventory is not stable across versions, so unrecognized entries are
+    /// inert rather than errors. Enable the flag on every probabilistic sampler in the ingestion
+    /// path so they keep the same traces.
+    pub features: Vec<String>,
+
     /// Whether the rare-span sampler is enabled.
     pub enable_rare_sampler: bool,
 
@@ -84,6 +94,7 @@ impl Default for Domain {
             error_tracking_standalone_enabled: false,
             errors_per_second: 0.0,
             target_traces_per_second: 0.0,
+            features: Vec::new(),
             enable_rare_sampler: false,
             probabilistic_sampler: ProbabilisticSampler::default(),
             obfuscation: Obfuscation::default(),
@@ -141,6 +152,13 @@ impl Default for RareSampler {
 pub struct ProbabilisticSampler {
     /// Whether the probabilistic sampler is enabled.
     pub enabled: bool,
+
+    /// Seed mixed into the trace-ID hash before sampling, from 0 to 4,294,967,295.
+    ///
+    /// Defaults to `0`. Samplers in the same ingestion path keep the same traces only when their
+    /// seeds match, so align this with every other probabilistic sampler that sees the traffic.
+    /// Values outside the range fail configuration.
+    pub hash_seed: u32,
 
     /// Percentage of traces the probabilistic sampler keeps.
     pub sampling_percentage: f64,
