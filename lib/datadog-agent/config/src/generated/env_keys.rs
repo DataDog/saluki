@@ -53,6 +53,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_APM_FEATURES"],
+        path: &["apm_config", "features"],
+        decode: EnvDecode::CommaThenSpaceSeparated,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_CREDIT_CARDS_ENABLED"],
         path: &["apm_config", "obfuscation", "credit_cards", "enabled"],
         decode: EnvDecode::Bool,
@@ -166,6 +171,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_PROBABILISTIC_SAMPLER_ENABLED"],
         path: &["apm_config", "probabilistic_sampler", "enabled"],
         decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_PROBABILISTIC_SAMPLER_HASH_SEED"],
+        path: &["apm_config", "probabilistic_sampler", "hash_seed"],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_APM_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE"],
