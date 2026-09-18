@@ -99,9 +99,7 @@ impl TraceTagReplacer {
     fn replace_everywhere(&self, span: &mut Span, re: &Regex, repl: &str) {
         rewrite_non_hidden(span.attributes.iter_mut(), re, repl);
 
-        if let Some(resource) = replace_str(span.resource(), re, repl) {
-            span.set_resource(resource);
-        }
+        self.replace_resource(span, re, repl);
 
         for event in span.span_events_mut() {
             rewrite_non_hidden(event.attributes_mut().iter_mut(), re, repl);
@@ -133,6 +131,10 @@ impl TraceTagReplacer {
 
 impl SynchronousTransform for TraceTagReplacer {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        if self.rules.is_empty() {
+            return;
+        }
+
         for event in buffer {
             if let Event::Trace(ref mut trace) = event {
                 for span in trace.spans_mut() {
@@ -436,6 +438,22 @@ mod tests {
             Some("/pay?token=?"),
             "the second rule is resource-only and leaves the tag at the first rule's output"
         );
+    }
+
+    #[test]
+    fn empty_rule_set_leaves_span_untouched() {
+        let mut span = span_with(
+            "POST /pay/checkout?token=abc123",
+            attrs(&[("http.url", "/x?token=abc123")]),
+            vec![],
+        );
+        replacer(&[]).replace_span(&mut span);
+
+        assert_eq!(
+            attr(&span, "http.url").and_then(|v| v.as_string()).map(|s| s.as_ref()),
+            Some("/x?token=abc123")
+        );
+        assert_eq!(span.resource(), "POST /pay/checkout?token=abc123");
     }
 
     #[test]
