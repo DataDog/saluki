@@ -504,6 +504,67 @@ async fn rotation_and_credentials_return_logical_batches() {
     }
 }
 
+#[test]
+fn api_keys_are_trimmed_and_invalid_values_are_rejected() {
+    let key = parse_api_key(" \ttest-key\r\n").unwrap();
+    assert_eq!(key, "test-key");
+    assert!(key.is_sensitive());
+    for invalid in ["", " \t\r\n", "bad\nkey", "bad\u{7f}key"] {
+        assert!(parse_api_key(invalid).is_err());
+    }
+}
+
+#[tokio::test]
+async fn invalid_credential_updates_preserve_delivery_and_shutdown_persistence() {
+    let dir = TempDir::new().unwrap();
+    let settings = persisted_settings(&dir, 1024 * 1024);
+    let (mut worker, _wire, id) = open_worker().await;
+    worker.queue = persisted_queue(&settings).await;
+    submit(&mut worker, "inflight").await;
+    buffer(&mut worker, "partial").await;
+    worker.accept([Event::Metric(Metric::gauge("fresh", (123, 1.0)))]).await;
+    let ack_deadline = worker.ack_deadline;
+    let buffered_deadline = worker.buffered_deadline;
+
+    for key in ["", " \t\r\n", "bad\nkey", "bad\u{7f}key", " \ttest-key\r\n"] {
+        worker.update_credentials(key).await.unwrap();
+        assert_eq!(worker.api_key, "test-key");
+        assert_eq!(worker.core.current_stream_id(), Some(id));
+        assert_eq!(worker.core.inflight_len(), 1);
+        assert_eq!(worker.core.buffered_series_len(), 1);
+        assert_eq!(worker.ack_deadline, ack_deadline);
+        assert_eq!(worker.buffered_deadline, buffered_deadline);
+        assert!(!worker.suspended);
+    }
+
+    worker.on_transport(ack(id, 1)).await.unwrap();
+    assert_eq!(worker.core.inflight_len(), 0);
+    worker.shutdown().await.unwrap();
+    let (mut restarted, _restarted_wire, _) = open_worker().await;
+    restarted.queue = persisted_queue(&settings).await;
+    let mut names = queued_names(&mut restarted).await;
+    names.sort();
+    assert_eq!(names, ["fresh", "partial"]);
+}
+
+#[tokio::test]
+async fn valid_credential_update_resumes_after_ignored_invalid_update() {
+    let (mut worker, _wire, _) = open_worker().await;
+    submit(&mut worker, "inflight").await;
+    worker
+        .fail(MetricStreamFailureKind::Unauthenticated, "rejected key")
+        .await
+        .unwrap();
+    assert!(worker.suspended);
+    worker.update_credentials("bad\nkey").await.unwrap();
+    assert!(worker.suspended);
+    assert_eq!(worker.api_key, "test-key");
+    worker.update_credentials(" \tnew-key\r\n").await.unwrap();
+    assert!(!worker.suspended);
+    assert_eq!(worker.api_key, "new-key");
+    assert_eq!(queued_names(&mut worker).await, ["inflight"]);
+}
+
 fn persisted_settings(dir: &TempDir, memory_bytes: u64) -> SharedConfiguration {
     let mut settings = shared();
     let retry = &mut settings.endpoints.forwarder;

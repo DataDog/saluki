@@ -250,7 +250,17 @@ impl StatefulMetricsWorker {
     }
 
     async fn update_credentials(&mut self, key: &str) -> Result<(), GenericError> {
-        self.api_key = parse_api_key(key)?;
+        let api_key = match parse_api_key(key) {
+            Ok(api_key) => api_key,
+            Err(error) => {
+                warn!(%error, "Ignoring an invalid stateful metrics API key update.");
+                return Ok(());
+            }
+        };
+        if api_key == self.api_key {
+            return Ok(());
+        }
+        self.api_key = api_key;
         self.suspended = false;
         self.backoff = INITIAL_BACKOFF;
         let effects = self.core.reset_destination_state();
@@ -500,6 +510,10 @@ async fn wait_deadline(deadline: Option<Instant>) {
 }
 
 fn parse_api_key(key: &str) -> Result<MetadataValue<Ascii>, GenericError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(generic_error!("API key must not be blank"));
+    }
     let mut value: MetadataValue<Ascii> = key.parse().error_context("API key is not valid gRPC metadata")?;
     value.set_sensitive(true);
     Ok(value)
