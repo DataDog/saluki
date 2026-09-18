@@ -29,6 +29,7 @@ uds
 apis
 inlined
 json
+msgpack
 backoff
 batcher(s?)
 proxied
@@ -275,6 +276,9 @@ configtls
 keyspace
 Kueue
 plaintext
+normalizer
+suboperation(s?)
+runbook
 quantiz(ation|ations|er|ers|ed|es|e|ing)
 allowlist(s|ed|ing)?
 hostname(s?)

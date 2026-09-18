@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 
+pub mod apm;
 pub mod checks;
 pub mod dogstatsd;
 pub mod multi_region_failover;
@@ -13,6 +14,7 @@ pub mod traces;
 /// Per-domain resolved configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DomainConfiguration {
+    pub apm: apm::Domain,
     pub dogstatsd: dogstatsd::Domain,
     pub otlp: otlp::Domain,
     pub traces: traces::Domain,
