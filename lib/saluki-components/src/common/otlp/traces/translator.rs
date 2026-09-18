@@ -13,9 +13,10 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
+use crate::common::otlp::semantics::REGISTRY;
 use crate::common::otlp::traces::transform::{
-    bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, otel_span_to_dd_span,
-    otlp_value_to_string,
+    bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
+    otel_span_to_dd_span, otlp_value_to_string,
 };
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::Metrics;
@@ -256,7 +257,7 @@ impl OtlpTracesTranslator {
 
                 // Malformed self-parented spans (parent == span == trace ID) get their parent
                 // cleared so root selection treats them as roots.
-                let dd_span = if dd_span.parent_id() == trace_id && dd_span.parent_id() == dd_span.span_id() {
+                let mut dd_span = if dd_span.parent_id() == trace_id && dd_span.parent_id() == dd_span.span_id() {
                     dd_span.with_parent_id(0)
                 } else {
                     dd_span
@@ -293,6 +294,7 @@ impl OtlpTracesTranslator {
                     continue;
                 }
 
+                normalize_peer_service_tags(&mut dd_span, &REGISTRY, interner, string_builder, metrics);
                 entry.spans.push(dd_span);
             }
         }

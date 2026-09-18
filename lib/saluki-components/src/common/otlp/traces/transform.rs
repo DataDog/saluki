@@ -25,18 +25,21 @@ use tracing::error;
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::common::otlp::semantics::{
-    lookup_int64, lookup_string, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor, REGISTRY,
+    lookup_int64, lookup_string, Accessor, Concept, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor, Registry,
+    REGISTRY,
 };
 use crate::common::otlp::traces::normalize::{
-    is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name, normalize_service_into,
-    normalize_tag_value_append_unchecked, normalize_tag_value_into_unchecked, truncate_utf8, truncate_with_ellipses,
-    validate_and_fix_duration, validate_and_fix_start_time, MAX_META_KEY_LEN, MAX_META_VAL_LEN, MAX_TYPE_LEN,
+    is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name,
+    normalize_peer_service_into, normalize_service_into, normalize_tag_value_append_unchecked,
+    normalize_tag_value_into_unchecked, truncate_utf8, truncate_with_ellipses, validate_and_fix_duration,
+    validate_and_fix_start_time, PeerServiceChange, MAX_META_KEY_LEN, MAX_META_VAL_LEN, MAX_TYPE_LEN,
 };
 use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
 };
+use crate::common::otlp::Metrics;
 
 const EVENT_EXTRACTION_METRIC_KEY: &str = "_dd1.sr.eausr";
 const ANALYTICS_EVENT_KEY: &str = "analytics.event";
@@ -110,6 +113,65 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // `otel.scope.{name,version}` span meta were added to the Agent's OTLP trace conversion in 7.82; only emit them when
 // the Agent version meets that threshold.
 const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
+
+/// Resolves `peer.service` and `_dd.base_service` on a converted span and writes each normalized
+/// value back under its canonical key.
+///
+/// Resolution goes through the semantic registry, so registered equivalent attributes are
+/// honored; a value that normalizes to empty is written as empty, with no substitute.
+pub fn normalize_peer_service_tags(
+    span: &mut DdSpan, registry: &Registry, interner: &GenericMapInterner,
+    string_builder: &mut StringBuilder<GenericMapInterner>, metrics: &Metrics,
+) {
+    normalize_peer_service_tag(span, registry, Concept::PeerService, interner, string_builder, metrics);
+    normalize_peer_service_tag(
+        span,
+        registry,
+        Concept::DdBaseService,
+        interner,
+        string_builder,
+        metrics,
+    );
+}
+
+fn normalize_peer_service_tag(
+    span: &mut DdSpan, registry: &Registry, concept: Concept, interner: &GenericMapInterner,
+    string_builder: &mut StringBuilder<GenericMapInterner>, metrics: &Metrics,
+) {
+    let Some(value) = lookup_string(registry, &DdSpanAccessor::new(span), concept) else {
+        return;
+    };
+    if value.is_empty() {
+        return;
+    }
+
+    let change = normalize_peer_service_into(&value, string_builder);
+    let (truncate, invalid) = match concept {
+        Concept::PeerService => (
+            metrics.spans_malformed_peer_service_truncate(),
+            metrics.spans_malformed_peer_service_invalid(),
+        ),
+        Concept::DdBaseService => (
+            metrics.spans_malformed_base_service_truncate(),
+            metrics.spans_malformed_base_service_invalid(),
+        ),
+        _ => return,
+    };
+    match change {
+        PeerServiceChange::Truncated => truncate.increment(1),
+        PeerServiceChange::Invalid => invalid.increment(1),
+        PeerServiceChange::Unchanged => {}
+    }
+
+    let normalized = interner
+        .try_intern(string_builder.as_str())
+        .map(MetaString::from)
+        .unwrap_or_else(|| MetaString::from(string_builder.as_str()));
+    span.attributes.insert(
+        MetaString::from_static(concept.as_str()),
+        AttributeValue::String(normalized),
+    );
+}
 
 // otel_span_to_dd_span converts an OTLP span to DD span and is based on the logic defined in the agent.
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
@@ -2483,6 +2545,159 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go
     // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go
     // ===============================================================================================
+
+    fn peer_service_span(attrs: &[(&str, &str)]) -> DdSpan {
+        let attributes = attrs
+            .iter()
+            .map(|(k, v)| (MetaString::from(*k), AttributeValue::String(MetaString::from(*v))))
+            .collect::<FastHashMap<MetaString, AttributeValue>>();
+        DdSpan::new("svc", "op", "res", "web", 1, 0, 0, 1, 0).with_attributes(attributes)
+    }
+
+    #[test]
+    fn peer_service_resolves_registered_equivalents_not_literal_keys() {
+        let registry = Registry::from_json(
+            r#"{"concepts":{"peer.service":{"canonical":"peer.service","fallbacks":[
+                {"name":"service.peer","provider":"otel","type":"string"},
+                {"name":"peer.service","provider":"datadog","type":"string"}]}}}"#,
+        )
+        .expect("test registry parses");
+
+        let mut span = peer_service_span(&[("service.peer", "checkouts")]);
+        let (interner, mut string_builder) = extraction_env();
+        normalize_peer_service_tags(
+            &mut span,
+            &registry,
+            &interner,
+            &mut string_builder,
+            &Metrics::for_tests(),
+        );
+
+        assert_eq!(
+            span.attributes
+                .get("peer.service")
+                .and_then(|v| v.as_string())
+                .map(|s| s.as_ref()),
+            Some("checkouts"),
+            "the equivalent attribute resolves and is written back under the canonical key"
+        );
+        assert_eq!(
+            span.attributes
+                .get("service.peer")
+                .and_then(|v| v.as_string())
+                .map(|s| s.as_ref()),
+            Some("checkouts"),
+            "the source attribute is left as-is"
+        );
+    }
+
+    #[test]
+    fn peer_service_caps_at_the_service_length_limit() {
+        use metrics::set_default_local_recorder;
+        use saluki_core::components::ComponentContext;
+        use saluki_metrics::test::TestRecorder;
+
+        use crate::common::otlp::build_metrics;
+
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let mut span = peer_service_span(&[("peer.service", &"a".repeat(120))]);
+        let (interner, mut string_builder) = extraction_env();
+        normalize_peer_service_tags(&mut span, &REGISTRY, &interner, &mut string_builder, &metrics);
+
+        let capped = span
+            .attributes
+            .get("peer.service")
+            .and_then(|v| v.as_string())
+            .expect("canonical key is set");
+        assert_eq!(
+            capped.as_ref().len(),
+            100,
+            "the value is capped at the service length limit"
+        );
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("tag", "peer.service"),
+            ("reason", "truncate"),
+        ];
+        assert_eq!(recorder.counter(("component_spans_malformed_total", tags)), Some(1));
+    }
+
+    #[test]
+    fn peer_service_value_that_normalizes_to_empty_is_not_substituted() {
+        use metrics::set_default_local_recorder;
+        use saluki_core::components::ComponentContext;
+        use saluki_metrics::test::TestRecorder;
+
+        use crate::common::otlp::build_metrics;
+
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let mut span = peer_service_span(&[("peer.service", "!!!")]);
+        let (interner, mut string_builder) = extraction_env();
+        normalize_peer_service_tags(&mut span, &REGISTRY, &interner, &mut string_builder, &metrics);
+
+        assert_eq!(
+            span.attributes
+                .get("peer.service")
+                .and_then(|v| v.as_string())
+                .map(|s| s.as_ref()),
+            Some(""),
+            "the value is dropped, not replaced"
+        );
+
+        let tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("tag", "peer.service"),
+            ("reason", "invalid"),
+        ];
+        assert_eq!(recorder.counter(("component_spans_malformed_total", tags)), Some(1));
+    }
+
+    #[test]
+    fn absent_peer_service_tags_are_left_unset() {
+        let mut span = peer_service_span(&[("http.url", "/pay")]);
+        let (interner, mut string_builder) = extraction_env();
+        normalize_peer_service_tags(
+            &mut span,
+            &REGISTRY,
+            &interner,
+            &mut string_builder,
+            &Metrics::for_tests(),
+        );
+
+        assert!(!span.attributes.contains_key("peer.service"));
+        assert!(!span.attributes.contains_key("_dd.base_service"));
+    }
+
+    #[test]
+    fn base_service_normalizes_like_a_tag_value() {
+        let mut span = peer_service_span(&[("_dd.base_service", "payments db")]);
+        let (interner, mut string_builder) = extraction_env();
+        normalize_peer_service_tags(
+            &mut span,
+            &REGISTRY,
+            &interner,
+            &mut string_builder,
+            &Metrics::for_tests(),
+        );
+
+        assert_eq!(
+            span.attributes
+                .get("_dd.base_service")
+                .and_then(|v| v.as_string())
+                .map(|s| s.as_ref()),
+            Some("payments_db"),
+            "the canonical key holds the normalized value"
+        );
+    }
 
     fn extraction_env() -> (GenericMapInterner, StringBuilder<GenericMapInterner>) {
         let interner = test_interner();

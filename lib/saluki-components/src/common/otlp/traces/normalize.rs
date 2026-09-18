@@ -184,6 +184,50 @@ pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I
     }
 }
 
+/// How a peer service name changed while being normalized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PeerServiceChange {
+    /// Value already conformed.
+    Unchanged,
+    /// Value exceeded `MAX_SERVICE_LEN` and was truncated.
+    Truncated,
+    /// Nothing survived normalization; the value is empty.
+    Invalid,
+}
+
+/// Normalizes a peer service name into `out`.
+///
+/// The value is capped at `MAX_SERVICE_LEN` and normalized as a tag value; unlike a span's
+/// service name, nothing is substituted when normalization empties it.
+pub(super) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilder<I>) -> PeerServiceChange {
+    out.clear();
+
+    if value.is_empty() {
+        return PeerServiceChange::Unchanged;
+    }
+
+    let mut change = PeerServiceChange::Unchanged;
+    let value = if value.len() > MAX_SERVICE_LEN {
+        change = PeerServiceChange::Truncated;
+        truncate_utf8_str(value, MAX_SERVICE_LEN)
+    } else {
+        value
+    };
+
+    if is_normalized_tag_value(value) {
+        let _ = out.push_str(value);
+        return change;
+    }
+
+    normalize_tag_value_append_unchecked(value, out);
+
+    if out.as_str().is_empty() {
+        PeerServiceChange::Invalid
+    } else {
+        change
+    }
+}
+
 /// Normalizes `value` into `out`, clearing any existing contents first.
 ///
 /// Use this when the caller has already determined `value` isn't normalized, so we
