@@ -1,12 +1,16 @@
+use std::fs::File;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio_util::sync::CancellationToken;
 
 use crate::cli::utils::DataPlaneAPIClient;
-use crate::dogstatsd_contexts::read_report;
+use crate::dogstatsd_contexts::read_report_from_file;
 
 /// Displays the DogStatsD contexts with the highest cardinality.
 #[derive(FromArgs, Debug)]
@@ -53,12 +57,12 @@ impl ValidatedTopCommand {
 #[argh(subcommand, name = "dump-contexts")]
 pub(super) struct DumpContextsCommand {}
 
-#[async_trait(?Send)]
-pub(super) trait DogStatsDContextDumpRequester {
+#[async_trait]
+pub(super) trait DogStatsDContextDumpRequester: Send {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError>;
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
         self.dogstatsd_contexts_dump().await
@@ -66,7 +70,8 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 }
 
 pub(super) async fn handle_dogstatsd_top(
-    requester: Option<&mut dyn DogStatsDContextDumpRequester>, cmd: ValidatedTopCommand, output: &mut dyn Write,
+    requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: ValidatedTopCommand,
+    output: &mut (dyn Write + Send),
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
         Some(path) => path,
@@ -82,9 +87,72 @@ pub(super) async fn handle_dogstatsd_top(
         }
     };
 
-    let report = read_report(&path)
+    let file = open_context_report_file(&path)?;
+    write_rendered_report(
+        output,
+        &path,
+        render_report_from_file(&path, file, cmd.num_metrics, cmd.num_tags)?,
+    )
+}
+
+pub(super) async fn handle_dogstatsd_top_offline_cancellable(
+    cmd: ValidatedTopCommand, output: &mut (dyn Write + Send), cancellation: &CancellationToken,
+) -> Result<(), GenericError> {
+    let path = cmd
+        .path
+        .ok_or_else(|| generic_error!("Offline DogStatsD top requires a context dump path."))?;
+    if cancellation.is_cancelled() {
+        return Ok(());
+    }
+
+    let file = open_context_report_file(&path)?;
+    let metric_limit = cmd.num_metrics;
+    let tag_limit = cmd.num_tags;
+    let task = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || render_report_from_file(&path, file, metric_limit, tag_limit)
+    });
+    let Some(rendered) =
+        super::run_cancellable_blocking(cancellation, task, "DogStatsD context report rendering").await?
+    else {
+        return Ok(());
+    };
+
+    write_rendered_report(output, &path, rendered)
+}
+
+fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+
+    let file = options
+        .open(path)
+        .with_error_context(|| format!("Failed to open DogStatsD context report from '{}'.", path.display()))?;
+    if file
+        .metadata()
+        .with_error_context(|| format!("Failed to inspect DogStatsD context report from '{}'.", path.display()))?
+        .is_file()
+    {
+        Ok(file)
+    } else {
+        Err(generic_error!(
+            "DogStatsD context report path '{}' is not a regular file.",
+            path.display()
+        ))
+    }
+}
+
+fn render_report_from_file(
+    path: &Path, file: File, metric_limit: usize, tag_limit: usize,
+) -> Result<String, GenericError> {
+    let report = read_report_from_file(path, file)
         .with_error_context(|| format!("Failed to read DogStatsD context report from '{}'.", path.display()))?;
-    let rendered = report.render(cmd.num_metrics, cmd.num_tags);
+    Ok(report.render(metric_limit, tag_limit))
+}
+
+fn write_rendered_report(output: &mut (dyn Write + Send), path: &Path, rendered: String) -> Result<(), GenericError> {
     output
         .write_all(rendered.as_bytes())
         .with_error_context(|| format!("Failed to write DogStatsD context report for '{}'.", path.display()))?;
@@ -95,7 +163,7 @@ pub(super) async fn handle_dogstatsd_top(
 }
 
 pub(super) async fn handle_dogstatsd_dump_contexts(
-    requester: &mut dyn DogStatsDContextDumpRequester, output: &mut dyn Write,
+    requester: &mut (dyn DogStatsDContextDumpRequester + Send), output: &mut (dyn Write + Send),
 ) -> Result<(), GenericError> {
     let path = requester
         .request_context_dump()
@@ -121,9 +189,11 @@ mod tests {
     use argh::FromArgs as _;
     use async_trait::async_trait;
     use saluki_error::{generic_error, GenericError};
+    use tokio_util::sync::CancellationToken;
 
     use super::{
-        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DogStatsDContextDumpRequester, TopCommand,
+        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, handle_dogstatsd_top_offline_cancellable,
+        open_context_report_file, render_report_from_file, DogStatsDContextDumpRequester, TopCommand,
         ValidatedTopCommand,
     };
     use crate::cli::dogstatsd::{DogstatsdCommand, DogstatsdSubcommand};
@@ -223,6 +293,61 @@ mod tests {
 
         assert_eq!(requester.calls, 0);
         assert_eq!(output.text(), GOLDEN_REPORT);
+    }
+
+    #[test]
+    fn offline_top_renders_from_the_descriptor_opened_before_path_changes() {
+        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact should be created");
+        std::fs::write(
+            artifact.path(),
+            b"{\"Name\":\"original.metric\",\"Host\":\"\",\"Type\":\"Gauge\",\"TaggerTags\":[],\"MetricTags\":[],\"NoIndex\":false,\"Source\":1}\n",
+        )
+        .expect("original artifact should be written");
+        let file = open_context_report_file(artifact.path()).expect("original artifact should open");
+        let replacement = artifact.path().with_extension("replacement");
+        std::fs::write(&replacement, b"not-json").expect("replacement artifact should be written");
+        std::fs::rename(&replacement, artifact.path()).expect("artifact path should be replaced");
+
+        let rendered = render_report_from_file(artifact.path(), file, 10, 5).expect("opened artifact should render");
+
+        assert!(rendered.contains("original.metric"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_top_offline_rejects_a_non_regular_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let mut output = RecordingWriter::default();
+
+        let error = handle_dogstatsd_top(
+            None,
+            top_command(Some(directory.path().to_owned()), 10, None),
+            &mut output,
+        )
+        .await
+        .expect_err("offline top should reject a directory");
+
+        assert!(
+            error.to_string().contains("regular file") || error.to_string().contains("failed to open"),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_top_offline_cancellable_does_not_render_after_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut output = RecordingWriter::default();
+
+        handle_dogstatsd_top_offline_cancellable(
+            top_command(Some(PathBuf::from("missing-context-dump.ndjson")), 10, None),
+            &mut output,
+            &cancellation,
+        )
+        .await
+        .expect("cancelled offline top should not read or render the artifact");
+
+        assert_eq!(output.text(), "");
+        assert!(output.flushes.is_empty());
     }
 
     #[tokio::test]
@@ -411,7 +536,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl DogStatsDContextDumpRequester for FakeRequester {
         async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
             self.calls += 1;
