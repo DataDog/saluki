@@ -12,6 +12,7 @@ use foldspace_core::{
 };
 use futures::Stream;
 use prost::Message as _;
+use saluki_common::hash::hash_single_stable;
 use saluki_context::{tags::TagSet, Context};
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryLimiter},
@@ -978,6 +979,55 @@ fn sharding_routes_series_independently_of_points_and_tag_order() {
         assert_eq!(shard.series()[0].points()[0].timestamp, 123);
         assert_eq!(shard.series()[1].points()[0].timestamp, 456);
         assert_eq!(shards.iter().map(LogicalMetricBatch::point_count).sum::<usize>(), 2);
+    }
+}
+
+#[test]
+fn sharding_preserves_hashes_for_borrowed_and_normalized_tags() {
+    for (prefix, values) in [
+        (vec![], vec![]),
+        (vec![], vec!["z:1"]),
+        (vec![], vec!["z:1", "a:2"]),
+        (vec![], vec!["z:1", "a:2", "a:2"]),
+        (vec!["z:1", "a:2"], vec![]),
+        (vec!["z:1"], vec!["a:2"]),
+        (vec!["z:1", "a:2", "a:2"], vec!["z:1", "b:3"]),
+    ] {
+        let series = LogicalMetricSeries::new("requests", MetricSeriesType::Rate, vec![MetricPoint::new(1, 2.0)])
+            .with_tags(MetricTagSet {
+                prefix: prefix.into_iter().map(String::from).collect(),
+                values: values.into_iter().map(String::from).collect(),
+            })
+            .with_resources(vec![
+                MetricResource::new("host", "a"),
+                MetricResource::new("device", "b"),
+                MetricResource::new("host", "a"),
+            ])
+            .with_interval(10)
+            .with_unit("request")
+            .with_source_type_name(Some("integration".to_owned()))
+            .with_origin(FoldspaceOrigin::new(1, 2, 3))
+            .with_no_index(true);
+
+        // Preserve the original identity hash so this optimization cannot move persisted series between workers.
+        let mut tags: Vec<_> = series.tags().prefix.iter().chain(&series.tags().values).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
+        resources.sort_unstable();
+        resources.dedup();
+        let original_hash = hash_single_stable((
+            series.name(),
+            series.metric_type() as u8,
+            tags,
+            resources,
+            series.interval(),
+            series.unit(),
+            series.source_type_name(),
+            series.origin(),
+            series.no_index(),
+        ));
+        assert_eq!(sharding::series_hash(&series), original_hash);
     }
 }
 

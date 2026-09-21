@@ -68,7 +68,11 @@ pub(super) fn convert(metric: &Metric) -> Option<LogicalMetricSeries> {
         .map(|tag| tag.as_str().to_owned())
         .collect();
     let mut series = LogicalMetricSeries::new(metric.context().name().as_ref(), kind, points)
-        .with_tags(MetricTagSet::standalone(tags))
+        // The setter sorts tags; constructing a standalone tag set would sort them twice.
+        .with_tags(MetricTagSet {
+            prefix: Vec::new(),
+            values: tags,
+        })
         .with_resources(resources)
         .with_interval(interval.map_or(0, |interval| interval.as_secs()));
     if let Some(unit) = metric.metadata().unit() {

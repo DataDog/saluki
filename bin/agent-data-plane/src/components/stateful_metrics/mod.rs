@@ -181,7 +181,7 @@ impl Destination for StatefulMetrics {
                 },
             }
         }
-        // Close every mailbox before waiting: delivery budgets run concurrently across workers.
+        // Close every worker input queue before waiting: delivery budgets run concurrently across workers.
         drop(inputs);
         while let Some(completed) = tasks.join_next().await {
             match completed {
@@ -249,7 +249,7 @@ impl StatefulMetricsWorker {
         delivery_shutdown_timeout: Duration,
     ) -> Result<(), GenericError> {
         let result = self.drive(&mut input, &mut api_key, delivery_shutdown_timeout).await;
-        // Preserve accepted mailbox contents even when the event loop returns an error.
+        // Preserve accepted input queue contents even when the event loop returns an error.
         input.close();
         while let Some(batch) = input.recv().await {
             self.enqueue(batch).await;

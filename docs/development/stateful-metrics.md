@@ -156,12 +156,12 @@ worker across input buffers and restarts. The sender does not use the context's 
 Each worker runs its own async task and independently owns its core, dictionaries, gRPC transport,
 priority/retry queues, reconnect and flush timers, acknowledgement deadline, and credential watcher.
 A stalled, rejected, or reconnecting stream does not suspend its peers. The dispatcher sends to
-all selected workers concurrently through bounded mailboxes of two logical batches per worker.
+all selected workers concurrently through bounded input queues of two logical batches per worker.
 A worker continues accepting input during a transport outage using the existing spill/drop policy.
-If queue processing itself stalls (for example, during slow disk I/O), bounded mailboxes eventually
+If queue processing itself stalls (for example, during slow disk I/O), bounded worker input queues eventually
 backpressure shared input. This is not a promise of isolation from shared CPU, memory, or disk exhaustion.
 
-Routing preserves input order within each worker's mailbox and each logical batch. The
+Routing preserves input order within each worker's input queue and each logical batch. The
 high-priority queue is FIFO. There is no global ordering across workers. High-priority overflow
 joins the low-priority queue, so newer high-priority work can overtake both retries and older
 overflow. Memory retries can also overtake disk retries. Delivery under queue pressure or recovery
@@ -191,11 +191,11 @@ HTTP retry directories are unaffected. Use a separate storage root for each ADP 
 The existing forwarder queue capacities and disk limits apply **per worker**. Increasing the count
 multiplies the aggregate high-priority capacity, retry-memory budget, disk budget, and maximum
 number of inflight payloads (8 per worker). Each worker also adds a transport, compression state,
-dictionaries, a partial batch, and a two-batch input mailbox. Series distribution and dictionary
+dictionaries, a partial batch, and a two-batch input queue. Series distribution and dictionary
 reuse affect actual memory; these limits do not bound total process memory or dictionary bytes.
 The configured series threshold and flush timeout apply independently to each worker.
 
-Closing destination input closes all worker mailboxes before waiting for completion. Workers drain
+Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush
 their own retry storage. Increasing the worker count does not serialize delivery timeouts. Disk
 flush time still depends on the storage system. A worker error is reported after the other workers
