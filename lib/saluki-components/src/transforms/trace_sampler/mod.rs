@@ -53,8 +53,6 @@ const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent'
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
-// Decision maker values for `_dd.p.dm` (matching datadog-agent).
-
 fn normalize_sampling_rate(rate: f64) -> f64 {
     if rate <= 0.0 || rate >= 1.0 {
         1.0
@@ -67,6 +65,8 @@ fn normalize_sampling_rate(rate: f64) -> f64 {
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
     probabilistic_sampler_enabled: bool,
+    probabilistic_hash_seed: u32,
+    probabilistic_full_trace_id: bool,
     sampling_percentage: f64,
     error_sampling_enabled: bool,
     error_tracking_standalone: bool,
@@ -90,6 +90,10 @@ impl TraceSamplerConfiguration {
         let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler_sampling_percentage / 100.0);
         Self {
             probabilistic_sampler_enabled: traces.probabilistic_sampler.enabled,
+            probabilistic_hash_seed: traces.probabilistic_sampler.hash_seed,
+            probabilistic_full_trace_id: traces
+                .features
+                .contains(&domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId),
             sampling_percentage: traces.probabilistic_sampler.sampling_percentage,
             error_sampling_enabled: traces.error_sampling_enabled,
             error_tracking_standalone: traces.error_tracking_standalone_enabled,
@@ -116,6 +120,10 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
             error_sampling_enabled: self.error_sampling_enabled,
             error_tracking_standalone: self.error_tracking_standalone,
             probabilistic_sampler_enabled: self.probabilistic_sampler_enabled,
+            probabilistic: probabilistic::ProbabilisticSampler::new(
+                self.probabilistic_hash_seed,
+                self.probabilistic_full_trace_id,
+            ),
             otlp_sampling_rate: self.otlp_sampling_rate,
             error_sampler: errors::ErrorsSampler::new(self.errors_per_second, ERROR_SAMPLE_RATE),
             priority_sampler: priority_sampler::PrioritySampler::new(
@@ -151,6 +159,7 @@ pub struct TraceSampler {
     error_tracking_standalone: bool,
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
+    probabilistic: probabilistic::ProbabilisticSampler,
     otlp_sampling_rate: f64,
     compute_top_level_by_span_kind: bool,
     error_sampler: errors::ErrorsSampler,
@@ -198,8 +207,9 @@ impl TraceSampler {
     }
 
     /// Returns `true` if the given trace ID should be probabilistically sampled.
-    fn sample_probabilistic(&self, trace_id: u64) -> bool {
-        probabilistic::ProbabilisticSampler::sample(trace_id, self.sampling_rate)
+    fn sample_probabilistic(&self, trace_id_high: u64, trace_id_low: u64) -> bool {
+        self.probabilistic
+            .sample(trace_id_high, trace_id_low, self.sampling_rate)
     }
 
     fn is_otlp_trace(&self, trace: &Trace, root_span_idx: usize) -> bool {
@@ -311,7 +321,6 @@ impl TraceSampler {
             return (false, PRIORITY_AUTO_DROP, "", None);
         }
 
-        let now = std::time::SystemTime::now();
         let Some(root_span_idx) = self.get_root_span_index(trace) else {
             return (false, PRIORITY_AUTO_DROP, "", None);
         };
@@ -321,6 +330,7 @@ impl TraceSampler {
         if self.error_tracking_standalone {
             let otlp_pre_sample = self.otlp_pre_sample(trace, root_span_idx);
             if self.trace_contains_error(trace, true) {
+                let now = std::time::SystemTime::now();
                 let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 let default_priority = if keep { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP };
                 let (priority, dm) = otlp_pre_sample.unwrap_or((default_priority, ""));
@@ -329,8 +339,6 @@ impl TraceSampler {
             let (pre_priority, pre_dm) = otlp_pre_sample.unwrap_or((PRIORITY_AUTO_DROP, ""));
             return (false, pre_priority, pre_dm, Some(root_span_idx));
         }
-
-        let contains_error = self.trace_contains_error(trace, false);
 
         // Run the rare sampler early, before all other samplers. This mirrors the Go agent behavior
         // where the rare sampler runs first to catch traces that would otherwise be dropped entirely.
@@ -346,19 +354,18 @@ impl TraceSampler {
                 // Rare sampler wins over probabilistic sampling.
                 prob_keep = true;
             } else {
-                // Run probabilistic sampler - use trace ID
-                let root_trace_id = trace.trace_id_low;
-                if self.sample_probabilistic(root_trace_id) {
+                if self.sample_probabilistic(trace.trace_id_high, trace.trace_id_low) {
                     decision_maker = DECISION_MAKER_PROBABILISTIC;
                     prob_keep = true;
 
                     if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                         root_span.attributes.insert(
-                            MetaString::from(PROB_RATE_KEY),
+                            MetaString::from_static(PROB_RATE_KEY),
                             AttributeValue::Float(self.sampling_rate),
                         );
                     }
-                } else if self.error_sampling_enabled && contains_error {
+                } else if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
+                    let now = std::time::SystemTime::now();
                     prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 }
             }
@@ -372,6 +379,9 @@ impl TraceSampler {
             return (prob_keep, priority, decision_maker, Some(root_span_idx));
         }
 
+        // Read once here, where the samplers below consume it; every path above returns without
+        // needing it.
+        let now = std::time::SystemTime::now();
         let user_priority = self.get_user_priority(trace, root_span_idx);
         if let Some(priority) = user_priority {
             if priority < PRIORITY_AUTO_DROP {
@@ -414,7 +424,7 @@ impl TraceSampler {
             }
         }
 
-        if self.error_sampling_enabled && contains_error {
+        if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
                 return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
@@ -463,7 +473,7 @@ impl TraceSampler {
     /// The `root_span_id` parameter identifies which span should receive the sampling metadata.
     /// This avoids recalculating the root span since it was already found in `run_samplers`.
     fn apply_sampling_metadata(
-        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, root_span_idx: usize,
+        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &'static str, root_span_idx: usize,
     ) {
         let is_otlp = self.is_otlp_trace(trace, root_span_idx);
         // Chunk-level decision maker: the sampler's value when it decided, otherwise the first
@@ -487,7 +497,7 @@ impl TraceSampler {
                     .cloned()
             })
         } else {
-            Some(MetaString::from(decision_maker))
+            Some(MetaString::from_static(decision_maker))
         };
 
         // The span-level decision maker is stamped only when a sampler made the call: promotion
@@ -500,8 +510,8 @@ impl TraceSampler {
         // still flows through trace fields to the encoder.
         if priority > 0 && !decision_maker.is_empty() && !(is_otlp && self.probabilistic_sampler_enabled) {
             root_span_value.attributes.insert(
-                MetaString::from(TAG_DECISION_MAKER),
-                AttributeValue::String(MetaString::from(decision_maker)),
+                MetaString::from_static(TAG_DECISION_MAKER),
+                AttributeValue::String(MetaString::from_static(decision_maker)),
             );
         }
 
@@ -589,6 +599,7 @@ mod tests {
             error_sampling_enabled: true,
             error_tracking_standalone: false,
             probabilistic_sampler_enabled: true,
+            probabilistic: probabilistic::ProbabilisticSampler::new(0, false),
             otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
@@ -968,9 +979,9 @@ mod tests {
         // for known trace IDs at known rates, so a regression in the hash, the bucket mask, or the comparison is
         // caught (a determinism-only check would not catch any of those).
         //
-        // Expected values were computed directly from the FNV-1a bucket math in `ProbabilisticSampler::sample`
-        // (mirrors datadog-agent/pkg/trace/sampler/probabilistic.go). For reference, the trace IDs below hash to
-        // these buckets (out of 0x4000 = 16384): 0x1234567890ABCDEF -> 1764, 0x0 -> 9301, u64::MAX -> 12365.
+        // Expected values were computed directly from the FNV-1a bucket math in `ProbabilisticSampler::sample`.
+        // For reference, the trace IDs below hash to these buckets (out of 0x4000 = 16384):
+        // 0x1234567890ABCDEF -> 1764, 0x0 -> 9301, u64::MAX -> 12365.
         struct Case {
             trace_id: u64,
             rate: f64,
@@ -1029,7 +1040,7 @@ mod tests {
             let mut sampler = create_test_sampler();
             sampler.sampling_rate = case.rate;
             assert_eq!(
-                sampler.sample_probabilistic(case.trace_id),
+                sampler.sample_probabilistic(0, case.trace_id),
                 case.expected_keep,
                 "trace_id={:#018x} rate={}",
                 case.trace_id,
@@ -1046,9 +1057,80 @@ mod tests {
         let sampler = create_test_sampler();
         let trace_id = 0x1234567890ABCDEF_u64;
         assert_eq!(
-            sampler.sample_probabilistic(trace_id),
-            sampler.sample_probabilistic(trace_id)
+            sampler.sample_probabilistic(0, trace_id),
+            sampler.sample_probabilistic(0, trace_id)
         );
+    }
+
+    #[test]
+    fn probabilistic_sampling_hash_seed_changes_decisions() {
+        // A seed re-buckets every trace ID: 0x1234567890ABCDEF moves from bucket 1764 with seed 0 to
+        // bucket 7338 with seed 22, so rates that straddle only one of the buckets flip decisions.
+        let mut seeded = create_test_sampler();
+        seeded.probabilistic = probabilistic::ProbabilisticSampler::new(22, false);
+
+        // Bucket 7338 (7338/16384 = 0.4479): dropped below 0.45, kept above it.
+        seeded.sampling_rate = 0.40;
+        assert!(!seeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+        seeded.sampling_rate = 0.50;
+        assert!(seeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+
+        // At rate 0.20 the zero-seed sampler keeps this trace (bucket 1764, pinned in
+        // `probabilistic_sampling_known_decisions`) while the seeded sampler drops it.
+        seeded.sampling_rate = 0.20;
+        assert!(!seeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+        let mut unseeded = create_test_sampler();
+        unseeded.sampling_rate = 0.20;
+        assert!(unseeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+    }
+
+    #[test]
+    fn probabilistic_sampling_full_trace_id_mode_hashes_both_halves() {
+        let high = 0xAABBCCDD00112233_u64;
+        let low = 0x1234567890ABCDEF_u64;
+
+        // Legacy mode buckets on the low half alone, so the high half cannot move the decision.
+        let mut legacy = create_test_sampler();
+        legacy.probabilistic = probabilistic::ProbabilisticSampler::new(22, false);
+        legacy.sampling_rate = 0.45;
+        assert_eq!(
+            legacy.sample_probabilistic(0, low),
+            legacy.sample_probabilistic(high, low)
+        );
+
+        // Full mode hashes the 16-byte big-endian ID, high half first: (high, low) lands in bucket
+        // 454 (kept at 0.05, dropped at 0.02), moving the decision relative to legacy mode.
+        let mut full = create_test_sampler();
+        full.probabilistic = probabilistic::ProbabilisticSampler::new(22, true);
+        full.sampling_rate = 0.02;
+        assert!(!full.sample_probabilistic(high, low));
+        full.sampling_rate = 0.05;
+        assert!(full.sample_probabilistic(high, low));
+
+        // A zero high half is still a different input than legacy mode: the halves swap byte
+        // ranges, bucket 14666 versus 7338 (kept at 0.90, dropped at 0.89).
+        full.sampling_rate = 0.89;
+        assert!(!full.sample_probabilistic(0, low));
+        full.sampling_rate = 0.90;
+        assert!(full.sample_probabilistic(0, low));
+    }
+
+    #[test]
+    fn from_configuration_reads_the_full_trace_id_feature() {
+        let traces = domains::traces::Domain {
+            features: vec![domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId],
+            ..Default::default()
+        };
+        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        assert!(config.probabilistic_full_trace_id);
+
+        // Unrecognized flags are carried, not rejected, and enable nothing.
+        let traces = domains::traces::Domain {
+            features: vec![domains::traces::ApmFeature::Other("table_names".to_owned())],
+            ..Default::default()
+        };
+        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        assert!(!config.probabilistic_full_trace_id);
     }
 
     #[test]

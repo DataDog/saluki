@@ -666,6 +666,63 @@ mod tests {
         assert_eq!(sketch.quantile(0.5), None);
     }
 
+    /// Regression test for <https://github.com/DataDog/saluki/issues/2596>, as reported.
+    ///
+    /// A single observation far above everything already recorded used to be dropped from
+    /// `CollapsingLowestDenseStore`'s bins while still being tallied in its cached count. `count()` then
+    /// over-reported by one, and `quantile(1.0)` resolved a rank that no bin covered, which fell through to the
+    /// `unreachable!` in `quantile`. The store-level cause and its mirror are covered in
+    /// `canonical::store::reference_tests`; this case pins the symptom the report was filed against.
+    ///
+    /// The relative accuracy matters here. The drop needed the new index to land at least `max_num_bins` positions
+    /// above the window, which at 1% accuracy takes a value ratio of ~6.2e17 and so was unreachable in practice, but
+    /// at the 1/1024 accuracy used below takes a ratio of only ~55.
+    #[test]
+    fn large_upward_jump_preserves_counts_and_maximum_quantile() {
+        let mut sketch = DDSketch::with_relative_accuracy(1.0 / 1024.0).unwrap();
+        sketch.add_n(1.0, 100);
+        sketch.add(((1u64 << 30) - 1) as f64);
+
+        assert_eq!(sketch.count(), 101);
+
+        let stored: f64 = sketch.positive_store().to_proto().contiguousBinCounts.iter().sum();
+        assert_eq!(
+            stored, 101.0,
+            "every observation must be present in the bins, not just in the count"
+        );
+
+        let maximum = sketch.quantile(1.0).expect("the maximum quantile must resolve");
+        assert_rel_acc_eq!(1.0, 1.0 / 1024.0, ((1u64 << 30) - 1) as f64, maximum);
+    }
+
+    /// Regression test for the downward-expansion half of
+    /// <https://github.com/DataDog/saluki/issues/2596>.
+    ///
+    /// Adding the large value first used to pin the window to that single bin, so the 100 observations of `1.0`
+    /// collapsed onto the largest index seen rather than onto the lowest index the store could still represent. Both
+    /// insertion orders must now produce the same sketch.
+    #[test]
+    fn collapsing_lowest_quantiles_do_not_depend_on_insertion_order() {
+        let large = ((1u64 << 30) - 1) as f64;
+
+        let mut ascending = DDSketch::with_relative_accuracy(1.0 / 1024.0).unwrap();
+        ascending.add_n(1.0, 100);
+        ascending.add(large);
+
+        let mut descending = DDSketch::with_relative_accuracy(1.0 / 1024.0).unwrap();
+        descending.add(large);
+        descending.add_n(1.0, 100);
+
+        assert_eq!(descending.count(), ascending.count());
+        for quantile in [0.0, 0.5, 0.95, 1.0] {
+            assert_eq!(
+                descending.quantile(quantile),
+                ascending.quantile(quantile),
+                "quantile({quantile}) must not depend on insertion order"
+            );
+        }
+    }
+
     #[test]
     fn accuracy_integers_positive_only_even_small() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
