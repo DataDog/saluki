@@ -42,7 +42,7 @@ const CORE_AGENT_CLI_GRPC_MAX_INBOUND_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES: usize = 3 * 1024 * 1024;
 const _: () = assert!(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES < CORE_AGENT_CLI_GRPC_MAX_INBOUND_BYTES);
 
-/// Maximum time report output can remain buffered before it is sent to the command stream.
+/// Maximum time stdout report data can remain buffered before it is sent to the command stream.
 const REMOTE_COMMAND_OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 /// Limits full-payload output chunks awaiting framing.
 const COMMAND_OUTPUT_EVENT_CAPACITY: usize = 2;
@@ -90,11 +90,11 @@ impl RemoteCommandProviderImpl {
 }
 
 enum CommandOutputEvent {
-    Text(String),
-    Flush,
+    Stdout(String),
+    FlushStdout,
 }
 
-/// Asynchronously accepts UTF-8 command output for the stream framing worker.
+/// Asynchronously accepts UTF-8 stdout report data for the stream framing worker.
 ///
 /// Individual writes are split before they enter the bounded queue. A full queue applies asynchronous backpressure to
 /// the command rather than blocking a Tokio worker or accumulating an unbounded command transcript.
@@ -119,19 +119,19 @@ impl RemoteCommandOutput {
 
 #[async_trait]
 impl CommandOutput for RemoteCommandOutput {
-    async fn write_status(&mut self, message: &str) -> std::io::Result<()> {
-        self.write_report(&format!("{message}\n")).await
+    async fn write_progress(&mut self, message: &str) -> std::io::Result<()> {
+        self.write_stdout(&format!("{message}\n")).await
     }
 
-    async fn write_report(&mut self, output: &str) -> std::io::Result<()> {
+    async fn write_stdout(&mut self, output: &str) -> std::io::Result<()> {
         for chunk in utf8_chunks(output) {
-            self.send(CommandOutputEvent::Text(chunk.to_owned())).await?;
+            self.send(CommandOutputEvent::Stdout(chunk.to_owned())).await?;
         }
         Ok(())
     }
 
-    async fn flush(&mut self) -> std::io::Result<()> {
-        self.send(CommandOutputEvent::Flush).await
+    async fn flush_stdout(&mut self) -> std::io::Result<()> {
+        self.send(CommandOutputEvent::FlushStdout).await
     }
 }
 
@@ -163,7 +163,7 @@ async fn send_frame(
     }
 }
 
-async fn flush_pending_output(
+async fn flush_pending_stdout(
     pending: &mut String, sender: &mpsc::Sender<Result<ExecuteCommandResponse, Status>>,
     cancellation: &CancellationToken,
 ) -> bool {
@@ -174,7 +174,7 @@ async fn flush_pending_output(
     send_frame(sender, cancellation, ExecuteCommandFrame::Stdout(output)).await
 }
 
-/// Frames command output and delivers buffered text at least every 100 ms while output is pending.
+/// Frames stdout report data and delivers buffered text at least every 100 ms while output is pending.
 async fn stream_command_output(
     mut receiver: mpsc::Receiver<CommandOutputEvent>, sender: mpsc::Sender<Result<ExecuteCommandResponse, Status>>,
     cancellation: CancellationToken,
@@ -191,26 +191,26 @@ async fn stream_command_output(
             biased;
             _ = cancellation.cancelled() => return,
             _ = flush_timer.tick() => {
-                if !flush_pending_output(&mut pending, &sender, &cancellation).await {
+                if !flush_pending_stdout(&mut pending, &sender, &cancellation).await {
                     return;
                 }
             }
             event = receiver.recv() => match event {
-                Some(CommandOutputEvent::Text(text)) => {
+                Some(CommandOutputEvent::Stdout(text)) => {
                     if pending.len() + text.len() > MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES
-                        && !flush_pending_output(&mut pending, &sender, &cancellation).await
+                        && !flush_pending_stdout(&mut pending, &sender, &cancellation).await
                     {
                         return;
                     }
                     pending.push_str(&text);
                 }
-                Some(CommandOutputEvent::Flush) => {
-                    if !flush_pending_output(&mut pending, &sender, &cancellation).await {
+                Some(CommandOutputEvent::FlushStdout) => {
+                    if !flush_pending_stdout(&mut pending, &sender, &cancellation).await {
                         return;
                     }
                 }
                 None => {
-                    flush_pending_output(&mut pending, &sender, &cancellation).await;
+                    flush_pending_stdout(&mut pending, &sender, &cancellation).await;
                     return;
                 }
             },
@@ -390,7 +390,7 @@ mod tests {
         let mut output = RemoteCommandOutput::new(output_sender);
 
         output
-            .write_report("buffered output")
+            .write_stdout("buffered output")
             .await
             .expect("output should queue");
         tokio::task::yield_now().await;
@@ -410,6 +410,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_progress_is_delivered_as_stdout() {
+        let (output_sender, output_receiver) = mpsc::channel(COMMAND_OUTPUT_EVENT_CAPACITY);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let worker = tokio::spawn(stream_command_output(output_receiver, sender, CancellationToken::new()));
+        let mut output = RemoteCommandOutput::new(output_sender);
+
+        output
+            .write_progress("replay warning")
+            .await
+            .expect("progress should queue");
+        output.flush_stdout().await.expect("stdout flush should queue");
+        drop(output);
+
+        let frame = receiver.recv().await.expect("progress should be delivered");
+        assert!(
+            matches!(frame.expect("frame should be valid").frame, Some(ExecuteCommandFrame::Stdout(message)) if message == "replay warning\n")
+        );
+        worker.await.expect("worker should stop when output closes");
+    }
+
+    #[tokio::test]
     async fn remote_output_streams_more_than_the_old_aggregate_limit_in_bounded_frames() {
         let (output_sender, output_receiver) = mpsc::channel(COMMAND_OUTPUT_EVENT_CAPACITY);
         let (sender, mut receiver) = mpsc::channel(1);
@@ -418,10 +439,10 @@ mod tests {
         let write_task = tokio::spawn(async move {
             let mut output = RemoteCommandOutput::new(output_sender);
             output
-                .write_report(&expected)
+                .write_stdout(&expected)
                 .await
                 .expect("large output should stream under backpressure");
-            output.flush().await.expect("flush should queue");
+            output.flush_stdout().await.expect("flush should queue");
             expected
         });
 
@@ -450,8 +471,8 @@ mod tests {
             cancellation.clone(),
         ));
         let mut output = RemoteCommandOutput::new(output_sender);
-        output.write_report("stdout").await.expect("output should queue");
-        output.flush().await.expect("flush should queue");
+        output.write_stdout("stdout").await.expect("output should queue");
+        output.flush_stdout().await.expect("flush should queue");
         drop(output);
         worker.await.expect("output worker should finish before error handling");
 

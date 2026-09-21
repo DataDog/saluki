@@ -110,11 +110,11 @@ async fn write_rendered_report(
     output: &mut dyn CommandOutput, path: &Path, rendered: String,
 ) -> Result<(), GenericError> {
     output
-        .write_report(&rendered)
+        .write_stdout(&rendered)
         .await
         .with_error_context(|| format!("Failed to write DogStatsD context report for '{}'.", path.display()))?;
     output
-        .flush()
+        .flush_stdout()
         .await
         .with_error_context(|| format!("Failed to flush DogStatsD context report for '{}'.", path.display()))?;
     Ok(())
@@ -132,11 +132,11 @@ pub(super) async fn handle_dogstatsd_dump_contexts(
 
 async fn write_dump_path(output: &mut dyn CommandOutput, path: &Path) -> Result<(), GenericError> {
     output
-        .write_report(&format!("Wrote {}\n", path.display()))
+        .write_stdout(&format!("Wrote {}\n", path.display()))
         .await
         .with_error_context(|| format!("Failed to write the DogStatsD context dump path '{}'.", path.display()))?;
     output
-        .flush()
+        .flush_stdout()
         .await
         .with_error_context(|| format!("Failed to flush the DogStatsD context dump path '{}'.", path.display()))?;
     Ok(())
@@ -507,16 +507,16 @@ mod tests {
 
     #[async_trait]
     impl CommandOutput for RecordingWriter {
-        async fn write_status(&mut self, _message: &str) -> std::io::Result<()> {
+        async fn write_progress(&mut self, _message: &str) -> std::io::Result<()> {
             Ok(())
         }
 
-        async fn write_report(&mut self, output: &str) -> std::io::Result<()> {
+        async fn write_stdout(&mut self, output: &str) -> std::io::Result<()> {
             self.bytes.extend_from_slice(output.as_bytes());
             Ok(())
         }
 
-        async fn flush(&mut self) -> std::io::Result<()> {
+        async fn flush_stdout(&mut self) -> std::io::Result<()> {
             self.flushes.push(self.bytes.clone());
             Ok(())
         }
