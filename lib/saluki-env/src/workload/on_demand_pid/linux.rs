@@ -122,12 +122,21 @@ impl ResolverImpl {
         // handing it back lets the alias the collector registered resolve us.
         //
         // Only when both sides of that comparison are the unified hierarchy, though, since the alias map is keyed on
-        // a bare inode and inode numbers only identify a file within a single filesystem.
-        // `get_self_cgroup_controller_inode` vouches for its own end -- it returns `None` unless our `/sys/fs/cgroup`
-        // is a cgroup2 mount -- and the check here vouches for the keyspace it's about to be compared against, which
-        // is a different mount whenever the collector is reading a host-mapped cgroupfs. Under cgroups v1 those
-        // inodes come from the per-controller filesystems instead, so ours means nothing to the map: at best it
+        // a bare inode and inode numbers only identify a file within a single filesystem. The two ends are different
+        // mounts whenever the collector is reading a host-mapped cgroupfs, so each is checked separately:
+        // `get_self_cgroup_controller_inode` returns `None` unless our own `/sys/fs/cgroup` is a cgroup2 mount, and
+        // the check here establishes that the keyspace it's about to be compared against was built from one too.
+        //
+        // Neither check alone is enough, and hybrid hosts are why the second one is here. `try_from_config` prefers
+        // cgroups v1 whenever any v1 controller is mounted, so on a hybrid host the collector reads the memory
+        // controller and the map is keyed on inodes from that filesystem -- while our own `/sys/fs/cgroup` may be the
+        // unified mount, whose `cgroup.controllers` exists (empty, but present) and so satisfies the check above. An
+        // inode from the unified hierarchy means nothing to a map keyed on memory-controller inodes: at best it
         // resolves nothing, at worst it collides with another container's.
+        //
+        // Both being cgroup2 still doesn't prove they're the *same* cgroup2 -- a nested kernel, such as ADP inside a
+        // microVM with the host's cgroupfs mapped in, would be two inode spaces that both pass. Ruling that out means
+        // keying the alias map on `(dev, ino)` rather than the bare inode it uses today.
         if self.cgroups_reader.is_unified() {
             if let Some(controller_inode) = get_self_cgroup_controller_inode() {
                 return Some(EntityId::ContainerInode(controller_inode));
