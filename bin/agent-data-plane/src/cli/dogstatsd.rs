@@ -977,6 +977,7 @@ mod tests {
         dogstatsd_socket_path, parse_remote_dogstatsd_command, DogstatsdSubcommand, GenericError, ReplayTarget,
         TimestampResolution,
     };
+    #[cfg(not(target_os = "linux"))]
     use crate::cli::remote::CommandOutput;
 
     #[test]
