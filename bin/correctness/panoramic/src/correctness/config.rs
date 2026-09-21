@@ -159,11 +159,31 @@ pub struct TargetConfig {
     #[serde(default = "Vec::new")]
     pub files: Vec<String>,
 
-    /// Additional environment variables to be passed into the target container.
+    /// Environment variables to be passed into the target container.
     ///
-    /// These should be in the form of `KEY=VALUE`.
-    #[serde(default = "Vec::new")]
-    pub additional_env_vars: Vec<String>,
+    /// Keys are variable names, values are the string the process receives. Values must be YAML
+    /// strings, so quote anything that would otherwise parse as a boolean or a number (`"true"`,
+    /// `"8125"`).
+    ///
+    /// Defaults to no variables. Baseline and comparison own their own maps; nothing is shared
+    /// between them.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+impl TargetConfig {
+    /// Returns this target's environment as `KEY=VALUE` assignments, ordered by variable name.
+    ///
+    /// Airlock, and so the Docker backend, takes the environment in this process-level form rather
+    /// than as a map. The order comes from [`BTreeMap`], so the same case produces the same
+    /// container environment on every run. The kind backend builds pod environment variables from
+    /// the map directly, so both backends see the same names and values.
+    pub fn env_assignments(&self) -> Vec<String> {
+        self.env
+            .iter()
+            .map(|(name, value)| format!("{}={}", name, value))
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -264,7 +284,7 @@ impl Config {
             image: target_config.image.clone(),
             entrypoint: target_config.entrypoint.clone(),
             command: target_config.command.clone(),
-            additional_env_vars: target_config.additional_env_vars.clone(),
+            additional_env_vars: target_config.env_assignments(),
             container_os: ContainerOs::Linux,
             host_cgroup_namespace: false,
         };

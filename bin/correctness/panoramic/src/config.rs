@@ -816,9 +816,9 @@ impl IntegrationConfig {
 
 /// A single variant in a `correctness_matrix` test.
 ///
-/// Each variant expands into an independent correctness test. The variant's `additional_env_vars`
-/// are appended to the environment variables of both the baseline and comparison targets in the
-/// base configuration, allowing a single test directory to exercise multiple agent configurations
+/// Each variant expands into an independent correctness test. The variant's `env` is overlaid on
+/// the environment variables of both the baseline and comparison targets in the base
+/// configuration, allowing a single test directory to exercise multiple agent configurations
 /// without duplicating the full config layout.
 #[derive(Clone, Deserialize)]
 pub struct MatrixVariant {
@@ -828,13 +828,13 @@ pub struct MatrixVariant {
     /// `dsd-origin-detection-matrix/unified`.
     pub name: String,
 
-    /// Environment variables appended to both the baseline and comparison targets.
+    /// Environment variables overlaid on both the baseline and comparison targets.
     ///
-    /// Entries must be in `KEY=VALUE` format, identical to `additional_env_vars` on
-    /// [`CorrectnessTargetConfig`]. These are appended after the base config's env vars, so they
-    /// can override defaults by relying on last-write-wins semantics in the agent's config loader.
+    /// Same mapping form as `env` on [`CorrectnessTargetConfig`]. A variant entry replaces the base
+    /// configuration's value for the same variable name; base entries the variant does not name are
+    /// left alone.
     #[serde(default)]
-    pub additional_env_vars: Vec<String>,
+    pub env: BTreeMap<String, String>,
 }
 
 /// A matrix correctness test that fans out into one independent test per variant.
@@ -859,10 +859,10 @@ pub struct MatrixConfig {
     #[serde(default)]
     pub datadog_intake: CorrectnessDatadogIntakeConfig,
 
-    /// Baseline target configuration (shared base; variant env vars are appended).
+    /// Baseline target configuration (shared base; variant env vars are overlaid on it).
     pub baseline: CorrectnessTargetConfig,
 
-    /// Comparison target configuration (shared base; variant env vars are appended).
+    /// Comparison target configuration (shared base; variant env vars are overlaid on it).
     pub comparison: CorrectnessTargetConfig,
 
     /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
@@ -924,21 +924,18 @@ impl MatrixConfig {
 
     /// Expands this matrix into one [`CorrectnessConfig`] per variant.
     ///
-    /// Each expanded config is a clone of the base configuration with the variant's
-    /// `additional_env_vars` appended to both the baseline and comparison targets.
+    /// Each expanded config is a clone of the base configuration with the variant's `env` overlaid
+    /// on both the baseline and comparison targets, so a variable named by both the base config and
+    /// the variant takes the variant's value.
     fn expand(self, base_name: &str) -> Vec<CorrectnessConfig> {
         self.variants
             .iter()
             .map(|variant| {
                 let mut baseline = self.baseline.clone();
-                baseline
-                    .additional_env_vars
-                    .extend(variant.additional_env_vars.iter().cloned());
+                baseline.env.extend(variant.env.clone());
 
                 let mut comparison = self.comparison.clone();
-                comparison
-                    .additional_env_vars
-                    .extend(variant.additional_env_vars.iter().cloned());
+                comparison.env.extend(variant.env.clone());
 
                 CorrectnessConfig {
                     name: format!("{}/{}", base_name, variant.name),
@@ -962,7 +959,7 @@ impl MatrixConfig {
                             .iter()
                             .map(|f| canonicalize_file_entry(f, &self.base_config_path))
                             .collect(),
-                        additional_env_vars: baseline.additional_env_vars,
+                        env: baseline.env,
                     },
                     comparison: CorrectnessTargetConfig {
                         image: comparison.image,
@@ -973,7 +970,7 @@ impl MatrixConfig {
                             .iter()
                             .map(|f| canonicalize_file_entry(f, &self.base_config_path))
                             .collect(),
-                        additional_env_vars: comparison.additional_env_vars,
+                        env: comparison.env,
                     },
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                     additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
@@ -1360,9 +1357,11 @@ comparison:
   image: saluki-images/datadog-agent:testing-release
 variants:
   - name: first
-    additional_env_vars: ["DD_EXAMPLE=1"]
+    env:
+      DD_EXAMPLE: "1"
   - name: second
-    additional_env_vars: ["DD_EXAMPLE=2"]
+    env:
+      DD_EXAMPLE: "2"
 "#,
         );
 
@@ -1374,6 +1373,137 @@ variants:
         for test in &tests {
             assert_eq!(test.case_path(), case_dir, "case path for '{}'", test.name());
         }
+    }
+
+    #[test]
+    fn correctness_target_env_becomes_key_value_assignments_ordered_by_name() {
+        let base_dir = create_test_case_dir(
+            "dsd-env",
+            r#"
+type: correctness
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  env:
+    DD_TAGS: "a=1,b=2"
+    DD_API_KEY: correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  env:
+    DD_API_KEY: correctness-test
+    DD_DATA_PLANE_ENABLED: "true"
+"#,
+        );
+        let config_path = base_dir.path().join("dsd-env").join("config.yaml");
+
+        let config = CorrectnessConfig::from_yaml(config_path.to_str().unwrap()).expect("case should parse");
+
+        // What the Docker adapter hands to Airlock: one assignment per variable, ordered by name,
+        // with a value containing '=' left intact.
+        assert_eq!(
+            config.baseline.env_assignments(),
+            vec!["DD_API_KEY=correctness-test".to_string(), "DD_TAGS=a=1,b=2".to_string()]
+        );
+
+        // Each target owns its own environment: the comparison-only variable does not leak into the
+        // baseline.
+        assert_eq!(
+            config.comparison.env_assignments(),
+            vec![
+                "DD_API_KEY=correctness-test".to_string(),
+                "DD_DATA_PLANE_ENABLED=true".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn correctness_target_env_rejects_an_unquoted_boolean_value() {
+        // An unquoted `true` is a YAML boolean, not the string the process would receive, so the
+        // case must fail to load rather than guess at a value.
+        let base_dir = create_test_case_dir(
+            "dsd-bare-bool",
+            r#"
+type: correctness
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  env:
+    DD_DATA_PLANE_ENABLED: true
+"#,
+        );
+        let config_path = base_dir.path().join("dsd-bare-bool").join("config.yaml");
+
+        let error = match CorrectnessConfig::from_yaml(config_path.to_str().unwrap()) {
+            Ok(_) => panic!("an unquoted boolean env value should be rejected"),
+            Err(e) => format!("{e:?}"),
+        };
+
+        assert!(error.contains("DD_DATA_PLANE_ENABLED"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn matrix_variant_env_overlays_both_targets_and_wins_on_a_shared_variable() {
+        let base_dir = create_test_case_dir(
+            "dsd-matrix",
+            r#"
+type: correctness_matrix
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  env:
+    DD_API_KEY: correctness-test
+    DD_DOGSTATSD_TAG_CARDINALITY: low
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  env:
+    DD_API_KEY: correctness-test
+    DD_DOGSTATSD_TAG_CARDINALITY: low
+    DD_DATA_PLANE_ENABLED: "true"
+variants:
+  - name: high-cardinality
+    env:
+      DD_DOGSTATSD_TAG_CARDINALITY: high
+      DD_ORIGIN_DETECTION_UNIFIED: "true"
+"#,
+        );
+        let config_path = base_dir.path().join("dsd-matrix").join("config.yaml");
+
+        let matrix = MatrixConfig::from_yaml(config_path.to_str().unwrap()).expect("matrix should parse");
+        let expanded = matrix.expand("dsd-matrix");
+
+        assert_eq!(expanded.len(), 1);
+        let variant = &expanded[0];
+        for (side, target) in [("baseline", &variant.baseline), ("comparison", &variant.comparison)] {
+            // The variant wins on the shared variable, adds its own, and leaves the rest of the base
+            // environment alone.
+            assert_eq!(
+                target.env.get("DD_DOGSTATSD_TAG_CARDINALITY").map(String::as_str),
+                Some("high"),
+                "{side} should take the variant's cardinality"
+            );
+            assert_eq!(
+                target.env.get("DD_ORIGIN_DETECTION_UNIFIED").map(String::as_str),
+                Some("true"),
+                "{side} should gain the variant's own variable"
+            );
+            assert_eq!(
+                target.env.get("DD_API_KEY").map(String::as_str),
+                Some("correctness-test"),
+                "{side} should keep base variables the variant does not name"
+            );
+        }
+
+        // The variant overlay does not merge the two targets: comparison-only settings stay there.
+        assert_eq!(
+            variant.comparison.env.get("DD_DATA_PLANE_ENABLED").map(String::as_str),
+            Some("true")
+        );
+        assert!(!variant.baseline.env.contains_key("DD_DATA_PLANE_ENABLED"));
     }
 
     fn dynamic_vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
