@@ -188,6 +188,7 @@ async fn stream_command_output(
 
     loop {
         tokio::select! {
+            biased;
             _ = cancellation.cancelled() => return,
             _ = flush_timer.tick() => {
                 if !flush_pending_output(&mut pending, &sender, &cancellation).await {
