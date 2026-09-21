@@ -14,6 +14,8 @@ pub(crate) mod dogstatsd;
 pub use self::dogstatsd::handle_dogstatsd_command;
 use self::dogstatsd::DogstatsdCommand;
 
+pub(crate) mod remote;
+
 mod run;
 pub use self::run::handle_run_command;
 use self::run::RunCommand;

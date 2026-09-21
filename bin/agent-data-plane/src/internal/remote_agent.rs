@@ -20,8 +20,7 @@ use datadog_protos::agent::{
     command::v1::{
         execute_command_response::Frame as ExecuteCommandFrame,
         remote_command_provider_server::{RemoteCommandProvider, RemoteCommandProviderServer},
-        Command as RemoteCommand, CommandParameter, CommandProvider, ExecuteCommandRequest, ExecuteCommandResponse,
-        ListCommandsRequest, ListCommandsResponse, ParameterType,
+        CommandProvider, ExecuteCommandRequest, ExecuteCommandResponse, ListCommandsRequest, ListCommandsResponse,
     },
     config_event,
     flare::v1::{flare_provider_server::*, *},
@@ -60,9 +59,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::state::metrics::get_datadog_agent_remappings;
 use crate::{
-    cli::dogstatsd::{
-        parse_remote_dogstatsd_command, run_dogstatsd_command, DogstatsdCommandOutput, RemoteArgumentType,
-        RemoteDogstatsdCommandDescriptor, REMOTE_DOGSTATSD_COMMANDS,
+    cli::{
+        dogstatsd::{parse_remote_dogstatsd_command, run_dogstatsd_command, REMOTE_DOGSTATSD_COMMANDS},
+        remote::CommandOutput,
     },
     config::DataPlaneConfiguration,
 };
@@ -89,38 +88,10 @@ fn dogstatsd_command_provider() -> CommandProvider {
     CommandProvider {
         name: "dogstatsd".to_string(),
         description: "Inspect DogStatsD pipeline status".to_string(),
-        commands: REMOTE_DOGSTATSD_COMMANDS.iter().map(remote_command).collect(),
-    }
-}
-
-fn remote_command(descriptor: &RemoteDogstatsdCommandDescriptor) -> RemoteCommand {
-    RemoteCommand {
-        name: descriptor.name.to_string(),
-        short_name: descriptor.name.to_string(),
-        helper: descriptor.helper.to_string(),
-        parameters: descriptor.parameters.iter().map(command_parameter).collect(),
-        is_runnable: true,
-        ..Default::default()
-    }
-}
-
-fn command_parameter(descriptor: &crate::cli::dogstatsd::RemoteDogstatsdParameterDescriptor) -> CommandParameter {
-    CommandParameter {
-        name: descriptor.name.to_string(),
-        short_name: descriptor.short_name.to_string(),
-        helper: descriptor.helper.to_string(),
-        r#type: remote_parameter_type(descriptor.argument_type).into(),
-        required: descriptor.required,
-        is_flag: true,
-        is_persistent: false,
-    }
-}
-
-const fn remote_parameter_type(argument_type: RemoteArgumentType) -> ParameterType {
-    match argument_type {
-        RemoteArgumentType::String => ParameterType::TypeString,
-        RemoteArgumentType::Bool => ParameterType::TypeBool,
-        RemoteArgumentType::Uint => ParameterType::TypeUint,
+        commands: REMOTE_DOGSTATSD_COMMANDS
+            .iter()
+            .map(|descriptor| descriptor.to_rcp_command())
+            .collect(),
     }
 }
 
@@ -629,7 +600,7 @@ impl std::io::Write for RemoteCommandOutput {
     }
 }
 
-impl DogstatsdCommandOutput for RemoteCommandOutput {
+impl CommandOutput for RemoteCommandOutput {
     fn write_status(&mut self, message: &str) -> std::io::Result<()> {
         writeln!(self, "{message}")
     }
@@ -1277,23 +1248,7 @@ mod tests {
         );
 
         for (command, descriptor) in provider.commands.iter().zip(REMOTE_DOGSTATSD_COMMANDS) {
-            assert!(command.is_runnable);
-            assert_eq!(command.name, descriptor.name);
-            assert_eq!(command.short_name, descriptor.name);
-            assert_eq!(command.helper, descriptor.helper);
-            assert_eq!(command.parameters.len(), descriptor.parameters.len());
-            for (parameter, descriptor) in command.parameters.iter().zip(descriptor.parameters) {
-                assert_eq!(parameter.name, descriptor.name);
-                assert_eq!(parameter.short_name, descriptor.short_name);
-                assert_eq!(parameter.helper, descriptor.helper);
-                assert_eq!(
-                    ParameterType::try_from(parameter.r#type).expect("parameter type should be valid"),
-                    remote_parameter_type(descriptor.argument_type)
-                );
-                assert_eq!(parameter.required, descriptor.required);
-                assert!(parameter.is_flag);
-                assert!(!parameter.is_persistent);
-            }
+            assert_eq!(command, &descriptor.to_rcp_command());
         }
     }
 
@@ -1424,7 +1379,7 @@ mod tests {
     fn remote_command_output_writes_status_and_reports_to_stdout() {
         let mut output = RemoteCommandOutput { bytes: Vec::new() };
 
-        DogstatsdCommandOutput::write_status(&mut output, "command status")
+        CommandOutput::write_status(&mut output, "command status")
             .expect("status should be written to remote command output");
         std::io::Write::write_all(&mut output, b"command report")
             .expect("report should be written to remote command output");
