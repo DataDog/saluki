@@ -13,7 +13,7 @@ use tracing::warn;
 use super::signature::{ServiceSignature, Signature};
 
 /// Maximum number of entries in the catalog before eviction.
-const MAX_CATALOG_ENTRIES: usize = 5000;
+pub(super) const MAX_CATALOG_ENTRIES: usize = 5000;
 /// Initial size of our LRU cache, will grow as needed.
 const INITIAL_SIZE: usize = 1024;
 

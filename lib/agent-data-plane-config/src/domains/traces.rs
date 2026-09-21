@@ -84,14 +84,27 @@ pub struct Domain {
 
     /// Multiplier applied to every learned keep-rate of the adaptive samplers.
     ///
-    /// Defaults to 1.0, leaving the computed rates unchanged. A value of `0` keeps nothing from
-    /// the adaptive samplers, and values above 1.0 keep proportionally more.
+    /// Defaults to 1.0, leaving the computed rates unchanged; values above 1.0 keep
+    /// proportionally more. A value of `0` drops every trace decided by a learned rate.
+    /// Signatures without a learned rate—new, or freshly cleaned up—fall to the sampler's
+    /// default rate, which this multiplier does not scale.
+    ///
+    /// Operators who want coarser or finer sampling than the adaptive target computes can set
+    /// this once instead of re-planning the target: raise it temporarily for incident
+    /// investigations, lower it to control ingestion cost. The trade-off is coverage against
+    /// volume—every adaptive sampler's output scales together, so the per-service distribution
+    /// is preserved while the total scales.
     pub extra_sample_rate: f64,
 
     /// Maximum number of service signatures the priority sampler tracks rates for.
     ///
-    /// Defaults to 5000. If set to `0`, the default of 5000 applies. Distinct services beyond the
-    /// cap evict the least recently used entries and lose their learned rates.
+    /// Defaults to 5000. If set to `0`, the default of 5000 applies. Distinct services beyond
+    /// the cap evict the least recently used entries and lose their learned rates.
+    ///
+    /// Deployments with more distinct (service, environment) pairs than the default should
+    /// raise this. The trade-off is memory—the catalog holds a map entry and an LRU entry
+    /// per tracked signature—against rate fidelity, since evicted services re-learn their
+    /// rates from cold.
     pub max_catalog_entries: usize,
 
     /// Beta APM feature flags enabled for traces.

@@ -154,6 +154,21 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
 impl MemoryBounds for TraceSamplerConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<TraceSampler>("component struct");
+
+        // The catalog holds a hash map slot plus one LRU slab entry per tracked signature. A
+        // configured 0 selects the default cap, matching the catalog's own resolution.
+        let catalog_capacity = if self.max_catalog_entries == 0 {
+            catalog::MAX_CATALOG_ENTRIES
+        } else {
+            self.max_catalog_entries
+        };
+        builder
+            .minimum()
+            .with_map::<signature::ServiceSignature, u32>("priority sampler catalog map", catalog_capacity)
+            .with_map::<signature::ServiceSignature, signature::Signature>(
+                "priority sampler catalog entries",
+                catalog_capacity,
+            );
     }
 }
 
