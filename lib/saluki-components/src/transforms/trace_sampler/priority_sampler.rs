@@ -41,6 +41,11 @@ impl PrioritySampler {
         self.sampler.update_target_tps(target_tps);
     }
 
+    /// Returns the number of service signatures tracked by the underlying sampler.
+    pub(super) fn tracked_signature_count(&self) -> i64 {
+        self.sampler.size()
+    }
+
     /// Returns the current target traces per second.
     pub(super) fn get_target_tps(&self) -> f64 {
         self.sampler.target_tps()

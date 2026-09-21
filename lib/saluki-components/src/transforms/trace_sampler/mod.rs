@@ -15,6 +15,7 @@
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
@@ -24,6 +25,7 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -35,11 +37,13 @@ mod probabilistic;
 mod rare_sampler;
 mod score_sampler;
 mod signature;
+mod telemetry;
 
 use self::probabilistic::PROB_RATE_KEY;
+use self::telemetry::Telemetry;
 use crate::common::datadog::{
-    compute_top_level, get_root_span_index, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC,
-    OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
+    compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
+    DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
 };
 
 // Sampling priority constants (matching datadog-agent)
@@ -114,9 +118,13 @@ impl TraceSamplerConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for TraceSamplerConfiguration {
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
+        let telemetry = Telemetry::new(&MetricsBuilder::from_component_context(context.component_context()));
+        // The transform is built once per process, so the flush loop runs for the process lifetime.
+        tokio::spawn(telemetry.clone().run_flush_loop());
+
         let sampler = TraceSampler {
             sampling_rate: self.sampling_percentage / 100.0,
             error_sampling_enabled: self.error_sampling_enabled,
@@ -143,7 +151,9 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                 self.rare_sampler_tps,
                 std::time::Duration::from_secs_f64(self.rare_sampler_cooldown_secs),
                 self.rare_sampler_cardinality,
+                telemetry.clone(),
             ),
+            telemetry,
             compute_top_level_by_span_kind: self.compute_top_level_by_span_kind,
         };
 
@@ -184,6 +194,7 @@ pub struct TraceSampler {
     priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
     rare_sampler: rare_sampler::RareSampler,
+    telemetry: Telemetry,
 }
 
 impl TraceSampler {
@@ -333,29 +344,57 @@ impl TraceSampler {
     /// Return a tuple containing whether or not the trace should be kept, the decision maker tag (which sampler is responsible),
     /// and the index of the root span used for evaluation.
     fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, Option<usize>) {
+        let (keep, priority, decision_maker, root_span_idx, sampler_name) = self.run_samplers_inner(trace);
+
+        let (service, env) = match root_span_idx {
+            Some(root_span_idx) => {
+                let service = trace
+                    .spans()
+                    .get(root_span_idx)
+                    .map(|span| MetaString::from(span.service()))
+                    .unwrap_or_default();
+                let env = get_trace_env(trace, root_span_idx).cloned().unwrap_or_default();
+                (service, env)
+            }
+            None => (MetaString::empty(), MetaString::empty()),
+        };
+        self.telemetry
+            .record_decision(keep, sampler_name, priority, service, env);
+
+        (keep, priority, decision_maker, root_span_idx)
+    }
+
+    fn run_samplers_inner(
+        &mut self, trace: &mut Trace,
+    ) -> (bool, i32, &'static str, Option<usize>, telemetry::SamplerName) {
+        // The name starts unclaimed; whichever sampler decides the trace claims it, so every
+        // decision is recorded under exactly one sampler.
+        let mut sampler_name = telemetry::SamplerName::Unknown;
+
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
         // Empty trace check
         if trace.spans().is_empty() {
-            return (false, PRIORITY_AUTO_DROP, "", None);
+            return (false, PRIORITY_AUTO_DROP, "", None, sampler_name);
         }
 
         let Some(root_span_idx) = self.get_root_span_index(trace) else {
-            return (false, PRIORITY_AUTO_DROP, "", None);
+            return (false, PRIORITY_AUTO_DROP, "", None, sampler_name);
         };
 
         // ETS: only sample traces containing errors (including exception span events); skip all other samplers.
-        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L1068
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00/pkg/trace/agent/agent.go#L1068
         if self.error_tracking_standalone {
+            sampler_name = telemetry::SamplerName::Error;
             let otlp_pre_sample = self.otlp_pre_sample(trace, root_span_idx);
             if self.trace_contains_error(trace, true) {
                 let now = std::time::SystemTime::now();
                 let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 let default_priority = if keep { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP };
                 let (priority, dm) = otlp_pre_sample.unwrap_or((default_priority, ""));
-                return (keep, priority, dm, Some(root_span_idx));
+                return (keep, priority, dm, Some(root_span_idx), sampler_name);
             }
             let (pre_priority, pre_dm) = otlp_pre_sample.unwrap_or((PRIORITY_AUTO_DROP, ""));
-            return (false, pre_priority, pre_dm, Some(root_span_idx));
+            return (false, pre_priority, pre_dm, Some(root_span_idx), sampler_name);
         }
 
         // Run the rare sampler early, before all other samplers. This mirrors the Go agent behavior
@@ -365,11 +404,13 @@ impl TraceSampler {
 
         // Modern path: ProbabilisticSamplerEnabled = true
         if self.probabilistic_sampler_enabled {
+            sampler_name = telemetry::SamplerName::Probabilistic;
             let mut prob_keep = false;
             let mut decision_maker = "";
 
             if rare {
                 // Rare sampler wins over probabilistic sampling.
+                sampler_name = telemetry::SamplerName::Rare;
                 prob_keep = true;
             } else {
                 if self.sample_probabilistic(trace.trace_id_high, trace.trace_id_low) {
@@ -383,6 +424,7 @@ impl TraceSampler {
                         );
                     }
                 } else if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
+                    sampler_name = telemetry::SamplerName::Error;
                     let now = std::time::SystemTime::now();
                     prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 }
@@ -394,7 +436,7 @@ impl TraceSampler {
                 PRIORITY_AUTO_DROP
             };
 
-            return (prob_keep, priority, decision_maker, Some(root_span_idx));
+            return (prob_keep, priority, decision_maker, Some(root_span_idx), sampler_name);
         }
 
         // Read once here, where the samplers below consume it; every path above returns without
@@ -402,27 +444,32 @@ impl TraceSampler {
         let now = std::time::SystemTime::now();
         let user_priority = self.get_user_priority(trace, root_span_idx);
         if let Some(priority) = user_priority {
+            sampler_name = telemetry::SamplerName::Priority;
             if priority < PRIORITY_AUTO_DROP {
                 // Manual drop: short-circuit and skip other samplers.
-                return (false, priority, "", Some(root_span_idx));
+                return (false, priority, "", Some(root_span_idx), sampler_name);
             }
 
             if rare {
-                return (true, priority, "", Some(root_span_idx));
+                sampler_name = telemetry::SamplerName::Rare;
+                return (true, priority, "", Some(root_span_idx), sampler_name);
             }
 
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
-                return (true, priority, "", Some(root_span_idx));
+                return (true, priority, "", Some(root_span_idx), sampler_name);
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
+            sampler_name = telemetry::SamplerName::NoPriority;
             // Rare check mirrors agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
             if rare {
-                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+                sampler_name = telemetry::SamplerName::Rare;
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx), sampler_name);
             }
 
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.trace_id_low;
             if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+                sampler_name = telemetry::SamplerName::Probabilistic;
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.attributes.remove(PROB_RATE_KEY);
                 }
@@ -431,26 +478,30 @@ impl TraceSampler {
                     PRIORITY_AUTO_KEEP,
                     DECISION_MAKER_PROBABILISTIC,
                     Some(root_span_idx),
+                    sampler_name,
                 );
             }
         } else {
+            sampler_name = telemetry::SamplerName::NoPriority;
             if rare {
-                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+                sampler_name = telemetry::SamplerName::Rare;
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx), sampler_name);
             }
             if self.no_priority_sampler.sample(now, trace, root_span_idx) {
-                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx), sampler_name);
             }
         }
 
         if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
+            sampler_name = telemetry::SamplerName::Error;
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
-                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx), sampler_name);
             }
         }
 
         // Default: drop the trace
-        (false, PRIORITY_AUTO_DROP, "", Some(root_span_idx))
+        (false, PRIORITY_AUTO_DROP, "", Some(root_span_idx), sampler_name)
     }
 
     /// Fills in trace-level metadata from the spans.
@@ -596,6 +647,13 @@ impl TraceSampler {
 
 impl SynchronousTransform for TraceSampler {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        // Published once per buffer; the flush loop reports the latest values as gauges.
+        self.telemetry.set_tracked_signature_counts(
+            self.priority_sampler.tracked_signature_count(),
+            self.no_priority_sampler.tracked_signature_count(),
+            self.error_sampler.tracked_signature_count(),
+        );
+
         buffer.remove_if(|event| match event {
             Event::Trace(trace) => !self.process_trace(trace),
             _ => false,
@@ -622,7 +680,14 @@ mod tests {
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
-            rare_sampler: rare_sampler::RareSampler::new(false, 5.0, std::time::Duration::from_secs(300), 200),
+            rare_sampler: rare_sampler::RareSampler::new(
+                false,
+                5.0,
+                std::time::Duration::from_secs(300),
+                200,
+                telemetry::Telemetry::for_tests(),
+            ),
+            telemetry: telemetry::Telemetry::for_tests(),
             compute_top_level_by_span_kind: false,
         }
     }
@@ -1152,6 +1217,52 @@ mod tests {
     }
 
     #[test]
+    fn every_trace_is_counted_under_exactly_one_sampler() {
+        // With the probabilistic sampler enabled at rate 1.0, every trace is decided (and kept) by
+        // it: the sum of seen across all decision keys must equal the number of traces, with no
+        // double counting across samplers.
+        let mut sampler = create_test_sampler();
+
+        for i in 0..10 {
+            let span = create_test_span(i, 0);
+            let mut trace = create_test_trace(vec![span]);
+            sampler.run_samplers(&mut trace);
+        }
+
+        let decisions = sampler.telemetry.snapshot_decisions();
+        let total_seen: u64 = decisions.values().map(|counts| counts.seen).sum();
+        let total_kept: u64 = decisions.values().map(|counts| counts.kept).sum();
+        assert_eq!(total_seen, 10);
+        assert_eq!(total_kept, 10);
+        assert!(decisions
+            .keys()
+            .all(|key| key.sampler == telemetry::SamplerName::Probabilistic));
+        assert!(decisions.keys().all(|key| key.service == "test-service"));
+    }
+
+    #[test]
+    fn priority_decisions_are_counted_under_the_priority_sampler_with_priority_tag() {
+        // A trace with a user-set sampling priority is decided by the priority sampler, and its
+        // decision key carries that priority; no other sampler claims it.
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let mut metrics = HashMap::new();
+        metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 2.0);
+        let span = create_test_span_with_metrics(1, metrics);
+        let mut trace = create_test_trace(vec![span]);
+        sampler.run_samplers(&mut trace);
+
+        let decisions = sampler.telemetry.snapshot_decisions();
+        assert_eq!(decisions.len(), 1);
+        let (key, counts) = decisions.iter().next().unwrap();
+        assert_eq!(key.sampler, telemetry::SamplerName::Priority);
+        assert_eq!(key.priority, Some(PRIORITY_USER_KEEP));
+        assert_eq!(counts.seen, 1);
+        assert_eq!(counts.kept, 1);
+    }
+
+    #[test]
     fn error_detection() {
         let sampler = create_test_sampler();
 
@@ -1424,7 +1535,13 @@ mod tests {
     /// freely samples first occurrences, plus a long TTL so second occurrences stay within TTL.
     fn create_sampler_with_rare_enabled() -> TraceSampler {
         TraceSampler {
-            rare_sampler: rare_sampler::RareSampler::new(true, 1000.0, std::time::Duration::from_secs(300), 200),
+            rare_sampler: rare_sampler::RareSampler::new(
+                true,
+                1000.0,
+                std::time::Duration::from_secs(300),
+                200,
+                telemetry::Telemetry::for_tests(),
+            ),
             ..create_test_sampler()
         }
     }
