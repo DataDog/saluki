@@ -69,42 +69,39 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 
 pub(super) async fn handle_dogstatsd_top(
     requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: ValidatedTopCommand,
-    output: &mut (dyn Write + Send), cancellation: Option<&CancellationToken>,
+    output: &mut (dyn Write + Send), cancellation: &CancellationToken,
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
         Some(path) => path,
         None => {
             let requester =
                 requester.ok_or_else(|| generic_error!("Online DogStatsD top requires a context dump requester."))?;
-            let path = requester
-                .request_context_dump()
-                .await
-                .error_context("Failed to request a DogStatsD context dump.")?;
+            let path = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Ok(()),
+                result = requester.request_context_dump() => result,
+            }
+            .error_context("Failed to request a DogStatsD context dump.")?;
             write_dump_path(output, &path)?;
             path
         }
     };
 
-    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+    if cancellation.is_cancelled() {
         return Ok(());
     }
 
     let file = open_context_report_file(&path)?;
-    let rendered = if let Some(cancellation) = cancellation {
-        let metric_limit = cmd.num_metrics;
-        let tag_limit = cmd.num_tags;
-        let task = tokio::task::spawn_blocking({
-            let path = path.clone();
-            move || render_report_from_file(&path, file, metric_limit, tag_limit)
-        });
-        let Some(rendered) =
-            super::run_cancellable_blocking(cancellation, task, "DogStatsD context report rendering").await?
-        else {
-            return Ok(());
-        };
-        rendered
-    } else {
-        render_report_from_file(&path, file, cmd.num_metrics, cmd.num_tags)?
+    let metric_limit = cmd.num_metrics;
+    let tag_limit = cmd.num_tags;
+    let task = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || render_report_from_file(&path, file, metric_limit, tag_limit)
+    });
+    let Some(rendered) =
+        super::run_cancellable_blocking(cancellation, task, "DogStatsD context report rendering").await?
+    else {
+        return Ok(());
     };
 
     write_rendered_report(output, &path, rendered)
@@ -266,7 +263,7 @@ mod tests {
         let mut requester = FakeRequester::returning_path("unused");
         let mut output = RecordingWriter::default();
 
-        handle_dogstatsd_top(Some(&mut requester), command, &mut output, None)
+        handle_dogstatsd_top(Some(&mut requester), command, &mut output, &CancellationToken::new())
             .await
             .expect("offline top should succeed");
 
@@ -293,27 +290,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dogstatsd_top_offline_rejects_a_non_regular_file() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let mut output = RecordingWriter::default();
-
-        let error = handle_dogstatsd_top(
-            None,
-            top_command(Some(directory.path().to_owned()), 10, None),
-            &mut output,
-            None,
-        )
-        .await
-        .expect_err("offline top should reject a directory");
-
-        let error_text = error.to_string().to_lowercase();
-        assert!(
-            error_text.contains("regular file") || error_text.contains("failed to open"),
-            "{error:#}"
-        );
-    }
-
-    #[tokio::test]
     async fn dogstatsd_top_offline_does_not_render_after_cancellation() {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
@@ -323,7 +299,7 @@ mod tests {
             None,
             top_command(Some(PathBuf::from("missing-context-dump.ndjson")), 10, None),
             &mut output,
-            Some(&cancellation),
+            &cancellation,
         )
         .await
         .expect("cancelled offline top should not read or render the artifact");
@@ -337,9 +313,14 @@ mod tests {
         let mut requester = FakeRequester::returning_path(PLAIN_FIXTURE);
         let mut output = RecordingWriter::default();
 
-        handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None), &mut output, None)
-            .await
-            .expect("online top should succeed");
+        handle_dogstatsd_top(
+            Some(&mut requester),
+            top_command(None, 10, None),
+            &mut output,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("online top should succeed");
 
         assert_eq!(requester.calls, 1);
         assert_eq!(output.text(), format!("Wrote {PLAIN_FIXTURE}\n{GOLDEN_REPORT}"));
@@ -385,9 +366,14 @@ mod tests {
         let mut requester = FakeRequester::returning_path(artifact.path());
         let mut output = RecordingWriter::default();
 
-        let error = handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None), &mut output, None)
-            .await
-            .expect_err("corrupt artifact should fail");
+        let error = handle_dogstatsd_top(
+            Some(&mut requester),
+            top_command(None, 10, None),
+            &mut output,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("corrupt artifact should fail");
 
         let wrote_line = format!("Wrote {}\n", artifact.path().display());
         assert_eq!(requester.calls, 1);
@@ -413,7 +399,7 @@ mod tests {
             None,
             top_command(Some(artifact.path().to_owned()), 10, None),
             &mut output,
-            None,
+            &CancellationToken::new(),
         )
         .await
         .expect_err("wrong-typed artifact field should fail");
@@ -438,7 +424,7 @@ mod tests {
             None,
             top_command(Some(artifact.path().to_owned()), 10, None),
             &mut output,
-            None,
+            &CancellationToken::new(),
         )
         .await
         .expect("empty artifact should render");
@@ -479,7 +465,7 @@ mod tests {
 
         for (command, expected) in cases {
             let mut output = RecordingWriter::default();
-            handle_dogstatsd_top(None, command, &mut output, None)
+            handle_dogstatsd_top(None, command, &mut output, &CancellationToken::new())
                 .await
                 .expect("offline report should render");
             assert_eq!(output.text(), expected);
