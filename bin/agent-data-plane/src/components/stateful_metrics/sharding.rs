@@ -1,5 +1,7 @@
 //! Stable routing of logical series, independent of point values and timestamps.
 
+use std::hash::Hash;
+
 use foldspace_core::{LogicalMetricBatch, LogicalMetricSeries};
 use saluki_common::hash::hash_single_stable;
 use saluki_core::data_model::event::Event;
@@ -7,9 +9,19 @@ use saluki_core::data_model::event::Event;
 use super::conversion;
 
 pub(super) fn series_hash(series: &LogicalMetricSeries) -> u64 {
-    let mut tags: Vec<_> = series.tags().prefix.iter().chain(&series.tags().values).collect();
+    let tags = series.tags();
+    // Conversion produces sorted, unique standalone tags; hash them without allocating another vector.
+    if tags.prefix.is_empty() && tags.values.windows(2).all(|pair| pair[0] < pair[1]) {
+        return hash_with_tags(series, tags.values.as_slice());
+    }
+
+    let mut tags: Vec<_> = tags.prefix.iter().chain(&tags.values).collect();
     tags.sort_unstable();
     tags.dedup();
+    hash_with_tags(series, tags)
+}
+
+fn hash_with_tags(series: &LogicalMetricSeries, tags: impl Hash) -> u64 {
     let mut resources: Vec<_> = series.resources().iter().map(|r| (&r.kind, &r.name)).collect();
     resources.sort_unstable();
     resources.dedup();
