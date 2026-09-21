@@ -9,6 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
@@ -19,7 +20,8 @@ saluki-metrics = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

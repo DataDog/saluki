@@ -1,5 +1,6 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
+use saluki_common::supervision::CompositeWorker;
 use saluki_context::{
     origin::RawOrigin, tags::SharedTagSet, ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder,
 };
@@ -25,10 +26,12 @@ impl ContextResolvers {
     ///
     /// If the context resolver string interner size is invalid, or there is an error creating either of the context
     /// resolvers, an error is returned.
+    /// The returned worker drives cache expiration and interner telemetry for all three resolvers. It must be
+    /// spawned under the component's supervisor -- see `DogStatsD::run` -- or none of that work happens.
     pub fn new(
         config: &DogStatsDConfiguration, context: &ComponentContext,
         maybe_origin_tags_resolver: Option<DogStatsDOriginTagResolver>,
-    ) -> Result<Self, GenericError> {
+    ) -> Result<(Self, CompositeWorker), GenericError> {
         // We'll use the same string interner size for both context resolvers, which does mean double the usage, but
         // it's simpler this way for the moment.
         let context_string_interner_size =
@@ -43,39 +46,54 @@ impl ContextResolvers {
         let interner = GenericMapInterner::new(context_string_interner_size);
 
         let origin_tags = maybe_origin_tags_resolver.clone();
-        let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
-            .with_cached_tagsets_limit(cached_tagsets_limit)
-            .with_idle_tagsets_expiration(context_expiry_seconds)
-            .with_heap_allocations(allow_context_heap_allocations)
-            .with_origin_tags_resolver(
-                maybe_origin_tags_resolver
-                    .map(|resolver| -> Arc<dyn saluki_context::origin::OriginTagsResolver> { Arc::new(resolver) }),
-            )
-            .build();
+        let (tags_resolver, tags_resolver_worker) =
+            TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
+                .with_cached_tagsets_limit(cached_tagsets_limit)
+                .with_idle_tagsets_expiration(context_expiry_seconds)
+                .with_heap_allocations(allow_context_heap_allocations)
+                .with_origin_tags_resolver(
+                    maybe_origin_tags_resolver
+                        .map(|resolver| -> Arc<dyn saluki_context::origin::OriginTagsResolver> { Arc::new(resolver) }),
+                )
+                .build();
 
-        let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .with_cached_contexts_limit(cached_contexts_limit)
-            .with_idle_context_expiration(context_expiry_seconds)
-            .with_heap_allocations(allow_context_heap_allocations)
-            .with_tags_resolver(Some(tags_resolver.clone()))
-            .with_interner(interner.clone())
-            .build();
+        let (primary_resolver, primary_resolver_worker) =
+            ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
+                .with_interner_capacity_bytes(context_string_interner_size)
+                .with_cached_contexts_limit(cached_contexts_limit)
+                .with_idle_context_expiration(context_expiry_seconds)
+                .with_heap_allocations(allow_context_heap_allocations)
+                .with_tags_resolver(Some(tags_resolver.clone()))
+                .with_interner(interner.clone())
+                .build();
 
-        let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .without_caching()
-            .with_heap_allocations(allow_context_heap_allocations)
-            .with_tags_resolver(Some(tags_resolver.clone()))
-            .with_interner(interner)
-            .build();
+        let (no_agg_resolver, no_agg_resolver_worker) =
+            ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
+                .with_interner_capacity_bytes(context_string_interner_size)
+                .without_caching()
+                .with_heap_allocations(allow_context_heap_allocations)
+                .with_tags_resolver(Some(tags_resolver.clone()))
+                .with_interner(interner)
+                .build();
 
-        Ok(ContextResolvers {
+        // One child for all three: they are restarted together, and a panic in any of them brings the group back.
+        let worker = CompositeWorker::new(
+            "context_resolvers",
+            vec![
+                Box::new(tags_resolver_worker),
+                Box::new(primary_resolver_worker),
+                Box::new(no_agg_resolver_worker),
+            ],
+        );
+
+        let resolvers = ContextResolvers {
             primary: primary_resolver,
             no_agg: no_agg_resolver,
             tags: tags_resolver,
             origin_tags,
-        })
+        };
+
+        Ok((resolvers, worker))
     }
 
     #[cfg(test)]
@@ -169,8 +187,9 @@ mod tests {
             context_string_interner_size_bytes: Some(ByteSize::kib(64)),
             ..DogStatsDConfiguration::for_test()
         };
-        let mut resolvers =
-            ContextResolvers::new(&config, &test_context(), None).expect("valid config should build resolvers");
+        let mut resolvers = ContextResolvers::new(&config, &test_context(), None)
+            .expect("valid config should build resolvers")
+            .0;
 
         let primary = resolvers
             .primary()
