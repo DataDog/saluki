@@ -53,6 +53,26 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONFIG_EXTRA_SAMPLE_RATE"],
+        path: &["apm_config", "extra_sample_rate"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_FEATURES"],
+        path: &["apm_config", "features"],
+        decode: EnvDecode::CommaThenSpaceSeparated,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_CONFIG_MAX_CATALOG_ENTRIES"],
+        path: &["apm_config", "max_catalog_entries"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],
+        path: &["apm_config", "max_traces_per_second"],
+        decode: EnvDecode::Float,
+    },
+    EnvKey {
         env_vars: &["DD_APM_OBFUSCATION_CREDIT_CARDS_ENABLED"],
         path: &["apm_config", "obfuscation", "credit_cards", "enabled"],
         decode: EnvDecode::Bool,
@@ -168,9 +188,19 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_APM_PROBABILISTIC_SAMPLER_HASH_SEED"],
+        path: &["apm_config", "probabilistic_sampler", "hash_seed"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE"],
         path: &["apm_config", "probabilistic_sampler", "sampling_percentage"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_REPLACE_TAGS"],
+        path: &["apm_config", "replace_tags"],
+        decode: EnvDecode::Json,
     },
     EnvKey {
         env_vars: &["DD_APM_TARGET_TPS"],
@@ -233,6 +263,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_CONTAINER_CGROUP_ROOT"],
+        path: &["container_cgroup_root"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_CONTAINER_PROC_ROOT"],
+        path: &["container_proc_root"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_CRI_CONNECTION_TIMEOUT"],
         path: &["cri_connection_timeout"],
         decode: EnvDecode::Integer,
@@ -241,6 +281,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_CRI_QUERY_TIMEOUT"],
         path: &["cri_query_timeout"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_CRI_SOCKET_PATH"],
+        path: &["cri_socket_path"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_DATA_PLANE_API_LISTEN_ADDRESS"],
@@ -314,6 +359,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS"],
         path: &["data_plane", "secure_api_listen_address"],
         decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"],
+        path: &["data_plane", "serializer_zstd_compressor_level"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_DATA_PLANE_STOP_TIMEOUT"],
+        path: &["data_plane", "stop_timeout"],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT"],
@@ -538,17 +593,17 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_FORWARDER_BACKOFF_BASE"],
         path: &["forwarder_backoff_base"],
-        decode: EnvDecode::Integer,
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_BACKOFF_FACTOR"],
         path: &["forwarder_backoff_factor"],
-        decode: EnvDecode::Integer,
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_BACKOFF_MAX"],
         path: &["forwarder_backoff_max"],
-        decode: EnvDecode::Integer,
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_CONNECTION_RESET_INTERVAL"],
@@ -654,6 +709,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_HISTOGRAM_PERCENTILES"],
         path: &["histogram_percentiles"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_HOSTNAME"],
+        path: &["hostname"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_IPC_CERT_FILE_PATH"],
@@ -1052,11 +1112,6 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL"],
         path: &["serializer_experimental_use_v3_api", "compression_level"],
         decode: EnvDecode::Integer,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS"],
-        path: &["serializer_experimental_use_v3_api", "series", "endpoints"],
-        decode: EnvDecode::StringList,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],

@@ -67,6 +67,7 @@
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
 use std::{
+    collections::HashMap,
     fmt,
     marker::PhantomData,
     num::{NonZeroU64, NonZeroUsize},
@@ -75,12 +76,12 @@ use std::{
 
 use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
-    DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
+    DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
     DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
-use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
 use serde::de::Visitor;
@@ -150,7 +151,8 @@ pub struct SalukiOnly {
     /// Internal-telemetry verbosity (`metrics_level`).
     pub metrics_level: Option<String>,
     /// Remote-agent IPC string interner byte budget (`remote_agent_string_interner_size_bytes`).
-    pub remote_agent_string_interner_size_bytes: Option<usize>,
+    /// An explicit `0` fails the load: the interner cannot be built with no capacity.
+    pub remote_agent_string_interner_size_bytes: Option<NonZeroUsize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
     pub checks_ipc_endpoint: Option<String>,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
@@ -224,6 +226,8 @@ pub struct SalukiOnly {
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
     pub data_plane: DataPlane,
+    /// Unstable settings (`experimental.*`) that may change, move, or be removed without backward compatibility.
+    pub experimental: Experimental,
     /// APM trace knobs (`apm_config.*`).
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
@@ -234,24 +238,68 @@ pub struct SalukiOnly {
     pub ottl_transform_config: Option<OttlTransformConfig>,
 }
 
+/// Shared namespace for experimental settings (`experimental.*`).
+///
+/// Keys in this section may change, move, or be removed. Do not rely on backward compatibility.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Experimental {
+    /// Startup-only per-endpoint metric filtering (`experimental.metrics_endpoint_routing.*`).
+    pub metrics_endpoint_routing: MetricsEndpointRouting,
+}
+
+/// Experimental metrics endpoint-routing settings (`experimental.metrics_endpoint_routing.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct MetricsEndpointRouting {
+    /// Exact metric names permitted per configured primary or additional endpoint
+    /// (`experimental.metrics_endpoint_routing.metric_allowlist`).
+    ///
+    /// Defaults to absent, leaving routing unchanged. An empty allowlist drops all metrics for that endpoint,
+    /// including sketches. Operators can use this to reduce metric volume at selected destinations.
+    pub metric_allowlist: Option<HashMap<String, Vec<String>>>,
+}
+
 /// `data_plane.*` Saluki-only knobs.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlane {
-    /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout`).
-    ///
-    /// If present, this will override the Datadog schema's `aggregator_stop_timeout` and
-    /// `forwarder_stop_timeout` values.
-    pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
-    /// ADP-specific zstd compression level (`data_plane.serializer_zstd_compressor_level`), which
-    /// takes precedence over the Core Agent's `serializer_zstd_compressor_level`.
-    pub serializer_zstd_compressor_level: Option<i32>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
     pub otlp: DataPlaneOtlp,
+    /// APM v1.0 trace pipeline gate and receiver settings (`data_plane.apm.*`).
+    pub apm: DataPlaneApm,
+}
+
+/// `data_plane.apm.*`: the Datadog v1.0 (`idx`/ETP) trace receiver.
+///
+/// Deliberately not spelled `apm_config.*`: see
+/// [`agent_data_plane_config::domains::apm`] for why those keys can't be reused.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DataPlaneApm {
+    /// Whether the APM v1.0 trace pipeline is built (`data_plane.apm.enabled`).
+    pub enabled: Option<bool>,
+    /// TCP receiver endpoint (`data_plane.apm.receiver_endpoint`).
+    pub receiver_endpoint: Option<String>,
+    /// Unix domain socket path (`data_plane.apm.receiver_socket`).
+    pub receiver_socket: Option<String>,
+    /// Maximum accepted request body size (`data_plane.apm.max_payload_size`), given as a bare
+    /// integer number of bytes or a byte-size string such as `25MB`. `ByteSize` accepts both forms,
+    /// so the plain integer the equivalent Agent key uses does not fail the load.
+    pub max_payload_size: Option<ByteSize>,
+    /// Whether the receiver may bind a non-loopback TCP address (`data_plane.apm.non_local_traffic`).
+    pub non_local_traffic: Option<bool>,
+    /// How long to wait for the pipeline to accept a payload (`data_plane.apm.dispatch_timeout`),
+    /// given as a duration string such as `1s`.
+    ///
+    /// Not interchangeable with the reference trace-agent's `apm_config.decoder_timeout`, whose bare
+    /// integer counts milliseconds: a bare integer here counts nanoseconds, following Go's
+    /// `time.Duration` and the rest of ADP's duration keys. Spell the unit to avoid the ambiguity.
+    pub dispatch_timeout: Option<DurationString>,
 }
 
 // TODO(#2177): Delete these ADP-only defaults when receiver endpoints return to the canonical
@@ -294,6 +342,10 @@ pub struct DataPlaneChecks {
 pub struct ApmConfig {
     /// Default trace environment (`apm_config.default_env`).
     pub default_env: Option<String>,
+    /// Maximum length of a span's resource name, in bytes (`apm_config.max_resource_len`).
+    ///
+    /// Defaults to 5000 bytes. If set to `0`, all span resources are truncated to empty strings.
+    pub max_resource_len: Option<usize>,
     /// Whether error sampling is enabled (`apm_config.error_sampling_enabled`).
     pub error_sampling_enabled: Option<bool>,
     /// Rare sampler tuning (`apm_config.rare_sampler.*`).
@@ -518,12 +570,14 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
-        config.control.stop_timeout = self.data_plane.stop_timeout.map(Duration::from_secs);
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
         }
         if let Some(v) = self.data_plane.checks.enabled {
             config.control.checks = v;
+        }
+        if let Some(v) = self.data_plane.apm.enabled {
+            config.control.apm = v;
         }
         config.control.memory_limit = self.memory_limit.map(|v| v.as_u64());
         config.control.memory_slop_factor = self.memory_slop_factor.unwrap_or(DEFAULT_MEMORY_SLOP_FACTOR);
@@ -544,10 +598,12 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
-        // Highest precedence of the three inputs `Compression::zstd_compressor_level` resolves, so it
-        // is explicit when set and keeps ADP's default otherwise.
-        if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
-            config.shared.endpoints.compression.adp_zstd_level = ConfigValue::explicit(v);
+
+        // domains.metrics_endpoint_routing
+        let routing = &self.experimental.metrics_endpoint_routing;
+        let destination = &mut config.domains.metrics_endpoint_routing;
+        if let Some(v) = &routing.metric_allowlist {
+            destination.metric_allowlists.clone_from(v);
         }
 
         // domains.dogstatsd
@@ -646,6 +702,7 @@ impl SalukiOnly {
         if let Some(v) = self.apm_config.default_env.clone() {
             traces.default_env = v;
         }
+        traces.max_resource_len = self.apm_config.max_resource_len.unwrap_or(DEFAULT_MAX_RESOURCE_LEN);
         if let Some(v) = self.apm_config.error_sampling_enabled {
             traces.error_sampling_enabled = v;
         }
@@ -686,6 +743,27 @@ impl SalukiOnly {
             };
         }
 
+        // domains.apm
+        let apm = &mut config.domains.apm;
+        if let Some(v) = self.data_plane.apm.receiver_endpoint.clone() {
+            apm.receiver_endpoint = v;
+        }
+        if let Some(v) = self.data_plane.apm.receiver_socket.clone() {
+            apm.receiver_socket = v;
+        }
+        if let Some(v) = self.data_plane.apm.max_payload_size {
+            // Saturating rather than wrapping: on a 32-bit target a configured cap above `usize::MAX`
+            // is unreachable anyway, and clamping to the largest expressible cap is closer to the
+            // operator's intent than truncating it to a small one.
+            apm.max_payload_size = usize::try_from(v.as_u64()).unwrap_or(usize::MAX);
+        }
+        if let Some(v) = self.data_plane.apm.non_local_traffic {
+            apm.non_local_traffic = v;
+        }
+        if let Some(v) = self.data_plane.apm.dispatch_timeout {
+            apm.dispatch_timeout = v.into();
+        }
+
         // domains.checks
         if let Some(v) = &self.checks_ipc_endpoint {
             config.domains.checks.ipc_endpoint = v.clone();
@@ -697,9 +775,9 @@ impl SalukiOnly {
 mod tests {
     use agent_data_plane_config::defaults::{
         DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
-        DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY,
-        DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
-        MAX_STRING_INTERNER_SIZE_BYTES,
+        DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN,
+        DEFAULT_RARE_SAMPLER_CARDINALITY, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS,
+        DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES, DEFAULT_TRACE_ENV, MAX_STRING_INTERNER_SIZE_BYTES,
     };
     use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
     use serde_json::json;
@@ -754,20 +832,35 @@ mod tests {
             "otlp_string_interner_size": 333,
             // nested: data_plane
             "data_plane": {
-                "stop_timeout": 45,
                 "standalone_mode": true,
-                "serializer_zstd_compressor_level": 9,
                 "checks": { "enabled": true },
                 // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
                 // canonical schema-provided endpoint keys.
                 "otlp": {
                     "receiver_grpc_endpoint_temporary": "0.0.0.0:19317",
                     "receiver_http_endpoint_temporary": "0.0.0.0:19318"
+                },
+                "apm": {
+                    "enabled": true,
+                    "receiver_endpoint": "0.0.0.0:18127",
+                    "receiver_socket": "/var/run/datadog/apm.socket",
+                    "max_payload_size": "12MB",
+                    "non_local_traffic": true,
+                    "dispatch_timeout": "3s"
+                }
+            },
+            // nested: experimental.metrics_endpoint_routing
+            "experimental": {
+                "metrics_endpoint_routing": {
+                    "metric_allowlist": {
+                        "https://app.us5.datadoghq.com": ["allowed.metric", "also.allowed"]
+                    }
                 }
             },
             // nested: apm_config
             "apm_config": {
                 "default_env": "staging",
+                "max_resource_len": 1234,
                 "error_sampling_enabled": true,
                 "rare_sampler": { "cardinality": 9, "cooldown": 1.5, "tps": 3.0 },
                 "obfuscation": {
@@ -799,20 +892,26 @@ mod tests {
         saluki_only.seed(&mut config);
 
         // control
-        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
+        assert!(config.control.apm);
         assert_eq!(config.control.memory_limit, Some(ByteSize::mb(512).as_u64()));
         assert_eq!(config.control.memory_slop_factor, 0.3);
         assert!(!config.control.enable_global_limiter);
         assert_eq!(config.control.memory_mode, MemoryMode::Strict);
-        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes, 4096);
+        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 4096);
 
         // shared
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert_eq!(config.shared.endpoints.compression.effective_zstd_level(), 9);
+
+        // domains.metrics_endpoint_routing
+        let routing = &config.domains.metrics_endpoint_routing;
+        assert_eq!(
+            routing.metric_allowlists["https://app.us5.datadoghq.com"],
+            ["allowed.metric", "also.allowed"]
+        );
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
@@ -855,6 +954,7 @@ mod tests {
         // domains.traces
         let traces = &config.domains.traces;
         assert_eq!(traces.default_env, "staging");
+        assert_eq!(traces.max_resource_len, 1234);
         assert!(traces.error_sampling_enabled);
         assert_eq!(traces.rare_sampler.cardinality, 9);
         assert_eq!(traces.rare_sampler.cooldown, 1.5);
@@ -875,8 +975,38 @@ mod tests {
             vec!["set(name, \"x\")".to_string()]
         );
 
+        // domains.apm
+        let apm = &config.domains.apm;
+        assert_eq!(apm.receiver_endpoint, "0.0.0.0:18127");
+        assert_eq!(apm.receiver_socket, "/var/run/datadog/apm.socket");
+        assert_eq!(
+            apm.max_payload_size,
+            usize::try_from(ByteSize::mb(12).as_u64()).expect("12MB fits in usize")
+        );
+        assert!(apm.non_local_traffic);
+        assert_eq!(apm.dispatch_timeout, Duration::from_secs(3));
+
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+    }
+
+    /// `data_plane.apm.max_payload_size` is a byte size, but the equivalent Agent key
+    /// (`apm_config.max_payload_size`) is a plain integer number of bytes, so an operator porting a
+    /// value across will write an integer. Both forms must land on the same byte count.
+    #[test]
+    fn the_apm_max_payload_size_accepts_an_integer_or_a_byte_size_string() {
+        for value in [json!(12_000_000), json!("12MB")] {
+            let map = json!({ "data_plane": { "apm": { "max_payload_size": value.clone() } } });
+
+            let saluki_only: SalukiOnly = serde_json::from_value(map).expect("saluki-only source deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+
+            assert_eq!(
+                config.domains.apm.max_payload_size, 12_000_000,
+                "unexpected byte count for input: {value:?}"
+            );
+        }
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
@@ -983,6 +1113,29 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn remote_agent_string_interner_size_resolves_the_default_and_rejects_zero() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(
+            config.control.ipc.remote_agent_string_interner_size_bytes,
+            DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES
+        );
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "remote_agent_string_interner_size_bytes": 8192 }))
+                .expect("explicit interner budget deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 8192);
+
+        assert!(
+            serde_json::from_value::<SalukiOnly>(json!({ "remote_agent_string_interner_size_bytes": 0 })).is_err(),
+            "a zero remote-agent string interner budget must fail the load"
+        );
     }
 
     #[test]
@@ -1117,6 +1270,7 @@ mod tests {
         // ADP's historical sampler defaults in place.
         let traces = &config.domains.traces;
         assert_eq!(traces.default_env, DEFAULT_TRACE_ENV);
+        assert_eq!(traces.max_resource_len, DEFAULT_MAX_RESOURCE_LEN);
         assert_eq!(traces.error_sampling_enabled, DEFAULT_ERROR_SAMPLING_ENABLED);
         assert_eq!(traces.rare_sampler.tps, DEFAULT_RARE_SAMPLER_TPS);
         assert_eq!(traces.rare_sampler.cooldown, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS);

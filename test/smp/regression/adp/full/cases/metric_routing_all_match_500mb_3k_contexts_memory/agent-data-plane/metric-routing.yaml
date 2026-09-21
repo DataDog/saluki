@@ -1,0 +1,67 @@
+histogram_aggregates: ["max", "median", "avg", "count"]
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      "http://127.0.0.1:9092":
+        - routing.metric.10000
+        - routing.metric.10000.max
+        - routing.metric.10000.median
+        - routing.metric.10000.avg
+        - routing.metric.10000.count
+        - routing.metric.10000.95percentile
+        - routing.metric.10001
+        - routing.metric.10001.max
+        - routing.metric.10001.median
+        - routing.metric.10001.avg
+        - routing.metric.10001.count
+        - routing.metric.10001.95percentile
+        - routing.metric.10002
+        - routing.metric.10002.max
+        - routing.metric.10002.median
+        - routing.metric.10002.avg
+        - routing.metric.10002.count
+        - routing.metric.10002.95percentile
+        - routing.metric.10003
+        - routing.metric.10003.max
+        - routing.metric.10003.median
+        - routing.metric.10003.avg
+        - routing.metric.10003.count
+        - routing.metric.10003.95percentile
+        - routing.metric.10004
+        - routing.metric.10004.max
+        - routing.metric.10004.median
+        - routing.metric.10004.avg
+        - routing.metric.10004.count
+        - routing.metric.10004.95percentile
+        - routing.metric.10005
+        - routing.metric.10005.max
+        - routing.metric.10005.median
+        - routing.metric.10005.avg
+        - routing.metric.10005.count
+        - routing.metric.10005.95percentile
+        - routing.metric.10006
+        - routing.metric.10006.max
+        - routing.metric.10006.median
+        - routing.metric.10006.avg
+        - routing.metric.10006.count
+        - routing.metric.10006.95percentile
+        - routing.metric.10007
+        - routing.metric.10007.max
+        - routing.metric.10007.median
+        - routing.metric.10007.avg
+        - routing.metric.10007.count
+        - routing.metric.10007.95percentile
+        - routing.metric.10008
+        - routing.metric.10008.max
+        - routing.metric.10008.median
+        - routing.metric.10008.avg
+        - routing.metric.10008.count
+        - routing.metric.10008.95percentile
+        - routing.metric.10009
+        - routing.metric.10009.max
+        - routing.metric.10009.median
+        - routing.metric.10009.avg
+        - routing.metric.10009.count
+        - routing.metric.10009.95percentile

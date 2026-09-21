@@ -13,9 +13,10 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
+use crate::common::otlp::semantics::REGISTRY;
 use crate::common::otlp::traces::transform::{
-    bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, otel_span_to_dd_span,
-    otlp_value_to_string,
+    bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
+    otel_span_to_dd_span, otlp_value_to_string,
 };
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::Metrics;
@@ -161,20 +162,28 @@ struct TraceEntry {
     trace_id_hex: Option<MetaString>,
     /// High 8 bytes of the 128-bit trace ID (captured from the first span).
     trace_id_high: u64,
+    /// Set when any span in the trace has a span ID of zero. Mirrors `normalizeV1`
+    /// (`pkg/trace/agent/normalizer.go`), which drops such a span along with the chunk containing it.
+    dropped: bool,
+    /// Whether the group failed the full trace ID consistency check and must be dropped whole.
+    rejected: bool,
 }
 
 pub struct OtlpTracesTranslator {
     config: domains::otlp::Traces,
+    /// Maximum length of a span's resource name, in bytes.
+    max_resource_len: usize,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: domains::otlp::Traces) -> Self {
+    pub fn new(config: domains::otlp::Traces, max_resource_len: usize) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         Self {
             config,
+            max_resource_len,
             interner,
             string_builder,
         }
@@ -207,7 +216,28 @@ impl OtlpTracesTranslator {
                     priority: None,
                     trace_id_hex: None,
                     trace_id_high,
+                    dropped: false,
+                    rejected: false,
                 });
+
+                // Once a trace is headed for the drop bin, skip the remaining spans entirely rather
+                // than paying for their conversion only to discard the results at emit time.
+                if entry.dropped {
+                    metrics.spans_dropped_span_id_zero().increment(1);
+                    continue;
+                }
+
+                // Trace ID validity: a trace ID is either empty or exactly 16 bytes, and its
+                // low half must be nonzero. An invalid ID rejects the whole group.
+                if (!span.trace_id.is_empty() && span.trace_id.len() != 16) || trace_id == 0 {
+                    entry.rejected = true;
+                }
+
+                // Full trace ID consistency: spans in a group must carry the same full trace ID
+                // as the group's first span.
+                if entry.trace_id_high != trace_id_high {
+                    entry.rejected = true;
+                }
 
                 if entry.trace_id_hex.is_none() {
                     entry.trace_id_hex = trace_id_hex_meta(&span.trace_id);
@@ -222,7 +252,22 @@ impl OtlpTracesTranslator {
                     interner,
                     string_builder,
                     entry.trace_id_hex.as_ref(),
+                    self.max_resource_len,
                 );
+
+                // Malformed self-parented spans (parent == span == trace ID) get their parent
+                // cleared so root selection treats them as roots.
+                let mut dd_span = if dd_span.parent_id() == trace_id && dd_span.parent_id() == dd_span.span_id() {
+                    dd_span.with_parent_id(0)
+                } else {
+                    dd_span
+                };
+
+                // A zero span ID rejects the whole group; a wrong-length OTLP span ID also
+                // decodes to zero.
+                if dd_span.span_id() == 0 {
+                    entry.rejected = true;
+                }
 
                 // Track last-seen priority for this trace (overwrites previous values)
                 if let Some(priority) = dd_span
@@ -233,6 +278,23 @@ impl OtlpTracesTranslator {
                     entry.priority = Some(priority as i32);
                 }
 
+                // A span ID of zero is malformed: drop the span and, like the reference normalizer,
+                // the entire chunk containing it.
+                if dd_span.span_id() == 0 {
+                    if !entry.dropped {
+                        entry.dropped = true;
+                        metrics.traces_dropped_span_id_zero().increment(1);
+                        // Matches the Go trace-agent's separate `SpansDropped += len(chunk)`: count
+                        // every span already accepted into this trace plus the zero-ID span itself.
+                        metrics
+                            .spans_dropped_span_id_zero()
+                            .increment(entry.spans.len() as u64 + 1);
+                        entry.spans.clear();
+                    }
+                    continue;
+                }
+
+                normalize_peer_service_tags(&mut dd_span, &REGISTRY, interner, string_builder, metrics);
                 entry.spans.push(dd_span);
             }
         }
@@ -240,6 +302,7 @@ impl OtlpTracesTranslator {
         OtlpTraceEventsIter {
             resource_meta,
             entries: traces_by_id.into_iter(),
+            metrics: metrics.clone(),
         }
     }
 }
@@ -247,6 +310,7 @@ impl OtlpTracesTranslator {
 struct OtlpTraceEventsIter {
     resource_meta: OtlpResourceMeta,
     entries: IntoIter<u64, TraceEntry>,
+    metrics: Metrics,
 }
 
 impl Iterator for OtlpTraceEventsIter {
@@ -254,6 +318,18 @@ impl Iterator for OtlpTraceEventsIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         for (trace_id_low, entry) in self.entries.by_ref() {
+            if entry.dropped {
+                continue;
+            }
+
+            if entry.rejected {
+                // Two different traces glued together by a shared low half: drop the group whole.
+                self.metrics
+                    .spans_dropped_foreign_trace()
+                    .increment(entry.spans.len() as u64);
+                continue;
+            }
+
             if entry.spans.is_empty() {
                 continue;
             }
@@ -301,9 +377,11 @@ mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+    use saluki_core::components::ComponentContext;
+    use saluki_metrics::test::TestRecorder;
 
     use super::*;
-    use crate::common::otlp::Metrics;
+    use crate::common::otlp::{build_metrics, Metrics};
 
     fn string_kv(key: &str, value: &str) -> KeyValue {
         KeyValue {
@@ -324,14 +402,40 @@ mod tests {
     }
 
     fn span(trace_id: [u8; 16], span_id: [u8; 8], attributes: Vec<KeyValue>) -> OtlpSpan {
+        span_raw(trace_id.to_vec(), span_id, attributes)
+    }
+
+    fn span_with_parent(
+        trace_id: [u8; 16], span_id: [u8; 8], parent_span_id: [u8; 8], attributes: Vec<KeyValue>,
+    ) -> OtlpSpan {
         OtlpSpan {
             trace_id: trace_id.to_vec(),
+            span_id: span_id.to_vec(),
+            parent_span_id: parent_span_id.to_vec(),
+            name: "span".to_string(),
+            end_time_unix_nano: 2,
+            attributes,
+            ..Default::default()
+        }
+    }
+
+    fn span_raw(trace_id: Vec<u8>, span_id: [u8; 8], attributes: Vec<KeyValue>) -> OtlpSpan {
+        OtlpSpan {
+            trace_id,
             span_id: span_id.to_vec(),
             name: "span".to_string(),
             end_time_unix_nano: 2,
             attributes,
             ..Default::default()
         }
+    }
+
+    /// Builds a 16-byte big-endian trace ID from its high and low u64 halves.
+    fn trace_id16(high: u64, low: u64) -> [u8; 16] {
+        let mut id = [0u8; 16];
+        id[..8].copy_from_slice(&high.to_be_bytes());
+        id[8..].copy_from_slice(&low.to_be_bytes());
+        id
     }
 
     fn build_resource_spans(resource_attrs: Vec<KeyValue>, spans: Vec<OtlpSpan>) -> ResourceSpans {
@@ -349,10 +453,14 @@ mod tests {
     }
 
     fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
-        let mut translator = OtlpTracesTranslator::new(domains::otlp::Traces {
-            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
-            ..Default::default()
-        });
+        let mut translator = OtlpTracesTranslator::new(
+            domains::otlp::Traces {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                enable_compute_top_level_by_span_kind: true,
+                ..Default::default()
+            },
+            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+        );
         let metrics = Metrics::for_tests();
         translator
             .translate_spans(resource_spans, &metrics)
@@ -449,5 +557,265 @@ mod tests {
         assert_eq!(payload.container_id.as_ref(), "abc123");
         assert_eq!(payload.language_name.as_ref(), "go");
         assert_eq!(payload.tracer_version.as_ref(), "1.0");
+    }
+
+    /// A span whose span ID converts to zero is dropped along with the trace containing it, mirroring
+    /// `normalizeV1` (`pkg/trace/agent/normalizer.go`). https://github.com/DataDog/saluki/issues/2382
+    #[test]
+    fn translate_spans_drops_trace_containing_zero_span_id() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        let mut translator = OtlpTracesTranslator::new(
+            domains::otlp::Traces {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                ..Default::default()
+            },
+            5000,
+        );
+        let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
+
+        let trace = [0xDDu8; 16];
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace, [1u8; 8], vec![]),
+                span(trace, [0u8; 8], vec![]), // zero span ID drops the whole trace
+                span(trace, [2u8; 8], vec![]),
+            ],
+        );
+
+        let traces: Vec<Trace> = translator
+            .translate_spans(rs, &metrics)
+            .filter_map(Event::try_into_trace)
+            .collect();
+        assert!(
+            traces.is_empty(),
+            "the trace containing the zero-ID span must be dropped"
+        );
+
+        // Exactly one trace-level drop is counted, but all three spans in that trace are counted at
+        // the span level, mirroring the Go trace-agent's separate `TracesDropped`/`SpansDropped`
+        // counters.
+        let trace_tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("intentional", "true"),
+            ("drop_reason", "span_id_zero"),
+        ];
+        assert_eq!(
+            recorder.counter(("component_events_dropped_total", trace_tags)),
+            Some(1)
+        );
+
+        let span_tags: &[(&str, &str)] = &[
+            ("component_id", "otlp_test"),
+            ("component_type", "source"),
+            ("intentional", "true"),
+            ("drop_reason", "span_id_zero"),
+            ("message_type", "otlp_spans"),
+        ];
+        assert_eq!(recorder.counter(("component_events_dropped_total", span_tags)), Some(3));
+    }
+
+    /// A zero-ID span in one trace must not affect a well-formed trace in the same batch.
+    #[test]
+    fn translate_spans_keeps_well_formed_trace_alongside_dropped_trace() {
+        let bad_trace = [0xEEu8; 16];
+        let good_trace = [0xFFu8; 16];
+        let rs = build_resource_spans(
+            vec![],
+            vec![span(bad_trace, [0u8; 8], vec![]), span(good_trace, [1u8; 8], vec![])],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1, "only the well-formed trace survives");
+        assert_eq!(traces[0].trace_id_low, u64::from_be_bytes([0xFF; 8]));
+        assert_eq!(traces[0].spans().len(), 1);
+    }
+
+    #[test]
+    fn convert_trace_id_uses_agent_grouping_key() {
+        // Pins the grouping key we derive from the upstream OTLP ingest: the low 8 bytes of the
+        // 16-byte big-endian trace ID.
+        let id: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert_eq!(
+            convert_trace_id(&id),
+            u64::from_be_bytes([8, 9, 10, 11, 12, 13, 14, 15])
+        );
+        assert_eq!(convert_trace_id_high(&id), u64::from_be_bytes([0, 1, 2, 3, 4, 5, 6, 7]));
+
+        // A zero-padded 64-bit trace ID: its value lives entirely in the low half.
+        let id64 = trace_id16(0, 0x1234_5678_9abc_def0);
+        assert_eq!(convert_trace_id(&id64), 0x1234_5678_9abc_def0);
+        assert_eq!(convert_trace_id_high(&id64), 0);
+
+        assert_eq!(convert_trace_id(&[1, 2, 3]), 0);
+        assert_eq!(convert_trace_id_high(&[0xAA; 8]), 0);
+    }
+
+    #[test]
+    fn translate_spans_rejects_groups_with_mixed_full_trace_ids() {
+        let low = u64::from_be_bytes([0xAA; 8]);
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace_id16(0x0101_0101_0101_0101, low), [1u8; 8], vec![]),
+                span(trace_id16(0x0202_0202_0202_0202, low), [2u8; 8], vec![]),
+                span(trace_id16(0, 0x0BBB_BBBB_BBBB_BBBB), [3u8; 8], vec![]),
+            ],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(
+            traces.len(),
+            1,
+            "the mixed group is dropped; the unrelated trace survives"
+        );
+        assert_eq!(traces[0].trace_id_low, 0x0BBB_BBBB_BBBB_BBBB);
+    }
+
+    #[test]
+    fn translate_spans_rejects_mixed_zero_and_nonzero_high_halves() {
+        // A zero high half and a nonzero high half are different full trace IDs, in either span
+        // order. Both IDs are canonical 16-byte OTLP IDs here; the OTLP spans always carry the
+        // full 128-bit ID, so unlike legacy tracer chunks the high halves are always compared.
+        let id_zero_high = trace_id16(0, u64::from_be_bytes([0xAA; 8])).to_vec();
+        let id_full = trace_id16(0x0101_0101_0101_0101, u64::from_be_bytes([0xAA; 8])).to_vec();
+
+        let zero_high_first = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(id_zero_high.clone(), [1u8; 8], vec![]),
+                span_raw(id_full.clone(), [2u8; 8], vec![]),
+            ],
+        );
+        assert_eq!(translate(zero_high_first).len(), 0);
+
+        let full_first = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(id_full, [1u8; 8], vec![]),
+                span_raw(id_zero_high, [2u8; 8], vec![]),
+            ],
+        );
+        assert_eq!(translate(full_first).len(), 0);
+    }
+
+    #[test]
+    fn translate_spans_accepts_consistent_zero_high_halves() {
+        // Two 16-byte IDs with the same zero high half and same low half are one trace.
+        let id_zero_high = trace_id16(0, u64::from_be_bytes([0xAA; 8]));
+
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(id_zero_high, [1u8; 8], vec![]),
+                span(id_zero_high, [2u8; 8], vec![]),
+            ],
+        );
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].spans().len(), 2);
+        assert_eq!(traces[0].trace_id_high, 0);
+    }
+
+    #[test]
+    fn translate_spans_rejects_non_canonical_length_trace_ids() {
+        // A trace ID is valid only when it is empty or exactly 16 bytes; anything else is
+        // decode-invalid, and the trace is dropped.
+        for raw_id in [vec![0xAA; 8], vec![0xAA; 12], vec![0xAA; 20]] {
+            let rs = build_resource_spans(vec![], vec![span_raw(raw_id.clone(), [1u8; 8], vec![])]);
+            assert_eq!(
+                translate(rs).len(),
+                0,
+                "non-canonical length {} is dropped",
+                raw_id.len()
+            );
+        }
+
+        // A short ID in a group also rejects the whole group, not just the malformed span.
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span_raw(vec![0xAA; 8], [1u8; 8], vec![]),
+                span(trace_id16(0, u64::from_be_bytes([0xAA; 8])), [2u8; 8], vec![]),
+            ],
+        );
+        assert_eq!(
+            translate(rs).len(),
+            0,
+            "the group containing a short trace ID is dropped whole"
+        );
+    }
+
+    #[test]
+    fn translate_spans_rejects_zero_trace_ids() {
+        // A zero low half is invalid regardless of the high half: a 16-byte ID with a zero
+        // low half is zero, and an empty ID decodes to zero.
+        for raw_id in [
+            trace_id16(0x0101_0101_0101_0101, 0).to_vec(),
+            trace_id16(0, 0).to_vec(),
+            Vec::new(),
+        ] {
+            let rs = build_resource_spans(vec![], vec![span_raw(raw_id, [1u8; 8], vec![])]);
+            assert_eq!(translate(rs).len(), 0, "zero trace IDs are dropped");
+        }
+    }
+
+    #[test]
+    fn translate_spans_rejects_zero_span_ids() {
+        // A zero span ID drops the whole trace; a wrong-length OTLP span ID also decodes to
+        // zero. Duplicate span IDs, by contrast, are only counted as malformed, so they stay
+        // accepted.
+        let rs = build_resource_spans(vec![], vec![span(trace_id16(0, 1), [0u8; 8], vec![])]);
+        assert_eq!(translate(rs).len(), 0, "an all-zero span ID drops the trace");
+
+        let mut zero_len_span = span(trace_id16(0, 1), [1u8; 8], vec![]);
+        zero_len_span.span_id = vec![];
+        let rs = build_resource_spans(vec![], vec![zero_len_span]);
+        assert_eq!(
+            translate(rs).len(),
+            0,
+            "an empty span ID decodes to zero and drops the trace"
+        );
+
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace_id16(0, 1), [1u8; 8], vec![]),
+                span(trace_id16(0, 1), [1u8; 8], vec![]),
+            ],
+        );
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1, "duplicate span IDs are tolerated");
+        assert_eq!(traces_spans_len(&traces), 2);
+    }
+
+    fn traces_spans_len(traces: &[Trace]) -> usize {
+        traces.iter().map(|t| t.spans().len()).sum()
+    }
+
+    #[test]
+    fn translate_spans_repairs_self_parented_spans() {
+        // parent == span == trace ID gets the parent cleared so the malformed span becomes a
+        // root; other spans keep their parents.
+        let trace = trace_id16(0, 1);
+        let self_parented = span_with_parent(trace, [0, 0, 0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0, 1], vec![]);
+        let child = span_with_parent(trace, [0, 0, 0, 0, 0, 0, 0, 2], [0, 0, 0, 0, 0, 0, 0, 1], vec![]);
+
+        let rs = build_resource_spans(vec![], vec![self_parented, child]);
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+
+        let spans = traces[0].spans();
+        let repaired = spans
+            .iter()
+            .find(|s| s.span_id() == 1)
+            .expect("self-parented span is present");
+        assert_eq!(repaired.parent_id(), 0, "the self-parented span's parent is cleared");
+
+        let child = spans.iter().find(|s| s.span_id() == 2).expect("child is present");
+        assert_eq!(child.parent_id(), 1, "the child's parent is untouched");
     }
 }

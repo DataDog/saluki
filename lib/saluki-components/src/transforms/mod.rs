@@ -26,9 +26,6 @@ pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperPr
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
-mod mrf_gateway;
-pub use self::mrf_gateway::MrfMetricsGatewayConfiguration;
-
 mod trace_sampler;
 pub use self::trace_sampler::TraceSamplerConfiguration;
 
@@ -37,3 +34,5 @@ pub use self::apm_stats::ApmStatsTransformConfiguration;
 
 mod trace_obfuscation;
 pub use self::trace_obfuscation::TraceObfuscationConfiguration;
+mod trace_tag_replacer;
+pub use self::trace_tag_replacer::{ReplaceRule, TraceTagReplacerConfiguration};

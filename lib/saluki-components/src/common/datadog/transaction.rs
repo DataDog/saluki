@@ -1,5 +1,6 @@
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -10,7 +11,7 @@ use pin_project::pin_project;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
-use super::protocol::MetricsPayloadInfo;
+use super::protocol::{MetricsEndpointRouting, MetricsPayloadInfo};
 
 /// Data type for the body of `TransactionBody<B>`.
 pub enum TransactionBodyData<B>
@@ -186,6 +187,12 @@ pub struct Metadata {
     /// This is `Some` for metrics payloads and `None` for non-metrics payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_info: Option<MetricsPayloadInfo>,
+
+    /// Endpoint targeting for a metrics payload, if applicable.
+    ///
+    /// Not saved to disk: queued retries already belong to a specific endpoint.
+    #[serde(skip)]
+    pub metrics_endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
 impl Metadata {
@@ -195,6 +202,7 @@ impl Metadata {
             event_count,
             data_point_count,
             payload_info: None,
+            metrics_endpoint_routing: None,
         }
     }
 }
@@ -285,22 +293,27 @@ mod tests {
     use saluki_io::net::util::retry::{EventContainer as _, Retryable as _};
 
     use super::{Metadata, Transaction, TransactionBody};
+    use crate::common::datadog::protocol::MetricsEndpointRouting;
 
     #[test]
     fn basic_transaction_ser_deser_roundtrip() {
         // Create a basic transaction with a simple body.
-        let metadata = Metadata::from_event_and_data_point_count(1, 7);
+        let mut metadata = Metadata::from_event_and_data_point_count(1, 7);
+        metadata.metrics_endpoint_routing =
+            Some(MetricsEndpointRouting::Only(["http://example.com".to_string()].into()).into());
         let body = VecDeque::from("hello, world!".as_bytes().to_vec());
         let request = Request::builder().uri("http://example.com").body(body.clone()).unwrap();
 
         // Create our `Transaction`, and then roundtrip it: serialize and then deserialize.
         let transaction = Transaction::from_original(metadata.clone(), request);
         let serialized = serde_json::to_string(&transaction).unwrap();
+        assert!(!serialized.contains("metrics_endpoint_routing"));
         let deserialized: Transaction<VecDeque<u8>> = serde_json::from_str(&serialized).unwrap();
 
         // Check some basic properties.
         assert_eq!(deserialized.metadata.event_count, metadata.event_count);
         assert_eq!(deserialized.metadata.data_point_count, metadata.data_point_count);
+        assert_eq!(deserialized.metadata.metrics_endpoint_routing, None);
         assert_eq!(deserialized.event_count(), metadata.event_count as u64);
         assert_eq!(deserialized.data_point_count(), metadata.data_point_count as u64);
         assert_eq!(deserialized.request.uri(), "http://example.com");

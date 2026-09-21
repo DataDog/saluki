@@ -441,6 +441,11 @@ impl Span {
     pub fn span_events(&self) -> &[SpanEvent] {
         &self.span_events
     }
+
+    /// Returns a mutable reference to the span events collection.
+    pub fn span_events_mut(&mut self) -> &mut Vec<SpanEvent> {
+        &mut self.span_events
+    }
 }
 
 /// A link between spans describing a causal relationship.
@@ -589,5 +594,10 @@ impl SpanEvent {
     /// Returns the attributes map.
     pub fn attributes(&self) -> &FastHashMap<MetaString, AttributeValue> {
         &self.attributes
+    }
+
+    /// Returns a mutable reference to the attributes map.
+    pub fn attributes_mut(&mut self) -> &mut FastHashMap<MetaString, AttributeValue> {
+        &mut self.attributes
     }
 }

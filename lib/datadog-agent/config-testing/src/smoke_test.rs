@@ -17,6 +17,9 @@ fn test_json_value(value_type: ValueType) -> serde_json::Value {
         ValueType::String => json!(TEST_STRING_VALUE),
         ValueType::Bool => json!(TEST_BOOL_VALUE),
         ValueType::StringList => json!(TEST_STRING_LIST_VALUE),
+        ValueType::StringMapList => json!({
+            "https://smoke-secondary.example.com": ["smoke.metric"]
+        }),
         ValueType::Integer => json!(42i64),
         ValueType::Float => json!(1.5f64),
         ValueType::Duration => json!("42s"),
@@ -57,6 +60,7 @@ fn json_value_to_env_string(value: &serde_json::Value, value_type: ValueType) ->
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
             .unwrap_or_else(|| TEST_STRING_LIST_VALUE.join(" ")),
+        ValueType::StringMapList => value.to_string(),
         ValueType::Duration => value.as_str().unwrap_or("42s").to_string(),
     }
 }
@@ -313,12 +317,13 @@ mod tests {
 
     #[tokio::test]
     async fn flags_a_supported_key_that_never_changes_the_struct() {
-        // `CONTAINERD_CONFIGURATION` has registered (supported) keys. A factory that ignores the config
-        // entirely means each supported key "produces the default struct", violating the supported-key
-        // guarantee, which the harness must flag.
+        // This case needs a consumer with registered (supported) keys. No struct-deserializing consumer has
+        // any left, so it uses the `TYPED_CONFIG_SYSTEM` sentinel. A factory that ignores the config entirely
+        // means each supported key "produces the default struct", violating the supported-key guarantee, which
+        // the harness must flag.
         let outcome = tokio::spawn(async {
             run_config_smoke_tests(
-                structs::CONTAINERD_CONFIGURATION,
+                structs::TYPED_CONFIG_SYSTEM,
                 &[],
                 json!({}),
                 |_cfg: GenericConfiguration| json!({}),

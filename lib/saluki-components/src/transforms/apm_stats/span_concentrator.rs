@@ -11,59 +11,15 @@ use super::aggregation::{
     get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey, BUCKET_DURATION_NS,
     TAG_BASE_SERVICE, TAG_SPAN_KIND,
 };
+use super::peer_ip_quantize::quantize_peer_ip_addresses;
+use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
+use crate::common::otlp::semantics::{Registry, REGISTRY};
 
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
 const METRIC_MEASURED: &str = "_dd.measured";
 pub const METRIC_PARTIAL_VERSION: &str = "_dd.partial_version";
-
-/// Base peer tags copied from `pkg/trace/config/peer_tags.ini`.
-const BASE_PEER_TAGS: &[&str] = &[
-    "_dd.base_service",
-    "active_record.db.vendor",
-    "amqp.destination",
-    "amqp.exchange",
-    "amqp.queue",
-    "aws.queue.name",
-    "aws.s3.bucket",
-    "bucketname",
-    "cassandra.keyspace",
-    "db.cassandra.contact.points",
-    "db.couchbase.seed.nodes",
-    "db.hostname",
-    "db.instance",
-    "db.name",
-    "db.namespace",
-    "db.system",
-    "db.type",
-    "dns.hostname",
-    "grpc.host",
-    "hostname",
-    "http.host",
-    "http.server_name",
-    "messaging.destination",
-    "messaging.destination.name",
-    "messaging.kafka.bootstrap.servers",
-    "messaging.rabbitmq.exchange",
-    "messaging.system",
-    "mongodb.db",
-    "msmq.queue.path",
-    "net.peer.name",
-    "network.destination.ip",
-    "network.destination.name",
-    "out.host",
-    "peer.hostname",
-    "peer.service",
-    "queuename",
-    "rpc.service",
-    "rpc.system",
-    "sequel.db.vendor",
-    "server.address",
-    "streamname",
-    "tablename",
-    "topicname",
-];
 
 #[derive(Clone, Default)]
 pub struct InfraTags {
@@ -117,8 +73,14 @@ pub struct SpanConcentrator {
     /// Whether peer tags aggregation is enabled
     peer_tags_aggregation: bool,
 
-    /// Configured peer tag keys for aggregation (base + custom)
-    peer_tag_keys: Vec<MetaString>,
+    /// Peer tag key set for aggregation, derived from the semantic registry (base + custom)
+    peer_tag_keys: PeerTagKeys,
+
+    /// Operator-configured peer tags, kept so the key set can be rebuilt when the registry changes
+    custom_peer_tags: Vec<MetaString>,
+
+    /// Semantic attribute registry the peer tag key set is derived from
+    registry: Registry,
 
     /// Bucket duration in nanoseconds (10 s)
     bsize: u64,
@@ -138,20 +100,36 @@ pub struct SpanConcentrator {
 }
 
 impl SpanConcentrator {
+    /// Creates a new concentrator deriving its peer tag keys from the embedded semantic registry.
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
-        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|s| MetaString::from_static(s)).collect();
-        for tag in custom_peer_tags {
-            if !peer_tag_keys.iter().any(|t| t == tag) {
-                peer_tag_keys.push(tag.clone());
-            }
-        }
+        Self::new_with_registry(
+            compute_stats_by_span_kind,
+            peer_tags_aggregation,
+            custom_peer_tags,
+            &REGISTRY,
+            now,
+        )
+    }
+
+    /// Creates a new concentrator deriving its peer tag keys from the given semantic registry.
+    ///
+    /// The key set is a snapshot pinned to the registry's content hash; [`Self::flush`] rebuilds it
+    /// whenever the live registry content hash changes, so remotely shipped semantic updates reach
+    /// stats aggregation without a restart.
+    pub fn new_with_registry(
+        compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString],
+        registry: &Registry, now: u64,
+    ) -> Self {
+        let peer_tag_keys = PeerTagKeys::build(registry, custom_peer_tags);
 
         Self {
             compute_stats_by_span_kind,
             peer_tags_aggregation,
             peer_tag_keys,
+            custom_peer_tags: custom_peer_tags.to_vec(),
+            registry: registry.clone(),
             bsize: BUCKET_DURATION_NS,
             oldest_ts: align_ts(now, BUCKET_DURATION_NS),
             buffer_len: DEFAULT_BUFFER_LEN,
@@ -172,6 +150,11 @@ impl SpanConcentrator {
     }
 
     pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
+        // Refresh the peer tag key snapshot if the registry content changed. This runs on the
+        // flush cycle, deliberately off the per-span hot path: the steady-state cost is a single
+        // `u64` comparison, and only an actual registry change pays the re-derivation cost.
+        self.peer_tag_keys.refresh(&self.registry, &self.custom_peer_tags);
+
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
         let mut container_tags_by_id = FastHashMap::<MetaString, TagSet>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
@@ -304,6 +287,9 @@ impl SpanConcentrator {
         for key in keys_to_check {
             if let Some(value) = span.attributes.get(key.as_ref()).and_then(AttributeValue::as_string) {
                 if !value.is_empty() {
+                    // Quantize IP addresses before the value is hashed into the aggregation key, so
+                    // that per-host cardinality collapses to a single dimension.
+                    let value = quantize_peer_ip_addresses(value.as_ref());
                     peer_tags.push(MetaString::from(format!("{}:{}", key, value)));
                 }
             }
@@ -330,7 +316,7 @@ impl SpanConcentrator {
             || span_kind.eq_ignore_ascii_case("producer")
             || span_kind.eq_ignore_ascii_case("consumer")
         {
-            return &self.peer_tag_keys;
+            return self.peer_tag_keys.keys();
         }
 
         EMPTY_PEER_TAGS
@@ -379,5 +365,82 @@ fn is_partial_snapshot(span: &Span) -> bool {
     {
         Some(v) => v >= 0.0,
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_tag_ips_quantize_into_one_aggregation_group() {
+        let now = 1_000_000_000u64;
+        let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+
+        let payload_key = PayloadAggregationKey {
+            env: MetaString::from("test"),
+            ..Default::default()
+        };
+        let infra_tags = InfraTags::default();
+
+        // Two otherwise-identical client spans, differing only in the peer tag's IP address.
+        // With quantization, both collapse to `blocked-ip-address` and aggregate into a single
+        // group; if the quantize call in `matching_peer_tags` were removed, the raw IPs would
+        // hash differently and split the stats into two groups of one hit each.
+        for peer_ip in ["10.0.0.1:5432", "10.0.0.2:5432"] {
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            attrs.insert(
+                MetaString::from("db.instance"),
+                AttributeValue::String(MetaString::from(peer_ip)),
+            );
+            attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+            let span =
+                Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 0, now, 75, 0).with_attributes(attrs);
+
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("client span with peer tags should produce stats");
+            concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
+        }
+
+        let payloads = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
+
+        let mut matching_groups = Vec::new();
+        for payload in &payloads {
+            for bucket in payload.stats() {
+                for grouped in bucket.stats() {
+                    if grouped.resource() == "SELECT ..." {
+                        matching_groups.push(grouped);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            matching_groups.len(),
+            1,
+            "spans with different peer IPs must group after quantization"
+        );
+        assert_eq!(
+            matching_groups[0].hits(),
+            2,
+            "both spans' hits must combine into the single group"
+        );
+
+        let peer_tags: Vec<&str> = matching_groups[0].peer_tags().iter().map(|t| t.as_ref()).collect();
+        assert!(
+            peer_tags.contains(&"db.instance:blocked-ip-address:5432"),
+            "peer tags must carry the quantized value, got: {:?}",
+            peer_tags
+        );
+        assert!(
+            peer_tags.iter().all(|t| !t.contains("10.0.0.")),
+            "no peer tag may retain the raw IP, got: {:?}",
+            peer_tags
+        );
     }
 }

@@ -29,12 +29,11 @@ use agent_data_plane_config::domains::otlp::{
     CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
+use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
-use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
-use datadog_agent_config::{
-    cast_to_string, drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
-};
+use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
 use tracing::warn;
 
 use crate::source::SourceTree;
@@ -50,6 +49,10 @@ pub(crate) struct DatadogTranslator<'a> {
     sources: &'a SourceTree,
     config: SalukiConfiguration,
     errors: Vec<TranslateError>,
+    // Deprecated `apm_config.max_traces_per_second` value, held until the drive completes so the
+    // alias can be applied when `target_traces_per_second` was not set explicitly. Initialized to
+    // the schema default, which the drive always overwrites.
+    max_traces_per_second: f64,
 }
 
 type Result<T> = std::result::Result<T, TranslateError>;
@@ -63,6 +66,7 @@ impl<'a> DatadogTranslator<'a> {
             sources,
             config: SalukiConfiguration::default(),
             errors: Vec::new(),
+            max_traces_per_second: 10.0,
         }
     }
 
@@ -71,7 +75,20 @@ impl<'a> DatadogTranslator<'a> {
     pub(crate) fn translate(mut self) -> (SalukiConfiguration, Option<TranslateErrors>) {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
+        self.apply_deprecated_max_tps_alias();
         (self.config, errors)
+    }
+
+    /// Applies the deprecated `max_traces_per_second` alias to the target rate.
+    ///
+    /// `target_traces_per_second` wins when an input set it explicitly; otherwise the deprecated
+    /// value supplies the target. Both keys default to 10, so inputs setting neither are
+    /// unaffected.
+    fn apply_deprecated_max_tps_alias(&mut self) {
+        if self.sources.provenance("apm_config.target_traces_per_second") == Provenance::Explicit {
+            return;
+        }
+        self.config.domains.traces.target_traces_per_second = self.max_traces_per_second;
     }
 
     /// Records a translation error encountered while consuming.
@@ -92,6 +109,16 @@ impl<'a> DatadogTranslator<'a> {
                     key,
                     "port must be between 0 and 65535",
                 ));
+                None
+            }
+        }
+    }
+
+    fn parse_timeout_secs(&mut self, key: &'static str, value: i64) -> Option<Duration> {
+        match u64::try_from(value) {
+            Ok(secs) => Some(Duration::from_secs(secs)),
+            Err(_) => {
+                self.record_error(TranslateError::new_with_message(key, "timeout must not be negative"));
                 None
             }
         }
@@ -289,6 +316,35 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.errors_per_second = value;
     }
 
+    fn consume_apm_config_extra_sample_rate(&mut self, value: f64) {
+        // The schema default is 0, which would keep nothing from the adaptive samplers; the
+        // effective default is 1.0. Only a value an input actually set passes through, so an
+        // explicit 0 keeps its meaning.
+        let extra_sample_rate = if self.sources.provenance("apm_config.extra_sample_rate") == Provenance::Explicit {
+            value
+        } else {
+            1.0
+        };
+        self.config.domains.traces.extra_sample_rate = extra_sample_rate;
+    }
+
+    fn consume_apm_config_features(&mut self, value: Vec<String>) {
+        self.config.domains.traces.features = value.iter().map(|feature| ApmFeature::from(feature.as_str())).collect();
+    }
+
+    fn consume_apm_config_max_catalog_entries(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(entries) => self.config.domains.traces.max_catalog_entries = entries,
+            Err(error) => self.record_error(TranslateError::new("apm_config.max_catalog_entries", error)),
+        }
+    }
+
+    fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
+        // Applied to the target rate after the drive completes; see
+        // `apply_deprecated_max_tps_alias`.
+        self.max_traces_per_second = value;
+    }
+
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.credit_cards.enabled = value;
     }
@@ -386,8 +442,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.probabilistic_sampler.enabled = value;
     }
 
+    fn consume_apm_config_probabilistic_sampler_hash_seed(&mut self, value: i64) {
+        match u32::try_from(value) {
+            Ok(hash_seed) => self.config.domains.traces.probabilistic_sampler.hash_seed = hash_seed,
+            Err(error) => self.record_error(TranslateError::new("apm_config.probabilistic_sampler.hash_seed", error)),
+        }
+    }
+
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
         self.config.domains.traces.probabilistic_sampler.sampling_percentage = value;
+    }
+
+    fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
+        // The schema models each rule as a free string map; this gives it the typed
+        // `name`/`pattern`/`repl` shape the replacer consumes.
+        self.config.domains.traces.replace_tags = value
+            .into_iter()
+            .map(|rule| ReplaceRule {
+                name: rule.get("name").cloned().unwrap_or_default(),
+                pattern: rule.get("pattern").cloned().unwrap_or_default(),
+                repl: rule.get("repl").cloned().unwrap_or_default(),
+            })
+            .collect();
     }
 
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
@@ -442,12 +518,31 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_container_cgroup_root(&mut self, value: String) {
+        let provenance = self.sources.provenance("container_cgroup_root");
+        self.config.shared.environment.container_roots.cgroup_root = ConfigValue::new(PathBuf::from(value), provenance);
+    }
+
+    fn consume_container_proc_root(&mut self, value: String) {
+        let provenance = self.sources.provenance("container_proc_root");
+        self.config.shared.environment.container_roots.proc_root = ConfigValue::new(PathBuf::from(value), provenance);
+    }
+
     fn consume_cri_connection_timeout(&mut self, value: i64) {
-        self.config.control.ipc.cri_connection_timeout = value;
+        if let Some(timeout) = self.parse_timeout_secs("cri_connection_timeout", value) {
+            self.config.shared.environment.containerd.connection_timeout = timeout;
+        }
     }
 
     fn consume_cri_query_timeout(&mut self, value: i64) {
-        self.config.control.ipc.cri_query_timeout = value;
+        if let Some(timeout) = self.parse_timeout_secs("cri_query_timeout", value) {
+            self.config.shared.environment.containerd.query_timeout = timeout;
+        }
+    }
+
+    fn consume_cri_socket_path(&mut self, value: String) {
+        let provenance = self.sources.provenance("cri_socket_path");
+        self.config.shared.environment.containerd.socket_path = ConfigValue::new(PathBuf::from(value), provenance);
     }
 
     fn consume_data_plane_api_listen_address(&mut self, value: String) {
@@ -513,6 +608,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String) {
         self.config.control.secure_api_listen_address = value;
+    }
+
+    fn consume_data_plane_serializer_zstd_compressor_level(&mut self, value: i64) {
+        let provenance = self.sources.provenance("data_plane.serializer_zstd_compressor_level");
+        match i32::try_from(value) {
+            Ok(value) => {
+                self.config.shared.endpoints.compression.adp_zstd_level = ConfigValue::new(value, provenance);
+            }
+            Err(error) => self.record_error(TranslateError::new(
+                "data_plane.serializer_zstd_compressor_level",
+                error,
+            )),
+        }
+    }
+
+    fn consume_data_plane_stop_timeout(&mut self, value: i64) {
+        if self.sources.provenance("data_plane.stop_timeout") == Provenance::Explicit {
+            match parse_seconds("data_plane.stop_timeout", value) {
+                Ok(duration) => self.config.control.stop_timeout = Some(duration),
+                Err(error) => self.record_error(error),
+            }
+        }
     }
 
     fn consume_data_plane_use_new_config_stream_endpoint(&mut self, value: bool) {
@@ -582,7 +699,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
-        if !value.is_empty() {
+        if self.sources.provenance("dogstatsd_log_file") == Provenance::Explicit
+            && !value.is_empty()
+            && value != "${log_path}/dogstatsd_info/dogstatsd-stats.log"
+        {
             self.config.domains.dogstatsd.debug_log.log_file = Some(PathBuf::from(value));
         }
     }
@@ -754,16 +874,56 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.forwarder.apikey_validation_interval = value;
     }
 
-    fn consume_forwarder_backoff_base(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.backoff_base = value as f64;
+    fn consume_forwarder_backoff_base(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
+        let value = if value <= 0.0 {
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_base;
+            warn!("`forwarder_backoff_base` is not positive ({value}); using {default}.");
+            default
+        } else {
+            value
+        };
+
+        match Duration::try_from_secs_f64(value) {
+            Ok(_) => self.config.shared.endpoints.forwarder.backoff_base = value,
+            Err(error) => self.record_error(TranslateError::new("forwarder_backoff_base", error)),
+        }
     }
 
-    fn consume_forwarder_backoff_factor(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.backoff_factor = value as f64;
+    fn consume_forwarder_backoff_factor(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
+        if value < 2.0 {
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_factor;
+            warn!("`forwarder_backoff_factor` is less than 2 ({value}); using {default}.");
+            self.config.shared.endpoints.forwarder.backoff_factor = default;
+        } else {
+            self.config.shared.endpoints.forwarder.backoff_factor = value;
+        }
     }
 
-    fn consume_forwarder_backoff_max(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.backoff_max = value as f64;
+    fn consume_forwarder_backoff_max(&mut self, value: f64) {
+        // TODO(#2580): the minimum is a literal here; the schema should carry it, ideally as a
+        // mechanical validation
+        let value = if value <= 0.0 {
+            let default = DatadogConfiguration::schema_defaults().forwarder_backoff_max;
+            warn!("`forwarder_backoff_max` is not positive ({value}); using {default}.");
+            default
+        } else {
+            value
+        };
+
+        if let Err(error) = Duration::try_from_secs_f64(value) {
+            self.record_error(TranslateError::new("forwarder_backoff_max", error));
+        } else if value < self.config.shared.endpoints.forwarder.backoff_base {
+            self.record_error(TranslateError::new_with_message(
+                "forwarder_backoff_max",
+                "must be greater than or equal to `forwarder_backoff_base`",
+            ));
+        } else {
+            self.config.shared.endpoints.forwarder.backoff_max = value;
+        }
     }
 
     fn consume_forwarder_connection_reset_interval(&mut self, value: i64) {
@@ -844,7 +1004,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_storage_path(&mut self, value: String) {
-        self.config.shared.endpoints.forwarder.storage_path = PathBuf::from(value);
+        if !value.is_empty() && value != "${run_path}/transactions_to_retry" {
+            self.config.shared.endpoints.forwarder.storage_path = PathBuf::from(value);
+        }
     }
 
     fn consume_forwarder_timeout(&mut self, value: i64) {
@@ -869,6 +1031,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_histogram_percentiles(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.histogram.percentiles = value;
+    }
+
+    fn consume_hostname(&mut self, value: String) {
+        let provenance = self.sources.provenance("hostname");
+        self.config.shared.environment.hostname = ConfigValue::new(value, provenance);
     }
 
     fn consume_ipc_cert_file_path(&mut self, value: String) {
@@ -1281,10 +1448,6 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
     }
 
-    fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>) {
-        self.config.shared.metrics_encoding.v3_api.series.endpoints = value;
-    }
-
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
     }
@@ -1390,23 +1553,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_series_mode = parse_v3_series_mode("use_v3_api.series.enabled", &value);
     }
 
-    fn consume_use_v3_api_series_endpoints(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>) {
-        // This key arrives as raw JSON, so each mode is rendered the way the Agent's own string cast
-        // renders it before it is parsed: a boolean, an integer, `1.0`, and a null all reach the
-        // parser as the Agent reads them.
-        let mut modes: HashMap<String, V3SeriesMode> = HashMap::with_capacity(value.len());
-        for (endpoint, mode) in value {
-            match cast_to_string(&mode) {
-                Ok(rendered) => {
-                    modes.insert(endpoint, parse_v3_series_mode("use_v3_api.series.endpoints", &rendered));
-                }
-                Err(reason) => {
-                    self.record_error(TranslateError::new_with_message("use_v3_api.series.endpoints", reason))
-                }
-            }
-        }
-
-        self.config.shared.metrics_encoding.v3_series_endpoint_modes = modes;
+    fn consume_use_v3_api_series_endpoints(&mut self, value: HashMap<String, String>) {
+        self.config.shared.metrics_encoding.v3_series_endpoint_modes = value
+            .into_iter()
+            .map(|(endpoint, mode)| (endpoint, parse_v3_series_mode("use_v3_api.series.endpoints", &mode)))
+            .collect();
     }
 
     fn consume_vector_metrics_enabled(&mut self, value: bool) {
@@ -1451,6 +1602,7 @@ mod tests {
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
+        traces::ApmFeature,
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -1512,6 +1664,156 @@ mod tests {
             serde_json::from_value(sources.to_value()).expect("datadog source deserializes");
 
         DatadogTranslator::new(&datadog, sources).translate()
+    }
+
+    #[test]
+    fn apm_config_replace_tags_transports_as_typed_rules() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "replace_tags": [
+                    { "name": "*", "pattern": "token=[A-Za-z0-9]+", "repl": "token=?" },
+                    { "name": "resource.name", "pattern": "^POST /pay/", "repl": "POST /v1/payments/" }
+                ]
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.replace_tags.len(), 2);
+        assert_eq!(traces.replace_tags[0].name, "*");
+        assert_eq!(traces.replace_tags[0].pattern, "token=[A-Za-z0-9]+");
+        assert_eq!(traces.replace_tags[0].repl, "token=?");
+        assert_eq!(traces.replace_tags[1].name, "resource.name");
+        assert_eq!(traces.replace_tags[1].pattern, "^POST /pay/");
+        assert_eq!(traces.replace_tags[1].repl, "POST /v1/payments/");
+    }
+
+    #[test]
+    fn apm_config_replace_tags_accepts_json_string_and_missing_fields() {
+        // The environment delivers the array as one JSON-encoded string; a missing rule field
+        // reads as an empty string.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "replace_tags": "[{\"name\": \"http.url\", \"pattern\": \"p\"}]"
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.replace_tags.len(), 1);
+        assert_eq!(traces.replace_tags[0].name, "http.url");
+        assert_eq!(traces.replace_tags[0].pattern, "p");
+        assert_eq!(traces.replace_tags[0].repl, "");
+    }
+
+    #[test]
+    fn apm_config_features_and_probabilistic_hash_seed_translate() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "features": ["probabilistic_sampler_full_trace_id", "unrelated_feature"],
+                "probabilistic_sampler": { "hash_seed": 22 }
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.probabilistic_sampler.hash_seed, 22);
+        assert_eq!(
+            traces.features,
+            [
+                ApmFeature::ProbabilisticSamplerFullTraceId,
+                ApmFeature::Other("unrelated_feature".to_owned()),
+            ]
+        );
+
+        // Unset, both arrive at their schema defaults.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.probabilistic_sampler.hash_seed, 0);
+        assert!(config.domains.traces.features.is_empty());
+    }
+
+    #[test]
+    fn apm_config_extra_sample_rate_passes_explicit_values_and_defaults_to_one() {
+        // Unset, the schema default of 0 must not pass through: the effective default is 1.0,
+        // leaving every computed rate unchanged.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.extra_sample_rate, 1.0);
+
+        // An explicitly set 0 is meaningful (keeps nothing from the adaptive samplers) and passes
+        // through unchanged.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "extra_sample_rate": 0.0 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.extra_sample_rate, 0.0);
+
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "extra_sample_rate": 2.5 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.extra_sample_rate, 2.5);
+    }
+
+    #[test]
+    fn apm_config_max_catalog_entries_translates_and_rejects_negative() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "max_catalog_entries": 100 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.max_catalog_entries, 100);
+
+        // Unset arrives as 0, which the priority sampler's catalog reads as its default.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.max_catalog_entries, 0);
+
+        let (_, errors) = translate_explicit(json!({
+            "apm_config": { "max_catalog_entries": -1 }
+        }));
+        let errors = errors.expect("negative catalog size should record a translation error");
+        assert!(errors.to_string().contains("apm_config.max_catalog_entries"));
+    }
+
+    #[test]
+    fn deprecated_max_traces_per_second_supplies_target_when_current_key_unset() {
+        // Only the deprecated key set: it supplies the target.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "max_traces_per_second": 100.0 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.target_traces_per_second, 100.0);
+
+        // Both keys set: the current key wins.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "target_traces_per_second": 50.0,
+                "max_traces_per_second": 100.0
+            }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.target_traces_per_second, 50.0);
+
+        // Neither set: the shared default of 10.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.target_traces_per_second, 10.0);
+    }
+
+    #[test]
+    fn out_of_range_probabilistic_hash_seed_records_translation_error() {
+        // The sampler hashes the seed as four bytes, so values outside u32 are configuration
+        // failures rather than clamps.
+        for value in [-1, u32::MAX as i64 + 1] {
+            let (_, errors) = translate_explicit(json!({
+                "apm_config": { "probabilistic_sampler": { "hash_seed": value } }
+            }));
+            let errors = errors.unwrap_or_else(|| panic!("{value} should record a translation error"));
+            assert!(errors
+                .to_string()
+                .contains("apm_config.probabilistic_sampler.hash_seed"));
+        }
     }
 
     #[test]
@@ -1875,15 +2177,63 @@ mod tests {
     }
 
     #[test]
-    fn a_compound_v3_series_endpoint_mode_records_a_translation_error() {
-        // A mode written as a list or map is a structural error, not a mode the Agent interprets.
-        let (config, errors) = translate_explicit(json!({
-            "use_v3_api": { "series": { "endpoints": { "https://app.datadoghq.com": ["true"] } } }
-        }));
+    fn defaulted_environment_settings_stay_distinguishable_from_configured_ones() {
+        let (config, errors) = translate_stream(&[
+            ("hostname", json!(""), StreamProvenance::Default),
+            ("cri_socket_path", json!(""), StreamProvenance::Default),
+            ("container_proc_root", json!("/host/proc"), StreamProvenance::Default),
+            (
+                "container_cgroup_root",
+                json!("/host/sys/fs/cgroup/"),
+                StreamProvenance::Default,
+            ),
+        ]);
 
-        assert!(config.shared.metrics_encoding.v3_series_endpoint_modes.is_empty());
-        let errors = errors.expect("a compound mode should record a translation error");
-        assert!(errors.to_string().contains("use_v3_api.series.endpoints"));
+        assert!(errors.is_none());
+        let environment = &config.shared.environment;
+        assert_defaulted(&environment.hostname, "");
+        assert_defaulted(&environment.containerd.socket_path, PathBuf::from(""));
+        assert_defaulted(&environment.container_roots.proc_root, PathBuf::from("/host/proc"));
+        assert_defaulted(
+            &environment.container_roots.cgroup_root,
+            PathBuf::from("/host/sys/fs/cgroup/"),
+        );
+    }
+
+    #[test]
+    fn explicit_environment_settings_are_carried_verbatim() {
+        let (config, errors) = translate_stream(&[
+            ("hostname", json!("my-host"), StreamProvenance::Explicit),
+            ("cri_socket_path", json!(""), StreamProvenance::Explicit),
+            ("container_proc_root", json!("/proc"), StreamProvenance::Explicit),
+        ]);
+
+        assert!(errors.is_none());
+        let environment = &config.shared.environment;
+        assert_explicit(&environment.hostname, "my-host");
+        assert_explicit(&environment.containerd.socket_path, PathBuf::from(""));
+        assert_explicit(&environment.container_roots.proc_root, PathBuf::from("/proc"));
+    }
+
+    #[test]
+    fn cri_timeouts_become_durations_and_reject_negative_values() {
+        let (config, errors) = translate_explicit(json!({ "cri_connection_timeout": 2, "cri_query_timeout": 7 }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.shared.environment.containerd.connection_timeout,
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            config.shared.environment.containerd.query_timeout,
+            Duration::from_secs(7)
+        );
+
+        let (config, errors) = translate_explicit(json!({ "cri_query_timeout": -1 }));
+
+        let errors = errors.expect("a negative timeout should record a translation error");
+        assert!(errors.to_string().contains("cri_query_timeout"));
+        assert_eq!(config.shared.environment.containerd.query_timeout, Duration::ZERO);
     }
 
     // Issue #1965: the Core Agent streams `dd_url` at its schema default even when the operator
@@ -1971,15 +2321,32 @@ mod tests {
     }
 
     #[test]
-    fn the_adp_zstd_level_wins_over_an_explicit_agent_level() {
-        let (mut config, errors) = translate_explicit(json!({ "serializer_zstd_compressor_level": 5 }));
+    fn defaulted_data_plane_overrides_do_not_replace_derived_values() {
+        let (config, errors) = translate_stream(&[
+            ("aggregator_stop_timeout", json!(8), StreamProvenance::Explicit),
+            ("forwarder_stop_timeout", json!(9), StreamProvenance::Explicit),
+            ("data_plane.stop_timeout", json!(17), StreamProvenance::Default),
+            ("serializer_zstd_compressor_level", json!(5), StreamProvenance::Explicit),
+            (
+                "data_plane.serializer_zstd_compressor_level",
+                json!(3),
+                StreamProvenance::Default,
+            ),
+        ]);
+
         assert!(errors.is_none());
+        assert_eq!(config.control.stop_timeout, None);
+        assert_eq!(5, config.shared.endpoints.compression.effective_zstd_level());
+    }
 
-        let saluki_only: SalukiOnly =
-            serde_json::from_value(json!({ "data_plane": { "serializer_zstd_compressor_level": 4 } }))
-                .expect("saluki-only source deserializes");
-        saluki_only.seed(&mut config);
+    #[test]
+    fn the_adp_zstd_level_wins_over_an_explicit_agent_level() {
+        let (config, errors) = translate_explicit(json!({
+            "serializer_zstd_compressor_level": 5,
+            "data_plane": { "serializer_zstd_compressor_level": 4 },
+        }));
 
+        assert!(errors.is_none());
         assert_eq!(4, config.shared.endpoints.compression.effective_zstd_level());
     }
 
@@ -1995,6 +2362,67 @@ mod tests {
             DEFAULT_ZSTD_COMPRESSOR_LEVEL,
             config.shared.endpoints.compression.effective_zstd_level()
         );
+    }
+
+    #[test]
+    fn an_explicit_data_plane_stop_timeout_is_an_override() {
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "stop_timeout": 45 },
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn forwarder_backoff_uses_agent_fallbacks() {
+        let (config, errors) = translate_explicit(json!({
+            "forwarder_backoff_base": -0.5,
+            "forwarder_backoff_factor": 1.5,
+            "forwarder_backoff_max": -0.5,
+        }));
+
+        assert!(errors.is_none());
+        let defaults = DatadogConfiguration::schema_defaults();
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_eq!(forwarder.backoff_base, defaults.forwarder_backoff_base);
+        assert_eq!(forwarder.backoff_factor, defaults.forwarder_backoff_factor);
+        assert_eq!(forwarder.backoff_max, defaults.forwarder_backoff_max);
+    }
+
+    #[test]
+    fn unsafe_forwarder_backoff_durations_record_translation_errors() {
+        let (_, errors) = translate_explicit(json!({ "forwarder_backoff_base": 1e100 }));
+        assert!(errors
+            .expect("an unrepresentable base should record an error")
+            .to_string()
+            .contains("forwarder_backoff_base"));
+
+        let (_, errors) = translate_explicit(json!({
+            "forwarder_backoff_base": 2.5,
+            "forwarder_backoff_max": 2.4,
+        }));
+        assert!(errors
+            .expect("a maximum below the base should record an error")
+            .to_string()
+            .contains("forwarder_backoff_max"));
+    }
+
+    #[test]
+    fn forwarder_storage_path_ignores_only_unresolved_defaults() {
+        let (config, errors) = translate_stream(&[(
+            "forwarder_storage_path",
+            json!("${run_path}/transactions_to_retry"),
+            StreamProvenance::Default,
+        )]);
+        assert!(errors.is_none());
+        assert_eq!(config.shared.endpoints.forwarder.storage_path, PathBuf::new());
+
+        let resolved = "/var/lib/datadog/transactions_to_retry";
+        let (config, errors) =
+            translate_stream(&[("forwarder_storage_path", json!(resolved), StreamProvenance::Default)]);
+        assert!(errors.is_none());
+        assert_eq!(config.shared.endpoints.forwarder.storage_path, PathBuf::from(resolved));
     }
 
     #[test]

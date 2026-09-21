@@ -37,6 +37,9 @@ pub struct SharedConfiguration {
     /// Secrets management, read by the Datadog intake forwarders.
     pub secrets: Secrets,
 
+    /// Host and container runtime discovery, read by the environment providers.
+    pub environment: Environment,
+
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
@@ -47,6 +50,48 @@ pub struct SharedConfiguration {
     /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
     /// `run_path`.
     pub run_path: Option<PathBuf>,
+}
+
+/// Host identity and container runtime discovery inputs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Environment {
+    /// Hostname reported for all emitted data.
+    ///
+    /// Only read in standalone mode, where it is reported verbatim. In connected mode the hostname comes from the
+    /// Datadog Agent and this value is ignored.
+    ///
+    /// Defaults to empty, and a defaulted or empty value is treated as absent. Operators running standalone must set
+    /// it explicitly; startup fails otherwise.
+    pub hostname: ConfigValue<String>,
+
+    /// containerd runtime discovery and client timeouts.
+    pub containerd: Containerd,
+
+    /// Filesystem roots describing container workloads.
+    pub container_roots: ContainerRoots,
+}
+
+/// containerd runtime discovery and client timeouts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Containerd {
+    /// containerd gRPC socket. A defaulted empty value enables path probing.
+    pub socket_path: ConfigValue<PathBuf>,
+
+    /// Timeout for establishing a containerd gRPC connection. Defaults to 1 second; `0` never connects.
+    pub connection_timeout: Duration,
+
+    /// Per-RPC timeout for containerd API calls. Defaults to 5 seconds; `0` fails every call.
+    pub query_timeout: Duration,
+}
+
+/// Filesystem roots describing container workloads.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ContainerRoots {
+    /// procfs root. Defaults to `/host/proc`, which is only used when set explicitly.
+    pub proc_root: ConfigValue<PathBuf>,
+
+    /// cgroupfs root. Defaults to `/host/sys/fs/cgroup/`, which is only used when set explicitly.
+    pub cgroup_root: ConfigValue<PathBuf>,
 }
 
 /// Inputs used to derive deployment-wide static tags.
@@ -417,7 +462,7 @@ pub struct MetricsEncoding {
     /// Histogram aggregation and encoding settings.
     pub histogram: HistogramEncoding,
 
-    /// V3 metrics-intake protocol settings (`serializer_experimental_use_v3_api.*`).
+    /// Experimental V3 sketches settings (`serializer_experimental_use_v3_api.*`).
     pub v3_api: V3ApiEncoding,
 
     /// Global V3 series routing mode (`use_v3_api.series.enabled`).
@@ -450,21 +495,17 @@ impl Default for MetricsEncoding {
     }
 }
 
-/// V3 metrics-intake protocol settings for the series and sketches payloads
-/// (`serializer_experimental_use_v3_api.*`).
+/// Experimental V3 sketches settings (`serializer_experimental_use_v3_api.*`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiEncoding {
-    /// V3 series intake settings.
-    pub series: V3ApiSettings,
-
-    /// V3 sketches intake settings (the series-only fields stay at their defaults).
+    /// Endpoints using the V3 sketches intake.
     pub sketches: V3ApiSettings,
 
     /// zstd compression level for V3 payloads.
     pub compression_level: i32,
 }
 
-/// Per-payload V3 intake settings, reused for both series and sketches.
+/// V3 sketches intake settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
     /// Endpoints enabled for the V3 intake.

@@ -446,6 +446,23 @@ mod tests {
     }
 
     #[test]
+    fn the_adp_stop_timeout_override_reaches_both_views_from_the_environment() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_stop_timeout_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_DATA_PLANE_STOP_TIMEOUT", "45");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+        let from_by_key = loaded.raw_config().try_get_typed::<u64>("data_plane.stop_timeout");
+        let from_typed = loaded.local().control.stop_timeout;
+
+        std::env::remove_var("DD_DATA_PLANE_STOP_TIMEOUT");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(from_by_key.expect("key reads"), Some(45));
+        assert_eq!(from_typed, Some(std::time::Duration::from_secs(45)));
+    }
+
+    #[test]
     fn build_base_rejects_a_malformed_environment_value() {
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_build_base_bad_{}.yaml", std::process::id()));

@@ -2,8 +2,8 @@
 
 use std::{future::Future, num::NonZeroUsize, time::Duration};
 
+use agent_data_plane_config::shared::Environment;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
-use saluki_config::GenericConfiguration;
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
@@ -17,9 +17,9 @@ use saluki_core::{
 #[cfg(unix)]
 use saluki_env::features::Feature;
 #[cfg(target_os = "linux")]
-use saluki_env::workload::collectors::CgroupsMetadataCollector;
+use saluki_env::workload::{collectors::CgroupsMetadataCollector, CgroupsConfiguration};
 #[cfg(unix)]
-use saluki_env::workload::collectors::ContainerdMetadataCollector;
+use saluki_env::workload::{collectors::ContainerdMetadataCollector, ContainerdConfiguration};
 use saluki_env::{
     features::FeatureDetector,
     workload::{
@@ -50,9 +50,6 @@ const DEFAULT_TAG_STORE_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(2000).unw
 // SAFETY: The value is demonstrably not zero.
 const DEFAULT_EXTERNAL_DATA_STORE_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(2000).unwrap();
 
-// SAFETY: We know the value is not zero.
-const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap(); // 512KB.
-
 /// Datadog Agent-based workload provider.
 ///
 /// This provider is based primarily on the remote tagger API exposed by the Datadog Agent, which handles the bulk of
@@ -75,24 +72,19 @@ pub struct RemoteAgentWorkloadProvider {
 }
 
 impl RemoteAgentWorkloadProvider {
-    /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration, along with a [`Supervisor`] that
-    /// drives the aggregator and all collector workers.
+    /// Creates a provider and the [`Supervisor`] that drives its collectors.
     ///
     /// # Errors
     ///
-    /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
-    /// error is returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, client_config: &RemoteAgentClientConfiguration,
-        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+    /// If there is an issue creating the underlying metadata collectors, an error is returned.
+    pub async fn new(
+        string_interner_size_bytes: NonZeroUsize, environment: &Environment,
+        client_config: &RemoteAgentClientConfiguration, component_registry: &ComponentRegistry,
+        health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
         let workload_provider_id = root_provider_id().child("workload").child("remote_agent");
         let mut provider_bounds = component_registry.bounds_builder(&workload_provider_id);
 
-        // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
-        let string_interner_size_bytes = config
-            .try_get_typed::<NonZeroUsize>("remote_agent_string_interner_size_bytes")?
-            .unwrap_or(DEFAULT_STRING_INTERNER_SIZE_BYTES);
         let string_interner = GenericMapInterner::new(string_interner_size_bytes);
 
         provider_bounds
@@ -112,16 +104,44 @@ impl RemoteAgentWorkloadProvider {
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
         let mut collector_workers: Vec<MetadataCollectorWorker> = Vec::new();
 
+        let containerd_socket_path = environment
+            .containerd
+            .socket_path
+            .is_explicit()
+            .then(|| environment.containerd.socket_path.value.clone());
+        let container_proc_root = environment
+            .container_roots
+            .proc_root
+            .is_explicit()
+            .then(|| environment.container_roots.proc_root.value.clone());
+        let container_cgroup_root = environment
+            .container_roots
+            .cgroup_root
+            .is_explicit()
+            .then(|| environment.container_roots.cgroup_root.value.clone());
+
+        let feature_detector = FeatureDetector::automatic(containerd_socket_path.clone());
+
         // Add the containerd collector if the feature is available.
-        let feature_detector = FeatureDetector::automatic(config);
         #[cfg(unix)]
         if feature_detector.is_feature_available(Feature::Containerd) {
+            let containerd_config = ContainerdConfiguration {
+                connection_timeout: environment.containerd.connection_timeout,
+                query_timeout: environment.containerd.query_timeout,
+            };
             let cri_collector = build_collector(
                 &collectors_root,
                 "containerd",
                 health_registry,
                 &mut collector_bounds,
-                |health| ContainerdMetadataCollector::from_configuration(config, health, string_interner.clone()),
+                |health| {
+                    ContainerdMetadataCollector::new(
+                        containerd_socket_path.clone(),
+                        &containerd_config,
+                        health,
+                        string_interner.clone(),
+                    )
+                },
             )
             .await?;
 
@@ -131,19 +151,17 @@ impl RemoteAgentWorkloadProvider {
         // Add the cgroups collector if the feature if we're on Linux.
         #[cfg(target_os = "linux")]
         {
+            let cgroups_config = CgroupsConfiguration::new(
+                container_proc_root.clone(),
+                container_cgroup_root.clone(),
+                &feature_detector,
+            );
             let cgroups_collector = build_collector(
                 &collectors_root,
                 "cgroups",
                 health_registry,
                 &mut collector_bounds,
-                |health| {
-                    CgroupsMetadataCollector::from_configuration(
-                        config,
-                        feature_detector.clone(),
-                        health,
-                        string_interner.clone(),
-                    )
-                },
+                |health| CgroupsMetadataCollector::new(&cgroups_config, health, string_interner.clone()),
             )
             .await?;
 
@@ -184,8 +202,12 @@ impl RemoteAgentWorkloadProvider {
 
         aggregator.add_store(external_data_store);
 
-        let on_demand_pid_resolver =
-            OnDemandPIDResolver::from_configuration(config, feature_detector, string_interner)?;
+        let on_demand_pid_resolver = OnDemandPIDResolver::new(
+            container_proc_root,
+            container_cgroup_root,
+            &feature_detector,
+            string_interner,
+        )?;
         let origin_resolver = OriginResolver::new(eds_resolver.clone());
 
         // With the aggregator configured, update the memory bounds before handing it off to the supervisor.

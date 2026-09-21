@@ -1,0 +1,9 @@
+features:
+  - |
+    Added ``agent-data-plane debug runtime show-processes``, which reports the supervision tree of processes running
+    inside the data plane: each process's name, process ID, restart policy, restart count, uptime, and (for
+    supervisors) memory and CPU accounting, with child processes nested beneath their supervisor. Output defaults to
+    an indented tree, with ``--json`` for the raw payload and ``--format dot`` for a Graphviz graph.
+
+    The same snapshot is served as JSON from the new ``/runtime/processes`` route on the privileged API endpoint, and
+    is collected into support flares as ``supervision_tree.json``.

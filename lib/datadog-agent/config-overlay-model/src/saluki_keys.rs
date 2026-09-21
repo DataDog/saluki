@@ -22,7 +22,185 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
+    // ── metrics_endpoint_routing.rs ───────────────────────────────────────
+    SalukiKey {
+        yaml_path: "experimental.metrics_endpoint_routing.metric_allowlist",
+        description: "Per-endpoint metric allow lists",
+        default: "{}",
+        documentation: Some(concat!(
+            "### `experimental.metrics_endpoint_routing.metric_allowlist`\n\n",
+            "ADP can route a selected subset of metrics to the primary intake or to specific additional ",
+            "endpoints. This experimental routing is independent of Multi-Region Failover.\n\n",
+            "> [!WARNING]\n",
+            "> Settings under `experimental` are unstable and may change, move, or be removed. ",
+            "Do not rely on backward compatibility.\n\n",
+            "Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string. ",
+            "For the ",
+            "primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure ",
+            "additional destinations and their API keys through `additional_endpoints`, and use those exact map ",
+            "keys. The allowlist filters both series and sketches by metric name. ",
+            "An empty endpoint allowlist sends no metrics to that endpoint. ",
+            "Endpoints absent from the policy map retain their ordinary behavior.\n\n",
+            "ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in ",
+            "`additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies ",
+            "are read when the topology is built, so changing the map requires an ADP restart. An absent or empty ",
+            "policy map leaves ordinary endpoint routing unchanged.\n\n",
+            "To filter the primary while leaving an additional endpoint on its ordinary full stream:\n\n",
+            "```yaml\n",
+            "api_key: <primary-api-key>\n",
+            "dd_url: https://app.us5.datadoghq.com\n",
+            "additional_endpoints:\n",
+            "  https://app.datadoghq.com:\n",
+            "    - <secondary-api-key>\n",
+            "# Experimental keys may change, move, or be removed without backward compatibility.\n",
+            "experimental:\n",
+            "  metrics_endpoint_routing:\n",
+            "    metric_allowlist:\n",
+            "      https://app.us5.datadoghq.com:\n",
+            "        - allowed.metric\n",
+            "```\n\n",
+            "To leave the primary on its ordinary full stream while filtering only additional endpoints, omit the ",
+            "primary URL from the policy map:\n\n",
+            "```yaml\n",
+            "api_key: <primary-api-key>\n",
+            "dd_url: https://app.us5.datadoghq.com\n",
+            "additional_endpoints:\n",
+            "  https://app.datadoghq.com:\n",
+            "    - <us1-api-key>\n",
+            "  https://app.datadoghq.eu:\n",
+            "    - <eu1-api-key>\n",
+            "experimental:\n",
+            "  metrics_endpoint_routing:\n",
+            "    metric_allowlist:\n",
+            "      https://app.datadoghq.com:\n",
+            "        - critical.slo\n",
+            "      https://app.datadoghq.eu:\n",
+            "        - billing.latency\n",
+            "```",
+        )),
+        value_type: "ValueType::StringMapList",
+        schema_default: Some("{}"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#"{"https://app.datadoghq.com":["allowed.metric"]}"#),
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "metrics_endpoint_routing.rs",
+    },
     // ── data_plane.rs ────────────────────────────────────────────────────────
+    SalukiKey {
+        yaml_path: "data_plane.apm.dispatch_timeout",
+        description: "How long the v1.0 trace receiver waits for the pipeline to accept a payload",
+        // Spelled out rather than `1s`: this string is rendered into the generated configuration table, where the
+        // style checker requires a nonbreaking space between a number and a unit. `schema_default` below carries the
+        // machine-readable form. Compare `data_plane.stop_timeout`, whose `default` is the prose value "derived".
+        default: "1 second",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: Some("1s"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.enabled",
+        description: "Enable the ADP v1.0 APM trace pipeline",
+        default: "false",
+        documentation: Some(
+            "### `data_plane.apm.*`
+
+\
+             ADP can receive Datadog v1.0 (`idx`/ETP) tracer payloads directly, over \
+             `POST /v1.0/traces`, and forward them to the traces intake without going through the \
+             trace-agent. The pipeline is off by default.
+
+\
+             These keys are deliberately separate from `apm_config.receiver_port`, \
+             `apm_config.receiver_socket`, `apm_config.max_payload_size`, and \
+             `apm_config.apm_non_local_traffic`. Those configure the trace-agent's receiver, which \
+             keeps running on port `8126` alongside ADP, so the two listeners need independent \
+             settings. Point each tracer at exactly one of the two: fanning the same traffic to both \
+             double-counts APM stats.
+
+\
+             Only `/v1.0/traces` is served. Tracers that need `/v0.4/traces`, `/v0.5/traces`, or the \
+             profiling and telemetry proxy routes must stay pointed at the trace-agent.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.max_payload_size",
+        description: "Maximum accepted v1.0 trace request body size",
+        default: "26214400",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: Some("26214400"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.non_local_traffic",
+        description: "Allow the v1.0 trace receiver to bind a non-loopback address",
+        default: "false",
+        documentation: None,
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.receiver_endpoint",
+        description: "ADP v1.0 trace receiver TCP endpoint",
+        default: "localhost:8127",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: Some("localhost:8127"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
+        yaml_path: "data_plane.apm.receiver_socket",
+        description: "ADP v1.0 trace receiver Unix domain socket path",
+        default: "",
+        documentation: None,
+        value_type: "ValueType::String",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Traces])",
+        filename: "data_plane.rs",
+    },
     SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
         description: "ADP OTLP gRPC listen endpoint",
@@ -55,50 +233,6 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Otlp])",
-        filename: "data_plane.rs",
-    },
-    SalukiKey {
-        yaml_path: "data_plane.serializer_zstd_compressor_level",
-        description: "ADP zstd compression level",
-        default: "3",
-        documentation: Some(
-            "ADP-specific zstd compression level, taking precedence over the Core Agent's \
-             `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to \
-             `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its \
-             own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs \
-             69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can \
-             afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` \
-             or in ADP-specific configuration.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: Some("3"),
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["TYPED_CONFIG_SYSTEM"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
-    SalukiKey {
-        yaml_path: "data_plane.stop_timeout",
-        description: "ADP graceful shutdown timeout (s)",
-        default: "derived",
-        documentation: Some(
-            "### `data_plane.stop_timeout`
-
-\
-             ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. \
-             If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.",
-        ),
-        value_type: "ValueType::Integer",
-        schema_default: None,
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &["GET_TYPED"],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "data_plane.rs",
     },
     // ── dogstatsd.rs ─────────────────────────────────────────────────────────
@@ -234,9 +368,11 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
             "This ADP-only key is independent from `metric_tag_filterlist`. Remote Config updates to ",
             "`metric_tag_filterlist` therefore do not replace locally configured value allow-lists. Value allow-list ",
             "changes require an ADP restart in this initial implementation. Rules apply to counters and sketch-backed ",
-            "metrics before aggregation, including instrumented and origin tags. ADP matches `metric_prefix` after ",
-            "DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so configure the final metric name ",
-            "produced by those steps.\n\n",
+            "metrics before aggregation, including instrumented and origin tags. Like `metric_tag_filterlist`, value ",
+            "rules apply only to metrics that ADP aggregates. Metrics that carry an explicit client timestamp go ",
+            "through the no-aggregation pipeline (`dogstatsd_no_aggregation_pipeline`) and keep their tags unchanged. ",
+            "ADP matches `metric_prefix` after DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so ",
+            "configure the final metric name produced by those steps.\n\n",
             "Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered ",
             "tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not ",
             "operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value ",

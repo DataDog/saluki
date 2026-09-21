@@ -32,7 +32,7 @@ use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
     util::{
         middleware::{HttpInspectionLayer, RetryCircuitBreakerError, RetryCircuitBreakerLayer},
-        retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryQueue, Retryable},
+        retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryCauseTelemetry, RetryQueue, Retryable},
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -65,6 +65,7 @@ type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
 struct InFlightTransaction<R> {
     metadata: Metadata,
+    body_size: u64,
     retry_counters: Option<TransactionRetryCounters>,
     result: R,
 }
@@ -120,6 +121,7 @@ async fn handle_in_flight_transaction_result<B>(
 {
     let InFlightTransaction {
         metadata,
+        body_size,
         retry_counters,
         result,
     } = match task_result {
@@ -144,7 +146,15 @@ async fn handle_in_flight_transaction_result<B>(
         // surfaced by the inspection layer in the service stack rather than here, since a retriable 403 becomes a
         // `Retry` result and never reaches this arm.
         Ok(http_response) => {
-            process_http_response(http_response, metadata, telemetry, endpoint_url, endpoint_domain).await
+            process_http_response(
+                http_response,
+                metadata,
+                body_size,
+                telemetry,
+                endpoint_url,
+                endpoint_domain,
+            )
+            .await
         }
 
         // The service itself encountered an error while sending the request or receiving the response:
@@ -368,7 +378,6 @@ where
             .with_min_tls_version(config.min_tls_version())
             .with_tls_handshake_timeout(config.tls_handshake_timeout())
             .with_http_protocol(config.http_protocol())
-            .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(
                 metrics_builder.clone(),
                 Some(move |uri: &Uri| endpoint_name_for_client(uri)),
@@ -504,10 +513,12 @@ async fn run_io_loop<B>(
         let (route, resolved_endpoint) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
+        let policy_endpoint = config.metrics_policy_endpoint(route, &resolved_endpoint).to_string();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
         let retry_telemetry = TransactionRetryTelemetry::from_builder(&metrics_builder, &endpoint_domain);
+        let retry_cause_telemetry = RetryCauseTelemetry::from_builder(&metrics_builder, &endpoint_domain);
 
         let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
         let task_barrier = Arc::clone(&task_barrier);
@@ -525,6 +536,7 @@ async fn run_io_loop<B>(
                 telemetry.clone(),
                 txnq_telemetry,
                 retry_telemetry,
+                retry_cause_telemetry,
                 Arc::clone(&endpoint_name),
                 route,
                 resolved_endpoint,
@@ -536,6 +548,7 @@ async fn run_io_loop<B>(
         endpoint_txs.push(EndpointSender {
             endpoint_url,
             endpoint_domain,
+            policy_endpoint,
             route,
             tx: endpoint_tx,
         });
@@ -546,6 +559,9 @@ async fn run_io_loop<B>(
         let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
+                continue;
+            }
+            if !matches_metrics_endpoint_routing(&endpoint_sender.policy_endpoint, transaction.metadata()) {
                 continue;
             }
 
@@ -583,6 +599,7 @@ where
 {
     endpoint_url: String,
     endpoint_domain: String,
+    policy_endpoint: String,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
 }
@@ -618,13 +635,21 @@ fn track_transaction_input_for_endpoint(
     telemetry_by_endpoint.insert(endpoint_name, transaction_input_telemetry);
 }
 
+fn matches_metrics_endpoint_routing(configured_endpoint: &str, metadata: &Metadata) -> bool {
+    metadata
+        .metrics_endpoint_routing
+        .as_ref()
+        .is_none_or(|routing| routing.should_route_to(configured_endpoint))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
     txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
-    endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute, endpoint: ResolvedEndpoint,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
+    retry_cause_telemetry: RetryCauseTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
+    endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -640,17 +665,13 @@ async fn run_endpoint_io_loop<B>(
     let metrics_primary_v3_override = (route == EndpointRoute::MetricsPrimary)
         .then(|| config.opw_metrics_v3_series_override())
         .flatten();
-    let serializer_v3_configured_endpoint =
-        (route == EndpointRoute::MetricsPrimary).then(|| config.primary_configured_endpoint());
     let endpoint_v3_settings = if config.compressor_disables_metrics_v3() {
         EndpointV3Settings::disabled()
     } else {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: &configured_endpoint,
-            serializer_v3_configured_endpoint,
             series_config: config.use_v3_api_series(),
             metrics_primary_v3_override,
-            serializer_v3_series_endpoints: &v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
         })
     };
@@ -693,7 +714,9 @@ async fn run_endpoint_io_loop<B>(
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
         .layer(RetryCircuitBreakerLayer::new(
-            config.retry().to_default_http_retry_policy(secrets),
+            config
+                .retry()
+                .to_default_http_retry_policy(secrets, retry_cause_telemetry),
         ))
         .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
@@ -738,7 +761,7 @@ async fn run_endpoint_io_loop<B>(
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => {
-                    // Filter transactions based on endpoint's V3 settings and the transaction's payload info.
+                    // Endpoint targeting was checked before dispatch to this task. Filter by protocol before queuing.
                     let payload_info = txn.metadata().payload_info;
                     if !endpoint_v3_settings.should_receive_payload(payload_info) {
                         debug!(
@@ -781,8 +804,10 @@ async fn run_endpoint_io_loop<B>(
                         &mut retry_telemetry,
                         endpoint_name.as_ref(),
                     );
+                    let body_size = request.body().remaining() as u64;
                     in_flight.spawn(svc.call(request).map(move |result| InFlightTransaction {
                         metadata,
+                        body_size,
                         retry_counters,
                         result,
                     }));
@@ -885,7 +910,8 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
 
 /// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
 async fn process_http_response(
-    response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str, domain: &str,
+    response: Response<Incoming>, metadata: Metadata, body_size: u64, telemetry: &ComponentTelemetry,
+    endpoint_url: &str, domain: &str,
 ) {
     let status = response.status();
     if status.is_success() {
@@ -903,7 +929,7 @@ async fn process_http_response(
             { "domain": domain }
         );
 
-        telemetry.track_successful_transaction(&metadata, domain);
+        telemetry.track_successful_transaction(&metadata, body_size, domain);
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
 
@@ -1194,6 +1220,7 @@ mod tests {
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
     use crate::common::datadog::{
         endpoints::resolve_additional_endpoints,
+        protocol::MetricsEndpointRouting,
         test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
     };
     use crate::common::datadog::{
@@ -1207,6 +1234,72 @@ mod tests {
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    #[test]
+    fn alternate_metrics_intakes_inherit_primary_policy_for_dispatch() {
+        const ALTERNATE: &str = "https://alternate.example.com";
+        for use_vector in [false, true] {
+            let mut shared = shared_configuration();
+            let alternate = agent_data_plane_config::shared::AltMetricsIntake {
+                enabled: true,
+                url: ALTERNATE.to_string(),
+                use_v3_series: false,
+            };
+            if use_vector {
+                shared.endpoints.vector_intake = alternate;
+            } else {
+                shared.endpoints.opw_intake = alternate;
+            }
+            // An additional route to the same URL must still retain its own policy identity.
+            shared.endpoints.additional_endpoints = HashMap::from([(ALTERNATE.to_string(), vec!["key".to_string()])]);
+            let primary = shared.endpoints.primary_endpoint();
+            let config = ForwarderConfiguration::from_configuration(&shared);
+            let endpoints = config.build_routable_endpoints().unwrap();
+            assert!(endpoints
+                .iter()
+                .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary));
+            for endpoint in endpoints {
+                let policy_endpoint = config.metrics_policy_endpoint(endpoint.route(), endpoint.endpoint());
+                let mut metadata = TxnMetadata::from_event_and_data_point_count(1, 1);
+                // Without an endpoint policy, payloads retain ordinary delivery.
+                assert!(matches_metrics_endpoint_routing(policy_endpoint, &metadata));
+                metadata.metrics_endpoint_routing =
+                    Some(MetricsEndpointRouting::AllExcept([primary.clone()].into()).into());
+                assert_eq!(
+                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    endpoint.route() == EndpointRoute::Additional
+                );
+                metadata.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([primary.clone()].into()).into());
+                assert_eq!(
+                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    endpoint.route() != EndpointRoute::Additional
+                );
+                if endpoint.route() == EndpointRoute::MetricsPrimary {
+                    assert_eq!(endpoint.endpoint().configured_endpoint(), ALTERNATE);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_routing_selects_whole_payloads_before_dispatch() {
+        const SELECTED: &str = "https://secondary.example.com";
+
+        let mut baseline = TxnMetadata::from_event_and_data_point_count(2, 2);
+        assert!(matches_metrics_endpoint_routing(SELECTED, &baseline));
+        baseline.metrics_endpoint_routing =
+            Some(MetricsEndpointRouting::AllExcept([SELECTED.to_string()].into()).into());
+        assert!(!matches_metrics_endpoint_routing(SELECTED, &baseline));
+        assert!(matches_metrics_endpoint_routing("https://other.example.com", &baseline));
+
+        let mut filtered = TxnMetadata::from_event_and_data_point_count(1, 1);
+        filtered.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([SELECTED.to_string()].into()).into());
+        assert!(matches_metrics_endpoint_routing(SELECTED, &filtered));
+        assert!(!matches_metrics_endpoint_routing(
+            "https://other.example.com",
+            &filtered
+        ));
     }
 
     fn is_metrics_request_path(path: &'static str) -> bool {
@@ -1491,6 +1584,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result: Err(RetryCircuitBreakerError::Service(
                     Box::new(std::io::Error::other("request failed")) as BoxError,
@@ -1514,6 +1608,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result: Err(RetryCircuitBreakerError::Service(
                     Box::new(std::io::Error::other("request failed")) as BoxError,
@@ -1598,6 +1693,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result,
             }),
@@ -1642,6 +1738,7 @@ mod tests {
         handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
             Ok(InFlightTransaction {
                 metadata,
+                body_size: 0,
                 retry_counters,
                 result: Err(RetryCircuitBreakerError::Service(
                     Box::new(std::io::Error::other("request failed")) as BoxError,
@@ -2204,7 +2301,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn forwarder_counts_only_dispatched_retries_after_server_errors() {
+    async fn forwarder_counts_successful_body_bytes_once_after_retries() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let (server_url, counter) = start_recording_http_server(vec![
@@ -2246,6 +2343,25 @@ mod tests {
         assert_eq!(
             recorder.counter(retry_metric_key("network_http_requests_requeued_total")),
             Some(0)
+        );
+
+        let component_metric_key = |name: &str| {
+            metrics::Key::from_parts(
+                name.to_string(),
+                vec![
+                    metrics::Label::new("component_id", "test_forwarder"),
+                    metrics::Label::new("component_type", "forwarder"),
+                ],
+            )
+        };
+        assert_eq!(
+            recorder.counter(component_metric_key("component_events_sent_total")),
+            Some(1)
+        );
+        // Regression: socket-write accounting counted every retry. Successful bytes must count the request body once.
+        assert_eq!(
+            recorder.counter(component_metric_key("component_bytes_sent_total")),
+            Some(12)
         );
     }
 

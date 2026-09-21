@@ -29,6 +29,7 @@ uds
 apis
 inlined
 json
+msgpack
 backoff
 batcher(s?)
 proxied
@@ -165,6 +166,7 @@ implementor(s?)
 jittered
 losslessly
 lossy
+lookback
 lookups
 lowercased
 mergeable
@@ -274,3 +276,17 @@ configtls
 keyspace
 Kueue
 plaintext
+normalizer
+suboperation(s?)
+runbook
+quantiz(ation|ations|er|ers|ed|es|e|ing)
+allowlist(s|ed|ing)?
+hostname(s?)
+instrumentation(s?)
+Graphviz
+renderer(s?)
+unscoped
+underflowing
+subresource(s?)
+multiset
+target_traces_per_second

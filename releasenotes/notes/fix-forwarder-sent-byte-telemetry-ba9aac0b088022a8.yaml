@@ -1,0 +1,3 @@
+fixes:
+  - |
+    Fix ``component_bytes_sent_total`` to exclude failed forwarder attempts, so retries no longer inflate sent-byte telemetry.

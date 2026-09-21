@@ -14,7 +14,6 @@
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use saluki_common::collections::FastHashMap;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
@@ -39,8 +38,8 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
-    SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
+    compute_top_level, get_root_span_index, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC,
+    OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
 };
 
 // Sampling priority constants (matching datadog-agent)
@@ -48,13 +47,9 @@ const PRIORITY_AUTO_DROP: i32 = 0;
 const PRIORITY_AUTO_KEEP: i32 = 1;
 const PRIORITY_USER_KEEP: i32 = 2;
 
-const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent's ExtraSampleRate)
-
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
-
-// Decision maker values for `_dd.p.dm` (matching datadog-agent).
 
 fn normalize_sampling_rate(rate: f64) -> f64 {
     if rate <= 0.0 || rate >= 1.0 {
@@ -68,17 +63,22 @@ fn normalize_sampling_rate(rate: f64) -> f64 {
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
     probabilistic_sampler_enabled: bool,
+    probabilistic_hash_seed: u32,
+    probabilistic_full_trace_id: bool,
     sampling_percentage: f64,
     error_sampling_enabled: bool,
     error_tracking_standalone: bool,
     errors_per_second: f64,
     target_traces_per_second: f64,
+    extra_sample_rate: f64,
+    max_catalog_entries: usize,
     default_env: MetaString,
     rare_sampler_enabled: bool,
     rare_sampler_tps: f64,
     rare_sampler_cooldown_secs: f64,
     rare_sampler_cardinality: usize,
     otlp_sampling_rate: f64,
+    compute_top_level_by_span_kind: bool,
 }
 
 impl TraceSamplerConfiguration {
@@ -90,17 +90,24 @@ impl TraceSamplerConfiguration {
         let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler_sampling_percentage / 100.0);
         Self {
             probabilistic_sampler_enabled: traces.probabilistic_sampler.enabled,
+            probabilistic_hash_seed: traces.probabilistic_sampler.hash_seed,
+            probabilistic_full_trace_id: traces
+                .features
+                .contains(&domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId),
             sampling_percentage: traces.probabilistic_sampler.sampling_percentage,
             error_sampling_enabled: traces.error_sampling_enabled,
             error_tracking_standalone: traces.error_tracking_standalone_enabled,
             errors_per_second: traces.errors_per_second,
             target_traces_per_second: traces.target_traces_per_second,
+            extra_sample_rate: traces.extra_sample_rate,
+            max_catalog_entries: traces.max_catalog_entries,
             default_env: MetaString::from(traces.default_env.clone()),
             rare_sampler_enabled: traces.enable_rare_sampler,
             rare_sampler_tps: traces.rare_sampler.tps,
             rare_sampler_cooldown_secs: traces.rare_sampler.cooldown,
             rare_sampler_cardinality: traces.rare_sampler.cardinality,
             otlp_sampling_rate,
+            compute_top_level_by_span_kind: otlp_traces.enable_compute_top_level_by_span_kind,
         }
     }
 }
@@ -115,16 +122,21 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
             error_sampling_enabled: self.error_sampling_enabled,
             error_tracking_standalone: self.error_tracking_standalone,
             probabilistic_sampler_enabled: self.probabilistic_sampler_enabled,
+            probabilistic: probabilistic::ProbabilisticSampler::new(
+                self.probabilistic_hash_seed,
+                self.probabilistic_full_trace_id,
+            ),
             otlp_sampling_rate: self.otlp_sampling_rate,
-            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, ERROR_SAMPLE_RATE),
+            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, self.extra_sample_rate),
             priority_sampler: priority_sampler::PrioritySampler::new(
                 self.default_env.clone(),
-                ERROR_SAMPLE_RATE,
+                self.extra_sample_rate,
                 self.target_traces_per_second,
+                self.max_catalog_entries,
             ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
                 self.target_traces_per_second,
-                ERROR_SAMPLE_RATE,
+                self.extra_sample_rate,
             ),
             rare_sampler: rare_sampler::RareSampler::new(
                 self.rare_sampler_enabled,
@@ -132,6 +144,7 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                 std::time::Duration::from_secs_f64(self.rare_sampler_cooldown_secs),
                 self.rare_sampler_cardinality,
             ),
+            compute_top_level_by_span_kind: self.compute_top_level_by_span_kind,
         };
 
         Ok(Box::new(sampler))
@@ -141,6 +154,21 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
 impl MemoryBounds for TraceSamplerConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<TraceSampler>("component struct");
+
+        // The catalog holds a hash map slot plus one LRU slab entry per tracked signature. A
+        // configured 0 selects the default cap, matching the catalog's own resolution.
+        let catalog_capacity = if self.max_catalog_entries == 0 {
+            catalog::MAX_CATALOG_ENTRIES
+        } else {
+            self.max_catalog_entries
+        };
+        builder
+            .minimum()
+            .with_map::<signature::ServiceSignature, u32>("priority sampler catalog map", catalog_capacity)
+            .with_map::<signature::ServiceSignature, signature::Signature>(
+                "priority sampler catalog entries",
+                catalog_capacity,
+            );
     }
 }
 
@@ -149,7 +177,9 @@ pub struct TraceSampler {
     error_tracking_standalone: bool,
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
+    probabilistic: probabilistic::ProbabilisticSampler,
     otlp_sampling_rate: f64,
+    compute_top_level_by_span_kind: bool,
     error_sampler: errors::ErrorsSampler,
     priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
@@ -157,52 +187,10 @@ pub struct TraceSampler {
 }
 
 impl TraceSampler {
-    // TODO: merge this with the other duplicate "find root span of trace" functions
     /// Find the root span index of a trace.
     fn get_root_span_index(&self, trace: &Trace) -> Option<usize> {
-        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L36
-        let spans = trace.spans();
-        if spans.is_empty() {
-            return None;
-        }
-        let length = spans.len();
-        // General case: go over all spans and check for one without a matching parent.
-        // This intentionally mirrors `datadog-agent/pkg/trace/traceutil/trace.go:GetRoot`:
-        // - Fast-path: return the last span with `parent_id == 0` (some clients report the root last)
-        // - Otherwise: build a map of `parent_id -> child_span_index`, delete entries whose parent
-        //   exists in the trace, and pick any remaining "orphan" child span.
-        let mut parent_id_to_child: FastHashMap<u64, usize> = FastHashMap::default();
-
-        for i in 0..length {
-            // Common case optimization: check for span with parent_id == 0, starting from the end,
-            // since some clients report the root last.
-            let j = length - 1 - i;
-            if spans[j].parent_id() == 0 {
-                return Some(j);
-            }
-            parent_id_to_child.insert(spans[j].parent_id(), j);
-        }
-
-        for span in spans.iter() {
-            parent_id_to_child.remove(&span.span_id());
-        }
-
-        // Here, if the trace is valid, we should have `len(parent_id_to_child) == 1`.
-        if parent_id_to_child.len() != 1 {
-            debug!(
-                "Didn't reliably find the root span for traceID:{:016x}{:016x}",
-                trace.trace_id_high, trace.trace_id_low,
-            );
-        }
-
-        // Have a safe behavior if that's not the case.
-        // Pick a random span without its parent.
-        if let Some((_, child_idx)) = parent_id_to_child.iter().next() {
-            return Some(*child_idx);
-        }
-
-        // Gracefully fail with the last span of the trace.
-        Some(length - 1)
+        // The shared root finder, so every consumer anchors metadata to identical root spans.
+        get_root_span_index(trace.spans())
     }
 
     /// Check for user-set sampling priority in trace
@@ -237,8 +225,9 @@ impl TraceSampler {
     }
 
     /// Returns `true` if the given trace ID should be probabilistically sampled.
-    fn sample_probabilistic(&self, trace_id: u64) -> bool {
-        probabilistic::ProbabilisticSampler::sample(trace_id, self.sampling_rate)
+    fn sample_probabilistic(&self, trace_id_high: u64, trace_id_low: u64) -> bool {
+        self.probabilistic
+            .sample(trace_id_high, trace_id_low, self.sampling_rate)
     }
 
     fn is_otlp_trace(&self, trace: &Trace, root_span_idx: usize) -> bool {
@@ -350,7 +339,6 @@ impl TraceSampler {
             return (false, PRIORITY_AUTO_DROP, "", None);
         }
 
-        let now = std::time::SystemTime::now();
         let Some(root_span_idx) = self.get_root_span_index(trace) else {
             return (false, PRIORITY_AUTO_DROP, "", None);
         };
@@ -360,6 +348,7 @@ impl TraceSampler {
         if self.error_tracking_standalone {
             let otlp_pre_sample = self.otlp_pre_sample(trace, root_span_idx);
             if self.trace_contains_error(trace, true) {
+                let now = std::time::SystemTime::now();
                 let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 let default_priority = if keep { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP };
                 let (priority, dm) = otlp_pre_sample.unwrap_or((default_priority, ""));
@@ -368,8 +357,6 @@ impl TraceSampler {
             let (pre_priority, pre_dm) = otlp_pre_sample.unwrap_or((PRIORITY_AUTO_DROP, ""));
             return (false, pre_priority, pre_dm, Some(root_span_idx));
         }
-
-        let contains_error = self.trace_contains_error(trace, false);
 
         // Run the rare sampler early, before all other samplers. This mirrors the Go agent behavior
         // where the rare sampler runs first to catch traces that would otherwise be dropped entirely.
@@ -385,19 +372,18 @@ impl TraceSampler {
                 // Rare sampler wins over probabilistic sampling.
                 prob_keep = true;
             } else {
-                // Run probabilistic sampler - use trace ID
-                let root_trace_id = trace.trace_id_low;
-                if self.sample_probabilistic(root_trace_id) {
+                if self.sample_probabilistic(trace.trace_id_high, trace.trace_id_low) {
                     decision_maker = DECISION_MAKER_PROBABILISTIC;
                     prob_keep = true;
 
                     if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                         root_span.attributes.insert(
-                            MetaString::from(PROB_RATE_KEY),
+                            MetaString::from_static(PROB_RATE_KEY),
                             AttributeValue::Float(self.sampling_rate),
                         );
                     }
-                } else if self.error_sampling_enabled && contains_error {
+                } else if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
+                    let now = std::time::SystemTime::now();
                     prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 }
             }
@@ -411,6 +397,9 @@ impl TraceSampler {
             return (prob_keep, priority, decision_maker, Some(root_span_idx));
         }
 
+        // Read once here, where the samplers below consume it; every path above returns without
+        // needing it.
+        let now = std::time::SystemTime::now();
         let user_priority = self.get_user_priority(trace, root_span_idx);
         if let Some(priority) = user_priority {
             if priority < PRIORITY_AUTO_DROP {
@@ -453,7 +442,7 @@ impl TraceSampler {
             }
         }
 
-        if self.error_sampling_enabled && contains_error {
+        if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
                 return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
@@ -464,45 +453,84 @@ impl TraceSampler {
         (false, PRIORITY_AUTO_DROP, "", Some(root_span_idx))
     }
 
+    /// Fills in trace-level metadata from the spans.
+    ///
+    /// Origin comes from the root span's `_dd.origin` tag, and the decision maker is the first
+    /// span in chunk order carrying `_dd.p.dm` - both only when not already set. This runs here,
+    /// downstream of span filtering, so the metadata anchors to the final span population rather
+    /// than the one that arrived at decode time.
+    fn backfill_trace_metadata(&self, trace: &mut Trace, root_span_idx: usize) {
+        if trace.origin.is_empty() {
+            if let Some(origin) = trace.spans()[root_span_idx]
+                .attributes
+                .get(TAG_ORIGIN)
+                .and_then(AttributeValue::as_string)
+            {
+                trace.origin = origin.clone();
+            }
+        }
+
+        if trace.decision_maker.is_none() {
+            let first_decision_maker = trace.spans().iter().find_map(|span| {
+                span.attributes
+                    .get(TAG_DECISION_MAKER)
+                    .and_then(AttributeValue::as_string)
+            });
+            if let Some(dm) = first_decision_maker {
+                trace.decision_maker = Some(dm.clone());
+            }
+        }
+
+        if !self.compute_top_level_by_span_kind {
+            compute_top_level(trace.spans_mut());
+        }
+    }
+
     /// Apply sampling metadata to the trace in-place.
     ///
     /// The `root_span_id` parameter identifies which span should receive the sampling metadata.
     /// This avoids recalculating the root span since it was already found in `run_samplers`.
     fn apply_sampling_metadata(
-        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, root_span_idx: usize,
+        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &'static str, root_span_idx: usize,
     ) {
         let is_otlp = self.is_otlp_trace(trace, root_span_idx);
+        // Chunk-level decision maker: the sampler's value when it decided, otherwise the first
+        // carrier promoted during backfill (falling back to the root's own tag).
+        let promoted_decision_maker = if decision_maker.is_empty() {
+            trace.decision_maker.clone()
+        } else {
+            None
+        };
         let root_span_value = match trace.spans_mut().get_mut(root_span_idx) {
             Some(span) => span,
             None => return,
         };
 
-        // Add tag for the decision maker
-        let existing_decision_maker = if decision_maker.is_empty() {
-            root_span_value
-                .attributes
-                .get(TAG_DECISION_MAKER)
-                .and_then(AttributeValue::as_string)
-                .cloned()
-        } else {
-            None
-        };
         let decision_maker_meta = if decision_maker.is_empty() {
-            existing_decision_maker
-        } else {
-            Some(MetaString::from(decision_maker))
-        };
-
-        // When the APM-level probabilistic sampler is used with OTLP traces, the DD Agent writes
-        // _dd.p.dm to trace chunk tags only (not span meta). For the legacy OTLP sampling path,
-        // it is written to both. We match that behavior by skipping the span meta write only when
-        // both conditions hold; the DM value still flows through trace fields to the encoder.
-        if priority > 0 && !(is_otlp && self.probabilistic_sampler_enabled) {
-            if let Some(dm) = decision_maker_meta.as_ref() {
+            promoted_decision_maker.or_else(|| {
                 root_span_value
                     .attributes
-                    .insert(MetaString::from(TAG_DECISION_MAKER), AttributeValue::String(dm.clone()));
-            }
+                    .get(TAG_DECISION_MAKER)
+                    .and_then(AttributeValue::as_string)
+                    .cloned()
+            })
+        } else {
+            Some(MetaString::from_static(decision_maker))
+        };
+
+        // The span-level decision maker is stamped only when a sampler made the call: promotion
+        // targets trace chunk metadata, and each span's own tag is left in place because
+        // downstream systems rely on the span keeping its original value.
+        //
+        // With the APM-level probabilistic sampler on OTLP traces, `_dd.p.dm` is written to
+        // trace chunk tags only (not span meta); on the legacy sampling path it is written to
+        // both. The span meta write is skipped only when both conditions hold; the DM value
+        // still flows through trace fields to the encoder.
+        if priority > 0 && !decision_maker.is_empty() && !(is_otlp && self.probabilistic_sampler_enabled) {
+            root_span_value.attributes.insert(
+                MetaString::from_static(TAG_DECISION_MAKER),
+                AttributeValue::String(MetaString::from_static(decision_maker)),
+            );
         }
 
         // Now set sampling metadata directly on the trace.
@@ -522,6 +550,13 @@ impl TraceSampler {
         // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
         // root_span_idx is the index of the root span of the trace
         let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(trace);
+
+        // Backfill trace-derived metadata before any forwarding path (keep, ETS, or
+        // single-span/analytics sampling), so every forwarded trace carries metadata derived
+        // from its final span population.
+        if let Some(root_idx) = root_span_idx {
+            self.backfill_trace_metadata(trace, root_idx);
+        }
 
         // Apply sampling metadata and forward if kept, or if ETS (dropped non-error traces are
         // forwarded with DroppedTrace=true, suppressing SSS/analytics).
@@ -582,11 +617,13 @@ mod tests {
             error_sampling_enabled: true,
             error_tracking_standalone: false,
             probabilistic_sampler_enabled: true,
+            probabilistic: probabilistic::ProbabilisticSampler::new(0, false),
             otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
-            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
+            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
             rare_sampler: rare_sampler::RareSampler::new(false, 5.0, std::time::Duration::from_secs(300), 200),
+            compute_top_level_by_span_kind: false,
         }
     }
 
@@ -623,6 +660,234 @@ mod tests {
 
     fn create_test_trace(spans: Vec<DdSpan>) -> Trace {
         Trace::new(spans)
+    }
+
+    fn create_span_with_parent_and_service(
+        span_id: u64, parent_id: u64, service: &str, meta: &[(&str, &str)],
+    ) -> DdSpan {
+        let mut attrs = saluki_common::collections::FastHashMap::default();
+        for (k, v) in meta {
+            attrs.insert(MetaString::from(*k), AttributeValue::String(MetaString::from(*v)));
+        }
+        DdSpan::new(
+            MetaString::from(service),
+            MetaString::from("operation"),
+            MetaString::from("resource"),
+            MetaString::from("type"),
+            span_id,
+            parent_id,
+            0,
+            1000,
+            0,
+        )
+        .with_attributes(attrs)
+    }
+
+    #[test]
+    fn apply_sampling_metadata_preserves_backfilled_decision_maker() {
+        let sampler = create_test_sampler();
+        let root = create_test_span(1, 0);
+        let mut trace = create_test_trace(vec![root]);
+        trace.decision_maker = Some(MetaString::from("-8"));
+
+        sampler.apply_sampling_metadata(&mut trace, true, PRIORITY_AUTO_KEEP, "", 0);
+
+        assert_eq!(
+            trace.decision_maker.as_deref(),
+            Some("-8"),
+            "the chunk-level decision maker keeps the promoted value"
+        );
+        assert!(
+            !trace.spans()[0].attributes.contains_key(TAG_DECISION_MAKER),
+            "a promoted decision maker is never stamped onto the root span; span-level _dd.p.dm is written only when a sampler decides"
+        );
+    }
+
+    #[test]
+    fn apply_sampling_metadata_keeps_root_decision_maker_without_sampler_decision() {
+        let sampler = create_test_sampler();
+        let mut attrs = saluki_common::collections::FastHashMap::default();
+        attrs.insert(
+            MetaString::from(TAG_DECISION_MAKER),
+            AttributeValue::String(MetaString::from("-9")),
+        );
+        let root = create_test_span(1, 0).with_attributes(attrs);
+        let mut trace = create_test_trace(vec![root]);
+        // Promoted from an earlier child span during backfill.
+        trace.decision_maker = Some(MetaString::from("-8"));
+
+        sampler.apply_sampling_metadata(&mut trace, true, PRIORITY_AUTO_KEEP, "", 0);
+
+        assert_eq!(
+            trace.decision_maker.as_deref(),
+            Some("-8"),
+            "the chunk-level decision maker keeps the promoted value"
+        );
+        assert_eq!(
+            trace.spans()[0]
+                .attributes
+                .get(TAG_DECISION_MAKER)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some("-9"),
+            "the root span's own decision maker is never overwritten by a promoted value"
+        );
+    }
+
+    #[test]
+    fn backfill_promotes_origin_from_root_span() {
+        let sampler = create_test_sampler();
+        // The root is reported last here.
+        let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
+        let root = create_span_with_parent_and_service(1, 0, "svc", &[("_dd.origin", "lambda")]);
+        let mut trace = create_test_trace(vec![child, root]);
+
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+        assert_eq!(trace.origin.as_ref(), "lambda");
+    }
+
+    #[test]
+    fn backfill_ignores_origin_from_non_root_span() {
+        let sampler = create_test_sampler();
+        let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
+        let child = create_span_with_parent_and_service(2, 1, "svc", &[("_dd.origin", "rum")]);
+        let mut trace = create_test_trace(vec![root, child]);
+
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+        assert!(trace.origin.as_ref().is_empty());
+    }
+
+    #[test]
+    fn backfill_promotes_first_decision_maker() {
+        let sampler = create_test_sampler();
+        let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
+        let early = create_span_with_parent_and_service(2, 1, "svc", &[("_dd.p.dm", "-8")]);
+        let late = create_span_with_parent_and_service(3, 1, "svc", &[("_dd.p.dm", "-9")]);
+        let mut trace = create_test_trace(vec![root, early, late]);
+
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+        assert_eq!(
+            trace.decision_maker.as_deref(),
+            Some("-8"),
+            "first span carrying the tag wins - not a root-based rule"
+        );
+    }
+
+    #[test]
+    fn backfill_marks_top_level_fallback_when_span_kind_computation_disabled() {
+        let sampler = create_test_sampler();
+        // Roots, orphans, and service boundaries get marked; interior same-service spans don't.
+        let root = create_span_with_parent_and_service(1, 0, "svc-a", &[]);
+        let child = create_span_with_parent_and_service(2, 1, "svc-a", &[]);
+        let orphan = create_span_with_parent_and_service(3, 0xEE, "svc-a", &[]);
+        let other_service = create_span_with_parent_and_service(5, 1, "svc-b", &[]);
+        let local_entry = create_span_with_parent_and_service(6, 5, "svc-a", &[]);
+        let mut trace = create_test_trace(vec![root, child, orphan, other_service, local_entry]);
+
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+        let spans = trace.spans();
+        let top_level = |sid: u64| {
+            spans
+                .iter()
+                .find(|s| s.span_id() == sid)
+                .unwrap()
+                .attributes
+                .get(crate::common::datadog::TOP_LEVEL_KEY)
+                .and_then(AttributeValue::as_num)
+        };
+        assert_eq!(top_level(1), Some(1.0), "root spans are marked");
+        assert_eq!(
+            top_level(3),
+            Some(1.0),
+            "orphans whose parent is missing from the chunk are marked"
+        );
+        assert_eq!(top_level(5), Some(1.0), "spans entering a different service are marked");
+        assert_eq!(
+            top_level(6),
+            Some(1.0),
+            "spans crossing back into the resource service are marked (local root)"
+        );
+        assert_eq!(
+            top_level(2),
+            None,
+            "same-service children with their parent present are not marked"
+        );
+    }
+
+    #[test]
+    fn backfill_skips_top_level_when_span_kind_computation_enabled() {
+        let sampler = TraceSampler {
+            compute_top_level_by_span_kind: true,
+            ..create_test_sampler()
+        };
+        let root = create_span_with_parent_and_service(1, 0, "svc", &[]);
+        let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
+        let orphan = create_span_with_parent_and_service(3, 0xEE, "svc", &[]);
+        let mut trace = create_test_trace(vec![root, child, orphan]);
+
+        let root_idx = sampler.get_root_span_index(&trace).unwrap();
+        sampler.backfill_trace_metadata(&mut trace, root_idx);
+
+        for span in trace.spans() {
+            assert!(
+                !span.attributes.contains_key(crate::common::datadog::TOP_LEVEL_KEY),
+                "no span should carry a top-level mark with the fallback disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn process_trace_backfills_metadata_for_forwarded_traces() {
+        let mut sampler = create_test_sampler();
+        sampler.sampling_rate = 1.0; // keeps the trace, so it is forwarded
+        sampler.probabilistic_sampler_enabled = true;
+
+        let child = create_span_with_parent_and_service(2, 1, "svc", &[]);
+        let root = create_span_with_parent_and_service(1, 0, "svc", &[("_dd.origin", "lambda")]);
+        let mut trace = create_test_trace(vec![child, root]);
+
+        let forwarded = sampler.process_trace(&mut trace);
+        assert!(forwarded);
+        assert_eq!(
+            trace.origin.as_ref(),
+            "lambda",
+            "origin is backfilled for forwarded traces"
+        );
+        assert!(
+            trace
+                .spans()
+                .iter()
+                .any(|s| s.attributes.contains_key(crate::common::datadog::TOP_LEVEL_KEY)),
+            "top-level marks are set for forwarded traces"
+        );
+    }
+
+    #[test]
+    fn apply_sampling_metadata_sampler_decision_overrides_backfill() {
+        let sampler = create_test_sampler();
+        let root = create_test_span(1, 0);
+        let mut trace = create_test_trace(vec![root]);
+        trace.decision_maker = Some(MetaString::from("-8"));
+
+        sampler.apply_sampling_metadata(&mut trace, true, PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC, 0);
+
+        assert_eq!(trace.decision_maker.as_deref(), Some(DECISION_MAKER_PROBABILISTIC));
+        assert_eq!(
+            trace.spans()[0]
+                .attributes
+                .get(TAG_DECISION_MAKER)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some(DECISION_MAKER_PROBABILISTIC)
+        );
     }
 
     #[test]
@@ -732,9 +997,9 @@ mod tests {
         // for known trace IDs at known rates, so a regression in the hash, the bucket mask, or the comparison is
         // caught (a determinism-only check would not catch any of those).
         //
-        // Expected values were computed directly from the FNV-1a bucket math in `ProbabilisticSampler::sample`
-        // (mirrors datadog-agent/pkg/trace/sampler/probabilistic.go). For reference, the trace IDs below hash to
-        // these buckets (out of 0x4000 = 16384): 0x1234567890ABCDEF -> 1764, 0x0 -> 9301, u64::MAX -> 12365.
+        // Expected values were computed directly from the FNV-1a bucket math in `ProbabilisticSampler::sample`.
+        // For reference, the trace IDs below hash to these buckets (out of 0x4000 = 16384):
+        // 0x1234567890ABCDEF -> 1764, 0x0 -> 9301, u64::MAX -> 12365.
         struct Case {
             trace_id: u64,
             rate: f64,
@@ -793,7 +1058,7 @@ mod tests {
             let mut sampler = create_test_sampler();
             sampler.sampling_rate = case.rate;
             assert_eq!(
-                sampler.sample_probabilistic(case.trace_id),
+                sampler.sample_probabilistic(0, case.trace_id),
                 case.expected_keep,
                 "trace_id={:#018x} rate={}",
                 case.trace_id,
@@ -810,9 +1075,80 @@ mod tests {
         let sampler = create_test_sampler();
         let trace_id = 0x1234567890ABCDEF_u64;
         assert_eq!(
-            sampler.sample_probabilistic(trace_id),
-            sampler.sample_probabilistic(trace_id)
+            sampler.sample_probabilistic(0, trace_id),
+            sampler.sample_probabilistic(0, trace_id)
         );
+    }
+
+    #[test]
+    fn probabilistic_sampling_hash_seed_changes_decisions() {
+        // A seed re-buckets every trace ID: 0x1234567890ABCDEF moves from bucket 1764 with seed 0 to
+        // bucket 7338 with seed 22, so rates that straddle only one of the buckets flip decisions.
+        let mut seeded = create_test_sampler();
+        seeded.probabilistic = probabilistic::ProbabilisticSampler::new(22, false);
+
+        // Bucket 7338 (7338/16384 = 0.4479): dropped below 0.45, kept above it.
+        seeded.sampling_rate = 0.40;
+        assert!(!seeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+        seeded.sampling_rate = 0.50;
+        assert!(seeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+
+        // At rate 0.20 the zero-seed sampler keeps this trace (bucket 1764, pinned in
+        // `probabilistic_sampling_known_decisions`) while the seeded sampler drops it.
+        seeded.sampling_rate = 0.20;
+        assert!(!seeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+        let mut unseeded = create_test_sampler();
+        unseeded.sampling_rate = 0.20;
+        assert!(unseeded.sample_probabilistic(0, 0x1234567890ABCDEF));
+    }
+
+    #[test]
+    fn probabilistic_sampling_full_trace_id_mode_hashes_both_halves() {
+        let high = 0xAABBCCDD00112233_u64;
+        let low = 0x1234567890ABCDEF_u64;
+
+        // Legacy mode buckets on the low half alone, so the high half cannot move the decision.
+        let mut legacy = create_test_sampler();
+        legacy.probabilistic = probabilistic::ProbabilisticSampler::new(22, false);
+        legacy.sampling_rate = 0.45;
+        assert_eq!(
+            legacy.sample_probabilistic(0, low),
+            legacy.sample_probabilistic(high, low)
+        );
+
+        // Full mode hashes the 16-byte big-endian ID, high half first: (high, low) lands in bucket
+        // 454 (kept at 0.05, dropped at 0.02), moving the decision relative to legacy mode.
+        let mut full = create_test_sampler();
+        full.probabilistic = probabilistic::ProbabilisticSampler::new(22, true);
+        full.sampling_rate = 0.02;
+        assert!(!full.sample_probabilistic(high, low));
+        full.sampling_rate = 0.05;
+        assert!(full.sample_probabilistic(high, low));
+
+        // A zero high half is still a different input than legacy mode: the halves swap byte
+        // ranges, bucket 14666 versus 7338 (kept at 0.90, dropped at 0.89).
+        full.sampling_rate = 0.89;
+        assert!(!full.sample_probabilistic(0, low));
+        full.sampling_rate = 0.90;
+        assert!(full.sample_probabilistic(0, low));
+    }
+
+    #[test]
+    fn from_configuration_reads_the_full_trace_id_feature() {
+        let traces = domains::traces::Domain {
+            features: vec![domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId],
+            ..Default::default()
+        };
+        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        assert!(config.probabilistic_full_trace_id);
+
+        // Unrecognized flags are carried, not rejected, and enable nothing.
+        let traces = domains::traces::Domain {
+            features: vec![domains::traces::ApmFeature::Other("table_names".to_owned())],
+            ..Default::default()
+        };
+        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        assert!(!config.probabilistic_full_trace_id);
     }
 
     #[test]

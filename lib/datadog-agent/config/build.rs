@@ -8,6 +8,8 @@ mod classifier_gen;
 mod datadog_config_gen;
 #[path = "build/env_reader_gen.rs"]
 mod env_reader_gen;
+#[path = "build/generated_file.rs"]
+mod generated_file;
 #[path = "build/witness_gen.rs"]
 mod witness_gen;
 
@@ -27,6 +29,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build/datadog_config_gen.rs");
     println!("cargo:rerun-if-changed=build/env_reader_gen.rs");
     println!("cargo:rerun-if-changed=build/witness_gen.rs");
+    println!("cargo:rerun-if-changed=build/generated_file.rs");
+    // Watch the output as well as the input. Without this, a build against a warm target directory
+    // has no reason to re-run codegen, so an edited generated file survives the build and the
+    // check-schema-overlay job compares a hand edit against itself.
+    println!("cargo:rerun-if-changed=src/generated");
 
     // Load the composed schema once and pass the in-memory value to every consumer.
     let composed_schema = load_composed_schema(&files.datadog_schema, &files.otel_schema_dir)

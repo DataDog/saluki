@@ -1,4 +1,4 @@
-use std::{collections::HashMap, collections::VecDeque, ops::Range, time::Duration};
+use std::{collections::HashMap, collections::VecDeque, ops::Range, sync::Arc, time::Duration};
 
 use agent_data_plane_config::shared::{SharedConfiguration, V3SeriesMode};
 use async_trait::async_trait;
@@ -44,7 +44,7 @@ use crate::{
             V3EndpointConfig,
         },
         io::RB_BUFFER_CHUNK_SIZE,
-        protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
+        protocol::{MetricsEndpointRouting, MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
@@ -116,12 +116,11 @@ fn metrics_primary_url_can_resolve(url: &str) -> bool {
 }
 
 fn series_v3_can_be_enabled_for_config(
-    use_v2_api_series: bool, serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>,
-    has_additional_endpoints: bool, series_config: &UseV3ApiSeriesConfig,
+    use_v2_api_series: bool, metrics_primary_v3_override: Option<bool>, has_additional_endpoints: bool,
+    series_config: &UseV3ApiSeriesConfig,
 ) -> bool {
     use_v2_api_series
-        && (serializer_use_v3_series
-            || metrics_primary_v3_override == Some(true)
+        && (metrics_primary_v3_override == Some(true)
             || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
                 && series_v3_config_can_enable_v3(series_config)))
 }
@@ -226,6 +225,9 @@ pub struct DatadogMetricsConfiguration {
 
     /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
     additional_endpoints: HashMap<String, Vec<String>>,
+
+    /// Optional targeting applied to series and sketch payloads emitted by this encoder.
+    endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -252,12 +254,19 @@ impl DatadogMetricsConfiguration {
             opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
             primary_endpoint: endpoints.primary_endpoint(),
             additional_endpoints: endpoints.additional_endpoints.clone(),
+            endpoint_routing: None,
         }
     }
 
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         self.additional_tags = Some(additional_tags);
+        self
+    }
+
+    /// Restricts series and sketch payloads to the configured endpoint routing policy.
+    pub fn with_endpoint_routing(mut self, endpoint_routing: MetricsEndpointRouting) -> Self {
+        self.endpoint_routing = Some(Arc::new(endpoint_routing));
         self
     }
 
@@ -278,7 +287,6 @@ impl DatadogMetricsConfiguration {
     pub fn with_v2_series_only(mut self) -> Self {
         self.use_v3_api.series.enabled = V3SeriesMode::Disabled;
         self.use_v3_api.series.endpoints.clear();
-        self.v3_api.series.endpoints.clear();
         self.opw_metrics.clear_v3_series_overrides();
         self
     }
@@ -294,14 +302,11 @@ impl DatadogMetricsConfiguration {
 
     fn endpoint_v3_settings(
         &self, endpoint: &ResolvedEndpoint, metrics_primary_v3_override: Option<bool>,
-        serializer_v3_configured_endpoint: Option<&str>,
     ) -> EndpointV3Settings {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
-            serializer_v3_configured_endpoint,
             series_config: &self.use_v3_api.series,
             metrics_primary_v3_override,
-            serializer_v3_series_endpoints: &self.v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &self.v3_api.sketches.endpoints,
         })
     }
@@ -314,19 +319,16 @@ impl DatadogMetricsConfiguration {
         {
             let metrics_primary = ResolvedEndpoint::from_raw_endpoint(metrics_primary_url, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
-            let settings = self.endpoint_v3_settings(
-                &metrics_primary,
-                Some(metrics_primary_v3_override),
-                Some(&self.primary_endpoint),
-            );
-            if predicate(&settings) {
+            let settings = self.endpoint_v3_settings(&metrics_primary, Some(metrics_primary_v3_override));
+            // The alternate intake replaces the primary stream, so it inherits the primary's allowlist policy.
+            if self.routes_to_endpoint(&self.primary_endpoint) && predicate(&settings) {
                 return Ok(true);
             }
         } else {
             let primary = ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
-            let settings = self.endpoint_v3_settings(&primary, None, None);
-            if predicate(&settings) {
+            let settings = self.endpoint_v3_settings(&primary, None);
+            if self.routes_to_endpoint(&self.primary_endpoint) && predicate(&settings) {
                 return Ok(true);
             }
         }
@@ -334,13 +336,19 @@ impl DatadogMetricsConfiguration {
         for endpoint in resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
-            let settings = self.endpoint_v3_settings(&endpoint, None, None);
-            if predicate(&settings) {
+            let settings = self.endpoint_v3_settings(&endpoint, None);
+            if self.routes_to_endpoint(endpoint.configured_endpoint()) && predicate(&settings) {
                 return Ok(true);
             }
         }
 
         Ok(false)
+    }
+
+    fn routes_to_endpoint(&self, policy_endpoint: &str) -> bool {
+        self.endpoint_routing
+            .as_ref()
+            .is_none_or(|routing| routing.should_route_to(policy_endpoint))
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
@@ -359,7 +367,6 @@ impl DatadogMetricsConfiguration {
         let metrics_primary_v3_override = selected_metrics_primary_v3_override(&self.opw_metrics);
         if !series_v3_can_be_enabled_for_config(
             self.use_v2_series_api,
-            self.v3_api.use_v3_series(),
             metrics_primary_v3_override,
             !self.additional_endpoints.is_empty(),
             &self.use_v3_api.series,
@@ -473,7 +480,6 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             debug!(
                 ?series_mode,
                 ?sketches_mode,
-                v3_series_endpoints = ?self.v3_api.series.endpoints,
                 v3_sketches_endpoints = ?self.v3_api.sketches.endpoints,
                 "V3 encoding support is enabled."
             );
@@ -488,6 +494,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             telemetry,
             flush_timeout,
             log_payloads: self.log_payloads,
+            endpoint_routing: self.endpoint_routing.clone(),
         }))
     }
 }
@@ -525,6 +532,7 @@ pub struct DatadogMetrics {
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
     log_payloads: bool,
+    endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
 }
 
 struct V3RuntimeConfig {
@@ -546,6 +554,7 @@ impl Encoder for DatadogMetrics {
             telemetry,
             flush_timeout,
             log_payloads,
+            endpoint_routing,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -583,6 +592,7 @@ impl Encoder for DatadogMetrics {
                 _ = health.live() => continue,
                 maybe_payload = payloads_rx.recv() => match maybe_payload {
                     Some(payload) => {
+                        let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
                         if let Err(e) = context.dispatcher().dispatch(payload).await {
                             error!("Failed to dispatch payload: {}", e);
                         }
@@ -604,8 +614,11 @@ impl Encoder for DatadogMetrics {
                                 permit = events_tx.reserve() => break permit
                                     .error_context("Failed to reserve capacity for event buffer.")?,
                                 maybe_payload = payloads_rx.recv() => match maybe_payload {
-                                    Some(payload) => if let Err(e) = context.dispatcher().dispatch(payload).await {
-                                        error!("Failed to dispatch payload: {}", e);
+                                    Some(payload) => {
+                                        let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
+                                        if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                            error!("Failed to dispatch payload: {}", e);
+                                        }
                                     },
 
                                     // Our payloads channel is gone, which means our request builder task went away unexpectedly.
@@ -626,6 +639,7 @@ impl Encoder for DatadogMetrics {
 
         // Continue draining the payloads receiver until it is closed.
         while let Some(payload) = payloads_rx.recv().await {
+            let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
             if let Err(e) = context.dispatcher().dispatch(payload).await {
                 error!("Failed to dispatch payload: {}", e);
             }
@@ -636,6 +650,21 @@ impl Encoder for DatadogMetrics {
         debug!("Datadog Metrics encoder stopped.");
 
         Ok(())
+    }
+}
+
+fn apply_endpoint_routing(payload: Payload, endpoint_routing: Option<&Arc<MetricsEndpointRouting>>) -> Payload {
+    let Some(endpoint_routing) = endpoint_routing else {
+        return payload;
+    };
+
+    match payload {
+        Payload::Http(http_payload) => {
+            let (mut metadata, request) = http_payload.into_parts();
+            metadata.set(Arc::clone(endpoint_routing));
+            Payload::Http(HttpPayload::new(metadata, request))
+        }
+        payload => payload,
     }
 }
 
@@ -1810,12 +1839,48 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_routing_restricts_series_and_sketch_payloads() {
+        use crate::common::datadog::{
+            METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SKETCHES_PATH,
+        };
+
+        for routing in [
+            MetricsEndpointRouting::AllExcept(["https://selected.example.com".to_string()].into()),
+            MetricsEndpointRouting::Only(["https://selected.example.com".to_string()].into()),
+        ] {
+            let routing = Arc::new(routing);
+            for (path, info) in [
+                (METRICS_SERIES_V1_PATH, MetricsPayloadInfo::v2_series()),
+                (METRICS_SERIES_V2_PATH, MetricsPayloadInfo::v2_series()),
+                (METRICS_SERIES_V3_BETA_PATH, MetricsPayloadInfo::v3_series()),
+                (METRICS_SERIES_V3_PATH, MetricsPayloadInfo::v3_series()),
+                (METRICS_SKETCHES_PATH, MetricsPayloadInfo::v2_sketches()),
+                (METRICS_SKETCHES_V3_PATH, MetricsPayloadInfo::v3_sketches()),
+            ] {
+                for tagged in [false, true] {
+                    let mut metadata = PayloadMetadata::from_event_count(1);
+                    if tagged {
+                        metadata.set(info);
+                    }
+                    let body = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE).freeze();
+                    let request = Request::builder().uri(path).body(body).unwrap();
+                    let payload = Payload::Http(HttpPayload::new(metadata, request));
+                    let routed = apply_endpoint_routing(payload, Some(&routing))
+                        .try_into_http_payload()
+                        .unwrap();
+                    let (metadata, _) = routed.into_parts();
+                    let payload_routing = metadata.get::<Arc<MetricsEndpointRouting>>();
+                    assert!(Arc::ptr_eq(payload_routing.unwrap(), &routing));
+                    assert_eq!(metadata.get::<MetricsPayloadInfo>(), tagged.then_some(&info));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn v3_api_settings_come_from_resolved_configuration() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_api.compression_level = 7;
-        shared.metrics_encoding.v3_api.series = TypedV3ApiSettings {
-            endpoints: vec!["https://app.datadoghq.com".to_string()],
-        };
         shared.metrics_encoding.v3_api.sketches = TypedV3ApiSettings {
             endpoints: vec!["https://app.datadoghq.eu".to_string()],
         };
@@ -1823,10 +1888,6 @@ mod tests {
         let config = metrics_config_from(&shared);
 
         assert_eq!(7, config.v3_api.compression_level);
-        assert_eq!(
-            Some("https://app.datadoghq.com"),
-            config.v3_api.series.endpoints.first().map(String::as_str)
-        );
         assert_eq!(
             Some("https://app.datadoghq.eu"),
             config.v3_api.sketches.endpoints.first().map(String::as_str)
@@ -1893,6 +1954,70 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_routing_limits_protocol_selection_to_payload_targets() {
+        // The primary Datadog endpoint is V3-authoritative under `datadog_only`, while the custom additional endpoint
+        // stays on V2. Each routing direction therefore proves that primary and additional endpoints can both be
+        // selected or excluded.
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://custom.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]);
+
+        let primary = shared.endpoints.primary_endpoint();
+        let additional = "https://custom.example.com".to_string();
+        for (routing, expects_v2) in [
+            (MetricsEndpointRouting::AllExcept([additional.clone()].into()), false),
+            (MetricsEndpointRouting::Only([additional].into()), true),
+            (MetricsEndpointRouting::AllExcept([primary.clone()].into()), true),
+            (MetricsEndpointRouting::Only([primary].into()), false),
+        ] {
+            let config = metrics_config_from(&shared).with_endpoint_routing(routing);
+            assert_eq!(config.requires_v2_series(false).unwrap(), expects_v2);
+            assert_eq!(config.requires_v3_series(false).unwrap(), !expects_v2);
+        }
+    }
+
+    #[test]
+    fn alternate_metrics_intakes_inherit_primary_routing_but_keep_their_protocol() {
+        for use_vector in [false, true] {
+            for use_v3_series in [false, true] {
+                let mut shared = shared_configuration();
+                // Give ordinary endpoints the opposite protocol so using the wrong destination is observable.
+                shared.metrics_encoding.v3_series_mode = if use_v3_series {
+                    V3SeriesMode::Disabled
+                } else {
+                    V3SeriesMode::Enabled
+                };
+                let alternate = AltMetricsIntake {
+                    enabled: true,
+                    url: "https://alternate.example.com".to_string(),
+                    use_v3_series,
+                };
+                if use_vector {
+                    shared.endpoints.vector_intake = alternate;
+                } else {
+                    shared.endpoints.opw_intake = alternate;
+                }
+                shared.endpoints.additional_endpoints = HashMap::from([(
+                    "https://alternate.example.com".to_string(),
+                    vec!["additional-key".to_string()],
+                )]);
+                let primary = shared.endpoints.primary_endpoint();
+                for (routing, expects_v3) in [
+                    (MetricsEndpointRouting::Only([primary.clone()].into()), use_v3_series),
+                    (MetricsEndpointRouting::AllExcept([primary].into()), !use_v3_series),
+                ] {
+                    let config = metrics_config_from(&shared).with_endpoint_routing(routing);
+                    assert_eq!(config.requires_v2_series(false).unwrap(), !expects_v3);
+                    assert_eq!(config.requires_v3_series(false).unwrap(), expects_v3);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn all_v2_endpoints_do_not_require_v3_series() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
@@ -1920,13 +2045,8 @@ mod tests {
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
         let config = metrics_config_from(&shared);
 
-        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
-            config.use_v2_series_api,
-            false,
-            None,
-            false,
-            &config.use_v3_api.series,
-        );
+        let series_v3_can_be_enabled =
+            series_v3_can_be_enabled_for_config(config.use_v2_series_api, None, false, &config.use_v3_api.series);
 
         assert!(!series_v3_can_be_enabled);
 
@@ -1942,33 +2062,12 @@ mod tests {
     }
 
     #[test]
-    fn all_v3_serializer_endpoints_require_only_v3_series() {
-        let mut shared = shared_configuration();
-        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
-        shared.endpoints.dd_url = ConfigValue::explicit("https://agent.datad0g.com.".to_string());
-        shared.endpoints.additional_endpoints = HashMap::from([(
-            "https://agent.datadoghq.com.".to_string(),
-            vec!["additional-api-key".to_string()],
-        )]);
-        shared.metrics_encoding.v3_api.series.endpoints = vec![
-            "https://agent.datad0g.com.".to_string(),
-            "https://agent.datadoghq.com.".to_string(),
-        ];
-        let config = metrics_config_from(&shared);
-
-        assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
-        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
-    }
-
-    #[test]
     fn endpoint_override_uses_the_overridden_endpoint_protocol() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
         shared.endpoints.dd_url = ConfigValue::explicit("https://primary.example.com".to_string());
-        shared.metrics_encoding.v3_api.series.endpoints = vec![
-            "https://primary.example.com".to_string(),
-            "https://v3-mrf.example.com".to_string(),
-        ];
+        shared.metrics_encoding.v3_series_endpoint_modes =
+            HashMap::from([("https://v3-mrf.example.com".to_string(), V3SeriesMode::Enabled)]);
         let config = metrics_config_from(&shared);
 
         let v2_mrf_config = config
@@ -2019,7 +2118,6 @@ mod tests {
 
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert!(config.use_v3_api.series.endpoints.is_empty());
-        assert!(config.v3_api.series.endpoints.is_empty());
         assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
         assert!(!config.requires_v3_series(false).expect("endpoint should resolve"));
     }
@@ -2044,36 +2142,25 @@ mod tests {
 
         assert!(!series_v3_can_be_enabled_for_config(
             true,
-            false,
             Some(false),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
             true,
-            false,
             Some(true),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
             true,
-            false,
             Some(false),
             true,
-            &series_config
-        ));
-        assert!(series_v3_can_be_enabled_for_config(
-            true,
-            true,
-            Some(false),
-            false,
             &series_config
         ));
         assert_eq!(None, invalid_metrics_primary_override);
         assert!(series_v3_can_be_enabled_for_config(
             true,
-            false,
             invalid_metrics_primary_override,
             false,
             &series_config

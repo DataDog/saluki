@@ -1,0 +1,6 @@
+fixes:
+  - |
+    Fix invalid pointer arithmetic in per-group memory accounting that could abort Agent Data Plane
+    during startup, reporting ``misaligned pointer dereference``. Builds for 64-bit Arm targets,
+    including macOS on Apple silicon, were observed to fail this way, but the underlying fault was
+    present on every platform and could also have produced incorrect memory accounting.

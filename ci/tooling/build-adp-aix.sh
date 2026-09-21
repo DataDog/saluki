@@ -7,15 +7,15 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 BUILD_PROFILE="${BUILD_PROFILE:-aix-optimized-release}"
 BUILD_FEATURES="${BUILD_FEATURES:-default}"
-AIX_RUST_SDK_DIR="${AIX_RUST_SDK_DIR:-/opt/freeware/lib/RustSDK/1.92}"
+AIX_RUST_SDK_DIR="${AIX_RUST_SDK_DIR:-/opt/freeware/lib/RustSDK/1.96}"
 ADP_AIX_CC="${ADP_AIX_CC:-/opt/freeware/bin/gcc}"
 ADP_AIX_CXX="${ADP_AIX_CXX:-/opt/freeware/bin/g++}"
 ADP_AIX_AR="${ADP_AIX_AR:-/usr/bin/ar}"
 ADP_AIX_RANLIB="${ADP_AIX_RANLIB:-/usr/bin/ranlib}"
 CARGO_HOME="${CARGO_HOME:-/opt/cargo-home}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/opt/saluki/target}"
-ADP_AIX_EXPECTED_CARGO_PREFIX="${ADP_AIX_EXPECTED_CARGO_PREFIX:-cargo 1.92.}"
-ADP_AIX_EXPECTED_RUSTC_PREFIX="${ADP_AIX_EXPECTED_RUSTC_PREFIX:-rustc 1.92.}"
+ADP_AIX_EXPECTED_CARGO_PREFIX="${ADP_AIX_EXPECTED_CARGO_PREFIX:-cargo 1.96.}"
+ADP_AIX_EXPECTED_RUSTC_PREFIX="${ADP_AIX_EXPECTED_RUSTC_PREFIX:-rustc 1.96.}"
 ADP_AIX_EXPECTED_GCC_PREFIX="${ADP_AIX_EXPECTED_GCC_PREFIX:-gcc (GCC) 13.}"
 ADP_AIX_EXPECTED_GXX_PREFIX="${ADP_AIX_EXPECTED_GXX_PREFIX:-g++ (GCC) 13.}"
 ADP_AIX_BUILD_DRY_RUN="${ADP_AIX_BUILD_DRY_RUN:-false}"
@@ -31,10 +31,13 @@ export CARGO_TARGET_DIR
 APP_GIT_HASH_AUTO="$(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo not-in-git)"
 
 export APP_GIT_HASH="${APP_GIT_HASH:-${ADP_APP_GIT_HASH:-${APP_GIT_HASH_AUTO}}}"
-# Unlike the Makefile, this script defaults APP_DEV_BUILD to "false", so it can't fall back to a placeholder
-# timestamp: saluki-metadata rejects placeholder metadata on release builds. Stamp the current time instead.
-APP_BUILD_TIME_AUTO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-${APP_BUILD_TIME_AUTO}}}}"
+# The Makefile uses this stable placeholder outside CI, but a release AIX build must replace it because
+# saluki-metadata rejects placeholder metadata.
+app_build_time_placeholder="0000-00-00T00:00:00-00:00"
+if [[ "${APP_BUILD_TIME:-}" == "${app_build_time_placeholder}" ]]; then
+    unset APP_BUILD_TIME
+fi
+export APP_BUILD_TIME="${APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}}"
 export APP_DEV_BUILD="${APP_DEV_BUILD:-${ADP_APP_DEV_BUILD:-false}}"
 
 require_executable() {

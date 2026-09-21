@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
-use saluki_config::GenericConfiguration;
 #[cfg(unix)]
-use tracing::{debug, error};
+use tracing::debug;
 
 #[cfg(unix)]
 use super::{
@@ -18,30 +17,21 @@ pub struct ContainerdDetector;
 impl ContainerdDetector {
     /// Tries to detect the containerd gRPC socket path.
     ///
-    /// The socket path can be specified in the configuration, or if it's not present, default paths will be checked for
-    /// the presence of the socket path.
-    ///
-    /// If the socket path is configured or detected, and is a valid Unix domain socket, `Some` is returned with the
-    /// socket path. Otherwise, `None` is returned.
+    /// If `socket_path` is given, that path is used. Otherwise, well-known paths are probed for a Unix domain socket.
+    /// Either way, `None` is returned unless the resulting path refers to containerd.
     #[cfg(unix)]
-    pub fn detect_grpc_socket_path(config: &GenericConfiguration) -> Option<PathBuf> {
-        // Try and read the socket path from either the configuration, or if it's not present there, from the possible
-        // default paths we would expect it to be listening at.
-        let detected_socket_path = match config.try_get_typed::<PathBuf>("cri_socket_path") {
-            Ok(Some(cri_socket_path)) => Some(cri_socket_path),
-            Ok(None) => {
+    pub fn detect_grpc_socket_path(socket_path: Option<PathBuf>) -> Option<PathBuf> {
+        let detected_socket_path = match socket_path {
+            Some(socket_path) => Some(socket_path),
+            None => {
                 if is_running_inside_docker() {
                     None
                 } else {
-                    debug!("Containerd socket path (`cri_socket_path`) not present in configuration. Trying to detect at default paths...");
+                    debug!("No containerd socket path configured. Trying to detect at default paths...");
 
                     let default_socket_paths = with_host_mount_prefixes([DEFAULT_CONTAINERD_SOCKET_PATH_LINUX]);
                     find_first_available_unix_socket(default_socket_paths)
                 }
-            }
-            Err(e) => {
-                error!(error = %e, "Value for `cri_socket_path` could not be parsed as a valid path.");
-                None
             }
         }?;
 
@@ -56,7 +46,36 @@ impl ContainerdDetector {
 
     /// Returns `None` because containerd Unix socket detection isn't supported on this platform.
     #[cfg(not(unix))]
-    pub fn detect_grpc_socket_path(_: &GenericConfiguration) -> Option<PathBuf> {
+    pub fn detect_grpc_socket_path(_: Option<PathBuf>) -> Option<PathBuf> {
         None
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::ContainerdDetector;
+
+    #[test]
+    fn a_configured_socket_path_is_used_without_probing() {
+        let configured = PathBuf::from("/custom/run/containerd/containerd.sock");
+
+        assert_eq!(
+            ContainerdDetector::detect_grpc_socket_path(Some(configured.clone())),
+            Some(configured)
+        );
+    }
+
+    #[test]
+    fn a_configured_empty_socket_path_leaves_containerd_undetected() {
+        assert_eq!(ContainerdDetector::detect_grpc_socket_path(Some(PathBuf::new())), None);
+    }
+
+    #[test]
+    fn a_configured_socket_path_for_another_runtime_leaves_containerd_undetected() {
+        let configured = PathBuf::from("/var/run/crio/crio.sock");
+
+        assert_eq!(ContainerdDetector::detect_grpc_socket_path(Some(configured)), None);
     }
 }
