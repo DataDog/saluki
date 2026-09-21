@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add ``agent remote dogstatsd`` commands for inspecting and managing DogStatsD in Agent Data Plane deployments.
