@@ -650,12 +650,29 @@ pub(crate) fn get_self_container_id(interner: &GenericMapInterner) -> Option<Met
 ///
 /// Only meaningful under the cgroups v2 unified hierarchy, where that path is itself a cgroup. Under cgroups v1 it's
 /// the `tmpfs` the controllers are mounted into, and an inode from that filesystem doesn't identify anything in the
-/// hierarchy. Callers **MUST** check [`CgroupsReader::is_unified`] first.
+/// hierarchy, so this returns `None` unless our own mount is the unified hierarchy.
 pub(crate) fn get_self_cgroup_controller_inode() -> Option<u64> {
-    cgroup_controller_inode(Path::new(SELF_CGROUPFS_PATH))
+    unified_cgroup_controller_inode(Path::new(SELF_CGROUPFS_PATH))
 }
 
-fn cgroup_controller_inode(path: &Path) -> Option<u64> {
+/// Gets the inode of the given cgroupfs mount, if that mount is the cgroups v2 unified hierarchy.
+///
+/// Every cgroup in the unified hierarchy exposes [`CGROUPS_V2_CONTROLLERS_FILE`], so its presence at the root of the
+/// mount establishes that an inode read from there belongs to a cgroup2 filesystem. Under cgroups v1 the same path is
+/// the `tmpfs` the per-controller filesystems are mounted into, and the file isn't there.
+///
+/// This is deliberately a property of the mount being read, not of the hierarchy the cgroups metadata collector walks.
+/// Those are different mounts whenever the collector is reading a host-mapped cgroupfs, and only the former says
+/// anything about where this inode came from.
+fn unified_cgroup_controller_inode(path: &Path) -> Option<u64> {
+    if !path.join(CGROUPS_V2_CONTROLLERS_FILE).exists() {
+        debug!(
+            path = %path.display(),
+            "Own cgroupfs mount is not the unified hierarchy, so its inode can't identify a container.",
+        );
+        return None;
+    }
+
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(e) => {
@@ -827,10 +844,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        cgroup_controller_inode, extract_container_id, extract_container_id_from_path,
-        get_container_id_from_cgroup_lines, is_usable_controller_inode, visit_subdirectories, CgroupControllerEntry,
+        extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
+        is_usable_controller_inode, unified_cgroup_controller_inode, visit_subdirectories, CgroupControllerEntry,
         CgroupsConfiguration, CgroupsReader, Feature, FeatureDetector, HierarchyReader, TraversalResult,
-        DEFAULT_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
+        CGROUPS_V1_BASE_CONTROLLER_NAME, CGROUPS_V2_CONTROLLERS_FILE, DEFAULT_CGROUPFS_ROOT,
+        DEFAULT_HOST_MAPPED_CGROUPFS_ROOT, DEFAULT_HOST_MAPPED_PROCFS_ROOT, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -1394,20 +1412,32 @@ mod tests {
     }
 
     #[test]
-    fn cgroup_controller_inode_reports_a_real_directory_inode() {
+    fn unified_cgroup_controller_inode_reports_a_real_directory_inode() {
         let root = tempdir().unwrap();
+        fs::write(root.path().join(CGROUPS_V2_CONTROLLERS_FILE), "cpu memory pids").unwrap();
 
-        let inode = cgroup_controller_inode(root.path()).expect("a real directory has a usable inode");
+        let inode = unified_cgroup_controller_inode(root.path()).expect("a real directory has a usable inode");
 
         assert_eq!(inode, fs::metadata(root.path()).unwrap().ino());
         assert!(is_usable_controller_inode(inode));
     }
 
     #[test]
-    fn cgroup_controller_inode_returns_none_for_a_missing_path() {
+    fn unified_cgroup_controller_inode_returns_none_for_a_missing_path() {
         let root = tempdir().unwrap();
 
-        assert_eq!(cgroup_controller_inode(&root.path().join("missing")), None);
+        assert_eq!(unified_cgroup_controller_inode(&root.path().join("missing")), None);
+    }
+
+    #[test]
+    fn unified_cgroup_controller_inode_returns_none_when_our_own_mount_is_not_unified() {
+        // A cgroups v1 mount is the `tmpfs` the per-controller filesystems hang off of, so it has no
+        // `cgroup.controllers` and its inode belongs to a filesystem the collector never walks. Handing that inode to
+        // an alias map keyed on inode alone would at best resolve nothing and at worst name another container.
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join(CGROUPS_V1_BASE_CONTROLLER_NAME)).unwrap();
+
+        assert_eq!(unified_cgroup_controller_inode(root.path()), None);
     }
 
     #[test]

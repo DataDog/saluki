@@ -125,10 +125,13 @@ impl ResolverImpl {
         // our own cgroup. Its inode is the same one a traversal of the host's hierarchy reports for that cgroup, so
         // handing it back lets the alias the collector registered resolve us.
         //
-        // Only under the unified hierarchy, though. There, `/sys/fs/cgroup` is a cgroup in the same filesystem the
-        // collector walked, so the inode identifies the same object. Under cgroups v1 it's the tmpfs those controllers
-        // are mounted into, and an inode from a different filesystem means nothing to a map keyed on inode alone --
-        // at best it resolves nothing, at worst it collides with another container's.
+        // Only when both sides of that comparison are the unified hierarchy, though, since the alias map is keyed on
+        // a bare inode and inode numbers only identify a file within a single filesystem.
+        // `get_self_cgroup_controller_inode` vouches for its own end -- it returns `None` unless our `/sys/fs/cgroup`
+        // is a cgroup2 mount -- and the check here vouches for the keyspace it's about to be compared against, which
+        // is a different mount whenever the collector is reading a host-mapped cgroupfs. Under cgroups v1 those
+        // inodes come from the per-controller filesystems instead, so ours means nothing to the map: at best it
+        // resolves nothing, at worst it collides with another container's.
         if self.cgroups_reader.is_unified() {
             if let Some(controller_inode) = get_self_cgroup_controller_inode() {
                 return Some(EntityId::ContainerInode(controller_inode));
