@@ -118,25 +118,15 @@ impl ResolverImpl {
         }
 
         // In our own cgroup namespace, `/proc/self/cgroup` reads `0::/` and names nothing, but the namespace root is
-        // our own cgroup. Its inode is the same one a traversal of the host's hierarchy reports for that cgroup, so
-        // handing it back lets the alias the collector registered resolve us.
+        // our own cgroup, whose inode is the one the collector saw walking the host's hierarchy.
         //
-        // Only when both sides of that comparison are the unified hierarchy, though, since the alias map is keyed on
-        // a bare inode and inode numbers only identify a file within a single filesystem. The two ends are different
-        // mounts whenever the collector is reading a host-mapped cgroupfs, so each is checked separately:
-        // `get_self_cgroup_controller_inode` returns `None` unless our own `/sys/fs/cgroup` is a cgroup2 mount, and
-        // the check here establishes that the keyspace it's about to be compared against was built from one too.
-        //
-        // Neither check alone is enough, and hybrid hosts are why the second one is here. `try_from_config` prefers
-        // cgroups v1 whenever any v1 controller is mounted, so on a hybrid host the collector reads the memory
-        // controller and the map is keyed on inodes from that filesystem -- while our own `/sys/fs/cgroup` may be the
-        // unified mount, whose `cgroup.controllers` exists (empty, but present) and so satisfies the check above. An
-        // inode from the unified hierarchy means nothing to a map keyed on memory-controller inodes: at best it
-        // resolves nothing, at worst it collides with another container's.
-        //
-        // Both being cgroup2 still doesn't prove they're the *same* cgroup2 -- a nested kernel, such as ADP inside a
-        // microVM with the host's cgroupfs mapped in, would be two inode spaces that both pass. Ruling that out means
-        // keying the alias map on `(dev, ino)` rather than the bare inode it uses today.
+        // That alias map is keyed on a bare inode, so it only holds if both inodes come from the same filesystem --
+        // and these are different mounts whenever the collector reads a host-mapped cgroupfs. So each end is checked
+        // separately: `get_self_cgroup_controller_inode` returns `None` unless ours is cgroup2, and `is_unified`
+        // covers the collector's. Hybrid hosts are why the latter is load-bearing: `try_from_config` prefers v1
+        // whenever any v1 controller is mounted, so the map can be keyed on memory-controller inodes while our own
+        // mount is the unified one. (Two cgroup2 mounts still aren't provably the same one, which would need
+        // `(dev, ino)` keys.)
         if self.cgroups_reader.is_unified() {
             if let Some(controller_inode) = get_self_cgroup_controller_inode() {
                 return Some(EntityId::ContainerInode(controller_inode));
