@@ -1,163 +1,93 @@
-// Renovate configuration for the Saluki repo.
-//
-// This file is JSONC (JSON with Comments). Can be validated with:
-//     npx --yes --package renovate -- renovate-config-validator renovate.json
-//
-// The configuration below is designed to spam us with fewer PRs:
-//
-//   - Updates land in a single weekly window instead of continuously.
-//   - Non-major updates collapse into one combined PR.
-//   - Brand-new releases soak for a week before Renovate proposes them, which
-//     filters out same-week re-bumps and gives upstream maintainers time to
-//     yank broken releases.
-//   - Hard caps prevent surprise floods from a busy ecosystem week.
-//
-// Security advisories are explicitly exempted from all of the above and open
-// dedicated PRs immediately. See the `vulnerabilityAlerts` block.
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-
-  // Presets are bundles of config maintained by the Renovate project.
-  "extends": [
-    "config:recommended",
-    // Collapse all non-major updates (patch + minor) across every ecosystem
-    // into a single PR per scheduled run.
-    "group:allNonMajor",
-
-    // Restrict Renovate to creating branches to weekly.
-    "schedule:weekly"
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    'group:allNonMajor',
+    'schedule:weekly',
   ],
-
-  // Mark Renovate PRs as automated so various checks that only apply to
-  // non-automated changes will skip running for dependency update PRs.
-  "labels": ["automated"],
-
-  // Maximum number of Renovate-authored PRs that may be open at once.
-  "prConcurrentLimit": 5,
-
-  // Maximum number of new PRs Renovate may create per hour.
-  "prHourlyLimit": 2,
-
-  // Wait this long after a new version is published before Renovate will
-  // propose updating to it.
-  "minimumReleaseAge": "7 days",
-
-  // Renovate has a separate code path for vulnerability fixes. When a
-  // dependency in the repo has a known advisory (from GitHub's security
-  // advisory feed and, with the option below, from OSV.dev) and a fixed
-  // version is available, Renovate creates a dedicated PR that bypasses:
-  //
-  //   - `schedule` (opens immediately, not just on Monday)
-  //   - `minimumReleaseAge` (no 7-day soak)
-  //   - `prConcurrentLimit` and `prHourlyLimit` (does not count against caps)
-  //   - grouping (gets its own focused PR rather than being bundled in the
-  //     weekly non-major group)
-  "osvVulnerabilityAlerts": true,
-
-  // Package-manager-specific rules.
-  "packageRules": [
-    // Use Cargo's semver interpretation for all Cargo dependencies. Cargo
-    // treats `^0.x` as `>=0.x.0, <0.x+1.0`, so a bump from `0.9` to `0.10`
-    // is a breaking (major) change. Without this, Renovate uses standard
-    // semver where such a bump is classified as "minor" and incorrectly
-    // lands in the non-major group PR — which cannot fix compilation errors
-    // caused by removed features or API changes.
-    {
-      "matchManagers": ["cargo"],
-      "versioning": "cargo"
-    },
-    // Cargo pre-1.0 breaking updates: `0.x` → `0.y` is a breaking change in
-    // Cargo's semver (`^0.9` covers `>=0.9.0, <0.10.0`), but Renovate still
-    // assigns `updateType: "minor"` because the major version digit (`0`) does
-    // not change. That means `group:allNonMajor` captures these bumps in the
-    // weekly batch PR, where Renovate cannot fix compilation errors from
-    // removed features or API changes. Override `groupName` so they land in a
-    // dedicated PR that clearly signals manual review is required.
-    {
-      "matchManagers": ["cargo"],
-      "matchCurrentVersion": "/^0\\.[0-9]/",
-      "matchUpdateTypes": ["minor"],
-      "groupName": "cargo pre-1.0 breaking updates",
-      "prBodyNotes": [
-        "**Cargo breaking update (pre-v1.0)** — `0.x` → `0.y` is a breaking change in Cargo's semver. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
-      ]
-    },
-    // schemars/typify/prettyplease are stuck in a dependency deadlock tracked
-    // in our #2289 and at https://github.com/oxidecomputer/typify/issues/886
-    {
-      "matchManagers": ["cargo"],
-      "matchPackageNames": [
-        "schemars",
-        "schemars_derive",
-        "typify",
-        "typify-impl",
-        "typify-macro",
-        "prettyplease"
-      ],
-      "groupName": "blocked schema/codegen dependencies",
-      "dependencyDashboardApproval": true
-    },
-    // Warn reviewers that genuine Cargo major updates (1.x → 2.0, etc.) may
-    // also require manual fixes for removed features or API changes.
-    {
-      "matchManagers": ["cargo"],
-      "matchUpdateTypes": ["major"],
-      "prBodyNotes": [
-        "**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
-      ]
-    },
-    // We deliberately hold the Rust toolchain (rust-toolchain.toml `channel`) well
-    // below the latest stable release to preserve broader platform support for
-    // consumers on older compilers. Disable Renovate's `rust-toolchain` manager so it
-    // stops proposing bumps here; the toolchain version is a manual decision.
-    {
-      "matchManagers": ["rust-toolchain"],
-      "enabled": false
-    },
-    // aws-lc-rs is intentionally pinned below 1.18 in Cargo.toml to stay on the
-    // NIST CMVP validated FIPS 140-3 module (AWS-LC-FIPS 3.x); 1.18.0 switches
-    // the `fips` feature to the not-yet-certified AWS-LC-FIPS 4.x module. Without
-    // this rule Renovate keeps proposing to widen the `<1.18` upper bound in the
-    // weekly non-major group PR. Remove once AWS-LC-FIPS 4.x is certified (see
-    // the pin comment next to the `aws-lc-rs` workspace dependency).
-    {
-      "matchManagers": ["cargo"],
-      "matchPackageNames": ["aws-lc-rs"],
-      "allowedVersions": "<1.18"
-    }
+  labels: [
+    'automated',
   ],
-
-  // Custom managers for Datadog Agent version pins that Renovate's built-in managers don't see.
-  //
-  // The `dockerfile` manager already bumps docker/Dockerfile.datadog-agent (the
-  // `registry.datadoghq.com/agent` FROM/ARG). But a couple of other pins for the same Agent are
-  // hand-maintained in files no default manager parses -- the macOS test Agent version (Makefile)
-  // and the Windows LTSC base image (.gitlab/windows.yml) -- so they were silently left behind on
-  // past bumps (see the 7.80.1 -> 7.80.2 update). Manage them here, tied to the same depName
-  // (`registry.datadoghq.com/agent`) so they bump in lockstep with -- and in the same PR as -- the
-  // main Agent image.
-  //
-  // `currentValue` captures only the numeric version; any image-tag suffix (-ltsc2022, -jmx, -full)
-  // is matched but left out of the group, so Renovate rewrites just the number and preserves the
-  // suffix in place. Because the suffixed tags are published together with the bare release, every
-  // pin tracks the same single Agent version rather than drifting onto separate per-suffix streams.
-  "customManagers": [
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+  minimumReleaseAge: '7 days',
+  osvVulnerabilityAlerts: true,
+  packageRules: [
     {
-      "customType": "regex",
-      "fileMatch": [
-        "(^|/)Makefile$",
-        "^\\.gitlab/windows\\.yml$"
+      matchManagers: [
+        'cargo',
       ],
-      "matchStrings": [
-        // Bare version, e.g. `MACOS_TEST_AGENT_VERSION ?= 7.80.3` (Makefile).
-        "MACOS_TEST_AGENT_VERSION \\?= (?<currentValue>[\\d.]+)",
-        // Image pin, e.g. `registry.datadoghq.com/agent:7.80.3-ltsc2022` (.gitlab/windows.yml).
-        // The `-suffix` is matched but not captured, so only the number is rewritten.
-        "registry\\.datadoghq\\.com/agent:(?<currentValue>[\\d.]+)(?:-[a-z0-9]+)?"
+      versioning: 'cargo',
+    },
+    {
+      matchManagers: [
+        'cargo',
       ],
-      "datasourceTemplate": "docker",
-      "depNameTemplate": "registry.datadoghq.com/agent",
-      "versioningTemplate": "docker"
-    }
-  ]
+      matchCurrentVersion: '/^0\\.[0-9]/',
+      matchUpdateTypes: [
+        'minor',
+      ],
+      groupName: 'cargo pre-1.0 breaking updates',
+      prBodyNotes: [
+        "**Cargo breaking update (pre-v1.0)** — `0.x` → `0.y` is a breaking change in Cargo's semver. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes.",
+      ],
+    },
+    {
+      matchManagers: [
+        'cargo',
+      ],
+      matchPackageNames: [
+        'schemars',
+        'schemars_derive',
+        'typify',
+        'typify-impl',
+        'typify-macro',
+        'prettyplease',
+      ],
+      groupName: 'blocked schema/codegen dependencies',
+      dependencyDashboardApproval: true,
+    },
+    {
+      matchManagers: [
+        'cargo',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
+      prBodyNotes: [
+        '**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes.',
+      ],
+    },
+    {
+      matchManagers: [
+        'rust-toolchain',
+      ],
+      enabled: false,
+    },
+    {
+      matchManagers: [
+        'cargo',
+      ],
+      matchPackageNames: [
+        'aws-lc-rs',
+      ],
+      allowedVersions: '<1.18',
+    },
+  ],
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: [
+        '/(^|/)Makefile$/',
+        '/^\\.gitlab/windows\\.yml$/',
+      ],
+      matchStrings: [
+        'MACOS_TEST_AGENT_VERSION \\?= (?<currentValue>[\\d.]+)',
+        'registry\\.datadoghq\\.com/agent:(?<currentValue>[\\d.]+)(?:-[a-z0-9]+)?',
+      ],
+      datasourceTemplate: 'docker',
+      depNameTemplate: 'registry.datadoghq.com/agent',
+      versioningTemplate: 'docker',
+    },
+  ],
 }
