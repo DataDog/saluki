@@ -330,6 +330,30 @@ Compare these named-corpus cases with each other, not directly with earlier 100-
 runs or the ordinary `dsd_uds_500mb_3k_contexts` case. These experiments belong to the full suite and do
 not define pass/fail quality gates or assert on received metric contents.
 
+#### Ad-hoc secondary all-miss scaling
+
+The `metric_routing_secondary_miss_<N>_entries_500mb_3k_contexts` experiments vary only the
+secondary allowlist size: 10, 100, 1,000, 10,000, and 100,000 entries. Each size measures CPU,
+memory, and ingress throughput, for 15 additional full-suite cases on this experimental branch.
+The existing regression cases and quality gates are unchanged.
+
+The primary has no allowlist and receives all metrics. The secondary has exactly N unique
+names, all under `routing.absent.`, which cannot match the `routing.metric.` input names or
+their histogram-derived outputs. Names are deterministic and equal-length across all sizes
+so results do not depend on a new random list each run. Unlike the earlier routing cases,
+these policies do not expand each entry into histogram-derived names.
+
+All sizes use the same 10 input metric names, approximately 3,000 contexts, metric-type mix,
+randomized tags, generator seed, 500 MiB/s offered traffic, and target resources. Compare these
+five sizes with each other to measure allowlist-size overhead without changing input cardinality.
+This measures all-miss filtering, not the all-match encoding and forwarding cost; it is not a
+claim that all-miss is the most expensive workload in every dimension.
+
+Run the manual `run-benchmarks-adp-full` job to include these cases; the automatic
+`run-benchmarks-adp` job runs only the unchanged quality gates. These experiments do not assert
+on received metric contents. Their generated configurations are intentionally large and are
+for this benchmark-only branch, not the implementation PR.
+
 ## Regenerating Experiments
 
 After modifying `experiments.yaml`, regenerate the case directories:
