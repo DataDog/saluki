@@ -6,27 +6,15 @@ use async_trait::async_trait;
 use metrics::{gauge, Gauge, Level};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
-    observability::metrics::MetricsFlusherWorker,
-    runtime::{InitializationError, Supervisable, SupervisorFuture},
+    observability::metrics::initialize_shared_metrics_state,
+    runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture},
 };
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metrics::static_metrics;
 use tokio::{runtime::Handle, select, time::sleep};
 
 mod api;
 pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
-
-/// The set of workers spawned by [`initialize_metrics`].
-///
-/// Each worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the metrics subsystem to
-/// fully function: the flusher worker propagates internal metrics to subscribers, the runtime worker emits Tokio
-/// runtime gauges, and the override processor asserts the privileged API routes and handles dynamic filter
-/// overrides driven through them.
-pub(crate) struct MetricsWorkers {
-    pub runtime: RuntimeMetricsWorker,
-    pub flusher: MetricsFlusherWorker,
-    pub override_processor: MetricsOverrideWorker,
-}
 
 /// Initializes the metrics subsystem for `metrics`.
 ///
@@ -34,15 +22,16 @@ pub(crate) struct MetricsWorkers {
 /// metrics, followed by a period (for example, `<prefix>.<metric name>`). The given default level seeds the runtime
 /// filter and is what the filter is restored to when [`MetricsAPIHandler`]'s reset route is invoked.
 ///
-/// Returns a [`MetricsWorkers`] bundle containing the supervisable workers needed to drive the metrics subsystem
-/// at runtime.
+/// Returns a [`Supervisor`] holding the subsystem's background workers. The caller must arrange for it to run --
+/// typically by adding it to a parent supervisor -- or internal metrics are never flushed to subscribers.
 ///
 /// # Errors
 ///
-/// If the metrics subsystem was already initialized, an error will be returned.
+/// If the metrics subsystem was already initialized, or its supervisor can't be constructed, an error will be
+/// returned.
 pub(crate) async fn initialize_metrics(
     metrics_prefix: impl Into<String>, default_level: Level,
-) -> Result<MetricsWorkers, GenericError> {
+) -> Result<Supervisor, GenericError> {
     // We forward to the implementation in `saluki_core` so that we can have this crate be the collection point of all
     // helpers/types that are specific to generic application setup/initialization.
     //
@@ -53,15 +42,21 @@ pub(crate) async fn initialize_metrics(
 
     let override_processor = MetricsOverrideWorker::new(filter_handle);
 
+    // Subscribe to the registry now rather than when the worker starts, so that flushes landing between here and the
+    // supervisor running are still folded into the shared state.
+    let reflector = initialize_shared_metrics_state()?;
+
     // Capture the current runtime handle eagerly so the runtime metrics worker measures the runtime that owns
     // bootstrap, regardless of where the worker future eventually executes under the supervisor.
     let runtime = RuntimeMetricsWorker::new("primary", Handle::current());
 
-    Ok(MetricsWorkers {
-        runtime,
-        flusher,
-        override_processor,
-    })
+    let mut supervisor = Supervisor::new("metrics").error_context("Failed to construct metrics supervisor.")?;
+    supervisor.add_worker(flusher);
+    supervisor.add_worker(runtime);
+    supervisor.add_worker(override_processor);
+    supervisor.add_worker(reflector);
+
+    Ok(supervisor)
 }
 
 /// Emits the startup metrics for the application.

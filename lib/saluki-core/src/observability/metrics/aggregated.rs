@@ -4,15 +4,19 @@
 //! internal metric, keyed by metric context. Counters are summed, gauges keep the latest value by
 //! timestamp, and histograms accumulate into fixed-bucket [`AggregatedHistogram`]s.
 
-use std::sync::Arc;
+use std::{
+    iter::Once,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 
-use futures::stream::StreamExt as _;
+use futures::{stream::StreamExt as _, Stream};
 use papaya::HashMap;
 use saluki_context::Context;
-use tokio::sync::OnceCell;
+use saluki_error::{generic_error, GenericError};
 
 use super::histogram::AggregatedHistogram;
-use super::reflector::{Processor, Reflector};
+use super::reflector::{Processor, Reflector, ReflectorWorker};
 use super::{MetricsSnapshot, MetricsStream};
 use crate::data_model::event::metric::MetricValues;
 
@@ -291,17 +295,50 @@ fn metric_values_to_aggregated(metric_name: &str, values: MetricValues) -> Optio
     }
 }
 
+/// The source feeding the shared metrics reflector.
+///
+/// Boxed so that the worker driving it has a nameable type: the adapters applied to [`MetricsStream`] are otherwise
+/// unnameable.
+type SharedMetricsSource = Pin<Box<dyn Stream<Item = Once<MetricsSnapshot>> + Send>>;
+
+/// The worker that drives the shared metrics reflector. See [`initialize_shared_metrics_state`].
+pub type SharedMetricsWorker = ReflectorWorker<AggregatedMetricsProcessor, SharedMetricsSource>;
+
+static SHARED_METRICS_STATE: OnceLock<Reflector<AggregatedMetricsProcessor>> = OnceLock::new();
+
+/// Initializes the shared metrics state, returning the worker that drives it.
+///
+/// Must be called after [`initialize_metrics`][super::initialize_metrics] has installed the global recorder, and
+/// before any caller reaches for [`get_shared_metrics_state`]. The returned worker must be added to a
+/// [`Supervisor`][crate::runtime::Supervisor]; until it runs, the shared state stays empty.
+///
+/// The subscription to the internal metrics registry is taken here rather than when the worker starts, so flushes
+/// that land between initialization and the supervisor starting are still observed.
+///
+/// # Errors
+///
+/// If the shared metrics state was already initialized, an error is returned.
+pub fn initialize_shared_metrics_state() -> Result<SharedMetricsWorker, GenericError> {
+    let source: SharedMetricsSource =
+        Box::pin(MetricsStream::register().map(Arc::unwrap_or_clone).map(std::iter::once));
+    let (reflector, worker) = Reflector::new(source, AggregatedMetricsProcessor);
+
+    SHARED_METRICS_STATE
+        .set(reflector)
+        .map_err(|_| generic_error!("Shared metrics state was already initialized."))?;
+
+    Ok(worker)
+}
+
 /// Gets the shared metrics state, which provides unified access to internal metrics in a simplified interface.
 ///
-/// This is lazily initialized and will only be created when it's first accessed.
-pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
-    static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
-    REFLECTOR
-        .get_or_init(|| async {
-            let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone).map(std::iter::once);
-            Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
-        })
-        .await
+/// # Panics
+///
+/// Panics if [`initialize_shared_metrics_state`] has not been called.
+pub fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
+    SHARED_METRICS_STATE
+        .get()
+        .expect("shared metrics state should be initialized before it is accessed")
         .clone()
 }
 
