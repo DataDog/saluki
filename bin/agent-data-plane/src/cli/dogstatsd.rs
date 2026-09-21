@@ -240,7 +240,6 @@ pub(crate) async fn run_dogstatsd_command(
             .error_context("Failed to replay DogStatsD traffic")
         }
         DogstatsdSubcommand::Top(command) => {
-            let command = command.validate();
             if command.is_offline() {
                 handle_dogstatsd_top(None, command, output, cancellation).await
             } else {
@@ -467,41 +466,35 @@ fn dogstatsd_replay_target(listeners: &Listeners) -> Result<ReplayTarget, Generi
 fn open_replay_capture_file(path: &Path) -> Result<std::fs::File, GenericError> {
     open_regular_file(
         path,
-        || {
-            format!(
-                "DogStatsD replay requires a regular capture file; failed to open '{}'.",
-                path.display()
-            )
-        },
-        || {
-            format!(
-                "DogStatsD replay requires a regular capture file; failed to inspect '{}'.",
-                path.display()
-            )
-        },
-        || {
-            generic_error!(
-                "DogStatsD replay requires a regular capture file; '{}' is not a regular file.",
-                path.display()
-            )
-        },
+        "DogStatsD replay requires a regular capture file; failed to open",
+        "DogStatsD replay requires a regular capture file; failed to inspect",
+        "DogStatsD replay requires a regular capture file;",
     )
 }
 
 pub(super) fn open_regular_file(
-    path: &Path, open_error_context: impl FnOnce() -> String, inspect_error_context: impl FnOnce() -> String,
-    not_regular_file_error: impl FnOnce() -> GenericError,
+    path: &Path, open_error_prefix: &'static str, inspect_error_prefix: &'static str,
+    not_regular_file_prefix: &'static str,
 ) -> Result<std::fs::File, GenericError> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     options.custom_flags(libc::O_NONBLOCK);
 
-    let file = options.open(path).with_error_context(open_error_context)?;
-    if file.metadata().with_error_context(inspect_error_context)?.is_file() {
+    let file = options
+        .open(path)
+        .with_error_context(|| format!("{open_error_prefix} '{}'.", path.display()))?;
+    if file
+        .metadata()
+        .with_error_context(|| format!("{inspect_error_prefix} '{}'.", path.display()))?
+        .is_file()
+    {
         Ok(file)
     } else {
-        Err(not_regular_file_error())
+        Err(generic_error!(format!(
+            "{not_regular_file_prefix} '{}' is not a regular file.",
+            path.display()
+        )))
     }
 }
 
