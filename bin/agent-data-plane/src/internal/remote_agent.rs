@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write as _;
-use std::pin::Pin;
 use std::sync::OnceLock;
 use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
@@ -17,20 +15,16 @@ use datadog_protos::agent::v1::{
     ReportRemoteAgentEventRequest,
 };
 use datadog_protos::agent::{
-    command::v1::{
-        execute_command_response::Frame as ExecuteCommandFrame,
-        remote_command_provider_server::{RemoteCommandProvider, RemoteCommandProviderServer},
-        CommandProvider, ExecuteCommandRequest, ExecuteCommandResponse, ListCommandsRequest, ListCommandsResponse,
-    },
+    command::v1::remote_command_provider_server::RemoteCommandProviderServer,
     config_event,
     flare::v1::{flare_provider_server::*, *},
     status::v1::{status_provider_server::*, *},
     telemetry::v1::{get_telemetry_response::*, telemetry_provider_server::*, *},
     ConfigSetting as AgentConfigSetting, ConfigSnapshot,
 };
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use process_memory::Querier as MemoryQuerier;
-use prost_types::{value::Kind, Struct};
+use prost_types::value::Kind;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
@@ -52,18 +46,12 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
-use crate::state::metrics::get_datadog_agent_remappings;
 use crate::{
-    cli::{
-        dogstatsd::{parse_remote_dogstatsd_command, run_dogstatsd_command, REMOTE_DOGSTATSD_COMMANDS},
-        remote::CommandOutput,
-    },
-    config::DataPlaneConfiguration,
+    config::DataPlaneConfiguration, internal::remote_command::RemoteCommandProviderImpl,
+    state::metrics::get_datadog_agent_remappings,
 };
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -83,17 +71,6 @@ const LISTENER_UDP: &str = "listener_type:udp";
 const LISTENER_UNIX: &str = "listener_type:unix";
 const LISTENER_UNIXGRAM: &str = "listener_type:unixgram";
 const SESSION_ID_METADATA_KEY: &str = "session_id";
-
-fn dogstatsd_command_provider() -> CommandProvider {
-    CommandProvider {
-        name: "dogstatsd".to_string(),
-        description: "Inspect DogStatsD pipeline status".to_string(),
-        commands: REMOTE_DOGSTATSD_COMMANDS
-            .iter()
-            .map(|descriptor| descriptor.to_rcp_command())
-            .collect(),
-    }
-}
 
 /// Remote agent initialization.
 ///
@@ -210,10 +187,7 @@ impl RemoteAgentBootstrap {
     pub fn create_command_service(
         &self, current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
     ) -> RemoteCommandProviderServer<RemoteCommandProviderImpl> {
-        RemoteCommandProviderServer::new(RemoteCommandProviderImpl {
-            session_id: self.session_id.clone(),
-            current_config,
-        })
+        RemoteCommandProviderServer::new(RemoteCommandProviderImpl::new(self.session_id.clone(), current_config))
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
@@ -544,191 +518,6 @@ impl StatusProvider for RemoteAgentImpl {
                 Ok(tonic::Response::new(builder.into_response()))
             })
             .await;
-    }
-}
-
-pub(crate) struct RemoteCommandProviderImpl {
-    session_id: SessionIdHandle,
-    current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
-}
-
-impl RemoteCommandProviderImpl {
-    fn response_with_session_id<T>(&self, value: T) -> Result<tonic::Response<T>, Status> {
-        let session_id = self
-            .session_id
-            .get()
-            .ok_or(Status::failed_precondition(
-                "session ID not set; must be registered with Core Agent",
-            ))?
-            .to_grpc_header_value();
-        let mut response = tonic::Response::new(value);
-        response.metadata_mut().append(SESSION_ID_METADATA_KEY, session_id);
-        Ok(response)
-    }
-}
-
-const MAX_REMOTE_COMMAND_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-// Leave room for protobuf and gRPC framing below grpc-go's default 4 MiB inbound message limit.
-const MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES: usize = 3 * 1024 * 1024;
-const _: () = assert!(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES < 4 * 1024 * 1024);
-
-struct RemoteCommandOutput {
-    bytes: Vec<u8>,
-}
-
-impl RemoteCommandOutput {
-    fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
-}
-
-impl std::io::Write for RemoteCommandOutput {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let new_len = self.bytes.len().saturating_add(buffer.len());
-        if new_len > MAX_REMOTE_COMMAND_OUTPUT_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WriteZero,
-                "remote command output exceeds the 16 MiB limit",
-            ));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl CommandOutput for RemoteCommandOutput {
-    fn write_status(&mut self, message: &str) -> std::io::Result<()> {
-        writeln!(self, "{message}")
-    }
-
-    fn report_writer(&mut self) -> &mut (dyn std::io::Write + Send) {
-        self
-    }
-}
-
-fn remote_command_output_chunks(output: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut start = 0;
-
-    while start < output.len() {
-        let mut end = (start + MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES).min(output.len());
-        while !output.is_char_boundary(end) {
-            end -= 1;
-        }
-        chunks.push(output[start..end].to_owned());
-        start = end;
-    }
-
-    chunks
-}
-
-async fn send_remote_command_output_chunks(
-    sender: &mpsc::Sender<Result<ExecuteCommandResponse, Status>>, output: &str,
-    frame: fn(String) -> ExecuteCommandFrame,
-) {
-    for output in remote_command_output_chunks(output) {
-        let _ = sender
-            .send(Ok(ExecuteCommandResponse {
-                frame: Some(frame(output)),
-            }))
-            .await;
-    }
-}
-
-struct CancellableCommandStream {
-    inner: ReceiverStream<Result<ExecuteCommandResponse, Status>>,
-    cancellation: CancellationToken,
-}
-
-impl Stream for CancellableCommandStream {
-    type Item = Result<ExecuteCommandResponse, Status>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>, context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner).poll_next(context)
-    }
-}
-
-impl Drop for CancellableCommandStream {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
-    }
-}
-
-#[async_trait]
-impl RemoteCommandProvider for RemoteCommandProviderImpl {
-    type ExecuteCommandStream = Pin<Box<dyn Stream<Item = Result<ExecuteCommandResponse, Status>> + Send>>;
-
-    async fn list_commands(
-        &self, _request: tonic::Request<ListCommandsRequest>,
-    ) -> Result<tonic::Response<ListCommandsResponse>, Status> {
-        self.response_with_session_id(ListCommandsResponse {
-            providers: vec![dogstatsd_command_provider()],
-        })
-    }
-
-    async fn execute_command(
-        &self, request: tonic::Request<ExecuteCommandRequest>,
-    ) -> Result<tonic::Response<Self::ExecuteCommandStream>, Status> {
-        let (sender, receiver) = mpsc::channel(128);
-        let cancellation = CancellationToken::new();
-        let response = self.response_with_session_id(Box::pin(CancellableCommandStream {
-            inner: ReceiverStream::new(receiver),
-            cancellation: cancellation.clone(),
-        }) as Self::ExecuteCommandStream)?;
-        let command = if request.get_ref().provider_name != "dogstatsd" {
-            Err(generic_error!(
-                "unknown remote command provider `{}`",
-                request.get_ref().provider_name
-            ))
-        } else {
-            parse_remote_dogstatsd_command(
-                &request.get_ref().command_path,
-                request.get_ref().arguments.as_ref().unwrap_or(&Struct::default()),
-            )
-        };
-
-        let current_config = Arc::clone(&self.current_config);
-        tokio::spawn(async move {
-            let exit_code = match command {
-                Ok(command) => {
-                    let mut output = RemoteCommandOutput { bytes: Vec::new() };
-                    let result =
-                        run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation).await;
-                    let stdout = String::from_utf8_lossy(&output.into_bytes()).into_owned();
-                    send_remote_command_output_chunks(&sender, &stdout, ExecuteCommandFrame::Stdout).await;
-                    match result {
-                        Ok(()) => 0,
-                        Err(error) => {
-                            send_remote_command_output_chunks(
-                                &sender,
-                                &format!("{error:#}\n"),
-                                ExecuteCommandFrame::Stderr,
-                            )
-                            .await;
-                            1
-                        }
-                    }
-                }
-                Err(error) => {
-                    send_remote_command_output_chunks(&sender, &format!("{error:#}\n"), ExecuteCommandFrame::Stderr)
-                        .await;
-                    1
-                }
-            };
-            let _ = sender
-                .send(Ok(ExecuteCommandResponse {
-                    frame: Some(ExecuteCommandFrame::ExitCode(exit_code)),
-                }))
-                .await;
-        });
-
-        Ok(response)
     }
 }
 
@@ -1230,206 +1019,6 @@ mod tests {
                 ConfigSetting::new("api_key", Value::from(""), Provenance::Default),
             ]
         );
-    }
-
-    #[test]
-    fn dogstatsd_command_provider_describes_every_remote_command() {
-        let provider = dogstatsd_command_provider();
-
-        assert_eq!(provider.name, "dogstatsd");
-        assert_eq!(provider.description, "Inspect DogStatsD pipeline status");
-        assert_eq!(
-            provider
-                .commands
-                .iter()
-                .map(|command| command.name.as_str())
-                .collect::<Vec<_>>(),
-            ["stats", "capture", "replay", "top", "dump-contexts"]
-        );
-
-        for (command, descriptor) in provider.commands.iter().zip(REMOTE_DOGSTATSD_COMMANDS) {
-            assert_eq!(command, &descriptor.to_rcp_command());
-        }
-    }
-
-    #[test]
-    fn dropping_command_stream_cancels_execution() {
-        let cancellation = CancellationToken::new();
-        let (_sender, receiver) = mpsc::channel(1);
-        drop(CancellableCommandStream {
-            inner: ReceiverStream::new(receiver),
-            cancellation: cancellation.clone(),
-        });
-        assert!(cancellation.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn completed_command_sender_ends_the_stream() {
-        let (sender, receiver) = mpsc::channel(1);
-        drop(sender);
-        let mut stream = CancellableCommandStream {
-            inner: ReceiverStream::new(receiver),
-            cancellation: CancellationToken::new(),
-        };
-        assert!(futures::StreamExt::next(&mut stream).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn execute_command_invalid_provider_streams_error_and_exit_code_with_session_header() {
-        let session_id = SessionIdHandle::empty();
-        session_id.update(Some(
-            SessionId::new("test-session-id").expect("session ID should be valid"),
-        ));
-        let service = RemoteCommandProviderImpl {
-            session_id,
-            current_config: Arc::new(arc_swap::ArcSwap::from_pointee(SalukiConfiguration::default())),
-        };
-
-        let response = service
-            .execute_command(tonic::Request::new(ExecuteCommandRequest {
-                provider_name: "invalid-provider".to_string(),
-                command_path: Vec::new(),
-                arguments: None,
-            }))
-            .await
-            .expect("invalid provider should return an execution stream");
-        assert_eq!(
-            response
-                .metadata()
-                .get(SESSION_ID_METADATA_KEY)
-                .expect("response should include session ID"),
-            "test-session-id"
-        );
-
-        let mut stream = response.into_inner();
-        let stderr = stream
-            .next()
-            .await
-            .expect("stream should contain stderr frame")
-            .expect("stderr frame should not be a transport error");
-        assert!(matches!(
-            stderr.frame,
-            Some(ExecuteCommandFrame::Stderr(message)) if message.contains("unknown remote command provider `invalid-provider`")
-        ));
-
-        let exit_code = stream
-            .next()
-            .await
-            .expect("stream should contain exit code frame")
-            .expect("exit code frame should not be a transport error");
-        assert!(matches!(exit_code.frame, Some(ExecuteCommandFrame::ExitCode(1))));
-        assert!(stream.next().await.is_none(), "stream should end after the exit code");
-    }
-
-    #[tokio::test]
-    async fn execute_command_chunks_large_stderr_frames() {
-        let session_id = SessionIdHandle::empty();
-        session_id.update(Some(
-            SessionId::new("test-session-id").expect("session ID should be valid"),
-        ));
-        let service = RemoteCommandProviderImpl {
-            session_id,
-            current_config: Arc::new(arc_swap::ArcSwap::from_pointee(SalukiConfiguration::default())),
-        };
-        let provider_name = "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES * 2 + 1);
-        let expected_error = format!("unknown remote command provider `{provider_name}`\n");
-
-        let response = service
-            .execute_command(tonic::Request::new(ExecuteCommandRequest {
-                provider_name,
-                command_path: Vec::new(),
-                arguments: None,
-            }))
-            .await
-            .expect("invalid provider should return an execution stream");
-        let mut stream = response.into_inner();
-        let mut stderr = String::new();
-        while let Some(frame) = stream.next().await {
-            match frame.expect("frame should not be a transport error").frame {
-                Some(ExecuteCommandFrame::Stderr(message)) => {
-                    assert!(message.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES);
-                    stderr.push_str(&message);
-                }
-                Some(ExecuteCommandFrame::ExitCode(1)) => break,
-                frame => panic!("unexpected frame: {frame:?}"),
-            }
-        }
-
-        assert_eq!(stderr, expected_error);
-    }
-
-    #[tokio::test]
-    async fn remote_command_chunk_sender_preserves_stdout_stderr_order() {
-        let (sender, mut receiver) = mpsc::channel(2);
-
-        send_remote_command_output_chunks(&sender, "stdout", ExecuteCommandFrame::Stdout).await;
-        send_remote_command_output_chunks(&sender, "stderr", ExecuteCommandFrame::Stderr).await;
-
-        assert!(matches!(
-            receiver.recv().await.expect("stdout frame should be sent").expect("frame should be valid").frame,
-            Some(ExecuteCommandFrame::Stdout(message)) if message == "stdout"
-        ));
-        assert!(matches!(
-            receiver.recv().await.expect("stderr frame should be sent").expect("frame should be valid").frame,
-            Some(ExecuteCommandFrame::Stderr(message)) if message == "stderr"
-        ));
-    }
-
-    #[test]
-    fn remote_command_output_writes_status_and_reports_to_stdout() {
-        let mut output = RemoteCommandOutput { bytes: Vec::new() };
-
-        CommandOutput::write_status(&mut output, "command status")
-            .expect("status should be written to remote command output");
-        std::io::Write::write_all(&mut output, b"command report")
-            .expect("report should be written to remote command output");
-
-        assert_eq!(output.into_bytes(), b"command status\ncommand report");
-    }
-
-    #[test]
-    fn remote_command_output_rejects_data_beyond_its_limit() {
-        let mut output = RemoteCommandOutput {
-            bytes: vec![0; MAX_REMOTE_COMMAND_OUTPUT_BYTES],
-        };
-        assert!(std::io::Write::write(&mut output, b"x").is_err());
-    }
-
-    #[test]
-    fn remote_command_output_chunks_stay_below_the_grpc_go_default_message_limit() {
-        let output = "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES * 2 + 1);
-
-        let chunks = remote_command_output_chunks(&output);
-
-        assert_eq!(chunks.len(), 3);
-        assert!(chunks
-            .iter()
-            .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
-        assert_eq!(chunks.concat(), output);
-    }
-
-    #[test]
-    fn remote_command_output_chunks_preserve_utf8_characters_at_chunk_boundaries() {
-        let output = format!("{}💚", "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES - 1));
-
-        let chunks = remote_command_output_chunks(&output);
-
-        assert_eq!(chunks.concat(), output);
-        assert!(chunks
-            .iter()
-            .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
-    }
-
-    #[test]
-    fn remote_command_error_chunks_preserve_utf8_characters_at_chunk_boundaries() {
-        let error = format!("{}💚\n", "x".repeat(MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES - 1));
-
-        let chunks = remote_command_output_chunks(&error);
-
-        assert_eq!(chunks.concat(), error);
-        assert!(chunks
-            .iter()
-            .all(|chunk| chunk.len() <= MAX_REMOTE_COMMAND_STDOUT_FRAME_BYTES));
     }
 
     #[test]

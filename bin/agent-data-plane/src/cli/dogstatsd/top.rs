@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
@@ -7,7 +6,7 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{dogstatsd::open_regular_file, utils::DataPlaneAPIClient};
+use crate::cli::{dogstatsd::open_regular_file, remote::CommandOutput, utils::DataPlaneAPIClient};
 use crate::dogstatsd_contexts::read_report_from_file;
 
 /// Displays the DogStatsD contexts with the highest cardinality.
@@ -69,7 +68,7 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 
 pub(super) async fn handle_dogstatsd_top(
     requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: ValidatedTopCommand,
-    output: &mut (dyn Write + Send), cancellation: &CancellationToken,
+    output: &mut dyn CommandOutput, cancellation: &CancellationToken,
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
         Some(path) => path,
@@ -82,7 +81,7 @@ pub(super) async fn handle_dogstatsd_top(
                 result = requester.request_context_dump() => result,
             }
             .error_context("Failed to request a DogStatsD context dump.")?;
-            write_dump_path(output, &path)?;
+            write_dump_path(output, &path).await?;
             path
         }
     };
@@ -104,7 +103,7 @@ pub(super) async fn handle_dogstatsd_top(
         return Ok(());
     };
 
-    write_rendered_report(output, &path, rendered)
+    write_rendered_report(output, &path, rendered).await
 }
 
 fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
@@ -129,38 +128,44 @@ fn render_report_from_file(
     Ok(report.render(metric_limit, tag_limit))
 }
 
-fn write_rendered_report(output: &mut (dyn Write + Send), path: &Path, rendered: String) -> Result<(), GenericError> {
+async fn write_rendered_report(
+    output: &mut dyn CommandOutput, path: &Path, rendered: String,
+) -> Result<(), GenericError> {
     output
-        .write_all(rendered.as_bytes())
+        .write_report(&rendered)
+        .await
         .with_error_context(|| format!("Failed to write DogStatsD context report for '{}'.", path.display()))?;
     output
         .flush()
+        .await
         .with_error_context(|| format!("Failed to flush DogStatsD context report for '{}'.", path.display()))?;
     Ok(())
 }
 
 pub(super) async fn handle_dogstatsd_dump_contexts(
-    requester: &mut (dyn DogStatsDContextDumpRequester + Send), output: &mut (dyn Write + Send),
+    requester: &mut (dyn DogStatsDContextDumpRequester + Send), output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     let path = requester
         .request_context_dump()
         .await
         .error_context("Failed to request a DogStatsD context dump.")?;
-    write_dump_path(output, &path)
+    write_dump_path(output, &path).await
 }
 
-fn write_dump_path(output: &mut dyn Write, path: &Path) -> Result<(), GenericError> {
-    writeln!(output, "Wrote {}", path.display())
+async fn write_dump_path(output: &mut dyn CommandOutput, path: &Path) -> Result<(), GenericError> {
+    output
+        .write_report(&format!("Wrote {}\n", path.display()))
+        .await
         .with_error_context(|| format!("Failed to write the DogStatsD context dump path '{}'.", path.display()))?;
     output
         .flush()
+        .await
         .with_error_context(|| format!("Failed to flush the DogStatsD context dump path '{}'.", path.display()))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::path::{Path, PathBuf};
 
     use argh::FromArgs as _;
@@ -172,7 +177,10 @@ mod tests {
         handle_dogstatsd_dump_contexts, handle_dogstatsd_top, open_context_report_file, render_report_from_file,
         DogStatsDContextDumpRequester, TopCommand, ValidatedTopCommand,
     };
-    use crate::cli::dogstatsd::{DogstatsdCommand, DogstatsdSubcommand};
+    use crate::cli::{
+        dogstatsd::{DogstatsdCommand, DogstatsdSubcommand},
+        remote::CommandOutput,
+    };
 
     const PLAIN_FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -526,13 +534,18 @@ mod tests {
         }
     }
 
-    impl io::Write for RecordingWriter {
-        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-            self.bytes.extend_from_slice(buffer);
-            Ok(buffer.len())
+    #[async_trait]
+    impl CommandOutput for RecordingWriter {
+        async fn write_status(&mut self, _message: &str) -> std::io::Result<()> {
+            Ok(())
         }
 
-        fn flush(&mut self) -> io::Result<()> {
+        async fn write_report(&mut self, output: &str) -> std::io::Result<()> {
+            self.bytes.extend_from_slice(output.as_bytes());
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> std::io::Result<()> {
             self.flushes.push(self.bytes.clone());
             Ok(())
         }

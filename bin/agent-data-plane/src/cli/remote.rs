@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use datadog_protos::agent::command::v1::{
     Command as RcpCommand, CommandParameter as RcpCommandParameter, ParameterType,
 };
@@ -144,36 +142,48 @@ fn remote_argument_value(
 }
 
 /// Receives a command's progress and report output.
+///
+/// Output implementations apply backpressure asynchronously. Command execution must not use synchronous writers because
+/// a slow remote-command client must not block a Tokio worker thread or turn ordinary output into a write failure.
+#[async_trait::async_trait]
 pub(crate) trait CommandOutput: Send {
     /// Writes a progress update for the command.
-    fn write_status(&mut self, message: &str) -> std::io::Result<()>;
+    async fn write_status(&mut self, message: &str) -> std::io::Result<()>;
 
-    /// Returns the writer for the command's report output.
-    fn report_writer(&mut self) -> &mut (dyn Write + Send);
+    /// Writes UTF-8 report output for the command.
+    async fn write_report(&mut self, output: &str) -> std::io::Result<()>;
+
+    /// Delivers report output written so far.
+    async fn flush(&mut self) -> std::io::Result<()>;
 }
 
 /// Writes command output to the direct command's logging and standard-output sinks.
 pub(crate) struct DirectCommandOutput {
-    stdout: std::io::Stdout,
+    stdout: tokio::io::Stdout,
 }
 
 impl DirectCommandOutput {
     /// Creates output for a command invoked directly from the CLI.
     pub(crate) fn new() -> Self {
         Self {
-            stdout: std::io::stdout(),
+            stdout: tokio::io::stdout(),
         }
     }
 }
 
+#[async_trait::async_trait]
 impl CommandOutput for DirectCommandOutput {
-    fn write_status(&mut self, message: &str) -> std::io::Result<()> {
+    async fn write_status(&mut self, message: &str) -> std::io::Result<()> {
         info!("{message}");
         Ok(())
     }
 
-    fn report_writer(&mut self) -> &mut (dyn Write + Send) {
-        &mut self.stdout
+    async fn write_report(&mut self, output: &str) -> std::io::Result<()> {
+        tokio::io::AsyncWriteExt::write_all(&mut self.stdout, output.as_bytes()).await
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        tokio::io::AsyncWriteExt::flush(&mut self.stdout).await
     }
 }
 
