@@ -5602,6 +5602,7 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "criterion",
  "indexmap",
  "memchr",
@@ -5616,6 +5617,7 @@ dependencies = [
  "smallvec",
  "stringtheory",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -5687,6 +5689,7 @@ dependencies = [
  "stringtheory",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tonic",
  "tower",
  "tracing",

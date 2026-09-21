@@ -13,6 +13,7 @@ use std::{future::Future, pin::Pin, time::Duration};
 use async_trait::async_trait;
 use saluki_error::GenericError;
 use snafu::Snafu;
+use tokio::select;
 
 use crate::sync::shutdown::ShutdownHandle;
 
@@ -92,6 +93,113 @@ pub trait Supervisable: Send + Sync {
     ///
     /// If the process can't be initialized, an error is returned.
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError>;
+}
+
+/// Runs several workers as a single supervised child.
+///
+/// This is for a producer that owns more than one independent piece of background work -- a resolver with both a
+/// cache to expire and telemetry to report, say -- and wants to hand its owner one child rather than several. It is a
+/// composition, not a collection to pass around: the result is one node in the tree, and the parts are not
+/// individually addressable.
+///
+/// Merging is reasonable precisely because these children are restarted on failure. A panic in any part restarts the
+/// whole worker, so grouping them does not leave some other part dead; a non-restarting child would want the parts
+/// separated instead, so that one failing didn't silently take the others with it.
+pub struct CompositeWorker {
+    name: String,
+    workers: Vec<Box<dyn Supervisable>>,
+}
+
+impl CompositeWorker {
+    /// Creates a new `CompositeWorker` with the given name, running `workers` concurrently.
+    pub fn new<N>(name: N, workers: Vec<Box<dyn Supervisable>>) -> Self
+    where
+        N: Into<String>,
+    {
+        Self {
+            name: name.into(),
+            workers,
+        }
+    }
+
+    /// Returns `true` if there is nothing to run.
+    pub fn is_empty(&self) -> bool {
+        self.workers.is_empty()
+    }
+}
+
+#[async_trait]
+impl Supervisable for CompositeWorker {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        // Each part is re-initialized here, so a restart of this worker is a restart of all of them. The parts are
+        // handed a no-op signal because the `select!` below is what observes shutdown for the group: dropping the
+        // joined future stops them all, and these are timer loops with nothing to unwind.
+        let mut futures = Vec::with_capacity(self.workers.len());
+        for worker in &self.workers {
+            futures.push(worker.initialize(ShutdownHandle::noop()).await?);
+        }
+
+        Ok(Box::pin(async move {
+            let drive = async {
+                let mut result = Ok(());
+                for outcome in futures_join_all(futures).await {
+                    // Report the first failure, but only after every part has settled.
+                    if result.is_ok() {
+                        result = outcome;
+                    }
+                }
+                result
+            };
+
+            select! {
+                _ = process_shutdown => Ok(()),
+                result = drive => result,
+            }
+        }))
+    }
+}
+
+/// Polls every future to completion, returning their outputs in order.
+///
+/// A hand-rolled `join_all`: `saluki-common` deliberately doesn't depend on `futures`, and this is the only place
+/// that needs it.
+async fn futures_join_all<F>(futures: Vec<F>) -> Vec<F::Output>
+where
+    F: Future,
+{
+    let mut pinned = futures.into_iter().map(Box::pin).collect::<Vec<_>>();
+    let mut outputs = Vec::with_capacity(pinned.len());
+
+    // Sequential awaiting would serialize the loops, so poll them together via `select!` on the remaining set until
+    // all have produced an output.
+    while !pinned.is_empty() {
+        let (index, output) = poll_first_ready(&mut pinned).await;
+        pinned.remove(index);
+        outputs.push(output);
+    }
+
+    outputs
+}
+
+/// Waits until any future in `futures` is ready, returning its index and output.
+async fn poll_first_ready<F>(futures: &mut [Pin<Box<F>>]) -> (usize, F::Output)
+where
+    F: Future,
+{
+    std::future::poll_fn(|cx| {
+        for (index, future) in futures.iter_mut().enumerate() {
+            if let std::task::Poll::Ready(output) = future.as_mut().poll(cx) {
+                return std::task::Poll::Ready((index, output));
+            }
+        }
+
+        std::task::Poll::Pending
+    })
+    .await
 }
 
 #[cfg(test)]

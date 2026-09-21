@@ -24,7 +24,7 @@ use agent_data_plane_config::{
 };
 use async_trait::async_trait;
 use saluki_common::{
-    cache::{Cache, CacheBuilder},
+    cache::{Cache, CacheBuilder, CacheWorker},
     collections::{FastHashMap, FastHashSet},
 };
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
@@ -39,6 +39,7 @@ use saluki_core::{
         EventType,
     },
     observability::ComponentMetricsExt,
+    runtime,
     topology::OutputDefinition,
 };
 use saluki_error::{generic_error, GenericError};
@@ -297,13 +298,16 @@ impl TransformBuilder for TagFilterlistConfiguration {
         let filters = compile_filters_with_values(&self.entries, self.value_prefix_filters.clone());
         telemetry.set_size(filters.rule_count());
 
+        let (context_cache, context_cache_worker) = build_context_cache(self.context_cache_capacity);
+
         Ok(Box::new(TagFilterlist {
             filters,
             entries: self.entries.clone(),
             value_prefix_filters: self.value_prefix_filters.clone(),
             telemetry,
-            context_cache: build_context_cache(self.context_cache_capacity),
+            context_cache,
             context_cache_capacity: self.context_cache_capacity,
+            context_cache_worker: Some(context_cache_worker),
         }))
     }
 }
@@ -323,11 +327,18 @@ struct TagFilterlist {
     entries: Live<Vec<MetricTagFilterEntry>>,
     value_prefix_filters: CompiledValuePrefixFilters,
     telemetry: Telemetry,
-    context_cache: Cache<Context, Option<(Context, usize)>>,
+    context_cache: ContextCache,
     context_cache_capacity: usize,
+
+    // Built in `build` but spawned in `run`, so the cache's expiration lands under the component's own supervisor
+    // rather than whatever supervisor happens to be ambient during `build`. `Option` so `run` can take it.
+    context_cache_worker: Option<ContextCacheWorker>,
 }
 
-fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize)>> {
+type ContextCache = Cache<Context, Option<(Context, usize)>>;
+type ContextCacheWorker = CacheWorker<Context, Option<(Context, usize)>>;
+
+fn build_context_cache(capacity: usize) -> (ContextCache, ContextCacheWorker) {
     let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
     CacheBuilder::from_identifier("tag_filterlist/context_cache")
         .expect("identifier cannot be empty")
@@ -340,6 +351,12 @@ fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize
 #[async_trait]
 impl Transform for TagFilterlist {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        // Transient: the expiration loop also stops when its cache is dropped, which is a clean exit that must not be
+        // restarted into a loop. A panic is worth recovering from, since the cache would otherwise stop expiring.
+        if let Some(worker) = self.context_cache_worker.take() {
+            runtime::supervisable(worker).transient().spawn();
+        }
+
         let mut health = context.take_health_handle();
         health.mark_ready();
 
@@ -395,7 +412,11 @@ impl Transform for TagFilterlist {
                 },
                 new_entries = self.entries.changed() => {
                     self.filters = compile_filters_with_values(&new_entries, self.value_prefix_filters.clone());
-                    self.context_cache = build_context_cache(self.context_cache_capacity);
+                    // The outgoing cache's worker exits on its own once that cache is dropped, so the child count
+                    // returns to where it was; there is a brief overlap where both are present.
+                    let (cache, worker) = build_context_cache(self.context_cache_capacity);
+                    self.context_cache = cache;
+                    runtime::supervisable(worker).transient().spawn();
                     let rule_count = self.filters.rule_count();
                     self.telemetry.set_size(rule_count);
                     self.telemetry.increment_updates();
@@ -505,6 +526,7 @@ mod tests {
         Context, TagSetMutViewState,
     };
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+    use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::components::{
         transforms::{TransformBuilder, TransformContext},
         BuildContext, ComponentContext,
@@ -1456,7 +1478,14 @@ mod tests {
             consumer,
         );
 
-        transform.run(context).await.expect("tag filterlist run should succeed");
+        // `run` spawns the context cache's expiration worker on its own supervisor, so it has to be driven inside
+        // one rather than bare.
+        let supervisor = TestComponentSupervisor::start("tag_filterlist").await;
+        supervisor
+            .handle()
+            .scope(async move { transform.run(context).await })
+            .await
+            .expect("tag filterlist run should succeed");
 
         let mut dispatched: Vec<Metric> = Vec::new();
         while let Ok(buffer) = out_rx.try_recv() {

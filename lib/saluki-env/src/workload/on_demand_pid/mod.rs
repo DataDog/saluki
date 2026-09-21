@@ -10,6 +10,19 @@ use crate::{features::FeatureDetector, workload::EntityId};
 #[cfg(target_os = "linux")]
 mod linux;
 
+/// The worker driving an [`OnDemandPIDResolver`]'s background work.
+///
+/// Only present on Linux; on other platforms resolution is a no-op and there is nothing to drive.
+#[cfg(target_os = "linux")]
+pub type OnDemandPIDResolverWorker = linux::ResolverWorker;
+
+/// The worker driving an [`OnDemandPIDResolver`]'s background work.
+///
+/// Only present on Linux; on other platforms resolution is a no-op and there is nothing to drive, so this is
+/// uninhabited and always `None`.
+#[cfg(not(target_os = "linux"))]
+pub type OnDemandPIDResolverWorker = std::convert::Infallible;
+
 /// A resolver for mapping process IDs to their container IDs based on querying the underlying host.
 ///
 /// # Platform support
@@ -35,10 +48,14 @@ impl OnDemandPIDResolver {
     ///
     /// On Linux, if a cgroups hierarchy can't be found, or the internal cache can't be created, an error is returned.
     /// On all other platforms, no error is possible.
+    ///
+    /// On Linux, a worker is returned alongside the resolver and must be added to a supervisor as a transient child;
+    /// until it runs, PID mappings are never expired and interner telemetry is never reported. On other platforms
+    /// resolution is a no-op, so there is no worker.
     pub fn new(
         procfs_root: Option<PathBuf>, cgroupfs_root: Option<PathBuf>, feature_detector: &FeatureDetector,
         interner: GenericMapInterner,
-    ) -> Result<Self, GenericError> {
+    ) -> Result<(Self, Option<OnDemandPIDResolverWorker>), GenericError> {
         #[cfg(target_os = "linux")]
         {
             let cgroups_config = crate::workload::helpers::cgroups::CgroupsConfiguration::new(
@@ -46,10 +63,13 @@ impl OnDemandPIDResolver {
                 cgroupfs_root,
                 feature_detector,
             );
-            let resolver_inner = linux::ResolverImpl::new(&cgroups_config, interner)?;
-            Ok(Self {
-                inner: Arc::new(resolver_inner),
-            })
+            let (resolver_inner, worker) = linux::ResolverImpl::new(&cgroups_config, interner)?;
+            Ok((
+                Self {
+                    inner: Arc::new(resolver_inner),
+                },
+                Some(worker),
+            ))
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -60,7 +80,7 @@ impl OnDemandPIDResolver {
             let _feature_detector = feature_detector;
             let _interner = interner;
 
-            Ok(Self { _empty: () })
+            Ok((Self { _empty: () }, None))
         }
     }
 

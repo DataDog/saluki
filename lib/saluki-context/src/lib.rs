@@ -11,6 +11,9 @@ pub use self::hash::{hash_context_with_host, ContextKey};
 pub mod origin;
 
 mod resolver;
-pub use self::resolver::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
+pub use self::resolver::{
+    ContextResolver, ContextResolverBuilder, ContextResolverWorker, TagsResolver, TagsResolverBuilder,
+    TagsResolverWorker,
+};
 
 pub mod tags;

@@ -11,7 +11,7 @@ use saluki_context::{
 use saluki_core::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     health::{Health, HealthRegistry},
-    runtime::{RestartStrategy, Supervisor},
+    runtime::{self, RestartStrategy, Supervisor},
     support::SubsystemIdentifier,
 };
 #[cfg(unix)]
@@ -202,13 +202,13 @@ impl RemoteAgentWorkloadProvider {
 
         aggregator.add_store(external_data_store);
 
-        let on_demand_pid_resolver = OnDemandPIDResolver::new(
+        let (on_demand_pid_resolver, on_demand_pid_worker) = OnDemandPIDResolver::new(
             container_proc_root,
             container_cgroup_root,
             &feature_detector,
             string_interner,
         )?;
-        let origin_resolver = OriginResolver::new(eds_resolver.clone());
+        let (origin_resolver, origin_resolver_worker) = OriginResolver::new(eds_resolver.clone());
 
         // With the aggregator configured, update the memory bounds before handing it off to the supervisor.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
@@ -223,6 +223,14 @@ impl RemoteAgentWorkloadProvider {
             supervisor.add_worker(worker);
         }
         supervisor.add_worker(api_worker);
+
+        // These are built above, before this supervisor exists, so their background work is handed back rather than
+        // spawned at construction. Transient: each also stops when the resolver it serves is dropped, which is a
+        // clean exit that must not be restarted into a loop.
+        supervisor.add_worker(runtime::supervisable(origin_resolver_worker).transient().build());
+        if let Some(worker) = on_demand_pid_worker {
+            supervisor.add_worker(runtime::supervisable(worker).transient().build());
+        }
 
         let provider = Self {
             tags_querier,

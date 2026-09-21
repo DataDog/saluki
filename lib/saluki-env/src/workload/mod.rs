@@ -27,7 +27,7 @@ mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 
 mod on_demand_pid;
-pub use self::on_demand_pid::OnDemandPIDResolver;
+pub use self::on_demand_pid::{OnDemandPIDResolver, OnDemandPIDResolverWorker};
 
 pub mod origin;
 use self::origin::ResolvedOrigin;

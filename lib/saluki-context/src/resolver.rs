@@ -1,9 +1,12 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use saluki_common::{
-    cache::{weight::ItemCountWeighter, Cache, CacheBuilder},
+    cache::{weight::ItemCountWeighter, Cache, CacheBuilder, CacheWorker},
     collections::PrehashedHashSet,
     hash::NoopU64BuildHasher,
+    supervision::{InitializationError, Supervisable, SupervisorFuture},
+    sync::shutdown::ShutdownHandle,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Gauge};
@@ -11,7 +14,8 @@ use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     CheapMetaString, MetaString,
 };
-use tokio::time::sleep;
+use tokio::{select, time::sleep};
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
 
 use crate::{
@@ -30,7 +34,9 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize = NonZeroUs
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
 type ContextCache = Cache<ContextKey, Context, ItemCountWeighter, NoopU64BuildHasher>;
+type ContextCacheWorker = CacheWorker<ContextKey, Context, ItemCountWeighter, NoopU64BuildHasher>;
 type TagSetCache = Cache<TagSetKey, SharedTagSet, ItemCountWeighter, NoopU64BuildHasher>;
+type TagSetCacheWorker = CacheWorker<TagSetKey, SharedTagSet, ItemCountWeighter, NoopU64BuildHasher>;
 
 #[static_metrics(prefix = context_resolver, labels(resolver_id))]
 #[derive(Clone)]
@@ -236,12 +242,17 @@ impl ContextResolverBuilder {
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
-            .with_tags_resolver(Some(TagsResolverBuilder::for_tests().build()))
+            .with_tags_resolver(Some(TagsResolverBuilder::for_tests().build().0))
             .without_telemetry()
     }
 
-    /// Builds a [`ContextResolver`] from the current configuration.
-    pub fn build(self) -> ContextResolver {
+    /// Builds a [`ContextResolver`] from the current configuration, along with the worker that drives its background
+    /// work.
+    ///
+    /// The resolver is usable immediately, but its caches never expire entries and interner telemetry is never
+    /// reported until the returned [`ContextResolverWorker`] is running. See [`CacheWorker`] for the restart policy to
+    /// spawn it with.
+    pub fn build(self) -> (ContextResolver, ContextResolverWorker) {
         let interner_capacity_bytes = self
             .interner_capacity_bytes
             .unwrap_or(DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES);
@@ -263,7 +274,7 @@ impl ContextResolverBuilder {
             .set(interner.capacity_bytes() as f64);
 
         // NOTE: We should switch to using a size-based weighter so that we can do more firm bounding of what we cache.
-        let context_cache = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
+        let (context_cache, context_cache_worker) = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
             .expect("cache identifier cannot possibly be empty")
             .with_capacity(cached_context_limit)
             .with_time_to_idle(self.idle_context_expiration)
@@ -272,22 +283,50 @@ impl ContextResolverBuilder {
             .build();
 
         // If no tags resolver is provided, we need to create one using the same interner used for the context resolver.
-        let tags_resolver = match self.tags_resolver {
-            Some(tags_resolver) => tags_resolver,
-            None => TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
-                .expect("tags resolver name not empty")
-                .with_cached_tagsets_limit(cached_context_limit.get())
-                .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
-                .with_heap_allocations(allow_heap_allocations)
-                .with_origin_tags_resolver(self.origin_tags_resolver.clone())
-                .build(),
+        //
+        // A caller-supplied resolver was built elsewhere, so its worker belongs to whoever built it; only one we
+        // create ourselves becomes part of this worker.
+        let (tags_resolver, tags_resolver_worker) = match self.tags_resolver {
+            Some(tags_resolver) => (tags_resolver, None),
+            None => {
+                let (resolver, worker) = TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
+                    .expect("tags resolver name not empty")
+                    .with_cached_tagsets_limit(cached_context_limit.get())
+                    .with_idle_tagsets_expiration(self.idle_context_expiration.unwrap_or_default())
+                    .with_heap_allocations(allow_heap_allocations)
+                    .with_origin_tags_resolver(self.origin_tags_resolver.clone())
+                    .build();
+                (resolver, Some(worker))
+            }
         };
 
-        if self.telemetry_enabled {
-            tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
-        }
+        // The interner telemetry loop is tied to the lifetime of the resolver, not just to process shutdown: the
+        // coordinator signals when it's dropped, which is what stops the loop once the last clone of this resolver
+        // goes away. See `ContextResolver::_telemetry_shutdown`.
+        let (telemetry_shutdown, interner_telemetry) = match self.telemetry_enabled {
+            true => {
+                let shutdown = CancellationToken::new();
+                let interner_telemetry = Some(InternerTelemetry {
+                    interner: interner.clone(),
+                    telemetry: telemetry.clone(),
+                    shutdown: shutdown.clone(),
+                });
 
-        ContextResolver {
+                // A token clone costs the worker nothing and keeps nothing alive; the guard below is what actually
+                // fires, when the last clone of this resolver goes away.
+                (Some(Arc::new(shutdown.drop_guard())), interner_telemetry)
+            }
+            false => (None, None),
+        };
+
+        let worker = ContextResolverWorker {
+            name: worker_name(&self.name),
+            context_cache: context_cache_worker,
+            tags_resolver: tags_resolver_worker,
+            interner_telemetry,
+        };
+
+        let resolver = ContextResolver {
             telemetry,
             interner,
             caching_enabled: self.caching_enabled,
@@ -298,7 +337,110 @@ impl ContextResolverBuilder {
             ),
             allow_heap_allocations,
             tags_resolver,
-        }
+            _telemetry_shutdown: telemetry_shutdown,
+        };
+
+        (resolver, worker)
+    }
+}
+
+/// Derives a supervision-tree name from a resolver name.
+///
+/// Resolver names lead with the owning component's identifier, which is redundant under that component's own
+/// supervisor, so only the trailing segment carries information. A component with both a `primary` and a `no_agg`
+/// resolver gets `primary_resolver` and `no_agg_resolver`.
+fn worker_name(resolver_name: &str) -> String {
+    let segment = resolver_name.rsplit('/').next().unwrap_or(resolver_name);
+    format!("{segment}_resolver")
+}
+
+/// The interner telemetry loop and the state it needs.
+struct InternerTelemetry {
+    interner: GenericMapInterner,
+    telemetry: Telemetry,
+    shutdown: CancellationToken,
+}
+
+/// A worker that drives a [`TagsResolver`]'s background work.
+///
+/// Expires idle entries from the resolver's tagset cache. Nothing expires while this isn't running. See
+/// [`CacheWorker`] for how to run it and why the restart policy should be transient.
+pub struct TagsResolverWorker {
+    tagset_cache: TagSetCacheWorker,
+}
+
+#[async_trait]
+impl Supervisable for TagsResolverWorker {
+    fn name(&self) -> &str {
+        self.tagset_cache.name()
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        self.tagset_cache.initialize(process_shutdown).await
+    }
+}
+
+/// A worker that drives a [`ContextResolver`]'s background work.
+///
+/// Expires idle entries from the resolver's context cache and, when telemetry is enabled, reports interner
+/// utilization. If the resolver created its own tags resolver rather than being handed one, that resolver's work is
+/// driven here too. None of it happens while this isn't running -- notably, caches grow without expiring.
+///
+/// See [`CacheWorker`] for how to run it and why the restart policy should be transient. Everything driven here stops
+/// both on supervisor shutdown and when the resolver it serves is dropped, which are independent events.
+pub struct ContextResolverWorker {
+    name: String,
+    context_cache: ContextCacheWorker,
+    tags_resolver: Option<TagsResolverWorker>,
+    interner_telemetry: Option<InternerTelemetry>,
+}
+
+#[async_trait]
+impl Supervisable for ContextResolverWorker {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        // Each sub-future is rebuilt from cloned handles on every call, which is what makes this worker restartable:
+        // a restart gets working loops rather than spent ones.
+        let context_cache = self.context_cache.initialize(ShutdownHandle::noop()).await?;
+        let tags_resolver = match &self.tags_resolver {
+            Some(worker) => Some(worker.initialize(ShutdownHandle::noop()).await?),
+            None => None,
+        };
+
+        let interner_telemetry = self
+            .interner_telemetry
+            .as_ref()
+            .map(|state| drive_telemetry(state.interner.clone(), state.telemetry.clone(), state.shutdown.clone()));
+
+        Ok(Box::pin(async move {
+            let drive = async {
+                let tags_resolver = async {
+                    match tags_resolver {
+                        Some(fut) => fut.await,
+                        None => Ok(()),
+                    }
+                };
+                let interner_telemetry = async {
+                    match interner_telemetry {
+                        Some(fut) => fut.await,
+                        None => std::future::pending().await,
+                    }
+                };
+
+                // The cache loops end when their cache is dropped; the interner loop ends when the resolver is. Both
+                // are independent of the supervisor's signal, which the `select!` below handles.
+                let (context_cache, tags_resolver, ()) = tokio::join!(context_cache, tags_resolver, interner_telemetry);
+                context_cache.and(tags_resolver)
+            };
+
+            select! {
+                _ = process_shutdown => Ok(()),
+                result = drive => result,
+            }
+        }))
     }
 }
 
@@ -333,6 +475,19 @@ pub struct ContextResolver {
     hash_seen_buffer: PrehashedHashSet<u64>,
     allow_heap_allocations: bool,
     tags_resolver: TagsResolver,
+
+    /// Drop guard for the interner telemetry task.
+    ///
+    /// The task holds clones of the interner and the telemetry handles, so it has to stop when the last clone of this
+    /// resolver is dropped rather than only when the process exits: the interner eagerly allocates its full configured
+    /// capacity and only frees it once the last clone goes away, and live telemetry handles block idle eviction of the
+    /// metrics they report.
+    ///
+    /// This is a separate concern from process shutdown, and both are needed: a resolver can be discarded while the
+    /// rest of the process keeps running.
+    ///
+    /// `None` when telemetry is disabled, in which case there's no task to stop.
+    _telemetry_shutdown: Option<Arc<DropGuard>>,
 }
 
 impl ContextResolver {
@@ -587,19 +742,27 @@ impl Clone for ContextResolver {
             ),
             allow_heap_allocations: self.allow_heap_allocations,
             tags_resolver: self.tags_resolver.clone(),
+            _telemetry_shutdown: self._telemetry_shutdown.clone(),
         }
     }
 }
 
-async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
-    loop {
-        sleep(Duration::from_secs(1)).await;
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry, shutdown: CancellationToken) {
+    let report_telemetry = async {
+        loop {
+            sleep(Duration::from_secs(1)).await;
 
-        telemetry.interner_entries().set(interner.len() as f64);
-        telemetry
-            .interner_capacity_bytes()
-            .set(interner.capacity_bytes() as f64);
-        telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+            telemetry.interner_entries().set(interner.len() as f64);
+            telemetry
+                .interner_capacity_bytes()
+                .set(interner.capacity_bytes() as f64);
+            telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+        }
+    };
+
+    select! {
+        _ = shutdown.cancelled() => {},
+        _ = report_telemetry => {},
     }
 }
 
@@ -745,8 +908,12 @@ impl TagsResolverBuilder {
         self
     }
 
-    /// Builds a [`TagsResolver`] from the current configuration.
-    pub fn build(self) -> TagsResolver {
+    /// Builds a [`TagsResolver`] from the current configuration, along with the worker that drives its background
+    /// work.
+    ///
+    /// The resolver is usable immediately, but its tagset cache never expires entries until the returned
+    /// [`TagsResolverWorker`] is running. See [`CacheWorker`] for the restart policy to spawn it with.
+    pub fn build(self) -> (TagsResolver, TagsResolverWorker) {
         let cached_tagsets_limit = self
             .cached_tagset_limit
             .unwrap_or(DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT);
@@ -758,7 +925,7 @@ impl TagsResolverBuilder {
             .interner_capacity_bytes()
             .set(self.interner.capacity_bytes() as f64);
 
-        let tagset_cache = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
+        let (tagset_cache, tagset_cache_worker) = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
             .expect("cache identifier cannot possibly be empty")
             .with_capacity(cached_tagsets_limit)
             .with_time_to_idle(self.idle_tagset_expiration)
@@ -766,14 +933,20 @@ impl TagsResolverBuilder {
             .with_telemetry(self.telemetry_enabled)
             .build();
 
-        TagsResolver {
+        let worker = TagsResolverWorker {
+            tagset_cache: tagset_cache_worker,
+        };
+
+        let resolver = TagsResolver {
             telemetry,
             interner: self.interner,
             caching_enabled: self.caching_enabled,
             tagset_cache,
             origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
-        }
+        };
+
+        (resolver, worker)
     }
 
     /// Configures a [`TagsResolverBuilder`] that's suitable for tests.
@@ -893,6 +1066,7 @@ mod tests {
         CompositeKey,
     };
     use saluki_common::hash::hash_single_fast;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::tags::Tag;
@@ -922,7 +1096,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
 
         // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
@@ -960,7 +1134,7 @@ mod tests {
 
     #[test]
     fn tag_order() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
 
         // Create two distinct contexts with the same name and tags, but with the tags in a different order:
         let name = "metric_name";
@@ -984,7 +1158,7 @@ mod tests {
 
     #[test]
     fn host_affects_identity_but_not_visible_tags() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
 
         let context1 = resolver
             .resolve_with_host("metric_name", "host-a", &[] as &[&str], None)
@@ -1004,7 +1178,7 @@ mod tests {
         assert!(context1.tags().is_empty());
         assert!(context2.tags().is_empty());
 
-        let mut uncached_resolver = ContextResolverBuilder::for_tests().without_caching().build();
+        let (mut uncached_resolver, _worker) = ContextResolverBuilder::for_tests().without_caching().build();
         let uncached1 = uncached_resolver
             .resolve_with_host("metric_name", "host-a", &[] as &[&str], None)
             .expect("should not fail to resolve");
@@ -1018,7 +1192,7 @@ mod tests {
 
     #[test]
     fn host_survives_rewrites() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
 
         let context1 = resolver
             .resolve_with_host("metric_name", "host-a", &["env:prod"][..], None)
@@ -1064,7 +1238,7 @@ mod tests {
 
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
-            let mut resolver = ContextResolverBuilder::for_tests().build();
+            let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
             resolver
                 .resolve("name", &["tag"][..], None)
                 .expect("should not fail to resolve")
@@ -1084,7 +1258,7 @@ mod tests {
 
     #[test]
     fn duplicate_tags() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
 
         // Two contexts with the same name, but each with a different set of duplicate tags:
         let name = "metric_name";
@@ -1128,7 +1302,7 @@ mod tests {
     fn differing_origins_with_without_resolver() {
         // Create a regular context resolver, without any origin tags resolver, which should result in contexts being
         // the same so long as the name and tags are the same, disregarding any difference in origin information:
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
 
         let name = "metric_name";
         let tags = ["tag1"];
@@ -1146,13 +1320,13 @@ mod tests {
 
         assert_eq!(context1, context2);
 
-        let tags_resolver = TagsResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests()
             .with_origin_tags_resolver(Some(Arc::new(DummyOriginTagsResolver)))
             .build();
         // Now build a context resolver with an origin tags resolver that trivially returns the hash of the origin info
         // as a tag, which should result in differeing sets of origin tags between the two origins, thus no longer
         // comparing as equal:
-        let mut resolver = ContextResolverBuilder::for_tests()
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests()
             .with_tags_resolver(Some(tags_resolver))
             .build();
 
@@ -1168,10 +1342,10 @@ mod tests {
 
     #[test]
     fn caching_disabled() {
-        let tags_resolver = TagsResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests()
             .with_origin_tags_resolver(Some(Arc::new(DummyOriginTagsResolver)))
             .build();
-        let mut resolver = ContextResolverBuilder::for_tests()
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests()
             .without_caching()
             .with_tags_resolver(Some(tags_resolver))
             .build();
@@ -1205,7 +1379,7 @@ mod tests {
         const BIG_TAG_TWO: &str = "another-long-boye-that-we-are-also-sure-wont-be-inlined-and-we-stand-on-that";
 
         // Create a context resolver with a proper string interner configured:
-        let mut resolver = ContextResolverBuilder::for_tests()
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests()
             .with_interner_capacity_bytes(NonZeroUsize::new(1024).expect("not zero"))
             .build();
 
@@ -1236,5 +1410,29 @@ mod tests {
         assert_eq!(context_tags.len(), 2);
         assert!(context_tags.has_tag(&tags[0]));
         assert!(context_tags.has_tag(&tags[1]));
+    }
+
+    #[tokio::test]
+    async fn interner_telemetry_stops_when_shutdown_is_signalled() {
+        // The telemetry task holds a clone of the interner -- which eagerly allocates its full configured capacity and
+        // only frees it once the last clone is dropped -- plus the telemetry handles, which block idle eviction of the
+        // metrics they report. It therefore has to observe shutdown rather than looping until the process exits.
+        let shutdown = CancellationToken::new();
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).expect("not zero"));
+        let mut task = tokio::spawn(drive_telemetry(interner, Telemetry::new("test"), shutdown.clone()));
+
+        // The task parks on its one-second reporting interval, so a short wait is enough to show that it doesn't exit
+        // on its own -- without which the exit below wouldn't attest to anything.
+        assert!(
+            timeout(Duration::from_millis(100), &mut task).await.is_err(),
+            "telemetry task should still be reporting"
+        );
+
+        shutdown.cancel();
+
+        timeout(Duration::from_secs(5), task)
+            .await
+            .expect("telemetry task should stop once shutdown is signalled")
+            .expect("telemetry task should not panic");
     }
 }
