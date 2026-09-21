@@ -421,6 +421,7 @@ default values.
 | Config Key                                   | Description                                  |
 | -------------------------------------------- | -------------------------------------------- |
 | `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `apm_config.features`                        | Beta APM feature flags                       |
 | `cri_socket_path`                            | containerd/CRI socket path                   |
 | `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
 | `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
@@ -455,6 +456,18 @@ Support is partial because ADP does not apply this timeout only to an aggregator
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
+
+### `apm_config.features`
+
+The core Agent uses `apm_config.features` to toggle beta APM behaviors.
+
+ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
+probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
+128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
+other value is ignored, without a warning: the flag inventory is not stable across agent
+versions, so unrecognized entries are inert rather than errors. Operators running multiple
+probabilistic samplers in one ingestion path should enable the flag consistently on every
+sampler that supports it.
 
 ### `cri_socket_path`
 
@@ -896,6 +909,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.peer_tags`                                                                     | Extra peer tags for stats aggregation              |
 | `apm_config.peer_tags_aggregation`                                                         | Aggregate APM stats by peer tags                   |
 | `apm_config.probabilistic_sampler.enabled`                                                 | Enable APM probabilistic sampler                   |
+| `apm_config.probabilistic_sampler.hash_seed`                                               | Probabilistic sampler hash seed                    |
 | `apm_config.probabilistic_sampler.sampling_percentage`                                     | Probabilistic sampler percentage                   |
 | `apm_config.replace_tags`                                                                  | Regex-based trace tag replacement rules            |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |

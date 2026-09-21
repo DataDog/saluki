@@ -22,6 +22,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_enable_rare_sampler(&mut self, value: bool);
     fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
     fn consume_apm_config_errors_per_second(&mut self, value: f64);
+    fn consume_apm_config_features(&mut self, value: Vec<String>);
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_credit_cards_keep_values(&mut self, value: Vec<String>);
     fn consume_apm_config_obfuscation_credit_cards_luhn(&mut self, value: bool);
@@ -45,6 +46,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_peer_tags(&mut self, value: Vec<String>);
     fn consume_apm_config_peer_tags_aggregation(&mut self, value: bool);
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool);
+    fn consume_apm_config_probabilistic_sampler_hash_seed(&mut self, value: i64);
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>);
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
@@ -279,6 +281,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
         config.apm_config.error_tracking_standalone.enabled.clone(),
     );
     consumer.consume_apm_config_errors_per_second(config.apm_config.errors_per_second.clone());
+    consumer.consume_apm_config_features(config.apm_config.features.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(
         config.apm_config.obfuscation.credit_cards.enabled.clone(),
     );
@@ -330,6 +333,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_peer_tags(config.apm_config.peer_tags.clone());
     consumer.consume_apm_config_peer_tags_aggregation(config.apm_config.peer_tags_aggregation.clone());
     consumer.consume_apm_config_probabilistic_sampler_enabled(config.apm_config.probabilistic_sampler.enabled.clone());
+    consumer
+        .consume_apm_config_probabilistic_sampler_hash_seed(config.apm_config.probabilistic_sampler.hash_seed.clone());
     consumer.consume_apm_config_probabilistic_sampler_sampling_percentage(
         config.apm_config.probabilistic_sampler.sampling_percentage.clone(),
     );

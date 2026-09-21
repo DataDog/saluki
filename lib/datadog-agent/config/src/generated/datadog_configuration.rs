@@ -772,6 +772,10 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub errors_per_second: f64,
 
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub features: Vec<String>,
+
     #[serde(default)]
     pub obfuscation: ApmConfigObfuscation,
 
@@ -804,6 +808,7 @@ impl Default for ApmConfig {
             enable_rare_sampler: Default::default(),
             error_tracking_standalone: Default::default(),
             errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
+            features: Default::default(),
             obfuscation: Default::default(),
             peer_tags: Default::default(),
             peer_tags_aggregation: defaults::default_bool::<true>(),
@@ -1057,6 +1062,10 @@ pub struct ApmConfigProbabilisticSampler {
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub hash_seed: i64,
+
     #[serde(
         default = "defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage"
     )]
@@ -1068,6 +1077,7 @@ impl Default for ApmConfigProbabilisticSampler {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
+            hash_seed: Default::default(),
             sampling_percentage: defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage(),
         }
     }
