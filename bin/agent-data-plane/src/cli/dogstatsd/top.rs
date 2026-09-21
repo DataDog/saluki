@@ -326,8 +326,9 @@ mod tests {
         .await
         .expect_err("offline top should reject a directory");
 
+        let error_text = error.to_string().to_lowercase();
         assert!(
-            error.to_string().contains("regular file") || error.to_string().contains("failed to open"),
+            error_text.contains("regular file") || error_text.contains("failed to open"),
             "{error:#}"
         );
     }
