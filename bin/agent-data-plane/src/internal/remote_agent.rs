@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
@@ -60,8 +61,8 @@ use tracing::{debug, error, info, warn};
 use crate::state::metrics::get_datadog_agent_remappings;
 use crate::{
     cli::dogstatsd::{
-        parse_remote_dogstatsd_command, run_dogstatsd_command, RemoteArgumentType, RemoteDogstatsdCommandDescriptor,
-        REMOTE_DOGSTATSD_COMMANDS,
+        parse_remote_dogstatsd_command, run_dogstatsd_command, DogstatsdCommandOutput, RemoteArgumentType,
+        RemoteDogstatsdCommandDescriptor, REMOTE_DOGSTATSD_COMMANDS,
     },
     config::DataPlaneConfiguration,
 };
@@ -628,6 +629,16 @@ impl std::io::Write for RemoteCommandOutput {
     }
 }
 
+impl DogstatsdCommandOutput for RemoteCommandOutput {
+    fn write_status(&mut self, message: &str) -> std::io::Result<()> {
+        writeln!(self, "{message}")
+    }
+
+    fn report_writer(&mut self) -> &mut (dyn std::io::Write + Send) {
+        self
+    }
+}
+
 fn remote_command_output_chunks(output: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut start = 0;
@@ -717,8 +728,7 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
                 Ok(command) => {
                     let mut output = RemoteCommandOutput { bytes: Vec::new() };
                     let result =
-                        run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
-                            .await;
+                        run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation).await;
                     let stdout = String::from_utf8_lossy(&output.into_bytes()).into_owned();
                     send_remote_command_output_chunks(&sender, &stdout, ExecuteCommandFrame::Stdout).await;
                     match result {
@@ -1408,6 +1418,18 @@ mod tests {
             receiver.recv().await.expect("stderr frame should be sent").expect("frame should be valid").frame,
             Some(ExecuteCommandFrame::Stderr(message)) if message == "stderr"
         ));
+    }
+
+    #[test]
+    fn remote_command_output_writes_status_and_reports_to_stdout() {
+        let mut output = RemoteCommandOutput { bytes: Vec::new() };
+
+        DogstatsdCommandOutput::write_status(&mut output, "command status")
+            .expect("status should be written to remote command output");
+        std::io::Write::write_all(&mut output, b"command report")
+            .expect("report should be written to remote command output");
+
+        assert_eq!(output.into_bytes(), b"command status\ncommand report");
     }
 
     #[test]
