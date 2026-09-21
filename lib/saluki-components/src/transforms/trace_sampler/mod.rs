@@ -179,6 +179,14 @@ impl MemoryBounds for TraceSamplerConfiguration {
                 "priority sampler catalog entries",
                 catalog_capacity,
             );
+
+        // Decision keys span the same (service, env) universe as the catalog, across a handful
+        // of samplers. The window resets every ten seconds, so steady-state growth follows active
+        // combinations; within a window, cardinality is proportional to traffic, matching the
+        // reference sampler's own windowed map.
+        builder
+            .minimum()
+            .with_map::<telemetry::DecisionKey, telemetry::DecisionCounts>("sampler decision window", catalog_capacity);
     }
 }
 
@@ -459,17 +467,18 @@ impl TraceSampler {
                 return (true, priority, "", Some(root_span_idx), sampler_name);
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
-            sampler_name = telemetry::SamplerName::NoPriority;
             // Rare check mirrors agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
             if rare {
                 sampler_name = telemetry::SamplerName::Rare;
                 return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx), sampler_name);
             }
 
+            // The OTLP rate decision is probabilistic: its keeps and its drops both record
+            // under the probabilistic sampler, never the no-priority bucket.
+            sampler_name = telemetry::SamplerName::Probabilistic;
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.trace_id_low;
             if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
-                sampler_name = telemetry::SamplerName::Probabilistic;
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.attributes.remove(PROB_RATE_KEY);
                 }
@@ -647,17 +656,17 @@ impl TraceSampler {
 
 impl SynchronousTransform for TraceSampler {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
-        // Published once per buffer; the flush loop reports the latest values as gauges.
+        buffer.remove_if(|event| match event {
+            Event::Trace(trace) => !self.process_trace(trace),
+            _ => false,
+        });
+
+        // Read after processing so signatures learned from this buffer are included.
         self.telemetry.set_tracked_signature_counts(
             self.priority_sampler.tracked_signature_count(),
             self.no_priority_sampler.tracked_signature_count(),
             self.error_sampler.tracked_signature_count(),
         );
-
-        buffer.remove_if(|event| match event {
-            Event::Trace(trace) => !self.process_trace(trace),
-            _ => false,
-        });
     }
 }
 
@@ -1707,6 +1716,33 @@ mod tests {
 
     /// Rare sampler should catch OTLP traces without a sampling priority on their first occurrence,
     /// matching the Go agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
+    #[test]
+    fn otlp_rate_decisions_record_under_the_probabilistic_sampler() {
+        // Keeps and drops from the OTLP rate decision both belong to the probabilistic sampler;
+        // the drop must not fall through to the no-priority bucket.
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.error_sampling_enabled = false;
+        sampler.otlp_sampling_rate = 0.0;
+
+        let mut span = create_top_level_span(1);
+        span.attributes.insert(
+            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
+            AttributeValue::String(MetaString::from("00000000000000000000000000000001")),
+        );
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep);
+        assert_eq!(priority, PRIORITY_AUTO_DROP);
+
+        let decisions = sampler.telemetry.snapshot_decisions();
+        let (key, counts) = decisions.iter().next().unwrap();
+        assert_eq!(key.sampler, telemetry::SamplerName::Probabilistic);
+        assert_eq!(counts.seen, 1);
+        assert_eq!(counts.kept, 0);
+    }
+
     #[test]
     fn rare_sampler_catches_otlp_no_priority_trace() {
         let mut sampler = create_sampler_with_rare_enabled();
