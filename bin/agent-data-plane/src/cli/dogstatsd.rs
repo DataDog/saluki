@@ -1304,11 +1304,13 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[derive(Default)]
     struct RecordingOutput {
         progress: Vec<String>,
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[async_trait::async_trait]
     impl CommandOutput for RecordingOutput {
         async fn write_progress(&mut self, message: &str) -> std::io::Result<()> {
