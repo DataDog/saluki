@@ -272,7 +272,7 @@ async fn handle_dogstatsd_stats(
 ) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     output
-        .write_status(&format!(
+        .write_progress(&format!(
             "Triggered statistics collection over the next {} seconds. Waiting for completion...",
             cmd.collection_duration_secs
         ))
@@ -283,20 +283,20 @@ async fn handle_dogstatsd_stats(
         .error_context("Failed to deserialize collected statistics response.")?;
 
     output
-        .write_status(&format!("Collected {} metric(s).", response.stats.len()))
+        .write_progress(&format!("Collected {} metric(s).", response.stats.len()))
         .await?;
 
     // Filter out any non-matching metrics if a filter was given.
     if let Some(filter) = cmd.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
         output
-            .write_status(&format!("{} metric(s) remain after filtering.", response.stats.len()))
+            .write_progress(&format!("{} metric(s) remain after filtering.", response.stats.len()))
             .await?;
     }
 
     if let Some(limit) = cmd.limit {
         output
-            .write_status(&format!("Output will be limited to the top {} metric(s).", limit))
+            .write_progress(&format!("Output will be limited to the top {} metric(s).", limit))
             .await?;
     }
 
@@ -312,7 +312,7 @@ async fn handle_dogstatsd_capture(
     api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     output
-        .write_status("Starting a DogStatsD traffic capture session...")
+        .write_progress("Starting a DogStatsD traffic capture session...")
         .await?;
 
     let capture_duration = cmd.capture_duration.to_string();
@@ -321,7 +321,7 @@ async fn handle_dogstatsd_capture(
         .await?;
 
     output
-        .write_status(&format!("Capture started. Data will be written to '{capture_path}'."))
+        .write_progress(&format!("Capture started. Data will be written to '{capture_path}'."))
         .await?;
 
     Ok(())
@@ -334,17 +334,14 @@ async fn handle_dogstatsd_replay(
     let target = dogstatsd_replay_target(listeners)?;
 
     output
-        .write_status(&format!(
+        .write_progress(&format!(
             "Preparing DogStatsD replay from '{}'.",
             cmd.replay_file_path.display()
         ))
         .await?;
 
     #[cfg(not(target_os = "linux"))]
-    tracing::warn!(
-        "DogStatsD replay cannot preserve captured PID-based origin tags on this platform. Replayed metrics may still \
-         receive origin tags from client-supplied metadata and the current live workload state."
-    );
+    write_non_linux_replay_origin_tag_warning(output).await?;
 
     let replay_file_path = cmd.replay_file_path.clone();
     let Some(mut reader) = run_cancellable_replay_load(cancel, move || {
@@ -370,7 +367,7 @@ async fn handle_dogstatsd_replay(
         &session_id,
         cancel,
         async {
-            output.write_status(state_status).await?;
+            output.write_progress(state_status).await?;
             run_dogstatsd_replay(&mut reader, target, cmd.loops, cancel).await
         },
         |session_id| api_client.dogstatsd_replay_finish_session(session_id),
@@ -379,9 +376,9 @@ async fn handle_dogstatsd_replay(
     match (replay_result, finish_result) {
         (Ok(()), Ok(())) => {
             if cancel.is_cancelled() {
-                output.write_status("DogStatsD replay interrupted.").await?;
+                output.write_progress("DogStatsD replay interrupted.").await?;
             } else {
-                output.write_status("DogStatsD replay completed.").await?;
+                output.write_progress("DogStatsD replay completed.").await?;
             }
             Ok(())
         }
@@ -393,6 +390,16 @@ async fn handle_dogstatsd_replay(
             finish_error
         )),
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn write_non_linux_replay_origin_tag_warning(output: &mut dyn CommandOutput) -> std::io::Result<()> {
+    output
+        .write_progress(
+            "DogStatsD replay cannot preserve captured PID-based origin tags on this platform. Replayed metrics may still \
+             receive origin tags from client-supplied metadata and the current live workload state.",
+        )
+        .await
 }
 
 async fn start_replay_session(
@@ -814,10 +821,10 @@ where
     I: IntoIterator<Item = String>,
 {
     for line in lines {
-        output.write_report(&line).await?;
-        output.write_report("\n").await?;
+        output.write_stdout(&line).await?;
+        output.write_stdout("\n").await?;
     }
-    output.flush().await
+    output.flush_stdout().await
 }
 
 pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteCommandDescriptor] = &[
@@ -970,6 +977,7 @@ mod tests {
         dogstatsd_socket_path, parse_remote_dogstatsd_command, DogstatsdSubcommand, GenericError, ReplayTarget,
         TimestampResolution,
     };
+    use crate::cli::remote::CommandOutput;
 
     #[test]
     fn remote_command_descriptors_are_the_canonical_remote_command_inventory() {
@@ -1296,6 +1304,27 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingOutput {
+        progress: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandOutput for RecordingOutput {
+        async fn write_progress(&mut self, message: &str) -> std::io::Result<()> {
+            self.progress.push(message.to_owned());
+            Ok(())
+        }
+
+        async fn write_stdout(&mut self, _output: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        async fn flush_stdout(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[cfg(unix)]
     fn create_fifo(path: &std::path::Path) {
         use std::ffi::CString;
@@ -1362,6 +1391,23 @@ mod tests {
         let target = dogstatsd_replay_target(&listeners).expect("pipe should be configured");
 
         assert!(matches!(target, ReplayTarget::NamedPipe(path) if path == r"\\.\pipe\datadog-dogstatsd"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn non_linux_replay_origin_tag_warning_is_written_as_progress() {
+        let mut output = RecordingOutput::default();
+
+        super::write_non_linux_replay_origin_tag_warning(&mut output)
+            .await
+            .expect("warning should be written as progress");
+
+        assert_eq!(
+            output.progress,
+            [
+                "DogStatsD replay cannot preserve captured PID-based origin tags on this platform. Replayed metrics may still receive origin tags from client-supplied metadata and the current live workload state."
+            ]
+        );
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]

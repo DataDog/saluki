@@ -141,20 +141,20 @@ fn remote_argument_value(
     }
 }
 
-/// Receives a command's progress and report output.
+/// Receives a command's human-readable progress updates and stdout report data.
 ///
 /// Output implementations apply backpressure asynchronously. Command execution must not use synchronous writers because
 /// a slow remote-command client must not block a Tokio worker thread or turn ordinary output into a write failure.
 #[async_trait::async_trait]
 pub(crate) trait CommandOutput: Send {
     /// Writes a progress update for the command.
-    async fn write_status(&mut self, message: &str) -> std::io::Result<()>;
+    async fn write_progress(&mut self, message: &str) -> std::io::Result<()>;
 
-    /// Writes UTF-8 report output for the command.
-    async fn write_report(&mut self, output: &str) -> std::io::Result<()>;
+    /// Writes UTF-8 stdout report data for the command.
+    async fn write_stdout(&mut self, output: &str) -> std::io::Result<()>;
 
-    /// Delivers report output written so far.
-    async fn flush(&mut self) -> std::io::Result<()>;
+    /// Delivers stdout report data written so far.
+    async fn flush_stdout(&mut self) -> std::io::Result<()>;
 }
 
 /// Writes command output to the direct command's logging and standard-output sinks.
@@ -173,16 +173,16 @@ impl DirectCommandOutput {
 
 #[async_trait::async_trait]
 impl CommandOutput for DirectCommandOutput {
-    async fn write_status(&mut self, message: &str) -> std::io::Result<()> {
+    async fn write_progress(&mut self, message: &str) -> std::io::Result<()> {
         info!("{message}");
         Ok(())
     }
 
-    async fn write_report(&mut self, output: &str) -> std::io::Result<()> {
+    async fn write_stdout(&mut self, output: &str) -> std::io::Result<()> {
         tokio::io::AsyncWriteExt::write_all(&mut self.stdout, output.as_bytes()).await
     }
 
-    async fn flush(&mut self) -> std::io::Result<()> {
+    async fn flush_stdout(&mut self) -> std::io::Result<()> {
         tokio::io::AsyncWriteExt::flush(&mut self.stdout).await
     }
 }
