@@ -59,7 +59,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::state::metrics::get_datadog_agent_remappings;
 use crate::{
-    cli::dogstatsd::{parse_remote_dogstatsd_command, run_dogstatsd_command},
+    cli::dogstatsd::{
+        parse_remote_dogstatsd_command, run_dogstatsd_command, RemoteArgumentType, RemoteDogstatsdCommandDescriptor,
+        REMOTE_DOGSTATSD_COMMANDS,
+    },
     config::DataPlaneConfiguration,
 };
 
@@ -85,153 +88,38 @@ fn dogstatsd_command_provider() -> CommandProvider {
     CommandProvider {
         name: "dogstatsd".to_string(),
         description: "Inspect DogStatsD pipeline status".to_string(),
-        commands: vec![
-            remote_command(
-                "stats",
-                "Print basic statistics about metrics received by the data plane.",
-                vec![
-                    command_parameter(
-                        "duration-secs",
-                        "d",
-                        "Amount of time to collect statistics for, in seconds.",
-                        ParameterType::TypeUint,
-                        true,
-                    ),
-                    command_parameter(
-                        "mode",
-                        "m",
-                        "Analysis mode: summary or cardinality.",
-                        ParameterType::TypeString,
-                        false,
-                    ),
-                    command_parameter(
-                        "sort-dir",
-                        "s",
-                        "Sort direction: asc or desc.",
-                        ParameterType::TypeString,
-                        false,
-                    ),
-                    command_parameter(
-                        "filter",
-                        "f",
-                        "Exclude metrics whose names do not contain this value.",
-                        ParameterType::TypeString,
-                        false,
-                    ),
-                    command_parameter(
-                        "limit",
-                        "l",
-                        "Maximum number of metrics to display.",
-                        ParameterType::TypeUint,
-                        false,
-                    ),
-                ],
-            ),
-            remote_command(
-                "capture",
-                "Start a DogStatsD traffic capture.",
-                vec![
-                    command_parameter(
-                        "duration",
-                        "d",
-                        "Capture duration in Go duration syntax.",
-                        ParameterType::TypeString,
-                        false,
-                    ),
-                    command_parameter(
-                        "path",
-                        "p",
-                        "Directory in which to write the capture.",
-                        ParameterType::TypeString,
-                        false,
-                    ),
-                    command_parameter(
-                        "compressed",
-                        "z",
-                        "Whether to zstd-compress the capture file.",
-                        ParameterType::TypeBool,
-                        false,
-                    ),
-                ],
-            ),
-            remote_command(
-                "replay",
-                "Replay DogStatsD traffic from a capture file.",
-                vec![
-                    command_parameter(
-                        "file",
-                        "f",
-                        "Path to the .dog or .dog.zstd capture file to replay.",
-                        ParameterType::TypeString,
-                        true,
-                    ),
-                    command_parameter(
-                        "loops",
-                        "l",
-                        "Number of replay iterations; 0 repeats until cancelled.",
-                        ParameterType::TypeUint,
-                        false,
-                    ),
-                ],
-            ),
-            remote_command(
-                "top",
-                "Display DogStatsD contexts with the highest cardinality.",
-                vec![
-                    command_parameter(
-                        "path",
-                        "p",
-                        "Read a context dump artifact instead of requesting one.",
-                        ParameterType::TypeString,
-                        false,
-                    ),
-                    command_parameter(
-                        "num-metrics",
-                        "m",
-                        "Maximum number of metrics to display.",
-                        ParameterType::TypeUint,
-                        false,
-                    ),
-                    command_parameter(
-                        "num-tags",
-                        "t",
-                        "Maximum number of tags to display per metric.",
-                        ParameterType::TypeUint,
-                        false,
-                    ),
-                ],
-            ),
-            remote_command(
-                "dump-contexts",
-                "Write currently tracked DogStatsD contexts as JSON.",
-                Vec::new(),
-            ),
-        ],
+        commands: REMOTE_DOGSTATSD_COMMANDS.iter().map(remote_command).collect(),
     }
 }
 
-fn remote_command(name: &str, helper: &str, parameters: Vec<CommandParameter>) -> RemoteCommand {
+fn remote_command(descriptor: &RemoteDogstatsdCommandDescriptor) -> RemoteCommand {
     RemoteCommand {
-        name: name.to_string(),
-        short_name: name.to_string(),
-        helper: helper.to_string(),
-        parameters,
+        name: descriptor.name.to_string(),
+        short_name: descriptor.name.to_string(),
+        helper: descriptor.helper.to_string(),
+        parameters: descriptor.parameters.iter().map(command_parameter).collect(),
         is_runnable: true,
         ..Default::default()
     }
 }
 
-fn command_parameter(
-    name: &str, short_name: &str, helper: &str, parameter_type: ParameterType, required: bool,
-) -> CommandParameter {
+fn command_parameter(descriptor: &crate::cli::dogstatsd::RemoteDogstatsdParameterDescriptor) -> CommandParameter {
     CommandParameter {
-        name: name.to_string(),
-        short_name: short_name.to_string(),
-        helper: helper.to_string(),
-        r#type: parameter_type.into(),
-        required,
+        name: descriptor.name.to_string(),
+        short_name: descriptor.short_name.to_string(),
+        helper: descriptor.helper.to_string(),
+        r#type: remote_parameter_type(descriptor.argument_type).into(),
+        required: descriptor.required,
         is_flag: true,
         is_persistent: false,
+    }
+}
+
+const fn remote_parameter_type(argument_type: RemoteArgumentType) -> ParameterType {
+    match argument_type {
+        RemoteArgumentType::String => ParameterType::TypeString,
+        RemoteArgumentType::Bool => ParameterType::TypeBool,
+        RemoteArgumentType::Uint => ParameterType::TypeUint,
     }
 }
 
@@ -756,6 +644,19 @@ fn remote_command_output_chunks(output: &str) -> Vec<String> {
     chunks
 }
 
+async fn send_remote_command_output_chunks(
+    sender: &mpsc::Sender<Result<ExecuteCommandResponse, Status>>, output: &str,
+    frame: fn(String) -> ExecuteCommandFrame,
+) {
+    for output in remote_command_output_chunks(output) {
+        let _ = sender
+            .send(Ok(ExecuteCommandResponse {
+                frame: Some(frame(output)),
+            }))
+            .await;
+    }
+}
+
 struct CancellableCommandStream {
     inner: ReceiverStream<Result<ExecuteCommandResponse, Status>>,
     cancellation: CancellationToken,
@@ -819,35 +720,23 @@ impl RemoteCommandProvider for RemoteCommandProviderImpl {
                         run_dogstatsd_command(&current_config.load_full(), command, &mut output, &cancellation, true)
                             .await;
                     let stdout = String::from_utf8_lossy(&output.into_bytes()).into_owned();
-                    for stdout in remote_command_output_chunks(&stdout) {
-                        let _ = sender
-                            .send(Ok(ExecuteCommandResponse {
-                                frame: Some(ExecuteCommandFrame::Stdout(stdout)),
-                            }))
-                            .await;
-                    }
+                    send_remote_command_output_chunks(&sender, &stdout, ExecuteCommandFrame::Stdout).await;
                     match result {
                         Ok(()) => 0,
                         Err(error) => {
-                            for stderr in remote_command_output_chunks(&format!("{error:#}\n")) {
-                                let _ = sender
-                                    .send(Ok(ExecuteCommandResponse {
-                                        frame: Some(ExecuteCommandFrame::Stderr(stderr)),
-                                    }))
-                                    .await;
-                            }
+                            send_remote_command_output_chunks(
+                                &sender,
+                                &format!("{error:#}\n"),
+                                ExecuteCommandFrame::Stderr,
+                            )
+                            .await;
                             1
                         }
                     }
                 }
                 Err(error) => {
-                    for stderr in remote_command_output_chunks(&format!("{error:#}\n")) {
-                        let _ = sender
-                            .send(Ok(ExecuteCommandResponse {
-                                frame: Some(ExecuteCommandFrame::Stderr(stderr)),
-                            }))
-                            .await;
-                    }
+                    send_remote_command_output_chunks(&sender, &format!("{error:#}\n"), ExecuteCommandFrame::Stderr)
+                        .await;
                     1
                 }
             };
@@ -1377,12 +1266,25 @@ mod tests {
             ["stats", "capture", "replay", "top", "dump-contexts"]
         );
 
-        let stats = &provider.commands[0];
-        assert!(stats.is_runnable);
-        assert_eq!(stats.parameters[0].name, "duration-secs");
-        assert_eq!(stats.parameters[0].short_name, "d");
-        assert!(stats.parameters[0].required);
-        assert!(stats.parameters[0].is_flag);
+        for (command, descriptor) in provider.commands.iter().zip(REMOTE_DOGSTATSD_COMMANDS) {
+            assert!(command.is_runnable);
+            assert_eq!(command.name, descriptor.name);
+            assert_eq!(command.short_name, descriptor.name);
+            assert_eq!(command.helper, descriptor.helper);
+            assert_eq!(command.parameters.len(), descriptor.parameters.len());
+            for (parameter, descriptor) in command.parameters.iter().zip(descriptor.parameters) {
+                assert_eq!(parameter.name, descriptor.name);
+                assert_eq!(parameter.short_name, descriptor.short_name);
+                assert_eq!(parameter.helper, descriptor.helper);
+                assert_eq!(
+                    ParameterType::try_from(parameter.r#type).expect("parameter type should be valid"),
+                    remote_parameter_type(descriptor.argument_type)
+                );
+                assert_eq!(parameter.required, descriptor.required);
+                assert!(parameter.is_flag);
+                assert!(!parameter.is_persistent);
+            }
+        }
     }
 
     #[test]
@@ -1489,6 +1391,23 @@ mod tests {
         }
 
         assert_eq!(stderr, expected_error);
+    }
+
+    #[tokio::test]
+    async fn remote_command_chunk_sender_preserves_stdout_stderr_order() {
+        let (sender, mut receiver) = mpsc::channel(2);
+
+        send_remote_command_output_chunks(&sender, "stdout", ExecuteCommandFrame::Stdout).await;
+        send_remote_command_output_chunks(&sender, "stderr", ExecuteCommandFrame::Stderr).await;
+
+        assert!(matches!(
+            receiver.recv().await.expect("stdout frame should be sent").expect("frame should be valid").frame,
+            Some(ExecuteCommandFrame::Stdout(message)) if message == "stdout"
+        ));
+        assert!(matches!(
+            receiver.recv().await.expect("stderr frame should be sent").expect("frame should be valid").frame,
+            Some(ExecuteCommandFrame::Stderr(message)) if message == "stderr"
+        ));
     }
 
     #[test]
