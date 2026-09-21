@@ -1,11 +1,54 @@
 //! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::defaults::{
     DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_RARE_SAMPLER_CARDINALITY,
     DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
 };
+
+/// A beta APM feature flag.
+///
+/// The feature inventory is not stable across agent versions: a flag may be promoted to a
+/// dedicated setting or dropped. Unrecognized values are carried as `ApmFeature::Other` rather
+/// than rejected, so configurations for newer or removed flags load unchanged.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ApmFeature {
+    /// Switches the probabilistic sampler from hashing the low 64 bits of the trace ID to hashing
+    /// the full 128-bit ID.
+    ProbabilisticSamplerFullTraceId,
+
+    /// An unrecognized feature ID, carried verbatim.
+    Other(String),
+}
+
+impl ApmFeature {
+    /// Returns the feature's configuration ID.
+    pub fn as_str(&self) -> &str {
+        match self {
+            ApmFeature::ProbabilisticSamplerFullTraceId => "probabilistic_sampler_full_trace_id",
+            ApmFeature::Other(feature) => feature,
+        }
+    }
+}
+
+impl From<&str> for ApmFeature {
+    fn from(feature: &str) -> Self {
+        match feature {
+            "probabilistic_sampler_full_trace_id" => ApmFeature::ProbabilisticSamplerFullTraceId,
+            other => ApmFeature::Other(other.to_owned()),
+        }
+    }
+}
+
+impl Serialize for ApmFeature {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 /// Resolved traces configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -41,13 +84,11 @@ pub struct Domain {
 
     /// Beta APM feature flags enabled for traces.
     ///
-    /// Recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
-    /// probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
-    /// 128-bit ID. Empty by default. Values other than the recognized flag are ignored without a
-    /// warning: the flag inventory is not stable across versions, so unrecognized entries are
-    /// inert rather than errors. Enable the flag on every probabilistic sampler in the ingestion
-    /// path so they keep the same traces.
-    pub features: Vec<String>,
+    /// Empty by default. Unrecognized values are carried as `ApmFeature::Other` and ignored
+    /// without a warning: the flag inventory is not stable across versions. Enable
+    /// `ApmFeature::ProbabilisticSamplerFullTraceId` on every probabilistic sampler in the
+    /// ingestion path so they keep the same traces.
+    pub features: Vec<ApmFeature>,
 
     /// Whether the rare-span sampler is enabled.
     pub enable_rare_sampler: bool,
@@ -304,4 +345,31 @@ pub struct OttlTransform {
 
     /// OTTL statements applied to each span. (not in Datadog Agent config schema)
     pub trace_statements: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_feature_ids_map_to_their_variants() {
+        assert_eq!(
+            ApmFeature::from("probabilistic_sampler_full_trace_id"),
+            ApmFeature::ProbabilisticSamplerFullTraceId
+        );
+        assert_eq!(
+            ApmFeature::from("error_rare_sample_tracer_drop"),
+            ApmFeature::Other("error_rare_sample_tracer_drop".to_owned())
+        );
+    }
+
+    #[test]
+    fn feature_ids_round_trip_through_as_str() {
+        for feature in [
+            ApmFeature::ProbabilisticSamplerFullTraceId,
+            ApmFeature::Other("table_names".to_owned()),
+        ] {
+            assert_eq!(ApmFeature::from(feature.as_str()), feature);
+        }
+    }
 }

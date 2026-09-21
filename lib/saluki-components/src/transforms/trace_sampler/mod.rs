@@ -53,9 +53,6 @@ const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent'
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
-/// Feature flag selecting full-trace-ID hashing in the probabilistic sampler.
-const FEATURE_PROBABILISTIC_SAMPLER_FULL_TRACE_ID: &str = "probabilistic_sampler_full_trace_id";
-
 fn normalize_sampling_rate(rate: f64) -> f64 {
     if rate <= 0.0 || rate >= 1.0 {
         1.0
@@ -96,8 +93,7 @@ impl TraceSamplerConfiguration {
             probabilistic_hash_seed: traces.probabilistic_sampler.hash_seed,
             probabilistic_full_trace_id: traces
                 .features
-                .iter()
-                .any(|feature| feature == FEATURE_PROBABILISTIC_SAMPLER_FULL_TRACE_ID),
+                .contains(&domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId),
             sampling_percentage: traces.probabilistic_sampler.sampling_percentage,
             error_sampling_enabled: traces.error_sampling_enabled,
             error_tracking_standalone: traces.error_tracking_standalone_enabled,
@@ -1117,6 +1113,24 @@ mod tests {
         assert!(!full.sample_probabilistic(0, low));
         full.sampling_rate = 0.90;
         assert!(full.sample_probabilistic(0, low));
+    }
+
+    #[test]
+    fn from_configuration_reads_the_full_trace_id_feature() {
+        let traces = domains::traces::Domain {
+            features: vec![domains::traces::ApmFeature::ProbabilisticSamplerFullTraceId],
+            ..Default::default()
+        };
+        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        assert!(config.probabilistic_full_trace_id);
+
+        // Unrecognized flags are carried, not rejected, and enable nothing.
+        let traces = domains::traces::Domain {
+            features: vec![domains::traces::ApmFeature::Other("table_names".to_owned())],
+            ..Default::default()
+        };
+        let config = TraceSamplerConfiguration::from_configuration(&traces, &domains::otlp::Traces::default());
+        assert!(!config.probabilistic_full_trace_id);
     }
 
     #[test]

@@ -29,7 +29,7 @@ use agent_data_plane_config::domains::otlp::{
     CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
-use agent_data_plane_config::domains::traces::ReplaceRule;
+use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
@@ -299,7 +299,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_apm_config_features(&mut self, value: Vec<String>) {
-        self.config.domains.traces.features = value;
+        self.config.domains.traces.features = value.iter().map(|feature| ApmFeature::from(feature.as_str())).collect();
     }
 
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool) {
@@ -1559,6 +1559,7 @@ mod tests {
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
+        traces::ApmFeature,
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -1676,7 +1677,10 @@ mod tests {
         assert_eq!(traces.probabilistic_sampler.hash_seed, 22);
         assert_eq!(
             traces.features,
-            ["probabilistic_sampler_full_trace_id", "unrelated_feature"]
+            [
+                ApmFeature::ProbabilisticSamplerFullTraceId,
+                ApmFeature::Other("unrelated_feature".to_owned()),
+            ]
         );
 
         // Unset, both arrive at their schema defaults.
