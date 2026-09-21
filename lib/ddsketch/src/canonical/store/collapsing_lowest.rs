@@ -52,6 +52,9 @@ impl CollapsingLowestDenseStore {
     }
 
     /// Ensures the store can accommodate the given index, growing and collapsing if necessary.
+    ///
+    /// On return, `index` is always representable: it either falls inside `[offset, offset + bins.len())`, or it falls
+    /// below `offset`, in which case it belongs to the collapsed lowest bin. [`Self::bin_index`] relies on this.
     fn grow(&mut self, index: i32) {
         if self.bins.is_empty() {
             self.bins.push(0);
@@ -65,11 +68,24 @@ impl CollapsingLowestDenseStore {
             let new_len = self.bins.len() + num_prepend;
 
             if new_len > self.max_num_bins {
-                // We need to collapse the new low indices into the current lowest
-                // Don't actually add the bins, just record that we collapsed
+                // The index sits below the widest window the store can represent. Widen the window downwards to the
+                // cap first, so the collapsed counts land on the lowest index that's still representable, then let
+                // `bin_index` fold `index` into `bins[0]`.
+                //
+                // Widening matters for accuracy: without it the collapsed floor is wherever the window happened to
+                // already start, which makes the result depend on insertion order. Descending input would pin every
+                // observation to the first index seen instead of spreading it across the available bins. The
+                // reference implementation places the floor at `max_index - max_num_bins + 1`, which is what widening
+                // to the cap achieves here.
+                let widen_by = self.max_num_bins - self.bins.len();
+                if widen_by > 0 {
+                    let mut widened = vec![0u64; self.max_num_bins];
+                    widened[widen_by..].copy_from_slice(&self.bins);
+                    self.bins = widened;
+                    self.offset -= widen_by as i32;
+                }
+
                 self.is_collapsed = true;
-                // The index is below our range, so when we add the count,
-                // we'll add it to the lowest bin (bins[0])
                 return;
             }
 
@@ -82,9 +98,9 @@ impl CollapsingLowestDenseStore {
             let new_len = (index - self.offset + 1) as usize;
 
             if new_len > self.max_num_bins {
-                // Need to collapse lowest bins to make room for higher indices
-                let bins_to_collapse = new_len - self.max_num_bins;
-                self.collapse_lowest(bins_to_collapse);
+                // The window can't stretch far enough to cover `index`, so slide its bottom up to the lowest index
+                // that keeps `index` in range, collapsing everything below that point.
+                self.collapse_below(index - self.max_num_bins as i32 + 1);
             }
 
             // Now append
@@ -93,49 +109,71 @@ impl CollapsingLowestDenseStore {
                 self.bins.resize(target_len, 0);
             }
         }
+
+        debug_assert!(
+            index < self.offset + self.bins.len() as i32,
+            "grow must leave `index` representable: index={}, offset={}, len={}",
+            index,
+            self.offset,
+            self.bins.len()
+        );
+        debug_assert!(
+            self.bins.len() <= self.max_num_bins,
+            "grow must respect the bin cap: len={}, max_num_bins={}",
+            self.bins.len(),
+            self.max_num_bins
+        );
     }
 
-    /// Collapses the lowest `n` bins into the bin at index `n`.
-    fn collapse_lowest(&mut self, n: usize) {
-        if n == 0 || self.bins.is_empty() {
+    /// Collapses every bin below `new_offset` into the bin at `new_offset`, making it the new lowest bin.
+    ///
+    /// Taking the new lowest index rather than a number of bins to shift by is what keeps this correct when
+    /// `new_offset` lands above the window entirely: that case folds the whole store into a single bin, instead of
+    /// clamping the shift and leaving the window short of where it needs to be.
+    fn collapse_below(&mut self, new_offset: i32) {
+        debug_assert!(
+            new_offset > self.offset,
+            "collapse_below only slides the window upwards"
+        );
+
+        if self.bins.is_empty() {
             return;
         }
 
         self.is_collapsed = true;
 
-        let n = n.min(self.bins.len() - 1);
-        if n == 0 {
-            return;
+        let n = (new_offset - self.offset) as usize;
+        if n >= self.bins.len() {
+            // Every bin sits below the new lowest index, so the whole store folds into one bin.
+            let collapsed_count: u64 = self.bins.iter().sum();
+            self.bins.clear();
+            self.bins.push(collapsed_count);
+        } else {
+            let collapsed_count: u64 = self.bins[..n].iter().sum();
+            self.bins[n] = self.bins[n].saturating_add(collapsed_count);
+            self.bins.drain(..n);
         }
 
-        // Sum up the bins to collapse
-        let collapsed_count: u64 = self.bins[..n].iter().sum();
-
-        // Add to the bin that will become the new lowest
-        self.bins[n] = self.bins[n].saturating_add(collapsed_count);
-
-        // Remove the collapsed bins
-        self.bins.drain(..n);
-        self.offset += n as i32;
+        self.offset = new_offset;
     }
 
     /// Returns the index into the bins array for the given logical index.
     ///
-    /// If the index is below our range, it's mapped to the lowest bin. If the index is above our range, `None` is
-    /// returned.
+    /// Indices below the window map to the lowest bin, which is where collapsed counts accumulate. [`Self::grow`]
+    /// guarantees no index arrives here from above the window, and that the store holds at least one bin.
     #[inline]
-    fn bin_index(&self, index: i32) -> Option<usize> {
+    fn bin_index(&self, index: i32) -> usize {
         if index < self.offset {
             // Index is below our range, map to lowest bin
-            Some(0)
-        } else {
-            let idx = (index - self.offset) as usize;
-            if idx < self.bins.len() {
-                Some(idx)
-            } else {
-                None
-            }
+            return 0;
         }
+
+        let idx = (index - self.offset) as usize;
+        debug_assert!(idx < self.bins.len(), "grow should have made `index` representable");
+
+        // Clamping keeps the bins consistent with `count` even if that invariant is ever broken: the observation
+        // loses accuracy instead of being dropped outright.
+        idx.min(self.bins.len() - 1)
     }
 }
 
@@ -147,9 +185,8 @@ impl Store for CollapsingLowestDenseStore {
 
         self.grow(index);
 
-        if let Some(bin_idx) = self.bin_index(index) {
-            self.bins[bin_idx] = self.bins[bin_idx].saturating_add(count);
-        }
+        let bin_idx = self.bin_index(index);
+        self.bins[bin_idx] = self.bins[bin_idx].saturating_add(count);
         self.count = self.count.saturating_add(count);
     }
 
