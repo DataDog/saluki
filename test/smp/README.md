@@ -343,9 +343,17 @@ their histogram-derived outputs. Names are deterministic and equal-length across
 so results do not depend on a new random list each run. Unlike the earlier routing cases,
 these policies do not expand each entry into histogram-derived names.
 
-All sizes use the same 10 input metric names, approximately 3,000 contexts, metric-type mix,
-randomized tags, generator seed, 500 MiB/s offered traffic, and target resources. Compare these
-five sizes with each other to measure allowlist-size overhead without changing input cardinality.
+All sizes and the unfiltered `metric_routing_dual_ship_500mb_3k_contexts` control use the same
+10 input metric names, approximately 3,000 contexts, metric-type mix, randomized tags, generator
+seed, 500 MiB/s offered traffic, target resources, and V3 settings for both endpoints.
+
+Compare each size against the dual-shipping control for the same optimization goal and build
+variant within a run. Report CPU, memory, and ingress throughput deltas relative to that control.
+This measures the net effect of enabling the allowlist: filtering cost plus the savings from
+not encoding and forwarding the secondary's metrics. SMP's `baseline` and `comparison` labels
+identify build variants, not filtering disabled and enabled; both variants run each case's config.
+Compare the five filtered sizes with each other as a separate measure of allowlist-size overhead.
+Separate startup from steady-state results: the current full-suite CI job uses zero warmup seconds.
 This measures all-miss filtering, not the all-match encoding and forwarding cost; it is not a
 claim that all-miss is the most expensive workload in every dimension.
 

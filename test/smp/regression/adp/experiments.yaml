@@ -169,15 +169,13 @@ templates:
 
   # Scale only the secondary's allowlist, not the input corpus or aggregation workload.
   # The primary receives everything; the secondary's disjoint names never match.
+  # Inherit both endpoints' V3 settings so only the allowlist differs from the dual-shipping control.
   metric_routing_secondary_miss_scaling:
     extends: metric_routing_base
     target:
       files:
         metric-routing.yaml:
           source: shared/metric-routing-miss-scaling.yaml.j2
-      environment:
-        # Only the primary produces payloads. Keep the idle secondary off V3.
-        DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true"}'
 
   # Base template for the tag filtering experiments.
   tagfilter_base:
