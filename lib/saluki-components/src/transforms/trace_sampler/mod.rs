@@ -47,8 +47,6 @@ const PRIORITY_AUTO_DROP: i32 = 0;
 const PRIORITY_AUTO_KEEP: i32 = 1;
 const PRIORITY_USER_KEEP: i32 = 2;
 
-const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent's ExtraSampleRate)
-
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
@@ -72,6 +70,8 @@ pub struct TraceSamplerConfiguration {
     error_tracking_standalone: bool,
     errors_per_second: f64,
     target_traces_per_second: f64,
+    extra_sample_rate: f64,
+    max_catalog_entries: usize,
     default_env: MetaString,
     rare_sampler_enabled: bool,
     rare_sampler_tps: f64,
@@ -99,6 +99,8 @@ impl TraceSamplerConfiguration {
             error_tracking_standalone: traces.error_tracking_standalone_enabled,
             errors_per_second: traces.errors_per_second,
             target_traces_per_second: traces.target_traces_per_second,
+            extra_sample_rate: traces.extra_sample_rate,
+            max_catalog_entries: traces.max_catalog_entries,
             default_env: MetaString::from(traces.default_env.clone()),
             rare_sampler_enabled: traces.enable_rare_sampler,
             rare_sampler_tps: traces.rare_sampler.tps,
@@ -125,15 +127,16 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                 self.probabilistic_full_trace_id,
             ),
             otlp_sampling_rate: self.otlp_sampling_rate,
-            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, ERROR_SAMPLE_RATE),
+            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, self.extra_sample_rate),
             priority_sampler: priority_sampler::PrioritySampler::new(
                 self.default_env.clone(),
-                ERROR_SAMPLE_RATE,
+                self.extra_sample_rate,
                 self.target_traces_per_second,
+                self.max_catalog_entries,
             ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
                 self.target_traces_per_second,
-                ERROR_SAMPLE_RATE,
+                self.extra_sample_rate,
             ),
             rare_sampler: rare_sampler::RareSampler::new(
                 self.rare_sampler_enabled,
@@ -151,6 +154,21 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
 impl MemoryBounds for TraceSamplerConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<TraceSampler>("component struct");
+
+        // The catalog holds a hash map slot plus one LRU slab entry per tracked signature. A
+        // configured 0 selects the default cap, matching the catalog's own resolution.
+        let catalog_capacity = if self.max_catalog_entries == 0 {
+            catalog::MAX_CATALOG_ENTRIES
+        } else {
+            self.max_catalog_entries
+        };
+        builder
+            .minimum()
+            .with_map::<signature::ServiceSignature, u32>("priority sampler catalog map", catalog_capacity)
+            .with_map::<signature::ServiceSignature, signature::Signature>(
+                "priority sampler catalog entries",
+                catalog_capacity,
+            );
     }
 }
 
@@ -602,7 +620,7 @@ mod tests {
             probabilistic: probabilistic::ProbabilisticSampler::new(0, false),
             otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
-            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
+            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0, 5000),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
             rare_sampler: rare_sampler::RareSampler::new(false, 5.0, std::time::Duration::from_secs(300), 200),
             compute_top_level_by_span_kind: false,

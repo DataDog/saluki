@@ -224,6 +224,13 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  apm_config.extra_sample_rate:
+    support: full
+    pipelines: [traces]
+    description: "Extra sample rate multiplier"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.features:
     support: partial
     pipelines: [traces]
@@ -238,6 +245,20 @@ inventory:
       versions, so unrecognized entries are inert rather than errors. Operators running multiple
       probabilistic samplers in one ingestion path should enable the flag consistently on every
       sampler that supports it.
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.max_catalog_entries:
+    support: full
+    pipelines: [traces]
+    description: "Priority sampler service-signature catalog cap"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.max_traces_per_second:
+    support: full
+    pipelines: [traces]
+    description: "Deprecated alias for target_traces_per_second"
     test_support:
       used_by: [NO_SMOKE]
 
@@ -3980,7 +4001,6 @@ excluded:
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
   apm_config.env: "ignored in initial audit 2026-04-23"
-  apm_config.extra_sample_rate: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
@@ -4000,7 +4020,6 @@ excluded:
   apm_config.instrumentation.targets: "ignored in initial audit 2026-04-23"
   apm_config.internal_profiling.enabled: "ignored in initial audit 2026-04-23"
   apm_config.log_file: "ignored in initial audit 2026-04-23"
-  apm_config.max_catalog_entries: "ignored in initial audit 2026-04-23"
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
   apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
@@ -4009,7 +4028,6 @@ excluded:
   apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
-  apm_config.max_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"

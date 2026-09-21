@@ -13,7 +13,7 @@ use tracing::warn;
 use super::signature::{ServiceSignature, Signature};
 
 /// Maximum number of entries in the catalog before eviction.
-const MAX_CATALOG_ENTRIES: usize = 5000;
+pub(super) const MAX_CATALOG_ENTRIES: usize = 5000;
 /// Initial size of our LRU cache, will grow as needed.
 const INITIAL_SIZE: usize = 1024;
 
@@ -38,11 +38,6 @@ pub(super) struct ServiceKeyCatalog {
 }
 
 impl ServiceKeyCatalog {
-    /// Creates a new ServiceKeyCatalog with the default maximum entries.
-    pub fn new() -> Self {
-        Self::with_max_entries(MAX_CATALOG_ENTRIES)
-    }
-
     /// Creates a new ServiceKeyCatalog with a custom maximum entries limit.
     ///
     /// If `max_entries` is 0, uses the default of 5000.

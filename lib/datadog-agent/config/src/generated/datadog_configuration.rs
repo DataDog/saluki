@@ -772,9 +772,23 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub errors_per_second: f64,
 
+    #[serde(default = "defaults::datadog_configuration_apm_config_extra_sample_rate")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub extra_sample_rate: f64,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub features: Vec<String>,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_catalog_entries: i64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_apm_config_max_traces_per_second"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub max_traces_per_second: f64,
 
     #[serde(default)]
     pub obfuscation: ApmConfigObfuscation,
@@ -808,7 +822,10 @@ impl Default for ApmConfig {
             enable_rare_sampler: Default::default(),
             error_tracking_standalone: Default::default(),
             errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
+            extra_sample_rate: defaults::datadog_configuration_apm_config_extra_sample_rate(),
             features: Default::default(),
+            max_catalog_entries: Default::default(),
+            max_traces_per_second: defaults::datadog_configuration_apm_config_max_traces_per_second(),
             obfuscation: Default::default(),
             peer_tags: Default::default(),
             peer_tags_aggregation: defaults::default_bool::<true>(),
@@ -2217,6 +2234,12 @@ pub mod defaults {
         ]
     }
     pub(super) fn datadog_configuration_apm_config_errors_per_second() -> f64 {
+        10_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_extra_sample_rate() -> f64 {
+        0_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_max_traces_per_second() -> f64 {
         10_f64
     }
     pub(super) fn datadog_configuration_apm_config_target_traces_per_second() -> f64 {
