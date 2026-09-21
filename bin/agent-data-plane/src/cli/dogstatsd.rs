@@ -1,7 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
@@ -243,16 +242,16 @@ pub(crate) async fn run_dogstatsd_command(
         DogstatsdSubcommand::Top(command) => {
             let command = command.validate();
             if command.is_offline() {
-                handle_dogstatsd_top(None, command, output.report_writer(), cancellation).await
+                handle_dogstatsd_top(None, command, output, cancellation).await
             } else {
                 let mut api_client = get_api_client(config).await?;
-                handle_dogstatsd_top(Some(&mut api_client), command, output.report_writer(), cancellation).await
+                handle_dogstatsd_top(Some(&mut api_client), command, output, cancellation).await
             }
         }
         DogstatsdSubcommand::DumpContexts(_) => {
             let mut api_client = get_api_client(config).await?;
             run_cancellable_command(cancellation, async {
-                handle_dogstatsd_dump_contexts(&mut api_client, output.report_writer()).await
+                handle_dogstatsd_dump_contexts(&mut api_client, output).await
             })
             .await
         }
@@ -273,30 +272,38 @@ async fn handle_dogstatsd_stats(
     api_client: &mut DataPlaneAPIClient, cmd: StatsCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
-    output.write_status(&format!(
-        "Triggered statistics collection over the next {} seconds. Waiting for completion...",
-        cmd.collection_duration_secs
-    ))?;
+    output
+        .write_status(&format!(
+            "Triggered statistics collection over the next {} seconds. Waiting for completion...",
+            cmd.collection_duration_secs
+        ))
+        .await?;
 
     let response_body = api_client.dogstatsd_stats(cmd.collection_duration_secs).await?;
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
 
-    output.write_status(&format!("Collected {} metric(s).", response.stats.len()))?;
+    output
+        .write_status(&format!("Collected {} metric(s).", response.stats.len()))
+        .await?;
 
     // Filter out any non-matching metrics if a filter was given.
     if let Some(filter) = cmd.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
-        output.write_status(&format!("{} metric(s) remain after filtering.", response.stats.len()))?;
+        output
+            .write_status(&format!("{} metric(s) remain after filtering.", response.stats.len()))
+            .await?;
     }
 
     if let Some(limit) = cmd.limit {
-        output.write_status(&format!("Output will be limited to the top {} metric(s).", limit))?;
+        output
+            .write_status(&format!("Output will be limited to the top {} metric(s).", limit))
+            .await?;
     }
 
     match cmd.analysis_mode {
-        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response, output.report_writer())?,
-        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response, output.report_writer())?,
+        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response, output).await?,
+        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response, output).await?,
     }
 
     Ok(())
@@ -305,14 +312,18 @@ async fn handle_dogstatsd_stats(
 async fn handle_dogstatsd_capture(
     api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
-    output.write_status("Starting a DogStatsD traffic capture session...")?;
+    output
+        .write_status("Starting a DogStatsD traffic capture session...")
+        .await?;
 
     let capture_duration = cmd.capture_duration.to_string();
     let capture_path = api_client
         .dogstatsd_capture(&capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
         .await?;
 
-    output.write_status(&format!("Capture started. Data will be written to '{capture_path}'."))?;
+    output
+        .write_status(&format!("Capture started. Data will be written to '{capture_path}'."))
+        .await?;
 
     Ok(())
 }
@@ -323,10 +334,12 @@ async fn handle_dogstatsd_replay(
 ) -> Result<(), GenericError> {
     let target = dogstatsd_replay_target(listeners)?;
 
-    output.write_status(&format!(
-        "Preparing DogStatsD replay from '{}'.",
-        cmd.replay_file_path.display()
-    ))?;
+    output
+        .write_status(&format!(
+            "Preparing DogStatsD replay from '{}'.",
+            cmd.replay_file_path.display()
+        ))
+        .await?;
 
     #[cfg(not(target_os = "linux"))]
     tracing::warn!(
@@ -358,7 +371,7 @@ async fn handle_dogstatsd_replay(
         &session_id,
         cancel,
         async {
-            output.write_status(state_status)?;
+            output.write_status(state_status).await?;
             run_dogstatsd_replay(&mut reader, target, cmd.loops, cancel).await
         },
         |session_id| api_client.dogstatsd_replay_finish_session(session_id),
@@ -367,9 +380,9 @@ async fn handle_dogstatsd_replay(
     match (replay_result, finish_result) {
         (Ok(()), Ok(())) => {
             if cancel.is_cancelled() {
-                output.write_status("DogStatsD replay interrupted.")?;
+                output.write_status("DogStatsD replay interrupted.").await?;
             } else {
-                output.write_status("DogStatsD replay completed.")?;
+                output.write_status("DogStatsD replay completed.").await?;
             }
             Ok(())
         }
@@ -677,8 +690,8 @@ fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: Times
     }
 }
 
-fn handle_stats_summary_analysis(
-    cmd: &StatsCommand, mut response: StatsResponse<'_>, output: &mut (dyn Write + Send),
+async fn handle_stats_summary_analysis(
+    cmd: &StatsCommand, mut response: StatsResponse<'_>, output: &mut dyn CommandOutput,
 ) -> std::io::Result<()> {
     let mut table = get_stylized_table();
     table.set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
@@ -712,11 +725,11 @@ fn handle_stats_summary_analysis(
         ]));
     }
 
-    output_lines(output, table.lines())
+    output_lines(output, table.lines()).await
 }
 
-fn handle_stats_cardinality_analysis<'a>(
-    cmd: &StatsCommand, response: StatsResponse<'a>, output: &mut (dyn Write + Send),
+async fn handle_stats_cardinality_analysis<'a>(
+    cmd: &StatsCommand, response: StatsResponse<'a>, output: &mut dyn CommandOutput,
 ) -> std::io::Result<()> {
     let mut table = get_stylized_table();
     table.set_header(["Metric", "Unique Contexts", "Highest Cardinality Tags (top 5)"]);
@@ -792,7 +805,7 @@ fn handle_stats_cardinality_analysis<'a>(
         ]));
     }
 
-    output_lines(output, table.lines())
+    output_lines(output, table.lines()).await
 }
 
 fn get_stylized_table() -> Table {
@@ -803,14 +816,15 @@ fn get_stylized_table() -> Table {
     table
 }
 
-fn output_lines<I>(output: &mut (dyn Write + Send), lines: I) -> std::io::Result<()>
+async fn output_lines<I>(output: &mut dyn CommandOutput, lines: I) -> std::io::Result<()>
 where
     I: IntoIterator<Item = String>,
 {
     for line in lines {
-        writeln!(output, "{line}")?;
+        output.write_report(&line).await?;
+        output.write_report("\n").await?;
     }
-    output.flush()
+    output.flush().await
 }
 
 pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteCommandDescriptor] = &[
