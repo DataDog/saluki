@@ -27,23 +27,6 @@ pub(super) struct TopCommand {
 }
 
 impl TopCommand {
-    pub(super) fn validate(self) -> ValidatedTopCommand {
-        ValidatedTopCommand {
-            path: self.path,
-            num_metrics: self.num_metrics,
-            num_tags: self.num_tags.unwrap_or(5),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ValidatedTopCommand {
-    path: Option<PathBuf>,
-    num_metrics: usize,
-    num_tags: usize,
-}
-
-impl ValidatedTopCommand {
     pub(super) fn is_offline(&self) -> bool {
         self.path.is_some()
     }
@@ -67,7 +50,7 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 }
 
 pub(super) async fn handle_dogstatsd_top(
-    requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: ValidatedTopCommand,
+    requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: TopCommand,
     output: &mut dyn CommandOutput, cancellation: &CancellationToken,
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
@@ -109,23 +92,18 @@ pub(super) async fn handle_dogstatsd_top(
 fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
     open_regular_file(
         path,
-        || format!("Failed to open DogStatsD context report from '{}'.", path.display()),
-        || format!("Failed to inspect DogStatsD context report from '{}'.", path.display()),
-        || {
-            generic_error!(
-                "DogStatsD context report path '{}' is not a regular file.",
-                path.display()
-            )
-        },
+        "Failed to open DogStatsD context report from",
+        "Failed to inspect DogStatsD context report from",
+        "DogStatsD context report path",
     )
 }
 
 fn render_report_from_file(
-    path: &Path, file: File, metric_limit: usize, tag_limit: usize,
+    path: &Path, file: File, metric_limit: usize, tag_limit: Option<usize>,
 ) -> Result<String, GenericError> {
     let report = read_report_from_file(path, file)
         .with_error_context(|| format!("Failed to read DogStatsD context report from '{}'.", path.display()))?;
-    Ok(report.render(metric_limit, tag_limit))
+    Ok(report.render(metric_limit, tag_limit.unwrap_or(5)))
 }
 
 async fn write_rendered_report(
@@ -175,7 +153,7 @@ mod tests {
 
     use super::{
         handle_dogstatsd_dump_contexts, handle_dogstatsd_top, open_context_report_file, render_report_from_file,
-        DogStatsDContextDumpRequester, TopCommand, ValidatedTopCommand,
+        DogStatsDContextDumpRequester, TopCommand,
     };
     use crate::cli::{
         dogstatsd::{DogstatsdCommand, DogstatsdSubcommand},
@@ -202,10 +180,7 @@ mod tests {
         assert_eq!(top.path, None);
         assert_eq!(top.num_metrics, 10);
         assert_eq!(top.num_tags, None);
-        let validated = top.validate();
-        assert_eq!(validated.path, None);
-        assert_eq!(validated.num_metrics, 10);
-        assert_eq!(validated.num_tags, 5);
+        assert!(!top.is_offline());
     }
 
     #[test]
@@ -219,10 +194,7 @@ mod tests {
         assert_eq!(top.path, Some(PathBuf::from(PLAIN_FIXTURE)));
         assert_eq!(top.num_metrics, 7);
         assert_eq!(top.num_tags, Some(3));
-        let validated = top.validate();
-        assert_eq!(validated.path, Some(PathBuf::from(PLAIN_FIXTURE)));
-        assert_eq!(validated.num_metrics, 7);
-        assert_eq!(validated.num_tags, 3);
+        assert!(top.is_offline());
     }
 
     #[test]
@@ -233,7 +205,6 @@ mod tests {
         };
 
         assert_eq!(top.num_tags, Some(4));
-        assert_eq!(top.validate().num_tags, 4);
     }
 
     #[test]
@@ -292,7 +263,8 @@ mod tests {
         std::fs::write(&replacement, b"not-json").expect("replacement artifact should be written");
         std::fs::rename(&replacement, artifact.path()).expect("artifact path should be replaced");
 
-        let rendered = render_report_from_file(artifact.path(), file, 10, 5).expect("opened artifact should render");
+        let rendered =
+            render_report_from_file(artifact.path(), file, 10, Some(5)).expect("opened artifact should render");
 
         assert!(rendered.contains("original.metric"), "{rendered}");
     }
@@ -484,13 +456,12 @@ mod tests {
         DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], args)
     }
 
-    fn top_command(path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>) -> ValidatedTopCommand {
+    fn top_command(path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>) -> TopCommand {
         TopCommand {
             path,
             num_metrics,
             num_tags,
         }
-        .validate()
     }
 
     struct FakeRequester {
