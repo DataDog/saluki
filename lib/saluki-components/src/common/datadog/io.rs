@@ -471,7 +471,7 @@ where
         secrets_refresher.spawn();
 
         runtime::worker(
-            "dd_txn_forwarder_io_loop",
+            "io_loop",
             run_io_loop(
                 transactions_rx,
                 context,
@@ -671,7 +671,7 @@ fn endpoint_io_loop_task_name(endpoint: &ResolvedEndpoint) -> String {
         .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_else(|| configured.to_owned());
 
-    format!("dd_txn_forwarder_endpoint_io_loop_{}", get_sanitized_name(&host))
+    format!("endpoint_io_loop_{}", get_sanitized_name(&host))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2374,9 +2374,9 @@ mod tests {
         assert_eq!(
             vec![
                 // Configured as a URL.
-                "dd_txn_forwarder_endpoint_io_loop_app_datadoghq_com".to_string(),
+                "endpoint_io_loop_app_datadoghq_com".to_string(),
                 // Configured as a bare host, which doesn't parse as a URL.
-                "dd_txn_forwarder_endpoint_io_loop_app_datadoghq_eu".to_string(),
+                "endpoint_io_loop_app_datadoghq_eu".to_string(),
             ],
             task_names
         );

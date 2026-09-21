@@ -138,7 +138,7 @@ fn spawn_validation_task(
     readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
 ) {
     runtime::worker(
-        "dd_api_key_validation",
+        "api_key_validation",
         run_validation_loop(endpoints, client, api_key_changes, interval, readiness_tx, emitter),
     )
     .with_shutdown_strategy(ShutdownStrategy::Brutal)

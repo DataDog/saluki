@@ -295,7 +295,7 @@ impl ApiKeyRefresher {
     pub(crate) fn spawn(self) {
         if let Some((view, targets)) = self.primary {
             runtime::worker(
-                "dd_api_key_refresher_primary",
+                "api_key_refresher_primary",
                 refresh_primary(view, targets, Arc::clone(&self.changed)),
             )
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
@@ -304,7 +304,7 @@ impl ApiKeyRefresher {
 
         if let Some((view, targets)) = self.additional {
             runtime::worker(
-                "dd_api_key_refresher_additional",
+                "api_key_refresher_additional",
                 refresh_additional(view, targets, self.changed),
             )
             .with_shutdown_strategy(ShutdownStrategy::Brutal)

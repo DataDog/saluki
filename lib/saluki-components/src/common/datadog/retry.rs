@@ -82,7 +82,7 @@ impl SecretsGateRefresher {
     pub(crate) fn spawn(self) {
         let Self { secrets, gate } = self;
 
-        runtime::worker("dd_secrets_gate_refresher", follow_secrets(secrets, gate))
+        runtime::worker("secrets_gate_refresher", follow_secrets(secrets, gate))
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
             .spawn();
     }
