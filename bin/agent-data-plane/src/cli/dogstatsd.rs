@@ -273,34 +273,25 @@ async fn handle_dogstatsd_stats(
     api_client: &mut DataPlaneAPIClient, cmd: StatsCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
-    report_status(
-        output,
-        format!(
-            "Triggered statistics collection over the next {} seconds. Waiting for completion...",
-            cmd.collection_duration_secs
-        ),
-    )?;
+    output.write_status(&format!(
+        "Triggered statistics collection over the next {} seconds. Waiting for completion...",
+        cmd.collection_duration_secs
+    ))?;
 
     let response_body = api_client.dogstatsd_stats(cmd.collection_duration_secs).await?;
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
 
-    report_status(output, format!("Collected {} metric(s).", response.stats.len()))?;
+    output.write_status(&format!("Collected {} metric(s).", response.stats.len()))?;
 
     // Filter out any non-matching metrics if a filter was given.
     if let Some(filter) = cmd.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
-        report_status(
-            output,
-            format!("{} metric(s) remain after filtering.", response.stats.len()),
-        )?;
+        output.write_status(&format!("{} metric(s) remain after filtering.", response.stats.len()))?;
     }
 
     if let Some(limit) = cmd.limit {
-        report_status(
-            output,
-            format!("Output will be limited to the top {} metric(s).", limit),
-        )?;
+        output.write_status(&format!("Output will be limited to the top {} metric(s).", limit))?;
     }
 
     match cmd.analysis_mode {
@@ -314,17 +305,14 @@ async fn handle_dogstatsd_stats(
 async fn handle_dogstatsd_capture(
     api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
-    report_status(output, "Starting a DogStatsD traffic capture session...".to_string())?;
+    output.write_status("Starting a DogStatsD traffic capture session...")?;
 
     let capture_duration = cmd.capture_duration.to_string();
     let capture_path = api_client
         .dogstatsd_capture(&capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
         .await?;
 
-    report_status(
-        output,
-        format!("Capture started. Data will be written to '{capture_path}'."),
-    )?;
+    output.write_status(&format!("Capture started. Data will be written to '{capture_path}'."))?;
 
     Ok(())
 }
@@ -335,10 +323,10 @@ async fn handle_dogstatsd_replay(
 ) -> Result<(), GenericError> {
     let target = dogstatsd_replay_target(listeners)?;
 
-    report_status(
-        output,
-        format!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display()),
-    )?;
+    output.write_status(&format!(
+        "Preparing DogStatsD replay from '{}'.",
+        cmd.replay_file_path.display()
+    ))?;
 
     #[cfg(not(target_os = "linux"))]
     tracing::warn!(
@@ -346,7 +334,13 @@ async fn handle_dogstatsd_replay(
          receive origin tags from client-supplied metadata and the current live workload state."
     );
 
-    let Some(mut reader) = load_replay_capture(&cmd.replay_file_path, cancel).await? else {
+    let replay_file_path = cmd.replay_file_path.clone();
+    let Some(mut reader) = run_cancellable_replay_load(cancel, move || {
+        let file = open_replay_capture_file(&replay_file_path)?;
+        TrafficCaptureReader::from_file(file)
+    })
+    .await?
+    else {
         return Ok(());
     };
     let state = reader.read_state()?;
@@ -364,7 +358,7 @@ async fn handle_dogstatsd_replay(
         &session_id,
         cancel,
         async {
-            report_status(output, state_status.to_string())?;
+            output.write_status(state_status)?;
             run_dogstatsd_replay(&mut reader, target, cmd.loops, cancel).await
         },
         |session_id| api_client.dogstatsd_replay_finish_session(session_id),
@@ -373,9 +367,9 @@ async fn handle_dogstatsd_replay(
     match (replay_result, finish_result) {
         (Ok(()), Ok(())) => {
             if cancel.is_cancelled() {
-                report_status(output, "DogStatsD replay interrupted.".to_string())?;
+                output.write_status("DogStatsD replay interrupted.")?;
             } else {
-                report_status(output, "DogStatsD replay completed.".to_string())?;
+                output.write_status("DogStatsD replay completed.")?;
             }
             Ok(())
         }
@@ -455,17 +449,6 @@ fn dogstatsd_replay_target(listeners: &Listeners) -> Result<ReplayTarget, Generi
             .expect("named pipe address should produce a named pipe path");
         Ok(ReplayTarget::NamedPipe(pipe_path))
     }
-}
-
-async fn load_replay_capture(
-    replay_file_path: &Path, cancellation: &CancellationToken,
-) -> Result<Option<TrafficCaptureReader>, GenericError> {
-    let replay_file_path = replay_file_path.to_path_buf();
-    run_cancellable_replay_load(cancellation, move || {
-        let file = open_replay_capture_file(&replay_file_path)?;
-        TrafficCaptureReader::from_file(file)
-    })
-    .await
 }
 
 fn open_replay_capture_file(path: &Path) -> Result<std::fs::File, GenericError> {
@@ -818,10 +801,6 @@ fn get_stylized_table() -> Table {
     table.load_style(ASCII_FULL_CONDENSED);
 
     table
-}
-
-fn report_status(output: &mut dyn CommandOutput, message: String) -> std::io::Result<()> {
-    output.write_status(&message)
 }
 
 fn output_lines<I>(output: &mut (dyn Write + Send), lines: I) -> std::io::Result<()>
@@ -1196,9 +1175,11 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
 
-        let reader = super::load_replay_capture(std::path::Path::new("does-not-exist"), &cancellation)
-            .await
-            .expect("cancelled replay capture load should not access the file");
+        let reader = super::run_cancellable_replay_load(&cancellation, || {
+            Err::<super::TrafficCaptureReader, _>(saluki_error::generic_error!("capture file should not be accessed"))
+        })
+        .await
+        .expect("cancelled replay capture load should not access the file");
 
         assert!(reader.is_none());
     }
