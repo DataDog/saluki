@@ -11,7 +11,6 @@ use agent_data_plane_config::{domains::dogstatsd::Listeners, SalukiConfiguration
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
-use prost_types::{value::Kind, Struct};
 use saluki_app::util::wait_for_shutdown_signal;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
@@ -31,9 +30,15 @@ use tokio::net::windows::named_pipe::ClientOptions;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
-use crate::cli::utils::{get_api_client, DataPlaneAPIClient};
+use crate::cli::{
+    remote::{
+        remote_command_argv, CommandOutput, DirectCommandOutput, RemoteArgumentType, RemoteCommandDescriptor,
+        RemoteParameterDescriptor,
+    },
+    utils::{get_api_client, DataPlaneAPIClient},
+};
 
 mod top;
 use self::top::{handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DumpContextsCommand, TopCommand};
@@ -184,9 +189,7 @@ pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: Do
             }
         })
     });
-    let mut output = DirectDogstatsdCommandOutput {
-        stdout: std::io::stdout(),
-    };
+    let mut output = DirectCommandOutput::new();
     let result = run_dogstatsd_command(local_config.local(), cmd, &mut output, &cancellation).await;
     if let Some(signal_task) = signal_task {
         signal_task.abort();
@@ -198,31 +201,8 @@ pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: Do
     }
 }
 
-pub(crate) trait DogstatsdCommandOutput: Send {
-    /// Writes a progress update for the command.
-    fn write_status(&mut self, message: &str) -> std::io::Result<()>;
-
-    /// Returns the writer for the command's report output.
-    fn report_writer(&mut self) -> &mut (dyn Write + Send);
-}
-
-struct DirectDogstatsdCommandOutput {
-    stdout: std::io::Stdout,
-}
-
-impl DogstatsdCommandOutput for DirectDogstatsdCommandOutput {
-    fn write_status(&mut self, message: &str) -> std::io::Result<()> {
-        info!("{message}");
-        Ok(())
-    }
-
-    fn report_writer(&mut self) -> &mut (dyn Write + Send) {
-        &mut self.stdout
-    }
-}
-
 pub(crate) async fn run_dogstatsd_command(
-    config: &SalukiConfiguration, cmd: DogstatsdCommand, output: &mut dyn DogstatsdCommandOutput,
+    config: &SalukiConfiguration, cmd: DogstatsdCommand, output: &mut dyn CommandOutput,
     cancellation: &CancellationToken,
 ) -> Result<(), GenericError> {
     if cancellation.is_cancelled() {
@@ -290,7 +270,7 @@ async fn run_cancellable_command(
 }
 
 async fn handle_dogstatsd_stats(
-    api_client: &mut DataPlaneAPIClient, cmd: StatsCommand, output: &mut dyn DogstatsdCommandOutput,
+    api_client: &mut DataPlaneAPIClient, cmd: StatsCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     report_status(
@@ -332,7 +312,7 @@ async fn handle_dogstatsd_stats(
 }
 
 async fn handle_dogstatsd_capture(
-    api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand, output: &mut dyn DogstatsdCommandOutput,
+    api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand, output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     report_status(output, "Starting a DogStatsD traffic capture session...".to_string())?;
 
@@ -350,8 +330,8 @@ async fn handle_dogstatsd_capture(
 }
 
 async fn handle_dogstatsd_replay(
-    api_client: &mut DataPlaneAPIClient, listeners: &Listeners, cmd: ReplayCommand,
-    output: &mut dyn DogstatsdCommandOutput, cancel: &CancellationToken,
+    api_client: &mut DataPlaneAPIClient, listeners: &Listeners, cmd: ReplayCommand, output: &mut dyn CommandOutput,
+    cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
     let target = dogstatsd_replay_target(listeners)?;
 
@@ -840,7 +820,7 @@ fn get_stylized_table() -> Table {
     table
 }
 
-fn report_status(output: &mut dyn DogstatsdCommandOutput, message: String) -> std::io::Result<()> {
+fn report_status(output: &mut dyn CommandOutput, message: String) -> std::io::Result<()> {
     output.write_status(&message)
 }
 
@@ -854,61 +834,40 @@ where
     output.flush()
 }
 
-pub(crate) struct RemoteDogstatsdCommandDescriptor {
-    pub(crate) name: &'static str,
-    pub(crate) helper: &'static str,
-    pub(crate) parameters: &'static [RemoteDogstatsdParameterDescriptor],
-}
-
-pub(crate) struct RemoteDogstatsdParameterDescriptor {
-    pub(crate) name: &'static str,
-    pub(crate) short_name: &'static str,
-    pub(crate) helper: &'static str,
-    pub(crate) argument_type: RemoteArgumentType,
-    pub(crate) required: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RemoteArgumentType {
-    String,
-    Bool,
-    Uint,
-}
-
-pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteDogstatsdCommandDescriptor] = &[
-    RemoteDogstatsdCommandDescriptor {
+pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteCommandDescriptor] = &[
+    RemoteCommandDescriptor {
         name: "stats",
         helper: "Print basic statistics about metrics received by the data plane.",
         parameters: &[
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "duration-secs",
                 short_name: "d",
                 helper: "Amount of time to collect statistics for, in seconds.",
                 argument_type: RemoteArgumentType::Uint,
                 required: true,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "mode",
                 short_name: "m",
                 helper: "Analysis mode: summary or cardinality.",
                 argument_type: RemoteArgumentType::String,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "sort-dir",
                 short_name: "s",
                 helper: "Sort direction: asc or desc.",
                 argument_type: RemoteArgumentType::String,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "filter",
                 short_name: "f",
                 helper: "Exclude metrics whose names do not contain this value.",
                 argument_type: RemoteArgumentType::String,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "limit",
                 short_name: "l",
                 helper: "Maximum number of metrics to display.",
@@ -917,25 +876,25 @@ pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteDogstatsdCommandDescriptor] 
             },
         ],
     },
-    RemoteDogstatsdCommandDescriptor {
+    RemoteCommandDescriptor {
         name: "capture",
         helper: "Start a DogStatsD traffic capture.",
         parameters: &[
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "duration",
                 short_name: "d",
                 helper: "Capture duration in Go duration syntax.",
                 argument_type: RemoteArgumentType::String,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "path",
                 short_name: "p",
                 helper: "Directory in which to write the capture.",
                 argument_type: RemoteArgumentType::String,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "compressed",
                 short_name: "z",
                 helper: "Whether to zstd-compress the capture file.",
@@ -944,18 +903,18 @@ pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteDogstatsdCommandDescriptor] 
             },
         ],
     },
-    RemoteDogstatsdCommandDescriptor {
+    RemoteCommandDescriptor {
         name: "replay",
         helper: "Replay DogStatsD traffic from a capture file.",
         parameters: &[
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "file",
                 short_name: "f",
                 helper: "Path to the .dog or .dog.zstd capture file to replay.",
                 argument_type: RemoteArgumentType::String,
                 required: true,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "loops",
                 short_name: "l",
                 helper: "Number of replay iterations; 0 repeats until cancelled.",
@@ -964,25 +923,25 @@ pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteDogstatsdCommandDescriptor] 
             },
         ],
     },
-    RemoteDogstatsdCommandDescriptor {
+    RemoteCommandDescriptor {
         name: "top",
         helper: "Display DogStatsD contexts with the highest cardinality.",
         parameters: &[
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "path",
                 short_name: "p",
                 helper: "Read a context dump artifact instead of requesting one.",
                 argument_type: RemoteArgumentType::String,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "num-metrics",
                 short_name: "m",
                 helper: "Maximum number of metrics to display.",
                 argument_type: RemoteArgumentType::Uint,
                 required: false,
             },
-            RemoteDogstatsdParameterDescriptor {
+            RemoteParameterDescriptor {
                 name: "num-tags",
                 short_name: "t",
                 helper: "Maximum number of tags to display per metric.",
@@ -991,7 +950,7 @@ pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteDogstatsdCommandDescriptor] 
             },
         ],
     },
-    RemoteDogstatsdCommandDescriptor {
+    RemoteCommandDescriptor {
         name: "dump-contexts",
         helper: "Write currently tracked DogStatsD contexts as JSON.",
         parameters: &[],
@@ -1000,49 +959,12 @@ pub(crate) const REMOTE_DOGSTATSD_COMMANDS: &[RemoteDogstatsdCommandDescriptor] 
 
 /// Parses a typed remote-command request into the same command representation used by the local CLI.
 pub(crate) fn parse_remote_dogstatsd_command(
-    command_path: &[String], arguments: &Struct,
+    command_path: &[String], arguments: &prost_types::Struct,
 ) -> Result<DogstatsdCommand, GenericError> {
-    let [command] = command_path else {
-        return Err(generic_error!("expected exactly one DogStatsD command path segment"));
-    };
-
-    let mut argv = vec![command.clone()];
-    for (name, value) in &arguments.fields {
-        let expected_type = remote_argument_type(command, name)
-            .ok_or_else(|| generic_error!("unexpected argument `{name}` for DogStatsD command `{command}`"))?;
-        argv.push(format!("--{name}"));
-        argv.push(remote_argument_value(name, value.kind.as_ref(), expected_type)?);
-    }
-
+    let argv = remote_command_argv(command_path, arguments, REMOTE_DOGSTATSD_COMMANDS, "DogStatsD")?;
     let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
-    let command = DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], &argv_refs)
-        .map_err(|error| generic_error!("invalid arguments for DogStatsD command `{command}`: {}", error.output))?;
-    Ok(command)
-}
-
-fn remote_argument_type(command: &str, name: &str) -> Option<RemoteArgumentType> {
-    REMOTE_DOGSTATSD_COMMANDS
-        .iter()
-        .find(|descriptor| descriptor.name == command)
-        .and_then(|descriptor| descriptor.parameters.iter().find(|parameter| parameter.name == name))
-        .map(|parameter| parameter.argument_type)
-}
-
-fn remote_argument_value(
-    name: &str, kind: Option<&Kind>, expected_type: RemoteArgumentType,
-) -> Result<String, GenericError> {
-    match (expected_type, kind) {
-        (RemoteArgumentType::String, Some(Kind::StringValue(value))) => Ok(value.clone()),
-        (RemoteArgumentType::Bool, Some(Kind::BoolValue(value))) => Ok(value.to_string()),
-        (RemoteArgumentType::Uint, Some(Kind::NumberValue(value)))
-            if value.is_finite() && *value >= 0.0 && value.fract() == 0.0 && *value <= u64::MAX as f64 =>
-        {
-            Ok(format!("{value:.0}"))
-        }
-        (RemoteArgumentType::String, _) => Err(generic_error!("argument `{name}` must be a string")),
-        (RemoteArgumentType::Bool, _) => Err(generic_error!("argument `{name}` must be a boolean")),
-        (RemoteArgumentType::Uint, _) => Err(generic_error!("argument `{name}` must be an unsigned integer")),
-    }
+    DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], &argv_refs)
+        .map_err(|error| generic_error!("invalid arguments for DogStatsD command: {}", error.output))
 }
 
 #[cfg(test)]
@@ -1077,6 +999,22 @@ mod tests {
     }
 
     #[test]
+    fn remote_command_descriptor_required_flags_match_argh() {
+        for descriptor in super::REMOTE_DOGSTATSD_COMMANDS {
+            let parsed =
+                parse_remote_dogstatsd_command(&[descriptor.name.to_string()], &prost_types::Struct::default());
+            let has_required_parameter = descriptor.parameters.iter().any(|parameter| parameter.required);
+
+            assert_eq!(
+                parsed.is_ok(),
+                !has_required_parameter,
+                "descriptor required flags must match the Argh parser for `{}`",
+                descriptor.name
+            );
+        }
+    }
+
+    #[test]
     fn remote_command_parser_validates_argument_types_from_the_descriptor() {
         let arguments = prost_types::Struct {
             fields: [(
@@ -1092,6 +1030,62 @@ mod tests {
             .expect_err("stats duration must be an unsigned integer");
 
         assert!(error.to_string().contains("unsigned integer"));
+    }
+
+    #[test]
+    fn remote_command_parser_accepts_the_supported_descriptor_types() {
+        let arguments = prost_types::Struct {
+            fields: [
+                (
+                    "duration".to_string(),
+                    Value {
+                        kind: Some(prost_types::value::Kind::StringValue("30s".to_string())),
+                    },
+                ),
+                (
+                    "path".to_string(),
+                    Value {
+                        kind: Some(prost_types::value::Kind::StringValue("/tmp/capture".to_string())),
+                    },
+                ),
+                (
+                    "compressed".to_string(),
+                    Value {
+                        kind: Some(prost_types::value::Kind::BoolValue(false)),
+                    },
+                ),
+            ]
+            .into(),
+        };
+
+        let command = parse_remote_dogstatsd_command(&["capture".to_string()], &arguments)
+            .expect("descriptor-supported argument types should parse through Argh");
+        let DogstatsdSubcommand::Capture(capture) = command.subcommand else {
+            panic!("expected capture command");
+        };
+
+        assert_eq!(capture.capture_duration.as_duration(), Duration::from_secs(30));
+        assert_eq!(capture.capture_path.as_deref(), Some("/tmp/capture"));
+        assert!(!capture.compressed);
+
+        let stats = parse_remote_dogstatsd_command(
+            &["stats".to_string()],
+            &prost_types::Struct {
+                fields: [(
+                    "duration-secs".to_string(),
+                    Value {
+                        kind: Some(prost_types::value::Kind::NumberValue(30.0)),
+                    },
+                )]
+                .into(),
+            },
+        )
+        .expect("unsigned-integer descriptor arguments should parse through Argh");
+        let DogstatsdSubcommand::Stats(stats) = stats.subcommand else {
+            panic!("expected stats command");
+        };
+
+        assert_eq!(stats.collection_duration_secs, 30);
     }
 
     #[test]
