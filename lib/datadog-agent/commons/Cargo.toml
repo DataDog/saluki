@@ -21,7 +21,7 @@ tonic = { workspace = true, features = ["transport"] }
 tracing = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-registry = "0.6.1"
+windows-registry = "0.100.0"
 
 [dev-dependencies]
 rcgen = { workspace = true, features = ["crypto", "pem"] }
