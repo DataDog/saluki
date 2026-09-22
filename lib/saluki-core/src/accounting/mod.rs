@@ -151,16 +151,10 @@ impl UsageExpr {
     fn evaluate(&self) -> usize {
         match self {
             Self::Config { value, .. } | Self::StructSize { value, .. } | Self::Constant { value, .. } => *value,
-            // The identities match `Iterator::product` and `Iterator::sum` for an empty expression.
             Self::Product { values } => values.iter().map(UsageExpr::evaluate).fold(1, usize::saturating_mul),
-            Self::Sum { values } => saturating_sum(values),
+            Self::Sum { values } => values.iter().map(UsageExpr::evaluate).fold(0, usize::saturating_add),
         }
     }
-}
-
-/// Evaluates every expression and adds the results, saturating at [`usize::MAX`].
-fn saturating_sum(exprs: &[UsageExpr]) -> usize {
-    exprs.iter().map(UsageExpr::evaluate).fold(0, usize::saturating_add)
 }
 
 /// Memory bounds for a component.
@@ -173,31 +167,24 @@ pub struct ComponentBounds {
 
 impl ComponentBounds {
     /// Gets the total minimum required bytes for this component and all subcomponents.
-    ///
-    /// Saturates at [`usize::MAX`] rather than overflowing. See [`UsageExpr::evaluate`].
     pub fn total_minimum_required_bytes(&self) -> usize {
-        saturating_sum(&self.self_minimum_required_bytes).saturating_add(
-            self.subcomponents
-                .values()
-                .map(|cb| cb.total_minimum_required_bytes())
-                .fold(0, usize::saturating_add),
-        )
+        self.self_minimum_required_bytes
+            .iter()
+            .map(UsageExpr::evaluate)
+            .chain(self.subcomponents.values().map(|cb| cb.total_minimum_required_bytes()))
+            .fold(0, usize::saturating_add)
     }
 
     /// Gets the total firm limit bytes for this component and all subcomponents.
     ///
     /// The firm limit includes the minimum required bytes.
-    ///
-    /// Saturates at [`usize::MAX`] rather than overflowing. See [`UsageExpr::evaluate`].
     pub fn total_firm_limit_bytes(&self) -> usize {
-        saturating_sum(&self.self_minimum_required_bytes)
-            .saturating_add(saturating_sum(&self.self_firm_limit_bytes))
-            .saturating_add(
-                self.subcomponents
-                    .values()
-                    .map(|cb| cb.total_firm_limit_bytes())
-                    .fold(0, usize::saturating_add),
-            )
+        self.self_minimum_required_bytes
+            .iter()
+            .chain(self.self_firm_limit_bytes.iter())
+            .map(UsageExpr::evaluate)
+            .chain(self.subcomponents.values().map(|cb| cb.total_firm_limit_bytes()))
+            .fold(0, usize::saturating_add)
     }
 
     /// Returns an iterator of all subcomponents within this component.
