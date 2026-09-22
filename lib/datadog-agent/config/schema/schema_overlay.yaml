@@ -196,6 +196,20 @@ inventory:
       additional_attributes:
         config_registry_filename: forwarder.rs
 
+  apm_config.analyzed_rate_by_service:
+    support: full
+    pipelines: [traces]
+    description: "Legacy per-service event extraction rates"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.analyzed_spans:
+    support: full
+    pipelines: [traces]
+    description: "Per service|operation APM event extraction rates"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.compute_stats_by_span_kind:
     support: full
     pipelines: [traces]
@@ -252,6 +266,13 @@ inventory:
     support: full
     pipelines: [traces]
     description: "Priority sampler service-signature catalog cap"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.max_events_per_second:
+    support: full
+    pipelines: [traces]
+    description: "Upper bound on sampled APM events per second"
     test_support:
       used_by: [NO_SMOKE]
 
@@ -3977,8 +3998,6 @@ excluded:
   anomaly_detection.storage.point_retention: "2026-09-08 ADP does not currently have an anomaly-detection component; anomaly detection currently runs in the Core Agent."
   apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
-  apm_config.analyzed_rate_by_service: "ignored in initial audit 2026-04-23"
-  apm_config.analyzed_spans: "ignored in initial audit 2026-04-23"
   apm_config.apm_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.apm_non_local_traffic: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
@@ -4023,7 +4042,6 @@ excluded:
   apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
   apm_config.max_connections: "ignored in initial audit 2026-04-23"
   apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
-  apm_config.max_events_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_memory: "ignored in initial audit 2026-04-23"
   apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"

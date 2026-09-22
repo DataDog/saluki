@@ -139,6 +139,36 @@ where
         .collect()
 }
 
+/// Deserializes a number map, coercing each value as the Agent does.
+///
+/// # Errors
+///
+/// Returns an error when a value cannot be cast to a number.
+pub(crate) fn deserialize_number_map<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|(key, value)| cast_to_f64(&value).map(|value| (key, value)).map_err(de::Error::custom))
+        .collect()
+}
+
+/// Renders a JSON value as a `number` leaf (`cast.ToFloat64E`).
+///
+/// A witness method that receives a leaf as raw JSON, rather than as a generated field, renders
+/// it through this so that `1` and `"1.5"` read as the Agent reads them (`1.0` and `1.5`) instead
+/// of rejecting their JSON spelling.
+///
+/// # Errors
+///
+/// Returns an error for a value the Agent cannot cast to a number: a non-numeric string or a
+/// compound value.
+pub fn cast_to_f64(value: &::serde_json::Value) -> Result<f64, String> {
+    value.deserialize_any(F64Visitor).map_err(|e| e.to_string())
+}
+
 /// Renders a JSON value as a `string` leaf (`cast.ToStringE`).
 ///
 /// A witness method that receives a leaf as raw JSON, rather than as a generated field, renders it
@@ -393,6 +423,9 @@ mod tests {
     #[derive(Deserialize)]
     struct StringMap(#[serde(deserialize_with = "deserialize_string_map")] HashMap<String, String>);
 
+    #[derive(Deserialize)]
+    struct NumberMap(#[serde(deserialize_with = "deserialize_number_map")] HashMap<String, f64>);
+
     fn as_bool(value: Value) -> Result<bool, String> {
         serde_json::from_value::<Bool>(value)
             .map(|b| b.0)
@@ -538,6 +571,23 @@ mod tests {
         assert_eq!(values["null"], "");
         assert_eq!(values["string"], "datadog_only");
         assert!(serde_json::from_value::<StringMap>(json!({ "compound": [] })).is_err());
+    }
+
+    #[test]
+    fn number_map_coerces_numeric_values() {
+        let values = serde_json::from_value::<NumberMap>(json!({
+            "integer": 3,
+            "float": 0.8,
+            "string": "0.25"
+        }))
+        .expect("numeric values deserialize")
+        .0;
+
+        assert_eq!(values["integer"], 3.0);
+        assert_eq!(values["float"], 0.8);
+        assert_eq!(values["string"], 0.25);
+        assert!(serde_json::from_value::<NumberMap>(json!({ "compound": [] })).is_err());
+        assert!(serde_json::from_value::<NumberMap>(json!({ "text": "datadog_only" })).is_err());
     }
 
     #[test]
