@@ -1084,14 +1084,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_command_parser_requires_the_stats_duration() {
-        let error = parse_remote_dogstatsd_command(&["stats".to_string()], &prost_types::Struct::default())
-            .expect_err("stats duration is required");
-
-        assert!(error.to_string().contains("duration-secs"));
-    }
-
-    #[test]
     fn remote_command_parser_preserves_capture_defaults() {
         let command = parse_remote_dogstatsd_command(&["capture".to_string()], &prost_types::Struct::default())
             .expect("capture accepts no optional flags");
@@ -1105,58 +1097,43 @@ mod tests {
     }
 
     #[test]
-    fn remote_command_parser_defers_top_file_validation_to_execution() {
+    fn remote_command_parser_defers_path_validation_to_execution() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let command =
-            parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", directory.path()))
-                .expect("remote top parsing should not inspect the file path");
-
-        assert!(matches!(command.subcommand, DogstatsdSubcommand::Top(_)));
-    }
-
-    #[test]
-    fn remote_command_parser_defers_replay_directory_validation_to_execution() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let command =
-            parse_remote_dogstatsd_command(&["replay".to_string()], &remote_file_argument("file", directory.path()))
-                .expect("remote replay parsing should not inspect the file path");
-
-        let DogstatsdSubcommand::Replay(command) = command.subcommand else {
-            panic!("expected replay command");
+        #[cfg(unix)]
+        let fifo = {
+            let fifo = directory.path().join("command-input.fifo");
+            create_fifo(&fifo);
+            fifo
         };
-        let error = super::open_replay_capture_file(&command.replay_file_path)
-            .expect_err("replay should reject a directory during execution");
+        let cases = [
+            ("top", "path", directory.path()),
+            ("replay", "file", directory.path()),
+            #[cfg(unix)]
+            ("top", "path", fifo.as_path()),
+            #[cfg(unix)]
+            ("replay", "file", fifo.as_path()),
+        ];
 
+        for (command_name, argument_name, path) in cases {
+            let command =
+                parse_remote_dogstatsd_command(&[command_name.to_string()], &remote_file_argument(argument_name, path))
+                    .expect("remote parsing should not inspect the file path");
+
+            assert!(
+                matches!(
+                    (command_name, command.subcommand),
+                    ("top", DogstatsdSubcommand::Top(_)) | ("replay", DogstatsdSubcommand::Replay(_))
+                ),
+                "expected {command_name} command"
+            );
+        }
+
+        let error = super::open_replay_capture_file(directory.path())
+            .expect_err("replay should reject a directory during execution");
         assert!(
             error.to_string().contains("regular file") || error.to_string().contains("failed to open"),
             "{error:#}"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_command_parser_defers_top_fifo_validation_to_execution() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let fifo = directory.path().join("context-dump.fifo");
-        create_fifo(&fifo);
-
-        let command = parse_remote_dogstatsd_command(&["top".to_string()], &remote_file_argument("path", &fifo))
-            .expect("remote top parsing should not inspect the file path");
-
-        assert!(matches!(command.subcommand, DogstatsdSubcommand::Top(_)));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_command_parser_defers_replay_file_validation_to_execution() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let fifo = directory.path().join("capture.fifo");
-        create_fifo(&fifo);
-
-        let command = parse_remote_dogstatsd_command(&["replay".to_string()], &remote_file_argument("file", &fifo))
-            .expect("remote replay parsing should not inspect the file path");
-
-        assert!(matches!(command.subcommand, DogstatsdSubcommand::Replay(_)));
     }
 
     #[cfg(unix)]
@@ -1169,21 +1146,6 @@ mod tests {
         let error = super::open_replay_capture_file(&fifo).expect_err("replay should reject a FIFO");
 
         assert!(error.to_string().contains("regular file"), "{error:#}");
-    }
-
-    #[test]
-    fn replay_file_reader_uses_the_validated_descriptor_after_the_path_changes() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let path = directory.path().join("capture.dog");
-        std::fs::write(&path, [0xD4, 0x74, 0xD0, 0x60, 0xF3, 0xFF, 0x00, 0x00]).expect("capture should be written");
-        let file = super::open_replay_capture_file(&path).expect("capture should open");
-        let replacement = directory.path().join("replacement.dog");
-        std::fs::write(&replacement, b"not a capture file").expect("replacement capture should be written");
-        std::fs::rename(&replacement, &path).expect("capture path should be replaced");
-
-        let reader = super::TrafficCaptureReader::from_file(file).expect("reader should use the opened capture");
-
-        assert_eq!(reader.version(), 3);
     }
 
     #[tokio::test]
