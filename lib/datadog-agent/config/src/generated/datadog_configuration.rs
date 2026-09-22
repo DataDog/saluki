@@ -757,6 +757,13 @@ impl Default for AgentIpc {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfig {
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_number_map")]
+    pub analyzed_rate_by_service: HashMap<String, f64>,
+
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub analyzed_spans: ::serde_json::Map<String, ::serde_json::Value>,
+
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub compute_stats_by_span_kind: bool,
@@ -783,6 +790,12 @@ pub struct ApmConfig {
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_catalog_entries: i64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_apm_config_max_events_per_second"
+    )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
+    pub max_events_per_second: f64,
 
     #[serde(
         default = "defaults::datadog_configuration_apm_config_max_traces_per_second"
@@ -818,6 +831,8 @@ pub struct ApmConfig {
 impl Default for ApmConfig {
     fn default() -> Self {
         Self {
+            analyzed_rate_by_service: Default::default(),
+            analyzed_spans: Default::default(),
             compute_stats_by_span_kind: defaults::default_bool::<true>(),
             enable_rare_sampler: Default::default(),
             error_tracking_standalone: Default::default(),
@@ -825,6 +840,7 @@ impl Default for ApmConfig {
             extra_sample_rate: defaults::datadog_configuration_apm_config_extra_sample_rate(),
             features: Default::default(),
             max_catalog_entries: Default::default(),
+            max_events_per_second: defaults::datadog_configuration_apm_config_max_events_per_second(),
             max_traces_per_second: defaults::datadog_configuration_apm_config_max_traces_per_second(),
             obfuscation: Default::default(),
             peer_tags: Default::default(),
@@ -2238,6 +2254,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_apm_config_extra_sample_rate() -> f64 {
         0_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_max_events_per_second() -> f64 {
+        200_f64
     }
     pub(super) fn datadog_configuration_apm_config_max_traces_per_second() -> f64 {
         10_f64
