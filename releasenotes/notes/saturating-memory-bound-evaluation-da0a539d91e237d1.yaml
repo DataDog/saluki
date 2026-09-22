@@ -1,6 +1,4 @@
 fixes:
   - |
     Fixed a crash at startup when configured values make a component's memory bound too large to
-    represent. Optimized release builds previously wrapped to a small bound and started with a memory
-    limit far below what the topology could allocate; the bound now saturates and memory bounds
-    verification rejects it.
+    represent rather than silently wrapping such that the bounds weren't respected.
