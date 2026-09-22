@@ -110,6 +110,9 @@ const fn default_replay_loops() -> u32 {
     DEFAULT_REPLAY_LOOPS
 }
 
+/// Number of replay packets sent before yielding to the control runtime.
+const REPLAY_RUNTIME_YIELD_INTERVAL: u64 = 128;
+
 /// Replays DogStatsD traffic from a capture file.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "replay")]
@@ -366,15 +369,16 @@ async fn handle_dogstatsd_replay(
     write_non_linux_replay_origin_tag_warning(output).await?;
 
     let replay_file_path = cmd.replay_file_path.clone();
-    let Some(mut reader) = run_cancellable_replay_load(cancel, move || {
+    let Some((mut reader, state)) = run_cancellable_replay_load(cancel, move || {
         let file = open_replay_capture_file(&replay_file_path)?;
-        TrafficCaptureReader::from_file(file)
+        let reader = TrafficCaptureReader::from_file(file)?;
+        let state = reader.read_state()?;
+        Ok((reader, state))
     })
     .await?
     else {
         return Ok(());
     };
-    let state = reader.read_state()?;
     let Some(session_id) =
         start_replay_session(cancel, api_client.dogstatsd_replay_start_session(state.as_ref())).await?
     else {
@@ -701,6 +705,9 @@ async fn replay_one_iteration(
 
         sender.send(&msg.payload, msg.pid).await?;
         packets_sent += 1;
+        if packets_sent.is_multiple_of(REPLAY_RUNTIME_YIELD_INTERVAL) {
+            tokio::task::yield_now().await;
+        }
     }
 }
 
