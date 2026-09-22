@@ -69,6 +69,17 @@ test-integration-windows-amd64:
   extends: .windows-amd64-test-job
   stage: e2e
   needs: []
+  # Matches the retry policy on the linux/darwin integration jobs (see `test-integration` and
+  # `.test-integration-macos-base` in .gitlab/e2e.yml). This is a last-resort net stacked under
+  # the in-harness mitigations, not the primary fix: a retry re-runs the whole job, including the
+  # cargo build and a possible cold pull of the multi-GB build image, so it is expensive and it
+  # only helps for failures that don't reproduce.
+  retry: 2
+  # No explicit timeout previously, so a job that wedged after a failed `docker pull` fell back to
+  # the instance default and held a scarce Windows runner for nearly two hours (job 2056945739).
+  # 45m clears the worst legitimate run -- cold build image pull (~13m) plus cargo build (~8m)
+  # plus the Agent base image pull and the test phase -- with margin to spare.
+  timeout: 45m
   cache:
     key: windows-amd64-integration-cargo
     paths:
