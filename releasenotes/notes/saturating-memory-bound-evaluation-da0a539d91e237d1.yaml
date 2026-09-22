@@ -1,0 +1,9 @@
+fixes:
+  - |
+    Component memory bound calculations now saturate instead of overflowing when a configured value is
+    large enough that the resulting bound cannot be represented. Previously such a configuration either
+    aborted startup or, in builds without overflow checks, wrapped to a small bound that passed memory
+    bounds verification, letting the process start with a memory limit that did not reflect what the
+    topology could actually allocate. A bound too large to represent is now reported as the largest
+    representable one, which no memory grant satisfies, so verification rejects it with the usual
+    ``firm limit exceeds available`` error.
