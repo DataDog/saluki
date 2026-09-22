@@ -182,11 +182,17 @@ impl MemoryBounds for TraceSamplerConfiguration {
 
         // Decision keys span the same (service, env) universe as the catalog, across a handful
         // of samplers. The window resets every ten seconds, so steady-state growth follows active
-        // combinations; within a window, cardinality is proportional to traffic, matching the
-        // reference sampler's own windowed map.
+        // combinations; within a window, growth is capped at the telemetry's decision-key limit,
+        // with excess combinations rolled into one bucket per sampler.
         builder
             .minimum()
             .with_map::<telemetry::DecisionKey, telemetry::DecisionCounts>("sampler decision window", catalog_capacity);
+
+        // The decision-metric handle cache spans the same key universe and holds only recently
+        // active keys, so its steady-state size follows the window map's.
+        builder
+            .minimum()
+            .with_map::<telemetry::DecisionKey, telemetry::TrackedHandles>("sampler metric handles", catalog_capacity);
     }
 }
 
