@@ -176,6 +176,11 @@ struct StatsResponse<'a> {
     stats: Vec<MetricSummary<'a>>,
 }
 
+struct StatsAnalysis {
+    progress: Vec<String>,
+    report_lines: Vec<String>,
+}
+
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: DogstatsdCommand) {
     let cancellation = CancellationToken::new();
@@ -211,12 +216,9 @@ pub(crate) async fn run_dogstatsd_command(
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(command) => {
             let mut api_client = get_api_client(config).await?;
-            run_cancellable_command(cancellation, async {
-                handle_dogstatsd_stats(&mut api_client, command, output)
-                    .await
-                    .error_context("Failed to run stats subcommand")
-            })
-            .await
+            handle_dogstatsd_stats(&mut api_client, command, output, cancellation)
+                .await
+                .error_context("Failed to run stats subcommand")
         }
         DogstatsdSubcommand::Capture(command) => {
             let mut api_client = get_api_client(config).await?;
@@ -257,18 +259,26 @@ pub(crate) async fn run_dogstatsd_command(
     }
 }
 
+async fn run_cancellable<T>(
+    cancellation: &CancellationToken, command: impl Future<Output = Result<T, GenericError>>,
+) -> Result<Option<T>, GenericError> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Ok(None),
+        result = command => result.map(Some),
+    }
+}
+
 async fn run_cancellable_command(
     cancellation: &CancellationToken, command: impl Future<Output = Result<(), GenericError>>,
 ) -> Result<(), GenericError> {
-    tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => Ok(()),
-        result = command => result,
-    }
+    let _ = run_cancellable(cancellation, command).await?;
+    Ok(())
 }
 
 async fn handle_dogstatsd_stats(
     api_client: &mut DataPlaneAPIClient, cmd: StatsCommand, output: &mut dyn CommandOutput,
+    cancellation: &CancellationToken,
 ) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     output
@@ -278,34 +288,46 @@ async fn handle_dogstatsd_stats(
         ))
         .await?;
 
-    let response_body = api_client.dogstatsd_stats(cmd.collection_duration_secs).await?;
+    let Some(response_body) =
+        run_cancellable(cancellation, api_client.dogstatsd_stats(cmd.collection_duration_secs)).await?
+    else {
+        return Ok(());
+    };
+    let analysis_task = tokio::task::spawn_blocking(move || analyze_dogstatsd_stats(cmd, response_body));
+    let Some(analysis) = run_cancellable_blocking(cancellation, analysis_task, "DogStatsD statistics analysis").await?
+    else {
+        return Ok(());
+    };
+
+    for progress in analysis.progress {
+        output.write_progress(&progress).await?;
+    }
+    output_lines(output, analysis.report_lines).await?;
+
+    Ok(())
+}
+
+fn analyze_dogstatsd_stats(cmd: StatsCommand, response_body: String) -> Result<StatsAnalysis, GenericError> {
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
-
-    output
-        .write_progress(&format!("Collected {} metric(s).", response.stats.len()))
-        .await?;
+    let mut progress = vec![format!("Collected {} metric(s).", response.stats.len())];
 
     // Filter out any non-matching metrics if a filter was given.
     if let Some(filter) = cmd.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
-        output
-            .write_progress(&format!("{} metric(s) remain after filtering.", response.stats.len()))
-            .await?;
+        progress.push(format!("{} metric(s) remain after filtering.", response.stats.len()));
     }
 
     if let Some(limit) = cmd.limit {
-        output
-            .write_progress(&format!("Output will be limited to the top {} metric(s).", limit))
-            .await?;
+        progress.push(format!("Output will be limited to the top {} metric(s).", limit));
     }
 
-    match cmd.analysis_mode {
-        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response, output).await?,
-        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response, output).await?,
-    }
+    let report_lines = match cmd.analysis_mode {
+        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response),
+        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response),
+    };
 
-    Ok(())
+    Ok(StatsAnalysis { progress, report_lines })
 }
 
 async fn handle_dogstatsd_capture(
@@ -690,9 +712,7 @@ fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: Times
     }
 }
 
-async fn handle_stats_summary_analysis(
-    cmd: &StatsCommand, mut response: StatsResponse<'_>, output: &mut dyn CommandOutput,
-) -> std::io::Result<()> {
+fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse<'_>) -> Vec<String> {
     let mut table = get_stylized_table();
     table.set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
 
@@ -725,12 +745,10 @@ async fn handle_stats_summary_analysis(
         ]));
     }
 
-    output_lines(output, table.lines()).await
+    table.lines().collect()
 }
 
-async fn handle_stats_cardinality_analysis<'a>(
-    cmd: &StatsCommand, response: StatsResponse<'a>, output: &mut dyn CommandOutput,
-) -> std::io::Result<()> {
+fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: StatsResponse<'a>) -> Vec<String> {
     let mut table = get_stylized_table();
     table.set_header(["Metric", "Unique Contexts", "Highest Cardinality Tags (top 5)"]);
 
@@ -805,7 +823,7 @@ async fn handle_stats_cardinality_analysis<'a>(
         ]));
     }
 
-    output_lines(output, table.lines()).await
+    table.lines().collect()
 }
 
 fn get_stylized_table() -> Table {
@@ -973,9 +991,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
-        dogstatsd_socket_path, parse_remote_dogstatsd_command, DogstatsdSubcommand, GenericError, ReplayTarget,
-        TimestampResolution,
+        analyze_dogstatsd_stats, compute_target_offset, default_capture_duration, default_replay_loops,
+        dogstatsd_replay_target, dogstatsd_socket_path, parse_remote_dogstatsd_command, AnalysisMode,
+        DogstatsdSubcommand, GenericError, ReplayTarget, SortDirection, StatsCommand, TimestampResolution,
     };
     #[cfg(not(target_os = "linux"))]
     use crate::cli::remote::CommandOutput;
@@ -1231,6 +1249,33 @@ mod tests {
         replay_result.expect("cancelled replay should not fail");
         finish_result.expect("cancelled replay session should finish");
         assert!(session_finished.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stats_analysis_builds_the_report_before_streaming() {
+        let analysis = analyze_dogstatsd_stats(
+            StatsCommand {
+                collection_duration_secs: 1,
+                analysis_mode: AnalysisMode::Summary,
+                sort_direction: Some(SortDirection::Ascending),
+                filter: Some("kept".to_string()),
+                limit: Some(1),
+            },
+            r#"{"stats":[{"name":"kept.metric","tags":["env:test"],"count":2,"last_seen":0},{"name":"discarded.metric","tags":[],"count":1,"last_seen":0}]}"#.to_string(),
+        )
+        .expect("statistics response should analyze");
+
+        assert_eq!(
+            analysis.progress,
+            [
+                "Collected 2 metric(s).",
+                "1 metric(s) remain after filtering.",
+                "Output will be limited to the top 1 metric(s).",
+            ]
+        );
+        let report = analysis.report_lines.join("\n");
+        assert!(report.contains("kept.metric"));
+        assert!(!report.contains("discarded.metric"));
     }
 
     #[test]
