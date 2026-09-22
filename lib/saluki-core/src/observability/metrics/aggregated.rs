@@ -310,7 +310,8 @@ static SHARED_METRICS_STATE: OnceLock<Reflector<AggregatedMetricsProcessor>> = O
 ///
 /// Must be called after [`initialize_metrics`][super::initialize_metrics] has installed the global recorder, and
 /// before any caller reaches for [`get_shared_metrics_state`]. The returned worker must be added to a
-/// [`Supervisor`][crate::runtime::Supervisor]; until it runs, the shared state stays empty.
+/// [`Supervisor`][crate::runtime::Supervisor] -- as a transient child, per [`ReflectorWorker`] -- and until it runs,
+/// the shared state stays empty.
 ///
 /// The subscription to the internal metrics registry is taken here rather than when the worker starts, so flushes
 /// that land between initialization and the supervisor starting are still observed.

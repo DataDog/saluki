@@ -94,14 +94,6 @@ pub struct Reflector<P: Processor> {
     store: Store<P>,
 }
 
-impl<P: Processor> Clone for Reflector<P> {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-        }
-    }
-}
-
 impl<P: Processor> Reflector<P> {
     /// Creates a new reflector with the given data source and processor.
     ///
@@ -112,7 +104,8 @@ impl<P: Processor> Reflector<P> {
     ///
     /// Returns the reflector alongside a [`ReflectorWorker`] that consumes the data source and feeds the processed
     /// items into the shared state. The reflector is usable immediately, but reports only the initial state until
-    /// the worker is added to a [`Supervisor`][crate::runtime::Supervisor] and starts running.
+    /// the worker is added to a [`Supervisor`][crate::runtime::Supervisor] and starts running. Register the worker
+    /// as transient, for the reasons given on [`ReflectorWorker`].
     ///
     /// `Reflector` is cheaply cloneable and can either be cloned for each caller or shared between them (for example, via
     /// `Arc<T>`).
@@ -132,6 +125,14 @@ impl<P: Processor> Reflector<P> {
     }
 }
 
+impl<P: Processor> Clone for Reflector<P> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+        }
+    }
+}
+
 /// A worker that drives a [`Reflector`]'s data source.
 ///
 /// Consumes items from the source and feeds them through the processor into the reflector's shared state. Until this
@@ -140,6 +141,13 @@ impl<P: Processor> Reflector<P> {
 /// The source is retained across restarts rather than being rebuilt, so a worker that fails and is restarted resumes
 /// from wherever the source left off. That matters for a source backed by a subscription: rebuilding it would drop
 /// whatever accumulated while the worker was down.
+///
+/// Register this worker as [`transient`][crate::runtime::ChildBuilder::transient] rather than with the permanent
+/// default of [`Supervisor::add_worker`][crate::runtime::Supervisor::add_worker]. An exhausted source is terminal
+/// here: the worker returns normally once the source ends, and the retained source means a restart would only feed
+/// it the same dead source, exit immediately again, and burn through the supervisor's restart budget. Transient
+/// leaves it stopped instead, which is the intended outcome. A source that cannot end -- a subscription held open
+/// for the life of the process, say -- never reaches this case, but nothing about the type guarantees that.
 pub struct ReflectorWorker<P: Processor, S> {
     store: Store<P>,
     source: Arc<Mutex<S>>,

@@ -7,7 +7,7 @@ use metrics::{gauge, Gauge, Level};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
     observability::metrics::initialize_shared_metrics_state,
-    runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture},
+    runtime::{self, InitializationError, Supervisable, Supervisor, SupervisorFuture},
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metrics::static_metrics;
@@ -54,7 +54,10 @@ pub(crate) async fn initialize_metrics(
     supervisor.add_worker(flusher);
     supervisor.add_worker(runtime);
     supervisor.add_worker(override_processor);
-    supervisor.add_worker(reflector);
+
+    // Transient rather than permanent: the reflector worker treats an exhausted source as terminal and returns
+    // normally, so restarting it would only hand it the same dead source again.
+    supervisor.add_worker(runtime::supervisable(reflector).transient().build());
 
     Ok(supervisor)
 }
