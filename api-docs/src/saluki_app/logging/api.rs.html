@@ -196,7 +196,7 @@
 <a href=#196 id=196 data-nosnippet>196</a><span class="attr">#[async_trait]
 <a href=#197 id=197 data-nosnippet>197</a></span><span class="kw">impl </span>Supervisable <span class="kw">for </span>LoggingOverrideWorker {
 <a href=#198 id=198 data-nosnippet>198</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#199 id=199 data-nosnippet>199</a>        <span class="string">"dynamic-logging-override-processor"
+<a href=#199 id=199 data-nosnippet>199</a>        <span class="string">"level-override-processor"
 <a href=#200 id=200 data-nosnippet>200</a>    </span>}
 <a href=#201 id=201 data-nosnippet>201</a>
 <a href=#202 id=202 data-nosnippet>202</a>    <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {

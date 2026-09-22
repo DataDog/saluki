@@ -137,7 +137,7 @@
 <a href=#137 id=137 data-nosnippet>137</a><span class="attr">#[async_trait]
 <a href=#138 id=138 data-nosnippet>138</a></span><span class="kw">impl </span>Supervisable <span class="kw">for </span>MetricsOverrideWorker {
 <a href=#139 id=139 data-nosnippet>139</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#140 id=140 data-nosnippet>140</a>        <span class="string">"dynamic-metrics-override-processor"
+<a href=#140 id=140 data-nosnippet>140</a>        <span class="string">"level-override-processor"
 <a href=#141 id=141 data-nosnippet>141</a>    </span>}
 <a href=#142 id=142 data-nosnippet>142</a>
 <a href=#143 id=143 data-nosnippet>143</a>    <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {

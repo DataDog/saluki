@@ -110,30 +110,26 @@
 <a href=#110 id=110 data-nosnippet>110</a>    </span><span class="kw">pub async fn </span>bootstrap(<span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Bootstrap, GenericError&gt; {
 <a href=#111 id=111 data-nosnippet>111</a>        <span class="comment">// Initialize the logging subsystem first, since we want to make it possible to get any logs from the rest of
 <a href=#112 id=112 data-nosnippet>112</a>        // the bootstrap process.
-<a href=#113 id=113 data-nosnippet>113</a>        </span><span class="kw">let </span>(logging_guard, logging_override) = initialize_logging(<span class="self">self</span>.logging_config)
+<a href=#113 id=113 data-nosnippet>113</a>        </span><span class="kw">let </span>(logging_guard, logging_supervisor) = initialize_logging(<span class="self">self</span>.logging_config)
 <a href=#114 id=114 data-nosnippet>114</a>            .<span class="kw">await
 <a href=#115 id=115 data-nosnippet>115</a>            </span>.error_context(<span class="string">"Failed to initialize logging subsystem."</span>)<span class="question-mark">?</span>;
 <a href=#116 id=116 data-nosnippet>116</a>
 <a href=#117 id=117 data-nosnippet>117</a>        <span class="comment">// Initialize everything else.
 <a href=#118 id=118 data-nosnippet>118</a>        </span>initialize_tls().error_context(<span class="string">"Failed to initialize TLS subsystem."</span>)<span class="question-mark">?</span>;
-<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span>metrics_workers = initialize_metrics(<span class="self">self</span>.metrics_prefix, <span class="self">self</span>.metrics_default_level)
+<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span>metrics_supervisor = initialize_metrics(<span class="self">self</span>.metrics_prefix, <span class="self">self</span>.metrics_default_level)
 <a href=#120 id=120 data-nosnippet>120</a>            .<span class="kw">await
 <a href=#121 id=121 data-nosnippet>121</a>            </span>.error_context(<span class="string">"Failed to initialize metrics subsystem."</span>)<span class="question-mark">?</span>;
 <a href=#122 id=122 data-nosnippet>122</a>
-<a href=#123 id=123 data-nosnippet>123</a>        <span class="comment">// Build the supervisor for all bootstrap-spawned background workers. The default ambient runtime mode is
-<a href=#124 id=124 data-nosnippet>124</a>        // appropriate here: these are lightweight tasks that share the parent runtime, and the runtime metrics
-<a href=#125 id=125 data-nosnippet>125</a>        // worker has already eagerly captured the parent's `Handle` so it always describes the right runtime.
-<a href=#126 id=126 data-nosnippet>126</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>supervisor =
-<a href=#127 id=127 data-nosnippet>127</a>            Supervisor::new(<span class="string">"app-bootstrap"</span>).error_context(<span class="string">"Failed to construct app bootstrap supervisor."</span>)<span class="question-mark">?</span>;
-<a href=#128 id=128 data-nosnippet>128</a>        supervisor.add_worker(logging_override);
-<a href=#129 id=129 data-nosnippet>129</a>        supervisor.add_worker(metrics_workers.flusher);
-<a href=#130 id=130 data-nosnippet>130</a>        supervisor.add_worker(metrics_workers.runtime);
-<a href=#131 id=131 data-nosnippet>131</a>        supervisor.add_worker(metrics_workers.override_processor);
-<a href=#132 id=132 data-nosnippet>132</a>
-<a href=#133 id=133 data-nosnippet>133</a>        <span class="prelude-val">Ok</span>(Bootstrap {
-<a href=#134 id=134 data-nosnippet>134</a>            supervisor,
-<a href=#135 id=135 data-nosnippet>135</a>            guard: BootstrapGuard { logging_guard },
-<a href=#136 id=136 data-nosnippet>136</a>        })
-<a href=#137 id=137 data-nosnippet>137</a>    }
-<a href=#138 id=138 data-nosnippet>138</a>}
+<a href=#123 id=123 data-nosnippet>123</a>        <span class="comment">// Build our combined supervisor for all bootstrap-related workers.
+<a href=#124 id=124 data-nosnippet>124</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>supervisor =
+<a href=#125 id=125 data-nosnippet>125</a>            Supervisor::new(<span class="string">"app-bootstrap"</span>).error_context(<span class="string">"Failed to construct app bootstrap supervisor."</span>)<span class="question-mark">?</span>;
+<a href=#126 id=126 data-nosnippet>126</a>        supervisor.add_worker(logging_supervisor);
+<a href=#127 id=127 data-nosnippet>127</a>        supervisor.add_worker(metrics_supervisor);
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="prelude-val">Ok</span>(Bootstrap {
+<a href=#130 id=130 data-nosnippet>130</a>            supervisor,
+<a href=#131 id=131 data-nosnippet>131</a>            guard: BootstrapGuard { logging_guard },
+<a href=#132 id=132 data-nosnippet>132</a>        })
+<a href=#133 id=133 data-nosnippet>133</a>    }
+<a href=#134 id=134 data-nosnippet>134</a>}
 </code></pre></div></section></main></body></html>

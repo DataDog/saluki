@@ -135,173 +135,176 @@
 <a href=#135 id=135 data-nosnippet>135</a>        <span class="kw">let </span><span class="self">Self </span>{ forwarder } = <span class="kw-2">*</span><span class="self">self</span>;
 <a href=#136 id=136 data-nosnippet>136</a>
 <a href=#137 id=137 data-nosnippet>137</a>        <span class="kw">let </span><span class="kw-2">mut </span>health = context.take_health_handle();
-<a href=#138 id=138 data-nosnippet>138</a>        <span class="kw">let </span>forwarder = forwarder.spawn().<span class="kw">await</span>;
-<a href=#139 id=139 data-nosnippet>139</a>
-<a href=#140 id=140 data-nosnippet>140</a>        health.mark_ready();
-<a href=#141 id=141 data-nosnippet>141</a>        <span class="macro">debug!</span>(<span class="string">"Cluster Agent forwarder started."</span>);
-<a href=#142 id=142 data-nosnippet>142</a>
-<a href=#143 id=143 data-nosnippet>143</a>        <span class="kw">loop </span>{
-<a href=#144 id=144 data-nosnippet>144</a>            <span class="macro">select!</span> {
-<a href=#145 id=145 data-nosnippet>145</a>                <span class="kw">_ </span>= health.live() =&gt; <span class="kw">continue</span>,
-<a href=#146 id=146 data-nosnippet>146</a>                maybe_payload = context.payloads().next() =&gt; <span class="kw">match </span>maybe_payload {
-<a href=#147 id=147 data-nosnippet>147</a>                    <span class="prelude-val">Some</span>(payload) =&gt; <span class="kw">if let </span><span class="prelude-val">Some</span>(http_payload) = payload.try_into_http_payload() {
-<a href=#148 id=148 data-nosnippet>148</a>                        <span class="kw">let </span>(payload_meta, request) = http_payload.into_parts();
-<a href=#149 id=149 data-nosnippet>149</a>                        <span class="kw">let </span>transaction_meta = Metadata::from_event_and_data_point_count(
-<a href=#150 id=150 data-nosnippet>150</a>                            payload_meta.event_count(),
-<a href=#151 id=151 data-nosnippet>151</a>                            payload_meta.data_point_count(),
-<a href=#152 id=152 data-nosnippet>152</a>                        );
-<a href=#153 id=153 data-nosnippet>153</a>                        <span class="kw">let </span>transaction = Transaction::from_original(transaction_meta, request);
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a>                        forwarder.send_transaction(transaction).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#156 id=156 data-nosnippet>156</a>                    }
-<a href=#157 id=157 data-nosnippet>157</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
-<a href=#158 id=158 data-nosnippet>158</a>                },
-<a href=#159 id=159 data-nosnippet>159</a>            }
-<a href=#160 id=160 data-nosnippet>160</a>        }
-<a href=#161 id=161 data-nosnippet>161</a>
-<a href=#162 id=162 data-nosnippet>162</a>        forwarder.shutdown().<span class="kw">await</span>;
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="comment">// Spawns supervised children of this component's supervisor, which is what stops them and bounds their drain
+<a href=#139 id=139 data-nosnippet>139</a>        // once this run-future returns.
+<a href=#140 id=140 data-nosnippet>140</a>        </span><span class="kw">let </span>forwarder = forwarder.spawn();
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a>        health.mark_ready();
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="macro">debug!</span>(<span class="string">"Cluster Agent forwarder started."</span>);
+<a href=#144 id=144 data-nosnippet>144</a>
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">loop </span>{
+<a href=#146 id=146 data-nosnippet>146</a>            <span class="macro">select!</span> {
+<a href=#147 id=147 data-nosnippet>147</a>                <span class="kw">_ </span>= health.live() =&gt; <span class="kw">continue</span>,
+<a href=#148 id=148 data-nosnippet>148</a>                maybe_payload = context.payloads().next() =&gt; <span class="kw">match </span>maybe_payload {
+<a href=#149 id=149 data-nosnippet>149</a>                    <span class="prelude-val">Some</span>(payload) =&gt; <span class="kw">if let </span><span class="prelude-val">Some</span>(http_payload) = payload.try_into_http_payload() {
+<a href=#150 id=150 data-nosnippet>150</a>                        <span class="kw">let </span>(payload_meta, request) = http_payload.into_parts();
+<a href=#151 id=151 data-nosnippet>151</a>                        <span class="kw">let </span>transaction_meta = Metadata::from_event_and_data_point_count(
+<a href=#152 id=152 data-nosnippet>152</a>                            payload_meta.event_count(),
+<a href=#153 id=153 data-nosnippet>153</a>                            payload_meta.data_point_count(),
+<a href=#154 id=154 data-nosnippet>154</a>                        );
+<a href=#155 id=155 data-nosnippet>155</a>                        <span class="kw">let </span>transaction = Transaction::from_original(transaction_meta, request);
+<a href=#156 id=156 data-nosnippet>156</a>
+<a href=#157 id=157 data-nosnippet>157</a>                        forwarder.send_transaction(transaction).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#158 id=158 data-nosnippet>158</a>                    }
+<a href=#159 id=159 data-nosnippet>159</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
+<a href=#160 id=160 data-nosnippet>160</a>                },
+<a href=#161 id=161 data-nosnippet>161</a>            }
+<a href=#162 id=162 data-nosnippet>162</a>        }
 <a href=#163 id=163 data-nosnippet>163</a>
-<a href=#164 id=164 data-nosnippet>164</a>        <span class="macro">debug!</span>(<span class="string">"Cluster Agent forwarder stopped."</span>);
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>        <span class="prelude-val">Ok</span>(())
-<a href=#167 id=167 data-nosnippet>167</a>    }
-<a href=#168 id=168 data-nosnippet>168</a>}
-<a href=#169 id=169 data-nosnippet>169</a>
-<a href=#170 id=170 data-nosnippet>170</a><span class="kw">fn </span>bearer_auth_header_value(auth_token: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;HeaderValue, GenericError&gt; {
-<a href=#171 id=171 data-nosnippet>171</a>    <span class="kw">let </span>raw_value = <span class="macro">format!</span>(<span class="string">"Bearer {auth_token}"</span>);
-<a href=#172 id=172 data-nosnippet>172</a>    HeaderValue::from_str(<span class="kw-2">&amp;</span>raw_value)
-<a href=#173 id=173 data-nosnippet>173</a>        .map_err(|<span class="kw">_</span>| <span class="macro">generic_error!</span>(<span class="string">"cluster_agent.auth_token contains characters that are invalid in HTTP headers."</span>))
-<a href=#174 id=174 data-nosnippet>174</a>}
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a><span class="kw">fn </span>cluster_agent_request_mapper_factory&lt;B&gt;(auth_header_value: HeaderValue) -&gt; EndpointRequestMapperFactory&lt;B&gt;
-<a href=#177 id=177 data-nosnippet>177</a><span class="kw">where
-<a href=#178 id=178 data-nosnippet>178</a>    </span>B: <span class="lifetime">'static</span>,
-<a href=#179 id=179 data-nosnippet>179</a>{
-<a href=#180 id=180 data-nosnippet>180</a>    std::sync::Arc::new(<span class="kw">move </span>|endpoint| cluster_agent_request_mapper(endpoint, auth_header_value.clone()))
-<a href=#181 id=181 data-nosnippet>181</a>}
-<a href=#182 id=182 data-nosnippet>182</a>
-<a href=#183 id=183 data-nosnippet>183</a><span class="kw">fn </span>cluster_agent_request_mapper&lt;B&gt;(
-<a href=#184 id=184 data-nosnippet>184</a>    endpoint: ResolvedEndpoint, auth_header_value: HeaderValue,
-<a href=#185 id=185 data-nosnippet>185</a>) -&gt; EndpointRequestMapper&lt;B&gt; {
-<a href=#186 id=186 data-nosnippet>186</a>    <span class="kw">let </span>new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
-<a href=#187 id=187 data-nosnippet>187</a>        .expect(<span class="string">"should not fail to construct new endpoint authority"</span>);
-<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">let </span>new_uri_scheme =
-<a href=#189 id=189 data-nosnippet>189</a>        Scheme::try_from(endpoint.endpoint().scheme()).expect(<span class="string">"should not fail to construct new endpoint scheme"</span>);
-<a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    Box::new(<span class="kw">move </span>|<span class="kw-2">mut </span>request: Request&lt;TransactionBody&lt;B&gt;&gt;| {
-<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">let </span>new_uri = Uri::builder()
-<a href=#193 id=193 data-nosnippet>193</a>            .scheme(new_uri_scheme.clone())
-<a href=#194 id=194 data-nosnippet>194</a>            .authority(new_uri_authority.clone())
-<a href=#195 id=195 data-nosnippet>195</a>            .path_and_query(CLUSTER_AGENT_SERIES_PATH)
-<a href=#196 id=196 data-nosnippet>196</a>            .build()
-<a href=#197 id=197 data-nosnippet>197</a>            .expect(<span class="string">"should not fail to construct Cluster Agent URI"</span>);
-<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw-2">*</span>request.uri_mut() = new_uri;
-<a href=#199 id=199 data-nosnippet>199</a>        request.headers_mut().remove(<span class="kw-2">&amp;</span>DD_API_KEY_HEADER);
-<a href=#200 id=200 data-nosnippet>200</a>        request.headers_mut().insert(AUTHORIZATION, auth_header_value.clone());
-<a href=#201 id=201 data-nosnippet>201</a>
-<a href=#202 id=202 data-nosnippet>202</a>        request
-<a href=#203 id=203 data-nosnippet>203</a>    })
-<a href=#204 id=204 data-nosnippet>204</a>}
-<a href=#205 id=205 data-nosnippet>205</a>
-<a href=#206 id=206 data-nosnippet>206</a><span class="kw">fn </span>get_cluster_agent_endpoint_name(_uri: <span class="kw-2">&amp;</span>Uri) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#207 id=207 data-nosnippet>207</a>    <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"cluster_agent_series"</span>))
-<a href=#208 id=208 data-nosnippet>208</a>}
-<a href=#209 id=209 data-nosnippet>209</a>
-<a href=#210 id=210 data-nosnippet>210</a><span class="attr">#[cfg(test)]
-<a href=#211 id=211 data-nosnippet>211</a></span><span class="kw">mod </span>tests {
-<a href=#212 id=212 data-nosnippet>212</a>    <span class="kw">use </span>std::collections::HashMap;
-<a href=#213 id=213 data-nosnippet>213</a>
-<a href=#214 id=214 data-nosnippet>214</a>    <span class="kw">use </span>agent_data_plane_config::{
-<a href=#215 id=215 data-nosnippet>215</a>        shared::{AltMetricsIntake, V3SeriesMode},
-<a href=#216 id=216 data-nosnippet>216</a>        ConfigValue,
-<a href=#217 id=217 data-nosnippet>217</a>    };
-<a href=#218 id=218 data-nosnippet>218</a>    <span class="kw">use </span>http::Method;
-<a href=#219 id=219 data-nosnippet>219</a>
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="comment">// Starts the drain; the component's supervisor waits for it, bounded by its shutdown budget.
+<a href=#165 id=165 data-nosnippet>165</a>        </span>forwarder.shutdown();
+<a href=#166 id=166 data-nosnippet>166</a>
+<a href=#167 id=167 data-nosnippet>167</a>        <span class="macro">debug!</span>(<span class="string">"Cluster Agent forwarder stopped."</span>);
+<a href=#168 id=168 data-nosnippet>168</a>
+<a href=#169 id=169 data-nosnippet>169</a>        <span class="prelude-val">Ok</span>(())
+<a href=#170 id=170 data-nosnippet>170</a>    }
+<a href=#171 id=171 data-nosnippet>171</a>}
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a><span class="kw">fn </span>bearer_auth_header_value(auth_token: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;HeaderValue, GenericError&gt; {
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">let </span>raw_value = <span class="macro">format!</span>(<span class="string">"Bearer {auth_token}"</span>);
+<a href=#175 id=175 data-nosnippet>175</a>    HeaderValue::from_str(<span class="kw-2">&amp;</span>raw_value)
+<a href=#176 id=176 data-nosnippet>176</a>        .map_err(|<span class="kw">_</span>| <span class="macro">generic_error!</span>(<span class="string">"cluster_agent.auth_token contains characters that are invalid in HTTP headers."</span>))
+<a href=#177 id=177 data-nosnippet>177</a>}
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a><span class="kw">fn </span>cluster_agent_request_mapper_factory&lt;B&gt;(auth_header_value: HeaderValue) -&gt; EndpointRequestMapperFactory&lt;B&gt;
+<a href=#180 id=180 data-nosnippet>180</a><span class="kw">where
+<a href=#181 id=181 data-nosnippet>181</a>    </span>B: <span class="lifetime">'static</span>,
+<a href=#182 id=182 data-nosnippet>182</a>{
+<a href=#183 id=183 data-nosnippet>183</a>    std::sync::Arc::new(<span class="kw">move </span>|endpoint| cluster_agent_request_mapper(endpoint, auth_header_value.clone()))
+<a href=#184 id=184 data-nosnippet>184</a>}
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a><span class="kw">fn </span>cluster_agent_request_mapper&lt;B&gt;(
+<a href=#187 id=187 data-nosnippet>187</a>    endpoint: ResolvedEndpoint, auth_header_value: HeaderValue,
+<a href=#188 id=188 data-nosnippet>188</a>) -&gt; EndpointRequestMapper&lt;B&gt; {
+<a href=#189 id=189 data-nosnippet>189</a>    <span class="kw">let </span>new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
+<a href=#190 id=190 data-nosnippet>190</a>        .expect(<span class="string">"should not fail to construct new endpoint authority"</span>);
+<a href=#191 id=191 data-nosnippet>191</a>    <span class="kw">let </span>new_uri_scheme =
+<a href=#192 id=192 data-nosnippet>192</a>        Scheme::try_from(endpoint.endpoint().scheme()).expect(<span class="string">"should not fail to construct new endpoint scheme"</span>);
+<a href=#193 id=193 data-nosnippet>193</a>
+<a href=#194 id=194 data-nosnippet>194</a>    Box::new(<span class="kw">move </span>|<span class="kw-2">mut </span>request: Request&lt;TransactionBody&lt;B&gt;&gt;| {
+<a href=#195 id=195 data-nosnippet>195</a>        <span class="kw">let </span>new_uri = Uri::builder()
+<a href=#196 id=196 data-nosnippet>196</a>            .scheme(new_uri_scheme.clone())
+<a href=#197 id=197 data-nosnippet>197</a>            .authority(new_uri_authority.clone())
+<a href=#198 id=198 data-nosnippet>198</a>            .path_and_query(CLUSTER_AGENT_SERIES_PATH)
+<a href=#199 id=199 data-nosnippet>199</a>            .build()
+<a href=#200 id=200 data-nosnippet>200</a>            .expect(<span class="string">"should not fail to construct Cluster Agent URI"</span>);
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw-2">*</span>request.uri_mut() = new_uri;
+<a href=#202 id=202 data-nosnippet>202</a>        request.headers_mut().remove(<span class="kw-2">&amp;</span>DD_API_KEY_HEADER);
+<a href=#203 id=203 data-nosnippet>203</a>        request.headers_mut().insert(AUTHORIZATION, auth_header_value.clone());
+<a href=#204 id=204 data-nosnippet>204</a>
+<a href=#205 id=205 data-nosnippet>205</a>        request
+<a href=#206 id=206 data-nosnippet>206</a>    })
+<a href=#207 id=207 data-nosnippet>207</a>}
+<a href=#208 id=208 data-nosnippet>208</a>
+<a href=#209 id=209 data-nosnippet>209</a><span class="kw">fn </span>get_cluster_agent_endpoint_name(_uri: <span class="kw-2">&amp;</span>Uri) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"cluster_agent_series"</span>))
+<a href=#211 id=211 data-nosnippet>211</a>}
+<a href=#212 id=212 data-nosnippet>212</a>
+<a href=#213 id=213 data-nosnippet>213</a><span class="attr">#[cfg(test)]
+<a href=#214 id=214 data-nosnippet>214</a></span><span class="kw">mod </span>tests {
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="kw">use </span>std::collections::HashMap;
+<a href=#216 id=216 data-nosnippet>216</a>
+<a href=#217 id=217 data-nosnippet>217</a>    <span class="kw">use </span>agent_data_plane_config::{
+<a href=#218 id=218 data-nosnippet>218</a>        shared::{AltMetricsIntake, V3SeriesMode},
+<a href=#219 id=219 data-nosnippet>219</a>        ConfigValue,
+<a href=#220 id=220 data-nosnippet>220</a>    };
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">use </span>http::Method;
 <a href=#222 id=222 data-nosnippet>222</a>
-<a href=#223 id=223 data-nosnippet>223</a>    <span class="attr">#[test]
-<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">fn </span>request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {
-<a href=#225 id=225 data-nosnippet>225</a>        <span class="kw">let </span>auth_header_value = bearer_auth_header_value(<span class="string">"secret-token"</span>).expect(<span class="string">"auth header should be valid"</span>);
-<a href=#226 id=226 data-nosnippet>226</a>        <span class="kw">let </span>endpoint = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://cluster-agent.example.com:5005"</span>, <span class="string">"secret-token"</span>)
-<a href=#227 id=227 data-nosnippet>227</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#228 id=228 data-nosnippet>228</a>        <span class="kw">let </span><span class="kw-2">mut </span>mapper = cluster_agent_request_mapper::&lt;()&gt;(endpoint, auth_header_value);
-<a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">let </span>request = Request::builder()
-<a href=#230 id=230 data-nosnippet>230</a>            .method(Method::POST)
-<a href=#231 id=231 data-nosnippet>231</a>            .uri(<span class="string">"/api/v2/series"</span>)
-<a href=#232 id=232 data-nosnippet>232</a>            .header(<span class="string">"dd-api-key"</span>, <span class="string">"primary-api-key"</span>)
-<a href=#233 id=233 data-nosnippet>233</a>            .body(TransactionBody::&lt;()&gt;::Rehydrated(<span class="prelude-val">None</span>))
-<a href=#234 id=234 data-nosnippet>234</a>            .expect(<span class="string">"request should build"</span>);
-<a href=#235 id=235 data-nosnippet>235</a>
-<a href=#236 id=236 data-nosnippet>236</a>        <span class="kw">let </span>input_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
-<a href=#237 id=237 data-nosnippet>237</a>        <span class="kw">let </span>request = mapper(request);
-<a href=#238 id=238 data-nosnippet>238</a>        <span class="kw">let </span>mapped_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
-<a href=#239 id=239 data-nosnippet>239</a>
-<a href=#240 id=240 data-nosnippet>240</a>        <span class="macro">assert_eq!</span>(input_endpoint_name.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"cluster_agent_series"</span>));
-<a href=#241 id=241 data-nosnippet>241</a>        <span class="macro">assert_eq!</span>(mapped_endpoint_name.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"cluster_agent_series"</span>));
-<a href=#242 id=242 data-nosnippet>242</a>        <span class="macro">assert_eq!</span>(
-<a href=#243 id=243 data-nosnippet>243</a>            request.uri().to_string(),
-<a href=#244 id=244 data-nosnippet>244</a>            <span class="string">"https://cluster-agent.example.com:5005/series"
-<a href=#245 id=245 data-nosnippet>245</a>        </span>);
-<a href=#246 id=246 data-nosnippet>246</a>        <span class="macro">assert_eq!</span>(request.headers().get(AUTHORIZATION).unwrap(), <span class="string">"Bearer secret-token"</span>);
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="macro">assert!</span>(request.headers().get(<span class="string">"dd-api-key"</span>).is_none());
-<a href=#248 id=248 data-nosnippet>248</a>    }
-<a href=#249 id=249 data-nosnippet>249</a>
-<a href=#250 id=250 data-nosnippet>250</a>    <span class="attr">#[test]
-<a href=#251 id=251 data-nosnippet>251</a>    </span><span class="kw">fn </span>bearer_auth_header_rejects_invalid_token() {
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="macro">assert!</span>(bearer_auth_header_value(<span class="string">"bad\ntoken"</span>).is_err());
-<a href=#253 id=253 data-nosnippet>253</a>    }
-<a href=#254 id=254 data-nosnippet>254</a>
-<a href=#255 id=255 data-nosnippet>255</a>    <span class="attr">#[tokio::test]
-<a href=#256 id=256 data-nosnippet>256</a>    </span><span class="kw">async fn </span>configuration_uses_only_cluster_agent_endpoint() {
-<a href=#257 id=257 data-nosnippet>257</a>        <span class="comment">// Every configured Datadog intake setting here conflicts with the Cluster Agent destination:
-<a href=#258 id=258 data-nosnippet>258</a>        // a different API key, an explicit `dd_url`, a `site`, an additional endpoint, an alternate
-<a href=#259 id=259 data-nosnippet>259</a>        // metrics intake, and V3 series routing. None of them may reach the built forwarder.
-<a href=#260 id=260 data-nosnippet>260</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>shared = shared_configuration();
-<a href=#261 id=261 data-nosnippet>261</a>        shared.endpoints.api_key = <span class="string">"primary-api-key"</span>.to_string();
-<a href=#262 id=262 data-nosnippet>262</a>        shared.endpoints.site = ConfigValue::explicit(<span class="string">"datadoghq.eu"</span>.to_string());
-<a href=#263 id=263 data-nosnippet>263</a>        shared.endpoints.dd_url = ConfigValue::explicit(<span class="string">"https://app.datadoghq.com"</span>.to_string());
-<a href=#264 id=264 data-nosnippet>264</a>        shared.endpoints.additional_endpoints = HashMap::from([(
-<a href=#265 id=265 data-nosnippet>265</a>            <span class="string">"https://additional.example.com"</span>.to_string(),
-<a href=#266 id=266 data-nosnippet>266</a>            <span class="macro">vec!</span>[<span class="string">"additional-api-key"</span>.to_string()],
-<a href=#267 id=267 data-nosnippet>267</a>        )]);
-<a href=#268 id=268 data-nosnippet>268</a>        shared.endpoints.opw_intake = AltMetricsIntake {
-<a href=#269 id=269 data-nosnippet>269</a>            enabled: <span class="bool-val">true</span>,
-<a href=#270 id=270 data-nosnippet>270</a>            url: <span class="string">"https://opw.example.com"</span>.to_string(),
-<a href=#271 id=271 data-nosnippet>271</a>            use_v3_series: <span class="bool-val">true</span>,
-<a href=#272 id=272 data-nosnippet>272</a>        };
-<a href=#273 id=273 data-nosnippet>273</a>        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-<a href=#274 id=274 data-nosnippet>274</a>        shared.metrics_encoding.v3_series_endpoint_modes =
-<a href=#275 id=275 data-nosnippet>275</a>            HashMap::from([(<span class="string">"https://app.datadoghq.com"</span>.to_string(), V3SeriesMode::Enabled)]);
-<a href=#276 id=276 data-nosnippet>276</a>
-<a href=#277 id=277 data-nosnippet>277</a>        <span class="comment">// The same configuration drives a plain Datadog forwarder, which does honor all of it.
-<a href=#278 id=278 data-nosnippet>278</a>        </span><span class="kw">let </span>datadog_forwarder = ForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>shared);
-<a href=#279 id=279 data-nosnippet>279</a>        <span class="macro">assert_eq!</span>(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
-<a href=#280 id=280 data-nosnippet>280</a>
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">let </span>config = ClusterAgentForwarderConfiguration::from_configuration(
-<a href=#282 id=282 data-nosnippet>282</a>            <span class="kw-2">&amp;</span>shared,
-<a href=#283 id=283 data-nosnippet>283</a>            <span class="string">"https://cluster-agent.example.com"</span>.to_string(),
-<a href=#284 id=284 data-nosnippet>284</a>            <span class="string">"secret-token"</span>.to_string(),
-<a href=#285 id=285 data-nosnippet>285</a>        )
-<a href=#286 id=286 data-nosnippet>286</a>        .expect(<span class="string">"Cluster Agent forwarder configuration should parse"</span>);
-<a href=#287 id=287 data-nosnippet>287</a>        <span class="kw">let </span>endpoints = config
-<a href=#288 id=288 data-nosnippet>288</a>            .forwarder_config
-<a href=#289 id=289 data-nosnippet>289</a>            .build_routable_endpoints()
-<a href=#290 id=290 data-nosnippet>290</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#291 id=291 data-nosnippet>291</a>
-<a href=#292 id=292 data-nosnippet>292</a>        <span class="macro">assert_eq!</span>(endpoints.len(), <span class="number">1</span>);
-<a href=#293 id=293 data-nosnippet>293</a>        <span class="macro">assert_eq!</span>(endpoints[<span class="number">0</span>].route(), EndpointRoute::Primary);
-<a href=#294 id=294 data-nosnippet>294</a>        <span class="macro">assert_eq!</span>(
-<a href=#295 id=295 data-nosnippet>295</a>            endpoints[<span class="number">0</span>].endpoint().endpoint().as_str(),
-<a href=#296 id=296 data-nosnippet>296</a>            <span class="string">"https://cluster-agent.example.com/"
-<a href=#297 id=297 data-nosnippet>297</a>        </span>);
-<a href=#298 id=298 data-nosnippet>298</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>endpoints[<span class="number">0</span>].endpoint().api_key(), <span class="string">"secret-token"</span>);
-<a href=#299 id=299 data-nosnippet>299</a>        <span class="macro">assert_eq!</span>(
-<a href=#300 id=300 data-nosnippet>300</a>            V3SeriesMode::Disabled,
-<a href=#301 id=301 data-nosnippet>301</a>            config.forwarder_config.use_v3_api_series().enabled
-<a href=#302 id=302 data-nosnippet>302</a>        );
-<a href=#303 id=303 data-nosnippet>303</a>        <span class="macro">assert!</span>(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
-<a href=#304 id=304 data-nosnippet>304</a>        <span class="macro">assert!</span>(!config.forwarder_config.allow_arbitrary_tags());
-<a href=#305 id=305 data-nosnippet>305</a>    }
-<a href=#306 id=306 data-nosnippet>306</a>}
+<a href=#223 id=223 data-nosnippet>223</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#224 id=224 data-nosnippet>224</a>    <span class="kw">use </span><span class="kw">crate</span>::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
+<a href=#225 id=225 data-nosnippet>225</a>
+<a href=#226 id=226 data-nosnippet>226</a>    <span class="attr">#[test]
+<a href=#227 id=227 data-nosnippet>227</a>    </span><span class="kw">fn </span>request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {
+<a href=#228 id=228 data-nosnippet>228</a>        <span class="kw">let </span>auth_header_value = bearer_auth_header_value(<span class="string">"secret-token"</span>).expect(<span class="string">"auth header should be valid"</span>);
+<a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">let </span>endpoint = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://cluster-agent.example.com:5005"</span>, <span class="string">"secret-token"</span>)
+<a href=#230 id=230 data-nosnippet>230</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#231 id=231 data-nosnippet>231</a>        <span class="kw">let </span><span class="kw-2">mut </span>mapper = cluster_agent_request_mapper::&lt;()&gt;(endpoint, auth_header_value);
+<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>request = Request::builder()
+<a href=#233 id=233 data-nosnippet>233</a>            .method(Method::POST)
+<a href=#234 id=234 data-nosnippet>234</a>            .uri(<span class="string">"/api/v2/series"</span>)
+<a href=#235 id=235 data-nosnippet>235</a>            .header(<span class="string">"dd-api-key"</span>, <span class="string">"primary-api-key"</span>)
+<a href=#236 id=236 data-nosnippet>236</a>            .body(TransactionBody::&lt;()&gt;::Rehydrated(<span class="prelude-val">None</span>))
+<a href=#237 id=237 data-nosnippet>237</a>            .expect(<span class="string">"request should build"</span>);
+<a href=#238 id=238 data-nosnippet>238</a>
+<a href=#239 id=239 data-nosnippet>239</a>        <span class="kw">let </span>input_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw">let </span>request = mapper(request);
+<a href=#241 id=241 data-nosnippet>241</a>        <span class="kw">let </span>mapped_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
+<a href=#242 id=242 data-nosnippet>242</a>
+<a href=#243 id=243 data-nosnippet>243</a>        <span class="macro">assert_eq!</span>(input_endpoint_name.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"cluster_agent_series"</span>));
+<a href=#244 id=244 data-nosnippet>244</a>        <span class="macro">assert_eq!</span>(mapped_endpoint_name.as_deref(), <span class="prelude-val">Some</span>(<span class="string">"cluster_agent_series"</span>));
+<a href=#245 id=245 data-nosnippet>245</a>        <span class="macro">assert_eq!</span>(
+<a href=#246 id=246 data-nosnippet>246</a>            request.uri().to_string(),
+<a href=#247 id=247 data-nosnippet>247</a>            <span class="string">"https://cluster-agent.example.com:5005/series"
+<a href=#248 id=248 data-nosnippet>248</a>        </span>);
+<a href=#249 id=249 data-nosnippet>249</a>        <span class="macro">assert_eq!</span>(request.headers().get(AUTHORIZATION).unwrap(), <span class="string">"Bearer secret-token"</span>);
+<a href=#250 id=250 data-nosnippet>250</a>        <span class="macro">assert!</span>(request.headers().get(<span class="string">"dd-api-key"</span>).is_none());
+<a href=#251 id=251 data-nosnippet>251</a>    }
+<a href=#252 id=252 data-nosnippet>252</a>
+<a href=#253 id=253 data-nosnippet>253</a>    <span class="attr">#[test]
+<a href=#254 id=254 data-nosnippet>254</a>    </span><span class="kw">fn </span>bearer_auth_header_rejects_invalid_token() {
+<a href=#255 id=255 data-nosnippet>255</a>        <span class="macro">assert!</span>(bearer_auth_header_value(<span class="string">"bad\ntoken"</span>).is_err());
+<a href=#256 id=256 data-nosnippet>256</a>    }
+<a href=#257 id=257 data-nosnippet>257</a>
+<a href=#258 id=258 data-nosnippet>258</a>    <span class="attr">#[tokio::test]
+<a href=#259 id=259 data-nosnippet>259</a>    </span><span class="kw">async fn </span>configuration_uses_only_cluster_agent_endpoint() {
+<a href=#260 id=260 data-nosnippet>260</a>        <span class="comment">// Every configured Datadog intake setting here conflicts with the Cluster Agent destination:
+<a href=#261 id=261 data-nosnippet>261</a>        // a different API key, an explicit `dd_url`, a `site`, an additional endpoint, an alternate
+<a href=#262 id=262 data-nosnippet>262</a>        // metrics intake, and V3 series routing. None of them may reach the built forwarder.
+<a href=#263 id=263 data-nosnippet>263</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>shared = shared_configuration();
+<a href=#264 id=264 data-nosnippet>264</a>        shared.endpoints.api_key = <span class="string">"primary-api-key"</span>.to_string();
+<a href=#265 id=265 data-nosnippet>265</a>        shared.endpoints.site = ConfigValue::explicit(<span class="string">"datadoghq.eu"</span>.to_string());
+<a href=#266 id=266 data-nosnippet>266</a>        shared.endpoints.dd_url = ConfigValue::explicit(<span class="string">"https://app.datadoghq.com"</span>.to_string());
+<a href=#267 id=267 data-nosnippet>267</a>        shared.endpoints.additional_endpoints = HashMap::from([(
+<a href=#268 id=268 data-nosnippet>268</a>            <span class="string">"https://additional.example.com"</span>.to_string(),
+<a href=#269 id=269 data-nosnippet>269</a>            <span class="macro">vec!</span>[<span class="string">"additional-api-key"</span>.to_string()],
+<a href=#270 id=270 data-nosnippet>270</a>        )]);
+<a href=#271 id=271 data-nosnippet>271</a>        shared.endpoints.opw_intake = AltMetricsIntake {
+<a href=#272 id=272 data-nosnippet>272</a>            enabled: <span class="bool-val">true</span>,
+<a href=#273 id=273 data-nosnippet>273</a>            url: <span class="string">"https://opw.example.com"</span>.to_string(),
+<a href=#274 id=274 data-nosnippet>274</a>            use_v3_series: <span class="bool-val">true</span>,
+<a href=#275 id=275 data-nosnippet>275</a>        };
+<a href=#276 id=276 data-nosnippet>276</a>        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
+<a href=#277 id=277 data-nosnippet>277</a>        shared.metrics_encoding.v3_series_endpoint_modes =
+<a href=#278 id=278 data-nosnippet>278</a>            HashMap::from([(<span class="string">"https://app.datadoghq.com"</span>.to_string(), V3SeriesMode::Enabled)]);
+<a href=#279 id=279 data-nosnippet>279</a>
+<a href=#280 id=280 data-nosnippet>280</a>        <span class="comment">// The same configuration drives a plain Datadog forwarder, which does honor all of it.
+<a href=#281 id=281 data-nosnippet>281</a>        </span><span class="kw">let </span>datadog_forwarder = ForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>shared);
+<a href=#282 id=282 data-nosnippet>282</a>        <span class="macro">assert_eq!</span>(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
+<a href=#283 id=283 data-nosnippet>283</a>
+<a href=#284 id=284 data-nosnippet>284</a>        <span class="kw">let </span>config = ClusterAgentForwarderConfiguration::from_configuration(
+<a href=#285 id=285 data-nosnippet>285</a>            <span class="kw-2">&amp;</span>shared,
+<a href=#286 id=286 data-nosnippet>286</a>            <span class="string">"https://cluster-agent.example.com"</span>.to_string(),
+<a href=#287 id=287 data-nosnippet>287</a>            <span class="string">"secret-token"</span>.to_string(),
+<a href=#288 id=288 data-nosnippet>288</a>        )
+<a href=#289 id=289 data-nosnippet>289</a>        .expect(<span class="string">"Cluster Agent forwarder configuration should parse"</span>);
+<a href=#290 id=290 data-nosnippet>290</a>        <span class="kw">let </span>endpoints = config
+<a href=#291 id=291 data-nosnippet>291</a>            .forwarder_config
+<a href=#292 id=292 data-nosnippet>292</a>            .build_routable_endpoints()
+<a href=#293 id=293 data-nosnippet>293</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#294 id=294 data-nosnippet>294</a>
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="macro">assert_eq!</span>(endpoints.len(), <span class="number">1</span>);
+<a href=#296 id=296 data-nosnippet>296</a>        <span class="macro">assert_eq!</span>(endpoints[<span class="number">0</span>].route(), EndpointRoute::Primary);
+<a href=#297 id=297 data-nosnippet>297</a>        <span class="macro">assert_eq!</span>(
+<a href=#298 id=298 data-nosnippet>298</a>            endpoints[<span class="number">0</span>].endpoint().endpoint().as_str(),
+<a href=#299 id=299 data-nosnippet>299</a>            <span class="string">"https://cluster-agent.example.com/"
+<a href=#300 id=300 data-nosnippet>300</a>        </span>);
+<a href=#301 id=301 data-nosnippet>301</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>endpoints[<span class="number">0</span>].endpoint().api_key(), <span class="string">"secret-token"</span>);
+<a href=#302 id=302 data-nosnippet>302</a>        <span class="macro">assert_eq!</span>(
+<a href=#303 id=303 data-nosnippet>303</a>            V3SeriesMode::Disabled,
+<a href=#304 id=304 data-nosnippet>304</a>            config.forwarder_config.use_v3_api_series().enabled
+<a href=#305 id=305 data-nosnippet>305</a>        );
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="macro">assert!</span>(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
+<a href=#307 id=307 data-nosnippet>307</a>        <span class="macro">assert!</span>(!config.forwarder_config.allow_arbitrary_tags());
+<a href=#308 id=308 data-nosnippet>308</a>    }
+<a href=#309 id=309 data-nosnippet>309</a>}
 </code></pre></div></section></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["InitializationError","ShutdownStrategy"],"trait":["Supervisable"],"type":["SupervisorFuture"]};

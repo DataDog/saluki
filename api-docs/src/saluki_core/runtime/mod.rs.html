@@ -87,7 +87,7 @@
 <a href=#87 id=87 data-nosnippet>87</a>//! failed workers and supervisors are restarted.
 <a href=#88 id=88 data-nosnippet>88</a>
 <a href=#89 id=89 data-nosnippet>89</a></span><span class="kw">mod </span>process;
-<a href=#90 id=90 data-nosnippet>90</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::process::get_sanitized_name;
+<a href=#90 id=90 data-nosnippet>90</a><span class="kw">pub use </span><span class="self">self</span>::process::get_sanitized_name;
 <a href=#91 id=91 data-nosnippet>91</a><span class="kw">pub use </span><span class="self">self</span>::process::Id <span class="kw">as </span>ProcessId;
 <a href=#92 id=92 data-nosnippet>92</a><span class="attr">#[cfg(test)]
 <a href=#93 id=93 data-nosnippet>93</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::process::Name;
@@ -98,32 +98,78 @@
 <a href=#98 id=98 data-nosnippet>98</a><span class="kw">pub use </span><span class="self">self</span>::dedicated::{RuntimeConfiguration, RuntimeMode};
 <a href=#99 id=99 data-nosnippet>99</a>
 <a href=#100 id=100 data-nosnippet>100</a><span class="kw">mod </span>restart;
-<a href=#101 id=101 data-nosnippet>101</a><span class="kw">pub use </span><span class="self">self</span>::restart::{RestartMode, RestartStrategy, RestartType};
-<a href=#102 id=102 data-nosnippet>102</a>
-<a href=#103 id=103 data-nosnippet>103</a><span class="kw">mod </span>supervisor;
-<a href=#104 id=104 data-nosnippet>104</a><span class="kw">pub use </span><span class="self">self</span>::supervisor::{
-<a href=#105 id=105 data-nosnippet>105</a>    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, LoweredChild, ShutdownStrategy,
-<a href=#106 id=106 data-nosnippet>106</a>    Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec, WorkerSpec,
-<a href=#107 id=107 data-nosnippet>107</a>};
-<a href=#108 id=108 data-nosnippet>108</a>
-<a href=#109 id=109 data-nosnippet>109</a><span class="kw">mod </span>tree;
-<a href=#110 id=110 data-nosnippet>110</a><span class="kw">pub use </span><span class="self">self</span>::tree::{
-<a href=#111 id=111 data-nosnippet>111</a>    NodeKind, NodeSnapshot, NodeState, ResourceUsage, SupervisionSettings, SupervisionTreeAPIHandler,
-<a href=#112 id=112 data-nosnippet>112</a>    SupervisionTreeHandle, SupervisionTreeState, SupervisionTreeWorker, TreeSnapshot, TreeTotals, UnixMillis,
-<a href=#113 id=113 data-nosnippet>113</a>    SUPERVISION_TREE_ROUTE,
-<a href=#114 id=114 data-nosnippet>114</a>};
-<a href=#115 id=115 data-nosnippet>115</a>
-<a href=#116 id=116 data-nosnippet>116</a><span class="kw">mod </span>spawn;
-<a href=#117 id=117 data-nosnippet>117</a><span class="kw">pub use </span><span class="self">self</span>::spawn::spawn;
-<a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a><span class="kw">mod </span>builder;
-<a href=#120 id=120 data-nosnippet>120</a><span class="kw">pub use </span><span class="self">self</span>::builder::{
-<a href=#121 id=121 data-nosnippet>121</a>    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
-<a href=#122 id=122 data-nosnippet>122</a>    OneShot, Restartable, Terminable,
-<a href=#123 id=123 data-nosnippet>123</a>};
-<a href=#124 id=124 data-nosnippet>124</a>
-<a href=#125 id=125 data-nosnippet>125</a><span class="kw">mod </span>workers;
-<a href=#126 id=126 data-nosnippet>126</a><span class="kw">pub use </span><span class="self">self</span>::workers::{FnWorker, IntoWorkerResult};
-<a href=#127 id=127 data-nosnippet>127</a>
-<a href=#128 id=128 data-nosnippet>128</a><span class="kw">mod </span>worker_state;
+<a href=#101 id=101 data-nosnippet>101</a><span class="comment">// The `Supervisable` contract itself lives one crate down, in `saluki-common`, so that leaf crates can describe
+<a href=#102 id=102 data-nosnippet>102</a>// restartable background work without depending on the supervisor engine here. It's re-exported so that this module
+<a href=#103 id=103 data-nosnippet>103</a>// remains the single place to import supervision from.
+<a href=#104 id=104 data-nosnippet>104</a></span><span class="kw">pub use </span>saluki_common::supervision::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a><span class="kw">pub use </span><span class="self">self</span>::restart::{RestartMode, RestartStrategy, RestartType};
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a><span class="kw">mod </span>supervisor;
+<a href=#109 id=109 data-nosnippet>109</a><span class="kw">pub use </span><span class="self">self</span>::supervisor::{
+<a href=#110 id=110 data-nosnippet>110</a>    AutoShutdown, ChildId, ChildSpecification, ChildState, LoweredChild, Supervisor, SupervisorError, SupervisorHandle,
+<a href=#111 id=111 data-nosnippet>111</a>    SupervisorSpec, WorkerSpec,
+<a href=#112 id=112 data-nosnippet>112</a>};
+<a href=#113 id=113 data-nosnippet>113</a>
+<a href=#114 id=114 data-nosnippet>114</a><span class="kw">mod </span>tree;
+<a href=#115 id=115 data-nosnippet>115</a><span class="kw">pub use </span><span class="self">self</span>::tree::{
+<a href=#116 id=116 data-nosnippet>116</a>    NodeKind, NodeSnapshot, NodeState, ResourceUsage, SupervisionSettings, SupervisionTreeAPIHandler,
+<a href=#117 id=117 data-nosnippet>117</a>    SupervisionTreeHandle, SupervisionTreeState, SupervisionTreeWorker, TreeSnapshot, TreeTotals, UnixMillis,
+<a href=#118 id=118 data-nosnippet>118</a>    SUPERVISION_TREE_ROUTE,
+<a href=#119 id=119 data-nosnippet>119</a>};
+<a href=#120 id=120 data-nosnippet>120</a>
+<a href=#121 id=121 data-nosnippet>121</a><span class="kw">mod </span>spawn;
+<a href=#122 id=122 data-nosnippet>122</a><span class="kw">pub use </span><span class="self">self</span>::spawn::spawn;
+<a href=#123 id=123 data-nosnippet>123</a>
+<a href=#124 id=124 data-nosnippet>124</a><span class="kw">mod </span>builder;
+<a href=#125 id=125 data-nosnippet>125</a><span class="kw">pub use </span><span class="self">self</span>::builder::{
+<a href=#126 id=126 data-nosnippet>126</a>    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
+<a href=#127 id=127 data-nosnippet>127</a>    OneShot, Restartable, Terminable,
+<a href=#128 id=128 data-nosnippet>128</a>};
+<a href=#129 id=129 data-nosnippet>129</a>
+<a href=#130 id=130 data-nosnippet>130</a><span class="kw">mod </span>workers;
+<a href=#131 id=131 data-nosnippet>131</a><span class="kw">pub use </span><span class="self">self</span>::workers::{FnWorker, IntoWorkerResult};
+<a href=#132 id=132 data-nosnippet>132</a>
+<a href=#133 id=133 data-nosnippet>133</a><span class="kw">mod </span>worker_state;
+<a href=#134 id=134 data-nosnippet>134</a>
+<a href=#135 id=135 data-nosnippet>135</a><span class="attr">#[cfg(test)]
+<a href=#136 id=136 data-nosnippet>136</a></span><span class="kw">mod </span>tests {
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="kw">use </span>async_trait::async_trait;
+<a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a>    <span class="kw">use </span>super::{InitializationError, Supervisable, SupervisorFuture};
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">struct </span>Noop;
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a>    <span class="attr">#[async_trait]
+<a href=#145 id=145 data-nosnippet>145</a>    </span><span class="kw">impl </span>Supervisable <span class="kw">for </span>Noop {
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#147 id=147 data-nosnippet>147</a>            <span class="string">"noop"
+<a href=#148 id=148 data-nosnippet>148</a>        </span>}
+<a href=#149 id=149 data-nosnippet>149</a>
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
+<a href=#151 id=151 data-nosnippet>151</a>            <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
+<a href=#152 id=152 data-nosnippet>152</a>                process_shutdown.<span class="kw">await</span>;
+<a href=#153 id=153 data-nosnippet>153</a>                <span class="prelude-val">Ok</span>(())
+<a href=#154 id=154 data-nosnippet>154</a>            }))
+<a href=#155 id=155 data-nosnippet>155</a>        }
+<a href=#156 id=156 data-nosnippet>156</a>    }
+<a href=#157 id=157 data-nosnippet>157</a>
+<a href=#158 id=158 data-nosnippet>158</a>    <span class="attr">#[test]
+<a href=#159 id=159 data-nosnippet>159</a>    </span><span class="kw">fn </span>contract_reexport_is_the_same_type_as_the_definition() {
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="comment">// The contract is defined in `saluki-common` and re-exported here, which is what keeps every existing
+<a href=#161 id=161 data-nosnippet>161</a>        // `use saluki_core::runtime::Supervisable` compiling. A second, parallel definition would also compile, but
+<a href=#162 id=162 data-nosnippet>162</a>        // would make the two mutually unusable: this pins that an implementation written against the re-export
+<a href=#163 id=163 data-nosnippet>163</a>        // satisfies the original.
+<a href=#164 id=164 data-nosnippet>164</a>        </span><span class="kw">fn </span>accepts_the_definition(worker: Box&lt;<span class="kw">dyn </span>saluki_common::supervision::Supervisable&gt;) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#165 id=165 data-nosnippet>165</a>            <span class="kw">match </span>worker.name() {
+<a href=#166 id=166 data-nosnippet>166</a>                <span class="string">"noop" </span>=&gt; <span class="string">"noop"</span>,
+<a href=#167 id=167 data-nosnippet>167</a>                other =&gt; <span class="macro">panic!</span>(<span class="string">"unexpected worker name: {other}"</span>),
+<a href=#168 id=168 data-nosnippet>168</a>            }
+<a href=#169 id=169 data-nosnippet>169</a>        }
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">let </span>worker: Box&lt;<span class="kw">dyn </span>Supervisable&gt; = Box::new(Noop);
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="macro">assert_eq!</span>(accepts_the_definition(worker), <span class="string">"noop"</span>);
+<a href=#173 id=173 data-nosnippet>173</a>    }
+<a href=#174 id=174 data-nosnippet>174</a>}
 </code></pre></div></section></main></body></html>
