@@ -472,6 +472,16 @@ fn is_string_map_string(ty: &syn::Type) -> bool {
     map_types(ty).is_some_and(|(key, value)| is_string(key) && is_string(value))
 }
 
+/// Returns whether `ty` is exactly `HashMap<String, f64>`.
+fn is_string_map_f64(ty: &syn::Type) -> bool {
+    map_types(ty).is_some_and(|(key, value)| is_string(key) && is_f64(value))
+}
+
+/// Returns whether `ty` is the plain `f64`.
+fn is_f64(ty: &syn::Type) -> bool {
+    plain_ident(ty).is_some_and(|ident| ident == "f64")
+}
+
 fn map_types(ty: &syn::Type) -> Option<(&syn::Type, &syn::Type)> {
     let syn::Type::Path(tp) = ty else { return None };
     let last = tp.path.segments.last()?;
@@ -617,6 +627,7 @@ fn permissivize(file: &mut syn::File) {
                 LeafKind::Number => "crate::cast_de::deserialize_f64",
                 LeafKind::Text => "crate::cast_de::deserialize_string",
                 LeafKind::StringMap => "crate::cast_de::deserialize_string_map",
+                LeafKind::NumberMap => "crate::cast_de::deserialize_number_map",
                 LeafKind::OptionalText => "crate::cast_de::deserialize_optional_string",
                 LeafKind::OptionalInteger => "crate::cast_de::deserialize_optional_i64",
                 LeafKind::Exempt => continue,
@@ -640,6 +651,7 @@ enum LeafKind {
     Number,
     Text,
     StringMap,
+    NumberMap,
     OptionalText,
     OptionalInteger,
     /// A nested section, or a leaf whose shape another pass or its own consumer handles.
@@ -660,6 +672,9 @@ fn leaf_kind(ty: &syn::Type, struct_names: &HashSet<String>) -> LeafKind {
     }
     if is_string_map_string(ty) {
         return LeafKind::StringMap;
+    }
+    if is_string_map_f64(ty) {
+        return LeafKind::NumberMap;
     }
     // An optional `integer` leaf uses the same permissive coercion as a plain `i64`, while an
     // absent or null value stays `None`.
