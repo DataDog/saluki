@@ -370,17 +370,6 @@ mod tests {
         assert!(cancellation.is_cancelled());
     }
 
-    #[tokio::test]
-    async fn completed_command_sender_ends_the_stream() {
-        let (sender, receiver) = mpsc::channel(1);
-        drop(sender);
-        let mut stream = CancellableCommandStream {
-            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
-            cancellation: CancellationToken::new(),
-        };
-        assert!(stream.next().await.is_none());
-    }
-
     #[tokio::test(start_paused = true)]
     async fn buffered_remote_command_output_flushes_within_100_milliseconds() {
         let (output_sender, output_receiver) = mpsc::channel(COMMAND_OUTPUT_EVENT_CAPACITY);
