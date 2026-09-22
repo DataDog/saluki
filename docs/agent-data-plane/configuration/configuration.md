@@ -1227,14 +1227,6 @@ metadata can still populate `ContainerPid` aliases in the tag store on Unix plat
 covers steady-state tagging when another source provides a PID, but macOS UDS origin detection
 cannot obtain that PID from the socket.
 
-### `forwarder_retry_queue_max_size`
-
-Deprecated in favor of `forwarder_retry_queue_payloads_max_size`. ADP matches the core Agent: this setting counts
-payloads rather than bytes, and is converted to the retry queue's byte budget by multiplying by the 2 MB maximum
-payload size. It applies only when it is set explicitly and `forwarder_retry_queue_payloads_max_size` is not; when
-both are set, the byte-based setting wins. ADP does not log a deprecation warning for this key, because the core
-Agent already does.
-
 ### `hostname`
 
 ADP uses this only in standalone mode, where the fixed host provider requires a configured
