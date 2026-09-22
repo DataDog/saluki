@@ -374,7 +374,7 @@ mod tests {
         };
         let retry_config = RetryConfiguration::from_configuration(&forwarder, None);
 
-        assert_eq!(1024, retry_config.queue_max_size_bytes());
+        assert_eq!(1024 * 2 * 1024 * 1024, retry_config.queue_max_size_bytes());
     }
 
     #[test]

@@ -10,6 +10,14 @@ use serde::Serialize;
 use crate::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_MAX_METRICS_PER_PAYLOAD, DEFAULT_ZSTD_COMPRESSOR_LEVEL};
 use crate::{ConfigValue, Error};
 
+/// Assumed maximum size, in bytes, of a single payload in the retry queue.
+///
+/// The deprecated `forwarder_retry_queue_max_size` setting bounds the retry queue by payload count,
+/// while the queue itself is bounded by bytes. Converting between the two requires assuming a
+/// per-payload size, and this value matches the Agent's own assumption so that the same
+/// configuration yields the same byte budget in ADP and the Agent.
+pub const MAX_PAYLOAD_SIZE_BYTES: u64 = 2 * 1024 * 1024;
+
 /// Cross-cutting configuration shared across domains.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SharedConfiguration {
@@ -355,8 +363,11 @@ pub struct Forwarder {
     /// Maximum number of payloads held in the in-memory retry queue.
     ///
     /// Deprecated in favor of [`retry_queue_payloads_max_size`](Self::retry_queue_payloads_max_size).
-    /// The Datadog schema supplies `0` when nothing sets this key. Because `0` is also a value an
-    /// operator can set, honor this setting only when it is explicit.
+    /// This setting counts payloads, not bytes;
+    /// [`effective_retry_queue_max_size_bytes`](Self::effective_retry_queue_max_size_bytes) converts
+    /// it using [`MAX_PAYLOAD_SIZE_BYTES`]. The Datadog schema supplies `0` when nothing sets this
+    /// key. Because `0` is also a value an operator can set, honor this setting only when it is
+    /// explicit.
     pub retry_queue_max_size: ConfigValue<u64>,
 
     /// Maximum total size, in bytes, of payloads held in the retry queue.
@@ -389,9 +400,13 @@ impl Forwarder {
     /// payload-size value, which carries the source schema's default. Selection cannot look at the
     /// values themselves: `0` is both the deprecated setting's schema default and a value an
     /// operator can mean.
+    ///
+    /// The deprecated setting counts payloads rather than bytes, so it is scaled by
+    /// [`MAX_PAYLOAD_SIZE_BYTES`] to reach a byte budget. A count large enough to overflow saturates
+    /// at [`u64::MAX`], which the retry queue treats as effectively unbounded.
     pub fn effective_retry_queue_max_size_bytes(&self) -> u64 {
         if !self.retry_queue_payloads_max_size.is_explicit() && self.retry_queue_max_size.is_explicit() {
-            self.retry_queue_max_size.value
+            self.retry_queue_max_size.value.saturating_mul(MAX_PAYLOAD_SIZE_BYTES)
         } else {
             self.retry_queue_payloads_max_size.value
         }
@@ -760,13 +775,28 @@ mod tests {
 
     #[test]
     fn retry_queue_size_falls_back_to_the_explicit_deprecated_size() {
+        // The deprecated setting is a payload count, so 1024 payloads is a 2 GiB byte budget. Using
+        // the count as a byte budget would leave a queue too small to hold a single payload.
         let forwarder = Forwarder {
             retry_queue_payloads_max_size: ConfigValue::defaulted(15 * 1024 * 1024),
             retry_queue_max_size: ConfigValue::explicit(1024),
             ..Default::default()
         };
 
-        assert_eq!(1024, forwarder.effective_retry_queue_max_size_bytes());
+        assert_eq!(1024 * 2 * 1024 * 1024, forwarder.effective_retry_queue_max_size_bytes());
+    }
+
+    #[test]
+    fn a_deprecated_retry_queue_size_that_would_overflow_saturates() {
+        // A count this large cannot be scaled into a u64. Wrapping would turn an enormous queue into
+        // a tiny one, so the conversion saturates into an effectively unbounded queue instead.
+        let forwarder = Forwarder {
+            retry_queue_payloads_max_size: ConfigValue::defaulted(15 * 1024 * 1024),
+            retry_queue_max_size: ConfigValue::explicit(u64::MAX),
+            ..Default::default()
+        };
+
+        assert_eq!(u64::MAX, forwarder.effective_retry_queue_max_size_bytes());
     }
 
     #[test]
@@ -805,6 +835,7 @@ mod tests {
             retry_queue_max_size: ConfigValue::explicit(0),
             ..Default::default()
         };
+        // Zero payloads scales to zero bytes either way.
         assert_eq!(0, explicitly_zero.effective_retry_queue_max_size_bytes());
 
         let defaulted_zero = Forwarder {
