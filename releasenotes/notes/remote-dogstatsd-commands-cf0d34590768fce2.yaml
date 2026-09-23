@@ -1,4 +1,4 @@
 ---
 features:
   - |
-    Add ``agent remote dogstatsd`` commands for inspecting and managing DogStatsD in Agent Data Plane deployments.
+    Exposes ``dogstatsd`` commands through the Remote Command Provider, allowing them to be executed via the Core Agent's ``agent remote ...`` CLI.
