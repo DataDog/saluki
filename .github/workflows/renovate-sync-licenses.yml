@@ -62,13 +62,12 @@ jobs:
           token: "${{ steps.octo-sts.outputs.token }}"
 
       # Toolchain pinned by rust-toolchain.toml. No cache (only the license tool is compiled).
-      # rustflags cleared to suppress the action's default
-      # -D warnings.
+      # build-warnings cleared to suppress the action's default warnings-as-errors enforcement.
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: false
-          rustflags: ""
+          build-warnings: ""
 
       # Version extracted from the Makefile (single source of truth). `cargo install` instead of
       # `make` to avoid the protoc dependency in check-rust-build-tools.
