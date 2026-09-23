@@ -88,10 +88,26 @@ impl EventProcessor {
     ) -> Self {
         let mut extractors = vec![Extractor::Metric];
         if !analyzed_spans_by_service.is_empty() {
-            extractors.push(Extractor::FixedRate(analyzed_spans_by_service.clone()));
+            // Keys are lowercased once here, so mixed-case configuration still matches the
+            // lowercased span lookups.
+            let rates_by_service = analyzed_spans_by_service
+                .iter()
+                .map(|(service, operations)| {
+                    let operations = operations
+                        .iter()
+                        .map(|(operation, rate)| (operation.to_lowercase(), *rate))
+                        .collect::<HashMap<String, f64>>();
+                    (service.to_lowercase(), operations)
+                })
+                .collect::<HashMap<String, HashMap<String, f64>>>();
+            extractors.push(Extractor::FixedRate(rates_by_service));
         } else if !analyzed_rate_by_service.is_empty() {
             warn!("analyzed_rate_by_service is deprecated, please use analyzed_spans instead");
-            extractors.push(Extractor::Legacy(analyzed_rate_by_service.clone()));
+            let rates_by_service = analyzed_rate_by_service
+                .iter()
+                .map(|(service, rate)| (service.to_lowercase(), *rate))
+                .collect::<HashMap<String, f64>>();
+            extractors.push(Extractor::Legacy(rates_by_service));
         }
 
         Self {
@@ -147,6 +163,9 @@ impl EventProcessor {
             }
             counts.extracted += 1;
 
+            // The budget flip hashes the same trace ID as the extraction flip, so the two
+            // compose to the stricter of their rates rather than multiplying: every event of a
+            // trace shares one coherent verdict.
             let (sampled, eps_rate) = self.inner.limiter.sample(trace_id, priority);
             if !sampled {
                 continue;
@@ -221,7 +240,8 @@ impl Extractor {
                     .map(|rate| upscale_user_keep(*rate, priority))
             }
             Self::Legacy(rates_by_service) => {
-                // Only top-level spans are nominated.
+                // Only top-level spans are nominated, and legacy rates apply verbatim: this path
+                // predates user-keep handling and takes no upscaling.
                 let top_level = span
                     .attributes
                     .get(KEY_TOP_LEVEL)
@@ -465,6 +485,23 @@ mod tests {
             .attributes
             .insert(MetaString::from_static(KEY_TOP_LEVEL), AttributeValue::Float(1.0));
         assert_eq!(extractor.extract(&other, 0), None);
+    }
+
+    #[test]
+    fn mixed_case_configuration_matches_lowercased_spans() {
+        // Configuration keys arrive verbatim; the extractor must normalize them so mixed-case
+        // entries still match.
+        let fixed = HashMap::from([("Checkout".to_string(), map_of(&[("Request", 0.75)]))]);
+        let processor = EventProcessor::for_tests(&fixed, &HashMap::new(), 200.0);
+        let extractor = &processor.inner.extractors[1];
+
+        let span = Span::new("Checkout", "Request", "r", "web", 1, 0, 1, 100, 0);
+        assert_eq!(extractor.extract(&span, 0), Some(0.75));
+
+        let legacy = map_of(&[("Checkout", 0.25)]);
+        let processor = EventProcessor::for_tests(&HashMap::new(), &legacy, 200.0);
+        let extractor = &processor.inner.extractors[1];
+        assert_eq!(extractor.extract(&top_level_span(1), 0), Some(0.25));
     }
 
     #[test]
