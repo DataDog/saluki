@@ -1,10 +1,10 @@
 name: Check AWS-LC-FIPS 4.x Certification
 
-# `aws-lc-rs` is pinned below 1.18 (and `aws-lc-fips-sys` >= 0.14 is banned in deny.toml) because newer releases
-# switch the `fips` feature to AWS-LC-FIPS 4.x, which has been submitted for FIPS 140-3 validation but is not yet
-# certified. AWS-LC tracks certification status in its FIPS.md, listing submitted modules under "Modules in Process"
-# and certified ones under "Validations". This workflow watches for a 4.x entry to appear under "Validations" and opens
-# an issue so we know when the pin can be lifted.
+# `aws-lc-rs` is pinned below 1.18 (and enforced in CI by the `aws-lc-fips-sys` ban in deny.toml and by
+# ci/tooling/check-fips-module.sh) because newer releases switch the `fips` feature to AWS-LC-FIPS 4.x, which has been
+# submitted for FIPS 140-3 validation but is not yet certified. AWS-LC tracks certification status in its FIPS.md,
+# listing submitted modules under "Modules in Process" and certified ones under "Validations". This workflow watches
+# for a 4.x entry to appear under "Validations" and opens an issue so we know when the pin can be lifted.
 #
 # Delete this workflow once the pin has been lifted.
 
@@ -82,6 +82,7 @@ jobs:
               '',
               '- [ ] Remove the `<1.18` upper bound on `aws-lc-rs` in the workspace `Cargo.toml` and update its comment',
               '- [ ] Remove the `aws-lc-fips-sys@>=0.14` ban from `deny.toml`',
+              '- [ ] Add `4` to `CERTIFIED_FIPS_MODULE_VERSIONS` in `ci/tooling/check-fips-module.sh`',
               '- [ ] Remove the `aws-lc-rs` `allowedVersions` rule from `renovate.json5`',
               '- [ ] Revisit the `RUSTSEC-2026-0285` ignore in `deny.toml`',
               '- [ ] Delete `.github/workflows/check-aws-lc-fips-certification.yml`',
