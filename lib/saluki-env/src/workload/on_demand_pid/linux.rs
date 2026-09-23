@@ -7,7 +7,9 @@ use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::time::sleep;
 use tracing::{debug, trace};
 
-use crate::workload::helpers::cgroups::{get_self_container_id, CgroupsConfiguration, CgroupsReader};
+use crate::workload::helpers::cgroups::{
+    get_self_cgroup_controller_inode, get_self_container_id, CgroupsConfiguration, CgroupsReader,
+};
 use crate::workload::EntityId;
 
 #[static_metrics(prefix = pid_resolver)]
@@ -101,8 +103,39 @@ impl ResolverImpl {
     }
 
     /// Resolves the current process's container entity from local cgroup membership.
+    ///
+    /// The entity is whichever form we could establish: a container ID when our cgroup path names one, otherwise the
+    /// inode of our cgroup controller, which the cgroups metadata collector aliases to the container ID while walking
+    /// the host's hierarchy. Callers that resolve tags get the same answer either way; callers that need the container
+    /// ID itself have to resolve the alias.
+    ///
+    /// The inode form is only available under the cgroups v2 unified hierarchy.
     pub fn resolve_self_container(&self) -> Option<EntityId> {
-        get_self_container_id(&self.interner).map(EntityId::Container)
+        // Try the cgroup path first. It's self-verifying -- either it names a container or it doesn't -- whereas the
+        // inode below is only useful if the collector has aliased it, which we can't check from here.
+        if let Some(container_id) = get_self_container_id(&self.interner) {
+            return Some(EntityId::Container(container_id));
+        }
+
+        // In our own cgroup namespace, `/proc/self/cgroup` reads `0::/` and names nothing, but the namespace root is
+        // our own cgroup, whose inode is the one the collector saw walking the host's hierarchy.
+        //
+        // That alias map is keyed on a bare inode, so it only holds if both inodes come from the same filesystem --
+        // and these are different mounts whenever the collector reads a host-mapped cgroupfs. So each end is checked
+        // separately: `get_self_cgroup_controller_inode` returns `None` unless ours is cgroup2, and `is_unified`
+        // covers the collector's. Hybrid hosts are why the latter is load-bearing: `try_from_config` prefers v1
+        // whenever any v1 controller is mounted, so the map can be keyed on memory-controller inodes while our own
+        // mount is the unified one. (Two cgroup2 mounts still aren't provably the same one, which would need
+        // `(dev, ino)` keys.)
+        if self.cgroups_reader.is_unified() {
+            if let Some(controller_inode) = get_self_cgroup_controller_inode() {
+                return Some(EntityId::ContainerInode(controller_inode));
+            }
+        }
+
+        debug!("Could not resolve own container: cgroup path named no container, and no usable controller inode.");
+
+        None
     }
 }
 

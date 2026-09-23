@@ -1,0 +1,7 @@
+fixes:
+  - |
+    The deprecated ``forwarder_retry_queue_max_size`` setting is now interpreted as a payload count rather than a byte
+    count, matching the core Agent, which converts it to a byte budget by multiplying by the 2 MB maximum payload size.
+    Previously the value was used directly as the retry queue's byte budget, so a configuration the Agent read as
+    hundreds of megabytes left the data plane with a queue too small to hold a single payload. This setting still
+    applies only when it is set explicitly and ``forwarder_retry_queue_payloads_max_size`` is not.

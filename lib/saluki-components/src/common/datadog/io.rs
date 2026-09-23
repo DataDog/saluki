@@ -1,5 +1,24 @@
 //! Datadog forwarder I/O.
 //!
+//! # Supervision
+//!
+//! Every task here is a supervised child of the forwarder component's supervisor, spawned on the ambient supervisor
+//! that the component's own run-future executes under. They are siblings rather than a subtree: the main I/O loop, one
+//! I/O loop per endpoint, and the background refreshers all sit side by side under the one supervisor, which is also
+//! what bounds them -- a single [shutdown budget][saluki_core::runtime::Supervisor::with_shutdown_budget] covering the
+//! component and everything it spawned.
+//!
+//! Shutdown needs no explicit handshake between them, because the tasks are connected by channels and each stops at
+//! its own terminal condition. Dropping [`Handle`] closes the transaction channel, so the main I/O loop finishes and
+//! drops its per-endpoint senders, so each endpoint loop completes its in-flight requests and flushes its retry queue.
+//! The supervisor waits for all of them, which is what makes the drain ordered without any task having to know the
+//! order. The refreshers have no terminal condition at all and are therefore
+//! [`Brutal`][saluki_core::runtime::ShutdownStrategy::Brutal].
+//!
+//! In-flight requests remain an ordinary [`JoinSet`] owned by their endpoint loop rather than supervised children,
+//! because the loop consumes each result to decide whether the transaction is done or needs re-enqueuing. Their
+//! lifetime is already nested inside a supervised task, so they are torn down with it.
+//!
 //! # Missing
 //!
 //! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
@@ -22,11 +41,10 @@ use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{
-    collections::FastHashMap, hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp,
-};
+use saluki_common::{collections::FastHashMap, hash::hash_single_stable, time::get_unix_timestamp};
 use saluki_core::components::ComponentContext;
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
+use saluki_core::runtime::{self, get_sanitized_name};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
@@ -39,11 +57,12 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::{mpsc, oneshot, Barrier},
+    sync::mpsc,
     task::{JoinError, JoinSet},
 };
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
+use url::Url;
 
 use super::{
     api_key::{ApiKeyRefresher, LiveApiKeys},
@@ -197,7 +216,6 @@ where
     B: Buf + Clone,
 {
     transactions_tx: mpsc::Sender<Transaction<B>>,
-    io_shutdown_rx: oneshot::Receiver<()>,
 }
 
 impl<B> Handle<B>
@@ -216,18 +234,14 @@ where
         }
     }
 
-    /// Triggers the forwarder to shutdown and waits to shutdown to complete.
-    pub async fn shutdown(self) {
-        let Self {
-            transactions_tx,
-            io_shutdown_rx,
-        } = self;
-
-        // Drop the sender side of the transaction channel, which will propagate the actual closure to the main I/O task.
-        drop(transactions_tx);
-
-        // Wait for the main I/O task to signal that it has shutdown.
-        io_shutdown_rx.await.expect("I/O task has already shutdown.");
+    /// Triggers the forwarder to shut down.
+    ///
+    /// Dropping the transaction channel is what starts the drain: the main I/O loop finishes, its per-endpoint senders
+    /// drop, and each endpoint loop completes its in-flight requests and flushes its retry queue. This doesn't wait for
+    /// any of that. The forwarder's tasks are children of the component's supervisor, so waiting for them -- bounded by
+    /// that supervisor's shutdown budget -- is its job rather than the caller's.
+    pub fn shutdown(self) {
+        drop(self.transactions_tx);
     }
 }
 
@@ -416,11 +430,18 @@ where
 
     /// Spawns the I/O task for the forwarder, and any associated endpoint I/O tasks.
     ///
+    /// All of them are spawned as children of the ambient supervisor -- in practice, the supervisor of the forwarder
+    /// component calling this -- which is what stops them, and bounds their drain, once the returned `Handle` is
+    /// dropped. See the module documentation for how the drain is ordered.
+    ///
     /// Returns a `Handle` that can be used to send transactions to the forwarder, as well as eventually shut it down in
     /// an orderly fashion.
-    pub async fn spawn(self) -> Handle<B> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a supervision tree.
+    pub fn spawn(self) -> Handle<B> {
         let (transactions_tx, transactions_rx) = mpsc::channel(8);
-        let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
 
         // TODO: do not destructure self as a way to fix the #[allow(clippy::too_many_arguments)] annotations
         let Self {
@@ -449,11 +470,10 @@ where
         let secrets = secrets_refresher.gate.clone();
         secrets_refresher.spawn();
 
-        spawn_traced_named(
-            "dd-txn-forwarder-io-loop",
+        runtime::worker(
+            "io_loop",
             run_io_loop(
                 transactions_rx,
-                io_shutdown_tx,
                 context,
                 config,
                 secrets,
@@ -465,12 +485,10 @@ where
                 endpoint_request_mapper_factory,
                 emitter,
             ),
-        );
+        )
+        .spawn();
 
-        Handle {
-            transactions_tx,
-            io_shutdown_rx,
-        }
+        Handle { transactions_tx }
     }
 
     /// Returns API key validation for the startup endpoint set.
@@ -491,11 +509,10 @@ where
 
 #[allow(clippy::too_many_arguments)]
 async fn run_io_loop<B>(
-    mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
-    context: ComponentContext, config: ForwarderConfiguration, secrets: SecretsGate, service: HttpClient,
-    telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder, endpoint_name: Arc<EndpointNameFn>,
-    resolved_endpoints: Vec<RoutableEndpoint>, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    emitter: DiagnosticsEmitter,
+    mut transactions_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
+    secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+    endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -506,7 +523,6 @@ async fn run_io_loop<B>(
     let has_metrics_primary = resolved_endpoints
         .iter()
         .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
-    let task_barrier = Arc::new(Barrier::new(resolved_endpoints.len() + 1));
     let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
 
     for routable_endpoint in resolved_endpoints {
@@ -521,14 +537,11 @@ async fn run_io_loop<B>(
         let retry_cause_telemetry = RetryCauseTelemetry::from_builder(&metrics_builder, &endpoint_domain);
 
         let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
-        let task_barrier = Arc::clone(&task_barrier);
 
-        let task_name = format!("dd-txn-forwarder-io-loop-{}", resolved_endpoint.endpoint().authority());
-        spawn_traced_named(
-            task_name,
+        runtime::worker(
+            endpoint_io_loop_task_name(&resolved_endpoint),
             run_endpoint_io_loop(
                 endpoint_rx,
-                task_barrier,
                 context.clone(),
                 config.clone(),
                 secrets.clone(),
@@ -543,7 +556,8 @@ async fn run_io_loop<B>(
                 endpoint_request_mapper_factory.clone(),
                 emitter.clone(),
             ),
-        );
+        )
+        .spawn();
 
         endpoint_txs.push(EndpointSender {
             endpoint_url,
@@ -579,18 +593,12 @@ async fn run_io_loop<B>(
         }
     }
 
-    debug!("Requests channel for main I/O task complete. Stopping endpoint I/O tasks and synchronizing on shutdown.");
+    debug!("Requests channel for main I/O task complete. Stopping endpoint I/O tasks.");
 
     // Drop our endpoint I/O task channels, which will cause them to shut down once they've processed all outstanding
-    // requests in their respective channel. We wait for that to happen by synchronizing on the task barrier.
-    //
-    // Once all tasks have completed, we signal back to the main component task that the I/O loop has shutdown.
+    // requests in their respective channel. We don't wait for that here: the endpoint tasks are our siblings under the
+    // component's supervisor, and it waits for every child, so the drain stays ordered without this task tracking it.
     drop(endpoint_txs);
-    task_barrier.wait().await;
-
-    debug!("All endpoint I/O tasks have stopped. Main I/O task shutting down.");
-
-    let _ = io_shutdown_tx.send(());
 }
 
 struct EndpointSender<B>
@@ -642,10 +650,34 @@ fn matches_metrics_endpoint_routing(configured_endpoint: &str, metadata: &Metada
         .is_none_or(|routing| routing.should_route_to(configured_endpoint))
 }
 
+/// Returns the process name for the endpoint I/O loop serving `endpoint`.
+///
+/// Two things shape the name beyond the endpoint itself.
+///
+/// The host comes from the *configured* endpoint rather than the resolved one. The resolved URL carries the data plane
+/// version as a host prefix, so naming the task from it would rename the task on every release -- and a process name
+/// is a dimension of the per-task runtime telemetry, which makes it worth keeping stable. This is also why the name
+/// doesn't line up with the `domain` label on the forwarder's own metrics, which is version-prefixed.
+///
+/// The host is then folded into a single segment with [`get_sanitized_name`] rather than interpolated directly. A
+/// period separates segments of a process name, so `app.datadoghq.com` interpolated as-is would spread one task across
+/// three levels of the process tree instead of naming it.
+fn endpoint_io_loop_task_name(endpoint: &ResolvedEndpoint) -> String {
+    // An additional endpoint is configured as a bare host rather than a URL, which is why this falls back to the
+    // configured string as a whole instead of requiring it to parse.
+    let configured = endpoint.configured_endpoint();
+    let host = Url::parse(configured)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| configured.to_owned());
+
+    format!("endpoint_io_loop_{}", get_sanitized_name(&host))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
-    mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
-    config: ForwarderConfiguration, secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
+    mut txns_rx: mpsc::Receiver<Transaction<B>>, context: ComponentContext, config: ForwarderConfiguration,
+    secrets: SecretsGate, service: HttpClient, telemetry: ComponentTelemetry,
     txnq_telemetry: TransactionQueueTelemetry, mut retry_telemetry: TransactionRetryTelemetry,
     retry_cause_telemetry: RetryCauseTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
     endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
@@ -859,13 +891,7 @@ async fn run_endpoint_io_loop<B>(
         }
     }
 
-    debug!(
-        endpoint_url,
-        "Requests channel for endpoint I/O task complete. Synchronizing on shutdown."
-    );
-
-    // Signal to the main I/O task that we've finished.
-    task_barrier.wait().await;
+    debug!(endpoint_url, "Endpoint I/O task stopped.");
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
@@ -1201,6 +1227,7 @@ mod tests {
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_core::{
+        components::test_util::TestComponentSupervisor,
         observability::ComponentMetricsExt as _,
         runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
     };
@@ -2249,6 +2276,30 @@ mod tests {
         (dataspace, forwarder)
     }
 
+    /// Starts `forwarder` under a running component supervisor, the way the topology starts one.
+    ///
+    /// The forwarder spawns on the ambient supervisor, so it has to be started inside the supervisor's scope; outside
+    /// one it would panic for want of an ambient supervisor.
+    async fn spawn_test_forwarder(
+        supervisor: &TestComponentSupervisor, forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
+    ) -> Handle<FrozenChunkedBytesBuffer> {
+        supervisor.scope(async move { forwarder.spawn() }).await
+    }
+
+    /// Drains the forwarder and asserts that it did so on its own.
+    ///
+    /// `ShutdownTimedOut` would mean a task ignored shutdown and had to be aborted, which for the endpoint loops would
+    /// mean the retry queue never finished flushing.
+    async fn drain_test_forwarder(supervisor: TestComponentSupervisor, handle: Handle<FrozenChunkedBytesBuffer>) {
+        handle.shutdown();
+
+        let result = supervisor.shutdown().await;
+        assert!(
+            result.is_ok(),
+            "the forwarder's tasks should have drained on their own: {result:?}"
+        );
+    }
+
     fn build_test_transaction() -> Transaction<FrozenChunkedBytesBuffer> {
         let body = FrozenChunkedBytesBuffer::from(Bytes::from_static(b"test-payload"));
         let request = http::Request::builder()
@@ -2300,6 +2351,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn endpoint_io_loop_task_names_name_the_endpoint_in_one_segment() {
+        // Two properties at once. A period separates segments of a process name, so a host interpolated as-is would
+        // spread one task across levels of the process tree -- `..._io_loop_app`, `datadoghq`, `com` -- rather than
+        // naming it. And the host must be the configured one: the resolved URL is version-prefixed, so naming the task
+        // from it would rename the task on every release.
+        let mut shared = shared_configuration();
+        shared.endpoints.dd_url = ConfigValue::explicit("https://app.datadoghq.com".to_string());
+        shared.endpoints.additional_endpoints =
+            HashMap::from([("app.datadoghq.eu".to_string(), vec!["extra-key".to_string()])]);
+        let endpoints = ForwarderConfiguration::from_configuration(&shared)
+            .build_routable_endpoints()
+            .expect("endpoints should resolve");
+
+        let mut task_names = endpoints
+            .iter()
+            .map(|routable| endpoint_io_loop_task_name(routable.endpoint()))
+            .collect::<Vec<_>>();
+        task_names.sort();
+
+        assert_eq!(
+            vec![
+                // Configured as a URL.
+                "endpoint_io_loop_app_datadoghq_com".to_string(),
+                // Configured as a bare host, which doesn't parse as a URL.
+                "endpoint_io_loop_app_datadoghq_eu".to_string(),
+            ],
+            task_names
+        );
+
+        for task_name in &task_names {
+            assert!(
+                !task_name.contains('.'),
+                "the name must be a single segment: {task_name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarder_io_runs_as_supervised_children() {
+        // The main I/O loop, the per-endpoint I/O loop, and the secrets gate refresher are supervised children rather
+        // than detached tasks, so all of them are accounted for while the forwarder runs.
+        let (server_url, _counter) = start_recording_http_server(vec![StatusCode::OK]).await;
+        let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
+
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
+
+        // One main I/O loop, one endpoint I/O loop for the single configured endpoint, and the secrets gate refresher.
+        // No API key refresher: this forwarder follows no keys configuration.
+        supervisor.wait_for_children(3).await;
+
+        // Closing the transaction channel is the whole shutdown protocol. The main I/O loop finishes and drops its
+        // endpoint sender, so the endpoint loop drains and flushes, and both are gone -- without either of them having
+        // waited on the other, and without this test having waited on either.
+        handle.shutdown();
+        supervisor.wait_for_children(1).await;
+
+        // The refresher is what remains, deliberately: it has no terminal condition of its own, so it is brutally
+        // stopped when the supervisor drops it rather than being waited on.
+        let result = supervisor.shutdown().await;
+        assert!(result.is_ok(), "every child should have stopped on its own: {result:?}");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn forwarder_counts_successful_body_bytes_once_after_retries() {
         let recorder = TestRecorder::default();
@@ -2312,14 +2427,18 @@ mod tests {
         .await;
         let (_, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
 
-        let handle = forwarder.spawn().await;
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
             .await
             .expect("send should succeed");
 
         let observed = wait_for_count_at_least(&counter, 3, Duration::from_secs(3)).await;
-        handle.shutdown().await;
+
+        // The per-transaction telemetry asserted below is recorded by the endpoint I/O loop, so the drain has to finish
+        // before any of it can be read back.
+        drain_test_forwarder(supervisor, handle).await;
         assert!(
             observed >= 3,
             "forwarder should dispatch two retries (saw {observed} requests)"
@@ -2377,7 +2496,8 @@ mod tests {
         let (_, forwarder) = build_test_forwarder_following(&server_url, following).await;
 
         // Spawning the forwarder is what starts key refreshing in production.
-        let handle = forwarder.spawn().await;
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
             .await
@@ -2405,7 +2525,7 @@ mod tests {
         })
         .await;
 
-        handle.shutdown().await;
+        drain_test_forwarder(supervisor, handle).await;
         assert!(rotated.is_ok(), "a rotated API key should reach the request path");
     }
 
@@ -2416,14 +2536,15 @@ mod tests {
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
         let (_, forwarder) = build_test_forwarder(&server_url, secrets_in_use()).await;
 
-        let handle = forwarder.spawn().await;
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
             .await
             .expect("send should succeed");
 
         let observed = wait_for_count_at_least(&counter, 2, Duration::from_secs(3)).await;
-        handle.shutdown().await;
+        drain_test_forwarder(supervisor, handle).await;
 
         assert!(
             observed >= 2,
@@ -2442,7 +2563,8 @@ mod tests {
         let (dataspace, forwarder) = build_test_forwarder(&server_url, Live::new_fixed(Secrets::default())).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
-        let handle = forwarder.spawn().await;
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
             .await
@@ -2456,7 +2578,7 @@ mod tests {
             other => panic!("expected an InvalidApiKey diagnostic event, got: {other:?}"),
         }
 
-        handle.shutdown().await;
+        drain_test_forwarder(supervisor, handle).await;
     }
 
     #[tokio::test]
@@ -2472,7 +2594,8 @@ mod tests {
         let (dataspace, forwarder) = build_test_forwarder(&server_url, secrets).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
-        let handle = forwarder.spawn().await;
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        let handle = spawn_test_forwarder(&supervisor, forwarder).await;
         handle
             .send_transaction(build_test_transaction())
             .await
@@ -2485,6 +2608,6 @@ mod tests {
             other => panic!("expected an InvalidApiKey diagnostic event, got: {other:?}"),
         }
 
-        handle.shutdown().await;
+        drain_test_forwarder(supervisor, handle).await;
     }
 }

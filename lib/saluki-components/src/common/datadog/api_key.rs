@@ -12,6 +12,10 @@
 //!
 //! The refresher signals each write through [`ApiKeyChanges`], so a reader that has to act on a new
 //! key waits for the write rather than racing it.
+//!
+//! A refresher task follows its view forever and has no terminal condition of its own, so it is spawned as a
+//! [`Brutal`][saluki_core::runtime::ShutdownStrategy::Brutal] child: waiting for it at shutdown would hold the drain
+//! open until the supervisor's budget elapsed, and there is nothing in flight to preserve.
 
 use std::collections::HashMap;
 use std::future;
@@ -20,7 +24,7 @@ use std::sync::Arc;
 use agent_data_plane_config::Live;
 use arc_swap::ArcSwap;
 use http::{header::InvalidHeaderValue, HeaderValue};
-use saluki_common::task::spawn_traced_named;
+use saluki_core::runtime::{self, ShutdownStrategy};
 use stringtheory::MetaString;
 use tokio::sync::watch;
 use tracing::{debug, error, warn};
@@ -281,22 +285,30 @@ impl ApiKeyRefresher {
         }
     }
 
-    /// Spawns one task per bound view.
+    /// Spawns one supervised child per bound view.
     ///
     /// The two views are independent, so a change to one does not re-read the other.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a supervision tree.
     pub(crate) fn spawn(self) {
         if let Some((view, targets)) = self.primary {
-            spawn_traced_named(
-                "dd-api-key-refresher-primary",
+            runtime::worker(
+                "api_key_refresher_primary",
                 refresh_primary(view, targets, Arc::clone(&self.changed)),
-            );
+            )
+            .with_shutdown_strategy(ShutdownStrategy::Brutal)
+            .spawn();
         }
 
         if let Some((view, targets)) = self.additional {
-            spawn_traced_named(
-                "dd-api-key-refresher-additional",
+            runtime::worker(
+                "api_key_refresher_additional",
                 refresh_additional(view, targets, self.changed),
-            );
+            )
+            .with_shutdown_strategy(ShutdownStrategy::Brutal)
+            .spawn();
         }
     }
 }
@@ -347,6 +359,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::SalukiConfiguration;
+    use saluki_core::components::test_util::TestComponentSupervisor;
 
     use super::*;
     use crate::common::datadog::{
@@ -376,16 +389,31 @@ mod tests {
         config
     }
 
+    /// Spawns `refresher` under a running component supervisor, the way a forwarder component does.
+    ///
+    /// A refresher spawns on the ambient supervisor, so it has to be started inside the supervisor's scope; outside one
+    /// it would panic for want of an ambient supervisor. The returned supervisor is what keeps the refresher running,
+    /// so a caller has to hold it for as long as the rotation under test needs to land.
+    #[must_use]
+    async fn spawn_refresher(refresher: ApiKeyRefresher) -> TestComponentSupervisor {
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        supervisor.scope(async move { refresher.spawn() }).await;
+
+        supervisor
+    }
+
     /// Returns the endpoints the Datadog forwarder builds for `additional`, with the refresher that
-    /// follows `live` already spawned.
-    fn spawn_datadog_endpoints(live: &LiveConfiguration, additional: &[(&str, &[&str])]) -> Vec<RoutableEndpoint> {
+    /// follows `live` already spawned, and the supervisor keeping it running.
+    #[must_use]
+    async fn spawn_datadog_endpoints(
+        live: &LiveConfiguration, additional: &[(&str, &[&str])],
+    ) -> (TestComponentSupervisor, Vec<RoutableEndpoint>) {
         let endpoints = datadog_endpoints(additional);
 
-        ApiKeyRefresher::new(&endpoints, &live.api_keys())
-            .expect("the endpoints should follow the live views")
-            .spawn();
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
 
-        endpoints
+        (spawn_refresher(refresher).await, endpoints)
     }
 
     /// Returns the endpoints the Datadog forwarder builds for `additional`.
@@ -511,7 +539,7 @@ mod tests {
     #[tokio::test]
     async fn a_rotated_primary_key_reaches_the_endpoint() {
         let live = LiveConfiguration::new(config("start-key", &[]));
-        let endpoints = spawn_datadog_endpoints(&live, &[]);
+        let (_supervisor, endpoints) = spawn_datadog_endpoints(&live, &[]).await;
 
         live.store(config("rotated-key", &[]));
 
@@ -525,7 +553,7 @@ mod tests {
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
         let mut changes = refresher.changes();
-        refresher.spawn();
+        let _supervisor = spawn_refresher(refresher).await;
 
         live.store(config("rotated-key", &[]));
 
@@ -542,7 +570,7 @@ mod tests {
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
         let mut changes = refresher.changes();
-        refresher.spawn();
+        let _supervisor = spawn_refresher(refresher).await;
 
         live.store(config("key\nvalue", &[]));
 
@@ -564,9 +592,9 @@ mod tests {
         // already the views' baseline and no later change reports it.
         live.store(config("rotated-key", &[]));
 
-        ApiKeyRefresher::new(&endpoints, &live.api_keys())
-            .expect("the endpoints should follow the live views")
-            .spawn();
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
+        let _supervisor = spawn_refresher(refresher).await;
 
         await_api_key(endpoints[0].endpoint(), "rotated-key").await;
     }
@@ -579,9 +607,9 @@ mod tests {
 
         live.store(config("start-key", &[(ADDITIONAL_URL, &["rotated-extra-key"])]));
 
-        ApiKeyRefresher::new(&endpoints, &live.api_keys())
-            .expect("the endpoints should follow the live views")
-            .spawn();
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
+        let _supervisor = spawn_refresher(refresher).await;
 
         let additional_endpoint = endpoints
             .iter()
@@ -601,9 +629,9 @@ mod tests {
         let endpoints = ForwarderConfiguration::from_configuration(&shared)
             .build_routable_endpoints()
             .expect("endpoints should resolve");
-        ApiKeyRefresher::new(&endpoints, &live.api_keys())
-            .expect("both primary endpoints should follow the view")
-            .spawn();
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("both primary endpoints should follow the view");
+        let _supervisor = spawn_refresher(refresher).await;
 
         live.store(config("rotated-key", &[]));
 
@@ -616,7 +644,7 @@ mod tests {
     async fn a_rotated_additional_key_reaches_only_its_own_endpoint() {
         let additional: &[(&str, &[&str])] = &[(ADDITIONAL_URL, &["extra-key-1", "extra-key-2"])];
         let live = LiveConfiguration::new(config("start-key", additional));
-        let endpoints = spawn_datadog_endpoints(&live, additional);
+        let (_supervisor, endpoints) = spawn_datadog_endpoints(&live, additional).await;
 
         live.store(config(
             "start-key",
@@ -640,7 +668,7 @@ mod tests {
     async fn a_removed_additional_key_leaves_the_last_usable_key() {
         let additional: &[(&str, &[&str])] = &[(ADDITIONAL_URL, &["extra-key-1", "extra-key-2"])];
         let live = LiveConfiguration::new(config("start-key", additional));
-        let endpoints = spawn_datadog_endpoints(&live, additional);
+        let (_supervisor, endpoints) = spawn_datadog_endpoints(&live, additional).await;
 
         live.store(config("start-key", &[(ADDITIONAL_URL, &["rotated-extra-key"])]));
 
@@ -678,9 +706,8 @@ mod tests {
             )),
             additional: None,
         };
-        ApiKeyRefresher::new(&endpoints, &api_keys)
-            .expect("the destination should follow the view")
-            .spawn();
+        let refresher = ApiKeyRefresher::new(&endpoints, &api_keys).expect("the destination should follow the view");
+        let _supervisor = spawn_refresher(refresher).await;
 
         let mut rotated = SalukiConfiguration::default();
         rotated.domains.multi_region_failover.api_key = Some("rotated-failover-key".to_string());

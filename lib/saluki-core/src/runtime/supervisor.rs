@@ -8,8 +8,10 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
-use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_common::{
+    supervision::{InitializationError, ShutdownStrategy, Supervisable},
+    sync::shutdown::ShutdownHandle,
+};
 use saluki_error::GenericError;
 use serde::{Deserialize, Serialize};
 use snafu::{OptionExt as _, Snafu};
@@ -31,9 +33,6 @@ use crate::runtime::{
 ///
 /// See [`SupervisedChild::create_process`].
 const UNNAMED_CHILD: &str = "unnamed";
-
-/// A `Future` that represents the execution of a supervised process.
-pub type SupervisorFuture = Pin<Box<dyn Future<Output = Result<(), GenericError>> + Send>>;
 
 /// A `Future` that represents the full lifecycle of a worker, including initialization.
 ///
@@ -109,38 +108,6 @@ pub enum ProcessError {
     },
 }
 
-/// Initialization errors.
-///
-/// Initialization errors are distinct from runtime errors: they indicate that a process couldn't be started at all
-/// (for example, failed to bind a port, missing configuration). These errors don't trigger restart logic; instead, they
-/// immediately propagate up and fail the supervisor.
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum InitializationError {
-    /// The process couldn't be initialized due to an error.
-    #[snafu(display("Process failed to initialize: {}", source))]
-    Failed {
-        /// The underlying error that caused initialization to fail.
-        source: GenericError,
-    },
-}
-
-impl From<GenericError> for InitializationError {
-    fn from(source: GenericError) -> Self {
-        Self::Failed { source }
-    }
-}
-
-/// Strategy for shutting down a process.
-#[derive(Clone, Copy, Debug)]
-pub enum ShutdownStrategy {
-    /// Waits for the configured duration for the process to exit, and then forcefully aborts it otherwise.
-    Graceful(Duration),
-
-    /// Forcefully aborts the process without waiting.
-    Brutal,
-}
-
 /// Policy for automatically shutting a supervisor down based on the termination of its _significant_ children.
 ///
 /// A significant child (see [`ChildBuilder::with_significant`][crate::runtime::ChildBuilder::with_significant]) is one whose termination -- when it isn't restarted -- can
@@ -159,49 +126,6 @@ pub enum AutoShutdown {
 
     /// Shut down once _all_ significant children have terminated without being restarted.
     AllSignificant,
-}
-
-/// A supervisable process.
-#[async_trait]
-pub trait Supervisable: Send + Sync {
-    /// Returns the name of the process.
-    fn name(&self) -> &str;
-
-    /// Returns the shutdown strategy for the process.
-    fn shutdown_strategy(&self) -> ShutdownStrategy {
-        ShutdownStrategy::Graceful(Duration::from_secs(5))
-    }
-
-    /// Returns whether this process observes the shutdown signal it is given.
-    ///
-    /// Shutting a subtree down is a _trigger_, not an enforcement: many workers ignore the signal entirely and stop
-    /// only when they reach their own terminal condition, such as an input channel closing. Reporting `false` lets the
-    /// supervisor skip creating a shutdown coordinator it would never usefully fire, and hand the process a
-    /// [`ShutdownHandle::noop`] instead.
-    ///
-    /// This says nothing about _whether_ the supervisor waits for the process -- that's
-    /// [`shutdown_strategy`][Self::shutdown_strategy]. A process that ignores the signal is still waited for, up to
-    /// whatever deadline applies to it.
-    ///
-    /// Defaults to `true`.
-    fn wants_shutdown_signal(&self) -> bool {
-        true
-    }
-
-    /// Initializes the process asynchronously.
-    ///
-    /// During initialization, any resources or configuration for the process can be created asynchronously, and the
-    /// same runtime that's used for running the process is used for initialization. The resulting future is expected to
-    /// complete as soon as reasonably possible after `shutdown` resolves.
-    ///
-    /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the worker
-    /// can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization, the worker
-    /// will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
-    ///
-    /// # Errors
-    ///
-    /// If the process can't be initialized, an error is returned.
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError>;
 }
 
 /// Supervisor errors.
@@ -1519,7 +1443,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::runtime::{self, FnWorker, NodeKind, NodeSnapshot, NodeState};
+    use crate::runtime::{self, FnWorker, NodeKind, NodeSnapshot, NodeState, SupervisorFuture};
     use crate::test_support::wait_until;
 
     /// Behavior for a mock worker during initialization.
@@ -2164,6 +2088,38 @@ mod tests {
         assert!(
             transient_count.load(Ordering::SeqCst) >= 2,
             "transient worker must be restarted after an abnormal exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_child_is_restarted_on_panic() {
+        // The other half of what makes `transient` the right policy for a worker serving an object with a lifetime of
+        // its own -- a cache's expiration loop, say. A panic is a bug worth recovering from, so the worker comes back;
+        // the clean exit that follows the served object being dropped is taken at face value (see
+        // `transient_child_is_not_restarted_on_clean_exit`), so it stays stopped. Under `Permanent` that clean exit
+        // would be restarted straight into another clean exit, over and over, until the restart intensity failed the
+        // whole supervisor.
+        let transient = MockWorker::panicking("transient-worker", Duration::from_millis(50));
+        let transient_count = transient.start_count();
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(ChildSpecification::worker(transient).with_restart_type(RestartType::Transient));
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        wait_until("the panicking transient worker has been restarted", || {
+            transient_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
+        let _ = tx.send(());
+
+        let result = join_supervisor(handle).await;
+        assert!(result.is_ok());
+        assert!(
+            transient_count.load(Ordering::SeqCst) >= 2,
+            "transient worker must be restarted after a panic"
         );
     }
 

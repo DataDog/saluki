@@ -166,10 +166,10 @@ impl Forwarder for Datadog {
 
         let mut health = context.take_health_handle();
 
+        // Both of these spawn supervised children of this component's supervisor, which is what stops them and
+        // bounds their drain once this run-future returns.
         let mut validation = forwarder.api_key_validator().spawn();
-
-        // Spawn our forwarder task to handle sending requests.
-        let forwarder = forwarder.spawn().await;
+        let forwarder = forwarder.spawn();
 
         debug!("Datadog forwarder started.");
 
@@ -193,9 +193,10 @@ impl Forwarder for Datadog {
             }
         }
 
-        // Shutdown the forwarder gracefully.
-        validation.abort();
-        forwarder.shutdown().await;
+        // Start the forwarder's drain. Dropping `validation` stops API key validation the same way. Neither is waited
+        // for here; the component's supervisor owns that, bounded by its shutdown budget.
+        forwarder.shutdown();
+        drop(validation);
 
         debug!("Datadog forwarder stopped.");
 
@@ -230,6 +231,7 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::SalukiConfiguration;
+    use saluki_core::components::test_util::TestComponentSupervisor;
 
     use super::*;
     use crate::common::datadog::{
@@ -323,9 +325,13 @@ mod tests {
         assert_eq!(endpoints.len(), 1);
         assert_eq!("mrf-api-key", &*endpoints[0].endpoint().api_key());
 
-        ApiKeyRefresher::new(&endpoints, &config.api_keys)
-            .expect("the destination should follow the failover view")
-            .spawn();
+        let refresher = ApiKeyRefresher::new(&endpoints, &config.api_keys)
+            .expect("the destination should follow the failover view");
+
+        // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
+        // the test.
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the primary key first: the override does not follow it.
         live_config.shared.endpoints.api_key = "rotated-primary-api-key".to_string();

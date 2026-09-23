@@ -84,6 +84,14 @@ $Panoramic = Join-Path $env:CARGO_TARGET_DIR "release\panoramic.exe"
 $TestDir = Join-Path $RepoRoot "test\integration\cases"
 
 Write-Host "[*] Running Windows integration tests..."
+# Parallelism is deliberately lower than the Linux/macOS runs. Every Windows test case gets its
+# own `nat` network, and creating those (plus attaching each container's endpoint) goes through
+# HNS, which serializes badly: concurrent setups race and the loser gets back
+# `hnsCall failed in Win32: The object already exists. (0x1392)`, erroring the test and failing
+# the whole job. airlock retries that collision (see `with_hns_retry` in airlock's driver), and
+# halving the number of simultaneous racers cuts how often the retry is needed at all. The cost is
+# roughly double the test phase -- a few minutes against a job whose wall clock is dominated by
+# the build image pull and the cargo build -- so the trade is worth making here.
 $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
