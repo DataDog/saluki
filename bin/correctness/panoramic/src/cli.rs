@@ -30,14 +30,7 @@ const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/
 /// Crates that `--log-level` applies to: Panoramic itself and the first-party libraries it links.
 ///
 /// These are tracing target names, which are crate names with underscores rather than dashes.
-const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
-    "panoramic",
-    "airlock",
-    "stele",
-    "saluki_common",
-    "saluki_config",
-    "saluki_error",
-];
+const FIRST_PARTY_LOG_TARGETS: &[&str] = &["panoramic", "airlock", "stele", "saluki_common", "saluki_error"];
 
 /// Verbosity selected by `--log-level`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -111,8 +104,8 @@ pub struct Cli {
     pub command: Command,
 
     /// Log level for panoramic and the first-party libraries it links (airlock,
-    /// stele, saluki-common, saluki-config, saluki-error). External dependencies
-    /// stay silent. RUST_LOG, when set, takes precedence over this flag
+    /// stele, saluki-common, saluki-error). External dependencies stay silent.
+    /// RUST_LOG, when set, takes precedence over this flag
     #[arg(
         long,
         global = true,

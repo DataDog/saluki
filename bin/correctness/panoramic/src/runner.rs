@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
-    config::{parse_file_spec, parse_port_spec, IntegrationConfig},
+    config::{parse_file_spec, parse_port_spec, CaseConfig as _, IntegrationConfig},
     events::TestEvent,
     reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };

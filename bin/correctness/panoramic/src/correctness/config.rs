@@ -10,10 +10,10 @@ use airlock::{
     driver::{ContainerOs, DriverConfig},
 };
 use async_trait::async_trait;
-use saluki_config::ConfigurationLoader;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 
+use crate::config::{deserialize_env_map, CaseConfig};
 use crate::correctness::analysis::AnalysisMode;
 use crate::reporter::TestResult;
 use crate::test::{Test, TestContext, TestSuite};
@@ -75,8 +75,9 @@ pub struct Config {
     #[serde(default)]
     pub require_dogstatsd_forwarded_packets: bool,
 
+    /// Directory holding this case's `config.yaml`, which anchors the relative paths it declares.
     #[serde(skip, default = "PathBuf::new")]
-    pub(crate) base_config_path: PathBuf,
+    pub(crate) base_path: PathBuf,
 }
 
 #[derive(Clone, Deserialize)]
@@ -167,7 +168,7 @@ pub struct TargetConfig {
     ///
     /// Defaults to no variables. Baseline and comparison own their own maps; nothing is shared
     /// between them.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: BTreeMap<String, String>,
 }
 
@@ -201,7 +202,7 @@ impl Test for Config {
     }
 
     fn case_path(&self) -> PathBuf {
-        self.base_config_path.clone()
+        self.base_path.clone()
     }
 
     fn timeout(&self) -> Duration {
@@ -229,46 +230,22 @@ impl Test for Config {
     }
 }
 
+impl CaseConfig for Config {
+    fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
+    fn set_base_path(&mut self, base_path: PathBuf) {
+        self.base_path = base_path;
+    }
+}
+
 impl Config {
-    pub fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
-        let config_path = PathBuf::from(config_path)
-            .canonicalize()
-            .error_context("Failed to canonicalize configuration file path.")?;
-
-        // We load the configuration file from the given path, and also environment variables, and then deserialize.
-        let mut config = ConfigurationLoader::default()
-            .from_yaml(&config_path)
-            .error_context("Failed to load configuration file.")?
-            .from_environment("PANORAMIC")
-            .expect("Environment variable prefix should not be empty.")
-            .into_typed::<Config>()
-            .error_context("Failed to deserialize configuration file.")?;
-
-        // Now that we've deserialized things, calculate the base path of the configuration file we loaded, which we
-        // then use as the base path for any configuration fields which also specify paths to files. We only use the
-        // base path if those paths aren't already absolute.
-        config.base_config_path = config_path
-            .parent()
-            .expect("Configuration file path must be an absolute file path.")
-            .to_path_buf();
-
-        Ok(config)
-    }
-
-    pub fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
-        let path = path.as_ref();
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.base_config_path.join(path)
-        }
-    }
-
     pub fn millstone_config(&self) -> AirlockMillstoneConfig {
         AirlockMillstoneConfig {
             image: self.millstone.image.clone(),
             binary_path: Some(self.millstone.binary_path.clone()),
-            config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
+            config_path: self.resolve_path(&self.millstone.config_path),
         }
     }
 
@@ -292,11 +269,11 @@ impl Config {
         let mut driver_config = DriverConfig::target("target", airlock_target_config).await?;
 
         for file in &target_config.files {
-            // Parse the two file paths -- host path and container path -- from the entry,
-            // and canonicalize the host path. The container path must be absolute.
+            // Parse the two file paths -- host path and container path -- from the entry, and anchor
+            // the host path at the case directory. The container path must be absolute.
             match file.split_once(':') {
                 Some((host_path, container_path)) => {
-                    let host_path = self.get_canonicalized_config_path(host_path);
+                    let host_path = self.resolve_path(host_path);
                     let container_path = Path::new(container_path);
                     if !container_path.is_absolute() {
                         return Err(generic_error!(
