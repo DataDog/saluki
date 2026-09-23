@@ -1010,11 +1010,22 @@ pub trait CaseConfig {
     }
 }
 
+/// Prefix of the environment variables that override values from a case's `config.yaml`.
+///
+/// A variable named `PANORAMIC_<SECTION>__<FIELD>` replaces the matching field within that
+/// section, creating the section if the case does not declare it. CI correctness jobs use these to
+/// run a case with the images built for the commit, such as `PANORAMIC_BASELINE__IMAGE`. A variable
+/// without `__` names a top-level field; names the configuration does not declare are ignored,
+/// which is how unrelated `PANORAMIC_*` variables (command-line arguments, `PANORAMIC_DYNAMIC_*`)
+/// pass through with no effect.
+const ENV_OVERRIDE_PREFIX: &str = "PANORAMIC_";
+
 /// Loads one test case configuration from its `config.yaml`, anchored at that file's directory.
 ///
 /// Every case type loads the same way: plain YAML deserialization, then the case directory recorded
-/// on the result. Values come from the file alone, so YAML typing is what the case gets: an unquoted
-/// `true` is a boolean and does not stand in for the string `"true"`.
+/// on the result. YAML typing is what the case gets: an unquoted `true` is a boolean and does not
+/// stand in for the string `"true"`. Values from `PANORAMIC_<SECTION>__<FIELD>` environment
+/// variables are applied as strings on top of the document, replacing what the file declared.
 ///
 /// # Errors
 ///
@@ -1037,8 +1048,15 @@ where
     let content = std::fs::read_to_string(&config_path)
         .error_context(format!("Failed to read configuration file: {}", config_path.display()))?;
 
-    let mut case: T = serde_yaml::from_str(&content)
+    let mut document: serde_yaml::Value = serde_yaml::from_str(&content)
         .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
+
+    apply_env_overrides(&mut document, std::env::vars());
+
+    let mut case: T = serde_yaml::from_value(document).error_context(format!(
+        "Failed to deserialize configuration file: {}",
+        config_path.display()
+    ))?;
 
     let base_path = config_path
         .parent()
@@ -1047,6 +1065,55 @@ where
     case.set_base_path(base_path);
 
     Ok(case)
+}
+
+/// Applies case-configuration overrides from `PANORAMIC_*` variables to a parsed document.
+///
+/// Takes the variables to apply rather than reading the environment itself, so a caller can pass
+/// anything, including nothing.
+fn apply_env_overrides(document: &mut serde_yaml::Value, vars: impl Iterator<Item = (String, String)>) {
+    for (name, value) in vars {
+        let Some(rest) = name.strip_prefix(ENV_OVERRIDE_PREFIX) else {
+            continue;
+        };
+
+        // The name below the prefix, split into field path segments: `MILLSTONE__IMAGE` becomes
+        // `millstone`, `image`. An empty segment (a leading or doubled `__`) matches nothing in a
+        // case, so the variable is ignored rather than creating a field nothing reads.
+        let segments: Vec<String> = rest.split("__").map(str::to_ascii_lowercase).collect();
+        if segments.iter().any(String::is_empty) {
+            continue;
+        }
+
+        set_override(document, &segments, value);
+    }
+}
+
+/// Replaces the value at a field path in a document, creating the parent sections it lacks.
+///
+/// Skips the override when the path runs through a value that is not a mapping: the document the
+/// case actually declared wins over a variable trying to traverse it.
+fn set_override(document: &mut serde_yaml::Value, segments: &[String], value: String) {
+    let Some((last, parents)) = segments.split_last() else {
+        return;
+    };
+
+    let mut current = document;
+    for segment in parents {
+        let Some(map) = current.as_mapping_mut() else { return };
+        let key = serde_yaml::Value::String(segment.clone());
+        if !map.contains_key(&key) {
+            map.insert(key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        }
+        current = map.get_mut(&key).expect("key was just inserted");
+    }
+
+    if let Some(map) = current.as_mapping_mut() {
+        map.insert(
+            serde_yaml::Value::String(last.clone()),
+            serde_yaml::Value::String(value),
+        );
+    }
 }
 
 /// Discover all test cases across one or more directories.
@@ -1534,10 +1601,58 @@ comparison:
         let case_dir = base_dir.path().join("dsd-paths").canonicalize().unwrap();
         assert_eq!(config.millstone_config().config_path, case_dir.join("millstone.yaml"));
 
-        // An absolute path is the case's own choice and passes through untouched.
-        assert_eq!(
-            config.resolve_path("/etc/datadog-agent/datadog.yaml"),
+        // An absolute path is the case's own choice and passes through untouched. Pick one that is
+        // absolute on the platform running the test: a Unix-style root is not absolute on Windows.
+        let absolute_path = if cfg!(windows) {
+            PathBuf::from(r"C:\etc\datadog-agent\datadog.yaml")
+        } else {
             PathBuf::from("/etc/datadog-agent/datadog.yaml")
+        };
+        assert_eq!(config.resolve_path(&absolute_path), absolute_path);
+    }
+
+    #[test]
+    fn env_overrides_replace_a_declared_field_and_create_an_undeclared_section() {
+        let mut document = serde_yaml::from_str(
+            r#"
+millstone:
+  image: saluki-images/correctness-tools:latest
+"#,
+        )
+        .expect("document should parse");
+
+        apply_env_overrides(
+            &mut document,
+            [
+                (
+                    "PANORAMIC_MILLSTONE__IMAGE".to_string(),
+                    "registry.ddbuild.io/saluki/correctness-tools:abc123".to_string(),
+                ),
+                (
+                    "PANORAMIC_DATADOG_INTAKE__IMAGE".to_string(),
+                    "registry.ddbuild.io/saluki/correctness-tools:abc123".to_string(),
+                ),
+                // No `__`, so this names a top-level field no case declares. It lands in the
+                // document and is ignored at deserialization, like the CLI's own variables are.
+                ("PANORAMIC_LOG_DIR".to_string(), "somewhere".to_string()),
+            ]
+            .into_iter(),
+        );
+
+        // The declared field takes the override, and the missing section is created by it.
+        #[derive(Deserialize)]
+        struct MillstoneAndIntake {
+            millstone: CorrectnessMillstoneConfig,
+            datadog_intake: CorrectnessDatadogIntakeConfig,
+        }
+        let config: MillstoneAndIntake = serde_yaml::from_value(document).expect("config should deserialize");
+        assert_eq!(
+            config.millstone.image,
+            "registry.ddbuild.io/saluki/correctness-tools:abc123"
+        );
+        assert_eq!(
+            config.datadog_intake.image,
+            "registry.ddbuild.io/saluki/correctness-tools:abc123"
         );
     }
 
