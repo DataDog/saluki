@@ -127,7 +127,7 @@ impl DataPlaneAPIClient {
     /// Temporarily overrides the log level for the process.
     ///
     /// The filter directives follow the format used by
-    /// [`tracing_subscriber::filter::EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives),
+    /// [`tracing_subscriber::filter::Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/targets/struct.Targets.html),
     /// which allows for specifying log levels on a global or per-module basis. The duration of the override is
     /// specified in seconds, and the override is reverted after that duration has passed. The same override can be set
     /// again while an override is active in under to "refresh" its override duration.

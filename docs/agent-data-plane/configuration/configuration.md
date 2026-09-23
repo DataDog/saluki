@@ -573,12 +573,17 @@ log_level: debug
 This keeps third-party dependencies such as `hyper`, `tokio`, and `tonic` at their
 default filtering unless you opt them in.
 
-To control dependency logs or set a global fallback, use advanced `EnvFilter` directives
-in `log_level`. ADP applies those directive strings as configured:
+To control dependency logs or set a global fallback, use advanced filter directives in
+`log_level`: a comma-separated list of bare levels (`warn`), which set the global
+fallback, and `target=level` pairs, which apply to that target and any target nested
+under it. ADP applies those directive strings as configured:
 
 ```yaml
 log_level: warn,agent_data_plane=debug,hyper=warn
 ```
+
+Span and field filters, such as `agent_data_plane[span{field=value}]=debug`, are not
+supported. ADP fails to start if `log_level` contains one.
 
 ### `min_tls_version`
 

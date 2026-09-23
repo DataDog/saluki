@@ -40,7 +40,6 @@ tokio-util = { workspace = true, features = ["compat"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
-  "env-filter",
   "fmt",
   "local-time",
   "registry",

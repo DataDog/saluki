@@ -6,9 +6,14 @@
 
 use std::{fs::File, path::PathBuf, thread, time::Duration};
 
+use saluki_common::logging::filter_from_env;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
-use tracing_subscriber::{filter::LevelFilter, EnvFilter};
+use tracing_subscriber::{
+    filter::{LevelFilter, Targets},
+    layer::SubscriberExt as _,
+    util::SubscriberInitExt as _,
+};
 
 const COMPLETION_FILE_ARG: &str = "--completion-file";
 const TRAFFIC_CAPTURE_DIR_ARG: &str = "--traffic-capture-dir";
@@ -28,13 +33,10 @@ mod target;
 fn main() {
     tracing_subscriber::fmt()
         .compact()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
         .with_ansi(true)
         .with_target(true)
+        .finish()
+        .with(filter_from_env(Targets::new().with_default(LevelFilter::INFO)))
         .init();
 
     match run() {

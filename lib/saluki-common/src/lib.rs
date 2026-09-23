@@ -4,6 +4,7 @@ pub mod collections;
 pub mod deser;
 pub mod hash;
 pub mod iter;
+pub mod logging;
 pub mod rate;
 pub mod resource_tracking;
 pub mod scrubber;
