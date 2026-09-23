@@ -1,0 +1,101 @@
+name: Check AWS-LC-FIPS 4.x Certification
+
+# `aws-lc-rs` is pinned below 1.18 (and `aws-lc-fips-sys` >= 0.14 is banned in deny.toml) because newer releases
+# switch the `fips` feature to AWS-LC-FIPS 4.x, which has been submitted for FIPS 140-3 validation but is not yet
+# certified. AWS-LC tracks certification status in its FIPS.md, listing submitted modules under "Modules in Process"
+# and certified ones under "Validations". This workflow watches for a 4.x entry to appear under "Validations" and opens
+# an issue so we know when the pin can be lifted.
+#
+# Delete this workflow once the pin has been lifted.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check-certification:
+    if: github.repository == 'DataDog/saluki'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check AWS-LC FIPS.md for a certified 4.x module
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fipsDocPath = 'crypto/fipsmodule/FIPS.md';
+            const fipsDocUrl = `https://github.com/aws/aws-lc/blob/main/${fipsDocPath}`;
+
+            const { data: file } = await github.rest.repos.getContent({
+              owner: 'aws',
+              repo: 'aws-lc',
+              path: fipsDocPath,
+              ref: 'main',
+            });
+            const doc = Buffer.from(file.content, 'base64').toString('utf8');
+
+            // Grab the "## Validations" section, up to the next level-two heading.
+            const validationsMatch = doc.match(/^## Validations\s*$([\s\S]*?)(?=^## )/m);
+
+            // Fail loudly if the document no longer looks the way we expect, rather than silently never finding a
+            // match. The 3.1 static module is the one we currently ship, so it should always be listed.
+            if (!validationsMatch || !/AWS-LC-FIPS v3\.1 \(static/.test(validationsMatch[1])) {
+              core.setFailed(
+                `Could not find the expected "Validations" section in ${fipsDocUrl}. ` +
+                'The document format may have changed; update this workflow to match.'
+              );
+              return;
+            }
+
+            // We ship a static FIPS build, so the static library certificate is the one that matters.
+            const certified = validationsMatch[1]
+              .split('\n')
+              .filter((line) => /AWS-LC-FIPS v4\.\d+ \(static/.test(line));
+
+            if (certified.length === 0) {
+              console.log('AWS-LC-FIPS 4.x (static) is not yet listed under "Validations".');
+              return;
+            }
+
+            console.log('AWS-LC-FIPS 4.x (static) appears to be certified:');
+            certified.forEach((line) => console.log(`  ${line}`));
+
+            const title = 'AWS-LC-FIPS 4.x is FIPS 140-3 certified: lift the aws-lc-rs pin';
+
+            // Don't open a duplicate if we've already filed one (open or closed).
+            const { data: existing } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue in:title "${title}"`,
+            });
+            if (existing.items.length > 0) {
+              console.log(`Issue already exists: ${existing.items[0].html_url}`);
+              return;
+            }
+
+            const body = [
+              `AWS-LC now lists a 4.x module under "Validations" in [FIPS.md](${fipsDocUrl}):`,
+              '',
+              ...certified,
+              '',
+              'Verify the certificate on the NIST CMVP site, then lift the pin to FIPS 4.x:',
+              '',
+              '- [ ] Remove the `<1.18` upper bound on `aws-lc-rs` in the workspace `Cargo.toml` and update its comment',
+              '- [ ] Remove the `aws-lc-fips-sys@>=0.14` ban from `deny.toml`',
+              '- [ ] Remove the `aws-lc-rs` `allowedVersions` rule from `renovate.json5`',
+              '- [ ] Revisit the `RUSTSEC-2026-0285` ignore in `deny.toml`',
+              '- [ ] Delete `.github/workflows/check-aws-lc-fips-certification.yml`',
+              '',
+              '_This issue was automatically opened by the ' +
+                `[Check AWS-LC-FIPS 4.x Certification](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+                '/blob/main/.github/workflows/check-aws-lc-fips-certification.yml) workflow._',
+            ].join('\n');
+
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['automated', 'dependencies'],
+            });
+            console.log(`Opened issue: ${issue.html_url}`);
