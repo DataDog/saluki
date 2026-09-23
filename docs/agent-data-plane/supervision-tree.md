@@ -54,16 +54,19 @@ only while a node is running. These three fields are absent only for a node that
 ```console
 $ agent-data-plane debug runtime show-processes
 Supervision tree for 'adp-root', captured 2026-09-03T12:00:00Z
-  52 processes (12 supervisors, 40 workers): 51 running, 1 exited, 0 registered
+  54 processes (14 supervisors, 40 workers): 53 running, 1 exited, 0 registered
   3 restarts across the tree, max depth 5
   resource tracking on: 24.1 MiB live, 12.3s CPU
 
 adp-root  [sup] running  pid=1  up=2h15m  one_for_one(0/5s)  live=1.2 MiB
 |-- app-bootstrap  [sup] running  pid=3  up=2h15m  one_for_one(1/5s)  live=104.0 KiB
-|   |-- logging-override  [worker] running  pid=4  up=2h15m
-|   `-- runtime-metrics  [worker] running  pid=6  up=2h15m
-|-- internal-sup  [sup] running  pid=8  up=2h15m  one_for_one(1/5s)  live=890.0 KiB
-|   `-- ctrl-pln  [sup] running  pid=9  up=2h15m  restarts=1  one_for_one(1/5s)  rt=1thr  live=612.0 KiB
+|   |-- logging  [sup] running  pid=4  up=2h15m  one_for_one(1/5s)  live=12.0 KiB
+|   |   `-- level-override-processor  [worker] running  pid=5  up=2h15m
+|   `-- metrics  [sup] running  pid=6  up=2h15m  one_for_one(1/5s)  live=92.0 KiB
+|       |-- flusher  [worker] running  pid=7  up=2h15m
+|       `-- reflector  [worker] running  pid=8  up=2h15m
+|-- internal-sup  [sup] running  pid=10  up=2h15m  one_for_one(1/5s)  live=890.0 KiB
+|   `-- ctrl-pln  [sup] running  pid=11  up=2h15m  restarts=1  one_for_one(1/5s)  rt=1thr  live=612.0 KiB
 `-- primary  [worker] running  pid=20  up=2h15m
     `-- topology.primary  [sup] running  pid=21  up=2h15m  one_for_one(0/5s)  live=18.4 MiB
 ```

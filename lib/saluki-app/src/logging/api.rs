@@ -196,7 +196,7 @@ impl LoggingOverrideWorker {
 #[async_trait]
 impl Supervisable for LoggingOverrideWorker {
     fn name(&self) -> &str {
-        "dynamic-logging-override-processor"
+        "level-override-processor"
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {

@@ -263,7 +263,24 @@ fn is_process_name_segment_valid(name: &str) -> bool {
     true
 }
 
-pub(crate) fn get_sanitized_name(name: &str) -> MetaString {
+/// Sanitizes `name` into a single process-name segment.
+///
+/// Invalid characters are replaced with underscores, runs of underscores are collapsed into one, and leading and
+/// trailing non-alphanumeric characters are trimmed. A name that is already a valid segment is returned unchanged.
+///
+/// Periods are *not* treated as separators here, unlike in a scoped process name: they are invalid within a segment,
+/// so they become underscores like any other invalid character. That is what makes this the right way to fold a
+/// dotted value -- a hostname, a URL authority -- into one segment of a task name. Interpolating such a value
+/// directly would instead split it across levels of the process tree.
+///
+/// # Examples
+///
+/// ```
+/// # use saluki_core::runtime::get_sanitized_name;
+/// assert_eq!(&*get_sanitized_name("app.datadoghq.com"), "app_datadoghq_com");
+/// assert_eq!(&*get_sanitized_name("already_valid"), "already_valid");
+/// ```
+pub fn get_sanitized_name(name: &str) -> MetaString {
     if is_process_name_segment_valid(name) {
         name.into()
     } else {

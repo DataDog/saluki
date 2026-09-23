@@ -92,7 +92,7 @@ impl Supervisable for InternalTelemetryAPIWorker {
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        let metrics = get_shared_metrics_state().await;
+        let metrics = get_shared_metrics_state();
         let handler = InternalTelemetryAPIHandler::new(metrics);
         let route = DynamicRoute::http(EndpointType::Unprivileged, &handler);
 
