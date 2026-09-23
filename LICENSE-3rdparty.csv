@@ -101,6 +101,9 @@ darling_core,https://github.com/TedDriggs/darling,MIT,Ted Driggs <ted.driggs@out
 darling_macro,https://github.com/TedDriggs/darling,MIT,Ted Driggs <ted.driggs@outlook.com>
 dashmap,https://github.com/xacrimon/dashmap,MIT,Acrimon <joel.wejdenstal@gmail.com>
 data-encoding,https://github.com/ia0/data-encoding,MIT,Julien Cretin <git@ia0.eu>
+defmt,https://github.com/knurling-rs/defmt,MIT OR Apache-2.0,The Knurling-rs developers
+defmt-macros,https://github.com/knurling-rs/defmt,MIT OR Apache-2.0,The Knurling-rs developers
+defmt-parser,https://github.com/knurling-rs/defmt,MIT OR Apache-2.0,The Knurling-rs developers
 der,https://github.com/RustCrypto/formats,Apache-2.0 OR MIT,RustCrypto Developers
 der,https://github.com/RustCrypto/formats/tree/master/der,Apache-2.0 OR MIT,RustCrypto Developers
 der-parser,https://github.com/rusticata/der-parser,MIT OR Apache-2.0,Pierre Chifflier <chifflier@wzdftpd.net>
