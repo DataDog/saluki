@@ -10,7 +10,8 @@
 
 use std::io::Write;
 
-use saluki_error::{generic_error, GenericError};
+use saluki_core::runtime::Supervisor;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
@@ -90,17 +91,17 @@ impl LoggingGuard {
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
 /// at runtime.
 ///
-/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a
-/// [`LoggingOverrideWorker`] that must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] to drive
-/// the dynamic override processor; the worker also asserts the privileged API routes for runtime filter control.
-/// Without the worker running, override requests are accepted but never applied.
+/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a [`Supervisor`]
+/// holding the subsystem's background workers. The caller must arrange for that supervisor to run -- typically by
+/// adding it to a parent supervisor -- or override requests are accepted but never applied.
 ///
 /// # Errors
 ///
-/// If the logging subsystem was already initialized, an error will be returned.
+/// If the logging subsystem was already initialized, or its supervisor can't be constructed, an error will be
+/// returned.
 pub(crate) async fn initialize_logging(
     config: LoggingConfiguration,
-) -> Result<(LoggingGuard, LoggingOverrideWorker), GenericError> {
+) -> Result<(LoggingGuard, Supervisor), GenericError> {
     // Build the initial output stack from the supplied configuration. This is later swappable via
     // `BootstrapGuard::reload_logging` once the Datadog Agent provides authoritative configuration.
     let (output_stack, worker_guards) = build_output_stack(&config)?;
@@ -119,13 +120,18 @@ pub(crate) async fn initialize_logging(
         .with(output_layer.with_filter(filter_layer))
         .try_init()?;
 
+    // The override worker also asserts the privileged API routes for runtime filter control, so nothing driven
+    // through those routes takes effect until this supervisor is running.
+    let mut supervisor = Supervisor::new("logging").error_context("Failed to construct logging supervisor.")?;
+    supervisor.add_worker(override_worker);
+
     Ok((
         LoggingGuard {
             worker_guards,
             stack_handle,
             controller,
         },
-        override_worker,
+        supervisor,
     ))
 }
 

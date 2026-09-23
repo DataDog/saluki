@@ -9,6 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 bytes = { workspace = true }
 crossbeam-queue = { workspace = true }
 foldhash = { workspace = true }
@@ -26,6 +27,7 @@ serde = { workspace = true }
 serde_with = { workspace = true }
 shake = { workspace = true }
 smallvec = { workspace = true }
+snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
