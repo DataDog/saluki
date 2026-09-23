@@ -2,9 +2,9 @@
 </div></details><h2 id="implementations" class="section-header">Implementations<a href="#implementations" class="anchor">§</a></h2><div id="implementations-list"><details class="toggle implementors-toggle" open><summary><section id="impl-MethodFilter" class="impl"><a class="src rightside" href="https://docs.rs/axum/0.8.9/src/axum/routing/method_filter.rs.html#11">Source</a><a href="#impl-MethodFilter" class="anchor">§</a><h3 class="code-header">impl <a class="struct" href="struct.MethodFilter.html" title="struct saluki_api::routing::MethodFilter">MethodFilter</a></h3></section></summary><div class="impl-items"><details class="toggle" open><summary><section id="associatedconstant.CONNECT" class="associatedconstant"><a class="src rightside" href="https://docs.rs/axum/0.8.9/src/axum/routing/method_filter.rs.html#29">Source</a><h4 class="code-header">pub const <a href="#associatedconstant.CONNECT" class="constant">CONNECT</a>: <a class="struct" href="struct.MethodFilter.html" title="struct saluki_api::routing::MethodFilter">MethodFilter</a></h4></section></summary><div class="docblock"><p>Match <code>CONNECT</code> requests.</p>
 <p>This is useful for implementing HTTP/2’s [extended CONNECT method],
 in which the <code>:protocol</code> pseudoheader is read
-(using <a href="https://docs.rs/hyper/1.11.0/hyper/ext/struct.Protocol.html" title="struct hyper::ext::Protocol"><code>hyper::ext::Protocol</code></a>)
+(using <a href="https://docs.rs/hyper/1.11.1/hyper/ext/struct.Protocol.html" title="struct hyper::ext::Protocol"><code>hyper::ext::Protocol</code></a>)
 and the connection upgraded to a bidirectional byte stream
-(using <a href="https://docs.rs/hyper/1.11.0/hyper/upgrade/fn.on.html" title="fn hyper::upgrade::on"><code>hyper::upgrade::on</code></a>).</p>
+(using <a href="https://docs.rs/hyper/1.11.1/hyper/upgrade/fn.on.html" title="fn hyper::upgrade::on"><code>hyper::upgrade::on</code></a>).</p>
 <p>As seen in the <a href="https://www.iana.org/assignments/http-upgrade-tokens/http-upgrade-tokens.xhtml">HTTP Upgrade Token Registry</a>,
 common uses include WebSockets and proxying UDP or IP –
 though note that when using <a href="crate::extract::WebSocketUpgrade"><code>WebSocketUpgrade</code></a>
