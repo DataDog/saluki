@@ -34,7 +34,7 @@ impl IntoWorkerResult for Result<(), GenericError> {
     }
 }
 
-type WorkerBody = Box<dyn FnOnce() -> SupervisorFuture + Send>;
+type WorkerBody = Box<dyn FnOnce(ShutdownHandle) -> SupervisorFuture + Send>;
 
 /// A [`Supervisable`] worker built from a plain future.
 ///
@@ -43,20 +43,26 @@ type WorkerBody = Box<dyn FnOnce() -> SupervisorFuture + Send>;
 ///
 /// # Shutdown
 ///
-/// An `FnWorker` is never handed a shutdown signal, and reports as much through
+/// A worker created with [`new`][Self::new] never gets a shutdown signal, and it reports this through
 /// [`wants_shutdown_signal`][Supervisable::wants_shutdown_signal]. Shutdown of a subtree is a _trigger_, not an
 /// enforcement: the workers within it keep running until their terminal conditions are reached, which is what lets a
 /// set of tasks connected by channels drain in dependency order without any of them having to know that order. The
-/// supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] is the backstop for work that
-/// takes too long, and [`ShutdownStrategy::Brutal`] is the answer for work that has no terminal condition at all.
+/// supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] is the backstop for work that takes
+/// too long, and [`ShutdownStrategy::Brutal`] is the answer for work that has no terminal condition at all.
 ///
-/// A worker that genuinely needs to observe shutdown -- to run cleanup, or because it has no other way to know it
-/// should stop -- should implement [`Supervisable`] directly, which does receive the signal.
+/// Some workers must observe shutdown, for example a worker that:
+///
+/// - must stop a long-lived connection gracefully
+/// - must run cleanup
+/// - has no other way to know when to stop
+///
+/// Create such a worker with [`with_shutdown`][Self::with_shutdown] instead, which gives its body the signal.
 ///
 /// This worker cannot be restarted, as the future is consumed during initialization.
 pub struct FnWorker {
     name: String,
     body: Mutex<Option<WorkerBody>>,
+    wants_signal: bool,
 }
 
 impl FnWorker {
@@ -84,9 +90,45 @@ impl FnWorker {
     {
         Self {
             name: name.into(),
-            body: Mutex::new(Some(Box::new(move || {
+            body: Mutex::new(Some(Box::new(move |_| {
                 Box::pin(async move { fut.await.into_worker_result() })
             }))),
+            wants_signal: false,
+        }
+    }
+
+    /// Creates a worker whose body gets the shutdown signal.
+    ///
+    /// `f` is called once, when the worker starts. Its argument is the [`ShutdownHandle`] that the supervisor of the
+    /// worker fires when the worker must stop. The handle also carries the [deadline][ShutdownHandle::deadline] by
+    /// which the worker must finish, if there is a deadline.
+    ///
+    /// Prefer [`worker_with_shutdown`][crate::runtime::worker_with_shutdown] and its counterpart on
+    /// [`SupervisorHandle`][crate::runtime::SupervisorHandle]. These functions wrap this function with the correct
+    /// defaults for a dynamically spawned child.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use saluki_core::runtime::FnWorker;
+    /// # async fn serve_until(_: saluki_common::sync::shutdown::ShutdownHandle) {}
+    /// let worker = FnWorker::with_shutdown("conn_handler", |shutdown| serve_until(shutdown));
+    /// ```
+    #[must_use]
+    pub fn with_shutdown<N, F, Fut>(name: N, f: F) -> Self
+    where
+        N: Into<String>,
+        F: FnOnce(ShutdownHandle) -> Fut + Send + 'static,
+        Fut: Future + Send + 'static,
+        Fut::Output: IntoWorkerResult,
+    {
+        Self {
+            name: name.into(),
+            body: Mutex::new(Some(Box::new(move |shutdown| {
+                let fut = f(shutdown);
+                Box::pin(async move { fut.await.into_worker_result() })
+            }))),
+            wants_signal: true,
         }
     }
 }
@@ -102,10 +144,10 @@ impl Supervisable for FnWorker {
     }
 
     fn wants_shutdown_signal(&self) -> bool {
-        false
+        self.wants_signal
     }
 
-    async fn initialize(&self, _process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let body = self
             .body
             .lock()
@@ -113,7 +155,7 @@ impl Supervisable for FnWorker {
             .take()
             .ok_or_else(|| InitializationError::from(generic_error!("worker already initialized")))?;
 
-        Ok(body())
+        Ok(body(process_shutdown))
     }
 }
 
@@ -174,6 +216,25 @@ mod tests {
         // The supervisor uses this to skip allocating a shutdown coordinator it would never fire: an `FnWorker` runs
         // until its own terminal condition regardless of what the supervisor signals.
         assert!(!FnWorker::new("test", async {}).wants_shutdown_signal());
+    }
+
+    #[tokio::test]
+    async fn worker_with_shutdown_wants_and_receives_the_signal() {
+        let worker = FnWorker::with_shutdown("test", |shutdown| async move {
+            shutdown.await;
+        });
+        assert!(worker.wants_shutdown_signal());
+
+        let (coordinator, handle) = ShutdownHandle::paired();
+        let run = worker.initialize(handle).await.expect("should initialize");
+        let run = tokio::spawn(run);
+
+        coordinator.shutdown();
+        timeout(RUN_TIMEOUT, run)
+            .await
+            .expect("worker should stop once signalled")
+            .expect("worker task should not panic")
+            .expect("should exit cleanly");
     }
 
     #[tokio::test]

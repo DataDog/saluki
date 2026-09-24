@@ -8,13 +8,16 @@ use std::{
             AtomicBool, AtomicUsize,
             Ordering::{AcqRel, Acquire, Release},
         },
-        Arc,
+        Arc, OnceLock,
     },
     task::{Context, Poll},
 };
 
 use pin_project::{pin_project, pinned_drop};
-use tokio::sync::{futures::OwnedNotified, Notify};
+use tokio::{
+    sync::{futures::OwnedNotified, Notify},
+    time::Instant,
+};
 
 #[derive(Default)]
 struct ShutdownInner {
@@ -22,6 +25,11 @@ struct ShutdownInner {
     notify: Arc<Notify>,
     outstanding: AtomicUsize,
     all_dropped: Notify,
+    /// The deadline for the handles to finish their shutdown, if the coordinator gave one.
+    ///
+    /// The coordinator sets this value before the flag. Thus, a handle that sees the shutdown also sees the deadline
+    /// that came with it.
+    deadline: OnceLock<Instant>,
 }
 
 impl ShutdownInner {
@@ -98,6 +106,21 @@ impl ShutdownCoordinator {
         self.state.signal();
     }
 
+    /// Signals shutdown to all outstanding handles without waiting, and gives them a deadline to finish.
+    ///
+    /// Handles read the deadline through [`ShutdownHandle::deadline`]. The deadline is only advice, and nothing here
+    /// enforces it. But usually, the code that gave the deadline stops waiting when the deadline passes, and then
+    /// aborts all work that remains. Thus, a handle can control the timing of its own shutdown. For example, a handle
+    /// can drain gracefully, and then stop immediately when the deadline is near.
+    ///
+    /// The code that gave the deadline can also stop the work a short time before the deadline, to clean up after the
+    /// work before the deadline passes. Thus, a handle must not plan to use all the time until the deadline.
+    pub fn shutdown_with_deadline(self, deadline: Instant) {
+        // Set the deadline before the signal, so that a handle that sees the shutdown also sees its deadline.
+        let _ = self.state.deadline.set(deadline);
+        self.state.signal();
+    }
+
     /// Signals shutdown to all outstanding handles, waiting until all handles have completed (been dropped).
     ///
     /// If there are no outstanding handles, this returns immediately.
@@ -161,6 +184,51 @@ impl ShutdownHandle {
     pub fn is_triggered(&self) -> bool {
         self.state.flag.load(Acquire)
     }
+
+    /// Returns the deadline for shutdown to finish, if a deadline was given.
+    ///
+    /// Returns `None` until shutdown is triggered. Also returns `None` if shutdown was triggered without a deadline.
+    /// This occurs with [`ShutdownCoordinator::shutdown`], or when the coordinator is dropped. See
+    /// [`ShutdownCoordinator::shutdown_with_deadline`].
+    pub fn deadline(&self) -> Option<Instant> {
+        self.view().deadline()
+    }
+
+    /// Returns a read-only view of this handle's shutdown signal.
+    ///
+    /// Clone the view to observe the signal from other tasks.
+    pub fn view(&self) -> ShutdownView {
+        ShutdownView {
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+/// A read-only view of the shutdown signal of a [`ShutdownHandle`].
+///
+/// A view reports the same state as the handle that it came from. But a view is not a handle: it does not count as an
+/// outstanding handle, so [`ShutdownCoordinator::shutdown_and_wait`] does not wait for it, and it cannot be awaited.
+#[derive(Clone)]
+pub struct ShutdownView {
+    state: Arc<ShutdownInner>,
+}
+
+impl ShutdownView {
+    /// Returns `true` if shutdown has been triggered.
+    pub fn is_triggered(&self) -> bool {
+        self.state.flag.load(Acquire)
+    }
+
+    /// Returns the deadline for shutdown to finish, if a deadline was given.
+    ///
+    /// See [`ShutdownHandle::deadline`].
+    pub fn deadline(&self) -> Option<Instant> {
+        if self.is_triggered() {
+            self.state.deadline.get().copied()
+        } else {
+            None
+        }
+    }
 }
 
 impl Future for ShutdownHandle {
@@ -219,6 +287,66 @@ mod tests {
 
         drop(coordinator);
         assert!(handle.is_triggered());
+    }
+
+    #[test]
+    fn deadline_is_absent_until_shutdown_and_without_one() {
+        let (coordinator, handle) = ShutdownHandle::paired();
+        assert_eq!(handle.deadline(), None);
+
+        coordinator.shutdown();
+        assert!(handle.is_triggered());
+        assert_eq!(handle.deadline(), None);
+    }
+
+    #[test]
+    fn deadline_is_absent_when_shutdown_comes_from_dropping_the_coordinator() {
+        let (coordinator, handle) = ShutdownHandle::paired();
+        drop(coordinator);
+
+        assert!(handle.is_triggered());
+        assert_eq!(handle.deadline(), None);
+    }
+
+    #[tokio::test]
+    async fn deadline_is_visible_to_every_handle() {
+        let mut coordinator = ShutdownCoordinator::default();
+        let first = coordinator.register();
+        let second = coordinator.register();
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        coordinator.shutdown_with_deadline(deadline);
+
+        assert!(first.is_triggered() && second.is_triggered());
+        assert_eq!(first.deadline(), Some(deadline));
+        assert_eq!(second.deadline(), Some(deadline));
+    }
+
+    #[test]
+    fn view_reports_the_state_of_its_handle() {
+        let (coordinator, handle) = ShutdownHandle::paired();
+        let view = handle.view();
+        assert!(!view.is_triggered());
+        assert_eq!(view.deadline(), None);
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        coordinator.shutdown_with_deadline(deadline);
+        assert!(view.is_triggered());
+        assert_eq!(view.deadline(), Some(deadline));
+    }
+
+    #[tokio::test]
+    async fn view_is_not_waited_for() {
+        let (coordinator, handle) = ShutdownHandle::paired();
+        let view = handle.view();
+
+        // The view is not an outstanding handle. Thus, after the handle is dropped, a coordinator that waits for its
+        // handles does not wait for the view.
+        drop(handle);
+        tokio::time::timeout(std::time::Duration::from_secs(1), coordinator.shutdown_and_wait())
+            .await
+            .expect("the view must not hold up the coordinator");
+        assert!(view.is_triggered());
     }
 
     #[test]
