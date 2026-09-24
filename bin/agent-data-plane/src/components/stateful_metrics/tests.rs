@@ -711,7 +711,7 @@ async fn start_destination(
         queue: DeliveryQueueConfiguration::from_configuration(settings),
         stop_timeout: TEST_TIMEOUT,
     };
-    let component = ComponentContext::test_destination("stateful_metrics");
+    let component = ComponentContext::test_destination("dd_stateful_metrics_out");
     let destination = configuration
         .build(BuildContext::new(component.clone(), ResourceRegistry::new()))
         .await
@@ -770,7 +770,7 @@ async fn destination_flushes_sparse_input_and_waits_for_ack_on_shutdown() {
 
 #[tokio::test]
 async fn router_sends_supported_series_only_to_stateful_destination() {
-    let component = ComponentContext::test_transform("stateful_metrics_route");
+    let component = ComponentContext::test_transform("dd_stateful_metrics_router");
     let router = StatefulMetricsRouterConfiguration
         .build(BuildContext::new(component.clone(), ResourceRegistry::new()))
         .await

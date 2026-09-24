@@ -208,9 +208,9 @@ class Fixture:
         intake_usage = subprocess.check_output(["ps", "-o", "rss=,%cpu=", "-p", str(self.intake.pid)], text=True).split()
         return {"time": time.monotonic(), "rss_kib": int(usage[0]), "cpu_percent": float(usage[1]),
                 "intake_rss_kib": int(intake_usage[0]), "intake_cpu_percent": float(intake_usage[1]),
-                "high_priority_entries": self.telemetry("endpoint_high_prio_queue_insertions_total", "stateful_metrics")
-                - self.telemetry("endpoint_high_prio_queue_removals_total", "stateful_metrics"),
-                "queue_entries": self.telemetry("network_http_retry_queue_size", "stateful_metrics"),
+                "high_priority_entries": self.telemetry("endpoint_high_prio_queue_insertions_total", "dd_stateful_metrics_out")
+                - self.telemetry("endpoint_high_prio_queue_removals_total", "dd_stateful_metrics_out"),
+                "queue_entries": self.telemetry("network_http_retry_queue_size", "dd_stateful_metrics_out"),
                 "acked": self.telemetry("stateful_metrics_batches_acked_total"),
                 "failures": self.telemetry("stateful_metrics_stream_failures_total"),
                 "dropped": self.telemetry("stateful_metrics_points_dropped_total"),
@@ -272,7 +272,7 @@ def shutdown(fixture):
     fixture.start_intake()
     fixture.start_adp()
     timestamp = fixture.send(["shutdown:9|g|#env:binary-test"])
-    fixture.wait_metric("endpoint_high_prio_queue_removals_total", component="stateful_metrics")
+    fixture.wait_metric("endpoint_high_prio_queue_removals_total", component="dd_stateful_metrics_out")
     require(not fixture.rows(), "Partial batch flushed before shutdown")
     fixture.stop_adp()
     fixture.expect("shutdown", 9, timestamp)
@@ -289,7 +289,7 @@ def reconnect(fixture):
     fixture.stop_intake()
     fixture.wait_metric("stateful_metrics_stream_failures_total")
     second = fixture.send(["reconnect:2|g|#env:binary-test", "outage:3|g|#env:binary-test"], timestamp + 1)
-    fixture.wait_metric("endpoint_high_prio_queue_insertions_total", 2, "stateful_metrics")
+    fixture.wait_metric("endpoint_high_prio_queue_insertions_total", 2, "dd_stateful_metrics_out")
     fixture.no_http_series()
     fixture.start_intake()
     fixture.expect("reconnect", 2, second)
@@ -302,7 +302,7 @@ def reconnect(fixture):
 def disk_restart(fixture):
     fixture.start_adp()
     timestamp = fixture.send(["persisted:11|g|#env:binary-test"])
-    fixture.wait_metric("endpoint_high_prio_queue_insertions_total", component="stateful_metrics")
+    fixture.wait_metric("endpoint_high_prio_queue_insertions_total", component="dd_stateful_metrics_out")
     fixture.stop_adp()
     files = list((fixture.root / "retry").rglob("retry-*.json"))
     require(files, "Shutdown did not persist logical retries")
@@ -389,7 +389,7 @@ def rejected_stream(fixture):
     fixture.start_adp()
     wait_for(lambda: fixture.proxy.rejected > 0, "injected gRPC UNAVAILABLE rejection")
     timestamp = fixture.send(["rejected:13|g|#env:binary-test"])
-    fixture.wait_metric("endpoint_high_prio_queue_insertions_total", component="stateful_metrics")
+    fixture.wait_metric("endpoint_high_prio_queue_insertions_total", component="dd_stateful_metrics_out")
     require(not fixture.rows(), "Rejected stream delivered unexpectedly")
     fixture.proxy.reject = False
     fixture.expect("rejected", 13, timestamp)

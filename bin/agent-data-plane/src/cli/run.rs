@@ -477,9 +477,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
             ));
         }
         blueprint
-            .add_transform("stateful_metrics_route", StatefulMetricsRouterConfiguration)?
+            .add_transform("dd_stateful_metrics_router", StatefulMetricsRouterConfiguration)?
             .add_destination(
-                "stateful_metrics",
+                "dd_stateful_metrics_out",
                 StatefulMetricsConfiguration {
                     endpoint: endpoint.clone().into(),
                     api_key: config_system.live(|config| &config.shared.endpoints.api_key),
@@ -490,9 +490,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
                     stop_timeout: dp.stop_timeout(),
                 },
             )?
-            .connect_components("metrics_enrich", "stateful_metrics_route")?
-            .connect_components("stateful_metrics_route.stateful", "stateful_metrics")?
-            .connect_components("stateful_metrics_route.http", "dd_metrics_encode")?;
+            .connect_components("metrics_enrich", "dd_stateful_metrics_router")?
+            .connect_components("dd_stateful_metrics_router.stateful", "dd_stateful_metrics_out")?
+            .connect_components("dd_stateful_metrics_router.http", "dd_metrics_encode")?;
     } else {
         blueprint.connect_components("metrics_enrich", "dd_metrics_encode")?;
     }

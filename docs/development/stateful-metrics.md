@@ -5,14 +5,14 @@ ADP embeds `foldspace-core` through a pinned Cargo dependency from the
 source into Saluki or run a separate client binary.
 
 Configuration selects delivery for count, rate, and gauge series. When the stateful endpoint is
-configured, those series use the dedicated `stateful_metrics` destination. Other metric types
+configured, those series use the dedicated `dd_stateful_metrics_out` destination. Other metric types
 continue through the HTTP encoder. Stream failures never switch series delivery to HTTP.
 
 ```mermaid
 flowchart TB
     subgraph ADP[ADP binary]
-        Enrich[metrics_enrich] --> Route[stateful_metrics_route]
-        Route -->|Count, rate, gauge| Sender[stateful_metrics destination]
+        Enrich[metrics_enrich] --> Route[dd_stateful_metrics_router]
+        Route -->|Count, rate, gauge| Sender[dd_stateful_metrics_out destination]
         Route -->|Other metric types| Encode[dd_metrics_encode]
         Encode --> Out[dd_out]
         Sender --> High[High-priority logical batches]
