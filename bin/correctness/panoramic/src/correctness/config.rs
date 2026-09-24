@@ -22,6 +22,12 @@ use crate::test::{Test, TestContext, TestSuite};
 // containers, so they need more time than the default.
 const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 
+/// Container names a correctness test carries in [`Test::images`] and image overrides.
+const BASELINE_IMAGE_NAME: &str = "baseline";
+const COMPARISON_IMAGE_NAME: &str = "comparison";
+const INTAKE_IMAGE_NAME: &str = "datadog-intake";
+const MILLSTONE_IMAGE_NAME: &str = "millstone";
+
 /// The container runtime backend to use for a correctness test.
 #[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -211,11 +217,24 @@ impl Test for Config {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        m.insert("baseline", self.baseline.image.clone());
-        m.insert("comparison", self.comparison.image.clone());
-        m.insert("datadog-intake", self.datadog_intake.image.clone());
-        m.insert("millstone", self.millstone.image.clone());
+        m.insert(BASELINE_IMAGE_NAME, self.baseline.image.clone());
+        m.insert(COMPARISON_IMAGE_NAME, self.comparison.image.clone());
+        m.insert(INTAKE_IMAGE_NAME, self.datadog_intake.image.clone());
+        m.insert(MILLSTONE_IMAGE_NAME, self.millstone.image.clone());
         m
+    }
+
+    fn set_image(&mut self, name: &str, image: &str) -> bool {
+        let field = match name {
+            BASELINE_IMAGE_NAME => &mut self.baseline.image,
+            COMPARISON_IMAGE_NAME => &mut self.comparison.image,
+            INTAKE_IMAGE_NAME => &mut self.datadog_intake.image,
+            MILLSTONE_IMAGE_NAME => &mut self.millstone.image,
+            _ => return false,
+        };
+
+        *field = image.to_string();
+        true
     }
 
     fn runtime(&self) -> String {

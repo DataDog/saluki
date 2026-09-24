@@ -7,7 +7,7 @@ use airlock::driver::DEFAULT_ALPINE_IMAGE;
 use chrono::Local;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::{reporter::OutputFormat, test::RunnerSettings};
+use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerSettings};
 
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///
@@ -212,6 +212,21 @@ pub struct RunCommand {
     /// permissions. CI points this at an internal registry
     #[arg(long, env = "PANORAMIC_ALPINE_IMAGE", default_value = DEFAULT_ALPINE_IMAGE, verbatim_doc_comment)]
     alpine_image: String,
+
+    /// Image to run for one of a test's containers, as `<name>=<image>`, replacing
+    /// what the test case declares. Repeat the flag to name more than one container; the
+    /// environment variable takes them as one comma-separated list. CI uses this to run
+    /// the cases against the images built for the commit. `panoramic list --json`
+    /// reports the container names each test declares, and a name no test in the run
+    /// declares is an error
+    #[arg(
+        long = "image-override",
+        value_name = "NAME=IMAGE",
+        env = "PANORAMIC_IMAGE_OVERRIDES",
+        value_delimiter = ',',
+        verbatim_doc_comment
+    )]
+    pub image_overrides: Vec<ImageOverride>,
 }
 
 impl RunCommand {
@@ -281,6 +296,7 @@ mod tests {
         ("core_agent_binary_path", "PANORAMIC_CORE_AGENT_BINARY_PATH"),
         ("alpine_image", "PANORAMIC_ALPINE_IMAGE"),
         ("log_dir", "PANORAMIC_LOG_DIR"),
+        ("image_overrides", "PANORAMIC_IMAGE_OVERRIDES"),
     ];
 
     fn run_command_of(cli: &Cli) -> &RunCommand {
@@ -442,6 +458,51 @@ mod tests {
         assert!(!cmd.verbose);
         assert!(!cmd.no_tui);
         assert!(!cmd.no_delete_kind_cluster);
+        assert!(cmd.image_overrides.is_empty());
+    }
+
+    #[test]
+    fn image_overrides_accept_a_repeated_flag_and_a_delimited_list() {
+        let repeated = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            "cases",
+            "--image-override",
+            "millstone=registry.example.com/tools:abc123",
+            "--image-override",
+            "baseline=registry.example.com/agent:abc123",
+        ])
+        .expect("repeated flags should parse");
+
+        // The same pairs as one delimited value, which is the shape the environment variable takes.
+        let delimited = Cli::try_parse_from([
+            "panoramic",
+            "run",
+            "-d",
+            "cases",
+            "--image-override",
+            "millstone=registry.example.com/tools:abc123,baseline=registry.example.com/agent:abc123",
+        ])
+        .expect("a delimited value should parse");
+
+        for cmd in [run_command_of(&repeated), run_command_of(&delimited)] {
+            let pairs: Vec<(&str, &str)> = cmd
+                .image_overrides
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.image.as_str()))
+                .collect();
+            assert_eq!(
+                pairs,
+                vec![
+                    ("millstone", "registry.example.com/tools:abc123"),
+                    ("baseline", "registry.example.com/agent:abc123")
+                ]
+            );
+        }
+
+        // A value that isn't a `name=image` pair fails at parse time rather than mid-run.
+        assert!(Cli::try_parse_from(["panoramic", "run", "-d", "cases", "--image-override", "millstone"]).is_err());
     }
 
     #[test]

@@ -870,14 +870,12 @@ impl IntegrationRunner {
             ContainerOs::Linux
         };
 
-        let image = crate::config::target_image_for_runtime(&self.test_case.active_runtime)
-            .ok_or_else(|| {
-                generic_error!(
-                    "Runtime '{}' has no associated container image; integration tests are unsupported.",
-                    self.test_case.active_runtime
-                )
-            })?
-            .to_string();
+        let image = self.test_case.target_image().ok_or_else(|| {
+            generic_error!(
+                "Runtime '{}' has no associated container image; integration tests are unsupported.",
+                self.test_case.active_runtime
+            )
+        })?;
 
         let target_config = airlock::config::TargetConfig {
             image,
@@ -937,7 +935,7 @@ impl IntegrationRunner {
     /// endpoint is published on.
     async fn start_intake(&self) -> Result<(Driver, u16), GenericError> {
         let config = DriverConfig::datadog_intake(airlock::config::DatadogIntakeConfig {
-            image: crate::config::DEFAULT_INTAKE_IMAGE.to_string(),
+            image: self.test_case.intake_image(),
             binary_path: None,
         })
         .await?
@@ -1232,6 +1230,10 @@ mod tests {
 
         fn images(&self) -> BTreeMap<&str, String> {
             BTreeMap::new()
+        }
+
+        fn set_image(&mut self, _name: &str, _image: &str) -> bool {
+            false
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {

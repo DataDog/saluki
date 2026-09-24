@@ -37,6 +37,8 @@ use self::config::{default_host_runtime, discover_tests};
 mod events;
 use self::events::{create_event_channel, TestEvent};
 
+mod image_override;
+
 mod machine_output;
 use self::machine_output::RunReport;
 
@@ -184,7 +186,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
+    let mut test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -195,6 +197,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    // Images the command line names replace what the cases declare, before anything is selected or
+    // started: a run against the wrong images is worth no time at all.
+    if let Err(e) = image_override::apply(&mut test_cases, &cmd.image_overrides) {
+        if use_tui {
+            eprintln!("{}", e);
+        } else {
+            error!("{}", e);
+        }
+        return ExitCode::from(EXIT_HARNESS_ERROR);
+    }
 
     if test_cases.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();

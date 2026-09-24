@@ -155,6 +155,16 @@ pub struct IntegrationConfig {
     #[serde(skip)]
     pub active_runtime: String,
 
+    /// Image replacing the runtime's target image, when `--image-override` named the target.
+    ///
+    /// Empty unless the command line set it: a case does not choose its target image.
+    #[serde(skip)]
+    container_image_override: Option<String>,
+
+    /// Image replacing the intake sidecar's image, when `--image-override` named the sidecar.
+    #[serde(skip)]
+    intake_image_override: Option<String>,
+
     /// Base path for resolving relative file paths.
     #[serde(skip)]
     pub base_path: PathBuf,
@@ -207,6 +217,12 @@ pub fn default_host_runtime() -> &'static str {
         LINUX_RUNTIME
     }
 }
+
+/// Container name the integration-test target carries in [`Test::images`] and image overrides.
+const TARGET_IMAGE_NAME: &str = "container";
+
+/// Container name the intake sidecar carries in [`Test::images`] and image overrides.
+const INTAKE_IMAGE_NAME: &str = "intake";
 
 /// Datadog intake sidecar configuration for a test case.
 ///
@@ -733,13 +749,27 @@ impl Test for IntegrationConfig {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        if let Some(image) = target_image_for_runtime(&self.active_runtime) {
-            m.insert("container", image.to_string());
+        if let Some(image) = self.target_image() {
+            m.insert(TARGET_IMAGE_NAME, image);
         }
         if self.intake.enabled {
-            m.insert("intake", DEFAULT_INTAKE_IMAGE.to_string());
+            m.insert(INTAKE_IMAGE_NAME, self.intake_image());
         }
         m
+    }
+
+    fn set_image(&mut self, name: &str, image: &str) -> bool {
+        match name {
+            TARGET_IMAGE_NAME if self.target_image().is_some() => {
+                self.container_image_override = Some(image.to_string());
+                true
+            }
+            INTAKE_IMAGE_NAME if self.intake.enabled => {
+                self.intake_image_override = Some(image.to_string());
+                true
+            }
+            _ => false,
+        }
     }
 
     fn runtime(&self) -> String {
@@ -766,6 +796,24 @@ impl Test for IntegrationConfig {
 }
 
 impl IntegrationConfig {
+    /// Returns the container image the target runs, or `None` for a runtime that uses no container.
+    ///
+    /// The active runtime picks the image, since a case does not choose one, unless the command line
+    /// replaced it.
+    pub fn target_image(&self) -> Option<String> {
+        match &self.container_image_override {
+            Some(image) => Some(image.clone()),
+            None => target_image_for_runtime(&self.active_runtime).map(str::to_string),
+        }
+    }
+
+    /// Returns the image the intake sidecar runs.
+    pub fn intake_image(&self) -> String {
+        self.intake_image_override
+            .clone()
+            .unwrap_or_else(|| DEFAULT_INTAKE_IMAGE.to_string())
+    }
+
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         for step in &mut self.procedure {
@@ -1010,28 +1058,17 @@ pub trait CaseConfig {
     }
 }
 
-/// Prefix of the environment variables that override values from a case's `config.yaml`.
-///
-/// A variable named `PANORAMIC_<SECTION>__<FIELD>` replaces the matching field within that
-/// section, creating the section if the case does not declare it. CI correctness jobs use these to
-/// run a case with the images built for the commit, such as `PANORAMIC_BASELINE__IMAGE`. A variable
-/// without `__` names a top-level field; names the configuration does not declare are ignored,
-/// which is how unrelated `PANORAMIC_*` variables (command-line arguments, `PANORAMIC_DYNAMIC_*`)
-/// pass through with no effect.
-const ENV_OVERRIDE_PREFIX: &str = "PANORAMIC_";
-
 /// Loads one test case configuration from its `config.yaml`, anchored at that file's directory.
 ///
 /// Every case type loads the same way: plain YAML deserialization, then the case directory recorded
-/// on the result. YAML typing is what the case gets: an unquoted `true` is a boolean and does not
-/// stand in for the string `"true"`. Values from `PANORAMIC_<SECTION>__<FIELD>` environment
-/// variables replace the matching fields in the document. Boolean fields accept only `true` or
-/// `false`; string fields keep the environment value unchanged.
+/// on the result. Values come from the file alone, so YAML typing is what the case gets: an unquoted
+/// `true` is a boolean and does not stand in for the string `"true"`. Images a case declares can be
+/// replaced after loading; see [`crate::image_override`].
 ///
 /// # Errors
 ///
-/// Returns an error if `config_path` cannot be resolved or read, an override has an invalid
-/// boolean value, or the result does not deserialize into `T`.
+/// Returns an error if `config_path` cannot be resolved or read, or if its contents do not
+/// deserialize into `T`.
 pub fn load_case<T, P>(config_path: P) -> Result<T, GenericError>
 where
     T: CaseConfig + DeserializeOwned,
@@ -1049,15 +1086,8 @@ where
     let content = std::fs::read_to_string(&config_path)
         .error_context(format!("Failed to read configuration file: {}", config_path.display()))?;
 
-    let mut document: serde_yaml::Value = serde_yaml::from_str(&content)
+    let mut case: T = serde_yaml::from_str(&content)
         .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
-
-    apply_env_overrides(&mut document, std::env::vars())?;
-
-    let mut case: T = serde_yaml::from_value(document).error_context(format!(
-        "Failed to deserialize configuration file: {}",
-        config_path.display()
-    ))?;
 
     let base_path = config_path
         .parent()
@@ -1066,77 +1096,6 @@ where
     case.set_base_path(base_path);
 
     Ok(case)
-}
-
-/// Applies case-configuration overrides from `PANORAMIC_*` variables to a parsed document.
-///
-/// Takes the variables to apply rather than reading the environment itself, so a caller can pass
-/// anything, including nothing.
-///
-/// # Errors
-///
-/// Returns an error naming any boolean override whose value is not `true` or `false`.
-fn apply_env_overrides(
-    document: &mut serde_yaml::Value, vars: impl Iterator<Item = (String, String)>,
-) -> Result<(), GenericError> {
-    for (name, value) in vars {
-        let Some(rest) = name.strip_prefix(ENV_OVERRIDE_PREFIX) else {
-            continue;
-        };
-
-        // The name below the prefix, split into field path segments: `MILLSTONE__IMAGE` becomes
-        // `millstone`, `image`. An empty segment (a leading or doubled `__`) matches nothing in a
-        // case, so the variable is ignored rather than creating a field nothing reads.
-        let segments: Vec<String> = rest.split("__").map(str::to_ascii_lowercase).collect();
-        if segments.iter().any(String::is_empty) {
-            continue;
-        }
-
-        let value = match segments.join(".").as_str() {
-            "intake.enabled"
-            | "container.host_cgroup_namespace"
-            | "otlp_direct_analysis_mode"
-            | "require_dogstatsd_forwarded_packets" => match value.as_str() {
-                "true" => serde_yaml::Value::Bool(true),
-                "false" => serde_yaml::Value::Bool(false),
-                _ => {
-                    return Err(generic_error!(
-                        "Invalid value for {}: expected 'true' or 'false', got '{}'",
-                        name,
-                        value
-                    ))
-                }
-            },
-            _ => serde_yaml::Value::String(value),
-        };
-
-        set_override(document, &segments, value);
-    }
-    Ok(())
-}
-
-/// Replaces the value at a field path in a document, creating the parent sections it lacks.
-///
-/// Skips the override when the path runs through a value that is not a mapping: the document the
-/// case actually declared wins over a variable trying to traverse it.
-fn set_override(document: &mut serde_yaml::Value, segments: &[String], value: serde_yaml::Value) {
-    let Some((last, parents)) = segments.split_last() else {
-        return;
-    };
-
-    let mut current = document;
-    for segment in parents {
-        let Some(map) = current.as_mapping_mut() else { return };
-        let key = serde_yaml::Value::String(segment.clone());
-        if !map.contains_key(&key) {
-            map.insert(key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-        }
-        current = map.get_mut(&key).expect("key was just inserted");
-    }
-
-    if let Some(map) = current.as_mapping_mut() {
-        map.insert(serde_yaml::Value::String(last.clone()), value);
-    }
 }
 
 /// Discover all test cases across one or more directories.
@@ -1632,126 +1591,6 @@ comparison:
             PathBuf::from("/etc/datadog-agent/datadog.yaml")
         };
         assert_eq!(config.resolve_path(&absolute_path), absolute_path);
-    }
-
-    #[test]
-    fn env_overrides_replace_a_declared_field_and_create_an_undeclared_section() {
-        let mut document = serde_yaml::from_str(
-            r#"
-millstone:
-  image: saluki-images/correctness-tools:latest
-"#,
-        )
-        .expect("document should parse");
-
-        apply_env_overrides(
-            &mut document,
-            [
-                (
-                    "PANORAMIC_MILLSTONE__IMAGE".to_string(),
-                    "registry.ddbuild.io/saluki/correctness-tools:abc123".to_string(),
-                ),
-                (
-                    "PANORAMIC_DATADOG_INTAKE__IMAGE".to_string(),
-                    "registry.ddbuild.io/saluki/correctness-tools:abc123".to_string(),
-                ),
-                // No `__`, so this names a top-level field no case declares. It lands in the
-                // document and is ignored at deserialization, like the CLI's own variables are.
-                ("PANORAMIC_LOG_DIR".to_string(), "somewhere".to_string()),
-            ]
-            .into_iter(),
-        )
-        .expect("string overrides should parse");
-
-        // The declared field takes the override, and the missing section is created by it.
-        #[derive(Deserialize)]
-        struct MillstoneAndIntake {
-            millstone: CorrectnessMillstoneConfig,
-            datadog_intake: CorrectnessDatadogIntakeConfig,
-        }
-        let config: MillstoneAndIntake = serde_yaml::from_value(document).expect("config should deserialize");
-        assert_eq!(
-            config.millstone.image,
-            "registry.ddbuild.io/saluki/correctness-tools:abc123"
-        );
-        assert_eq!(
-            config.datadog_intake.image,
-            "registry.ddbuild.io/saluki/correctness-tools:abc123"
-        );
-    }
-
-    #[test]
-    fn env_overrides_parse_boolean_fields_even_when_absent_from_the_case() {
-        let mut integration = serde_yaml::from_str(
-            r#"
-name: original
-timeout: 10s
-container:
-  host_cgroup_namespace: true
-procedure: []
-"#,
-        )
-        .unwrap();
-        apply_env_overrides(
-            &mut integration,
-            [
-                ("PANORAMIC_INTAKE__ENABLED".into(), "true".into()),
-                ("PANORAMIC_CONTAINER__HOST_CGROUP_NAMESPACE".into(), "false".into()),
-                ("PANORAMIC_NAME".into(), "true".into()),
-            ]
-            .into_iter(),
-        )
-        .unwrap();
-        let integration: IntegrationConfig = serde_yaml::from_value(integration).unwrap();
-        assert!(integration.intake.enabled);
-        assert!(!integration.container.host_cgroup_namespace);
-        assert_eq!(integration.name, "true");
-
-        let mut correctness = serde_yaml::from_str(
-            r#"
-runtime: docker
-analysis_mode: metrics
-baseline:
-  image: baseline
-comparison:
-  image: comparison
-"#,
-        )
-        .unwrap();
-        apply_env_overrides(
-            &mut correctness,
-            [
-                ("PANORAMIC_OTLP_DIRECT_ANALYSIS_MODE".into(), "true".into()),
-                ("PANORAMIC_REQUIRE_DOGSTATSD_FORWARDED_PACKETS".into(), "true".into()),
-                ("PANORAMIC_BASELINE__IMAGE".into(), "8125".into()),
-            ]
-            .into_iter(),
-        )
-        .unwrap();
-        let correctness: CorrectnessConfig = serde_yaml::from_value(correctness).unwrap();
-        assert!(correctness.otlp_direct_analysis_mode);
-        assert!(correctness.require_dogstatsd_forwarded_packets);
-        assert_eq!(correctness.baseline.image, "8125");
-    }
-
-    #[test]
-    fn env_overrides_reject_invalid_boolean_values() {
-        for name in [
-            "PANORAMIC_INTAKE__ENABLED",
-            "PANORAMIC_CONTAINER__HOST_CGROUP_NAMESPACE",
-            "PANORAMIC_OTLP_DIRECT_ANALYSIS_MODE",
-            "PANORAMIC_REQUIRE_DOGSTATSD_FORWARDED_PACKETS",
-        ] {
-            for value in ["tru", "yes", "1"] {
-                let mut document = serde_yaml::from_str("{}").unwrap();
-                let error = apply_env_overrides(&mut document, [(name.into(), value.into())].into_iter())
-                    .expect_err("invalid boolean override should fail");
-                let error = format!("{error:?}");
-                assert!(error.contains(name), "unexpected error: {error}");
-                assert!(error.contains(value), "unexpected error: {error}");
-                assert!(error.contains("true' or 'false"), "unexpected error: {error}");
-            }
-        }
     }
 
     #[test]
