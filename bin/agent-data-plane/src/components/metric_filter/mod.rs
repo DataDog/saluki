@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;
+use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -98,18 +99,8 @@ enum Filter {
 impl Filter {
     fn for_allowlist(names: &[String], prefixes: &[String]) -> Self {
         let mut prefixes = prefixes.to_vec();
-        prefixes.sort_unstable();
         // Remove covered prefixes so a binary search only needs to check its predecessor.
-        if !prefixes.is_empty() {
-            let mut retained = 0;
-            for next in 1..prefixes.len() {
-                if !prefixes[next].starts_with(&prefixes[retained]) {
-                    retained += 1;
-                    prefixes.swap(retained, next);
-                }
-            }
-            prefixes.truncate(retained + 1);
-        }
+        compact_metric_prefixes(&mut prefixes);
         Self::Allowlist {
             names: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
             prefixes,

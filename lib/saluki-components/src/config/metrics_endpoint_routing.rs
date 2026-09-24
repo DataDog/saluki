@@ -5,6 +5,21 @@ use std::collections::{BTreeMap, HashMap};
 use agent_data_plane_config::shared;
 use saluki_error::{generic_error, GenericError};
 
+/// Sorts literal prefixes and removes duplicates and prefixes covered by another prefix.
+pub fn compact_metric_prefixes(prefixes: &mut Vec<String>) {
+    prefixes.sort_unstable();
+    if !prefixes.is_empty() {
+        let mut retained = 0;
+        for next in 1..prefixes.len() {
+            if !prefixes[next].starts_with(&prefixes[retained]) {
+                retained += 1;
+                prefixes.swap(retained, next);
+            }
+        }
+        prefixes.truncate(retained + 1);
+    }
+}
+
 /// A group of configured endpoints that share exact-name and prefix metric allowlists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndpointAllowlistGroup {
@@ -66,8 +81,12 @@ impl MetricsEndpointRoutingConfiguration {
             canonical_allowlist.sort_unstable();
             canonical_allowlist.dedup();
             let mut canonical_prefixes = metric_prefix_allowlists.get(endpoint).cloned().unwrap_or_default();
-            canonical_prefixes.sort_unstable();
-            canonical_prefixes.dedup();
+            compact_metric_prefixes(&mut canonical_prefixes);
+            // Exact names covered by a prefix do not change the policy's matching behavior.
+            canonical_allowlist.retain(|name| {
+                let index = canonical_prefixes.partition_point(|prefix| prefix <= name);
+                index == 0 || !name.starts_with(&canonical_prefixes[index - 1])
+            });
             if !canonical_allowlist.is_empty() || !canonical_prefixes.is_empty() {
                 grouped_endpoints
                     .entry((canonical_allowlist, canonical_prefixes))
@@ -208,15 +227,23 @@ mod tests {
     }
 
     #[test]
-    fn combines_policy_maps_and_groups_only_identical_name_and_prefix_lists() {
+    fn combines_policy_maps_and_groups_equivalent_name_and_prefix_lists() {
         let names = HashMap::from([
-            (PRIMARY.to_string(), vec!["exact".to_string()]),
+            (
+                PRIMARY.to_string(),
+                vec!["exact".to_string(), "a.covered".to_string(), "b.covered".to_string()],
+            ),
             ("https://secondary-a.example.com".to_string(), vec!["exact".to_string()]),
         ]);
         let prefixes = HashMap::from([
             (
                 PRIMARY.to_string(),
-                vec!["b.".to_string(), "a.".to_string(), "a.".to_string()],
+                vec![
+                    "b.".to_string(),
+                    "a.".to_string(),
+                    "a.".to_string(),
+                    "a.nested.".to_string(),
+                ],
             ),
             (
                 "https://secondary-a.example.com".to_string(),
@@ -234,6 +261,7 @@ mod tests {
             .find(|p| !p.metric_allowlist.is_empty())
             .unwrap();
         assert_eq!(combined.endpoints, [PRIMARY, "https://secondary-a.example.com"]);
+        assert_eq!(combined.metric_allowlist, ["exact"]);
         assert_eq!(combined.metric_prefix_allowlist, ["a.", "b."]);
         let prefix_only = config
             .policy_groups()
