@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 use crate::saluki_env_overlay;
 use crate::source::SourceTree;
-use crate::system::{translate_strict, validate, ConfigurationSystem, Error};
+use crate::system::{translate_strict, validate, ConfigurationSystem, ConfigurationUpdates, Error};
 
 /// Where environment variables sit relative to the configuration file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,14 +69,17 @@ impl LoadedConfiguration {
 
     /// Uses the Datadog Agent's configuration stream as the runtime authority.
     ///
-    /// Waits for the initial Agent snapshot, layers it over the local sources, strictly translates
-    /// the result, and then starts the update task.
+    /// Waits for the initial Agent snapshot, layers it over the local sources, and strictly
+    /// translates the result. Returns the system together with the [`ConfigurationUpdates`] that
+    /// apply each later update. The caller must run them.
     ///
     /// # Errors
     ///
     /// Returns an error if the stream closes before its initial snapshot, or the merged configuration
     /// cannot be deserialized or translated.
-    pub async fn run(self, config_stream: mpsc::Receiver<ConfigUpdate>) -> Result<ConfigurationSystem, Error> {
+    pub async fn run(
+        self, config_stream: mpsc::Receiver<ConfigUpdate>,
+    ) -> Result<(ConfigurationSystem, ConfigurationUpdates), Error> {
         ConfigurationSystem::connected(config_stream, self.base).await
     }
 
@@ -220,6 +223,103 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         assert!(matches!(result, Err(Error::MissingApiKey)));
+    }
+
+    /// Loads the local sources from a temporary configuration file with the given contents.
+    ///
+    /// `test` names the file, so that tests which run at the same time do not share one.
+    async fn load_from_file(test: &str, contents: &str) -> LoadedConfiguration {
+        let path = std::env::temp_dir().join(format!("adp_{test}_{}.yaml", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
+            .await
+            .expect("local sources load");
+        std::fs::remove_file(&path).ok();
+        loaded
+    }
+
+    /// Waits until `system` reports `level` as the log level.
+    async fn await_log_level(system: &ConfigurationSystem, level: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while system.config().control.logging.level != level {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the configuration should report the log level `{level}`"));
+    }
+
+    fn log_level_update(level: &str) -> ConfigUpdate {
+        use saluki_config::dynamic::ConfigSetting;
+
+        ConfigUpdate::Partial(ConfigSetting::explicit("log_level", json!(level)))
+    }
+
+    #[tokio::test]
+    async fn run_applies_later_updates_only_once_the_updates_run() {
+        let loaded = load_from_file("run_updates", "api_key: test-api-key\nlog_level: info\n").await;
+
+        // `run` itself applies the initial snapshot. This is the startup gate.
+        let (agent_tx, agent_rx) = mpsc::channel(8);
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let (system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+        assert_eq!(system.config().control.logging.level, "info");
+
+        // A later update waits until the updates run. Nothing applies it in the background before
+        // then.
+        agent_tx.send(log_level_update("warn")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(system.config().control.logging.level, "info");
+
+        tokio::spawn(updates.run());
+        await_log_level(&system, "warn").await;
+    }
+
+    #[tokio::test]
+    async fn updates_continue_where_a_stopped_run_left_off() {
+        let loaded = load_from_file("run_restart", "api_key: test-api-key\nlog_level: info\n").await;
+
+        let (agent_tx, agent_rx) = mpsc::channel(8);
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let (system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+
+        let first_run = tokio::spawn(updates.run());
+        agent_tx.send(log_level_update("warn")).await.unwrap();
+        await_log_level(&system, "warn").await;
+
+        // Stop the run, as a supervisor does when it restarts a worker. The next run reads the same
+        // stream, so an update sent in between is not lost.
+        first_run.abort();
+        let _ = first_run.await;
+        agent_tx.send(log_level_update("error")).await.unwrap();
+
+        tokio::spawn(updates.run());
+        await_log_level(&system, "error").await;
+    }
+
+    #[tokio::test]
+    async fn updates_fail_once_the_stream_closes() {
+        let loaded = load_from_file("run_ended", "api_key: test-api-key\n").await;
+
+        let (agent_tx, agent_rx) = mpsc::channel(8);
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let (_system, updates) = loaded.run(agent_rx).await.expect("the initial snapshot is accepted");
+        drop(agent_tx);
+
+        // The stream does not reopen, so running the updates again fails in the same way.
+        assert!(matches!(updates.run().await, Err(Error::UpdateStreamClosed)));
+        assert!(matches!(updates.run().await, Err(Error::UpdateStreamClosed)));
+    }
+
+    #[tokio::test]
+    async fn run_fails_if_the_stream_closes_before_the_initial_snapshot() {
+        let loaded = load_from_file("run_closed", "api_key: test-api-key\n").await;
+
+        let (agent_tx, agent_rx) = mpsc::channel::<ConfigUpdate>(1);
+        drop(agent_tx);
+
+        let result = loaded.run(agent_rx).await;
+        assert!(matches!(result, Err(Error::StreamClosed)));
     }
 
     // `LoadedConfiguration::load` is `async` only for symmetry with the rest of the API; it awaits

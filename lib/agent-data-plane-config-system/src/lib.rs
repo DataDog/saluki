@@ -31,4 +31,4 @@ mod system;
 mod translators;
 
 pub use loaded::{EnvPrecedence, LoadedConfiguration};
-pub use system::{ConfigurationSystem, Error};
+pub use system::{ConfigurationSystem, ConfigurationUpdates, Error};

@@ -73,7 +73,7 @@ use crate::{
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
-        DogStatsDControlSurface, TopologyControlSurfaces,
+        ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
 use crate::{
@@ -113,12 +113,12 @@ pub async fn handle_run_command(
     // the Core Agent's config stream as authority; standalone mode treats the local sources as
     // authoritative. Both terminals block until the first configuration is received, deserialized,
     // and translated, failing the boot if it cannot be -- the strict startup gate.
-    let (config_sys, ra_bootstrap) = if standalone {
+    let (config_sys, ra_bootstrap, config_updates) = if standalone {
         let config_sys = local_config
             .standalone()
             .await
             .error_context("Failed to load configuration.")?;
-        (config_sys, None)
+        (config_sys, None, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
         let client_config = remote_agent_client_configuration(local_config.local())?;
@@ -127,18 +127,18 @@ pub async fn handle_run_command(
             .error_context("Failed to bootstrap remote agent state.")?;
 
         // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
-        // build the typed model and forwards them to the legacy compat map. `create_config_stream`
-        // stays on `ra_bootstrap`, which we keep to build the status/flare/telemetry services below.
+        // build the typed model. `create_config_stream` stays on `ra_bootstrap`, which we keep to
+        // build the status/flare/telemetry services below.
         let config_stream = ra_bootstrap.create_config_stream();
 
         info!("Waiting for initial configuration from Datadog Agent...");
-        let config_sys = local_config
+        let (config_sys, config_updates) = local_config
             .run(config_stream)
             .await
             .error_context("Failed to load initial configuration from the Datadog Agent.")?;
         info!("Initial configuration received.");
 
-        (config_sys, Some(ra_bootstrap))
+        (config_sys, Some(ra_bootstrap), Some(config_updates))
     };
 
     // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
@@ -268,6 +268,17 @@ pub async fn handle_run_command(
 
     root_supervisor.add_worker(bootstrap_supervisor);
     internal_supervisor.add_worker(resource_registry.worker());
+
+    // Apply configuration updates from the Datadog Agent. Until the supervision tree starts, updates stay queued in the
+    // Agent configuration stream and are not applied.
+    //
+    // A restart of the worker recovers from a panic, but not from a closed configuration stream, which never reopens:
+    // the restarted worker fails again at once. The failure then escalates and stops ADP, rather than leaving ADP to run
+    // on a configuration that can no longer change.
+    if let Some(config_updates) = config_updates {
+        internal_supervisor.add_worker(ConfigUpdatesWorker::new(config_updates));
+    }
+
     if let Some(env_supervisor) = maybe_env_supervisor {
         internal_supervisor.add_worker(env_supervisor);
     }
