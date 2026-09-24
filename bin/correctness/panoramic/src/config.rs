@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{
     de::{DeserializeOwned, Error as _},
@@ -13,14 +12,10 @@ use serde::{
 };
 use serde_json::Value;
 
-use crate::correctness::analysis::AnalysisMode;
-use crate::correctness::config::{
-    Config as CorrectnessConfig, DatadogIntakeConfig as CorrectnessDatadogIntakeConfig,
-    MillstoneConfig as CorrectnessMillstoneConfig, Runtime as CorrectnessRuntime,
-    TargetConfig as CorrectnessTargetConfig,
-};
-use crate::reporter::TestResult;
-use crate::test::{Test, TestContext, TestSuite};
+use crate::correctness::{case::CorrectnessTestCase, config::Config as CorrectnessConfig};
+use crate::image_override::ImageOverrides;
+use crate::integration::{IntegrationSettings, IntegrationTestCase};
+use crate::test::Test;
 
 /// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
 #[derive(Clone, Debug)]
@@ -146,27 +141,9 @@ pub struct IntegrationConfig {
     #[serde(default = "default_integration_runtimes")]
     pub runtimes: Vec<String>,
 
-    /// Active runtime for this test instance.
-    ///
-    /// Empty at parse time; [`IntegrationConfig::bind_to_runtime`] sets it to whichever runtime the
-    /// CLI is scoped to (after confirming that runtime is listed in `runtimes`). Used by `Test::run`
-    /// to dispatch to the right runner and by `Test::runtime` to report the effective runtime to the
-    /// CI pipeline generator.
+    /// Canonical configuration file path, recorded by the loader.
     #[serde(skip)]
-    pub active_runtime: String,
-
-    /// Images this instance runs, by container name.
-    ///
-    /// Empty at parse time, since a case declares no images: the active runtime chooses the target
-    /// image and the `intake` block decides whether the sidecar runs.
-    /// [`IntegrationConfig::bind_to_runtime`] resolves them, and `--image-override` replaces an
-    /// entry afterwards.
-    #[serde(skip)]
-    resolved_images: BTreeMap<String, String>,
-
-    /// Base path for resolving relative file paths.
-    #[serde(skip)]
-    pub base_path: PathBuf,
+    pub(crate) loaded_from: PathBuf,
 }
 
 fn default_integration_runtimes() -> Vec<String> {
@@ -534,317 +511,9 @@ pub enum HttpStatusMatcher {
     NotEqual(u16),
 }
 
-impl ActionConfig {
-    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
-    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        match self {
-            ActionConfig::CoreAgentConfigSet {
-                key, endpoint, value, ..
-            } => {
-                crate::dynamic_vars::resolve_placeholders(key, vars);
-                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
-                if let serde_json::Value::String(s) = value {
-                    crate::dynamic_vars::resolve_placeholders(s, vars);
-                }
-            }
-            ActionConfig::AdpCli { args, .. } => {
-                for arg in args {
-                    crate::dynamic_vars::resolve_placeholders(arg, vars);
-                }
-            }
-            ActionConfig::CoreAgentCli {
-                args, output_contains, ..
-            } => {
-                for arg in args {
-                    crate::dynamic_vars::resolve_placeholders(arg, vars);
-                }
-                if let Some(output_contains) = output_contains {
-                    crate::dynamic_vars::resolve_placeholders(output_contains, vars);
-                }
-            }
-            ActionConfig::DogstatsdReplay {
-                sender,
-                expected_metrics,
-                ..
-            } => {
-                for arg in sender.iter_mut().chain(expected_metrics) {
-                    crate::dynamic_vars::resolve_placeholders(arg, vars);
-                }
-            }
-            ActionConfig::DogstatsdSend { payload, .. } => {
-                crate::dynamic_vars::resolve_placeholders(payload, vars);
-            }
-            ActionConfig::TargetExec { command, .. } => {
-                for arg in command {
-                    crate::dynamic_vars::resolve_placeholders(arg, vars);
-                }
-            }
-        }
-    }
-
-    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
-    pub fn unresolved_placeholders(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        match self {
-            ActionConfig::CoreAgentConfigSet {
-                key, endpoint, value, ..
-            } => {
-                crate::dynamic_vars::find_unresolved(key, &mut out);
-                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
-                if let serde_json::Value::String(s) = value {
-                    crate::dynamic_vars::find_unresolved(s, &mut out);
-                }
-            }
-            ActionConfig::AdpCli { args, .. } => {
-                for arg in args {
-                    crate::dynamic_vars::find_unresolved(arg, &mut out);
-                }
-            }
-            ActionConfig::CoreAgentCli {
-                args, output_contains, ..
-            } => {
-                for arg in args {
-                    crate::dynamic_vars::find_unresolved(arg, &mut out);
-                }
-                if let Some(output_contains) = output_contains {
-                    crate::dynamic_vars::find_unresolved(output_contains, &mut out);
-                }
-            }
-            ActionConfig::DogstatsdReplay {
-                sender,
-                expected_metrics,
-                ..
-            } => {
-                for arg in sender.iter().chain(expected_metrics) {
-                    crate::dynamic_vars::find_unresolved(arg, &mut out);
-                }
-            }
-            ActionConfig::DogstatsdSend { payload, .. } => {
-                crate::dynamic_vars::find_unresolved(payload, &mut out);
-            }
-            ActionConfig::TargetExec { command, .. } => {
-                for arg in command {
-                    crate::dynamic_vars::find_unresolved(arg, &mut out);
-                }
-            }
-        }
-        out
-    }
-}
-
-impl AssertionConfig {
-    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
-    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        match self {
-            AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
-                crate::dynamic_vars::resolve_placeholders(pattern, vars);
-            }
-            AssertionConfig::HttpCheck { endpoint, .. } => {
-                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
-            }
-            AssertionConfig::PortListening { protocol, .. } => {
-                crate::dynamic_vars::resolve_placeholders(protocol, vars);
-            }
-            AssertionConfig::FileContains { path, pattern, .. } => {
-                crate::dynamic_vars::resolve_placeholders(path, vars);
-                if let Some(p) = pattern {
-                    crate::dynamic_vars::resolve_placeholders(p, vars);
-                }
-            }
-            AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
-                crate::dynamic_vars::resolve_placeholders(key, vars);
-                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
-            }
-            AssertionConfig::IntakeHasMetric { name, tags, .. } => {
-                crate::dynamic_vars::resolve_placeholders(name, vars);
-                for tag in tags {
-                    crate::dynamic_vars::resolve_placeholders(tag, vars);
-                }
-            }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
-        }
-    }
-
-    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
-    pub fn unresolved_placeholders(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        match self {
-            AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
-                crate::dynamic_vars::find_unresolved(pattern, &mut out);
-            }
-            AssertionConfig::HttpCheck { endpoint, .. } => {
-                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
-            }
-            AssertionConfig::PortListening { protocol, .. } => {
-                crate::dynamic_vars::find_unresolved(protocol, &mut out);
-            }
-            AssertionConfig::FileContains { path, pattern, .. } => {
-                crate::dynamic_vars::find_unresolved(path, &mut out);
-                if let Some(p) = pattern {
-                    crate::dynamic_vars::find_unresolved(p, &mut out);
-                }
-            }
-            AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
-                crate::dynamic_vars::find_unresolved(key, &mut out);
-                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
-            }
-            AssertionConfig::IntakeHasMetric { name, tags, .. } => {
-                crate::dynamic_vars::find_unresolved(name, &mut out);
-                for tag in tags {
-                    crate::dynamic_vars::find_unresolved(tag, &mut out);
-                }
-            }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
-        }
-        out
-    }
-}
-
-impl AssertionStep {
-    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion configs within this step.
-    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        match self {
-            AssertionStep::Single(config) => config.resolve_dynamic_vars(vars),
-            AssertionStep::Action(config) => config.resolve_dynamic_vars(vars),
-            AssertionStep::Parallel { parallel } => {
-                for config in parallel {
-                    config.resolve_dynamic_vars(vars);
-                }
-            }
-        }
-    }
-
-    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in this step.
-    pub fn unresolved_placeholders(&self) -> Vec<String> {
-        match self {
-            AssertionStep::Single(config) => config.unresolved_placeholders(),
-            AssertionStep::Action(config) => config.unresolved_placeholders(),
-            AssertionStep::Parallel { parallel } => parallel.iter().flat_map(|c| c.unresolved_placeholders()).collect(),
-        }
-    }
-}
-
-#[async_trait]
-impl Test for IntegrationConfig {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn suite(&self) -> TestSuite {
-        TestSuite::Integration
-    }
-
-    fn description(&self) -> Option<String> {
-        self.description.clone()
-    }
-
-    fn case_path(&self) -> PathBuf {
-        self.base_path.clone()
-    }
-
-    fn timeout(&self) -> Duration {
-        self.timeout.0
-    }
-
-    fn images(&self) -> BTreeMap<&str, String> {
-        self.resolved_images
-            .iter()
-            .map(|(name, image)| (name.as_str(), image.clone()))
-            .collect()
-    }
-
-    fn set_image(&mut self, name: &str, image: &str) -> bool {
-        match self.resolved_images.get_mut(name) {
-            Some(current) => {
-                *current = image.to_string();
-                true
-            }
-            None => false,
-        }
-    }
-
-    fn runtime(&self) -> String {
-        if self.active_runtime.is_empty() {
-            LINUX_RUNTIME.to_string()
-        } else {
-            self.active_runtime.clone()
-        }
-    }
-
-    async fn run(&self, tctx: TestContext) -> TestResult {
-        match self.active_runtime.as_str() {
-            MAC_RUNTIME => {
-                let mut runner = crate::unix_runner::UnixIntegrationRunner::new(self.clone(), tctx);
-                runner.run().await
-            }
-            // Default to the Linux container path for "linux" or unset.
-            _ => {
-                let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
-                runner.run().await
-            }
-        }
-    }
-}
-
-impl IntegrationConfig {
-    /// Binds the case to the runtime it runs under, resolving the images that runtime uses.
-    ///
-    /// Discovery calls this for each case it selects, once the runtime is known to be one the case
-    /// lists. A runtime that runs the target as a host process contributes no target image.
-    pub fn bind_to_runtime(&mut self, runtime: &str) {
-        self.active_runtime = runtime.to_string();
-
-        self.resolved_images.clear();
-        if let Some(image) = target_image_for_runtime(runtime) {
-            self.resolved_images
-                .insert(TARGET_IMAGE_NAME.to_string(), image.to_string());
-        }
-        if self.intake.enabled {
-            self.resolved_images
-                .insert(INTAKE_IMAGE_NAME.to_string(), DEFAULT_INTAKE_IMAGE.to_string());
-        }
-    }
-
-    /// Returns the image the named container runs, or `None` when this instance has no such
-    /// container.
-    pub fn image(&self, name: &str) -> Option<&str> {
-        self.resolved_images.get(name).map(String::as_str)
-    }
-
-    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
-    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        for step in &mut self.procedure {
-            step.resolve_dynamic_vars(vars);
-        }
-    }
-
-    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders across all assertion steps.
-    pub fn unresolved_placeholders(&self) -> Vec<String> {
-        self.procedure
-            .iter()
-            .flat_map(|s| s.unresolved_placeholders())
-            .collect()
-    }
-
-    /// Count total individual assertions across all steps.
-    pub fn total_assertion_count(&self) -> usize {
-        self.procedure
-            .iter()
-            .map(|step| match step {
-                AssertionStep::Single(_) | AssertionStep::Action(_) => 1,
-                AssertionStep::Parallel { parallel } => parallel.len(),
-            })
-            .sum()
-    }
-}
-
 impl CaseConfig for IntegrationConfig {
-    fn base_path(&self) -> &Path {
-        &self.base_path
-    }
-
-    fn set_base_path(&mut self, base_path: PathBuf) {
-        self.base_path = base_path;
+    fn set_loaded_from(&mut self, path: PathBuf) {
+        self.loaded_from = path;
     }
 }
 
@@ -864,140 +533,31 @@ pub struct MatrixVariant {
 
     /// Environment variables overlaid on both the baseline and comparison targets.
     ///
-    /// Same mapping form as `env` on [`CorrectnessTargetConfig`]. A variant entry replaces the base
+    /// Same mapping form as `env` on [`crate::correctness::config::TargetConfig`]. A variant entry replaces the base
     /// configuration's value for the same variable name; base entries the variant does not name are
     /// left alone.
     #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: BTreeMap<String, String>,
 }
 
-/// A matrix correctness test that fans out into one independent test per variant.
-///
-/// This is the deserialized form of a `type: correctness_matrix` config file. It shares all
-/// structural fields with a standard `correctness` config, but adds a `variants` list. At
-/// discovery time each variant is expanded into a standalone [`CorrectnessConfig`] named
-/// `{base_name}/{variant_name}`, which the runner treats as a fully independent test case.
-#[derive(Clone, Deserialize)]
-pub struct MatrixConfig {
-    /// Container runtime backend to use.
-    pub runtime: CorrectnessRuntime,
-
-    /// Analysis mode to use.
-    pub analysis_mode: AnalysisMode,
-
-    /// Millstone configuration (shared across all variants).
-    #[serde(default)]
-    pub millstone: CorrectnessMillstoneConfig,
-
-    /// Datadog intake configuration (shared across all variants).
-    #[serde(default)]
-    pub datadog_intake: CorrectnessDatadogIntakeConfig,
-
-    /// Baseline target configuration (shared base; variant env vars are overlaid on it).
-    pub baseline: CorrectnessTargetConfig,
-
-    /// Comparison target configuration (shared base; variant env vars are overlaid on it).
-    pub comparison: CorrectnessTargetConfig,
-
-    /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
-    ///
-    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
-    #[serde(default)]
-    pub otlp_direct_analysis_mode: bool,
-
-    /// When analysis mode is traces: additional span field paths to ignore when diffing baseline
-    /// vs comparison.
-    ///
-    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
-    #[serde(default)]
-    pub additional_span_ignore_fields: Vec<String>,
-
-    /// Whether each expanded correctness run must capture at least one forwarded DogStatsD packet.
-    #[serde(default)]
-    pub require_dogstatsd_forwarded_packets: bool,
-
-    /// Matrix variants. Each entry produces one expanded test case.
-    pub variants: Vec<MatrixVariant>,
-
-    #[serde(skip, default = "PathBuf::new")]
-    base_path: PathBuf,
+/// Variant metadata parsed separately from the shared correctness schema.
+#[derive(Deserialize)]
+struct MatrixVariants {
+    variants: Vec<MatrixVariant>,
 }
 
-impl CaseConfig for MatrixConfig {
-    fn base_path(&self) -> &Path {
-        &self.base_path
-    }
-
-    fn set_base_path(&mut self, base_path: PathBuf) {
-        self.base_path = base_path;
-    }
-}
-
-impl MatrixConfig {
-    /// Expands this matrix into one [`CorrectnessConfig`] per variant.
-    ///
-    /// Each expanded config is a clone of the base configuration with the variant's `env` overlaid
-    /// on both the baseline and comparison targets, so a variable named by both the base config and
-    /// the variant takes the variant's value.
-    fn expand(self, base_name: &str) -> Vec<CorrectnessConfig> {
+impl MatrixVariants {
+    /// Expands environments without resolving paths or changing the base data.
+    fn expand(self, base: &CorrectnessConfig, base_name: &str) -> Vec<(String, CorrectnessConfig)> {
         self.variants
-            .iter()
+            .into_iter()
             .map(|variant| {
-                let mut baseline = self.baseline.clone();
-                baseline.env.extend(variant.env.clone());
-
-                let mut comparison = self.comparison.clone();
-                comparison.env.extend(variant.env.clone());
-
-                CorrectnessConfig {
-                    name: format!("{}/{}", base_name, variant.name),
-                    runtime: self.runtime.clone(),
-                    analysis_mode: self.analysis_mode.clone(),
-                    millstone: CorrectnessMillstoneConfig {
-                        image: self.millstone.image.clone(),
-                        binary_path: self.millstone.binary_path.clone(),
-                        config_path: self.resolve_path(&self.millstone.config_path),
-                    },
-                    datadog_intake: CorrectnessDatadogIntakeConfig {
-                        image: self.datadog_intake.image.clone(),
-                        binary_path: self.datadog_intake.binary_path.clone(),
-                    },
-                    baseline: CorrectnessTargetConfig {
-                        image: baseline.image,
-                        entrypoint: baseline.entrypoint,
-                        command: baseline.command,
-                        files: baseline.files.iter().map(|f| anchor_file_entry(f, &self)).collect(),
-                        env: baseline.env,
-                    },
-                    comparison: CorrectnessTargetConfig {
-                        image: comparison.image,
-                        entrypoint: comparison.entrypoint,
-                        command: comparison.command,
-                        files: comparison.files.iter().map(|f| anchor_file_entry(f, &self)).collect(),
-                        env: comparison.env,
-                    },
-                    otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
-                    additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
-                    require_dogstatsd_forwarded_packets: self.require_dogstatsd_forwarded_packets,
-                    // Every variant comes from the matrix config's directory. Reports name it as the
-                    // case each expanded test came from, and it anchors any path this expansion did
-                    // not already make absolute.
-                    base_path: self.base_path.clone(),
-                }
+                let mut config = base.clone();
+                config.baseline.env.extend(variant.env.clone());
+                config.comparison.env.extend(variant.env);
+                (format!("{}/{}", base_name, variant.name), config)
             })
             .collect()
-    }
-}
-
-/// Rewrites the host-path portion of a `host_path:container_path` file entry to an absolute path
-/// anchored at the case directory, mirroring the anchoring that the correctness runtime performs
-/// for its own `files` entries.
-///
-/// An entry with no `:` is returned as written, leaving the runtime to reject it.
-fn anchor_file_entry(entry: &str, case: &impl CaseConfig) -> String {
-    match entry.split_once(':') {
-        Some((host, container)) => format!("{}:{}", case.resolve_path(host).display(), container),
-        None => entry.to_string(),
     }
 }
 
@@ -1029,35 +589,15 @@ where
         .collect()
 }
 
-/// A test case configuration read from a case directory's `config.yaml`.
-///
-/// The directory holding that file anchors every relative path the case declares, so [`load_case`]
-/// hands it back to the configuration once deserialization succeeds. Implementors carry it in a
-/// `#[serde(skip)]` field, since it comes from where the file was found rather than from the file.
+/// Configuration data that records which file the loader read.
 pub trait CaseConfig {
-    /// Returns the directory holding the `config.yaml` this case was loaded from.
-    fn base_path(&self) -> &Path;
-
-    /// Records the directory holding the `config.yaml` this case was loaded from.
-    fn set_base_path(&mut self, base_path: PathBuf);
-
-    /// Resolves a path declared by the case against the case directory.
-    ///
-    /// An absolute path is returned unchanged. Symlinks in the result are left as they are, since a
-    /// case may name a path that nothing has created yet.
-    fn resolve_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
-        let path = path.as_ref();
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.base_path().join(path)
-        }
-    }
+    /// Records the canonical configuration file path after deserialization.
+    fn set_loaded_from(&mut self, path: PathBuf);
 }
 
-/// Loads one test case configuration from its `config.yaml`, anchored at that file's directory.
+/// Loads one test case configuration and records its canonical file path.
 ///
-/// Every case type loads the same way: plain YAML deserialization, then the case directory recorded
+/// Every case type loads the same way: plain YAML deserialization, then the canonical file path recorded
 /// on the result. Values come from the file alone, so YAML typing is what the case gets: an unquoted
 /// `true` is a boolean and does not stand in for the string `"true"`. Images a case declares can be
 /// replaced after loading; see [`crate::image_override`].
@@ -1086,11 +626,7 @@ where
     let mut case: T = serde_yaml::from_str(&content)
         .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
 
-    let base_path = config_path
-        .parent()
-        .expect("Canonicalized file path always has a parent.")
-        .to_path_buf();
-    case.set_base_path(base_path);
+    case.set_loaded_from(config_path);
 
     Ok(case)
 }
@@ -1103,8 +639,17 @@ where
 ///
 /// `integration_runtime` scopes integration-test discovery to a single runtime: an integration
 /// test is included if and only if its `runtimes:` list contains this value. Correctness tests
-/// are unaffected; they always discover.
-pub fn discover_tests(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec<Box<dyn Test>>, GenericError> {
+/// are unaffected; they always discover. Image overrides apply across this entire scope, before
+/// the caller selects tests by name.
+///
+/// # Errors
+///
+/// Returns an error if a test directory cannot be read or an image override is duplicate or unmatched.
+pub fn discover_tests(
+    dirs: &[PathBuf], integration_runtime: &str, image_overrides: &[crate::image_override::ImageOverride],
+) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let overrides = ImageOverrides::new(image_overrides);
+    let settings = IntegrationSettings::new(integration_runtime, &overrides);
     let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
     for base_path in dirs {
@@ -1122,7 +667,7 @@ pub fn discover_tests(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec
             if path.is_dir() {
                 let config_path = path.join("config.yaml");
                 if config_path.exists() {
-                    match try_load_test(&config_path, &path, integration_runtime) {
+                    match try_load_test(&config_path, &path, integration_runtime, &settings, &overrides) {
                         Ok(loaded) => tests.extend(loaded),
                         Err(e) => {
                             // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
@@ -1139,6 +684,7 @@ pub fn discover_tests(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec
     // Sort by name for deterministic ordering.
     tests.sort_by_key(|a| a.name());
 
+    overrides.validate(&tests)?;
     Ok(tests)
 }
 
@@ -1149,7 +695,8 @@ pub fn discover_tests(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec
 /// whether the active `integration_runtime` is in the test's `runtimes:` list. `correctness`
 /// configs produce exactly one test case.
 fn try_load_test(
-    config_path: &Path, dir_path: &Path, integration_runtime: &str,
+    config_path: &Path, dir_path: &Path, integration_runtime: &str, settings: &IntegrationSettings,
+    overrides: &ImageOverrides<'_>,
 ) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
@@ -1190,18 +737,17 @@ fn try_load_test(
             if !config.runtimes.iter().any(|r| r == integration_runtime) {
                 return Ok(Vec::new());
             }
-            let mut variant = config.clone();
-            variant.bind_to_runtime(integration_runtime);
-            Ok(vec![Box::new(variant)])
+            Ok(vec![Box::new(IntegrationTestCase::new(config, settings))])
         }
         "correctness" => {
             let mut config: CorrectnessConfig = load_case(config_path)?;
-            config.name = dir_path
+            let name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            Ok(vec![Box::new(config)])
+            overrides.apply_correctness(&mut config);
+            Ok(vec![Box::new(CorrectnessTestCase::new(name, config))])
         }
         "correctness_matrix" => {
             let base_name = dir_path
@@ -1209,7 +755,10 @@ fn try_load_test(
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let matrix: MatrixConfig = load_case(config_path)?;
+            // Parse both schemas from YAML text: flattening or a Value roundtrip changes scalar coercion.
+            let base: CorrectnessConfig = load_case(config_path)?;
+            let matrix: MatrixVariants = serde_yaml::from_str(&content)
+                .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
             if matrix.variants.is_empty() {
                 return Err(generic_error!(
                     "correctness_matrix '{}' has no variants defined",
@@ -1217,9 +766,12 @@ fn try_load_test(
                 ));
             }
             Ok(matrix
-                .expand(&base_name)
+                .expand(&base, &base_name)
                 .into_iter()
-                .map(|c| Box::new(c) as Box<dyn Test>)
+                .map(|(name, mut config)| {
+                    overrides.apply_correctness(&mut config);
+                    Box::new(CorrectnessTestCase::new(name, config)) as Box<dyn Test>
+                })
                 .collect())
         }
         other => Err(generic_error!(
@@ -1385,7 +937,7 @@ procedure: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
 
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].name(), "windows-smoke");
@@ -1405,7 +957,7 @@ procedure: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows", &[]).unwrap();
         let images = tests[0].images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
@@ -1424,7 +976,7 @@ procedure: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux").unwrap();
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
         let images = tests[0].images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
@@ -1452,7 +1004,7 @@ variants:
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux").unwrap();
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux", &[]).unwrap();
 
         assert_eq!(tests.len(), 2);
         // Canonicalized, because the loader canonicalizes the config path it derives this from.
@@ -1489,14 +1041,14 @@ comparison:
         // What the Docker adapter hands to Airlock: one assignment per variable, ordered by name,
         // with a value containing '=' left intact.
         assert_eq!(
-            config.baseline.env_assignments(),
+            crate::correctness::case::env_assignments(&config.baseline.env),
             vec!["DD_API_KEY=correctness-test".to_string(), "DD_TAGS=a=1,b=2".to_string()]
         );
 
         // Each target owns its own environment: the comparison-only variable does not leak into the
         // baseline.
         assert_eq!(
-            config.comparison.env_assignments(),
+            crate::correctness::case::env_assignments(&config.comparison.env),
             vec![
                 "DD_API_KEY=correctness-test".to_string(),
                 "DD_DATA_PLANE_ENABLED=true".to_string()
@@ -1578,7 +1130,12 @@ comparison:
         // Canonicalized, because the loader canonicalizes the config path it derives the case
         // directory from. On macOS that turns the temp directory's `/tmp` into `/private/tmp`.
         let case_dir = base_dir.path().join("dsd-paths").canonicalize().unwrap();
-        assert_eq!(config.millstone_config().config_path, case_dir.join("millstone.yaml"));
+        assert_eq!(
+            CorrectnessTestCase::new("paths".to_string(), config.clone())
+                .millstone_config()
+                .config_path,
+            case_dir.join("millstone.yaml")
+        );
 
         // An absolute path is the case's own choice and passes through untouched. Pick one that is
         // absolute on the platform running the test: a Unix-style root is not absolute on Windows.
@@ -1587,7 +1144,10 @@ comparison:
         } else {
             PathBuf::from("/etc/datadog-agent/datadog.yaml")
         };
-        assert_eq!(config.resolve_path(&absolute_path), absolute_path);
+        assert_eq!(
+            crate::test::resolve_case_path(&config.loaded_from, &absolute_path),
+            absolute_path
+        );
     }
 
     #[test]
@@ -1618,11 +1178,12 @@ variants:
         );
         let config_path = base_dir.path().join("dsd-matrix").join("config.yaml");
 
-        let matrix: MatrixConfig = load_case(&config_path).expect("matrix should parse");
-        let expanded = matrix.expand("dsd-matrix");
+        let base: CorrectnessConfig = load_case(&config_path).unwrap();
+        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let expanded = matrix.expand(&base, "dsd-matrix");
 
         assert_eq!(expanded.len(), 1);
-        let variant = &expanded[0];
+        let variant = &expanded[0].1;
         for (side, target) in [("baseline", &variant.baseline), ("comparison", &variant.comparison)] {
             // The variant wins on the shared variable, adds its own, and leaves the rest of the base
             // environment alone.
@@ -1666,10 +1227,10 @@ variants:
         };
 
         assert!(
-            !action.unresolved_placeholders().is_empty(),
+            !crate::dynamic_vars::unresolved_action(&action).is_empty(),
             "placeholders should be detected before resolution"
         );
-        action.resolve_dynamic_vars(&vars);
+        crate::dynamic_vars::resolve_action(&mut action, &vars);
 
         let ActionConfig::CoreAgentConfigSet {
             key, value, endpoint, ..
@@ -1750,7 +1311,7 @@ procedure:
             timeout: HumanDuration(Duration::from_secs(1)),
         };
 
-        action.resolve_dynamic_vars(&vars);
+        crate::dynamic_vars::resolve_action(&mut action, &vars);
 
         let ActionConfig::TargetExec { command, .. } = action else {
             panic!("expected target_exec action");
@@ -1770,8 +1331,8 @@ procedure:
             timeout: HumanDuration(Duration::from_secs(1)),
         };
 
-        action.resolve_dynamic_vars(&vars);
-        assert!(action.unresolved_placeholders().is_empty());
+        crate::dynamic_vars::resolve_action(&mut action, &vars);
+        assert!(crate::dynamic_vars::unresolved_action(&action).is_empty());
 
         let ActionConfig::AdpCli { args, .. } = action else {
             panic!("expected adp_cli action");
@@ -1788,9 +1349,9 @@ procedure:
             timeout: HumanDuration(Duration::from_secs(1)),
         };
 
-        assert!(!action.unresolved_placeholders().is_empty());
-        action.resolve_dynamic_vars(&vars);
-        assert!(action.unresolved_placeholders().is_empty());
+        assert!(!crate::dynamic_vars::unresolved_action(&action).is_empty());
+        crate::dynamic_vars::resolve_action(&mut action, &vars);
+        assert!(crate::dynamic_vars::unresolved_action(&action).is_empty());
 
         let ActionConfig::CoreAgentCli {
             args, output_contains, ..
@@ -1812,12 +1373,12 @@ procedure:
             timeout: HumanDuration(Duration::from_secs(1)),
             stream: LogStream::default(),
         };
-        log.resolve_dynamic_vars(&vars);
+        crate::dynamic_vars::resolve_assertion(&mut log, &vars);
         let AssertionConfig::LogContains { pattern, .. } = &log else {
             panic!("expected log_contains");
         };
         assert_eq!(pattern, "listen:10.0.0.5");
-        assert!(log.unresolved_placeholders().is_empty());
+        assert!(crate::dynamic_vars::unresolved_assertion(&log).is_empty());
 
         let mut http = AssertionConfig::HttpCheck {
             endpoint: "http://{{PANORAMIC_DYNAMIC_IP}}:{{PANORAMIC_DYNAMIC_PORT}}/health".to_string(),
@@ -1825,7 +1386,7 @@ procedure:
             insecure_skip_verify: false,
             timeout: HumanDuration(Duration::from_secs(1)),
         };
-        http.resolve_dynamic_vars(&vars);
+        crate::dynamic_vars::resolve_assertion(&mut http, &vars);
         let AssertionConfig::HttpCheck { endpoint, .. } = &http else {
             panic!("expected http_check");
         };
@@ -1837,7 +1398,7 @@ procedure:
             regex: false,
             timeout: HumanDuration(Duration::from_secs(1)),
         };
-        file.resolve_dynamic_vars(&vars);
+        crate::dynamic_vars::resolve_assertion(&mut file, &vars);
         let AssertionConfig::FileContains { path, pattern, .. } = &file else {
             panic!("expected file_contains");
         };
@@ -1856,11 +1417,447 @@ procedure:
             stream: LogStream::default(),
         };
 
-        assertion.resolve_dynamic_vars(&dynamic_vars(&[("PRESENT", "x")]));
+        crate::dynamic_vars::resolve_assertion(&mut assertion, &dynamic_vars(&[("PRESENT", "x")]));
 
         assert_eq!(
-            assertion.unresolved_placeholders(),
+            crate::dynamic_vars::unresolved_assertion(&assertion),
             vec!["{{PANORAMIC_DYNAMIC_MISSING}}".to_string()]
+        );
+    }
+
+    #[test]
+    fn matrix_expansion_preserves_file_data_and_keeps_variants_independent() {
+        // Matrix expansion used to reconstruct fields and resolve paths itself. Both forms now
+        // retain file data and use the same case preparation and path resolution.
+        let dir = create_test_case_dir(
+            "matrix",
+            r#"
+type: correctness_matrix
+runtime: kubernetes_in_docker
+analysis_mode: traces
+millstone:
+  image: tools:custom
+  binary_path: /custom/millstone
+  config_path: nested/millstone.yaml
+datadog_intake:
+  image: intake:custom
+  binary_path: /custom/intake
+baseline:
+  image: baseline:custom
+  entrypoint: [baseline]
+  command: [run]
+  files: ["nested/agent.yaml:/etc/agent.yaml"]
+  env: {SHARED: base, BASELINE_ONLY: baseline}
+comparison:
+  image: comparison:custom
+  entrypoint: [comparison]
+  command: [start]
+  files: ["nested/comparison.yaml:/etc/agent.yaml"]
+  env: {SHARED: base, COMPARISON_ONLY: comparison}
+otlp_direct_analysis_mode: true
+additional_span_ignore_fields: [metrics.example]
+require_dogstatsd_forwarded_packets: true
+variants:
+  - name: first
+    env: {SHARED: first, FIRST_ONLY: first}
+  - name: second
+    env: {SHARED: second}
+"#,
+        );
+        let path = dir.path().join("matrix/config.yaml");
+        let ordinary: CorrectnessConfig = load_case(&path).unwrap();
+        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let expanded = matrix.expand(&ordinary, "matrix");
+        assert_eq!(
+            expanded.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            ["matrix/first", "matrix/second"]
+        );
+        let ordinary_case = CorrectnessTestCase::new("ordinary".to_string(), ordinary.clone());
+        for (name, config) in expanded {
+            assert_eq!(config.loaded_from, path.canonicalize().unwrap());
+            assert_eq!(config.millstone.config_path, PathBuf::from("nested/millstone.yaml"));
+            assert_eq!(config.baseline.files, ordinary.baseline.files);
+            assert_eq!(config.comparison.files, ordinary.comparison.files);
+            assert_eq!(config.baseline.entrypoint, ordinary.baseline.entrypoint);
+            assert_eq!(config.comparison.command, ordinary.comparison.command);
+            assert!(config.otlp_direct_analysis_mode);
+            assert_eq!(config.additional_span_ignore_fields, ["metrics.example"]);
+            assert!(config.require_dogstatsd_forwarded_packets);
+            let variant = name.strip_prefix("matrix/").unwrap();
+            for target in [&config.baseline, &config.comparison] {
+                assert_eq!(target.env["SHARED"], variant);
+                assert_eq!(target.env.contains_key("FIRST_ONLY"), variant == "first");
+            }
+            assert_eq!(config.baseline.env["BASELINE_ONLY"], "baseline");
+            assert!(!config.baseline.env.contains_key("COMPARISON_ONLY"));
+            assert_eq!(config.comparison.env["COMPARISON_ONLY"], "comparison");
+            assert!(!config.comparison.env.contains_key("BASELINE_ONLY"));
+            let case = CorrectnessTestCase::new(name.clone(), config);
+            assert_eq!(case.name(), name);
+            assert_eq!(case.case_path(), path.parent().unwrap().canonicalize().unwrap());
+            assert_eq!(case.runtime(), "kubernetes_in_docker");
+            assert_eq!(case.images(), ordinary_case.images());
+            assert_eq!(
+                case.millstone_config().config_path,
+                ordinary_case.millstone_config().config_path
+            );
+            assert_eq!(
+                case.millstone_config().binary_path.as_deref(),
+                Some("/custom/millstone")
+            );
+            assert_eq!(
+                case.datadog_intake_config().binary_path.as_deref(),
+                Some("/custom/intake")
+            );
+        }
+        assert_eq!(ordinary.baseline.env["SHARED"], "base");
+        assert!(!ordinary.comparison.env.contains_key("FIRST_ONLY"));
+    }
+
+    #[tokio::test]
+    async fn ordinary_and_matrix_targets_prepare_overridden_images_env_and_relative_mounts() {
+        let container_root = if cfg!(windows) { "C:/etc" } else { "/etc" };
+        let dir = create_test_case_dir(
+            "prepared",
+            &format!(
+                r#"
+type: correctness_matrix
+runtime: docker
+analysis_mode: metrics
+millstone:
+  config_path: nested/millstone.yaml
+baseline:
+  image: baseline:file
+  entrypoint: [baseline, --init]
+  command: [sleep, 10]
+  env: {{BASELINE_ONLY: baseline, SHARED: base, DD_TAGS: "a=1,b=2"}}
+  files: ["nested/baseline.yaml:{container_root}/baseline.yaml", "nested/common.yaml:{container_root}/common.yaml"]
+comparison:
+  image: comparison:file
+  entrypoint: [comparison, --init]
+  command: [wait, 20]
+  env: {{COMPARISON_ONLY: comparison, SHARED: base, DD_TAGS: "a=1,b=2"}}
+  files: ["nested/comparison.yaml:{container_root}/comparison.yaml", "nested/common.yaml:{container_root}/common.yaml"]
+variants:
+  - name: first
+    env: {{SHARED: first, FIRST_ONLY: "true"}}
+  - name: second
+    env: {{SHARED: second}}
+"#,
+            ),
+        );
+        let path = dir.path().join("prepared/config.yaml");
+        let base: CorrectnessConfig = load_case(&path).unwrap();
+        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut configs = vec![("prepared/base".to_string(), base.clone())];
+        configs.extend(matrix.expand(&base, "prepared"));
+        let entries = [
+            "baseline=baseline:custom",
+            "comparison=comparison:custom",
+            "datadog-intake=intake:custom",
+            "millstone=millstone:custom",
+        ]
+        .map(|entry| entry.parse().unwrap());
+        let overrides = ImageOverrides::new(&entries);
+        let case_dir = path.parent().unwrap().canonicalize().unwrap();
+        for (name, mut config) in configs {
+            let variant = name.strip_prefix("prepared/").unwrap().to_string();
+            overrides.apply_correctness(&mut config);
+            let case = CorrectnessTestCase::new(name, config);
+            for entry in &entries {
+                assert_eq!(case.images()[entry.name.as_str()], entry.image);
+            }
+            assert_eq!(case.datadog_intake_config().image, "intake:custom");
+            assert_eq!(case.millstone_config().image, "millstone:custom");
+            assert_eq!(
+                case.millstone_config().config_path,
+                case_dir.join("nested/millstone.yaml")
+            );
+            for (side, target, command) in [
+                ("baseline", &case.config.baseline, ["sleep", "10"]),
+                ("comparison", &case.config.comparison, ["wait", "20"]),
+            ] {
+                let (prepared, mounts) = case.target_config(target).unwrap();
+                assert_eq!(prepared.image, format!("{side}:custom"));
+                assert_eq!(prepared.entrypoint, [side, "--init"]);
+                assert_eq!(prepared.command, command);
+                assert_eq!(prepared.container_os, airlock::driver::ContainerOs::Linux);
+                assert!(!prepared.host_cgroup_namespace);
+                let mut expected_env = vec![
+                    format!("{}_ONLY={side}", side.to_uppercase()),
+                    "DD_TAGS=a=1,b=2".to_string(),
+                ];
+                if variant == "first" {
+                    expected_env.push("FIRST_ONLY=true".to_string());
+                }
+                expected_env.push(format!("SHARED={variant}"));
+                assert_eq!(prepared.additional_env_vars, expected_env);
+                assert_eq!(
+                    mounts,
+                    vec![
+                        (
+                            case_dir.join(format!("nested/{side}.yaml")),
+                            PathBuf::from(format!("{container_root}/{side}.yaml"))
+                        ),
+                        (
+                            case_dir.join("nested/common.yaml"),
+                            PathBuf::from(format!("{container_root}/common.yaml"))
+                        ),
+                    ]
+                );
+                // DriverConfig is opaque; assert its prepared inputs above and exercise construction here.
+                case.target_driver_config(target).await.expect("valid target driver");
+                assert_eq!(
+                    target.files[0],
+                    format!("nested/{side}.yaml:{container_root}/{side}.yaml")
+                );
+            }
+        }
+        assert_eq!(base.baseline.image, "baseline:file");
+        assert_eq!(base.comparison.env["SHARED"], "base");
+        assert!(!base.baseline.env.contains_key("FIRST_ONLY"));
+    }
+
+    #[test]
+    fn ordinary_and_matrix_targets_preserve_yaml_scalar_spellings() {
+        // Flattening the matrix base buffers YAML scalars as Serde Content, rejecting numeric
+        // commands. Parse the original YAML directly so String fields also retain spellings like 1e3.
+        let dir = create_test_case_dir(
+            "scalars",
+            r#"
+type: correctness_matrix
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: base
+  command: [sleep, 10, 01, 1e3, true, 1.50]
+  entrypoint: [env, 20, 02, 2e3, false, 2.50]
+  env: {BOOL: "true", NUMBER: "8125", SCIENTIFIC: "1e3", LEADING_ZERO: 01}
+comparison:
+  image: comp
+  command: [wait, 30, 03, 3e3, false, 3.50]
+  entrypoint: [exec, 40, 04, 4e3, true, 4.50]
+  env: {BOOL: "false", NUMBER: "8126", SCIENTIFIC: "2e3", LEADING_ZERO: 02}
+variants: [{name: one, env: {QUOTED: "true"}}]
+"#,
+        );
+        let path = dir.path().join("scalars/config.yaml");
+        let ordinary: CorrectnessConfig = load_case(&path).unwrap();
+        let matrix: MatrixVariants = serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let expanded = matrix.expand(&ordinary, "scalars");
+        let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].name(), "scalars/one");
+        for config in [&ordinary, &expanded[0].1] {
+            assert_eq!(config.baseline.command, ["sleep", "10", "01", "1e3", "true", "1.50"]);
+            assert_eq!(config.baseline.entrypoint, ["env", "20", "02", "2e3", "false", "2.50"]);
+            assert_eq!(config.comparison.command, ["wait", "30", "03", "3e3", "false", "3.50"]);
+            assert_eq!(
+                config.comparison.entrypoint,
+                ["exec", "40", "04", "4e3", "true", "4.50"]
+            );
+            assert_eq!(config.baseline.env["BOOL"], "true");
+            assert_eq!(config.baseline.env["NUMBER"], "8125");
+            assert_eq!(config.baseline.env["SCIENTIFIC"], "1e3");
+            assert_eq!(config.baseline.env["LEADING_ZERO"], "01");
+            assert_eq!(config.comparison.env["BOOL"], "false");
+            assert_eq!(config.comparison.env["NUMBER"], "8126");
+            assert_eq!(config.comparison.env["SCIENTIFIC"], "2e3");
+            assert_eq!(config.comparison.env["LEADING_ZERO"], "02");
+        }
+        assert!(!ordinary.baseline.env.contains_key("QUOTED"));
+        assert_eq!(expanded[0].1.baseline.env["QUOTED"], "true");
+        assert_eq!(expanded[0].1.comparison.env["QUOTED"], "true");
+    }
+
+    #[test]
+    fn all_environment_maps_reject_non_string_yaml_values() {
+        for value in ["true", "false", "8125", "1e3", "1.5", "null", "[text]", "{key: text}"] {
+            let integration = format!("name: strict\ntimeout: 1s\nprocedure: []\nenv: {{INVALID: {value}}}\n");
+            let error = serde_yaml::from_str::<IntegrationConfig>(&integration).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("environment variable 'INVALID' must be a YAML string"));
+            for (kind, section) in [
+                ("correctness", "baseline"),
+                ("correctness", "comparison"),
+                ("correctness_matrix", "baseline"),
+                ("correctness_matrix", "comparison"),
+                ("correctness_matrix", "variant"),
+            ] {
+                let env = format!("env: {{INVALID: {value}}}");
+                let baseline_env = if section == "baseline" { &env } else { "" };
+                let comparison_env = if section == "comparison" { &env } else { "" };
+                let variant_env = if section == "variant" { &env } else { "" };
+                let yaml = format!(
+                    r#"
+type: {kind}
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: base
+  {baseline_env}
+comparison:
+  image: comp
+  {comparison_env}
+variants:
+  - name: one
+    {variant_env}
+"#
+                );
+                let dir = create_test_case_dir("strict", &yaml);
+                let case_dir = dir.path().join("strict");
+                let overrides = ImageOverrides::new(&[]);
+                let settings = IntegrationSettings::new(LINUX_RUNTIME, &overrides);
+                let error = try_load_test(
+                    &case_dir.join("config.yaml"),
+                    &case_dir,
+                    LINUX_RUNTIME,
+                    &settings,
+                    &overrides,
+                )
+                .err()
+                .expect("non-string env value must fail");
+                let error = format!("{error:?}");
+                assert!(
+                    error.contains("environment variable 'INVALID' must be a YAML string"),
+                    "{kind} {section} {value}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn discovery_scopes_integration_images_to_runtime_and_leaves_correctness_eligible() {
+        let integration = create_test_case_dir(
+            "portable",
+            "type: integration\nname: portable\ntimeout: 1s\nruntimes: [linux, mac, windows]\nprocedure: []\n",
+        );
+        let correctness = create_test_case_dir(
+            "correctness",
+            r#"
+type: correctness
+runtime: docker
+analysis_mode: metrics
+baseline: {image: base}
+comparison: {image: comp}
+"#,
+        );
+        let dirs = [integration.path().to_path_buf(), correctness.path().to_path_buf()];
+        for (runtime, target) in [
+            (LINUX_RUNTIME, Some(DEFAULT_LINUX_TARGET_IMAGE)),
+            (WINDOWS_RUNTIME, Some(DEFAULT_WINDOWS_TARGET_IMAGE)),
+            (MAC_RUNTIME, None),
+            ("unknown", None),
+        ] {
+            let cases = discover_tests(&dirs, runtime, &[]).unwrap();
+            assert_eq!(cases[0].name(), "correctness");
+            assert_eq!(cases[0].runtime(), "docker");
+            assert_eq!(cases.len(), if runtime == "unknown" { 1 } else { 2 });
+            if runtime != "unknown" {
+                assert_eq!(cases[1].runtime(), runtime);
+                let expected: BTreeMap<&str, String> = target
+                    .into_iter()
+                    .map(|image| (TARGET_IMAGE_NAME, image.to_string()))
+                    .collect();
+                assert_eq!(cases[1].images(), expected);
+            }
+        }
+        let override_entry = ["container=target:override".parse().unwrap()];
+        for runtime in [MAC_RUNTIME, "unknown"] {
+            let error = discover_tests(&dirs, runtime, &override_entry)
+                .err()
+                .expect("no eligible target image");
+            assert!(error
+                .to_string()
+                .contains("No test in this run uses a container named 'container'"));
+        }
+    }
+
+    #[test]
+    fn declared_runtime_validation_precedes_eligibility_filtering() {
+        for (runtimes, expected) in [
+            ("[]", "empty runtimes list"),
+            ("[linux, typo]", "unknown runtime 'typo'"),
+        ] {
+            let yaml = format!("type: integration\nname: invalid\ntimeout: 1s\nruntimes: {runtimes}\nprocedure: []\n");
+            let dir = create_test_case_dir("invalid", &yaml);
+            let overrides = ImageOverrides::new(&[]);
+            let settings = IntegrationSettings::new(MAC_RUNTIME, &overrides);
+            let case_dir = dir.path().join("invalid");
+            let error = try_load_test(
+                &case_dir.join("config.yaml"),
+                &case_dir,
+                MAC_RUNTIME,
+                &settings,
+                &overrides,
+            )
+            .err()
+            .expect("invalid declared runtime");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn discovery_applies_correctness_overrides_to_ordinary_and_matrix_cases() {
+        let entries = [
+            "baseline=base:override",
+            "comparison=comp:override",
+            "millstone=tools:override",
+            "datadog-intake=intake:override",
+        ]
+        .map(|entry| entry.parse().unwrap());
+        for (kind, variants, count) in [
+            ("correctness", "", 1),
+            ("correctness_matrix", "variants: [{name: first}, {name: second}]", 2),
+        ] {
+            let dir = create_test_case_dir(
+                "case",
+                &format!(
+                    r#"
+type: {kind}
+runtime: docker
+analysis_mode: metrics
+baseline: {{image: base}}
+comparison: {{image: comp}}
+{variants}
+"#
+                ),
+            );
+            let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &entries).unwrap();
+            assert_eq!(cases.len(), count);
+            for case in cases {
+                let images = case.images();
+                for entry in &entries {
+                    assert_eq!(images[entry.name.as_str()], entry.image);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loader_records_the_canonical_file_without_resolving_declared_paths() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            r#"
+runtime: docker
+analysis_mode: metrics
+loaded_from: ignored
+baseline: {image: base}
+comparison: {image: comp}
+"#,
+        )
+        .unwrap();
+        let config: CorrectnessConfig = load_case(&path).unwrap();
+        assert_eq!(config.loaded_from, path.canonicalize().unwrap());
+        assert_eq!(config.millstone.config_path, PathBuf::from("millstone.yaml"));
+        let case = CorrectnessTestCase::new("relative".to_string(), config);
+        assert_eq!(case.case_path(), dir.path().canonicalize().unwrap());
+        assert_eq!(
+            case.millstone_config().config_path,
+            case.case_path().join("millstone.yaml")
         );
     }
 
