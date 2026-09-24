@@ -4,7 +4,6 @@ mod aggregation;
 mod compat;
 mod dogstatsd;
 mod serializer;
-mod trace_sampler;
 mod transaction;
 
 /// Returns the list of remapper rules relevant to metrics we send to the Datadog Agent via Remote Agent Registry (RAR).
@@ -17,7 +16,6 @@ pub fn get_datadog_agent_remappings() -> Vec<RemapperRule> {
     rules.extend(self::aggregation::get_aggregation_remappings());
     rules.extend(self::transaction::get_transaction_remappings());
     rules.extend(self::serializer::get_serializer_remappings());
-    rules.extend(self::trace_sampler::get_trace_sampler_remappings());
     rules
 }
 

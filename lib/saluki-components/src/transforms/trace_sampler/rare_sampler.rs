@@ -292,14 +292,14 @@ mod tests {
 
     #[test]
     fn disabled_sampler_never_keeps() {
-        let mut sampler = RareSampler::new(false, 5.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(false, 5.0, Duration::from_secs(300), 200, Telemetry::new());
         let mut trace = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(!sampler.sample(&mut trace, 0));
     }
 
     #[test]
     fn new_signature_is_kept() {
-        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::new());
         let mut trace = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace, 0));
         // The rare key should be set on the sampled span.
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn same_signature_within_ttl_is_dropped() {
-        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::new());
         let mut trace1 = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace1, 0));
 
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn non_top_level_span_not_considered() {
-        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::new());
         // Span is NOT top-level and NOT measured.
         let mut trace = make_trace(vec![make_plain_span("svc", "op", "res")]);
         assert!(!sampler.sample(&mut trace, 0));
@@ -333,14 +333,14 @@ mod tests {
 
     #[test]
     fn measured_span_is_considered() {
-        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::new());
         let mut trace = make_trace(vec![make_measured_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace, 0));
     }
 
     #[test]
     fn different_signatures_are_independent() {
-        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 5.0, Duration::from_secs(300), 200, Telemetry::new());
 
         // Keep trace with signature A.
         let mut trace_a = make_trace(vec![make_top_level_span("svc", "op", "resource-a")]);
@@ -359,13 +359,7 @@ mod tests {
     fn rate_limit_drops_excess_rare_traces() {
         // Use a very low TPS so the bucket doesn't refill during the loop, then create 60 distinct
         // signatures to exceed the burst of 50. We're testing the burst cap, not the refill rate.
-        let mut sampler = RareSampler::new(
-            true,
-            0.000_000_001,
-            Duration::from_secs(300),
-            200,
-            Telemetry::for_tests(),
-        );
+        let mut sampler = RareSampler::new(true, 0.000_000_001, Duration::from_secs(300), 200, Telemetry::new());
 
         let mut kept = 0usize;
         for i in 0..60usize {
@@ -383,7 +377,7 @@ mod tests {
     #[test]
     fn ttl_expiration_allows_resampling() {
         // Use a very short TTL so we can observe expiry in a test.
-        let mut sampler = RareSampler::new(true, 100.0, Duration::from_millis(10), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 100.0, Duration::from_millis(10), 200, Telemetry::new());
 
         let mut trace1 = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace1, 0));
@@ -402,13 +396,7 @@ mod tests {
     fn cardinality_limit_shrinks_shard() {
         // Fill a shard beyond its cardinality limit and verify the map stays bounded.
         let cardinality = 10usize;
-        let mut sampler = RareSampler::new(
-            true,
-            1000.0,
-            Duration::from_secs(300),
-            cardinality,
-            Telemetry::for_tests(),
-        );
+        let mut sampler = RareSampler::new(true, 1000.0, Duration::from_secs(300), cardinality, Telemetry::new());
 
         for i in 0..(cardinality + 5) {
             let mut trace = make_trace(vec![make_top_level_span("svc", "op", &format!("res-{}", i))]);
@@ -432,7 +420,7 @@ mod tests {
             ("plain", &[], false),
         ];
 
-        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200, Telemetry::new());
         for &(service, metrics, expected) in cases {
             let mut m = FastHashMap::default();
             for &(k, v) in metrics {
@@ -452,7 +440,7 @@ mod tests {
         // Trace 2 [r1, r2]:   r1 within TTL (skipped), r2 new → kept, r2 gets _dd.rare=1.
         //                     Sampling trace 2 refreshes both r1 and r2 TTLs.
         // Trace 3 [r1]:       r1 TTL was refreshed by trace 2 → dropped.
-        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200, Telemetry::for_tests());
+        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200, Telemetry::new());
 
         let mut trace1 = make_trace(vec![make_top_level_span("s1", "op", "r1")]);
         assert!(sampler.sample(&mut trace1, 0));
