@@ -140,43 +140,58 @@
 <a href=#140 id=140 data-nosnippet>140</a>        );
 <a href=#141 id=141 data-nosnippet>141</a>    }
 <a href=#142 id=142 data-nosnippet>142</a>
-<a href=#143 id=143 data-nosnippet>143</a>    <span class="doccomment">/// The documented environment variable must appear at the key's canonical nested path in the
-<a href=#144 id=144 data-nosnippet>144</a>    /// provider output.
-<a href=#145 id=145 data-nosnippet>145</a>    </span><span class="attr">#[test]
-<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">fn </span>adp_zstd_override_reaches_its_nested_path() {
-<a href=#147 id=147 data-nosnippet>147</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#148 id=148 data-nosnippet>148</a>        std::env::set_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>, <span class="string">"7"</span>);
-<a href=#149 id=149 data-nosnippet>149</a>
+<a href=#143 id=143 data-nosnippet>143</a>    <span class="attr">#[test]
+<a href=#144 id=144 data-nosnippet>144</a>    </span><span class="kw">fn </span>endpoint_metric_prefix_allowlists_decode_from_json() {
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#146 id=146 data-nosnippet>146</a>        std::env::set_var(
+<a href=#147 id=147 data-nosnippet>147</a>            <span class="string">"DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST"</span>,
+<a href=#148 id=148 data-nosnippet>148</a>            <span class="string">r#"{"https://secondary.example.com":["billing."]}"#</span>,
+<a href=#149 id=149 data-nosnippet>149</a>        );
 <a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">let </span>provider = EnvironmentProvider::new().expect(<span class="string">"environment reads"</span>);
-<a href=#151 id=151 data-nosnippet>151</a>
-<a href=#152 id=152 data-nosnippet>152</a>        std::env::remove_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>);
-<a href=#153 id=153 data-nosnippet>153</a>        <span class="macro">assert_eq!</span>(
-<a href=#154 id=154 data-nosnippet>154</a>            values_of(<span class="kw-2">&amp;</span>provider).pointer(<span class="string">"/data_plane/serializer_zstd_compressor_level"</span>),
-<a href=#155 id=155 data-nosnippet>155</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>Value::Number(<span class="number">7</span>.into()))
-<a href=#156 id=156 data-nosnippet>156</a>        );
-<a href=#157 id=157 data-nosnippet>157</a>    }
-<a href=#158 id=158 data-nosnippet>158</a>
-<a href=#159 id=159 data-nosnippet>159</a>    <span class="attr">#[test]
-<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">fn </span>unset_keys_contribute_nothing() {
-<a href=#161 id=161 data-nosnippet>161</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#162 id=162 data-nosnippet>162</a>        std::env::remove_var(<span class="string">"DD_PROXY_HTTP"</span>);
-<a href=#163 id=163 data-nosnippet>163</a>        std::env::remove_var(<span class="string">"HTTP_PROXY"</span>);
-<a href=#164 id=164 data-nosnippet>164</a>        std::env::remove_var(<span class="string">"http_proxy"</span>);
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>        <span class="kw">let </span>provider = EnvironmentProvider::new().expect(<span class="string">"environment reads"</span>);
-<a href=#167 id=167 data-nosnippet>167</a>
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="macro">assert!</span>(values_of(<span class="kw-2">&amp;</span>provider).pointer(<span class="string">"/proxy/http"</span>).is_none());
-<a href=#169 id=169 data-nosnippet>169</a>    }
-<a href=#170 id=170 data-nosnippet>170</a>
-<a href=#171 id=171 data-nosnippet>171</a>    <span class="attr">#[test]
-<a href=#172 id=172 data-nosnippet>172</a>    </span><span class="kw">fn </span>a_malformed_value_is_rejected() {
-<a href=#173 id=173 data-nosnippet>173</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#174 id=174 data-nosnippet>174</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">let </span>result = EnvironmentProvider::new();
-<a href=#177 id=177 data-nosnippet>177</a>
-<a href=#178 id=178 data-nosnippet>178</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
-<a href=#179 id=179 data-nosnippet>179</a>        <span class="macro">assert!</span>(result.is_err());
-<a href=#180 id=180 data-nosnippet>180</a>    }
-<a href=#181 id=181 data-nosnippet>181</a>}
+<a href=#151 id=151 data-nosnippet>151</a>        std::env::remove_var(<span class="string">"DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST"</span>);
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="macro">assert_eq!</span>(
+<a href=#153 id=153 data-nosnippet>153</a>            values_of(<span class="kw-2">&amp;</span>provider).pointer(<span class="string">"/experimental/metrics_endpoint_routing/metric_prefix_allowlist"</span>),
+<a href=#154 id=154 data-nosnippet>154</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({<span class="string">"https://secondary.example.com"</span>: [<span class="string">"billing."</span>]}))
+<a href=#155 id=155 data-nosnippet>155</a>        );
+<a href=#156 id=156 data-nosnippet>156</a>    }
+<a href=#157 id=157 data-nosnippet>157</a>
+<a href=#158 id=158 data-nosnippet>158</a>    <span class="doccomment">/// The documented environment variable must appear at the key's canonical nested path in the
+<a href=#159 id=159 data-nosnippet>159</a>    /// provider output.
+<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="attr">#[test]
+<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">fn </span>adp_zstd_override_reaches_its_nested_path() {
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#163 id=163 data-nosnippet>163</a>        std::env::set_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>, <span class="string">"7"</span>);
+<a href=#164 id=164 data-nosnippet>164</a>
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="kw">let </span>provider = EnvironmentProvider::new().expect(<span class="string">"environment reads"</span>);
+<a href=#166 id=166 data-nosnippet>166</a>
+<a href=#167 id=167 data-nosnippet>167</a>        std::env::remove_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>);
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="macro">assert_eq!</span>(
+<a href=#169 id=169 data-nosnippet>169</a>            values_of(<span class="kw-2">&amp;</span>provider).pointer(<span class="string">"/data_plane/serializer_zstd_compressor_level"</span>),
+<a href=#170 id=170 data-nosnippet>170</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>Value::Number(<span class="number">7</span>.into()))
+<a href=#171 id=171 data-nosnippet>171</a>        );
+<a href=#172 id=172 data-nosnippet>172</a>    }
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="attr">#[test]
+<a href=#175 id=175 data-nosnippet>175</a>    </span><span class="kw">fn </span>unset_keys_contribute_nothing() {
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#177 id=177 data-nosnippet>177</a>        std::env::remove_var(<span class="string">"DD_PROXY_HTTP"</span>);
+<a href=#178 id=178 data-nosnippet>178</a>        std::env::remove_var(<span class="string">"HTTP_PROXY"</span>);
+<a href=#179 id=179 data-nosnippet>179</a>        std::env::remove_var(<span class="string">"http_proxy"</span>);
+<a href=#180 id=180 data-nosnippet>180</a>
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">let </span>provider = EnvironmentProvider::new().expect(<span class="string">"environment reads"</span>);
+<a href=#182 id=182 data-nosnippet>182</a>
+<a href=#183 id=183 data-nosnippet>183</a>        <span class="macro">assert!</span>(values_of(<span class="kw-2">&amp;</span>provider).pointer(<span class="string">"/proxy/http"</span>).is_none());
+<a href=#184 id=184 data-nosnippet>184</a>    }
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="attr">#[test]
+<a href=#187 id=187 data-nosnippet>187</a>    </span><span class="kw">fn </span>a_malformed_value_is_rejected() {
+<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#189 id=189 data-nosnippet>189</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
+<a href=#190 id=190 data-nosnippet>190</a>
+<a href=#191 id=191 data-nosnippet>191</a>        <span class="kw">let </span>result = EnvironmentProvider::new();
+<a href=#192 id=192 data-nosnippet>192</a>
+<a href=#193 id=193 data-nosnippet>193</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
+<a href=#194 id=194 data-nosnippet>194</a>        <span class="macro">assert!</span>(result.is_err());
+<a href=#195 id=195 data-nosnippet>195</a>    }
+<a href=#196 id=196 data-nosnippet>196</a>}
 </code></pre></div></section></main></body></html>

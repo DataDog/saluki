@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["EndpointAllowlistGroup","MetricsEndpointRoutingConfiguration"]};
+window.SIDEBAR_ITEMS = {"fn":["compact_metric_prefixes"],"struct":["EndpointAllowlistGroup","MetricsEndpointRoutingConfiguration"]};

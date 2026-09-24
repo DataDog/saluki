@@ -12,17 +12,36 @@
 <a href=#12 id=12 data-nosnippet>12</a>    default: <span class="prelude-val">Some</span>(<span class="string">"{}"</span>),
 <a href=#13 id=13 data-nosnippet>13</a>};
 <a href=#14 id=14 data-nosnippet>14</a>
-<a href=#15 id=15 data-nosnippet>15</a><span class="macro">crate::declare_annotations!</span> {
-<a href=#16 id=16 data-nosnippet>16</a>    <span class="doccomment">/// `experimental.metrics_endpoint_routing.metric_allowlist`
-<a href=#17 id=17 data-nosnippet>17</a>    </span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST = SalukiAnnotation {
-<a href=#18 id=18 data-nosnippet>18</a>        schema: <span class="kw-2">&amp;</span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST_SCHEMA,
-<a href=#19 id=19 data-nosnippet>19</a>        support_level: SupportLevel::Full,
-<a href=#20 id=20 data-nosnippet>20</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#21 id=21 data-nosnippet>21</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#22 id=22 data-nosnippet>22</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
-<a href=#23 id=23 data-nosnippet>23</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#24 id=24 data-nosnippet>24</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#"{"https://app.datadoghq.com":["allowed.metric"]}"#</span>),
-<a href=#25 id=25 data-nosnippet>25</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#26 id=26 data-nosnippet>26</a>    };
-<a href=#27 id=27 data-nosnippet>27</a>}
+<a href=#15 id=15 data-nosnippet>15</a><span class="kw">static </span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST_SCHEMA: SchemaEntry = SchemaEntry {
+<a href=#16 id=16 data-nosnippet>16</a>    schema: Schema::Saluki,
+<a href=#17 id=17 data-nosnippet>17</a>    yaml_path: <span class="string">"experimental.metrics_endpoint_routing.metric_prefix_allowlist"</span>,
+<a href=#18 id=18 data-nosnippet>18</a>    env_vars: <span class="kw-2">&amp;</span>[],
+<a href=#19 id=19 data-nosnippet>19</a>    value_type: ValueType::StringMapList,
+<a href=#20 id=20 data-nosnippet>20</a>    default: <span class="prelude-val">Some</span>(<span class="string">"{}"</span>),
+<a href=#21 id=21 data-nosnippet>21</a>};
+<a href=#22 id=22 data-nosnippet>22</a>
+<a href=#23 id=23 data-nosnippet>23</a><span class="macro">crate::declare_annotations!</span> {
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// `experimental.metrics_endpoint_routing.metric_allowlist`
+<a href=#25 id=25 data-nosnippet>25</a>    </span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST = SalukiAnnotation {
+<a href=#26 id=26 data-nosnippet>26</a>        schema: <span class="kw-2">&amp;</span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_ALLOWLIST_SCHEMA,
+<a href=#27 id=27 data-nosnippet>27</a>        support_level: SupportLevel::Full,
+<a href=#28 id=28 data-nosnippet>28</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#29 id=29 data-nosnippet>29</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#30 id=30 data-nosnippet>30</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#31 id=31 data-nosnippet>31</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#32 id=32 data-nosnippet>32</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#"{"https://app.datadoghq.com":["allowed.metric"]}"#</span>),
+<a href=#33 id=33 data-nosnippet>33</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#34 id=34 data-nosnippet>34</a>    };
+<a href=#35 id=35 data-nosnippet>35</a>    <span class="doccomment">/// `experimental.metrics_endpoint_routing.metric_prefix_allowlist`
+<a href=#36 id=36 data-nosnippet>36</a>    </span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST = SalukiAnnotation {
+<a href=#37 id=37 data-nosnippet>37</a>        schema: <span class="kw-2">&amp;</span>EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST_SCHEMA,
+<a href=#38 id=38 data-nosnippet>38</a>        support_level: SupportLevel::Full,
+<a href=#39 id=39 data-nosnippet>39</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#40 id=40 data-nosnippet>40</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#41 id=41 data-nosnippet>41</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#42 id=42 data-nosnippet>42</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#43 id=43 data-nosnippet>43</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#"{"https://primary.example.com":["billing."]}"#</span>),
+<a href=#44 id=44 data-nosnippet>44</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#45 id=45 data-nosnippet>45</a>    };
+<a href=#46 id=46 data-nosnippet>46</a>}
 </code></pre></div></section></main></body></html>
