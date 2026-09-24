@@ -17,6 +17,8 @@ use saluki_error::GenericError;
 use tokio::select;
 use tracing::{debug, error};
 
+use super::metric_name::{is_normalized, normalize_into, NameBuf};
+
 /// Configuration for a metric filter between enrichment and encoding.
 ///
 /// MRF follows live settings for activation and its allowlist. Endpoint routing uses a fixed metric allowlist.
@@ -36,6 +38,9 @@ impl MetricFilterConfiguration {
     }
 
     /// Creates a fixed metric filter accepting exact names or literal prefixes. Two empty lists drop everything.
+    ///
+    /// Incoming names are normalized as the intake stores them for comparison only. Configured entries and
+    /// forwarded metric names are left unchanged.
     pub fn for_allowlist(names: Vec<String>, prefixes: Vec<String>) -> Self {
         Self {
             source: FilterSource::Allowlist { names, prefixes },
@@ -83,8 +88,9 @@ impl FilterSource {
 enum Filter {
     DropAll,
     All,
+    MrfAllowlist(HashSet<String>),
     Allowlist {
-        names: HashSet<String>,
+        names: HashSet<Vec<u8>>,
         prefixes: Vec<String>,
     },
 }
@@ -105,7 +111,7 @@ impl Filter {
             prefixes.truncate(retained + 1);
         }
         Self::Allowlist {
-            names: names.iter().cloned().collect(),
+            names: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
             prefixes,
         }
     }
@@ -116,7 +122,7 @@ impl Filter {
         } else if routing.allowlist.is_empty() {
             Self::All
         } else {
-            Self::for_allowlist(&routing.allowlist, &[])
+            Self::MrfAllowlist(routing.allowlist.iter().cloned().collect())
         }
     }
 
@@ -127,16 +133,28 @@ impl Filter {
         match self {
             Self::DropAll => false,
             Self::All => true,
+            Self::MrfAllowlist(names) => names.contains(metric.context().name().as_ref()),
             Self::Allowlist { names, prefixes } => {
                 let name = metric.context().name().as_ref();
-                if names.contains(name) {
-                    return true;
+                if is_normalized(name) {
+                    return Self::matches_allowlist(name.as_bytes(), names, prefixes);
                 }
-                match prefixes.binary_search_by(|prefix| prefix.as_str().cmp(name)) {
-                    Ok(_) => true,
-                    Err(index) => index > 0 && name.starts_with(&prefixes[index - 1]),
+                let mut buf = NameBuf::new();
+                match normalize_into(&mut buf, name) {
+                    Some(normalized) => Self::matches_allowlist(normalized, names, prefixes),
+                    None => false,
                 }
             }
+        }
+    }
+
+    fn matches_allowlist(name: &[u8], names: &HashSet<Vec<u8>>, prefixes: &[String]) -> bool {
+        if names.contains(name) {
+            return true;
+        }
+        match prefixes.binary_search_by(|prefix| prefix.as_bytes().cmp(name)) {
+            Ok(_) => true,
+            Err(index) => index > 0 && name.starts_with(prefixes[index - 1].as_bytes()),
         }
     }
 
@@ -392,11 +410,15 @@ mod tests {
 
     #[tokio::test]
     async fn an_allowlist_forwards_only_matching_metrics() {
-        let source = LiveSource::new(true, &["allowed.metric"]);
-        let routing = routing(true, &source);
-
-        assert!(routing.should_forward(&counter("allowed.metric")));
-        assert!(!routing.should_forward(&counter("blocked.metric")));
+        for (allowed, blocked) in [
+            ("my-service.requests", "my_service.requests"),
+            ("my_service.requests", "my-service.requests"),
+        ] {
+            let source = LiveSource::new(true, &[allowed]);
+            let routing = routing(true, &source);
+            assert!(routing.should_forward(&counter(allowed)));
+            assert!(!routing.should_forward(&counter(blocked)));
+        }
     }
 
     #[test]
@@ -430,13 +452,7 @@ mod tests {
         .source
         .filter();
         for make_metric in [counter, gauge, rate, set, histogram, distribution] {
-            for name in [
-                "exact.metric",
-                "billing.",
-                "billing.latency.p99",
-                "billing.requests",
-                "literal.*name",
-            ] {
+            for name in ["exact.metric", "billing.", "billing.latency.p99", "billing.requests"] {
                 assert!(routing.should_forward(&make_metric(name)), "{name}");
             }
             for name in [
@@ -445,6 +461,7 @@ mod tests {
                 "billing_other",
                 "Billing.requests",
                 "literal.name",
+                "literal.*name",
                 "other",
             ] {
                 assert!(!routing.should_forward(&make_metric(name)), "{name}");
@@ -464,6 +481,7 @@ mod tests {
                 .filter();
             assert_eq!(routing.should_forward(&counter("any.metric")), expected);
             assert_eq!(routing.should_forward(&distribution("any.metric")), expected);
+            assert!(!routing.should_forward(&counter("123")));
         }
     }
 
@@ -478,12 +496,37 @@ mod tests {
                 .map(|(_, s)| s.to_string())
                 .collect::<Vec<_>>();
             let filter = Filter::for_allowlist(&[], &prefixes);
-            for name in ["", "a", "a.", "a.b", "a.c", "ab", "abc", "b", "bc", "y", "z.", "z.foo"] {
+            for name in ["a", "a.", "a.b", "a.c", "ab", "abc", "b", "bc", "y", "z.", "z.foo"] {
                 assert_eq!(
                     filter.should_forward(&counter(name)),
                     prefixes.iter().any(|prefix| name.starts_with(prefix)),
                     "name={name}, prefixes={prefixes:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_allowlists_compare_normalized_names_without_rewriting_metrics() {
+        let filter = Filter::for_allowlist(
+            &["my_service.requests".to_string(), "literal-name".to_string()],
+            &["redis.checkpoint_".to_string()],
+        );
+        for make_metric in [counter, distribution] {
+            for (name, expected) in [
+                ("my-service.requests", true),
+                ("my_service.requests", true),
+                ("redis.checkpoint-bytes", true),
+                ("my-service.other", false),
+                ("redis.checkpointing.count", false),
+                ("literal-name", false),
+            ] {
+                let event = make_metric(name);
+                assert_eq!(filter.should_forward(&event), expected, "{name}");
+                let Event::Metric(metric) = event else {
+                    panic!("expected a metric")
+                };
+                assert_eq!(metric.context().name().as_ref(), name);
             }
         }
     }

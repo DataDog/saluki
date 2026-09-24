@@ -2,9 +2,7 @@
 
 use stringtheory::MetaString;
 
-mod metric_name;
-
-use self::metric_name::{is_normalized, normalize_into, NameBuf};
+use super::metric_name::{is_normalized, normalize_into, NameBuf};
 
 /// Compiled blocklist for metric names that should be filtered.
 ///
