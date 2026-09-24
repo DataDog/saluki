@@ -242,6 +242,12 @@ struct NodeInner {
     /// their own future -- so the parent has no supervisor value to record at registration time and the subtree would
     /// otherwise be invisible. Such a supervisor registers itself here when it starts.
     adopted: FastHashMap<u64, Arc<SupervisorNode>>,
+    /// Scopes owned by worker children, keyed by the roster id of the worker.
+    ///
+    /// The scope of a worker holds all children that the worker spawns as its own. Like an adopted supervisor, the
+    /// scope exists only after the worker starts. Thus, the scope is not known at registration time, and it registers
+    /// itself here.
+    scoped: FastHashMap<u64, Arc<SupervisorNode>>,
 }
 
 impl NodeInner {
@@ -257,6 +263,7 @@ impl NodeInner {
     fn clear_generation(&mut self) {
         self.children.clear();
         self.adopted.clear();
+        self.scoped.clear();
         self.history.retain(|key, _| !key.is_dynamic());
     }
 
@@ -279,6 +286,26 @@ pub(super) struct TreeParent {
 impl TreeParent {
     pub(super) fn new(node: Arc<SupervisorNode>, child_id: u64) -> Self {
         Self { node, child_id }
+    }
+
+    /// Records `scope` as the scope of the worker in this slot.
+    pub(super) fn attach_scope(&self, scope: Arc<SupervisorNode>) {
+        self.node.state().scoped.insert(self.child_id, scope);
+    }
+
+    /// Removes `scope` as the scope of the worker in this slot, if it is still the scope of that worker.
+    ///
+    /// This function compares by identity, and does not remove a different scope that it finds in the slot. A restarted
+    /// worker attaches a new scope under the same slot. A late detach of the old scope must not remove the new scope.
+    pub(super) fn detach_scope(&self, scope: &Arc<SupervisorNode>) {
+        let mut state = self.node.state();
+        if state
+            .scoped
+            .get(&self.child_id)
+            .is_some_and(|attached| Arc::ptr_eq(attached, scope))
+        {
+            state.scoped.remove(&self.child_id);
+        }
     }
 }
 
@@ -316,6 +343,7 @@ impl SupervisorNode {
                 children: FastIndexMap::default(),
                 history: FastHashMap::default(),
                 adopted: FastHashMap::default(),
+                scoped: FastHashMap::default(),
             }),
         }
     }
@@ -467,8 +495,12 @@ impl<E> Roster<E> {
         let mut state = self.node.state();
         state.restarts_performed += 1;
 
-        // Whatever the previous incarnation adopted refers to a supervisor that has since stopped. The new
-        // incarnation re-registers if it drives one of its own.
+        // Any supervisor that the previous instance of the child adopted is now stopped. The new instance registers again
+        // if it has one.
+        //
+        // The scope of the previous instance is not removed here. That scope detached itself when the previous instance
+        // was dropped, before its exit was reported. The new instance is already running at this point, and it can
+        // already have attached its own scope, so a removal here could only remove the scope of the new instance.
         state.adopted.remove(&id);
 
         if let Some(record) = state.children.get_mut(&id) {
@@ -495,6 +527,7 @@ impl<E> Roster<E> {
 
         let mut state = self.node.state();
         state.adopted.remove(&id);
+        state.scoped.remove(&id);
         match state.children.get(&id).map(|record| record.key) {
             // Order is restored by sorting on `ChildKey` when a snapshot is taken, so the roster itself doesn't need
             // to preserve it -- which lets a dynamic child, of which there may be one per unit of work, leave in
@@ -566,6 +599,7 @@ impl<E> Roster<E> {
             true
         });
         state.adopted.clear();
+        state.scoped.clear();
         drop(state);
 
         self.debug_assert_consistent();
@@ -754,49 +788,13 @@ impl Walk {
         // simpler to guarantee than any ordering rule.
         let (run, running, config, generation, restarts_performed, children) = {
             let state = node.state();
-
-            let mut children = state
-                .children
-                .iter()
-                .map(|(id, record)| {
-                    let history = state.history.get(&record.key);
-                    PendingChild {
-                        key: record.key,
-                        facts: ParentFacts {
-                            name: Arc::clone(&record.name),
-                            restart: record.restart,
-                            significant: record.significant,
-                            created: history
-                                .map(|h| h.created)
-                                .or_else(|| record.start.as_ref().map(|start| start.at))
-                                .unwrap_or_else(Stamp::now),
-                            restarts: history.map(|h| h.restarts).unwrap_or(0),
-                            exited: record.exited,
-                        },
-                        kind: match &record.kind {
-                            RecordKind::Supervisor(node) => PendingKind::Supervisor(Arc::clone(node)),
-                            RecordKind::Worker => match state.adopted.get(id) {
-                                Some(adopted) => PendingKind::WorkerDriving(Arc::clone(adopted)),
-                                None => PendingKind::Worker,
-                            },
-                        },
-                        start: record.start.clone(),
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            // A restart re-registers a child under a fresh id, so insertion order stops matching declaration order as
-            // soon as anything restarts. `ChildKey` orders statics by declaration and dynamics by spawn, which keeps
-            // successive snapshots diffable.
-            children.sort_by_key(|child| child.key);
-
             (
                 state.run.clone(),
                 state.running,
                 state.config,
                 state.generation,
                 state.restarts_performed,
-                children,
+                pending_children(&state),
             )
         };
 
@@ -858,18 +856,34 @@ impl Walk {
             // was configured and how it has fared.
             PendingKind::Supervisor(node) => self.supervisor(&node, child.facts, depth),
 
-            // A worker that turned out to be driving a supervisor of its own. The worker is what the parent
-            // supervises, so it stays the node; the supervisor it drives hangs beneath it.
-            PendingKind::WorkerDriving(adopted) => {
+            PendingKind::Worker { adopted, scope } => {
                 let mut snapshot = self.worker(child.facts, child.start, worker_group, depth);
-                if self.may_descend(&adopted.id, depth) {
-                    let nested = self.supervisor(&adopted, ParentFacts::root(&adopted), depth + 1);
-                    snapshot.children.push(nested);
+
+                // The worker was found to drive a supervisor of its own. The parent supervises the worker, so the
+                // worker stays the node. The supervisor that the worker drives appears under the worker.
+                if let Some(adopted) = adopted {
+                    if self.may_descend(&adopted.id, depth) {
+                        let nested = self.supervisor(&adopted, ParentFacts::root(&adopted), depth + 1);
+                        snapshot.children.push(nested);
+                    }
                 }
+
+                // These are the children that the worker spawned into its own scope. They belong to the worker, so
+                // they appear directly under the worker. The scope is how the worker holds them, and it is not a
+                // separate node. The children run in the process of the worker, so they count against the same
+                // resource group as the worker.
+                if let Some(scope) = scope {
+                    if self.may_descend(&scope.id, depth) {
+                        let children = pending_children(&scope.state());
+                        for child in children {
+                            let nested = self.child(child, worker_group, depth + 1);
+                            snapshot.children.push(nested);
+                        }
+                    }
+                }
+
                 snapshot
             }
-
-            PendingKind::Worker => self.worker(child.facts, child.start, worker_group, depth),
         }
     }
 
@@ -975,10 +989,54 @@ struct PendingChild {
 }
 
 enum PendingKind {
-    Worker,
-    /// A worker that drives a supervisor of its own, which hangs beneath it.
-    WorkerDriving(Arc<SupervisorNode>),
+    Worker {
+        /// A supervisor that the worker drives inside its own future, and that appears under the worker.
+        adopted: Option<Arc<SupervisorNode>>,
+
+        /// The worker's own scope, whose children appear under the worker.
+        scope: Option<Arc<SupervisorNode>>,
+    },
     Supervisor(Arc<SupervisorNode>),
+}
+
+/// Copies the children of a node out of the locked node state, in the order that a snapshot shows them.
+fn pending_children(state: &NodeInner) -> Vec<PendingChild> {
+    let mut children = state
+        .children
+        .iter()
+        .map(|(id, record)| {
+            let history = state.history.get(&record.key);
+            PendingChild {
+                key: record.key,
+                facts: ParentFacts {
+                    name: Arc::clone(&record.name),
+                    restart: record.restart,
+                    significant: record.significant,
+                    created: history
+                        .map(|h| h.created)
+                        .or_else(|| record.start.as_ref().map(|start| start.at))
+                        .unwrap_or_else(Stamp::now),
+                    restarts: history.map(|h| h.restarts).unwrap_or(0),
+                    exited: record.exited,
+                },
+                kind: match &record.kind {
+                    RecordKind::Supervisor(node) => PendingKind::Supervisor(Arc::clone(node)),
+                    RecordKind::Worker => PendingKind::Worker {
+                        adopted: state.adopted.get(id).cloned(),
+                        scope: state.scoped.get(id).cloned(),
+                    },
+                },
+                start: record.start.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // A restart registers the child again under a new id. Thus, after any restart, the insertion order is not the same
+    // as the declaration order. `ChildKey` orders static children by declaration and dynamic children by spawn. This
+    // order keeps successive snapshots easy to diff.
+    children.sort_by_key(|child| child.key);
+
+    children
 }
 
 /// Converts a duration to whole milliseconds, saturating rather than overflowing.
@@ -1146,6 +1204,31 @@ mod tests {
             !node.state().history.contains_key(&ChildKey::Dynamic(5)),
             "a dynamic child is never restored, so its history cannot be looked up again"
         );
+    }
+
+    #[test]
+    fn restarting_a_child_keeps_the_scope_that_its_new_instance_attached() {
+        let node = test_node("sup");
+        let mut roster = Roster::new(Arc::clone(&node));
+        roster.insert(
+            0,
+            (),
+            test_facts(ChildKey::Dynamic(0), "owner", RestartType::Permanent),
+            test_started("sup.owner"),
+        );
+
+        // The restarted instance runs as soon as it is spawned. It can attach its scope before the roster records the
+        // restart.
+        let scope = test_node("sup.owner");
+        TreeParent::new(Arc::clone(&node), 0).attach_scope(Arc::clone(&scope));
+        roster.restart_in_place(0, test_started("sup.owner"));
+
+        let state = node.state();
+        let attached = state
+            .scoped
+            .get(&0)
+            .expect("the scope of the new instance must stay attached");
+        assert!(Arc::ptr_eq(attached, &scope));
     }
 
     #[test]
