@@ -12,21 +12,22 @@
 //! - adding missing samplers (priority, nopriority)
 //! - add error tracking standalone mode
 
+use std::sync::LazyLock;
+
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Span, Trace},
-        Event,
+        Event, EventType,
     },
-    topology::EventsBuffer,
+    topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
+use tokio::select;
 use tracing::debug;
 
 mod catalog;
@@ -40,7 +41,7 @@ mod signature;
 mod telemetry;
 
 use self::probabilistic::PROB_RATE_KEY;
-use self::telemetry::Telemetry;
+use self::telemetry::{Telemetry, WINDOW};
 use crate::common::datadog::{
     compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
     DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
@@ -117,13 +118,25 @@ impl TraceSamplerConfiguration {
 }
 
 #[async_trait]
-impl SynchronousTransformBuilder for TraceSamplerConfiguration {
-    async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+impl TransformBuilder for TraceSamplerConfiguration {
+    fn input_event_type(&self) -> EventType {
+        EventType::Trace
+    }
+
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::default_output(EventType::Trace),
+                OutputDefinition::named_output("metrics", EventType::Metric),
+            ]
+        });
+        &OUTPUTS
+    }
+
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
-        let telemetry = Telemetry::new(&MetricsBuilder::from_component_context(context.component_context()));
-        // The transform is built once per process, so the flush loop runs for the process lifetime.
-        tokio::spawn(telemetry.clone().run_flush_loop());
+        let telemetry = Telemetry::new();
 
         let sampler = TraceSampler {
             sampling_rate: self.sampling_percentage / 100.0,
@@ -187,12 +200,6 @@ impl MemoryBounds for TraceSamplerConfiguration {
         builder
             .minimum()
             .with_map::<telemetry::DecisionKey, telemetry::DecisionCounts>("sampler decision window", catalog_capacity);
-
-        // The decision-metric handle cache spans the same key universe and holds only recently
-        // active keys, so its steady-state size follows the window map's.
-        builder
-            .minimum()
-            .with_map::<telemetry::DecisionKey, telemetry::TrackedHandles>("sampler metric handles", catalog_capacity);
     }
 }
 
@@ -660,19 +667,52 @@ impl TraceSampler {
     }
 }
 
-impl SynchronousTransform for TraceSampler {
-    fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
-        buffer.remove_if(|event| match event {
-            Event::Trace(trace) => !self.process_trace(trace),
-            _ => false,
-        });
+#[async_trait]
+impl Transform for TraceSampler {
+    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+        debug!("Trace sampler transform started.");
 
-        // Read after processing so signatures learned from this buffer are included.
-        self.telemetry.set_tracked_signature_counts(
-            self.priority_sampler.tracked_signature_count(),
-            self.no_priority_sampler.tracked_signature_count(),
-            self.error_sampler.tracked_signature_count(),
-        );
+        let mut window = tokio::time::interval_at(tokio::time::Instant::now() + WINDOW, WINDOW);
+
+        loop {
+            select! {
+                _ = health.live() => continue,
+                _ = window.tick() => {
+                    // Report the sampling telemetry through the dedicated metrics output, so the
+                    // metrics flow into the metrics pipeline and on to the backend.
+                    let events = self.telemetry.take_window_events();
+                    context.dispatcher().buffered_named("metrics")?.send_all(events).await?;
+                }
+                maybe_events = context.events().next() => match maybe_events {
+                    Some(mut events) => {
+                        events.remove_if(|event| match event {
+                            Event::Trace(trace) => !self.process_trace(trace),
+                            _ => false,
+                        });
+
+                        // Read after processing so signatures learned from this buffer are included.
+                        self.telemetry.set_tracked_signature_counts(
+                            self.priority_sampler.tracked_signature_count(),
+                            self.no_priority_sampler.tracked_signature_count(),
+                            self.error_sampler.tracked_signature_count(),
+                        );
+
+                        context.dispatcher().buffered()?.send_all(events).await?;
+                    }
+                    None => {
+                        // The input stream has ended, so report the final window before stopping.
+                        let events = self.telemetry.take_window_events();
+                        context.dispatcher().buffered_named("metrics")?.send_all(events).await?;
+                        break;
+                    }
+                }
+            }
+        }
+
+        debug!("Trace sampler transform stopped.");
+        Ok(())
     }
 }
 
@@ -700,9 +740,9 @@ mod tests {
                 5.0,
                 std::time::Duration::from_secs(300),
                 200,
-                telemetry::Telemetry::for_tests(),
+                telemetry::Telemetry::new(),
             ),
-            telemetry: telemetry::Telemetry::for_tests(),
+            telemetry: telemetry::Telemetry::new(),
             compute_top_level_by_span_kind: false,
         }
     }
@@ -1555,7 +1595,7 @@ mod tests {
                 1000.0,
                 std::time::Duration::from_secs(300),
                 200,
-                telemetry::Telemetry::for_tests(),
+                telemetry::Telemetry::new(),
             ),
             ..create_test_sampler()
         }

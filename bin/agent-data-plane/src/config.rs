@@ -152,13 +152,15 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns `true` if the metrics pipeline is required.
     ///
     /// Connected topologies need this pipeline whenever they have a data pipeline so the liveness metric can be
-    /// enriched and forwarded, including when the only data pipeline is an OTLP proxy. Standalone mode only creates
-    /// the pipeline for data sources that use it directly.
+    /// enriched and forwarded, including when the only data pipeline is an OTLP proxy. The trace sampler reports its
+    /// sampling telemetry as metric events, so a running traces pipeline also requires this one. Standalone mode
+    /// only creates the pipeline for data sources that use it directly.
     pub const fn metrics_pipeline_required(&self) -> bool {
         self.checks_enabled()
             || self.dogstatsd_enabled()
             || (self.otlp_enabled() && !self.otlp_proxy_enabled())
             || (!self.standalone_mode() && self.data_pipelines_enabled())
+            || self.traces_pipeline_required()
     }
 
     /// Returns `true` if the logs pipeline is required.
@@ -390,6 +392,18 @@ mod tests {
         assert!(!dp.events_pipeline_required());
         assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
+    }
+
+    #[test]
+    fn standalone_local_traces_requires_metrics_pipeline_for_sampler_telemetry() {
+        // The sampler reports its telemetry as metric events, so a running traces pipeline requires
+        // the metrics pipeline even in standalone mode.
+        let mut config = pipeline_configuration(false, false, true, true, false);
+        config.control.standalone_mode = true;
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+
+        assert!(dp.traces_pipeline_required());
+        assert!(dp.metrics_pipeline_required());
     }
 
     #[test]
