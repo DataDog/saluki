@@ -11,28 +11,14 @@ use std::path::Path;
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::apply_datadog_env;
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::ConfigurationLoader;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::env_provider::EnvironmentProvider;
 use crate::saluki_env_overlay;
 use crate::source::SourceTree;
 use crate::system::{translate_strict, validate, ConfigurationSystem, Error};
 
-// The environment-variable prefix ADP reads (`DD_`). Mirrors
-// `PlatformSettings::get_env_var_prefix()`; hardcoded so the configuration system need not depend on
-// `datadog-agent-commons` for a single constant.
-const ENV_VAR_PREFIX: &str = "DD";
-
-// Bound on the internal channel that forwards Agent updates into the compatibility map. Matches the
-// Agent stream's own channel depth (`RemoteAgentBootstrap::create_config_stream`).
-const COMPAT_FORWARD_CHANNEL_SIZE: usize = 100;
-
 /// Where environment variables sit relative to the configuration file.
-///
-/// One setting, applied identically to the Figment provider order for the by-key view and to the
-/// order the typed base is composed in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvPrecedence {
     /// Environment variables are read below the file: the file wins.
@@ -47,11 +33,7 @@ pub enum EnvPrecedence {
 }
 
 /// Local configuration prepared before a runtime authority is selected.
-///
-/// Retains a nested base for the typed path and a loader for the legacy by-key path. Both use the
-/// same source path and precedence but build their representations independently.
 pub struct LoadedConfiguration {
-    loader: ConfigurationLoader,
     // Nested local base used for typed translation and Agent-layer merges.
     base: SourceTree,
     // Strictly translated local snapshot exposed before authority selection and used by standalone
@@ -71,12 +53,11 @@ impl LoadedConfiguration {
     ///
     /// Returns an error if a local source cannot be read, decoded, deserialized, or translated.
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
-        let loader = build_loader(path.as_ref(), env)?;
         // Every value the local sources supply was set explicitly: the file set it or an environment
         // variable supplied it.
         let base = SourceTree::all_explicit(build_base(path.as_ref(), env)?);
         let local = translate_strict(&base)?;
-        Ok(Self { loader, base, local })
+        Ok(Self { base, local })
     }
 
     /// Returns the typed snapshot of the local file and environment.
@@ -93,15 +74,10 @@ impl LoadedConfiguration {
     ///
     /// # Errors
     ///
-    /// Returns an error if the compatibility map cannot be built, the stream closes before its
-    /// initial snapshot, or the merged configuration cannot be deserialized or translated.
+    /// Returns an error if the stream closes before its initial snapshot, or the merged configuration
+    /// cannot be deserialized or translated.
     pub async fn run(self, config_stream: mpsc::Receiver<ConfigUpdate>) -> Result<ConfigurationSystem, Error> {
-        // The configuration system owns the Agent stream and forwards each update into this
-        // compatibility map, so `raw_map()` keeps serving un-migrated components.
-        let (compat_tx, compat_rx) = mpsc::channel(COMPAT_FORWARD_CHANNEL_SIZE);
-        let compat_map = self.loader.with_dynamic_configuration(compat_rx).into_generic().await?;
-
-        ConfigurationSystem::connected(config_stream, compat_tx, compat_map, self.base).await
+        ConfigurationSystem::connected(config_stream, self.base).await
     }
 
     /// Uses the translated local configuration as the runtime authority.
@@ -112,23 +88,20 @@ impl LoadedConfiguration {
     ///
     /// # Errors
     ///
-    /// Returns an error if the compatibility map cannot be built from the local sources, or if the
-    /// local configuration fails validation.
+    /// Returns an error if the local configuration fails validation.
     pub async fn standalone(self) -> Result<ConfigurationSystem, Error> {
         validate(&self.local)?;
-        let compat_map = self.loader.into_generic().await?;
-        Ok(ConfigurationSystem::standalone(compat_map, self.local, self.base))
+        Ok(ConfigurationSystem::standalone(self.local, self.base))
     }
 }
 
 /// Builds the typed base: the configuration file parsed to its nested shape, with environment
 /// variables read directly and decoded into the schema's shapes on top.
 ///
-/// It reads the same file as the by-key compatibility view, normalizes it the same way (drop
-/// null-valued keys; an empty file is an empty object), and then overlays the environment via the
-/// generated Datadog reader, the Saluki-only reader, and the
-/// canonical proxy variables. `env` sets whether the environment overwrites the file (`AfterFile`)
-/// or only fills absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
+/// A null-valued key is dropped and an empty file is an empty object. The environment is then
+/// overlaid via the generated Datadog reader, the Saluki-only reader, and the canonical proxy
+/// variables. `env` sets whether the environment overwrites the file (`AfterFile`) or only fills
+/// absent keys (`BeforeFile`); `Disabled` skips the environment entirely.
 fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::Base {
         message: format!("read `{}`: {e}", path.display()),
@@ -151,8 +124,8 @@ fn build_base(path: &Path, env: EnvPrecedence) -> Result<Value, Error> {
     Ok(base)
 }
 
-/// Recursively removes object entries whose value is JSON null, mirroring the compatibility loader's
-/// file normalization: an explicitly null YAML key must not override a model default with null.
+/// Recursively removes object entries whose value is JSON null: an explicitly null YAML key must not
+/// override a model default with null.
 fn drop_nulls(value: &mut Value) {
     if let Value::Object(map) = value {
         map.retain(|_, v| !v.is_null());
@@ -160,37 +133,6 @@ fn drop_nulls(value: &mut Value) {
             drop_nulls(v);
         }
     }
-}
-
-/// Builds the by-key configuration view at the given precedence, with later sources overriding
-/// earlier ones.
-///
-/// Two environment providers are used together. [`ConfigurationLoader::from_environment`] scans the
-/// `DD_` prefix and contributes every variable as a flat key, which is what a key not covered by
-/// either source model needs. [`EnvironmentProvider`] then contributes the modeled keys at their
-/// canonical paths, so a nested key such as `proxy.http` is reachable in the shape the Datadog Agent
-/// itself uses. It sits at the higher precedence of the two because it knows a key's real shape,
-/// while the scanning provider can only guess from the variable's name.
-fn build_loader(path: &Path, env: EnvPrecedence) -> Result<ConfigurationLoader, Error> {
-    let loader = ConfigurationLoader::default();
-    let loader = match env {
-        EnvPrecedence::AfterFile => loader
-            .from_yaml(path)?
-            .from_environment(ENV_VAR_PREFIX)?
-            .add_providers([schema_env_provider()?]),
-        EnvPrecedence::BeforeFile => loader
-            .from_environment(ENV_VAR_PREFIX)?
-            .add_providers([schema_env_provider()?])
-            .from_yaml(path)?,
-        EnvPrecedence::Disabled => loader.from_yaml(path)?,
-    };
-    Ok(loader)
-}
-
-/// Builds the schema-driven environment provider, reporting a malformed value the same way the typed
-/// base does.
-fn schema_env_provider() -> Result<EnvironmentProvider, Error> {
-    EnvironmentProvider::new().map_err(|message| Error::Base { message })
 }
 
 #[cfg(test)]
@@ -251,7 +193,7 @@ mod tests {
     #[tokio::test]
     async fn load_rejects_translation_invalid_local_sources() {
         let path = std::env::temp_dir().join(format!("adp_local_bad_{}.yaml", std::process::id()));
-        // The compatibility loader accepts this value, but typed translation rejects it.
+        // The file parses, but typed translation rejects the value.
         std::fs::write(&path, "dogstatsd_tag_cardinality: bogus\n").unwrap();
 
         let result = LoadedConfiguration::load(&path, EnvPrecedence::Disabled).await;

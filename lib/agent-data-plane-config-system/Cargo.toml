@@ -10,7 +10,6 @@ agent-data-plane-config = { workspace = true }
 arc-swap = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
-figment = { workspace = true }
 saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

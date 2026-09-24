@@ -83,7 +83,6 @@ mod tests {
 
     use datadog_agent_config::classifier::Pipeline;
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
-    use saluki_config::ConfigurationLoader;
     use serde_json::{json, Value};
 
     use crate::system::translate_strict;
@@ -91,25 +90,24 @@ mod tests {
 
     /// Builds a system whose sources are a local configuration file, so every key present was set
     /// explicitly.
-    async fn system_with(file: Value) -> ConfigurationSystem {
-        system_from(SourceTree::all_explicit(file)).await
+    fn system_with(file: Value) -> ConfigurationSystem {
+        system_from(SourceTree::all_explicit(file))
     }
 
     /// Builds a system whose sources are the settings a configuration producer published, each
     /// carrying its own provenance.
-    async fn system_from_settings(settings: &[(&str, Value, StreamProvenance)]) -> ConfigurationSystem {
+    fn system_from_settings(settings: &[(&str, Value, StreamProvenance)]) -> ConfigurationSystem {
         let settings: Vec<_> = settings
             .iter()
             .map(|(key, value, provenance)| ConfigSetting::new(*key, value.clone(), *provenance))
             .collect();
 
-        system_from(SourceTree::from_settings(&settings)).await
+        system_from(SourceTree::from_settings(&settings))
     }
 
-    async fn system_from(sources: SourceTree) -> ConfigurationSystem {
-        let (raw_map, _) = ConfigurationLoader::for_tests(None, None, false).await;
+    fn system_from(sources: SourceTree) -> ConfigurationSystem {
         let config = translate_strict(&sources).expect("sources translate");
-        ConfigurationSystem::standalone(raw_map, config, sources)
+        ConfigurationSystem::standalone(config, sources)
     }
 
     fn pipelines(active: &[Pipeline]) -> HashSet<Pipeline> {
@@ -130,9 +128,9 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn high_severity_keys_fail_the_check_and_are_all_counted() {
-        let system = system_with(otlp_tls_settings("/etc/adp/cert.pem", "/etc/adp/key.pem")).await;
+    #[test]
+    fn high_severity_keys_fail_the_check_and_are_all_counted() {
+        let system = system_with(otlp_tls_settings("/etc/adp/cert.pem", "/etc/adp/key.pem"));
 
         let error = system
             .check_compatibility(&pipelines(&[Pipeline::Otlp]))
@@ -141,8 +139,8 @@ mod tests {
         assert!(error.to_string().contains("2 incompatible configuration detected"));
     }
 
-    #[tokio::test]
-    async fn a_high_severity_key_nobody_set_is_skipped() {
+    #[test]
+    fn a_high_severity_key_nobody_set_is_skipped() {
         // The Agent publishes every key it knows about, so a key it reports at its own default is a
         // key nobody configured, whatever value it holds.
         let system = system_from_settings(&[
@@ -156,19 +154,18 @@ mod tests {
                 json!("/etc/adp/key.pem"),
                 StreamProvenance::Default,
             ),
-        ])
-        .await;
+        ]);
 
         system
             .check_compatibility(&pipelines(&[Pipeline::Otlp]))
             .expect("a key nobody set is not an incompatibility");
     }
 
-    #[tokio::test]
-    async fn a_high_severity_key_set_to_its_default_value_is_still_checked() {
+    #[test]
+    fn a_high_severity_key_set_to_its_default_value_is_still_checked() {
         // Writing an unsupported key is a request ADP cannot honor, so it is reported even when the
         // value written happens to be the one the schema would have supplied.
-        let system = system_with(otlp_tls_settings("", "")).await;
+        let system = system_with(otlp_tls_settings("", ""));
 
         let error = system
             .check_compatibility(&pipelines(&[Pipeline::Otlp]))
@@ -177,31 +174,31 @@ mod tests {
         assert!(error.to_string().contains("2 incompatible configuration detected"));
     }
 
-    #[tokio::test]
-    async fn a_high_severity_key_affecting_no_active_pipeline_is_skipped() {
-        let system = system_with(otlp_tls_settings("/etc/adp/cert.pem", "/etc/adp/key.pem")).await;
+    #[test]
+    fn a_high_severity_key_affecting_no_active_pipeline_is_skipped() {
+        let system = system_with(otlp_tls_settings("/etc/adp/cert.pem", "/etc/adp/key.pem"));
 
         system
             .check_compatibility(&pipelines(&[Pipeline::DogStatsD]))
             .expect("an inactive pipeline's keys are not incompatibilities");
     }
 
-    #[tokio::test]
-    async fn lower_severity_keys_pass_and_cross_cutting_keys_ignore_active_pipelines() {
-        let system = system_with(json!({ "dogstatsd_queue_size": 2048, "min_tls_version": "tlsv1.3" })).await;
+    #[test]
+    fn lower_severity_keys_pass_and_cross_cutting_keys_ignore_active_pipelines() {
+        let system = system_with(json!({ "dogstatsd_queue_size": 2048, "min_tls_version": "tlsv1.3" }));
         system
             .check_compatibility(&pipelines(&[Pipeline::DogStatsD]))
             .expect("only high-severity incompatibilities fail the check");
 
-        let cross_cutting = system_with(json!({ "heroku_dyno": true })).await;
+        let cross_cutting = system_with(json!({ "heroku_dyno": true }));
         cross_cutting
             .check_compatibility(&pipelines(&[]))
             .expect_err("a cross-cutting high-severity key fails the check with no pipeline active");
     }
 
-    #[tokio::test]
-    async fn keys_the_registry_does_not_know_are_ignored() {
-        let system = system_with(json!({ "not_a_real_agent_setting": true, "dogstatsd_port": 9125 })).await;
+    #[test]
+    fn keys_the_registry_does_not_know_are_ignored() {
+        let system = system_with(json!({ "not_a_real_agent_setting": true, "dogstatsd_port": 9125 }));
 
         system
             .check_compatibility(&pipelines(&[Pipeline::DogStatsD]))
