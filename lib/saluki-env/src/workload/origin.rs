@@ -2,11 +2,11 @@
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_common::{
+use saluki_common::hash::hash_single_fast;
+use saluki_core::{
     cache::{Cache, CacheBuilder},
-    hash::hash_single_fast,
+    data_model::origin::{OriginTagCardinality, RawOrigin},
 };
-use saluki_core::data_model::origin::{OriginTagCardinality, RawOrigin};
 use tracing::trace;
 
 use super::stores::ExternalDataStoreResolver;

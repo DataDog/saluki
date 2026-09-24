@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use regex::Regex;
-use saluki_common::cache::{Cache, CacheBuilder};
+use saluki_core::cache::{Cache, CacheBuilder};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{

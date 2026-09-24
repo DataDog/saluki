@@ -1,3 +1,5 @@
+//! The weight of cache items, which a cache compares to its capacity.
+
 // NOTE: We're wrapping the `Weighter` trait from `quick_cache` to provide an abstracted interface over `quick_cache`,
 // so that we can more easily swap out the underlying cache implementation in the future if needed.
 
