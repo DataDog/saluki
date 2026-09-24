@@ -1,4 +1,4 @@
-//! Convert enriched series using the same value and resource semantics as the V3 encoder.
+//! Convert enriched series into logical metrics, preserving values and resource metadata.
 
 use foldspace_core::{
     LogicalMetricSeries, MetricOrigin as FoldspaceOrigin, MetricPoint, MetricResource, MetricSeriesType, MetricTagSet,
@@ -56,8 +56,7 @@ pub(super) fn convert(metric: &Metric) -> Option<LogicalMetricSeries> {
         }
     }
     if let Some(device) = device {
-        let index = usize::from(metric.context().host().is_some_and(|host| !host.is_empty()));
-        resources.insert(index, MetricResource::new("device", device));
+        resources.push(MetricResource::new("device", device));
     }
 
     seen.clear();

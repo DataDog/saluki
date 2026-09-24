@@ -133,7 +133,7 @@ fn has_name(sequence: &MetricDatumSequence) -> bool {
 }
 
 #[test]
-fn conversion_preserves_rate_metadata_and_v3_resources() {
+fn conversion_preserves_rate_metadata_and_resources() {
     let tags: TagSet = [
         "env:test",
         "device:disk",
@@ -160,8 +160,8 @@ fn conversion_preserves_rate_metadata_and_v3_resources() {
         series.resources(),
         [
             MetricResource::new("host", "host-a"),
-            MetricResource::new("device", "disk"),
             MetricResource::new("container", "abc"),
+            MetricResource::new("device", "disk"),
         ]
     );
     assert_eq!(series.origin(), Some(FoldspaceOrigin::new(10, 10, 0)));
