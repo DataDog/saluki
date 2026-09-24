@@ -461,6 +461,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
 
     let endpoint_routing = MetricsEndpointRoutingConfiguration::from_configuration(
         &config.domains.metrics_endpoint_routing.metric_allowlists,
+        &config.domains.metrics_endpoint_routing.metric_prefix_allowlists,
         &shared.endpoints,
     )?;
     blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
@@ -539,7 +540,10 @@ fn add_metrics_output_pipelines_to_blueprint(
     for (index, policy) in routing.policy_groups().iter().enumerate() {
         let filter_id = format!("metrics_routing_filter_{index}");
         let encoder_id = format!("metrics_routing_encode_{index}");
-        let filter_config = MetricFilterConfiguration::for_allowlist(policy.metric_allowlist.clone());
+        let filter_config = MetricFilterConfiguration::for_allowlist(
+            policy.metric_allowlist.clone(),
+            policy.metric_prefix_allowlist.clone(),
+        );
         let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
             .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
 

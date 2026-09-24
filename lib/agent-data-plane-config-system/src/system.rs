@@ -646,7 +646,10 @@ mod tests {
         let system = standalone_system(
             Some(json!({
                 "experimental": {
-                    "metrics_endpoint_routing": { "metric_allowlist": policies.clone() }
+                    "metrics_endpoint_routing": {
+                        "metric_allowlist": policies.clone(),
+                        "metric_prefix_allowlist": { "https://primary.example.com": ["billing."] }
+                    }
                 }
             })),
             None,
@@ -658,6 +661,17 @@ mod tests {
             serde_json::to_value(&system.config().domains.metrics_endpoint_routing.metric_allowlists).unwrap(),
             policies
         );
+        assert_eq!(
+            system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_prefix_allowlists,
+            std::collections::HashMap::from([(
+                "https://primary.example.com".to_string(),
+                vec!["billing.".to_string()]
+            )])
+        );
     }
 
     #[tokio::test]
@@ -667,6 +681,7 @@ mod tests {
             json!({ "experimental": {} }),
             json!({ "experimental": { "metrics_endpoint_routing": {} } }),
             json!({ "experimental": { "metrics_endpoint_routing": { "metric_allowlist": {} } } }),
+            json!({ "experimental": { "metrics_endpoint_routing": { "metric_prefix_allowlist": {} } } }),
         ] {
             let system = standalone_system(Some(source), None).await.expect("system builds");
             assert!(system
@@ -674,6 +689,12 @@ mod tests {
                 .domains
                 .metrics_endpoint_routing
                 .metric_allowlists
+                .is_empty());
+            assert!(system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_prefix_allowlists
                 .is_empty());
         }
     }

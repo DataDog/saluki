@@ -35,10 +35,10 @@ impl MetricFilterConfiguration {
         }
     }
 
-    /// Creates a fixed metric filter. Unlisted names are dropped; an empty list drops everything.
-    pub fn for_allowlist(allowlist: Vec<String>) -> Self {
+    /// Creates a fixed metric filter accepting exact names or literal prefixes. Two empty lists drop everything.
+    pub fn for_allowlist(names: Vec<String>, prefixes: Vec<String>) -> Self {
         Self {
-            source: FilterSource::Allowlist(allowlist),
+            source: FilterSource::Allowlist { names, prefixes },
         }
     }
 }
@@ -50,28 +50,31 @@ enum FilterSource {
         enabled: bool,
         routing: Live<MetricMirroring>,
     },
-    Allowlist(Vec<String>),
+    Allowlist {
+        names: Vec<String>,
+        prefixes: Vec<String>,
+    },
 }
 
 impl FilterSource {
     fn filter(&self) -> Filter {
         match self {
             Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, routing),
-            Self::Allowlist(names) => Filter::Allowlist(names.iter().cloned().collect()),
+            Self::Allowlist { names, prefixes } => Filter::for_allowlist(names, prefixes),
         }
     }
 
-    fn allowlist(&self) -> &[String] {
+    fn allowlists(&self) -> (&[String], &[String]) {
         match self {
-            Self::Mrf { routing, .. } => &routing.allowlist,
-            Self::Allowlist(names) => names,
+            Self::Mrf { routing, .. } => (&routing.allowlist, &[]),
+            Self::Allowlist { names, prefixes } => (names, prefixes),
         }
     }
 
     async fn changed(&mut self) -> Filter {
         match self {
             Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, &routing.changed().await),
-            Self::Allowlist(_) => std::future::pending().await,
+            Self::Allowlist { .. } => std::future::pending().await,
         }
     }
 }
@@ -80,17 +83,40 @@ impl FilterSource {
 enum Filter {
     DropAll,
     All,
-    Allowlist(HashSet<String>),
+    Allowlist {
+        names: HashSet<String>,
+        prefixes: Vec<String>,
+    },
 }
 
 impl Filter {
+    fn for_allowlist(names: &[String], prefixes: &[String]) -> Self {
+        let mut prefixes = prefixes.to_vec();
+        prefixes.sort_unstable();
+        // Remove covered prefixes so a binary search only needs to check its predecessor.
+        if !prefixes.is_empty() {
+            let mut retained = 0;
+            for next in 1..prefixes.len() {
+                if !prefixes[next].starts_with(&prefixes[retained]) {
+                    retained += 1;
+                    prefixes.swap(retained, next);
+                }
+            }
+            prefixes.truncate(retained + 1);
+        }
+        Self::Allowlist {
+            names: names.iter().cloned().collect(),
+            prefixes,
+        }
+    }
+
     fn for_mrf(enabled: bool, routing: &MetricMirroring) -> Self {
         if !enabled || !routing.enabled {
             Self::DropAll
         } else if routing.allowlist.is_empty() {
             Self::All
         } else {
-            Self::Allowlist(routing.allowlist.iter().cloned().collect())
+            Self::for_allowlist(&routing.allowlist, &[])
         }
     }
 
@@ -101,7 +127,16 @@ impl Filter {
         match self {
             Self::DropAll => false,
             Self::All => true,
-            Self::Allowlist(names) => names.contains(metric.context().name().as_ref()),
+            Self::Allowlist { names, prefixes } => {
+                let name = metric.context().name().as_ref();
+                if names.contains(name) {
+                    return true;
+                }
+                match prefixes.binary_search_by(|prefix| prefix.as_str().cmp(name)) {
+                    Ok(_) => true,
+                    Err(index) => index > 0 && name.starts_with(&prefixes[index - 1]),
+                }
+            }
         }
     }
 
@@ -146,7 +181,7 @@ impl TransformBuilder for MetricFilterConfiguration {
 
 impl MemoryBounds for MetricFilterConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let allowlist = self.source.allowlist();
+        let (allowlist, prefixes) = self.source.allowlists();
         builder
             .minimum()
             .with_single_value::<MetricFilter>("component struct")
@@ -156,6 +191,7 @@ impl MemoryBounds for MetricFilterConfiguration {
                 "allowlist strings",
                 allowlist
                     .iter()
+                    .chain(prefixes)
                     .map(|name| name.len() + std::mem::size_of::<String>())
                     .sum::<usize>()
                     * 2,
@@ -263,7 +299,7 @@ mod tests {
     #[test]
     fn static_constructor_filters_and_fails_closed_for_an_empty_list() {
         for allowlist in [vec![], vec!["allowed.metric".to_string()]] {
-            let config = MetricFilterConfiguration::for_allowlist(allowlist.clone());
+            let config = MetricFilterConfiguration::for_allowlist(allowlist.clone(), vec![]);
             let routing = config.source.filter();
             assert_eq!(
                 routing.should_forward(&counter("allowed.metric")),
@@ -365,7 +401,7 @@ mod tests {
 
     #[test]
     fn fixed_allowlist_filters_series_and_sketches_by_name() {
-        let routing = MetricFilterConfiguration::for_allowlist(vec!["allowed".to_string()])
+        let routing = MetricFilterConfiguration::for_allowlist(vec!["allowed".to_string()], vec![])
             .source
             .filter();
 
@@ -378,6 +414,78 @@ mod tests {
         assert!(!routing.should_forward(&counter("blocked.counter")));
         assert!(!routing.should_forward(&histogram("blocked.histogram")));
         assert!(!routing.should_forward(&distribution("blocked.distribution")));
+    }
+
+    #[test]
+    fn literal_prefixes_combine_with_exact_names_for_series_and_sketches() {
+        let routing = MetricFilterConfiguration::for_allowlist(
+            vec!["exact.metric".to_string()],
+            vec![
+                "billing.".to_string(),
+                "billing.latency.".to_string(),
+                "billing.".to_string(),
+                "literal.*".to_string(),
+            ],
+        )
+        .source
+        .filter();
+        for make_metric in [counter, gauge, rate, set, histogram, distribution] {
+            for name in [
+                "exact.metric",
+                "billing.",
+                "billing.latency.p99",
+                "billing.requests",
+                "literal.*name",
+            ] {
+                assert!(routing.should_forward(&make_metric(name)), "{name}");
+            }
+            for name in [
+                "exact.metric.extra",
+                "billing",
+                "billing_other",
+                "Billing.requests",
+                "literal.name",
+                "other",
+            ] {
+                assert!(!routing.should_forward(&make_metric(name)), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_only_filter_preserves_literal_starts_with_semantics() {
+        for (prefixes, expected) in [
+            (vec![], false),
+            (vec!["".to_string()], true),
+            (vec!["any".to_string()], true),
+        ] {
+            let routing = MetricFilterConfiguration::for_allowlist(vec![], prefixes)
+                .source
+                .filter();
+            assert_eq!(routing.should_forward(&counter("any.metric")), expected);
+            assert_eq!(routing.should_forward(&distribution("any.metric")), expected);
+        }
+    }
+
+    #[test]
+    fn prefix_binary_search_matches_a_linear_search() {
+        let candidates = ["", "a", "a.", "a.b", "ab", "b", "z."];
+        for mask in 0..(1 << candidates.len()) {
+            let prefixes = candidates
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, s)| s.to_string())
+                .collect::<Vec<_>>();
+            let filter = Filter::for_allowlist(&[], &prefixes);
+            for name in ["", "a", "a.", "a.b", "a.c", "ab", "abc", "b", "bc", "y", "z.", "z.foo"] {
+                assert_eq!(
+                    filter.should_forward(&counter(name)),
+                    prefixes.iter().any(|prefix| name.starts_with(prefix)),
+                    "name={name}, prefixes={prefixes:?}"
+                );
+            }
+        }
     }
 
     #[test]
