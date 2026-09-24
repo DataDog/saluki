@@ -21,7 +21,7 @@ use foldspace_core::{
     StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
-use saluki_components::forwarders::queue::{DeliveryQueueConfiguration, PendingTransaction, PendingTransactions};
+use saluki_components::queue::{DeliveryQueueConfiguration, PendingTransaction, PendingTransactions};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{

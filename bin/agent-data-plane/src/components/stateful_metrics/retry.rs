@@ -4,7 +4,7 @@ use std::mem::{size_of, size_of_val};
 
 use foldspace_core::{LogicalMetricBatch, LogicalMetricSeries, MetricResource};
 use saluki_common::hash::hash_single_stable;
-use saluki_components::forwarders::queue::{DeliveryQueueConfiguration, PendingTransactions};
+use saluki_components::queue::{DeliveryQueueConfiguration, PendingTransactions};
 use saluki_error::GenericError;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use saluki_metrics::MetricsBuilder;

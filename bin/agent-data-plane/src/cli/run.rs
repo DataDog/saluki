@@ -31,8 +31,8 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
-    forwarders::queue::DeliveryQueueConfiguration,
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
+    queue::DeliveryQueueConfiguration,
     relays::otlp::OtlpRelayConfiguration,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,

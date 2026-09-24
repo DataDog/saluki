@@ -6,6 +6,7 @@ pub mod middleware;
 pub mod obfuscation;
 pub mod protocol;
 mod proxy;
+pub mod queue;
 pub mod request_builder;
 pub(crate) mod retry;
 mod retry_capacity;

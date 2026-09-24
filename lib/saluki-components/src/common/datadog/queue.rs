@@ -8,8 +8,8 @@ use saluki_io::net::util::retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, Re
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 
-pub use crate::common::datadog::io::{PendingTransaction, PendingTransactions};
-use crate::common::datadog::{
+pub use super::io::{PendingTransaction, PendingTransactions};
+use super::{
     retry::RetryConfiguration,
     telemetry::{SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
 };
