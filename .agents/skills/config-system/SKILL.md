@@ -8,14 +8,17 @@ disable-model-invocation: false
 ---
 # /config-system
 
-Saluki is replacing direct reads from the raw `GenericConfiguration` map with a typed configuration
-boundary. This skill explains the architecture, transitional state, and workflows.
+Saluki configures its runtime through a typed boundary rather than direct reads from the raw
+`GenericConfiguration` map. No ADP production code reads that map. It stays in `saluki-config`,
+which is general-purpose infrastructure: another process consuming a configuration stream can still
+use its by-key view, and the configuration smoke tests and `bin/correctness` use the loader. Do not
+delete it for want of an ADP caller. This skill explains the architecture and workflows.
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
 ## Why this system exists
 
-`GenericConfiguration` leaks source-language details into components such as serde names, aliases,
+`GenericConfiguration` leaked source-language details into components such as serde names, aliases,
 parsing, and defaults. String-keyed reads hide dependencies from the compiler.
 
 The typed system places a translation boundary between configuration sources and runtime code:
@@ -47,7 +50,7 @@ into `SalukiConfiguration`.
 | Vendored Datadog JSON-schema (written in YAML)                  | `lib/datadog-agent/config/schema/core/`                                    |
 | Overlay types, validation, `SALUKI_KEYS`, smoke-test metadata   | `lib/datadog-agent/config-overlay-model/`                                  |
 | Config registry, `run_config_smoke_tests`, doc gen              | `lib/datadog-agent/config-testing/`                                        |
-| Raw map (`GenericConfiguration`) and the by-key view            | `lib/saluki-config/`                                                       |
+| Raw map and loader, general-purpose, no ADP caller              | `lib/saluki-config/`                                                       |
 | Hand-written Datadog witness implementation                     | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed`                             | `lib/agent-data-plane-config-system/src/saluki_only.rs`                    |
 | Saluki-only defaults                                            | `lib/agent-data-plane-config/src/defaults.rs`                              |
@@ -55,7 +58,7 @@ into `SalukiConfiguration`.
 | Translation gate and update loop                                | `lib/agent-data-plane-config-system/src/system.rs`                         |
 | Datadog env reader plus its Figment provider                    | `lib/datadog-agent/config/src/env_reader.rs`, `env_provider.rs`            |
 | Saluki-only env reader (convention, no table)                   | `lib/agent-data-plane-config-system/src/saluki_env_overlay.rs`             |
-| Provider carrying both key classes                              | `lib/agent-data-plane-config-system/src/env_provider.rs`                   |
+| Merged sources with per-value provenance                        | `lib/agent-data-plane-config-system/src/source.rs`                         |
 
 Use `ConfigValue<T>` in `SalukiConfiguration` when a default must be detectable:
 `Provenance::Default` vs `Provenance::Explicit`. See `dd_url`, `site`.
@@ -66,11 +69,9 @@ The intended end state is:
 
 - `agent-data-plane-config` depends on neither the raw map nor the Datadog source model.
 - `agent-data-plane-config-system` bridges sources to the model and constructs no components.
-- Components and runtime code do not access `GenericConfiguration` in the end state.
+- Components and runtime code do not access `GenericConfiguration`.
 - `saluki-components` define their own input arguments and structs.
 - `bin/agent-data-plane` hands each component what it requires.
-
-Dedicated migration PRs remove temporary violations component by component.
 
 ### `saluki-components` mistake
 
@@ -111,14 +112,12 @@ make build-schema-overlay
 The Datadog Agent does not derive a variable's name from its key path: `DD_PROXY_HTTP` reaches
 `proxy.http` while `DD_DOGSTATSD_PORT` reaches the flat `dogstatsd_port`. No separator convention
 reproduces this. Datadog keys read the environment through the generated tables. Saluki-only keys
-have no table: the name is the canonical path, upper-cased, underscore-joined, `DD_`-prefixed. Both
-readers serve both paths: the typed path via `apply_datadog_env` plus the Saluki-only reader, and
-the by-key path via `EnvironmentProvider`, a legacy Figment provider wrapping those readers.
+have no table: the name is the canonical path, upper-cased, underscore-joined, `DD_`-prefixed. The
+typed path reads both through `apply_datadog_env` plus the Saluki-only reader.
 
-**A modeled key arrives in the Agent's canonical shape.** A struct deserialized from
-`GenericConfiguration` MUST read that shape. Do not add a `#[serde(rename)]` or `#[serde(alias)]`
-and do not reintroduce a key-alias or environment-remapping table. A key that no model declares
-still arrives flat from the `DD_` prefix-scanning provider, at lower precedence.
+**A modeled key arrives in the Agent's canonical shape.** A source model MUST read that shape. Do not
+add a `#[serde(rename)]` or `#[serde(alias)]` and do not reintroduce a key-alias or
+environment-remapping table. A key no model declares is not read from the environment at all.
 
 For deserialization paths, reserve `#[serde(flatten)]` for a struct that groups several *top-level*
 Agent keys (for example, the forwarder's `forwarder_*` retry settings).
@@ -164,24 +163,21 @@ default.
 Push source parsing, defaults, and input validation to the configuration boundary. Components keep
 only validation that is business logic.
 
-## The transitional state
+## Merged sources and the raw view
 
-The migration proceeds in isolated changes, largely component by component. At any commit, the
-repository can contain:
+`SourceTree` is the merged configuration: every value an input supplied, each with the provenance of
+the input that supplied it. `ConfigurationSystem` retains the tree it translated from, which is what
+the startup compatibility gate, the privileged `/config` route, and the `runtime_config_dump.yaml`
+flare artifact read. Those readers need the keys the typed model does not carry, so they read the
+sources rather than the model.
 
-- bootstrap and CLI paths that still use `GenericConfiguration` before a `ConfigurationSystem`
-  exists;
-- runtime topology that carries both `ConfigurationSystem` and its `raw_map()` compatibility view;
-- components already built from typed slices; and
-- components that still deserialize directly from the raw map.
-
-Prefer typed config; do not introduce new component uses of `GenericConfiguration`.
+Do not introduce new component uses of `GenericConfiguration`.
 
 ### Runtime updates
 
 Startup translation is strict. Live updates are translated against tentative state: success
-atomically replaces the typed model; failure retains the last-known-good model. Every update still
-reaches the compatibility map, so typed and raw views can diverge during migration.
+atomically replaces both the typed model and the retained sources; failure retains the last-known-good
+model and leaves the sources as they were.
 
 ## Workflows
 
@@ -204,8 +200,8 @@ the witnessed model.
 3. If it has a default, define it once in `agent-data-plane-config/src/defaults.rs` and reference it
    from the model and source defaults.
 4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`. A **nested** key
-   *requires* this even when its only consumer reads the by-key view: the reader discovers paths
-   from `SalukiOnly`, so without a field the key is unreachable from the environment.
+   *requires* this: the Saluki-only environment reader discovers paths from `SalukiOnly`, so without a
+   field the key is unreachable from the environment.
 5. Add one `seed` assignment to the destination.
 6. (legacy): Keep `SALUKI_KEYS` consistent with the source key, type, and default.
 

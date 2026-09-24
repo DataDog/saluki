@@ -92,7 +92,6 @@ dependencies = [
  "bytesize",
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
- "figment",
  "saluki-config",
  "saluki-error",
  "serde",

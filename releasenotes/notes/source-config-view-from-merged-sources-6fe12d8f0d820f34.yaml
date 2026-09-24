@@ -1,0 +1,9 @@
+other:
+  - |
+    The source configuration view -- the privileged ``/config`` route, the ``config`` command that
+    reads it, and the ``runtime_config_dump.yaml`` flare artifact -- now reports the merged
+    configuration the running process was built from. Two things change in what it shows. A
+    ``DD_``-prefixed environment variable that no Agent or Agent Data Plane setting declares is no
+    longer listed; settings that are declared are unaffected, whether they come from the Agent, the
+    configuration file, or the environment. A configuration update that Agent Data Plane rejected is
+    no longer listed either, so the view stays consistent with the configuration in effect.

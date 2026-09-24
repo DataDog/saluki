@@ -7,8 +7,6 @@ use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::{ConfigurationError, GenericConfiguration};
-use saluki_error::GenericError;
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::Snafu;
@@ -19,16 +17,9 @@ use crate::saluki_only::SalukiOnly;
 use crate::source::SourceTree;
 use crate::translators::DatadogTranslator;
 
-/// An error building the translated configuration from the raw sources.
+/// An error building the translated configuration from the merged sources.
 #[derive(Debug, Snafu)]
 pub enum Error {
-    /// The configuration value could not be read from the raw configuration map.
-    #[snafu(context(false), display("{source}"))]
-    Source {
-        /// The underlying configuration error.
-        source: ConfigurationError,
-    },
-
     /// A source model could not be deserialized from the merged configuration value.
     #[snafu(context(false), display("{source}"))]
     Deserialize {
@@ -65,16 +56,13 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// The runtime configuration, translated from the raw sources and kept current.
+/// The runtime configuration, translated from the merged sources and kept current.
 ///
 /// The configuration system is the single owner of the Datadog Agent's `ConfigUpdate` stream. It
-/// folds each update onto the local source base to build the typed [`SalukiConfiguration`] directly,
-/// and forwards the same update to a legacy [`GenericConfiguration`] compatibility map so
-/// un-migrated components can still read by key. The current configuration lives in an [`ArcSwap`]
-/// cell so readers load a whole, self-consistent version with no lock, while the update task
-/// replaces it in one atomic store.
+/// folds each update onto the local source base and builds the typed [`SalukiConfiguration`] from
+/// the result. The current configuration lives in an [`ArcSwap`] cell so readers load a whole,
+/// self-consistent version with no lock, while the update task replaces it in one atomic store.
 pub struct ConfigurationSystem {
-    raw_map: GenericConfiguration,
     current: Arc<ArcSwap<SalukiConfiguration>>,
     // The merged sources the current configuration was translated from, kept so consumers that work
     // a key at a time have a by-key view carrying provenance. Replaced along with `current`, so the
@@ -87,9 +75,8 @@ pub struct ConfigurationSystem {
 }
 
 impl ConfigurationSystem {
-    /// Connected authority: takes ownership of the Datadog Agent's config stream, forwards each
-    /// update to the compatibility map, and builds the typed model directly from the stream folded
-    /// onto the local `base` (file + environment).
+    /// Connected authority: takes ownership of the Datadog Agent's config stream and builds the typed
+    /// model from the stream folded onto the local `base` (file + environment).
     ///
     /// Blocks for the first authoritative snapshot and is the strict startup gate: a snapshot that
     /// never arrives, cannot be deserialized, or fails translation aborts the boot. `async` because
@@ -100,19 +87,11 @@ impl ConfigurationSystem {
     ///
     /// Returns an error if the stream closes before the first snapshot, or the initial configuration
     /// cannot be deserialized or translated.
-    pub(crate) async fn connected(
-        mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>,
-        compat_map: GenericConfiguration, base: SourceTree,
-    ) -> Result<Self> {
+    pub(crate) async fn connected(mut agent_rx: mpsc::Receiver<ConfigUpdate>, base: SourceTree) -> Result<Self> {
         // The first stream message is the authoritative initial snapshot.
         let first = agent_rx.recv().await.ok_or(Error::StreamClosed)?;
-
-        // Fold it into the accumulating Agent layer and forward it to the compat map, then wait for
-        // the compat map to apply it so `raw_map()` is populated before any consumer reads it.
         let mut agent = SourceTree::empty();
         fold(&mut agent, &first);
-        forward(&compat_tx, first).await;
-        compat_map.ready().await;
 
         // Startup is the strict gate: this is the first, authoritative Agent snapshot, so any error
         // fails the boot and we never run on bad config. At runtime (see `agent_loop`) the same
@@ -130,7 +109,6 @@ impl ConfigurationSystem {
 
         tokio::spawn(agent_loop(
             agent_rx,
-            compat_tx,
             base,
             agent,
             Arc::clone(&current),
@@ -138,24 +116,16 @@ impl ConfigurationSystem {
             Arc::clone(&tick),
         ));
 
-        Ok(Self {
-            raw_map: compat_map,
-            current,
-            sources,
-            tick,
-        })
+        Ok(Self { current, sources, tick })
     }
 
     /// Installs a static configuration without an update task.
     ///
     /// Live views retain their initial values because this system sends no update notifications.
-    pub(crate) fn standalone(
-        compat_map: GenericConfiguration, config: SalukiConfiguration, sources: SourceTree,
-    ) -> Self {
+    pub(crate) fn standalone(config: SalukiConfiguration, sources: SourceTree) -> Self {
         let current = Arc::new(ArcSwap::from_pointee(config));
         let (tick, _) = watch::channel(());
         Self {
-            raw_map: compat_map,
             current,
             sources: Arc::new(ArcSwap::from_pointee(sources)),
             tick: Arc::new(tick),
@@ -184,28 +154,25 @@ impl ConfigurationSystem {
         Arc::clone(&self.current)
     }
 
-    /// Returns the raw source map for consumers that read configuration by key.
-    pub fn raw_map(&self) -> GenericConfiguration {
-        self.raw_map.clone()
-    }
-
-    /// Returns a callback that reads the current raw configuration as JSON.
-    pub fn raw_snapshot(&self) -> Arc<dyn Fn() -> std::result::Result<Value, GenericError> + Send + Sync> {
-        let raw_map = self.raw_map.clone();
-        Arc::new(move || raw_map.as_typed::<Value>().map_err(Into::into))
+    /// Returns a callback that reads the current merged sources as JSON.
+    ///
+    /// This is the raw source view: the values every input supplied, untranslated, including keys the
+    /// typed model does not carry. It reflects the last update the typed path accepted, so it is
+    /// consistent with the running configuration.
+    pub fn raw_snapshot(&self) -> Arc<dyn Fn() -> Value + Send + Sync> {
+        let sources = Arc::clone(&self.sources);
+        Arc::new(move || sources.load().to_value())
     }
 }
 
 /// Owns the Datadog Agent config stream for the life of the process: validates each update against
-/// the typed model, commits it on success, and forwards it to the by-key configuration view. Ends
-/// when the stream closes.
+/// the typed model and commits it on success. Ends when the stream closes.
 ///
 /// Each update is processed individually (no burst collapse) so a rejection can be attributed to the
 /// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
 async fn agent_loop(
-    mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>, base: SourceTree,
-    mut agent: SourceTree, current: Arc<ArcSwap<SalukiConfiguration>>, sources: Arc<ArcSwap<SourceTree>>,
-    tick: Arc<watch::Sender<()>>,
+    mut agent_rx: mpsc::Receiver<ConfigUpdate>, base: SourceTree, mut agent: SourceTree,
+    current: Arc<ArcSwap<SalukiConfiguration>>, sources: Arc<ArcSwap<SourceTree>>, tick: Arc<watch::Sender<()>>,
 ) {
     while let Some(update) = agent_rx.recv().await {
         // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
@@ -224,24 +191,15 @@ async fn agent_loop(
             }
             Err(e) => warn!(
                 error = %e,
-                "Rejected configuration update; keeping the last-known-good typed configuration. The \
-                 compatibility map still receives this update, so an un-migrated component may act on \
-                 a value the typed model rejected."
+                "Rejected configuration update; keeping the last-known-good typed configuration."
             ),
         }
-        // The compatibility map receives every update faithfully, whether or not the typed path
-        // accepted it: un-migrated components keep the Agent's permissive behavior during migration.
-        // The updater owns the receiver; if it is gone, no un-migrated component is reading the
-        // by-key view, so dropping the forward is fine.
-        forward(&compat_tx, update).await;
     }
 }
 
 /// Folds one update into the accumulating Agent layer.
 ///
-/// `Snapshot` replaces the layer; `Partial` applies one (possibly dotted) key, the same handling the
-/// `saluki-config` updater uses, so this layer applies Agent updates the same way as the compatibility
-/// view.
+/// `Snapshot` replaces the layer; `Partial` applies one (possibly dotted) key.
 ///
 /// Each setting's provenance is retained, which is what lets a later update that demotes a value to
 /// an Agent default stop shadowing the local value it had been overriding.
@@ -250,11 +208,6 @@ fn fold(agent: &mut SourceTree, update: &ConfigUpdate) {
         ConfigUpdate::Snapshot(settings) => *agent = SourceTree::from_settings(settings),
         ConfigUpdate::Partial(setting) => agent.set(setting),
     }
-}
-
-/// Forwards one update to the compatibility map's updater.
-async fn forward(compat_tx: &mpsc::Sender<ConfigUpdate>, update: ConfigUpdate) {
-    let _ = compat_tx.send(update).await;
 }
 
 /// Deserializes and translates merged source values, rejecting partially translated configuration.
@@ -368,7 +321,6 @@ mod tests {
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use datadog_agent_config::DatadogConfiguration;
     use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
-    use saluki_config::ConfigurationLoader;
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
 
@@ -383,17 +335,14 @@ mod tests {
     /// these tests exercise.
     const TEST_API_KEY: &str = "test-api-key";
 
-    /// Builds a standalone system whose authority is the local sources (`file` + `env`).
+    /// Builds a standalone system whose authority is the local sources.
     ///
     /// Translates without validating so a test can state only the setting it is exercising. The
     /// production standalone path validates; `loaded.rs` covers that.
-    async fn standalone_system(
-        file: Option<Value>, env: Option<&[(String, String)]>,
-    ) -> Result<ConfigurationSystem, Error> {
-        let (compat_map, _) = ConfigurationLoader::for_tests(file, env, false).await;
-        let base = SourceTree::all_explicit(compat_map.as_typed::<Value>().expect("base extracts"));
+    fn standalone_system(file: Value) -> Result<ConfigurationSystem, Error> {
+        let base = SourceTree::all_explicit(file);
         let config = translate_strict(&base)?;
-        Ok(ConfigurationSystem::standalone(compat_map, config, base))
+        Ok(ConfigurationSystem::standalone(config, base))
     }
 
     /// Builds a connected system whose base is `base` and whose authority is the returned Agent
@@ -404,14 +353,12 @@ mod tests {
     /// some unrelated setting need not restate what validation requires.
     async fn connected_system(mut base: Value) -> (ConfigurationSystem, mpsc::Sender<ConfigUpdate>) {
         let (agent_tx, agent_rx) = mpsc::channel(100);
-        let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
-        let compat_tx = compat_tx.expect("dynamic sender exists");
         agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
         if let Some(base) = base.as_object_mut() {
             base.entry("api_key").or_insert(json!(TEST_API_KEY));
         }
         let base = SourceTree::all_explicit(base);
-        let system = ConfigurationSystem::connected(agent_rx, compat_tx, compat_map, base)
+        let system = ConfigurationSystem::connected(agent_rx, base)
             .await
             .expect("system builds");
         (system, agent_tx)
@@ -430,9 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_current_reflects_translation() {
-        let system = standalone_system(Some(json!({ "log_level": "warn", "dogstatsd_port": 9125 })), None)
-            .await
-            .expect("system builds");
+        let system = standalone_system(json!({ "log_level": "warn", "dogstatsd_port": 9125 })).expect("system builds");
         let config = system.config();
 
         assert_eq!(config.control.logging.level, "warn");
@@ -583,7 +528,7 @@ mod tests {
         let snapshot = system.raw_snapshot();
         let cloned = Arc::clone(&snapshot);
 
-        assert_eq!(snapshot().expect("serializes").pointer("/dogstatsd_port"), None);
+        assert_eq!(snapshot().pointer("/dogstatsd_port"), None);
 
         agent_tx
             .send(ConfigUpdate::Partial(ConfigSetting::explicit(
@@ -594,7 +539,7 @@ mod tests {
             .unwrap();
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            while cloned().expect("serializes").pointer("/dogstatsd_port") != Some(&json!(9125)) {
+            while cloned().pointer("/dogstatsd_port") != Some(&json!(9125)) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
@@ -603,22 +548,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_snapshot_keeps_keys_the_typed_model_does_not_carry() {
+        // The raw view is for diagnosing a configuration, so it must show the unsupported keys an
+        // input supplied. They are pruned from the typed model by construction, which is why the view
+        // reads the sources rather than the model.
+        let (system, agent_tx) = connected_system(json!({ "dogstatsd_stats_buffer": 42 })).await;
+        let snapshot = system.raw_snapshot();
+
+        assert_eq!(snapshot().pointer("/dogstatsd_stats_buffer"), Some(&json!(42)));
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "config_id",
+                json!("abc"),
+            )))
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while snapshot().pointer("/config_id") != Some(&json!("abc")) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for the streamed unsupported key");
+    }
+
+    #[tokio::test]
     async fn nested_datadog_key_reaches_the_model() {
         // Sources deliver the Agent's canonical nested shape, which is what the Datadog
         // deserializer reads. A string list supplied as one space-separated string (the form an
         // environment variable carries) is still split on whitespace at the leaf.
-        let system = standalone_system(
-            Some(json!({
-                "autoscaling": {
-                    "failover": {
-                        "enabled": true,
-                        "metrics": "container.memory.usage container.cpu.usage",
-                    }
+        let system = standalone_system(json!({
+            "autoscaling": {
+                "failover": {
+                    "enabled": true,
+                    "metrics": "container.memory.usage container.cpu.usage",
                 }
-            })),
-            None,
-        )
-        .await
+            }
+        }))
         .expect("system builds");
         let config = system.config();
 
@@ -633,7 +601,7 @@ mod tests {
     async fn unset_autoscaling_failover_keeps_its_schema_defaults() {
         // Nothing is set here, so both fields must come back as the schema defaults; the component
         // layer no longer supplies fallbacks of its own.
-        let system = standalone_system(Some(json!({})), None).await.expect("system builds");
+        let system = standalone_system(json!({})).expect("system builds");
         let config = system.config();
 
         assert!(!config.shared.autoscaling_failover.enabled);
@@ -645,9 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn nested_saluki_only_key_seeds_the_model() {
-        let system = standalone_system(Some(json!({ "data_plane": { "standalone_mode": true } })), None)
-            .await
-            .expect("system builds");
+        let system = standalone_system(json!({ "data_plane": { "standalone_mode": true } })).expect("system builds");
 
         assert!(system.config().control.standalone_mode);
     }
@@ -658,15 +624,11 @@ mod tests {
             "https://primary.example.com": ["allowed.metric"],
             "https://secondary.example.com": []
         });
-        let system = standalone_system(
-            Some(json!({
-                "experimental": {
-                    "metrics_endpoint_routing": { "metric_allowlist": policies.clone() }
-                }
-            })),
-            None,
-        )
-        .await
+        let system = standalone_system(json!({
+            "experimental": {
+                "metrics_endpoint_routing": { "metric_allowlist": policies.clone() }
+            }
+        }))
         .expect("system builds");
 
         assert_eq!(
@@ -683,7 +645,7 @@ mod tests {
             json!({ "experimental": { "metrics_endpoint_routing": {} } }),
             json!({ "experimental": { "metrics_endpoint_routing": { "metric_allowlist": {} } } }),
         ] {
-            let system = standalone_system(Some(source), None).await.expect("system builds");
+            let system = standalone_system(source).expect("system builds");
             assert!(system
                 .config()
                 .domains
@@ -699,25 +661,23 @@ mod tests {
         // environment variable to its canonical path is the environment readers' job, and they do it
         // before a value ever reaches this point. A flattened key arriving from any other source is
         // simply not a key the model knows.
-        let system = standalone_system(Some(json!({ "autoscaling_failover_enabled": true })), None)
-            .await
-            .expect("system builds");
+        let system = standalone_system(json!({ "autoscaling_failover_enabled": true })).expect("system builds");
 
         assert!(!system.config().shared.autoscaling_failover.enabled);
     }
 
     #[tokio::test]
     async fn load_fails_on_translation_invalid_startup_config() {
-        // Startup is the strict gate: a value figment accepts but the model rejects fails the load,
+        // Startup is the strict gate: a value the sources carry but the model rejects fails the load,
         // so the process never boots on bad config.
-        let result = standalone_system(Some(json!({ "dogstatsd_tag_cardinality": "bogus" })), None).await;
+        let result = standalone_system(json!({ "dogstatsd_tag_cardinality": "bogus" }));
 
         assert!(matches!(result, Err(Error::Translate { .. })));
     }
 
     #[tokio::test]
     async fn negative_dogstatsd_workers_count_is_rejected_at_startup() {
-        let result = standalone_system(Some(json!({ "dogstatsd_workers_count": -1 })), None).await;
+        let result = standalone_system(json!({ "dogstatsd_workers_count": -1 }));
 
         let Err(error) = result else {
             panic!("negative worker count should fail the startup translation gate");
@@ -776,9 +736,8 @@ mod tests {
         // A byte-size setting documented as accepting a bare integer (`10485760`) rather than a
         // string (`"10MB"`) must not abort the strict startup gate. The typed model normalizes it,
         // and the translator resolves it to the same byte count.
-        let system = standalone_system(Some(json!({ "dogstatsd_log_file_max_size": 10485760 })), None)
-            .await
-            .expect("numeric byte size boots");
+        let system =
+            standalone_system(json!({ "dogstatsd_log_file_max_size": 10485760 })).expect("numeric byte size boots");
 
         assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 10485760);
     }
@@ -853,14 +812,10 @@ mod tests {
         // type, so a boolean written where the schema declares a string, or a quoted integer, is a
         // configuration it accepts. Each must reach the typed model instead of aborting the strict
         // startup gate.
-        let system = standalone_system(
-            Some(json!({
-                "use_v3_api": { "series": { "enabled": true } },
-                "dogstatsd_port": "8126",
-            })),
-            None,
-        )
-        .await
+        let system = standalone_system(json!({
+            "use_v3_api": { "series": { "enabled": true } },
+            "dogstatsd_port": "8126",
+        }))
         .expect("scalars in Agent-castable forms boot");
 
         assert_eq!(
@@ -1299,9 +1254,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_views_reflect_startup_configuration() {
-        let system = standalone_system(Some(json!({ "dogstatsd_metrics_stats_enable": true })), None)
-            .await
-            .expect("system builds");
+        let system = standalone_system(json!({ "dogstatsd_metrics_stats_enable": true })).expect("system builds");
         let config = system.config();
 
         let debug_log = system.live(|c| &c.domains.dogstatsd.debug_log);
