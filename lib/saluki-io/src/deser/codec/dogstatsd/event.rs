@@ -6,8 +6,7 @@ use nom::{
     sequence::{delimited, preceded, separated_pair},
     IResult, Parser as _,
 };
-use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
-use saluki_core::data_model::event::eventd::*;
+use saluki_core::data_model::{event::eventd::*, origin::OriginTagCardinality, tags::RawTags};
 use stringtheory::MetaString;
 
 use super::{helpers::*, DogStatsDCodecConfiguration};
@@ -177,11 +176,11 @@ pub fn parse_dogstatsd_event<'a>(
 #[cfg(test)]
 mod tests {
     use nom::IResult;
-    use saluki_context::{
+    use saluki_core::data_model::{
+        event::eventd::{AlertType, EventD, Priority},
         origin::OriginTagCardinality,
         tags::{SharedTagSet, Tag, TagSet},
     };
-    use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
     use stringtheory::MetaString;
 
     use super::{parse_dogstatsd_event, DogStatsDCodecConfiguration};

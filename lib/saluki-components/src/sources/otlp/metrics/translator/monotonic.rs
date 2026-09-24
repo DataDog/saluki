@@ -126,8 +126,7 @@ impl OtlpMetricsTranslator {
 mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
     use otlp_protos::opentelemetry::proto::metrics::v1::number_data_point::Value as OtlpNumberDataPointValue;
-    use saluki_context::tags::Tag;
-    use saluki_core::data_model::event::metric::MetricValues;
+    use saluki_core::data_model::{event::metric::MetricValues, tags::Tag};
 
     use super::super::tests::nanos_from_seconds;
     use super::*;

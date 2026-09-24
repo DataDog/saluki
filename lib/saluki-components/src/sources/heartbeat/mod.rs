@@ -1,11 +1,15 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use saluki_context::Context;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::{sources::*, BuildContext};
-use saluki_core::data_model::event::{metric::Metric, Event, EventType};
-use saluki_core::topology::OutputDefinition;
+use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    components::{sources::*, BuildContext},
+    data_model::event::{
+        metric::{context::Context, Metric},
+        Event, EventType,
+    },
+    topology::OutputDefinition,
+};
 use saluki_error::GenericError;
 use tokio::pin;
 use tokio::{select, time::interval};

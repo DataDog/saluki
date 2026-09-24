@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 
-use saluki_context::{
-    origin::OriginTagCardinality,
-    tags::{BorrowedTag, RawTags, RawTagsFilter, RawTagsFilterPredicate},
+use saluki_core::{
+    constants::datadog::*,
+    data_model::{
+        origin::OriginTagCardinality,
+        tags::{BorrowedTag, RawTags, RawTagsFilter, RawTagsFilterPredicate},
+    },
 };
-use saluki_core::constants::datadog::*;
 
 /// Filter predicate for well-known tags.
 #[derive(Clone)]
@@ -69,8 +71,10 @@ impl<'a> WellKnownTags<'a> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
-    use saluki_core::constants::datadog::*;
+    use saluki_core::{
+        constants::datadog::*,
+        data_model::{origin::OriginTagCardinality, tags::RawTags},
+    };
 
     use super::WellKnownTags;
 

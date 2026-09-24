@@ -14,9 +14,11 @@ use stringtheory::{
 use tokio::time::sleep;
 use tracing::debug;
 
-use crate::{
-    context::{Context, ContextInner},
+use super::{
     hash::{hash_context_with_host_and_seen, ContextKey, TagSetKey},
+    Context, ContextInner,
+};
+use crate::data_model::{
     origin::{OriginTagsResolver, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };
@@ -895,7 +897,7 @@ mod tests {
     use saluki_common::hash::hash_single_fast;
 
     use super::*;
-    use crate::tags::Tag;
+    use crate::data_model::tags::Tag;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -1037,8 +1039,8 @@ mod tests {
 
         let mut context1_filtered = context1.clone();
         let mut context2_filtered = context2.clone();
-        let mut state1 = crate::context::TagSetMutViewState::new();
-        let mut state2 = crate::context::TagSetMutViewState::new();
+        let mut state1 = crate::data_model::event::metric::context::TagSetMutViewState::new();
+        let mut state2 = crate::data_model::event::metric::context::TagSetMutViewState::new();
         {
             let mut view = context1_filtered.tags_mut_view(&mut state1);
             view.retain_tags(|_| false);

@@ -83,8 +83,7 @@ impl OtlpMetricsTranslator {
 #[cfg(test)]
 mod tests {
     use otlp_protos::opentelemetry::proto::metrics::v1::summary_data_point::ValueAtQuantile;
-    use saluki_context::tags::Tag;
-    use saluki_core::data_model::event::metric::MetricValues;
+    use saluki_core::data_model::{event::metric::MetricValues, tags::Tag};
 
     use super::super::tests::nanos_from_seconds;
     use super::*;

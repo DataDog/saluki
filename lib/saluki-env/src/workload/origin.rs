@@ -6,7 +6,7 @@ use saluki_common::{
     cache::{Cache, CacheBuilder},
     hash::hash_single_fast,
 };
-use saluki_context::origin::{OriginTagCardinality, RawOrigin};
+use saluki_core::data_model::origin::{OriginTagCardinality, RawOrigin};
 use tracing::trace;
 
 use super::stores::ExternalDataStoreResolver;

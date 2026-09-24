@@ -5,7 +5,7 @@ use serde::{ser::SerializeSeq as _, Serialize};
 use smallvec::SmallVec;
 
 use super::SharedTagSet;
-use crate::tags::Tag;
+use crate::data_model::tags::Tag;
 
 /// Heap-allocated overlay for mutation state, only created when a `TagSet` is actually mutated.
 #[derive(Clone, Debug)]

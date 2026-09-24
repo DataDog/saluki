@@ -5,17 +5,16 @@ use std::{
 
 use async_trait::async_trait;
 use saluki_common::time::get_unix_timestamp;
-use saluki_context::{
-    tags::{SharedTagSet, Tag, TagSet},
-    Context,
-};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{sources::*, BuildContext},
-    data_model::event::{
-        metric::Metric,
-        service_check::{CheckStatus, ServiceCheck},
-        Event, EventType,
+    data_model::{
+        event::{
+            metric::{context::Context, Metric},
+            service_check::{CheckStatus, ServiceCheck},
+            Event, EventType,
+        },
+        tags::{SharedTagSet, Tag, TagSet},
     },
     topology::OutputDefinition,
 };
@@ -213,13 +212,13 @@ fn create_liveness_payloads(hostname: MetaString, version: MetaString) -> (Conte
 mod tests {
     use std::sync::Arc;
 
-    use saluki_context::{
-        origin::{OriginTagCardinality, RawOrigin},
-        tags::SharedTagSet,
-    };
     use saluki_core::{
         components::sources::SourceBuilder as _,
-        data_model::event::{metric::MetricValues, service_check::CheckStatus, Event, EventType},
+        data_model::{
+            event::{metric::MetricValues, service_check::CheckStatus, Event, EventType},
+            origin::{OriginTagCardinality, RawOrigin},
+            tags::SharedTagSet,
+        },
     };
     use saluki_env::{
         workload::{origin::ResolvedOrigin, EntityId},

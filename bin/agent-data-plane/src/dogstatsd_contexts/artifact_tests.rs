@@ -3,9 +3,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use saluki_components::transforms::{AggregateContextSnapshotEntry, AggregateMetricType};
-use saluki_context::{
+use saluki_core::data_model::{
+    event::metric::context::Context,
     tags::{Tag, TagSet},
-    Context,
 };
 use serde_json::json;
 use stringtheory::MetaString;

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use saluki_context::{
+use saluki_core::data_model::{
     origin::{ExternalData, OriginTagCardinality},
     tags::TagSet,
 };

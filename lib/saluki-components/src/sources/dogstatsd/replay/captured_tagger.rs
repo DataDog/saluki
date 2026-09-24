@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use datadog_protos::agent::TaggerState;
 use saluki_common::collections::FastHashMap;
-use saluki_context::{
+use saluki_core::data_model::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, Tag, TagSet},
 };

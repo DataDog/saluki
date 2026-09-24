@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use saluki_context::tags::{SharedTagSet, Tag, TagSet};
+use saluki_core::data_model::tags::{SharedTagSet, Tag, TagSet};
 
 /// Build a SharedTagSet with the given number of tags.
 fn make_base(n: usize) -> SharedTagSet {

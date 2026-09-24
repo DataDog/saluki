@@ -24,6 +24,7 @@ futures = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 loom = { workspace = true, optional = true }
+memchr = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
@@ -35,7 +36,6 @@ prometheus-exposition = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
-saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -54,9 +54,14 @@ tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["ansi", "fmt"] }
+
+[[bench]]
+name = "tagset"
+harness = false

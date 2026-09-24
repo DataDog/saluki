@@ -5,7 +5,6 @@
           - "lib/saluki-api/**/*"
           - "lib/saluki-common/**/*"
           - "lib/saluki-core/**/*"
-          - "lib/saluki-context/**/*"
           - "lib/saluki-error/**/*"
           - "lib/saluki-health/**/*"
           - "lib/saluki-metadata/**/*"

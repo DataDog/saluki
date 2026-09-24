@@ -332,8 +332,7 @@ impl OtlpMetricsTranslator {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::tags::Tag;
-    use saluki_core::data_model::event::metric::MetricValues;
+    use saluki_core::data_model::{event::metric::MetricValues, tags::Tag};
 
     use super::super::tests::{distribution_sketch, nanos_from_seconds};
     use super::*;

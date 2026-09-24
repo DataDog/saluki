@@ -2,8 +2,10 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use saluki_common::collections::{FastHashSet, FastIndexMap};
-use saluki_context::origin::{ExternalData, RawExternalData};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    data_model::origin::{ExternalData, RawExternalData},
+};
 use saluki_metrics::{static_metrics, Counter, Gauge};
 use tracing::{debug, trace};
 
@@ -209,7 +211,7 @@ impl ExternalDataStoreResolver {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::origin::{ExternalData, RawExternalData};
+    use saluki_core::data_model::origin::{ExternalData, RawExternalData};
 
     use super::ExternalDataStore;
     use crate::workload::{aggregator::MetadataStore as _, origin::ResolvedExternalData, EntityId, MetadataOperation};

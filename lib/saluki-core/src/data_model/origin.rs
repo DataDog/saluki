@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use stringtheory::MetaString;
 use tracing::warn;
 
-use crate::tags::{SharedTagSet, Tag};
+use crate::data_model::tags::{SharedTagSet, Tag};
 
 /// The cardinality of tags associated with the origin entity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

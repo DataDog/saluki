@@ -15,7 +15,7 @@ use std::{
 use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState, UnixDogstatsdMsg};
 use prost::Message;
 use saluki_common::{collections::FastHashMap, time::get_unix_timestamp};
-use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
+use saluki_core::data_model::{origin::OriginTagCardinality, tags::SharedTagSet};
 use saluki_env::{workload::EntityId, WorkloadProvider};
 use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error, warn};

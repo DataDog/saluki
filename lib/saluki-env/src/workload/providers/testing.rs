@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use saluki_context::{
+use saluki_core::data_model::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::{SharedTagSet, Tag, TagSet},
 };

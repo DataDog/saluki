@@ -2,9 +2,10 @@
 
 use std::{fmt, num::NonZeroU64};
 
-use saluki_context::tags::TagSet;
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
+
+use crate::data_model::tags::TagSet;
 
 /// Value supplied used to specify a low priority event
 pub const PRIORITY_LOW: &str = "low";

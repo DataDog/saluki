@@ -165,11 +165,12 @@ fn split_tags(tags: &[MetaString]) -> impl Iterator<Item = (&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
-
     use super::super::aggregate_upserts;
     use super::*;
-    use crate::data_model::event::{metric::Metric, Event};
+    use crate::data_model::event::{
+        metric::{context::Context, Metric},
+        Event,
+    };
 
     #[test]
     fn renders_counter_and_gauge_groups_without_rules() {

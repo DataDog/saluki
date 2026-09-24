@@ -4,12 +4,12 @@ use std::{future::Future, num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::shared::Environment;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
-use saluki_context::{
-    origin::{OriginTagCardinality, RawOrigin},
-    tags::SharedTagSet,
-};
-use saluki_core::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder},
+    data_model::{
+        origin::{OriginTagCardinality, RawOrigin},
+        tags::SharedTagSet,
+    },
     health::{Health, HealthRegistry},
     runtime::{RestartStrategy, Supervisor},
     support::SubsystemIdentifier,

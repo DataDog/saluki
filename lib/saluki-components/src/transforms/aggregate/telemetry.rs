@@ -1,6 +1,5 @@
 use metrics::{Counter, Gauge};
-use saluki_context::Context;
-use saluki_core::data_model::event::metric::MetricValues;
+use saluki_core::data_model::event::metric::{context::Context, MetricValues};
 use saluki_metrics::MetricsBuilder;
 
 #[derive(Clone)]

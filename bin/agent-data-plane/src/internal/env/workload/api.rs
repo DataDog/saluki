@@ -9,11 +9,11 @@ use saluki_common::{
     collections::{FastHashMap, FastHashSet},
     sync::shutdown::ShutdownHandle,
 };
-use saluki_context::{
-    origin::OriginTagCardinality,
-    tags::{SharedTagSet, TagSet},
-};
 use saluki_core::{
+    data_model::{
+        origin::OriginTagCardinality,
+        tags::{SharedTagSet, TagSet},
+    },
     diagnostic::DiagnosticsEmitter,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
     support::SubsystemIdentifier,

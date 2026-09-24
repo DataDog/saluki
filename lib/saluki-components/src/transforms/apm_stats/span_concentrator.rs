@@ -1,9 +1,13 @@
 //! Span concentrator for APM stats computation.
 
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::{AttributeValue, Span};
-use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
+use saluki_core::data_model::{
+    event::{
+        trace::{AttributeValue, Span},
+        trace_stats::{ClientStatsBucket, ClientStatsPayload},
+    },
+    tags::TagSet,
+};
 use stringtheory::MetaString;
 
 use super::aggregation::AggregationRegistry;

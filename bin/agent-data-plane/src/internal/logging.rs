@@ -31,7 +31,6 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "saluki_common",
     "saluki_components",
     "saluki_config",
-    "saluki_context",
     "saluki_core",
     "saluki_env",
     "saluki_error",

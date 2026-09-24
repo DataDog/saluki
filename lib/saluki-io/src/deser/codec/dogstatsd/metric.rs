@@ -7,8 +7,7 @@ use nom::{
     sequence::{preceded, separated_pair, terminated},
     IResult, Parser as _,
 };
-use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
-use saluki_core::data_model::event::metric::*;
+use saluki_core::data_model::{event::metric::*, origin::OriginTagCardinality, tags::RawTags};
 use tracing::{debug, warn};
 
 use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
@@ -309,12 +308,11 @@ impl<'a> Iterator for FloatIter<'a> {
 #[cfg(test)]
 mod tests {
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::{
+    use saluki_core::data_model::{
+        event::metric::{context::Context, *},
         origin::OriginTagCardinality,
         tags::{SharedTagSet, Tag},
-        Context,
     };
-    use saluki_core::data_model::event::metric::*;
 
     use super::{parse_dogstatsd_metric, DogStatsDCodecConfiguration};
 

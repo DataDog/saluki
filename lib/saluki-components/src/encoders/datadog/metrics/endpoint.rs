@@ -1,5 +1,7 @@
-use saluki_context::tags::SharedTagSet;
-use saluki_core::data_model::event::metric::{Metric, MetricValues};
+use saluki_core::data_model::{
+    event::metric::{Metric, MetricValues},
+    tags::SharedTagSet,
+};
 use saluki_io::compression::CompressionScheme;
 
 /// Metrics intake endpoint.

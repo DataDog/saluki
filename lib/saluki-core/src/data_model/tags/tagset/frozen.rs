@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::tags::Tag;
+use crate::data_model::tags::Tag;
 
 /// Flat, immutable tag storage.
 ///
