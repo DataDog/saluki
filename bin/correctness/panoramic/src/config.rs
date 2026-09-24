@@ -148,22 +148,21 @@ pub struct IntegrationConfig {
 
     /// Active runtime for this test instance.
     ///
-    /// Empty at parse time; the discovery layer sets it to whichever runtime the CLI is scoped
-    /// to (after confirming that runtime is listed in `runtimes`). Used by `Test::run` to
-    /// dispatch to the right runner and by `Test::runtime` / `Test::images` to report the
-    /// effective runtime to the CI pipeline generator.
+    /// Empty at parse time; [`IntegrationConfig::bind_to_runtime`] sets it to whichever runtime the
+    /// CLI is scoped to (after confirming that runtime is listed in `runtimes`). Used by `Test::run`
+    /// to dispatch to the right runner and by `Test::runtime` to report the effective runtime to the
+    /// CI pipeline generator.
     #[serde(skip)]
     pub active_runtime: String,
 
-    /// Image replacing the runtime's target image, when `--image-override` named the target.
+    /// Images this instance runs, by container name.
     ///
-    /// Empty unless the command line set it: a case does not choose its target image.
+    /// Empty at parse time, since a case declares no images: the active runtime chooses the target
+    /// image and the `intake` block decides whether the sidecar runs.
+    /// [`IntegrationConfig::bind_to_runtime`] resolves them, and `--image-override` replaces an
+    /// entry afterwards.
     #[serde(skip)]
-    container_image_override: Option<String>,
-
-    /// Image replacing the intake sidecar's image, when `--image-override` named the sidecar.
-    #[serde(skip)]
-    intake_image_override: Option<String>,
+    resolved_images: BTreeMap<String, String>,
 
     /// Base path for resolving relative file paths.
     #[serde(skip)]
@@ -219,10 +218,10 @@ pub fn default_host_runtime() -> &'static str {
 }
 
 /// Container name the integration-test target carries in [`Test::images`] and image overrides.
-const TARGET_IMAGE_NAME: &str = "container";
+pub(crate) const TARGET_IMAGE_NAME: &str = "container";
 
 /// Container name the intake sidecar carries in [`Test::images`] and image overrides.
-const INTAKE_IMAGE_NAME: &str = "intake";
+pub(crate) const INTAKE_IMAGE_NAME: &str = "intake";
 
 /// Datadog intake sidecar configuration for a test case.
 ///
@@ -748,27 +747,19 @@ impl Test for IntegrationConfig {
     }
 
     fn images(&self) -> BTreeMap<&str, String> {
-        let mut m = BTreeMap::new();
-        if let Some(image) = self.target_image() {
-            m.insert(TARGET_IMAGE_NAME, image);
-        }
-        if self.intake.enabled {
-            m.insert(INTAKE_IMAGE_NAME, self.intake_image());
-        }
-        m
+        self.resolved_images
+            .iter()
+            .map(|(name, image)| (name.as_str(), image.clone()))
+            .collect()
     }
 
     fn set_image(&mut self, name: &str, image: &str) -> bool {
-        match name {
-            TARGET_IMAGE_NAME if self.target_image().is_some() => {
-                self.container_image_override = Some(image.to_string());
+        match self.resolved_images.get_mut(name) {
+            Some(current) => {
+                *current = image.to_string();
                 true
             }
-            INTAKE_IMAGE_NAME if self.intake.enabled => {
-                self.intake_image_override = Some(image.to_string());
-                true
-            }
-            _ => false,
+            None => false,
         }
     }
 
@@ -796,22 +787,28 @@ impl Test for IntegrationConfig {
 }
 
 impl IntegrationConfig {
-    /// Returns the container image the target runs, or `None` for a runtime that uses no container.
+    /// Binds the case to the runtime it runs under, resolving the images that runtime uses.
     ///
-    /// The active runtime picks the image, since a case does not choose one, unless the command line
-    /// replaced it.
-    pub fn target_image(&self) -> Option<String> {
-        match &self.container_image_override {
-            Some(image) => Some(image.clone()),
-            None => target_image_for_runtime(&self.active_runtime).map(str::to_string),
+    /// Discovery calls this for each case it selects, once the runtime is known to be one the case
+    /// lists. A runtime that runs the target as a host process contributes no target image.
+    pub fn bind_to_runtime(&mut self, runtime: &str) {
+        self.active_runtime = runtime.to_string();
+
+        self.resolved_images.clear();
+        if let Some(image) = target_image_for_runtime(runtime) {
+            self.resolved_images
+                .insert(TARGET_IMAGE_NAME.to_string(), image.to_string());
+        }
+        if self.intake.enabled {
+            self.resolved_images
+                .insert(INTAKE_IMAGE_NAME.to_string(), DEFAULT_INTAKE_IMAGE.to_string());
         }
     }
 
-    /// Returns the image the intake sidecar runs.
-    pub fn intake_image(&self) -> String {
-        self.intake_image_override
-            .clone()
-            .unwrap_or_else(|| DEFAULT_INTAKE_IMAGE.to_string())
+    /// Returns the image the named container runs, or `None` when this instance has no such
+    /// container.
+    pub fn image(&self, name: &str) -> Option<&str> {
+        self.resolved_images.get(name).map(String::as_str)
     }
 
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
@@ -1194,7 +1191,7 @@ fn try_load_test(
                 return Ok(Vec::new());
             }
             let mut variant = config.clone();
-            variant.active_runtime = integration_runtime.to_string();
+            variant.bind_to_runtime(integration_runtime);
             Ok(vec![Box::new(variant)])
         }
         "correctness" => {

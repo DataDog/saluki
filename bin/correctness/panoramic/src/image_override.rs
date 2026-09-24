@@ -114,7 +114,7 @@ procedure: []
 "#,
         )
         .expect("integration case should parse");
-        case.active_runtime = crate::config::LINUX_RUNTIME.to_string();
+        case.bind_to_runtime(crate::config::LINUX_RUNTIME);
 
         Box::new(case)
     }

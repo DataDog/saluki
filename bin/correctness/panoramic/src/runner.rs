@@ -870,12 +870,16 @@ impl IntegrationRunner {
             ContainerOs::Linux
         };
 
-        let image = self.test_case.target_image().ok_or_else(|| {
-            generic_error!(
-                "Runtime '{}' has no associated container image; integration tests are unsupported.",
-                self.test_case.active_runtime
-            )
-        })?;
+        let image = self
+            .test_case
+            .image(crate::config::TARGET_IMAGE_NAME)
+            .ok_or_else(|| {
+                generic_error!(
+                    "Runtime '{}' has no associated container image; integration tests are unsupported.",
+                    self.test_case.active_runtime
+                )
+            })?
+            .to_string();
 
         let target_config = airlock::config::TargetConfig {
             image,
@@ -934,8 +938,14 @@ impl IntegrationRunner {
     /// reaches it by network alias. Returns the sidecar's driver and the host port that its HTTP
     /// endpoint is published on.
     async fn start_intake(&self) -> Result<(Driver, u16), GenericError> {
+        let intake_image = self
+            .test_case
+            .image(crate::config::INTAKE_IMAGE_NAME)
+            .ok_or_else(|| generic_error!("The intake sidecar is not enabled for this test case."))?
+            .to_string();
+
         let config = DriverConfig::datadog_intake(airlock::config::DatadogIntakeConfig {
-            image: self.test_case.intake_image(),
+            image: intake_image,
             binary_path: None,
         })
         .await?
