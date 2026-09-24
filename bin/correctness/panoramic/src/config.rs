@@ -1025,12 +1025,13 @@ const ENV_OVERRIDE_PREFIX: &str = "PANORAMIC_";
 /// Every case type loads the same way: plain YAML deserialization, then the case directory recorded
 /// on the result. YAML typing is what the case gets: an unquoted `true` is a boolean and does not
 /// stand in for the string `"true"`. Values from `PANORAMIC_<SECTION>__<FIELD>` environment
-/// variables are applied as strings on top of the document, replacing what the file declared.
+/// variables replace the matching fields in the document. Boolean fields accept only `true` or
+/// `false`; string fields keep the environment value unchanged.
 ///
 /// # Errors
 ///
-/// Returns an error if `config_path` cannot be resolved or read, or if its contents do not
-/// deserialize into `T`.
+/// Returns an error if `config_path` cannot be resolved or read, an override has an invalid
+/// boolean value, or the result does not deserialize into `T`.
 pub fn load_case<T, P>(config_path: P) -> Result<T, GenericError>
 where
     T: CaseConfig + DeserializeOwned,
@@ -1051,7 +1052,7 @@ where
     let mut document: serde_yaml::Value = serde_yaml::from_str(&content)
         .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
 
-    apply_env_overrides(&mut document, std::env::vars());
+    apply_env_overrides(&mut document, std::env::vars())?;
 
     let mut case: T = serde_yaml::from_value(document).error_context(format!(
         "Failed to deserialize configuration file: {}",
@@ -1071,7 +1072,13 @@ where
 ///
 /// Takes the variables to apply rather than reading the environment itself, so a caller can pass
 /// anything, including nothing.
-fn apply_env_overrides(document: &mut serde_yaml::Value, vars: impl Iterator<Item = (String, String)>) {
+///
+/// # Errors
+///
+/// Returns an error naming any boolean override whose value is not `true` or `false`.
+fn apply_env_overrides(
+    document: &mut serde_yaml::Value, vars: impl Iterator<Item = (String, String)>,
+) -> Result<(), GenericError> {
     for (name, value) in vars {
         let Some(rest) = name.strip_prefix(ENV_OVERRIDE_PREFIX) else {
             continue;
@@ -1085,15 +1092,34 @@ fn apply_env_overrides(document: &mut serde_yaml::Value, vars: impl Iterator<Ite
             continue;
         }
 
+        let value = match segments.join(".").as_str() {
+            "intake.enabled"
+            | "container.host_cgroup_namespace"
+            | "otlp_direct_analysis_mode"
+            | "require_dogstatsd_forwarded_packets" => match value.as_str() {
+                "true" => serde_yaml::Value::Bool(true),
+                "false" => serde_yaml::Value::Bool(false),
+                _ => {
+                    return Err(generic_error!(
+                        "Invalid value for {}: expected 'true' or 'false', got '{}'",
+                        name,
+                        value
+                    ))
+                }
+            },
+            _ => serde_yaml::Value::String(value),
+        };
+
         set_override(document, &segments, value);
     }
+    Ok(())
 }
 
 /// Replaces the value at a field path in a document, creating the parent sections it lacks.
 ///
 /// Skips the override when the path runs through a value that is not a mapping: the document the
 /// case actually declared wins over a variable trying to traverse it.
-fn set_override(document: &mut serde_yaml::Value, segments: &[String], value: String) {
+fn set_override(document: &mut serde_yaml::Value, segments: &[String], value: serde_yaml::Value) {
     let Some((last, parents)) = segments.split_last() else {
         return;
     };
@@ -1109,10 +1135,7 @@ fn set_override(document: &mut serde_yaml::Value, segments: &[String], value: St
     }
 
     if let Some(map) = current.as_mapping_mut() {
-        map.insert(
-            serde_yaml::Value::String(last.clone()),
-            serde_yaml::Value::String(value),
-        );
+        map.insert(serde_yaml::Value::String(last.clone()), value);
     }
 }
 
@@ -1637,7 +1660,8 @@ millstone:
                 ("PANORAMIC_LOG_DIR".to_string(), "somewhere".to_string()),
             ]
             .into_iter(),
-        );
+        )
+        .expect("string overrides should parse");
 
         // The declared field takes the override, and the missing section is created by it.
         #[derive(Deserialize)]
@@ -1654,6 +1678,80 @@ millstone:
             config.datadog_intake.image,
             "registry.ddbuild.io/saluki/correctness-tools:abc123"
         );
+    }
+
+    #[test]
+    fn env_overrides_parse_boolean_fields_even_when_absent_from_the_case() {
+        let mut integration = serde_yaml::from_str(
+            r#"
+name: original
+timeout: 10s
+container:
+  host_cgroup_namespace: true
+procedure: []
+"#,
+        )
+        .unwrap();
+        apply_env_overrides(
+            &mut integration,
+            [
+                ("PANORAMIC_INTAKE__ENABLED".into(), "true".into()),
+                ("PANORAMIC_CONTAINER__HOST_CGROUP_NAMESPACE".into(), "false".into()),
+                ("PANORAMIC_NAME".into(), "true".into()),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let integration: IntegrationConfig = serde_yaml::from_value(integration).unwrap();
+        assert!(integration.intake.enabled);
+        assert!(!integration.container.host_cgroup_namespace);
+        assert_eq!(integration.name, "true");
+
+        let mut correctness = serde_yaml::from_str(
+            r#"
+runtime: docker
+analysis_mode: metrics
+baseline:
+  image: baseline
+comparison:
+  image: comparison
+"#,
+        )
+        .unwrap();
+        apply_env_overrides(
+            &mut correctness,
+            [
+                ("PANORAMIC_OTLP_DIRECT_ANALYSIS_MODE".into(), "true".into()),
+                ("PANORAMIC_REQUIRE_DOGSTATSD_FORWARDED_PACKETS".into(), "true".into()),
+                ("PANORAMIC_BASELINE__IMAGE".into(), "8125".into()),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let correctness: CorrectnessConfig = serde_yaml::from_value(correctness).unwrap();
+        assert!(correctness.otlp_direct_analysis_mode);
+        assert!(correctness.require_dogstatsd_forwarded_packets);
+        assert_eq!(correctness.baseline.image, "8125");
+    }
+
+    #[test]
+    fn env_overrides_reject_invalid_boolean_values() {
+        for name in [
+            "PANORAMIC_INTAKE__ENABLED",
+            "PANORAMIC_CONTAINER__HOST_CGROUP_NAMESPACE",
+            "PANORAMIC_OTLP_DIRECT_ANALYSIS_MODE",
+            "PANORAMIC_REQUIRE_DOGSTATSD_FORWARDED_PACKETS",
+        ] {
+            for value in ["tru", "yes", "1"] {
+                let mut document = serde_yaml::from_str("{}").unwrap();
+                let error = apply_env_overrides(&mut document, [(name.into(), value.into())].into_iter())
+                    .expect_err("invalid boolean override should fail");
+                let error = format!("{error:?}");
+                assert!(error.contains(name), "unexpected error: {error}");
+                assert!(error.contains(value), "unexpected error: {error}");
+                assert!(error.contains("true' or 'false"), "unexpected error: {error}");
+            }
+        }
     }
 
     #[test]
