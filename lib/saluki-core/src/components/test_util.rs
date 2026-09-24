@@ -7,7 +7,9 @@
 //!
 //! [`TestComponentSupervisor`] runs a supervisor configured the way the topology configures a component's supervisor.
 //! Pass its [`handle`][TestComponentSupervisor::handle] where a component wants one, and drive code that spawns
-//! on the ambient supervisor inside [`scope`][TestComponentSupervisor::scope].
+//! on the ambient supervisor inside [`scope`][TestComponentSupervisor::scope]. A component that spawns its own children
+//! into its scope must run as a supervised worker instead. To run it this way, use
+//! [`spawn_component`][TestComponentSupervisor::spawn_component].
 
 use std::future::Future;
 use std::time::Duration;
@@ -16,7 +18,10 @@ use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use tokio::task::futures::TaskLocalFuture;
 use tokio::task::JoinHandle;
 
-use crate::runtime::{state::DataspaceRegistry, AutoShutdown, Supervisor, SupervisorError, SupervisorHandle};
+use crate::runtime::{
+    state::DataspaceRegistry, AutoShutdown, ChildId, IntoWorkerResult, NodeSnapshot, NodeState, SupervisionTreeHandle,
+    Supervisor, SupervisorError, SupervisorHandle,
+};
 
 /// Shutdown budget for the test supervisor.
 ///
@@ -38,6 +43,7 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// component directly.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
+    tree: SupervisionTreeHandle,
     dataspace: DataspaceRegistry,
     shutdown_coordinator: Option<ShutdownCoordinator>,
     task: JoinHandle<Result<(), SupervisorError>>,
@@ -72,6 +78,7 @@ impl TestComponentSupervisor {
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
         // is how we observe that it has.
         let handle = supervisor.handle();
+        let tree = supervisor.tree_handle();
 
         let task_dataspace = dataspace.clone();
         let (shutdown_coordinator, process_shutdown) = ShutdownHandle::paired();
@@ -83,6 +90,7 @@ impl TestComponentSupervisor {
 
         let supervisor = Self {
             handle,
+            tree,
             dataspace,
             shutdown_coordinator: Some(shutdown_coordinator),
             task,
@@ -109,6 +117,65 @@ impl TestComponentSupervisor {
         F: Future,
     {
         self.handle.scope(fut)
+    }
+
+    /// Runs a component as a supervised worker of this supervisor, in the same way as the topology.
+    ///
+    /// `f` receives the shutdown handle of the worker. In production, this handle is the shutdown handle of the
+    /// component. Install it into the context of the component before you run the component. To make the component
+    /// ignore its supervisor, install a handle that the test owns instead. The worker is significant, as a component
+    /// is. Thus, if the worker terminates, the supervisor stops.
+    ///
+    /// Unlike [`scope`][Self::scope], this function gives the component a scope of its own. A component that spawns
+    /// its own children needs that scope.
+    pub fn spawn_component<F, Fut>(&self, name: &str, f: F) -> ChildId
+    where
+        F: FnOnce(ShutdownHandle) -> Fut + Send + 'static,
+        Fut: Future + Send + 'static,
+        Fut::Output: IntoWorkerResult,
+    {
+        self.handle
+            .worker_with_shutdown(name.to_string(), f)
+            .with_significant(true)
+            .spawn()
+    }
+
+    /// Returns a read-only handle to this supervisor's supervision tree.
+    pub fn tree_handle(&self) -> SupervisionTreeHandle {
+        self.tree.clone()
+    }
+
+    /// Returns the number of processes that run anywhere under this supervisor.
+    ///
+    /// The count also includes the children of children. These are all the children that a component spawns into its
+    /// scope when you run it with [`spawn_component`][Self::spawn_component], and the children of those children.
+    /// [`active_children`][Self::active_children] does not count them.
+    pub fn running_descendants(&self) -> usize {
+        fn count(node: &NodeSnapshot) -> usize {
+            node.children
+                .iter()
+                .map(|child| usize::from(child.state == NodeState::Running) + count(child))
+                .sum()
+        }
+
+        count(&self.tree.snapshot().root)
+    }
+
+    /// Waits until exactly `count` processes run under this supervisor.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the count does not reach `count` within a few seconds.
+    pub async fn wait_for_running_descendants(&self, count: usize) {
+        self.poll_until(&format!("the supervisor has {count} running descendants"), || {
+            self.running_descendants() == count
+        })
+        .await;
+    }
+
+    /// Returns `true` if the supervisor run is complete.
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
     }
 
     /// Returns the dataspace shared by the supervisor and its children.

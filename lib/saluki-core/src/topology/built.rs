@@ -44,7 +44,7 @@ use super::component_worker::{
 use super::{graph::Graph, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId};
 use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::DataspaceRegistry;
-use crate::runtime::{self, AutoShutdown, RestartMode, RestartStrategy, Supervisor};
+use crate::runtime::{self, AutoShutdown, RestartMode, RestartStrategy, Supervisor, UnadoptedScope};
 use crate::support::SubsystemIdentifier;
 use crate::topology::ids::get_component_relative_identifier;
 use crate::topology::interconnect::{Consumer, Dispatchable};
@@ -80,6 +80,10 @@ pub(crate) struct BuiltTopology {
     destinations: HashMap<ComponentContext, (Box<dyn Destination + Send>, ComponentRegistry)>,
     encoders: HashMap<ComponentContext, (Box<dyn Encoder + Send>, ComponentRegistry)>,
     forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
+    /// The scope that each component was built in.
+    ///
+    /// Until a component runs, its scope holds everything that the component spawned during its build.
+    component_scopes: HashMap<ComponentContext, UnadoptedScope>,
     component_token: ResourceGroupToken,
     interconnect_capacity: NonZeroUsize,
     worker_pool_config: WorkerPoolConfiguration,
@@ -96,8 +100,8 @@ impl BuiltTopology {
         destinations: HashMap<ComponentContext, (Box<dyn Destination + Send>, ComponentRegistry)>,
         encoders: HashMap<ComponentContext, (Box<dyn Encoder + Send>, ComponentRegistry)>,
         forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
-        component_token: ResourceGroupToken, interconnect_capacity: NonZeroUsize,
-        worker_pool_config: WorkerPoolConfiguration,
+        component_scopes: HashMap<ComponentContext, UnadoptedScope>, component_token: ResourceGroupToken,
+        interconnect_capacity: NonZeroUsize, worker_pool_config: WorkerPoolConfiguration,
     ) -> Self {
         Self {
             name,
@@ -110,6 +114,7 @@ impl BuiltTopology {
             destinations,
             encoders,
             forwarders,
+            component_scopes,
             component_token,
             interconnect_capacity,
             worker_pool_config,
@@ -172,6 +177,10 @@ impl BuiltTopology {
             ComponentInterconnects::from_graph(self.interconnect_capacity, &self.topology_id, &self.graph)
                 .error_context("Failed to build component interconnects.")?;
 
+        // The worker of each component adopts the scope that the component was built in. Thus, the tasks that the
+        // component spawned during its build start when the worker runs, and the worker owns them.
+        let mut component_scopes = self.component_scopes;
+
         // The topology supervisor parents one dedicated supervisor per component. Shutdown signals every
         // component at once, so sources stop immediately and the downstream cascade drains in parallel
         // (bounded by `shutdown_timeout`) rather than one component at a time. A `OneForOne` strategy with
@@ -186,16 +195,21 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup = build_component_supervisor(&component_context, shutdown_timeout, || SourceRunnable {
-                component,
-                context: SourceContext::new(
-                    &topology_context,
-                    &component_context,
-                    component_registry,
-                    health_handle,
-                    dispatcher,
-                ),
-            })?;
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || SourceRunnable {
+                    component,
+                    context: SourceContext::new(
+                        &topology_context,
+                        &component_context,
+                        component_registry,
+                        health_handle,
+                        dispatcher,
+                    ),
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -204,16 +218,21 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_payloads_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup = build_component_supervisor(&component_context, shutdown_timeout, || RelayRunnable {
-                component,
-                context: RelayContext::new(
-                    &topology_context,
-                    &component_context,
-                    component_registry,
-                    health_handle,
-                    dispatcher,
-                ),
-            })?;
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || RelayRunnable {
+                    component,
+                    context: RelayContext::new(
+                        &topology_context,
+                        &component_context,
+                        component_registry,
+                        health_handle,
+                        dispatcher,
+                    ),
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -223,17 +242,22 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup = build_component_supervisor(&component_context, shutdown_timeout, || DecoderRunnable {
-                component,
-                context: DecoderContext::new(
-                    &topology_context,
-                    &component_context,
-                    component_registry,
-                    health_handle,
-                    dispatcher,
-                    consumer,
-                ),
-            })?;
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || DecoderRunnable {
+                    component,
+                    context: DecoderContext::new(
+                        &topology_context,
+                        &component_context,
+                        component_registry,
+                        health_handle,
+                        dispatcher,
+                        consumer,
+                    ),
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -243,8 +267,11 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, || TransformRunnable {
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || TransformRunnable {
                     component,
                     context: TransformContext::new(
                         &topology_context,
@@ -254,7 +281,8 @@ impl BuiltTopology {
                         dispatcher,
                         consumer,
                     ),
-                })?;
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -263,8 +291,11 @@ impl BuiltTopology {
             let consumer = interconnects.take_events_consumer(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, || DestinationRunnable {
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || DestinationRunnable {
                     component,
                     context: DestinationContext::new(
                         &topology_context,
@@ -273,7 +304,8 @@ impl BuiltTopology {
                         health_handle,
                         consumer,
                     ),
-                })?;
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -283,17 +315,22 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_payloads_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup = build_component_supervisor(&component_context, shutdown_timeout, || EncoderRunnable {
-                component,
-                context: EncoderContext::new(
-                    &topology_context,
-                    &component_context,
-                    component_registry,
-                    health_handle,
-                    dispatcher,
-                    consumer,
-                ),
-            })?;
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || EncoderRunnable {
+                    component,
+                    context: EncoderContext::new(
+                        &topology_context,
+                        &component_context,
+                        component_registry,
+                        health_handle,
+                        dispatcher,
+                        consumer,
+                    ),
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -302,8 +339,11 @@ impl BuiltTopology {
             let consumer = interconnects.take_payloads_consumer(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, || ForwarderRunnable {
+            let component_sup = build_component_supervisor(
+                &component_context,
+                shutdown_timeout,
+                component_scopes.remove(&component_context),
+                || ForwarderRunnable {
                     component,
                     context: ForwarderContext::new(
                         &topology_context,
@@ -312,7 +352,8 @@ impl BuiltTopology {
                         health_handle,
                         consumer,
                     ),
-                })?;
+                },
+            )?;
             topology_sup.add_worker(component_sup);
         }
 
@@ -542,7 +583,7 @@ fn build_consumer_pair<T: Dispatchable>(
 /// sole (initial) child process, set as a significant child such that when it terminates, the supervisor shuts down as
 /// well. This provides us with a decent approximation of structured concurrency for components and their subtasks.
 fn build_component_supervisor<C, F>(
-    context: &ComponentContext, shutdown_timeout: Duration, make_runnable: F,
+    context: &ComponentContext, shutdown_timeout: Duration, scope: Option<UnadoptedScope>, make_runnable: F,
 ) -> Result<Supervisor, GenericError>
 where
     C: RunnableComponent,
@@ -557,12 +598,13 @@ where
         .with_shutdown_budget(shutdown_timeout);
 
     let runnable = make_runnable();
-    component_sup.add_worker(
-        runtime::supervisable(ComponentWorker::new(context.clone(), runnable))
-            .temporary()
-            .with_significant(true)
-            .build(),
-    );
+    let mut component_worker = runtime::supervisable(ComponentWorker::new(context.clone(), runnable))
+        .temporary()
+        .with_significant(true);
+    if let Some(scope) = scope {
+        component_worker = component_worker.adopting(scope);
+    }
+    component_sup.add_worker(component_worker.build());
 
     Ok(component_sup)
 }
@@ -625,6 +667,7 @@ mod tests {
             "test".to_string(),
             SubsystemIdentifier::from_segments(["test"]),
             Graph::default(),
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),

@@ -1,0 +1,6 @@
+enhancements:
+  - |
+    ``agent-data-plane debug runtime show-processes`` now shows the work that a process starts for itself under that
+    process in the supervision tree. For example, DogStatsD connection handlers appear under the listener that accepted
+    their connection. The background tasks of internal caches appear under the component that owns them. Also, a
+    process now waits for this work to stop before the process stops.

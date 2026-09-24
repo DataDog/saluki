@@ -1,10 +1,12 @@
 use std::{num::NonZeroUsize, time::Duration};
 
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::cache::{Cache, CacheBuilder};
+use saluki_core::runtime;
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Gauge};
 use stringtheory::interning::{GenericMapInterner, Interner as _};
-use tokio::time::sleep;
+use tokio::{pin, select, time::sleep};
 use tracing::{debug, trace};
 
 use crate::workload::helpers::cgroups::{
@@ -53,7 +55,13 @@ impl ResolverImpl {
             .with_capacity(NonZeroUsize::new(DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT).unwrap())
             .with_time_to_idle(Some(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION));
 
-        tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
+        // Report the usage of the interner while the owner of this resolver runs. If the resolver is built outside
+        // supervision, there is no process to tie the task to, so the task runs detached.
+        let (telemetry_interner, telemetry) = (interner.clone(), telemetry.clone());
+        runtime::worker_with_shutdown("pid_resolver_telemetry", move |shutdown| {
+            drive_telemetry(telemetry_interner, telemetry, shutdown)
+        })
+        .spawn_child_or_detached();
 
         Ok(Self {
             cgroups_reader,
@@ -139,9 +147,14 @@ impl ResolverImpl {
     }
 }
 
-async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry, shutdown: ShutdownHandle) {
+    pin!(shutdown);
+
     loop {
-        sleep(Duration::from_secs(1)).await;
+        select! {
+            _ = &mut shutdown => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        }
 
         telemetry.interner_entries().set(interner.len() as f64);
         telemetry
