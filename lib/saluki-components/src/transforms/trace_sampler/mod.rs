@@ -41,7 +41,7 @@ mod signature;
 mod telemetry;
 
 use self::probabilistic::PROB_RATE_KEY;
-use self::telemetry::{Telemetry, WINDOW};
+use self::telemetry::{DecisionWindow, WINDOW};
 use crate::common::datadog::{
     compute_top_level, get_root_span_index, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL,
     DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER, TAG_ORIGIN,
@@ -136,7 +136,7 @@ impl TransformBuilder for TraceSamplerConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
-        let telemetry = Telemetry::new();
+        let telemetry = DecisionWindow::new();
 
         let sampler = TraceSampler {
             sampling_rate: self.sampling_percentage / 100.0,
@@ -164,7 +164,7 @@ impl TransformBuilder for TraceSamplerConfiguration {
                 self.rare_sampler_tps,
                 std::time::Duration::from_secs_f64(self.rare_sampler_cooldown_secs),
                 self.rare_sampler_cardinality,
-                telemetry.clone(),
+                telemetry.counters().clone(),
             ),
             telemetry,
             compute_top_level_by_span_kind: self.compute_top_level_by_span_kind,
@@ -215,7 +215,7 @@ pub struct TraceSampler {
     priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
     rare_sampler: rare_sampler::RareSampler,
-    telemetry: Telemetry,
+    telemetry: DecisionWindow,
 }
 
 impl TraceSampler {
@@ -740,9 +740,9 @@ mod tests {
                 5.0,
                 std::time::Duration::from_secs(300),
                 200,
-                telemetry::Telemetry::new(),
+                telemetry::SamplerCounters::new(),
             ),
-            telemetry: telemetry::Telemetry::new(),
+            telemetry: telemetry::DecisionWindow::new(),
             compute_top_level_by_span_kind: false,
         }
     }
@@ -1595,7 +1595,7 @@ mod tests {
                 1000.0,
                 std::time::Duration::from_secs(300),
                 200,
-                telemetry::Telemetry::new(),
+                telemetry::SamplerCounters::new(),
             ),
             ..create_test_sampler()
         }
