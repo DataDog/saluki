@@ -1,17 +1,23 @@
-//! Sampler window telemetry, emitted as metric events.
+//! Sampler telemetry, emitted as metric events.
 //!
-//! Decisions accumulate in a map for one window; [`Telemetry::take_window_events`] reports every
-//! entry as seen/kept delta counters, the signature-count gauges, and the rare-sampler counters,
-//! then resets the window. The events flow through the sampler transform's metrics output into the
-//! metrics pipeline, so the metrics reach the backend under their published names without
-//! internal-registry involvement. The window map is capped at [`MAX_DECISION_KEYS`] entries;
-//! combinations beyond the cap count under one overflow bucket per sampler. Hits and misses are
-//! window deltas; shrinks accumulate for the process lifetime and are published as a gauge.
-//! Cloning shares the accumulators, so the recording path, the rare sampler, and the window flush
-//! all see the same window.
+//! The telemetry is split by who can write it: [`SamplerCounters`] holds the fixed counters the
+//! individual samplers record through shared references, with the recording sampler's identity
+//! baked into each counter name, and [`DecisionWindow`] holds the per-decision counts, keyed at
+//! runtime by the sampler that decided. The window is owned and flushed exclusively by the
+//! transform's loop, so it needs no lock; only the counters shared into the inner samplers stay
+//! atomic.
+//!
+//! Decisions accumulate in a map for one window; [`DecisionWindow::take_window_events`]
+//! reports every entry as seen/kept delta counters, the signature-count gauges, and the
+//! rare-sampler counters, then resets the window. The events flow through the sampler transform's
+//! metrics output into the metrics pipeline, so the metrics reach the backend under their
+//! published names without internal-registry involvement. The window map is capped at
+//! [`MAX_DECISION_KEYS`] entries; combinations beyond the cap count under one overflow bucket per
+//! sampler. Hits and misses are window deltas; shrinks accumulate for the process lifetime and are
+//! published as a gauge.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use saluki_common::collections::FastHashMap;
@@ -137,89 +143,31 @@ pub(super) struct DecisionCounts {
     pub(super) kept: u64,
 }
 
-/// Sampler telemetry.
+/// Counters shared with the individual samplers.
 ///
-/// Decisions accumulate in a map for one window and are reported as metric events by
-/// [`Telemetry::take_window_events`], which also resets the window.
+/// The inner samplers record through shared references, so the counters are atomic; cloning shares
+/// them. Attribution lives in the counter names themselves: each counter is specific to the
+/// sampler that records it, so the counters carry no runtime sampler identity.
 #[derive(Clone)]
-pub(super) struct Telemetry {
-    inner: Arc<TelemetryInner>,
+pub(super) struct SamplerCounters {
+    inner: Arc<CountersInner>,
 }
 
-struct TelemetryInner {
-    decisions: Mutex<FastHashMap<DecisionKey, DecisionCounts>>,
-    max_decision_keys: usize,
+struct CountersInner {
     rare_hits: AtomicU64,
     rare_misses: AtomicU64,
     rare_shrinks: AtomicU64,
-    priority_tracked: AtomicI64,
-    no_priority_tracked: AtomicI64,
-    error_tracked: AtomicI64,
 }
 
-impl Telemetry {
-    /// Creates a telemetry with the default decision-key cap.
+impl SamplerCounters {
+    /// Creates a telemetry with all counters at zero.
     pub(super) fn new() -> Self {
-        Self::with_decision_key_cap(MAX_DECISION_KEYS)
-    }
-
-    /// Creates a telemetry for tests with a reduced decision-key cap, for exercising the overflow
-    /// roll-over without recording tens of thousands of decisions.
-    #[cfg(test)]
-    pub(super) fn for_tests_with_decision_cap(max_decision_keys: usize) -> Self {
-        Self::with_decision_key_cap(max_decision_keys)
-    }
-
-    fn with_decision_key_cap(max_decision_keys: usize) -> Self {
         Self {
-            inner: Arc::new(TelemetryInner {
-                decisions: Mutex::new(FastHashMap::default()),
-                max_decision_keys,
+            inner: Arc::new(CountersInner {
                 rare_hits: AtomicU64::new(0),
                 rare_misses: AtomicU64::new(0),
                 rare_shrinks: AtomicU64::new(0),
-                priority_tracked: AtomicI64::new(0),
-                no_priority_tracked: AtomicI64::new(0),
-                error_tracked: AtomicI64::new(0),
             }),
-        }
-    }
-
-    /// Records one sampler decision.
-    ///
-    /// The priority is carried only by the priority sampler; every other sampler counts under a
-    /// key without it.
-    pub(super) fn record_decision(
-        &self, kept: bool, sampler: SamplerName, priority: i32, service: MetaString, env: MetaString,
-    ) {
-        let key = DecisionKey {
-            sampler,
-            service,
-            env,
-            priority: (sampler == SamplerName::Priority).then_some(priority),
-        };
-        let mut decisions = self.inner.decisions.lock().unwrap();
-        // A full window rolls unseen combinations into one overflow bucket per sampler, so burst
-        // cardinality cannot grow the map without bound; keys already present keep counting.
-        let counts = if decisions.len() >= self.inner.max_decision_keys && !decisions.contains_key(&key) {
-            decisions.entry(self.overflow_key(sampler)).or_default()
-        } else {
-            decisions.entry(key).or_default()
-        };
-        counts.seen += 1;
-        counts.kept += u64::from(kept);
-    }
-
-    /// Returns the key counting decisions rolled past the window's cap.
-    ///
-    /// One bucket per sampler: the service collapses to [`OVERFLOW_SERVICE`] and the env and
-    /// priority dimensions are dropped, so the roll-up itself stays bounded.
-    fn overflow_key(&self, sampler: SamplerName) -> DecisionKey {
-        DecisionKey {
-            sampler,
-            service: MetaString::from_static(OVERFLOW_SERVICE),
-            env: MetaString::empty(),
-            priority: None,
         }
     }
 
@@ -238,11 +186,98 @@ impl Telemetry {
         self.inner.rare_shrinks.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
+    fn rare_totals(&self) -> (u64, u64, u64) {
+        (
+            self.inner.rare_hits.load(Ordering::Relaxed),
+            self.inner.rare_misses.load(Ordering::Relaxed),
+            self.inner.rare_shrinks.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// The decision window, owned by the transform's loop.
+///
+/// Decisions accumulate in a map for one window and are reported as metric events by
+/// [`DecisionWindow::take_window_events`], which also resets the window. Each decision is keyed at
+/// runtime by the sampler that made it, unlike [`SamplerCounters`] where the recording sampler is
+/// fixed per counter. The loop holds this state exclusively, so the decision map is a plain map;
+/// the counters shared into the inner samplers stay atomic behind [`SamplerCounters`].
+pub(super) struct DecisionWindow {
+    decisions: FastHashMap<DecisionKey, DecisionCounts>,
+    max_decision_keys: usize,
+    counters: SamplerCounters,
+    priority_tracked: i64,
+    no_priority_tracked: i64,
+    error_tracked: i64,
+}
+
+impl DecisionWindow {
+    /// Creates a telemetry with the default decision-key cap.
+    pub(super) fn new() -> Self {
+        Self::with_decision_key_cap(MAX_DECISION_KEYS)
+    }
+
+    /// Creates a telemetry with a reduced decision-key cap, for exercising the overflow roll-over
+    /// without recording tens of thousands of decisions.
+    fn with_decision_key_cap(max_decision_keys: usize) -> Self {
+        Self {
+            decisions: FastHashMap::default(),
+            max_decision_keys,
+            counters: SamplerCounters::new(),
+            priority_tracked: 0,
+            no_priority_tracked: 0,
+            error_tracked: 0,
+        }
+    }
+
+    /// Returns the counters shared with the individual samplers.
+    pub(super) fn counters(&self) -> &SamplerCounters {
+        &self.counters
+    }
+
+    /// Records one sampler decision.
+    ///
+    /// The priority is carried only by the priority sampler; every other sampler counts under a
+    /// key without it.
+    pub(super) fn record_decision(
+        &mut self, kept: bool, sampler: SamplerName, priority: i32, service: MetaString, env: MetaString,
+    ) {
+        let key = DecisionKey {
+            sampler,
+            service,
+            env,
+            priority: (sampler == SamplerName::Priority).then_some(priority),
+        };
+        // A full window rolls unseen combinations into one overflow bucket per sampler, so burst
+        // cardinality cannot grow the map without bound; keys already present keep counting.
+        let counts = if self.decisions.len() >= self.max_decision_keys && !self.decisions.contains_key(&key) {
+            self.decisions.entry(self.overflow_key(sampler)).or_default()
+        } else {
+            self.decisions.entry(key).or_default()
+        };
+        counts.seen += 1;
+        counts.kept += u64::from(kept);
+    }
+
+    /// Returns the key counting decisions rolled past the window's cap.
+    ///
+    /// One bucket per sampler: the service collapses to [`OVERFLOW_SERVICE`] and the env and
+    /// priority dimensions are dropped, so the roll-up itself stays bounded.
+    fn overflow_key(&self, sampler: SamplerName) -> DecisionKey {
+        DecisionKey {
+            sampler,
+            service: MetaString::from_static(OVERFLOW_SERVICE),
+            env: MetaString::empty(),
+            priority: None,
+        }
+    }
+
     /// Publishes the tracked-signature counts of the adaptive samplers.
-    pub(super) fn set_tracked_signature_counts(&self, priority: i64, no_priority: i64, error: i64) {
-        self.inner.priority_tracked.store(priority, Ordering::Relaxed);
-        self.inner.no_priority_tracked.store(no_priority, Ordering::Relaxed);
-        self.inner.error_tracked.store(error, Ordering::Relaxed);
+    pub(super) fn set_tracked_signature_counts(&mut self, priority: i64, no_priority: i64, error: i64) {
+        self.priority_tracked = priority;
+        self.no_priority_tracked = no_priority;
+        self.error_tracked = error;
     }
 
     /// Reports the window as metric events and starts a new one.
@@ -250,51 +285,48 @@ impl Telemetry {
     /// Every decision reports its seen count, and keys that kept nothing never report a kept
     /// series. The signature-count gauges and the rare-sampler counters are reported every window,
     /// including quiet ones, so readers see gauges republished unchanged between active windows.
-    pub(super) fn take_window_events(&self) -> Vec<Event> {
+    pub(super) fn take_window_events(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
 
         // Drain the window map in place so its capacity carries into the next window.
-        {
-            let mut decisions = self.inner.decisions.lock().unwrap();
-            for (key, counts) in decisions.drain() {
-                let tags = key.tag_set();
+        for (key, counts) in self.decisions.drain() {
+            let tags = key.tag_set();
+            events.push(Event::Metric(Metric::counter(
+                Context::from_parts(METRIC_SAMPLER_SEEN, tags.clone()),
+                counts.seen as f64,
+            )));
+            if counts.kept > 0 {
                 events.push(Event::Metric(Metric::counter(
-                    Context::from_parts(METRIC_SAMPLER_SEEN, tags.clone()),
-                    counts.seen as f64,
+                    Context::from_parts(METRIC_SAMPLER_KEPT, tags),
+                    counts.kept as f64,
                 )));
-                if counts.kept > 0 {
-                    events.push(Event::Metric(Metric::counter(
-                        Context::from_parts(METRIC_SAMPLER_KEPT, tags),
-                        counts.kept as f64,
-                    )));
-                }
             }
         }
 
         events.push(gauge_event(
             METRIC_SAMPLER_SIZE,
             &[("sampler", SamplerName::Priority.as_str())],
-            self.inner.priority_tracked.load(Ordering::Relaxed) as f64,
+            self.priority_tracked as f64,
         ));
         events.push(gauge_event(
             METRIC_SAMPLER_SIZE,
             &[("sampler", SamplerName::NoPriority.as_str())],
-            self.inner.no_priority_tracked.load(Ordering::Relaxed) as f64,
+            self.no_priority_tracked as f64,
         ));
         events.push(gauge_event(
             METRIC_SAMPLER_SIZE,
             &[("sampler", SamplerName::Error.as_str())],
-            self.inner.error_tracked.load(Ordering::Relaxed) as f64,
+            self.error_tracked as f64,
         ));
 
-        let hits = self.inner.rare_hits.swap(0, Ordering::Relaxed);
+        let hits = self.counters.inner.rare_hits.swap(0, Ordering::Relaxed);
         if hits > 0 {
             events.push(Event::Metric(Metric::counter(
                 Context::from_parts(METRIC_RARE_HITS, TagSet::default()),
                 hits as f64,
             )));
         }
-        let misses = self.inner.rare_misses.swap(0, Ordering::Relaxed);
+        let misses = self.counters.inner.rare_misses.swap(0, Ordering::Relaxed);
         if misses > 0 {
             events.push(Event::Metric(Metric::counter(
                 Context::from_parts(METRIC_RARE_MISSES, TagSet::default()),
@@ -304,7 +336,7 @@ impl Telemetry {
         events.push(gauge_event(
             METRIC_RARE_SHRINKS,
             &[],
-            self.inner.rare_shrinks.load(Ordering::Relaxed) as f64,
+            self.counters.inner.rare_shrinks.load(Ordering::Relaxed) as f64,
         ));
 
         events
@@ -312,16 +344,7 @@ impl Telemetry {
 
     #[cfg(test)]
     pub(super) fn snapshot_decisions(&self) -> FastHashMap<DecisionKey, DecisionCounts> {
-        self.inner.decisions.lock().unwrap().clone()
-    }
-
-    #[cfg(test)]
-    fn rare_totals(&self) -> (u64, u64, u64) {
-        (
-            self.inner.rare_hits.load(Ordering::Relaxed),
-            self.inner.rare_misses.load(Ordering::Relaxed),
-            self.inner.rare_shrinks.load(Ordering::Relaxed),
-        )
+        self.decisions.clone()
     }
 }
 
@@ -339,7 +362,7 @@ mod tests {
 
     use super::*;
 
-    fn record(telemetry: &Telemetry, kept: bool, sampler: SamplerName, service: &str, env: &str) {
+    fn record(telemetry: &mut DecisionWindow, kept: bool, sampler: SamplerName, service: &str, env: &str) {
         telemetry.record_decision(kept, sampler, 1, MetaString::from(service), MetaString::from(env));
     }
 
@@ -425,10 +448,10 @@ mod tests {
 
     #[test]
     fn decisions_accumulate_per_key_and_flush_resets_the_window() {
-        let telemetry = Telemetry::new();
-        record(&telemetry, true, SamplerName::Probabilistic, "checkout", "prod");
-        record(&telemetry, false, SamplerName::Probabilistic, "checkout", "prod");
-        record(&telemetry, true, SamplerName::Probabilistic, "payments", "prod");
+        let mut telemetry = DecisionWindow::new();
+        record(&mut telemetry, true, SamplerName::Probabilistic, "checkout", "prod");
+        record(&mut telemetry, false, SamplerName::Probabilistic, "checkout", "prod");
+        record(&mut telemetry, true, SamplerName::Probabilistic, "payments", "prod");
 
         let snapshot = telemetry.snapshot_decisions();
         let checkout = snapshot
@@ -463,18 +486,24 @@ mod tests {
     }
 
     #[test]
-    fn decision_keys_roll_into_one_overflow_bucket_per_sampler() {
-        let telemetry = Telemetry::for_tests_with_decision_cap(3);
+    fn decision_keys_roll_into_one_overflow_bucket_counters() {
+        let mut telemetry = DecisionWindow::with_decision_key_cap(3);
         for i in 0..3 {
-            record(&telemetry, true, SamplerName::Probabilistic, &format!("svc{i}"), "prod");
+            record(
+                &mut telemetry,
+                true,
+                SamplerName::Probabilistic,
+                &format!("svc{i}"),
+                "prod",
+            );
         }
 
         // The window is full: unseen services roll into the overflow bucket.
-        record(&telemetry, true, SamplerName::Probabilistic, "svc3", "prod");
-        record(&telemetry, false, SamplerName::Probabilistic, "svc4", "prod");
+        record(&mut telemetry, true, SamplerName::Probabilistic, "svc3", "prod");
+        record(&mut telemetry, false, SamplerName::Probabilistic, "svc4", "prod");
         // A different sampler gets its own overflow bucket, and existing keys keep counting.
-        record(&telemetry, true, SamplerName::Rare, "svc5", "prod");
-        record(&telemetry, false, SamplerName::Probabilistic, "svc0", "prod");
+        record(&mut telemetry, true, SamplerName::Rare, "svc5", "prod");
+        record(&mut telemetry, false, SamplerName::Probabilistic, "svc0", "prod");
 
         let snapshot = telemetry.snapshot_decisions();
         // Three real keys plus one overflow bucket per overflowing sampler.
@@ -504,20 +533,20 @@ mod tests {
 
     #[test]
     fn rare_counters_reset_on_flush_but_shrinks_accumulate() {
-        let telemetry = Telemetry::new();
-        telemetry.record_rare_hit();
-        telemetry.record_rare_hit();
-        telemetry.record_rare_miss();
-        telemetry.record_rare_shrink();
-        assert_eq!(telemetry.rare_totals(), (2, 1, 1));
+        let mut telemetry = DecisionWindow::new();
+        telemetry.counters().record_rare_hit();
+        telemetry.counters().record_rare_hit();
+        telemetry.counters().record_rare_miss();
+        telemetry.counters().record_rare_shrink();
+        assert_eq!(telemetry.counters().rare_totals(), (2, 1, 1));
 
         let events = telemetry.take_window_events();
         assert!(has_counter(&events, METRIC_RARE_HITS, &[], 2.0));
         assert!(has_counter(&events, METRIC_RARE_MISSES, &[], 1.0));
         assert!(has_gauge(&events, METRIC_RARE_SHRINKS, &[], 1.0));
-        assert_eq!(telemetry.rare_totals(), (0, 0, 1));
+        assert_eq!(telemetry.counters().rare_totals(), (0, 0, 1));
 
-        telemetry.record_rare_shrink();
+        telemetry.counters().record_rare_shrink();
         let events = telemetry.take_window_events();
         // A quiet window for hits and misses still republishes the cumulative shrink gauge.
         assert!(!metric_with_tags(&events, METRIC_RARE_HITS, &[]));
@@ -526,8 +555,8 @@ mod tests {
 
     #[test]
     fn kept_series_appear_only_after_a_kept_decision() {
-        let telemetry = Telemetry::new();
-        record(&telemetry, false, SamplerName::Probabilistic, "checkout", "prod");
+        let mut telemetry = DecisionWindow::new();
+        record(&mut telemetry, false, SamplerName::Probabilistic, "checkout", "prod");
 
         let events = telemetry.take_window_events();
         assert!(has_counter(
@@ -542,7 +571,7 @@ mod tests {
             &["target_service:checkout"]
         ));
 
-        record(&telemetry, true, SamplerName::Probabilistic, "checkout", "prod");
+        record(&mut telemetry, true, SamplerName::Probabilistic, "checkout", "prod");
         let events = telemetry.take_window_events();
         assert!(has_counter(
             &events,
@@ -554,10 +583,10 @@ mod tests {
 
     #[test]
     fn fixed_metrics_report_every_window() {
-        let telemetry = Telemetry::new();
-        telemetry.record_rare_hit();
-        telemetry.record_rare_miss();
-        telemetry.record_rare_shrink();
+        let mut telemetry = DecisionWindow::new();
+        telemetry.counters().record_rare_hit();
+        telemetry.counters().record_rare_miss();
+        telemetry.counters().record_rare_shrink();
         telemetry.set_tracked_signature_counts(11, 7, 3);
 
         let events = telemetry.take_window_events();
@@ -574,10 +603,20 @@ mod tests {
 
     #[test]
     fn only_the_priority_sampler_carries_the_priority_dimension() {
-        let telemetry = Telemetry::new();
-        record(&telemetry, true, SamplerName::NoPriority, "checkout", "prod");
+        let mut telemetry = DecisionWindow::new();
+        record(&mut telemetry, true, SamplerName::NoPriority, "checkout", "prod");
         let snapshot = telemetry.snapshot_decisions();
         let (key, _) = snapshot.iter().next().unwrap();
         assert_eq!(key.priority, None);
+    }
+
+    #[test]
+    fn sampler_counters_share_counts_between_clones() {
+        // The transform hands clones into the individual samplers, so every clone must observe the
+        // same counters.
+        let telemetry = DecisionWindow::new();
+        let counters = telemetry.counters().clone();
+        counters.record_rare_hit();
+        assert_eq!(telemetry.counters().rare_totals(), (1, 0, 0));
     }
 }
