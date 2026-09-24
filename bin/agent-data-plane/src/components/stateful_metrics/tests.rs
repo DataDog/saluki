@@ -169,6 +169,30 @@ fn conversion_preserves_rate_metadata_and_v3_resources() {
 }
 
 #[test]
+fn conversion_discards_series_without_finite_points() {
+    for points in [
+        &[][..],
+        &[(123, f64::NAN), (124, f64::INFINITY), (125, f64::NEG_INFINITY)][..],
+    ] {
+        for values in [
+            MetricValues::counter(points),
+            MetricValues::gauge(points),
+            MetricValues::rate(points, Duration::from_secs(10)),
+        ] {
+            let metric = Metric::from_parts(
+                Context::from_static_parts("invalid", &[]),
+                values,
+                MetricMetadata::default(),
+            );
+            assert!(conversion::convert(&metric).is_none(), "{metric:?}");
+        }
+    }
+
+    let overflowing_rate = Metric::rate("overflow", (123, f64::MAX), Duration::from_nanos(1));
+    assert!(conversion::convert(&overflowing_rate).is_none());
+}
+
+#[test]
 fn zero_interval_and_source_type_survive_conversion() {
     let mut metric = Metric::rate("rate", (123, 20.0), Duration::ZERO);
     metric.metadata_mut().set_source_type(Arc::<str>::from("integration"));

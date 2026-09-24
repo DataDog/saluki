@@ -14,7 +14,7 @@ pub(super) fn convert(metric: &Metric) -> Option<LogicalMetricSeries> {
         // Sets, histograms, and distributions retain their existing HTTP serialization.
         _ => return None,
     };
-    let points = points
+    let points: Vec<MetricPoint> = points
         .filter_map(|(timestamp, value)| {
             let value = interval
                 .filter(|interval| !interval.is_zero())
@@ -24,6 +24,9 @@ pub(super) fn convert(metric: &Metric) -> Option<LogicalMetricSeries> {
                 .then(|| MetricPoint::new(timestamp.map_or(0, |ts| ts.get() as i64), value))
         })
         .collect();
+    if points.is_empty() {
+        return None;
+    }
 
     let mut resources = Vec::new();
     if let Some(host) = metric.context().host().filter(|host| !host.is_empty()) {
