@@ -45,7 +45,6 @@ tracing-appender = { workspace = true }
 tracing-rolling-file = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
-  "env-filter",
   "fmt",
   "json",
   "local-time",

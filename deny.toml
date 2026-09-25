@@ -15,8 +15,20 @@ ignore = [
   { id = "RUSTSEC-2026-0285", reason = "blocked on aws-lc-rs FIPS pin; see comment in Cargo.toml" },
 ]
 
+[graph]
+# Resolve the dependency graph with FIPS enabled so that bans, licenses, and advisories also cover the crates that
+# only appear in FIPS builds (e.g. `aws-lc-fips-sys`).
+features = ["fips"]
+
 [bans]
 multiple-versions = "allow"
+deny = [
+  # `aws-lc-fips-sys` bundles the AWS-LC FIPS module: 0.13.x is AWS-LC-FIPS 3.x (certified), while 0.14+ (pulled in
+  # by aws-lc-rs 1.18+) is AWS-LC-FIPS 4.x, which is not yet FIPS 140-3 certified. This backstops the `aws-lc-rs` pin
+  # in the workspace Cargo.toml. Lift both once AWS-LC-FIPS 4.x moves from "Modules in Process" to "Validations" in
+  # https://github.com/aws/aws-lc/blob/main/crypto/fipsmodule/FIPS.md.
+  { crate = "aws-lc-fips-sys@>=0.14", reason = "AWS-LC-FIPS 4.x is not yet certified; see aws-lc-rs pin in Cargo.toml" },
+]
 
 [licenses]
 version = 2
@@ -37,6 +49,11 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
+
+[[licenses.exceptions]]
+# AWS-LC inherits parts of OpenSSL, so the FIPS module crate carries the OpenSSL license alongside ISC/Apache-2.0.
+crate = "aws-lc-fips-sys"
+allow = ["OpenSSL"]
 
 [sources]
 allow-git = [

@@ -1,11 +1,26 @@
-//! Builds endpoint routing groups from exact-name metric allow lists.
+//! Builds endpoint routing groups from exact-name and literal-prefix metric allow lists.
 
 use std::collections::{BTreeMap, HashMap};
 
 use agent_data_plane_config::shared;
 use saluki_error::{generic_error, GenericError};
 
-/// A group of configured endpoints that share one exact-name metric allowlist.
+/// Sorts literal prefixes and removes duplicates and prefixes covered by another prefix.
+pub fn compact_metric_prefixes(prefixes: &mut Vec<String>) {
+    prefixes.sort_unstable();
+    if !prefixes.is_empty() {
+        let mut retained = 0;
+        for next in 1..prefixes.len() {
+            if !prefixes[next].starts_with(&prefixes[retained]) {
+                retained += 1;
+                prefixes.swap(retained, next);
+            }
+        }
+        prefixes.truncate(retained + 1);
+    }
+}
+
+/// A group of configured endpoints that share exact-name and prefix metric allowlists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndpointAllowlistGroup {
     /// Configured endpoint identities targeted by this policy.
@@ -13,6 +28,8 @@ pub struct EndpointAllowlistGroup {
 
     /// Exact metric names permitted to reach these endpoints.
     pub metric_allowlist: Vec<String>,
+    /// Literal metric-name prefixes permitted to reach these endpoints.
+    pub metric_prefix_allowlist: Vec<String>,
 }
 
 /// Endpoint-aware selective metric-routing configuration.
@@ -35,44 +52,57 @@ impl MetricsEndpointRoutingConfiguration {
     /// Returns an error if a policy names neither the primary endpoint nor an endpoint configured in
     /// `additional_endpoints`.
     pub fn from_configuration(
-        metric_allowlists: &HashMap<String, Vec<String>>, endpoints: &shared::Endpoints,
+        metric_allowlists: &HashMap<String, Vec<String>>, metric_prefix_allowlists: &HashMap<String, Vec<String>>,
+        endpoints: &shared::Endpoints,
     ) -> Result<Self, GenericError> {
-        let mut selected_endpoints = Vec::with_capacity(metric_allowlists.len());
-        let mut grouped_endpoints = BTreeMap::<Vec<String>, Vec<String>>::new();
+        let mut selected_endpoints = metric_allowlists
+            .keys()
+            .chain(metric_prefix_allowlists.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+        selected_endpoints.sort_unstable();
+        selected_endpoints.dedup();
+        let mut grouped_endpoints = BTreeMap::<(Vec<String>, Vec<String>), Vec<String>>::new();
         let primary_endpoint = endpoints.primary_endpoint();
 
-        for (endpoint, metric_allowlist) in metric_allowlists {
+        for endpoint in &selected_endpoints {
             if endpoint != &primary_endpoint && !endpoints.additional_endpoints.contains_key(endpoint) {
                 return Err(generic_error!(
                     "Experimental metrics endpoint-routing policy endpoint '{}' does not match the configured primary \
                      endpoint and is not present in `additional_endpoints`; correct the endpoint, add it and its API \
                      key to `additional_endpoints`, or remove it from \
-                     `experimental.metrics_endpoint_routing.metric_allowlist`.",
+                     `experimental.metrics_endpoint_routing.metric_allowlist` and \
+                     `experimental.metrics_endpoint_routing.metric_prefix_allowlist`.",
                     endpoint
                 ));
             }
 
-            selected_endpoints.push(endpoint.clone());
-
-            let mut canonical_allowlist = metric_allowlist.clone();
+            let mut canonical_allowlist = metric_allowlists.get(endpoint).cloned().unwrap_or_default();
             canonical_allowlist.sort_unstable();
             canonical_allowlist.dedup();
-            if !canonical_allowlist.is_empty() {
+            let mut canonical_prefixes = metric_prefix_allowlists.get(endpoint).cloned().unwrap_or_default();
+            compact_metric_prefixes(&mut canonical_prefixes);
+            // Exact names covered by a prefix do not change the policy's matching behavior.
+            canonical_allowlist.retain(|name| {
+                let index = canonical_prefixes.partition_point(|prefix| prefix <= name);
+                index == 0 || !name.starts_with(&canonical_prefixes[index - 1])
+            });
+            if !canonical_allowlist.is_empty() || !canonical_prefixes.is_empty() {
                 grouped_endpoints
-                    .entry(canonical_allowlist)
+                    .entry((canonical_allowlist, canonical_prefixes))
                     .or_default()
                     .push(endpoint.clone());
             }
         }
 
-        selected_endpoints.sort_unstable();
         let policy_groups = grouped_endpoints
             .into_iter()
-            .map(|(metric_allowlist, mut endpoints)| {
+            .map(|((metric_allowlist, metric_prefix_allowlist), mut endpoints)| {
                 endpoints.sort_unstable();
                 EndpointAllowlistGroup {
                     endpoints,
                     metric_allowlist,
+                    metric_prefix_allowlist,
                 }
             })
             .collect();
@@ -122,8 +152,9 @@ mod tests {
     fn empty_policy_map_preserves_the_ordinary_endpoint_path() {
         let allowlists = HashMap::new();
 
-        let config = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &endpoints())
-            .expect("empty routing should be valid");
+        let config =
+            MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints())
+                .expect("empty routing should be valid");
         assert!(config.selected_endpoints().is_empty());
         assert!(config.policy_groups().is_empty());
     }
@@ -142,8 +173,9 @@ mod tests {
             ("https://secondary-c.example.com".to_string(), Vec::new()),
         ]);
 
-        let config = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &endpoints())
-            .expect("configured endpoints should resolve");
+        let config =
+            MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints())
+                .expect("configured endpoints should resolve");
         assert_eq!(
             config.selected_endpoints(),
             [
@@ -159,7 +191,8 @@ mod tests {
                     "https://primary.example.com".to_string(),
                     "https://secondary-b.example.com".to_string()
                 ],
-                metric_allowlist: vec!["metric.a".to_string(), "metric.b".to_string()]
+                metric_allowlist: vec!["metric.a".to_string(), "metric.b".to_string()],
+                metric_prefix_allowlist: vec![],
             }]
         );
     }
@@ -176,7 +209,7 @@ mod tests {
             vec!["metric.a".to_string()],
         )]);
 
-        let config = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &endpoints)
+        let config = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints)
             .expect("site-derived primary endpoint should resolve");
         assert_eq!(config.selected_endpoints(), ["https://app.us5.datadoghq.com"]);
     }
@@ -185,11 +218,79 @@ mod tests {
     fn rejects_a_policy_that_does_not_name_a_configured_endpoint() {
         let allowlists = HashMap::from([("https://typo.example.com".to_string(), vec!["metric.a".to_string()])]);
 
-        let error = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &endpoints())
+        let error = MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints())
             .expect_err("unknown endpoint should be rejected");
         let message = error.to_string();
         assert!(message.contains("https://typo.example.com"));
         assert!(message.contains("primary endpoint"));
         assert!(message.contains("additional_endpoints"));
+    }
+
+    #[test]
+    fn combines_policy_maps_and_groups_equivalent_name_and_prefix_lists() {
+        let names = HashMap::from([
+            (
+                PRIMARY.to_string(),
+                vec!["exact".to_string(), "a.covered".to_string(), "b.covered".to_string()],
+            ),
+            ("https://secondary-a.example.com".to_string(), vec!["exact".to_string()]),
+        ]);
+        let prefixes = HashMap::from([
+            (
+                PRIMARY.to_string(),
+                vec![
+                    "b.".to_string(),
+                    "a.".to_string(),
+                    "a.".to_string(),
+                    "a.nested.".to_string(),
+                ],
+            ),
+            (
+                "https://secondary-a.example.com".to_string(),
+                vec!["a.".to_string(), "b.".to_string()],
+            ),
+            ("https://secondary-b.example.com".to_string(), vec!["a.".to_string()]),
+            ("https://secondary-c.example.com".to_string(), vec![]),
+        ]);
+        let config = MetricsEndpointRoutingConfiguration::from_configuration(&names, &prefixes, &endpoints()).unwrap();
+        assert_eq!(config.selected_endpoints().len(), 4);
+        assert_eq!(config.policy_groups().len(), 2);
+        let combined = config
+            .policy_groups()
+            .iter()
+            .find(|p| !p.metric_allowlist.is_empty())
+            .unwrap();
+        assert_eq!(combined.endpoints, [PRIMARY, "https://secondary-a.example.com"]);
+        assert_eq!(combined.metric_allowlist, ["exact"]);
+        assert_eq!(combined.metric_prefix_allowlist, ["a.", "b."]);
+        let prefix_only = config
+            .policy_groups()
+            .iter()
+            .find(|p| p.metric_allowlist.is_empty())
+            .unwrap();
+        assert_eq!(prefix_only.endpoints, ["https://secondary-b.example.com"]);
+        assert_eq!(prefix_only.metric_prefix_allowlist, ["a."]);
+    }
+
+    #[test]
+    fn different_prefixes_do_not_share_an_encoder_group() {
+        let names = HashMap::from([
+            (PRIMARY.to_string(), vec!["exact".to_string()]),
+            ("https://secondary-a.example.com".to_string(), vec!["exact".to_string()]),
+        ]);
+        let prefixes = HashMap::from([(PRIMARY.to_string(), vec!["a.".to_string()])]);
+        let config = MetricsEndpointRoutingConfiguration::from_configuration(&names, &prefixes, &endpoints()).unwrap();
+        assert_eq!(config.policy_groups().len(), 2);
+    }
+
+    #[test]
+    fn rejects_unknown_endpoints_in_prefix_map_including_empty_policies() {
+        for list in [vec![], vec!["metric.".to_string()]] {
+            let prefixes = HashMap::from([("https://typo.example.com".to_string(), list)]);
+            let error =
+                MetricsEndpointRoutingConfiguration::from_configuration(&HashMap::new(), &prefixes, &endpoints())
+                    .unwrap_err();
+            assert!(error.to_string().contains("metric_prefix_allowlist"));
+        }
     }
 }

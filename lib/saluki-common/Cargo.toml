@@ -32,6 +32,7 @@ stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }

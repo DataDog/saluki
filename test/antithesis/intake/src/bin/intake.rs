@@ -16,9 +16,14 @@ mod unix_intake {
     use antithesis_sdk::prelude::*;
     use anyhow::{Context, Result};
     use clap::Parser;
+    use saluki_common::logging::filter_from_env;
     use tokio::{net::TcpListener, sync::watch};
     use tracing::{error, info};
-    use tracing_subscriber::{filter::LevelFilter, EnvFilter};
+    use tracing_subscriber::{
+        filter::{LevelFilter, Targets},
+        layer::SubscriberExt as _,
+        util::SubscriberInitExt as _,
+    };
 
     /// Mock Datadog intake configuration, settable via environment variables
     #[derive(Parser)]
@@ -44,13 +49,10 @@ mod unix_intake {
     pub(super) async fn run() {
         tracing_subscriber::fmt()
             .compact()
-            .with_env_filter(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::INFO.into())
-                    .from_env_lossy(),
-            )
             .with_ansi(true)
             .with_target(true)
+            .finish()
+            .with(filter_from_env(Targets::new().with_default(LevelFilter::INFO)))
             .init();
 
         antithesis_init();

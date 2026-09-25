@@ -87,8 +87,8 @@ mod tests {
         // Matched metrics should appear with remapped names.
         assert!(output.contains("dogstatsd__packet_pool_get "));
         assert!(output.contains("dogstatsd__packet_pool "));
-        assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
-        assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
+        assert!(output.contains("points__sent{domain=\"https://api.datadoghq.com\"} 12"));
+        assert!(output.contains("points__dropped{domain=\"https://api.datadoghq.com\"} 3"));
         assert!(output.contains("transactions__retries{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 5"));
         assert!(
             output.contains("transactions__requeued{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 2")
@@ -102,8 +102,8 @@ mod tests {
         // Should have TYPE headers.
         assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
-        assert!(output.contains("# TYPE point__sent gauge"));
-        assert!(output.contains("# TYPE point__dropped gauge"));
+        assert!(output.contains("# TYPE points__sent gauge"));
+        assert!(output.contains("# TYPE points__dropped gauge"));
         assert!(output.contains("# TYPE transactions__retries counter"));
         assert!(output.contains("# TYPE transactions__requeued counter"));
         assert!(output.contains("# TYPE transactions__retry_queue_size gauge"));
