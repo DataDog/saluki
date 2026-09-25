@@ -64,7 +64,7 @@ use airlock::driver::Driver;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::debug;
 
-use crate::config::IntegrationConfig;
+use crate::config::{ActionConfig, AssertionConfig, AssertionStep, IntegrationConfig};
 
 /// Prefix for dynamic variable env vars in the test config.
 pub const ENV_PREFIX: &str = "PANORAMIC_DYNAMIC_";
@@ -172,6 +172,190 @@ pub fn find_unresolved(s: &str, out: &mut Vec<String>) {
         } else {
             break;
         }
+    }
+}
+
+/// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
+pub(crate) fn resolve_action(value: &mut ActionConfig, vars: &HashMap<String, String>) {
+    match value {
+        ActionConfig::CoreAgentConfigSet {
+            key, endpoint, value, ..
+        } => {
+            resolve_placeholders(key, vars);
+            resolve_placeholders(endpoint, vars);
+            if let serde_json::Value::String(s) = value {
+                resolve_placeholders(s, vars);
+            }
+        }
+        ActionConfig::AdpCli { args, .. } => {
+            for arg in args {
+                resolve_placeholders(arg, vars);
+            }
+        }
+        ActionConfig::CoreAgentCli {
+            args, output_contains, ..
+        } => {
+            for arg in args {
+                resolve_placeholders(arg, vars);
+            }
+            if let Some(output_contains) = output_contains {
+                resolve_placeholders(output_contains, vars);
+            }
+        }
+        ActionConfig::DogstatsdReplay {
+            sender,
+            expected_metrics,
+            ..
+        } => {
+            for arg in sender.iter_mut().chain(expected_metrics) {
+                resolve_placeholders(arg, vars);
+            }
+        }
+        ActionConfig::DogstatsdSend { payload, .. } => {
+            resolve_placeholders(payload, vars);
+        }
+        ActionConfig::TargetExec { command, .. } => {
+            for arg in command {
+                resolve_placeholders(arg, vars);
+            }
+        }
+    }
+}
+
+/// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
+pub(crate) fn unresolved_action(value: &ActionConfig) -> Vec<String> {
+    let mut out = Vec::new();
+    match value {
+        ActionConfig::CoreAgentConfigSet {
+            key, endpoint, value, ..
+        } => {
+            find_unresolved(key, &mut out);
+            find_unresolved(endpoint, &mut out);
+            if let serde_json::Value::String(s) = value {
+                find_unresolved(s, &mut out);
+            }
+        }
+        ActionConfig::AdpCli { args, .. } => {
+            for arg in args {
+                find_unresolved(arg, &mut out);
+            }
+        }
+        ActionConfig::CoreAgentCli {
+            args, output_contains, ..
+        } => {
+            for arg in args {
+                find_unresolved(arg, &mut out);
+            }
+            if let Some(output_contains) = output_contains {
+                find_unresolved(output_contains, &mut out);
+            }
+        }
+        ActionConfig::DogstatsdReplay {
+            sender,
+            expected_metrics,
+            ..
+        } => {
+            for arg in sender.iter().chain(expected_metrics) {
+                find_unresolved(arg, &mut out);
+            }
+        }
+        ActionConfig::DogstatsdSend { payload, .. } => {
+            find_unresolved(payload, &mut out);
+        }
+        ActionConfig::TargetExec { command, .. } => {
+            for arg in command {
+                find_unresolved(arg, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
+pub(crate) fn resolve_assertion(value: &mut AssertionConfig, vars: &HashMap<String, String>) {
+    match value {
+        AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
+            resolve_placeholders(pattern, vars);
+        }
+        AssertionConfig::HttpCheck { endpoint, .. } => {
+            resolve_placeholders(endpoint, vars);
+        }
+        AssertionConfig::PortListening { protocol, .. } => {
+            resolve_placeholders(protocol, vars);
+        }
+        AssertionConfig::FileContains { path, pattern, .. } => {
+            resolve_placeholders(path, vars);
+            if let Some(p) = pattern {
+                resolve_placeholders(p, vars);
+            }
+        }
+        AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
+            resolve_placeholders(key, vars);
+            resolve_placeholders(endpoint, vars);
+        }
+        AssertionConfig::IntakeHasMetric { name, tags, .. } => {
+            resolve_placeholders(name, vars);
+            for tag in tags {
+                resolve_placeholders(tag, vars);
+            }
+        }
+        AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
+    }
+}
+
+/// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
+pub(crate) fn unresolved_assertion(value: &AssertionConfig) -> Vec<String> {
+    let mut out = Vec::new();
+    match value {
+        AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
+            find_unresolved(pattern, &mut out);
+        }
+        AssertionConfig::HttpCheck { endpoint, .. } => {
+            find_unresolved(endpoint, &mut out);
+        }
+        AssertionConfig::PortListening { protocol, .. } => {
+            find_unresolved(protocol, &mut out);
+        }
+        AssertionConfig::FileContains { path, pattern, .. } => {
+            find_unresolved(path, &mut out);
+            if let Some(p) = pattern {
+                find_unresolved(p, &mut out);
+            }
+        }
+        AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
+            find_unresolved(key, &mut out);
+            find_unresolved(endpoint, &mut out);
+        }
+        AssertionConfig::IntakeHasMetric { name, tags, .. } => {
+            find_unresolved(name, &mut out);
+            for tag in tags {
+                find_unresolved(tag, &mut out);
+            }
+        }
+        AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
+    }
+    out
+}
+
+/// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion configs within this step.
+pub(crate) fn resolve_step(value: &mut AssertionStep, vars: &HashMap<String, String>) {
+    match value {
+        AssertionStep::Single(config) => resolve_assertion(config, vars),
+        AssertionStep::Action(config) => resolve_action(config, vars),
+        AssertionStep::Parallel { parallel } => {
+            for config in parallel {
+                resolve_assertion(config, vars);
+            }
+        }
+    }
+}
+
+/// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in this step.
+pub(crate) fn unresolved_step(value: &AssertionStep) -> Vec<String> {
+    match value {
+        AssertionStep::Single(config) => unresolved_assertion(config),
+        AssertionStep::Action(config) => unresolved_action(config),
+        AssertionStep::Parallel { parallel } => parallel.iter().flat_map(unresolved_assertion).collect(),
     }
 }
 

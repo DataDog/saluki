@@ -1,32 +1,9 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{collections::BTreeMap, path::PathBuf};
 
-use airlock::{
-    config::{
-        DatadogIntakeConfig as AirlockDatadogIntakeConfig, MillstoneConfig as AirlockMillstoneConfig,
-        TargetConfig as AirlockTargetConfig,
-    },
-    driver::{ContainerOs, DriverConfig},
-};
-use async_trait::async_trait;
-use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 
 use crate::config::{deserialize_env_map, CaseConfig};
 use crate::correctness::analysis::AnalysisMode;
-use crate::reporter::TestResult;
-use crate::test::{Test, TestContext, TestSuite};
-
-// Correctness tests run two isolation groups (baseline + comparison), each with multiple
-// containers, so they need more time than the default.
-const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
-
-/// Container names a correctness test carries in [`Test::images`] and image overrides.
-const BASELINE_IMAGE_NAME: &str = "baseline";
-const COMPARISON_IMAGE_NAME: &str = "comparison";
-const INTAKE_IMAGE_NAME: &str = "datadog-intake";
-const MILLSTONE_IMAGE_NAME: &str = "millstone";
 
 /// The container runtime backend to use for a correctness test.
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -44,9 +21,6 @@ fn default_otlp_direct_analysis_mode() -> bool {
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
-    #[serde(skip)]
-    pub(crate) name: String,
-
     /// Container runtime backend to use.
     pub runtime: Runtime,
 
@@ -81,9 +55,9 @@ pub struct Config {
     #[serde(default)]
     pub require_dogstatsd_forwarded_packets: bool,
 
-    /// Directory holding this case's `config.yaml`, which anchors the relative paths it declares.
-    #[serde(skip, default = "PathBuf::new")]
-    pub(crate) base_path: PathBuf,
+    /// Canonical configuration file path, recorded by the loader.
+    #[serde(skip)]
+    pub(crate) loaded_from: PathBuf,
 }
 
 #[derive(Clone, Deserialize)]
@@ -178,148 +152,8 @@ pub struct TargetConfig {
     pub env: BTreeMap<String, String>,
 }
 
-impl TargetConfig {
-    /// Returns this target's environment as `KEY=VALUE` assignments, ordered by variable name.
-    ///
-    /// Airlock, and so the Docker backend, takes the environment in this process-level form rather
-    /// than as a map. The order comes from [`BTreeMap`], so the same case produces the same
-    /// container environment on every run. The kind backend builds pod environment variables from
-    /// the map directly, so both backends see the same names and values.
-    pub fn env_assignments(&self) -> Vec<String> {
-        self.env
-            .iter()
-            .map(|(name, value)| format!("{}={}", name, value))
-            .collect()
-    }
-}
-
-#[async_trait]
-impl Test for Config {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn suite(&self) -> TestSuite {
-        TestSuite::Correctness
-    }
-
-    fn description(&self) -> Option<String> {
-        None
-    }
-
-    fn case_path(&self) -> PathBuf {
-        self.base_path.clone()
-    }
-
-    fn timeout(&self) -> Duration {
-        CORRECTNESS_TIMEOUT
-    }
-
-    fn images(&self) -> BTreeMap<&str, String> {
-        let mut m = BTreeMap::new();
-        m.insert(BASELINE_IMAGE_NAME, self.baseline.image.clone());
-        m.insert(COMPARISON_IMAGE_NAME, self.comparison.image.clone());
-        m.insert(INTAKE_IMAGE_NAME, self.datadog_intake.image.clone());
-        m.insert(MILLSTONE_IMAGE_NAME, self.millstone.image.clone());
-        m
-    }
-
-    fn set_image(&mut self, name: &str, image: &str) -> bool {
-        let field = match name {
-            BASELINE_IMAGE_NAME => &mut self.baseline.image,
-            COMPARISON_IMAGE_NAME => &mut self.comparison.image,
-            INTAKE_IMAGE_NAME => &mut self.datadog_intake.image,
-            MILLSTONE_IMAGE_NAME => &mut self.millstone.image,
-            _ => return false,
-        };
-
-        *field = image.to_string();
-        true
-    }
-
-    fn runtime(&self) -> String {
-        match self.runtime {
-            Runtime::Docker => "docker".to_string(),
-            Runtime::KubernetesInDocker => "kubernetes_in_docker".to_string(),
-        }
-    }
-
-    async fn run(&self, tctx: TestContext) -> TestResult {
-        crate::correctness::runner::run_correctness_test(self.name.clone(), self.clone(), tctx).await
-    }
-}
-
 impl CaseConfig for Config {
-    fn base_path(&self) -> &Path {
-        &self.base_path
-    }
-
-    fn set_base_path(&mut self, base_path: PathBuf) {
-        self.base_path = base_path;
-    }
-}
-
-impl Config {
-    pub fn millstone_config(&self) -> AirlockMillstoneConfig {
-        AirlockMillstoneConfig {
-            image: self.millstone.image.clone(),
-            binary_path: Some(self.millstone.binary_path.clone()),
-            config_path: self.resolve_path(&self.millstone.config_path),
-        }
-    }
-
-    pub fn datadog_intake_config(&self) -> AirlockDatadogIntakeConfig {
-        AirlockDatadogIntakeConfig {
-            image: self.datadog_intake.image.clone(),
-            binary_path: Some(self.datadog_intake.binary_path.clone()),
-        }
-    }
-
-    async fn target_driver_config(&self, target_config: &TargetConfig) -> Result<DriverConfig, GenericError> {
-        let airlock_target_config = AirlockTargetConfig {
-            image: target_config.image.clone(),
-            entrypoint: target_config.entrypoint.clone(),
-            command: target_config.command.clone(),
-            additional_env_vars: target_config.env_assignments(),
-            container_os: ContainerOs::Linux,
-            host_cgroup_namespace: false,
-        };
-
-        let mut driver_config = DriverConfig::target("target", airlock_target_config).await?;
-
-        for file in &target_config.files {
-            // Parse the two file paths -- host path and container path -- from the entry, and anchor
-            // the host path at the case directory. The container path must be absolute.
-            match file.split_once(':') {
-                Some((host_path, container_path)) => {
-                    let host_path = self.resolve_path(host_path);
-                    let container_path = Path::new(container_path);
-                    if !container_path.is_absolute() {
-                        return Err(generic_error!(
-                            "Container path '{}' must be absolute.",
-                            container_path.display()
-                        ));
-                    }
-
-                    driver_config = driver_config.with_bind_mount(host_path, container_path)
-                }
-                None => {
-                    return Err(generic_error!(
-                        "Invalid file entry format (expected 'host_path:container_path', got '{}')",
-                        file,
-                    ))
-                }
-            };
-        }
-
-        Ok(driver_config)
-    }
-
-    pub async fn baseline_target_driver_config(&self) -> Result<DriverConfig, GenericError> {
-        self.target_driver_config(&self.baseline).await
-    }
-
-    pub async fn comparison_target_driver_config(&self) -> Result<DriverConfig, GenericError> {
-        self.target_driver_config(&self.comparison).await
+    fn set_loaded_from(&mut self, path: PathBuf) {
+        self.loaded_from = path;
     }
 }

@@ -20,7 +20,8 @@ use tracing::{debug, error, info, info_span, warn, Instrument as _, Span};
 
 use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
-    config::{Config, Runtime},
+    case::CorrectnessTestCase,
+    config::Runtime,
     sync::Coordinator,
     traffic::{self, Side},
 };
@@ -53,14 +54,15 @@ const MILLSTONE_HEALTHCHECK_START_INTERVAL: Duration = Duration::from_millis(250
 const FLUSH_WAIT: Duration = Duration::from_secs(32);
 
 /// Run a single correctness test and return a panoramic `TestResult`.
-pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
-    match config.runtime {
-        Runtime::Docker => run_docker_correctness_test(name, config, tctx).await,
-        Runtime::KubernetesInDocker => crate::correctness::k8s::run_k8s_correctness_test(name, config, tctx).await,
+pub async fn run_correctness_test(case: CorrectnessTestCase, tctx: TestContext) -> TestResult {
+    match case.config.runtime {
+        Runtime::Docker => run_docker_correctness_test(case, tctx).await,
+        Runtime::KubernetesInDocker => crate::correctness::k8s::run_k8s_correctness_test(case, tctx).await,
     }
 }
 
-async fn run_docker_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
+async fn run_docker_correctness_test(case: CorrectnessTestCase, tctx: TestContext) -> TestResult {
+    let name = case.name.clone();
     let started = Instant::now();
 
     let log_dir = tctx.log_dir().to_path_buf();
@@ -71,7 +73,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
 
     // Phase 1: spawn containers
     let phase = phases.enter("spawn_containers");
-    let test_runner = match CorrectnessRunner::from_config(&config, tctx).await {
+    let test_runner = match CorrectnessRunner::from_case(&case, tctx).await {
         Ok(r) => r,
         Err(e) => return make_error_result(name, started, phase.finish_and_collect(), e),
     };
@@ -95,15 +97,20 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
 
     // Phase 3: analysis
     let phase = phases.enter("analysis");
-    let traces_options = match config.analysis_mode {
+    let traces_options = match case.config.analysis_mode {
         AnalysisMode::Traces => Some(TracesAnalysisOptions {
-            otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
-            additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
+            otlp_direct_analysis_mode: case.config.otlp_direct_analysis_mode,
+            additional_span_ignore_fields: case.config.additional_span_ignore_fields.clone(),
         }),
         AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
-        .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
+    let analysis_runner = AnalysisRunner::new(
+        case.config.analysis_mode,
+        baseline_data,
+        comparison_data,
+        traces_options,
+    )
+    .with_dogstatsd_forwarding_requirement(case.config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = phase.elapsed();
     let phase_timings = phase.finish_and_collect();
@@ -184,14 +191,18 @@ pub struct CorrectnessRunner {
 }
 
 impl CorrectnessRunner {
-    pub async fn from_config(config: &Config, tctx: TestContext) -> Result<Self, GenericError> {
-        let baseline =
-            crate::mounts::apply_target_mounts(config.baseline_target_driver_config().await?, tctx.mounts_dir())?;
-        let comparison =
-            crate::mounts::apply_target_mounts(config.comparison_target_driver_config().await?, tctx.mounts_dir())?;
+    pub async fn from_case(case: &CorrectnessTestCase, tctx: TestContext) -> Result<Self, GenericError> {
+        let baseline = crate::mounts::apply_target_mounts(
+            case.target_driver_config(&case.config.baseline).await?,
+            tctx.mounts_dir(),
+        )?;
+        let comparison = crate::mounts::apply_target_mounts(
+            case.target_driver_config(&case.config.comparison).await?,
+            tctx.mounts_dir(),
+        )?;
         Ok(Self {
-            datadog_intake_config: config.datadog_intake_config(),
-            millstone_config: config.millstone_config(),
+            datadog_intake_config: case.datadog_intake_config(),
+            millstone_config: case.millstone_config(),
             baseline_target_driver_config: baseline,
             comparison_target_driver_config: comparison,
             tctx,

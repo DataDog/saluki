@@ -4,12 +4,12 @@ Set-StrictMode -Version 3.0
 Import-Module (Join-Path $PSScriptRoot "windows-rust-env.psm1") -Force
 
 function Build-WindowsAdpImage {
+    param([string]$ImageTag)
     $AdpBinary = Join-Path $env:CARGO_TARGET_DIR "$env:BUILD_PROFILE\agent-data-plane.exe"
     if (-not (Test-Path $AdpBinary)) {
         throw "ADP binary not found at ${AdpBinary}"
     }
 
-    $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
     $BaseImage = if ($env:WINDOWS_ADP_BASE_IMAGE) { $env:WINDOWS_ADP_BASE_IMAGE } else { "mcr.microsoft.com/windows/servercore:ltsc2022" }
     $ContextDir = Join-Path $env:TEMP "saluki-windows-adp-image"
 
@@ -73,7 +73,8 @@ if (-not $env:APP_GIT_HASH) {
 Invoke-Native cargo build --release --package panoramic
 Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plane
 
-Build-WindowsAdpImage
+$ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
+Build-WindowsAdpImage -ImageTag $ImageTag
 
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"
@@ -96,6 +97,7 @@ $PanoramicArgs = @(
     "run",
     "-d", $TestDir,
     "--runtime", "windows",
+    "--image-override", "container=$ImageTag",
     "--no-tui",
     "-p", "4",
     "-l", $env:PANORAMIC_LOG_DIR
