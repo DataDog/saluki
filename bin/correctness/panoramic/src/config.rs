@@ -7,7 +7,10 @@ use std::{
 
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::Deserialize;
+use serde::{
+    de::{DeserializeOwned, Error as _},
+    Deserialize, Deserializer,
+};
 use serde_json::Value;
 
 use crate::correctness::analysis::AnalysisMode;
@@ -123,7 +126,11 @@ pub struct IntegrationConfig {
     /// Top-level (not under `container`) because both the linux and `mac` runtimes apply
     /// these the same way: docker injects them as container env, the Unix runner passes them
     /// to the spawned ADP / Core Agent processes.
-    #[serde(default)]
+    ///
+    /// Keys are variable names, values are the string the process receives. Values must be YAML
+    /// strings, so quote anything that would otherwise parse as a boolean or a number (`"true"`,
+    /// `"8125"`).
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: HashMap<String, String>,
 
     /// Ordered list of steps (assertions and actions) to execute.
@@ -141,12 +148,21 @@ pub struct IntegrationConfig {
 
     /// Active runtime for this test instance.
     ///
-    /// Empty at parse time; the discovery layer sets it to whichever runtime the CLI is scoped
-    /// to (after confirming that runtime is listed in `runtimes`). Used by `Test::run` to
-    /// dispatch to the right runner and by `Test::runtime` / `Test::images` to report the
-    /// effective runtime to the CI pipeline generator.
+    /// Empty at parse time; [`IntegrationConfig::bind_to_runtime`] sets it to whichever runtime the
+    /// CLI is scoped to (after confirming that runtime is listed in `runtimes`). Used by `Test::run`
+    /// to dispatch to the right runner and by `Test::runtime` to report the effective runtime to the
+    /// CI pipeline generator.
     #[serde(skip)]
     pub active_runtime: String,
+
+    /// Images this instance runs, by container name.
+    ///
+    /// Empty at parse time, since a case declares no images: the active runtime chooses the target
+    /// image and the `intake` block decides whether the sidecar runs.
+    /// [`IntegrationConfig::bind_to_runtime`] resolves them, and `--image-override` replaces an
+    /// entry afterwards.
+    #[serde(skip)]
+    resolved_images: BTreeMap<String, String>,
 
     /// Base path for resolving relative file paths.
     #[serde(skip)]
@@ -200,6 +216,12 @@ pub fn default_host_runtime() -> &'static str {
         LINUX_RUNTIME
     }
 }
+
+/// Container name the integration-test target carries in [`Test::images`] and image overrides.
+pub(crate) const TARGET_IMAGE_NAME: &str = "container";
+
+/// Container name the intake sidecar carries in [`Test::images`] and image overrides.
+pub(crate) const INTAKE_IMAGE_NAME: &str = "intake";
 
 /// Datadog intake sidecar configuration for a test case.
 ///
@@ -725,14 +747,20 @@ impl Test for IntegrationConfig {
     }
 
     fn images(&self) -> BTreeMap<&str, String> {
-        let mut m = BTreeMap::new();
-        if let Some(image) = target_image_for_runtime(&self.active_runtime) {
-            m.insert("container", image.to_string());
+        self.resolved_images
+            .iter()
+            .map(|(name, image)| (name.as_str(), image.clone()))
+            .collect()
+    }
+
+    fn set_image(&mut self, name: &str, image: &str) -> bool {
+        match self.resolved_images.get_mut(name) {
+            Some(current) => {
+                *current = image.to_string();
+                true
+            }
+            None => false,
         }
-        if self.intake.enabled {
-            m.insert("intake", DEFAULT_INTAKE_IMAGE.to_string());
-        }
-        m
     }
 
     fn runtime(&self) -> String {
@@ -759,6 +787,30 @@ impl Test for IntegrationConfig {
 }
 
 impl IntegrationConfig {
+    /// Binds the case to the runtime it runs under, resolving the images that runtime uses.
+    ///
+    /// Discovery calls this for each case it selects, once the runtime is known to be one the case
+    /// lists. A runtime that runs the target as a host process contributes no target image.
+    pub fn bind_to_runtime(&mut self, runtime: &str) {
+        self.active_runtime = runtime.to_string();
+
+        self.resolved_images.clear();
+        if let Some(image) = target_image_for_runtime(runtime) {
+            self.resolved_images
+                .insert(TARGET_IMAGE_NAME.to_string(), image.to_string());
+        }
+        if self.intake.enabled {
+            self.resolved_images
+                .insert(INTAKE_IMAGE_NAME.to_string(), DEFAULT_INTAKE_IMAGE.to_string());
+        }
+    }
+
+    /// Returns the image the named container runs, or `None` when this instance has no such
+    /// container.
+    pub fn image(&self, name: &str) -> Option<&str> {
+        self.resolved_images.get(name).map(String::as_str)
+    }
+
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         for step in &mut self.procedure {
@@ -784,33 +836,15 @@ impl IntegrationConfig {
             })
             .sum()
     }
+}
 
-    /// Load a test case from a YAML configuration file.
-    pub fn from_yaml<P: AsRef<Path>>(path: P) -> Result<Self, GenericError> {
-        let path = path.as_ref();
-        let content = std::fs::read_to_string(path)
-            .error_context(format!("Failed to read configuration file: {}", path.display()))?;
-
-        let mut test_case: IntegrationConfig = serde_yaml::from_str(&content)
-            .error_context(format!("Failed to parse configuration file: {}", path.display()))?;
-
-        test_case.base_path = path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .canonicalize()
-            .error_context("Failed to canonicalize base path")?;
-
-        Ok(test_case)
+impl CaseConfig for IntegrationConfig {
+    fn base_path(&self) -> &Path {
+        &self.base_path
     }
 
-    /// Resolve a file path relative to the test case's base path.
-    pub fn resolve_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
-        let path = path.as_ref();
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.base_path.join(path)
-        }
+    fn set_base_path(&mut self, base_path: PathBuf) {
+        self.base_path = base_path;
     }
 }
 
@@ -833,7 +867,7 @@ pub struct MatrixVariant {
     /// Same mapping form as `env` on [`CorrectnessTargetConfig`]. A variant entry replaces the base
     /// configuration's value for the same variable name; base entries the variant does not name are
     /// left alone.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: BTreeMap<String, String>,
 }
 
@@ -886,42 +920,20 @@ pub struct MatrixConfig {
     pub variants: Vec<MatrixVariant>,
 
     #[serde(skip, default = "PathBuf::new")]
-    base_config_path: PathBuf,
+    base_path: PathBuf,
+}
+
+impl CaseConfig for MatrixConfig {
+    fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
+    fn set_base_path(&mut self, base_path: PathBuf) {
+        self.base_path = base_path;
+    }
 }
 
 impl MatrixConfig {
-    fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
-        use saluki_config::ConfigurationLoader;
-
-        let config_path = PathBuf::from(config_path)
-            .canonicalize()
-            .error_context("Failed to canonicalize matrix configuration file path.")?;
-
-        let mut config = ConfigurationLoader::default()
-            .from_yaml(&config_path)
-            .error_context("Failed to load matrix configuration file.")?
-            .from_environment("PANORAMIC")
-            .expect("Environment variable prefix should not be empty.")
-            .into_typed::<MatrixConfig>()
-            .error_context("Failed to deserialize matrix configuration file.")?;
-
-        config.base_config_path = config_path
-            .parent()
-            .expect("Configuration file path must be an absolute file path.")
-            .to_path_buf();
-
-        Ok(config)
-    }
-
-    fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
-        let path = path.as_ref();
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.base_config_path.join(path)
-        }
-    }
-
     /// Expands this matrix into one [`CorrectnessConfig`] per variant.
     ///
     /// Each expanded config is a clone of the base configuration with the variant's `env` overlaid
@@ -944,7 +956,7 @@ impl MatrixConfig {
                     millstone: CorrectnessMillstoneConfig {
                         image: self.millstone.image.clone(),
                         binary_path: self.millstone.binary_path.clone(),
-                        config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
+                        config_path: self.resolve_path(&self.millstone.config_path),
                     },
                     datadog_intake: CorrectnessDatadogIntakeConfig {
                         image: self.datadog_intake.image.clone(),
@@ -954,22 +966,14 @@ impl MatrixConfig {
                         image: baseline.image,
                         entrypoint: baseline.entrypoint,
                         command: baseline.command,
-                        files: baseline
-                            .files
-                            .iter()
-                            .map(|f| canonicalize_file_entry(f, &self.base_config_path))
-                            .collect(),
+                        files: baseline.files.iter().map(|f| anchor_file_entry(f, &self)).collect(),
                         env: baseline.env,
                     },
                     comparison: CorrectnessTargetConfig {
                         image: comparison.image,
                         entrypoint: comparison.entrypoint,
                         command: comparison.command,
-                        files: comparison
-                            .files
-                            .iter()
-                            .map(|f| canonicalize_file_entry(f, &self.base_config_path))
-                            .collect(),
+                        files: comparison.files.iter().map(|f| anchor_file_entry(f, &self)).collect(),
                         env: comparison.env,
                     },
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
@@ -978,7 +982,7 @@ impl MatrixConfig {
                     // Every variant comes from the matrix config's directory. Reports name it as the
                     // case each expanded test came from, and it anchors any path this expansion did
                     // not already make absolute.
-                    base_config_path: self.base_config_path.clone(),
+                    base_path: self.base_path.clone(),
                 }
             })
             .collect()
@@ -986,20 +990,109 @@ impl MatrixConfig {
 }
 
 /// Rewrites the host-path portion of a `host_path:container_path` file entry to an absolute path
-/// anchored at `base_path`, mirroring the canonicalization that `CorrectnessConfig::from_yaml`
-/// performs for its own `files` entries.
-fn canonicalize_file_entry(entry: &str, base_path: &Path) -> String {
+/// anchored at the case directory, mirroring the anchoring that the correctness runtime performs
+/// for its own `files` entries.
+///
+/// An entry with no `:` is returned as written, leaving the runtime to reject it.
+fn anchor_file_entry(entry: &str, case: &impl CaseConfig) -> String {
     match entry.split_once(':') {
-        Some((host, container)) => {
-            let abs = if Path::new(host).is_absolute() {
-                PathBuf::from(host)
-            } else {
-                base_path.join(host)
-            };
-            format!("{}:{}", abs.display(), container)
-        }
+        Some((host, container)) => format!("{}:{}", case.resolve_path(host).display(), container),
         None => entry.to_string(),
     }
+}
+
+/// Deserializes a map of environment variables, requiring every value to be a YAML string.
+///
+/// A bare `true` or `8125` is a YAML boolean or number rather than the text a process receives, so a
+/// case that writes one is rejected by name instead of being handed a value it did not ask for. YAML
+/// scalars are otherwise loosely typed enough that the same file would load differently depending on
+/// whether a field happens to be typed as a `String`.
+///
+/// # Errors
+///
+/// Returns an error naming the first variable whose value is not a YAML string.
+pub(crate) fn deserialize_env_map<'de, D, M>(deserializer: D) -> Result<M, D::Error>
+where
+    D: Deserializer<'de>,
+    M: FromIterator<(String, String)>,
+{
+    BTreeMap::<String, serde_yaml::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(name, value)| match value {
+            serde_yaml::Value::String(value) => Ok((name, value)),
+            _ => Err(D::Error::custom(format!(
+                "environment variable '{}' must be a YAML string: quote any value that would otherwise \
+                 parse as a boolean or a number (\"true\", \"8125\")",
+                name
+            ))),
+        })
+        .collect()
+}
+
+/// A test case configuration read from a case directory's `config.yaml`.
+///
+/// The directory holding that file anchors every relative path the case declares, so [`load_case`]
+/// hands it back to the configuration once deserialization succeeds. Implementors carry it in a
+/// `#[serde(skip)]` field, since it comes from where the file was found rather than from the file.
+pub trait CaseConfig {
+    /// Returns the directory holding the `config.yaml` this case was loaded from.
+    fn base_path(&self) -> &Path;
+
+    /// Records the directory holding the `config.yaml` this case was loaded from.
+    fn set_base_path(&mut self, base_path: PathBuf);
+
+    /// Resolves a path declared by the case against the case directory.
+    ///
+    /// An absolute path is returned unchanged. Symlinks in the result are left as they are, since a
+    /// case may name a path that nothing has created yet.
+    fn resolve_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+        let path = path.as_ref();
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.base_path().join(path)
+        }
+    }
+}
+
+/// Loads one test case configuration from its `config.yaml`, anchored at that file's directory.
+///
+/// Every case type loads the same way: plain YAML deserialization, then the case directory recorded
+/// on the result. Values come from the file alone, so YAML typing is what the case gets: an unquoted
+/// `true` is a boolean and does not stand in for the string `"true"`. Images a case declares can be
+/// replaced after loading; see [`crate::image_override`].
+///
+/// # Errors
+///
+/// Returns an error if `config_path` cannot be resolved or read, or if its contents do not
+/// deserialize into `T`.
+pub fn load_case<T, P>(config_path: P) -> Result<T, GenericError>
+where
+    T: CaseConfig + DeserializeOwned,
+    P: AsRef<Path>,
+{
+    let config_path = config_path.as_ref();
+
+    // Canonicalizing the file rather than its parent directory keeps a bare `config.yaml` working:
+    // `Path::parent` would hand back an empty path, which does not canonicalize.
+    let config_path = config_path.canonicalize().error_context(format!(
+        "Failed to resolve configuration file: {}",
+        config_path.display()
+    ))?;
+
+    let content = std::fs::read_to_string(&config_path)
+        .error_context(format!("Failed to read configuration file: {}", config_path.display()))?;
+
+    let mut case: T = serde_yaml::from_str(&content)
+        .error_context(format!("Failed to parse configuration file: {}", config_path.display()))?;
+
+    let base_path = config_path
+        .parent()
+        .expect("Canonicalized file path always has a parent.")
+        .to_path_buf();
+    case.set_base_path(base_path);
+
+    Ok(case)
 }
 
 /// Discover all test cases across one or more directories.
@@ -1072,7 +1165,7 @@ fn try_load_test(
 
     match test_type {
         "integration" => {
-            let config = IntegrationConfig::from_yaml(config_path)?;
+            let config: IntegrationConfig = load_case(config_path)?;
             if config.runtimes.is_empty() {
                 return Err(generic_error!(
                     "integration test '{}' has empty runtimes list",
@@ -1098,14 +1191,11 @@ fn try_load_test(
                 return Ok(Vec::new());
             }
             let mut variant = config.clone();
-            variant.active_runtime = integration_runtime.to_string();
+            variant.bind_to_runtime(integration_runtime);
             Ok(vec![Box::new(variant)])
         }
         "correctness" => {
-            let config_path_str = config_path
-                .to_str()
-                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
-            let mut config = CorrectnessConfig::from_yaml(config_path_str)?;
+            let mut config: CorrectnessConfig = load_case(config_path)?;
             config.name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -1114,15 +1204,12 @@ fn try_load_test(
             Ok(vec![Box::new(config)])
         }
         "correctness_matrix" => {
-            let config_path_str = config_path
-                .to_str()
-                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
             let base_name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let matrix = MatrixConfig::from_yaml(config_path_str)?;
+            let matrix: MatrixConfig = load_case(config_path)?;
             if matrix.variants.is_empty() {
                 return Err(generic_error!(
                     "correctness_matrix '{}' has no variants defined",
@@ -1397,7 +1484,7 @@ comparison:
         );
         let config_path = base_dir.path().join("dsd-env").join("config.yaml");
 
-        let config = CorrectnessConfig::from_yaml(config_path.to_str().unwrap()).expect("case should parse");
+        let config: CorrectnessConfig = load_case(&config_path).expect("case should parse");
 
         // What the Docker adapter hands to Airlock: one assignment per variable, ordered by name,
         // with a value containing '=' left intact.
@@ -1437,12 +1524,70 @@ comparison:
         );
         let config_path = base_dir.path().join("dsd-bare-bool").join("config.yaml");
 
-        let error = match CorrectnessConfig::from_yaml(config_path.to_str().unwrap()) {
+        let error = match load_case::<CorrectnessConfig, _>(&config_path) {
             Ok(_) => panic!("an unquoted boolean env value should be rejected"),
             Err(e) => format!("{e:?}"),
         };
 
         assert!(error.contains("DD_DATA_PLANE_ENABLED"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn integration_case_env_rejects_an_unquoted_boolean_value() {
+        // Both suites load through one loader, so an integration case is held to the same rule as a
+        // correctness case: the value a process receives is whatever the YAML string says.
+        let yaml = r#"
+type: integration
+name: bare-bool-case
+timeout: 60s
+env:
+  DD_DATA_PLANE_ENABLED: true
+procedure:
+  - assertion: process_stable_for
+    duration: 5s
+"#;
+
+        let error = match serde_yaml::from_str::<IntegrationConfig>(yaml) {
+            Ok(_) => panic!("an unquoted boolean env value should be rejected"),
+            Err(e) => format!("{e:?}"),
+        };
+
+        assert!(error.contains("DD_DATA_PLANE_ENABLED"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn a_case_relative_path_anchors_at_the_case_directory() {
+        let base_dir = create_test_case_dir(
+            "dsd-paths",
+            r#"
+type: correctness
+runtime: docker
+analysis_mode: metrics
+millstone:
+  config_path: millstone.yaml
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+"#,
+        );
+        let config_path = base_dir.path().join("dsd-paths").join("config.yaml");
+
+        let config: CorrectnessConfig = load_case(&config_path).expect("case should parse");
+
+        // Canonicalized, because the loader canonicalizes the config path it derives the case
+        // directory from. On macOS that turns the temp directory's `/tmp` into `/private/tmp`.
+        let case_dir = base_dir.path().join("dsd-paths").canonicalize().unwrap();
+        assert_eq!(config.millstone_config().config_path, case_dir.join("millstone.yaml"));
+
+        // An absolute path is the case's own choice and passes through untouched. Pick one that is
+        // absolute on the platform running the test: a Unix-style root is not absolute on Windows.
+        let absolute_path = if cfg!(windows) {
+            PathBuf::from(r"C:\etc\datadog-agent\datadog.yaml")
+        } else {
+            PathBuf::from("/etc/datadog-agent/datadog.yaml")
+        };
+        assert_eq!(config.resolve_path(&absolute_path), absolute_path);
     }
 
     #[test]
@@ -1473,7 +1618,7 @@ variants:
         );
         let config_path = base_dir.path().join("dsd-matrix").join("config.yaml");
 
-        let matrix = MatrixConfig::from_yaml(config_path.to_str().unwrap()).expect("matrix should parse");
+        let matrix: MatrixConfig = load_case(&config_path).expect("matrix should parse");
         let expanded = matrix.expand("dsd-matrix");
 
         assert_eq!(expanded.len(), 1);
