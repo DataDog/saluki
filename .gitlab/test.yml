@@ -94,6 +94,7 @@ check-deny:
   stage: test
   script:
     - make check-deny-ci
+    - make check-fips-module
 
 check-fmt:
   extends: .linux-arm64-test-job
