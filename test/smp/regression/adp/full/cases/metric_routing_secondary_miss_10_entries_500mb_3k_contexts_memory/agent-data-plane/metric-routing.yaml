@@ -1,0 +1,17 @@
+histogram_aggregates: ["max", "median", "avg", "count"]
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      "http://127.0.0.1:9092":
+        - routing.absent.100000
+        - routing.absent.100001
+        - routing.absent.100002
+        - routing.absent.100003
+        - routing.absent.100004
+        - routing.absent.100005
+        - routing.absent.100006
+        - routing.absent.100007
+        - routing.absent.100008
+        - routing.absent.100009

@@ -167,6 +167,16 @@ templates:
                 metric_names:
                   - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}"
 
+  # Scale only the secondary's allowlist, not the input corpus or aggregation workload.
+  # The primary receives everything; the secondary's disjoint names never match.
+  # Inherit both endpoints' V3 settings so only the allowlist differs from the dual-shipping control.
+  metric_routing_secondary_miss_scaling:
+    extends: metric_routing_base
+    target:
+      files:
+        metric-routing.yaml:
+          source: shared/metric-routing-miss-scaling.yaml.j2
+
   # Base template for the tag filtering experiments.
   tagfilter_base:
     variables:
@@ -577,6 +587,38 @@ experiments:
     target:
       environment:
         DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9092":"true"}'
+
+  # Ad-hoc scaling sweep: exact allowlist-entry counts, without histogram-name expansion.
+  # Keep the 10-name input corpus, ~3K contexts, and 500 MiB/s traffic identical for every size.
+  - name: metric_routing_secondary_miss_10_entries_500mb_3k_contexts
+    extends: metric_routing_secondary_miss_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 10
+
+  - name: metric_routing_secondary_miss_100_entries_500mb_3k_contexts
+    extends: metric_routing_secondary_miss_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 100
+
+  - name: metric_routing_secondary_miss_1000_entries_500mb_3k_contexts
+    extends: metric_routing_secondary_miss_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 1000
+
+  - name: metric_routing_secondary_miss_10000_entries_500mb_3k_contexts
+    extends: metric_routing_secondary_miss_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 10000
+
+  - name: metric_routing_secondary_miss_100000_entries_500mb_3k_contexts
+    extends: metric_routing_secondary_miss_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 100000
 
   # ============================================================================
   # DogStatsD: quality gates (memory)

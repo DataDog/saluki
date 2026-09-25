@@ -330,6 +330,38 @@ Compare these named-corpus cases with each other, not directly with earlier 100-
 runs or the ordinary `dsd_uds_500mb_3k_contexts` case. These experiments belong to the full suite and do
 not define pass/fail quality gates or assert on received metric contents.
 
+#### Ad-hoc secondary all-miss scaling
+
+The `metric_routing_secondary_miss_<N>_entries_500mb_3k_contexts` experiments vary only the
+secondary allowlist size: 10, 100, 1,000, 10,000, and 100,000 entries. Each size measures CPU,
+memory, and ingress throughput, for 15 additional full-suite cases on this experimental branch.
+The existing regression cases and quality gates are unchanged.
+
+The primary has no allowlist and receives all metrics. The secondary has exactly N unique
+names, all under `routing.absent.`, which cannot match the `routing.metric.` input names or
+their histogram-derived outputs. Names are deterministic and equal-length across all sizes
+so results do not depend on a new random list each run. Unlike the earlier routing cases,
+these policies do not expand each entry into histogram-derived names.
+
+All sizes and the unfiltered `metric_routing_dual_ship_500mb_3k_contexts` control use the same
+10 input metric names, approximately 3,000 contexts, metric-type mix, randomized tags, generator
+seed, 500 MiB/s offered traffic, target resources, and V3 settings for both endpoints.
+
+Compare each size against the dual-shipping control for the same optimization goal and build
+variant within a run. Report CPU, memory, and ingress throughput deltas relative to that control.
+This measures the net effect of enabling the allowlist: filtering cost plus the savings from
+not encoding and forwarding the secondary's metrics. SMP's `baseline` and `comparison` labels
+identify build variants, not filtering disabled and enabled; both variants run each case's config.
+Compare the five filtered sizes with each other as a separate measure of allowlist-size overhead.
+Separate startup from steady-state results: the current full-suite CI job uses zero warmup seconds.
+This measures all-miss filtering, not the all-match encoding and forwarding cost; it is not a
+claim that all-miss is the most expensive workload in every dimension.
+
+Run the manual `run-benchmarks-adp-full` job to include these cases; the automatic
+`run-benchmarks-adp` job runs only the unchanged quality gates. These experiments do not assert
+on received metric contents. Their generated configurations are intentionally large and are
+for this benchmark-only branch, not the implementation PR.
+
 ## Regenerating Experiments
 
 After modifying `experiments.yaml`, regenerate the case directories:

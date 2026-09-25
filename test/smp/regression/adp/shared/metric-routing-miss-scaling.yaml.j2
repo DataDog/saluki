@@ -1,0 +1,13 @@
+{# Keep aggregation identical to the existing routing workload. The allowlist contains
+   exactly N unique, nonmatching names, not N base names plus histogram-derived entries.
+   Six-digit suffixes keep name length constant across every size in the sweep. #}
+histogram_aggregates: ["max", "median", "avg", "count"]
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      {{ exp_vars.filtered_endpoint | tojson }}:
+{% for name in lading_names("routing.absent.", 100000, exp_vars.allowlist_entries) %}
+        - {{ name }}
+{% endfor %}
