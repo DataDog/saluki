@@ -33,6 +33,11 @@ impl ErrorsSampler {
         // Use the score sampler to make the sampling decision
         self.score_sampler.sample(now, trace, root_idx)
     }
+
+    /// Returns the number of signatures tracked by the underlying sampler.
+    pub(super) fn tracked_signature_count(&self) -> i64 {
+        self.score_sampler.tracked_signature_count()
+    }
 }
 
 #[cfg(test)]
