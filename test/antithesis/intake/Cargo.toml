@@ -25,6 +25,7 @@ http-body-util = { workspace = true }
 mime = { workspace = true }
 protobuf = { workspace = true }
 rand = { workspace = true }
+saluki-common = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -46,7 +47,6 @@ tower-http = { workspace = true, features = [
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
-  "env-filter",
   "fmt",
   "local-time",
   "registry",

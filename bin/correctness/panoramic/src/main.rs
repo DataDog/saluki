@@ -13,10 +13,11 @@ use std::{
 
 use chrono::Local;
 use clap::Parser as _;
+use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
+use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use crate::runner::Runner;
 
@@ -36,6 +37,8 @@ use self::config::{default_host_runtime, discover_tests};
 
 mod events;
 use self::events::{create_event_channel, TestEvent};
+
+mod image_override;
 
 mod machine_output;
 use self::machine_output::RunReport;
@@ -106,14 +109,11 @@ async fn main() -> ExitCode {
 }
 
 fn initialize_logging(log_level: LogLevel) {
-    let env_filter = if std::env::var_os(EnvFilter::DEFAULT_ENV).is_some() {
-        EnvFilter::from_default_env()
-    } else {
-        EnvFilter::new(log_level.filter_directives())
-    };
+    let default_filter = parse_filter_directives(&log_level.filter_directives())
+        .expect("first-party log filter directives should always be valid");
 
     tracing_subscriber::registry()
-        .with(env_filter)
+        .with(filter_from_env(default_filter))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
@@ -184,7 +184,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
+    let mut test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -195,6 +195,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    // Images the command line names replace what the cases declare, before anything is selected or
+    // started: a run against the wrong images is worth no time at all.
+    if let Err(e) = image_override::apply(&mut test_cases, &cmd.image_overrides) {
+        if use_tui {
+            eprintln!("{}", e);
+        } else {
+            error!("{}", e);
+        }
+        return ExitCode::from(EXIT_HARNESS_ERROR);
+    }
 
     if test_cases.is_empty() {
         let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
@@ -592,9 +603,11 @@ mod tests {
 
     #[test]
     fn log_level_scopes_the_selected_level_to_first_party_crates() {
-        let directives = EnvFilter::new(LogLevel::Debug.filter_directives()).to_string();
+        let directives = parse_filter_directives(&LogLevel::Debug.filter_directives())
+            .expect("valid directives")
+            .to_string();
 
-        // `EnvFilter` reorders directives, so check membership rather than the whole string.
+        // Parsing reorders directives, so check membership rather than the whole string.
         assert!(
             directives.contains("panoramic=debug"),
             "directives were '{}'",
