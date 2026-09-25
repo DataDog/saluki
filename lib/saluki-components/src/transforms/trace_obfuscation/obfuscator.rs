@@ -121,19 +121,19 @@ impl Obfuscator {
 
     /// Obfuscates a MongoDB JSON query string.
     /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
-    pub fn obfuscate_mongodb_string(&self, query: &str) -> Option<MetaString> {
-        Some(self.mongo_obfuscator.as_ref()?.obfuscate(query).into())
+    pub fn obfuscate_mongodb_string(&mut self, query: &str) -> Option<MetaString> {
+        Some(self.mongo_obfuscator.as_mut()?.obfuscate(query).into())
     }
 
     /// Obfuscates an Elasticsearch JSON query string.
     /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
-    pub fn obfuscate_elasticsearch_string(&self, query: &str) -> Option<MetaString> {
-        Some(self.es_obfuscator.as_ref()?.obfuscate(query).into())
+    pub fn obfuscate_elasticsearch_string(&mut self, query: &str) -> Option<MetaString> {
+        Some(self.es_obfuscator.as_mut()?.obfuscate(query).into())
     }
 
     /// Obfuscates an OpenSearch JSON query string.
     /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
-    pub fn obfuscate_opensearch_string(&self, query: &str) -> Option<MetaString> {
-        Some(self.open_search_obfuscator.as_ref()?.obfuscate(query).into())
+    pub fn obfuscate_opensearch_string(&mut self, query: &str) -> Option<MetaString> {
+        Some(self.open_search_obfuscator.as_mut()?.obfuscate(query).into())
     }
 }
