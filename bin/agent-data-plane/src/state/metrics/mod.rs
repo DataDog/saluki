@@ -64,6 +64,17 @@ mod tests {
                 ),
                 2.0,
             )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.network_http_retry_queue_size", &[]),
+                4.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "error_type:origin_detection"],
+                ),
+                9.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -82,6 +93,8 @@ mod tests {
         assert!(
             output.contains("transactions__requeued{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 2")
         );
+        assert!(output.contains("transactions__retry_queue_size 4"));
+        assert!(output.contains("dogstatsd__uds_origin_detection_error 9"));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -93,6 +106,8 @@ mod tests {
         assert!(output.contains("# TYPE point__dropped gauge"));
         assert!(output.contains("# TYPE transactions__retries counter"));
         assert!(output.contains("# TYPE transactions__requeued counter"));
+        assert!(output.contains("# TYPE transactions__retry_queue_size gauge"));
+        assert!(output.contains("# TYPE dogstatsd__uds_origin_detection_error counter"));
     }
 
     #[test]
@@ -567,6 +582,11 @@ mod tests {
         );
         assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
         assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
+        assert_eq!(find("transactions.retry_queue_size"), Some("Retry queue size"));
+        assert_eq!(
+            find("dogstatsd.uds_origin_detection_error"),
+            Some("Dogstatsd UDS origin detection error count")
+        );
     }
 
     #[test]

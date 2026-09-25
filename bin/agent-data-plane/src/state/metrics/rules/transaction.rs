@@ -30,6 +30,8 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["domain", "endpoint"])
         .with_help_text("Successful transaction sizes in bytes"),
+        RemapperRule::by_name("adp.network_http_retry_queue_size", "transactions.retry_queue_size")
+            .with_help_text("Retry queue size"),
         RemapperRule::by_name("adp.component_data_points_sent_total", "point.sent").with_original_tags(["domain"]),
         RemapperRule::by_name("adp.component_data_points_dropped_total", "point.dropped")
             .with_original_tags(["domain"]),

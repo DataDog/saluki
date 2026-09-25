@@ -1,0 +1,5 @@
+enhancements:
+  - |
+    Agent Data Plane now reports ``dogstatsd.uds_origin_detection_error`` and
+    ``transactions.retry_queue_size`` through the Datadog Agent telemetry endpoint, matching the
+    names the Datadog Agent uses when it handles DogStatsD traffic itself.
