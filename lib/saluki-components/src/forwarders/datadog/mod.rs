@@ -22,7 +22,8 @@ use crate::common::datadog::{
     config::ForwarderConfiguration,
     endpoints::SingleDestination,
     io::{LiveForwarderConfiguration, TransactionForwarder},
-    protocol::{MetricsEndpointRouting, MetricsPayloadInfo},
+    protocol::MetricsPayloadInfo,
+    routing::{MetricsRoutingTargets, RoutingTargetCatalog},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
@@ -92,6 +93,16 @@ impl DatadogForwarderConfiguration {
             },
             secrets,
         }
+    }
+
+    /// Sets the routing targets that metrics payloads sent to this forwarder may be addressed to.
+    ///
+    /// Every encoder that addresses its payloads with [`MetricsRoutingTargets`] must share this catalog, and the catalog
+    /// must be built from the same endpoint configuration as this forwarder. Without a catalog, a payload addressed to
+    /// specific targets reaches no endpoint.
+    pub fn with_routing_targets(mut self, routing_targets: Arc<RoutingTargetCatalog>) -> Self {
+        self.forwarder_config = self.forwarder_config.with_routing_targets(routing_targets);
+        self
     }
 }
 
@@ -208,7 +219,7 @@ fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) ->
     let mut transaction_meta =
         Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
     transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
-    transaction_meta.metrics_endpoint_routing = payload_meta.get::<Arc<MetricsEndpointRouting>>().cloned();
+    transaction_meta.metrics_routing_targets = payload_meta.get::<Arc<MetricsRoutingTargets>>().cloned();
     transaction_meta
 }
 
@@ -279,27 +290,26 @@ mod tests {
         assert_eq!(3, transaction_meta.event_count);
         assert_eq!(11, transaction_meta.data_point_count);
         assert_eq!(None, transaction_meta.payload_info);
-        assert_eq!(None, transaction_meta.metrics_endpoint_routing);
+        assert_eq!(None, transaction_meta.metrics_routing_targets);
 
         // A metrics payload preserves protocol info and shares routing through dispatch and transaction clones.
-        let endpoint_routing = Arc::new(MetricsEndpointRouting::Only(
-            ["https://secondary.example.com".to_string()].into(),
-        ));
+        let catalog = RoutingTargetCatalog::new("https://primary.example.com", &HashMap::new()).unwrap();
+        let routing_targets = Arc::new(MetricsRoutingTargets::new(catalog.select(|_| true)));
         let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7)
             .with(MetricsPayloadInfo::v3_series())
-            .with(Arc::clone(&endpoint_routing));
+            .with(Arc::clone(&routing_targets));
         let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
         assert_eq!(2, transaction_meta.event_count);
         assert_eq!(7, transaction_meta.data_point_count);
         assert_eq!(Some(MetricsPayloadInfo::v3_series()), transaction_meta.payload_info);
         assert!(Arc::ptr_eq(
-            transaction_meta.metrics_endpoint_routing.as_ref().unwrap(),
-            &endpoint_routing
+            transaction_meta.metrics_routing_targets.as_ref().unwrap(),
+            &routing_targets
         ));
         let cloned_meta = transaction_meta.clone();
         assert!(Arc::ptr_eq(
-            cloned_meta.metrics_endpoint_routing.as_ref().unwrap(),
-            &endpoint_routing
+            cloned_meta.metrics_routing_targets.as_ref().unwrap(),
+            &routing_targets
         ));
     }
 
