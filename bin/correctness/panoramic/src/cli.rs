@@ -12,7 +12,7 @@ use crate::{image_override::ImageOverride, reporter::OutputFormat, test::RunnerS
 /// Environment variables Panoramic honors but doesn't own, rendered at the bottom of the help output.
 ///
 /// Panoramic-owned environment settings are arguments carrying a `PANORAMIC_*` fallback, which clap renders
-/// next to the flag they belong to. Bollard reads `DOCKER_HOST` and tracing-subscriber reads `RUST_LOG`.
+/// next to the flag they belong to. Bollard reads `DOCKER_HOST` and the logging setup reads `RUST_LOG`.
 /// `DOCKER_HOST` is not a flag, and `RUST_LOG` is not a clap environment fallback, so both are described here by hand.
 const ENV_HELP: &str = "\
 Environment variables:

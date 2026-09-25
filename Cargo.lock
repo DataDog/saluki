@@ -212,6 +212,7 @@ dependencies = [
  "proptest",
  "protobuf",
  "rand 0.10.2",
+ "saluki-common",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1376,6 +1377,7 @@ dependencies = [
  "datadog-protos",
  "protobuf",
  "rmp-serde",
+ "saluki-common",
  "saluki-error",
  "serde",
  "serde_json",
@@ -4007,6 +4009,7 @@ dependencies = [
  "lading-payload",
  "prost",
  "rand 0.10.2",
+ "saluki-common",
  "saluki-error",
  "serde",
  "serde_json",
@@ -5513,6 +5516,7 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
