@@ -121,20 +121,20 @@
 <a href=#121 id=121 data-nosnippet>121</a>
 <a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Obfuscates a MongoDB JSON query string.
 <a href=#123 id=123 data-nosnippet>123</a>    /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
-<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">pub fn </span>obfuscate_mongodb_string(<span class="kw-2">&amp;</span><span class="self">self</span>, query: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#125 id=125 data-nosnippet>125</a>        <span class="prelude-val">Some</span>(<span class="self">self</span>.mongo_obfuscator.as_ref()<span class="question-mark">?</span>.obfuscate(query).into())
+<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">pub fn </span>obfuscate_mongodb_string(<span class="kw-2">&amp;mut </span><span class="self">self</span>, query: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
+<a href=#125 id=125 data-nosnippet>125</a>        <span class="prelude-val">Some</span>(<span class="self">self</span>.mongo_obfuscator.as_mut()<span class="question-mark">?</span>.obfuscate(query).into())
 <a href=#126 id=126 data-nosnippet>126</a>    }
 <a href=#127 id=127 data-nosnippet>127</a>
 <a href=#128 id=128 data-nosnippet>128</a>    <span class="doccomment">/// Obfuscates an Elasticsearch JSON query string.
 <a href=#129 id=129 data-nosnippet>129</a>    /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
-<a href=#130 id=130 data-nosnippet>130</a>    </span><span class="kw">pub fn </span>obfuscate_elasticsearch_string(<span class="kw-2">&amp;</span><span class="self">self</span>, query: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#131 id=131 data-nosnippet>131</a>        <span class="prelude-val">Some</span>(<span class="self">self</span>.es_obfuscator.as_ref()<span class="question-mark">?</span>.obfuscate(query).into())
+<a href=#130 id=130 data-nosnippet>130</a>    </span><span class="kw">pub fn </span>obfuscate_elasticsearch_string(<span class="kw-2">&amp;mut </span><span class="self">self</span>, query: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
+<a href=#131 id=131 data-nosnippet>131</a>        <span class="prelude-val">Some</span>(<span class="self">self</span>.es_obfuscator.as_mut()<span class="question-mark">?</span>.obfuscate(query).into())
 <a href=#132 id=132 data-nosnippet>132</a>    }
 <a href=#133 id=133 data-nosnippet>133</a>
 <a href=#134 id=134 data-nosnippet>134</a>    <span class="doccomment">/// Obfuscates an OpenSearch JSON query string.
 <a href=#135 id=135 data-nosnippet>135</a>    /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
-<a href=#136 id=136 data-nosnippet>136</a>    </span><span class="kw">pub fn </span>obfuscate_opensearch_string(<span class="kw-2">&amp;</span><span class="self">self</span>, query: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#137 id=137 data-nosnippet>137</a>        <span class="prelude-val">Some</span>(<span class="self">self</span>.open_search_obfuscator.as_ref()<span class="question-mark">?</span>.obfuscate(query).into())
+<a href=#136 id=136 data-nosnippet>136</a>    </span><span class="kw">pub fn </span>obfuscate_opensearch_string(<span class="kw-2">&amp;mut </span><span class="self">self</span>, query: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
+<a href=#137 id=137 data-nosnippet>137</a>        <span class="prelude-val">Some</span>(<span class="self">self</span>.open_search_obfuscator.as_mut()<span class="question-mark">?</span>.obfuscate(query).into())
 <a href=#138 id=138 data-nosnippet>138</a>    }
 <a href=#139 id=139 data-nosnippet>139</a>}
 </code></pre></div></section></main></body></html>
