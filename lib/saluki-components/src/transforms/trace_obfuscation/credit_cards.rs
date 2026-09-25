@@ -1,9 +1,13 @@
 //! Credit card number obfuscation.
 
+use libdd_trace_obfuscation::credit_cards::is_card_number;
 use saluki_common::collections::FastHashSet;
 use stringtheory::MetaString;
 
 use super::obfuscator::CreditCardObfuscationConfig;
+
+/// Value written over an attribute that looks like a credit card number.
+pub const CREDIT_CARD_REPLACEMENT: &str = "?";
 
 /// Allowlist of tag keys that are known to never contain credit card numbers.
 const ALLOWLISTED_TAGS: &[&str] = &[
@@ -35,6 +39,12 @@ const ALLOWLISTED_TAGS: &[&str] = &[
     "service",
     "sql.query",
     "version",
+    // Data Job Monitoring tags. These values are frequently similar to credit card numbers.
+    "databricks_job_id",
+    "databricks_job_run_id",
+    "databricks_task_run_id",
+    "config.spark_app_startTime",
+    "config.spark_databricks_job_parentRunId",
 ];
 
 /// Credit card obfuscator with configuration.
@@ -60,189 +70,43 @@ impl CreditCardObfuscator {
         }
     }
 
+    /// Returns `true` when the value carried under `key` is subject to card scrubbing.
+    ///
+    /// Keys prefixed with `_`, keys on the static allowlist, and keys listed in the configured
+    /// `keep_values` are exempt.
+    pub fn should_obfuscate_key(&self, key: &str) -> bool {
+        if key.starts_with('_') {
+            return false;
+        }
+
+        if ALLOWLISTED_TAGS.contains(&key) {
+            return false;
+        }
+
+        !self.keep_values.contains(key)
+    }
+
+    /// Returns `true` when `val` could be a credit card number.
+    ///
+    /// Detection honors the configured `luhn` setting: when it is enabled, a candidate must also
+    /// pass the Luhn checksum.
+    pub fn is_card_number(&self, val: &str) -> bool {
+        is_card_number(val, self.luhn)
+    }
+
     /// Obfuscates credit card numbers in a value for the given key.
     /// Returns `Some(replacement)` if a credit card number is detected, `None` if unchanged.
     pub fn obfuscate_credit_card_number(&self, key: &str, val: &str) -> Option<MetaString> {
-        if key.starts_with('_') {
-            return None;
-        }
-
-        // Check static allowlist first.
-        if ALLOWLISTED_TAGS.contains(&key) {
-            return None;
-        }
-
-        // Check user-provided `keep_values`.
-        if self.keep_values.contains(key) {
+        if !self.should_obfuscate_key(key) {
             return None;
         }
 
         if self.is_card_number(val) {
-            return Some("?".into());
+            return Some(CREDIT_CARD_REPLACEMENT.into());
         }
 
         None
     }
-
-    fn is_card_number(&self, b: &str) -> bool {
-        if b.is_empty() || b.len() < 12 {
-            return false;
-        }
-
-        let first_char = b.chars().next().unwrap();
-        if first_char != ' ' && first_char != '-' && !first_char.is_ascii_digit() {
-            return false;
-        }
-
-        let mut prefix = 0; // Holds up to first 6 digits as numeric value
-        let mut count = 0; // Counts digits encountered
-        let mut found_prefix = false;
-        let mut digits = Vec::new(); // For Luhn validation
-
-        for ch in b.chars() {
-            match ch {
-                ' ' | '-' => continue,
-                '0'..='9' => {
-                    count += 1;
-                    let digit = ch as u8 - b'0';
-
-                    if self.luhn {
-                        digits.push(digit);
-                    }
-
-                    if !found_prefix {
-                        prefix = prefix * 10 + digit as i32;
-                        let (maybe, yes) = valid_card_prefix(prefix);
-                        if yes {
-                            found_prefix = true;
-                        } else if !maybe {
-                            return false;
-                        }
-                    }
-                }
-                _ => return false,
-            }
-        }
-
-        if !found_prefix {
-            return false;
-        }
-
-        if !(12..=19).contains(&count) {
-            return false;
-        }
-
-        if self.luhn {
-            return luhn_valid(&digits);
-        }
-
-        true
-    }
-}
-
-fn luhn_valid(digits: &[u8]) -> bool {
-    let mut sum = 0;
-    let mut alt = false;
-    let n = digits.len();
-
-    for i in (0..n).rev() {
-        let mut digit = digits[i] as i32;
-        if alt {
-            digit *= 2;
-            if digit > 9 {
-                digit = (digit % 10) + 1;
-            }
-        }
-        alt = !alt;
-        sum += digit;
-    }
-
-    sum % 10 == 0
-}
-
-fn valid_card_prefix(n: i32) -> (bool, bool) {
-    if n > 699999 {
-        return (false, false);
-    }
-
-    if n < 10 {
-        return match n {
-            1 | 4 => (false, true),
-            2 | 3 | 5 | 6 => (true, false),
-            _ => (false, false),
-        };
-    }
-
-    if n < 100 {
-        if (34..=39).contains(&n) || (51..=55).contains(&n) || n == 62 || n == 65 {
-            return (false, true);
-        }
-        if n == 30
-            || n == 63
-            || n == 64
-            || n == 50
-            || n == 60
-            || (22..=27).contains(&n)
-            || (56..=58).contains(&n)
-            || (60..=69).contains(&n)
-        {
-            return (true, false);
-        }
-        return (false, false);
-    }
-
-    if n < 1000 {
-        if (300..=305).contains(&n) || (644..=649).contains(&n) || n == 309 || n == 636 {
-            return (false, true);
-        }
-        if (352..=358).contains(&n)
-            || n == 501
-            || n == 601
-            || (222..=272).contains(&n)
-            || (500..=509).contains(&n)
-            || (560..=589).contains(&n)
-            || (600..=699).contains(&n)
-        {
-            return (true, false);
-        }
-        return (false, false);
-    }
-
-    if n < 10000 {
-        if (3528..=3589).contains(&n) || n == 5019 || n == 6011 {
-            return (false, true);
-        }
-        if (2221..=2720).contains(&n)
-            || (5000..=5099).contains(&n)
-            || (5600..=5899).contains(&n)
-            || (6000..=6999).contains(&n)
-        {
-            return (true, false);
-        }
-        return (false, false);
-    }
-
-    if n < 100000 {
-        if (22210..=27209).contains(&n)
-            || (50000..=50999).contains(&n)
-            || (56000..=58999).contains(&n)
-            || (60000..=69999).contains(&n)
-        {
-            return (true, false);
-        }
-        return (false, false);
-    }
-
-    if n < 1000000
-        && ((222100..=272099).contains(&n)
-            || (500000..=509999).contains(&n)
-            || (560000..=589999).contains(&n)
-            || (600000..=699999).contains(&n))
-    {
-        return (false, true);
-    }
-
-    (false, false)
 }
 
 #[cfg(test)]
@@ -254,120 +118,6 @@ mod tests {
             enabled: true,
             luhn: false,
             keep_values: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn test_luhn_valid() {
-        // Valid credit card numbers (with Luhn checksum)
-        assert!(luhn_valid(&[4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])); // Visa test card
-        assert!(luhn_valid(&[5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4])); // Mastercard test card
-        assert!(luhn_valid(&[3, 7, 8, 2, 8, 2, 2, 4, 6, 3, 1, 0, 0, 0, 5])); // Amex test card
-
-        // Invalid Luhn checksum
-        assert!(!luhn_valid(&[4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]));
-        assert!(!luhn_valid(&[4, 5, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 0]));
-    }
-
-    #[test]
-    fn test_valid_card_prefix() {
-        assert_eq!(valid_card_prefix(4), (false, true));
-        assert_eq!(valid_card_prefix(51), (false, true));
-        assert_eq!(valid_card_prefix(55), (false, true));
-        assert_eq!(valid_card_prefix(34), (false, true));
-        assert_eq!(valid_card_prefix(37), (false, true));
-        assert_eq!(valid_card_prefix(99), (false, false));
-        assert_eq!(valid_card_prefix(5), (true, false));
-    }
-
-    #[test]
-    fn test_iin_valid_card_prefix() {
-        let cases = vec![
-            (1, false, true),
-            (4, false, true),
-            (2, true, false),
-            (3, true, false),
-            (5, true, false),
-            (6, true, false),
-            (7, false, false),
-            (8, false, false),
-            (9, false, false),
-            (34, false, true),
-            (37, false, true),
-            (39, false, true),
-            (51, false, true),
-            (55, false, true),
-            (62, false, true),
-            (65, false, true),
-            (30, true, false),
-            (63, true, false),
-            (22, true, false),
-            (27, true, false),
-            (69, true, false),
-            (31, false, false),
-            (29, false, false),
-            (21, false, false),
-            (300, false, true),
-            (305, false, true),
-            (644, false, true),
-            (649, false, true),
-            (309, false, true),
-            (636, false, true),
-            (352, true, false),
-            (358, true, false),
-            (501, true, false),
-            (601, true, false),
-            (222, true, false),
-            (272, true, false),
-            (500, true, false),
-            (509, true, false),
-            (560, true, false),
-            (589, true, false),
-            (600, true, false),
-            (699, true, false),
-            (3528, false, true),
-            (3589, false, true),
-            (5019, false, true),
-            (6011, false, true),
-            (2221, true, false),
-            (2720, true, false),
-            (5000, true, false),
-            (5099, true, false),
-            (5600, true, false),
-            (5899, true, false),
-            (6000, true, false),
-            (6999, true, false),
-            (22210, true, false),
-            (27209, true, false),
-            (50000, true, false),
-            (50999, true, false),
-            (56000, true, false),
-            (58999, true, false),
-            (60000, true, false),
-            (69999, true, false),
-            (21000, false, false),
-            (55555, false, false),
-            (222100, false, true),
-            (272099, false, true),
-            (500000, false, true),
-            (509999, false, true),
-            (560000, false, true),
-            (589999, false, true),
-            (600000, false, true),
-            (699999, false, true),
-            (551234, false, false),
-            (594388, false, false),
-            (219899, false, false),
-        ];
-
-        for (input, expected_maybe, expected_yes) in cases {
-            let (maybe, yes) = valid_card_prefix(input);
-            assert_eq!(
-                (maybe, yes),
-                (expected_maybe, expected_yes),
-                "Failed for input: {}",
-                input
-            );
         }
     }
 
@@ -617,5 +367,41 @@ mod tests {
             obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111112"),
             None
         );
+    }
+
+    #[test]
+    fn test_more_than_sixteen_digits_is_not_a_card() {
+        let obfuscator = CreditCardObfuscator::new(&default_config());
+
+        // 16 digits behind a valid IIN prefix is the longest card number we detect.
+        assert!(obfuscator.is_card_number("4111111111111111"));
+
+        // 17 digits and up are something else, such as a job or run identifier.
+        assert!(!obfuscator.is_card_number("41111111111111111"));
+        assert!(!obfuscator.is_card_number("411111111111111111"));
+        assert!(!obfuscator.is_card_number("4111111111111111111"));
+        assert!(!obfuscator.is_card_number("4111-1111-1111-1111-111"));
+    }
+
+    #[test]
+    fn test_data_job_monitoring_keys_are_exempt() {
+        let obfuscator = CreditCardObfuscator::new(&default_config());
+
+        let card = "4111111111111111";
+        for key in [
+            "databricks_job_id",
+            "databricks_job_run_id",
+            "databricks_task_run_id",
+            "config.spark_app_startTime",
+            "config.spark_databricks_job_parentRunId",
+        ] {
+            assert!(!obfuscator.should_obfuscate_key(key), "key should be exempt: {}", key);
+            assert_eq!(
+                obfuscator.obfuscate_credit_card_number(key, card),
+                None,
+                "key should be exempt: {}",
+                key
+            );
+        }
     }
 }
