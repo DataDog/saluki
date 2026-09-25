@@ -164,8 +164,12 @@ impl RemapperRule {
             }
         }
 
-        for required_tag_key in &self.required_tag_keys {
-            metric_tags.get_single_tag(required_tag_key)?;
+        if self
+            .required_tag_keys
+            .iter()
+            .any(|required_tag_key| metric_tags.get_single_tag(required_tag_key).is_none())
+        {
+            return None;
         }
 
         let tags = self.build_remapped_tags(metric_tags);
