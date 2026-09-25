@@ -256,11 +256,33 @@ mod tests {
                 ),
                 2.0,
             )),
-            Event::Metric(Metric::gauge("adp.network_http_retry_queue_size", 2.0)),
+            // The untagged per-forwarder aggregates should be skipped in favor of the per-domain series.
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.network_http_retry_queue_size", &["component_id:dd_out"]),
+                99.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                2.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:mrf_dd_out", "domain:https://api.datadoghq.eu"],
+                ),
+                4.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.network_http_retry_queue_bytes_per_sec", &["component_id:dd_out"]),
+                98.0,
+            )),
             Event::Metric(Metric::gauge(
                 Context::from_static_parts(
                     "adp.network_http_retry_queue_bytes_per_sec",
-                    &["domain:https://api.datadoghq.com"],
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
                 ),
                 10.0,
             )),
@@ -295,7 +317,14 @@ mod tests {
             output.contains("forwarder_transactions_errors_by_type_sent_request_errors{source=\"agent-data-plane\"} 2")
         );
         assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 3"));
-        assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));
+        assert!(output.contains(
+            "forwarder_transactions_retry_queue_size{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 2"
+        ));
+        assert!(output.contains(
+            "forwarder_transactions_retry_queue_size{domain=\"https://api.datadoghq.eu\",source=\"agent-data-plane\"} 4"
+        ));
+        assert!(!output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"}"));
+        assert!(!output.contains("retry_queue_duration_bytes_per_sec{source=\"agent-data-plane\"}"));
         assert!(output.contains(
             "retry_queue_duration_bytes_per_sec{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 10"
         ));

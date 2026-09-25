@@ -1,0 +1,6 @@
+fixes:
+  - |
+    Fix ``forwarder_transactions_retry_queue_size`` and ``retry_queue_duration_bytes_per_sec`` on the
+    ``/compat/metrics`` endpoint reporting a single forwarder's value when several forwarders are
+    running. ``forwarder_transactions_retry_queue_size`` is now tagged by ``domain``, and
+    ``retry_queue_duration_bytes_per_sec`` no longer emits an extra series without a ``domain`` tag.
