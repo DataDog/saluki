@@ -159,15 +159,20 @@ pub fn get_compat_remappings() -> Vec<RemapperRule> {
             "forwarder_transactions_errors",
         )
         .with_additional_tags([SOURCE_TAG]),
+        // The retry queue size and bytes/sec gauges are also emitted untagged, once per forwarder, and those would
+        // collide once remapped, so only match the per-domain gauges.
         RemapperRule::by_name(
             "adp.network_http_retry_queue_size",
             "forwarder_transactions_retry_queue_size",
         )
+        .with_required_tag_keys(["domain"])
+        .with_original_tags(["domain"])
         .with_additional_tags([SOURCE_TAG]),
         RemapperRule::by_name(
             "adp.network_http_retry_queue_bytes_per_sec",
             "retry_queue_duration_bytes_per_sec",
         )
+        .with_required_tag_keys(["domain"])
         .with_original_tags(["domain"])
         .with_additional_tags([SOURCE_TAG]),
         RemapperRule::by_name(
