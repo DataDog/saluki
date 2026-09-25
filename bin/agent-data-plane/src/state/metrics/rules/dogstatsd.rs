@@ -140,6 +140,12 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         .with_original_tags(["message_type", "origin"])
         .with_additional_tags(["state:error"])
         .with_help_text("Count of service checks/events/metrics processed by dogstatsd"),
+        RemapperRule::by_name_and_tags(
+            "adp.component_errors_total",
+            &["component_id:dsd_in", "error_type:origin_detection"],
+            "dogstatsd.uds_origin_detection_error",
+        )
+        .with_help_text("Dogstatsd UDS origin detection error count"),
         // DogStatsD client byte telemetry. These counters mirror the post-aggregation metric stream and retain the
         // client library and transport dimensions supplied by the DogStatsD client.
         RemapperRule::by_name(

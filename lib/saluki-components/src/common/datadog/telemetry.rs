@@ -266,6 +266,7 @@ struct SharedTransactionQueueTelemetryInner {
     per_endpoint: FastHashMap<MetaString, RetryQueueStats>,
     capacity: RetryQueueCapacityAggregator,
     retry_queue_size: Gauge,
+    retry_queue_size_by_domain: FastHashMap<String, Gauge>,
     retry_queue_bytes_per_sec: Gauge,
     retry_queue_bytes_per_sec_by_domain: FastHashMap<String, Gauge>,
     retry_queue_capacity_secs_by_domain: FastHashMap<String, Gauge>,
@@ -274,6 +275,7 @@ struct SharedTransactionQueueTelemetryInner {
 
 #[derive(Default)]
 struct RetryQueueStats {
+    domain: MetaString,
     size: usize,
     bytes_per_sec: f64,
 }
@@ -285,6 +287,7 @@ impl SharedTransactionQueueTelemetryInner {
             per_endpoint: FastHashMap::default(),
             capacity: RetryQueueCapacityAggregator::new(),
             retry_queue_size: builder.register_gauge("network_http_retry_queue_size"),
+            retry_queue_size_by_domain: FastHashMap::default(),
             retry_queue_bytes_per_sec: builder.register_gauge("network_http_retry_queue_bytes_per_sec"),
             retry_queue_bytes_per_sec_by_domain: FastHashMap::default(),
             retry_queue_capacity_secs_by_domain: FastHashMap::default(),
@@ -292,11 +295,28 @@ impl SharedTransactionQueueTelemetryInner {
         }
     }
 
-    fn record_size(&mut self, endpoint_id: &MetaString, len: usize) {
-        self.per_endpoint.entry(endpoint_id.clone()).or_default().size = len;
+    fn record_size(&mut self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
+        let stats = self.per_endpoint.entry(endpoint_id.clone()).or_default();
+        stats.domain = domain.clone();
+        stats.size = len;
 
         let total_size = self.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
         self.retry_queue_size.set(total_size as f64);
+
+        let domain_size = self
+            .per_endpoint
+            .values()
+            .filter(|stats| stats.domain == *domain)
+            .map(|stats| stats.size)
+            .sum::<usize>();
+        let domain_size_gauge = self
+            .retry_queue_size_by_domain
+            .entry(domain.to_string())
+            .or_insert_with(|| {
+                self.builder
+                    .register_gauge_with_tags("network_http_retry_queue_size", [("domain", domain.to_string())])
+            });
+        domain_size_gauge.set(domain_size as f64);
     }
 
     fn record_bytes_per_sec(&mut self, endpoint_id: &MetaString, bytes_per_sec: f64) {
@@ -372,8 +392,8 @@ impl SharedTransactionQueueTelemetry {
         }
     }
 
-    fn record_retry_queue_size(&self, endpoint_id: &MetaString, len: usize) {
-        self.inner.lock().unwrap().record_size(endpoint_id, len);
+    fn record_retry_queue_size(&self, endpoint_id: &MetaString, domain: &MetaString, len: usize) {
+        self.inner.lock().unwrap().record_size(endpoint_id, domain, len);
     }
 
     fn record_retry_queue_bytes_per_sec(&self, endpoint_id: &MetaString, bytes_per_sec: f64) {
@@ -435,8 +455,8 @@ impl TransactionQueueTelemetry {
         &self.low_prio_queue_entries_dropped
     }
 
-    pub fn record_retry_queue_size(&self, len: usize) {
-        self.shared.record_retry_queue_size(&self.endpoint_id, len);
+    pub fn record_retry_queue_size(&self, domain: &MetaString, len: usize) {
+        self.shared.record_retry_queue_size(&self.endpoint_id, domain, len);
     }
 
     pub fn record_retry_queue_bytes_per_sec(&self, bytes_per_sec: f64) {
@@ -559,17 +579,54 @@ mod tests {
         let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", shared.clone());
         let second = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
 
-        first.record_retry_queue_size(3);
+        let domain = MetaString::from_static("https://example.com");
+
+        first.record_retry_queue_size(&domain, 3);
         first.record_retry_queue_bytes_per_sec(10.0);
-        second.record_retry_queue_size(5);
+        second.record_retry_queue_size(&domain, 5);
         second.record_retry_queue_bytes_per_sec(2.5);
 
         assert_eq!(aggregate_snapshot(&shared), (8, 12.5));
 
-        first.record_retry_queue_size(1);
+        first.record_retry_queue_size(&domain, 1);
         first.record_retry_queue_bytes_per_sec(4.0);
 
         assert_eq!(aggregate_snapshot(&shared), (6, 6.5));
+    }
+
+    #[test]
+    fn shared_transaction_queue_telemetry_records_retry_queue_size_by_domain() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/a", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://one.example/b", shared.clone());
+        let third = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
+        let one = MetaString::from_static("https://one.example");
+        let two = MetaString::from_static("https://two.example");
+
+        first.record_retry_queue_size(&one, 3);
+        second.record_retry_queue_size(&one, 4);
+        third.record_retry_queue_size(&two, 5);
+
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(12.0));
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
+            Some(7.0)
+        );
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://two.example")])),
+            Some(5.0)
+        );
+
+        first.record_retry_queue_size(&one, 0);
+
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(9.0));
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://one.example")])),
+            Some(4.0)
+        );
     }
 
     #[test]
