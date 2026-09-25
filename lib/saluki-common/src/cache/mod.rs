@@ -1,12 +1,22 @@
-use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    marker::PhantomData,
+    num::NonZeroUsize,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
+use async_trait::async_trait;
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Counter, Gauge, Histogram};
-use tokio::time::sleep;
+use tokio::{select, time::sleep};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
 
-use crate::{hash::FastBuildHasher, task::spawn_traced};
+use crate::{
+    hash::FastBuildHasher,
+    supervision::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
+    sync::shutdown::ShutdownHandle,
+};
 
 mod expiry;
 use self::expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle};
@@ -218,10 +228,14 @@ where
     W: Weighter<K, V> + Clone + Send + Sync + 'static,
     H: std::hash::BuildHasher + Clone + Default + Send + Sync + 'static,
 {
-    /// Builds a [`Cache`] from the current configuration.
-    pub fn build(self) -> Cache<K, V, W, H> {
+    /// Builds a [`Cache`] from the current configuration, along with the worker that drives its background work.
+    ///
+    /// The cache is usable immediately, but entries are never expired and cache telemetry is never reported until the
+    /// returned [`CacheWorker`] is running. See [`CacheWorker`] for how to run it.
+    pub fn build(self) -> (Cache<K, V, W, H>, CacheWorker) {
         let capacity = self.capacity.get();
 
+        let worker_name = worker_name_from_identifier(&self.identifier);
         let telemetry = Telemetry::new(self.identifier);
         telemetry.weight_limit().set(capacity as f64);
 
@@ -256,25 +270,161 @@ where
             telemetry: telemetry.clone(),
         };
 
-        // If expiration is enabled, spawn a background task to actually drive expiration.
-        if let Some(expiration_interval) = self.expiration_interval {
-            let expiration = expiration.clone();
-
-            spawn_traced(drive_expiration(
-                Arc::clone(&raw_cache),
-                telemetry.clone(),
+        let worker = CacheWorker {
+            inner: Box::new(TypedCacheWorker {
+                name: worker_name,
+                cache: Arc::downgrade(&raw_cache),
+                telemetry,
                 expiration,
-                expiration_interval,
-                shutdown_token.clone(),
-            ));
-        }
+                expiration_interval: self.expiration_interval,
+                telemetry_enabled: self.telemetry_enabled,
+                shutdown_token,
+            }),
+        };
 
-        // If telemetry is enabled, spawn a background task to drive telemetry reporting.
-        if self.telemetry_enabled {
-            spawn_traced(drive_telemetry(Arc::clone(&raw_cache), telemetry, shutdown_token));
-        }
+        (cache, worker)
+    }
+}
 
-        cache
+/// Derives a supervision-tree name from a cache identifier.
+///
+/// Identifiers are slash-delimited and lead with the owning component's identifier, which is redundant under that
+/// component's own supervisor. The trailing two segments are enough to tell sibling caches apart: a component with
+/// both a `primary` and a `no_agg` resolver gets `primary_contexts` and `no_agg_contexts` rather than two children
+/// both called `contexts`.
+fn worker_name_from_identifier(identifier: &str) -> String {
+    let mut segments = identifier.rsplit('/').take(2).collect::<Vec<_>>();
+    segments.reverse();
+    segments.join("_")
+}
+
+/// A worker that drives a [`Cache`]'s background behavior.
+///
+/// A cache needs two things done for it periodically: expiring entries that have gone idle, and reporting its size
+/// as telemetry. Both are the work of this worker, and neither happens while it isn't running -- notably, a cache
+/// whose worker was never started grows without expiring.
+///
+/// # Running it
+///
+/// Add it to a [`Supervisor`][supervisor], or spawn it on the ambient one, as a **transient** child:
+///
+/// ```no_run
+/// # use saluki_common::cache::CacheBuilder;
+/// # fn example() {
+/// let (cache, worker) = CacheBuilder::<u64, u64>::from_identifier("example").unwrap().build();
+/// // saluki_core::runtime::supervisable(worker).transient().spawn();
+/// # }
+/// ```
+///
+/// Transient is the correct policy, and the reason is worth knowing: this worker stops both when its supervisor
+/// shuts down *and* when the cache it serves is dropped, which are independent events. The latter is a clean exit, so
+/// a permanent child would be restarted, immediately exit again because the cache is still gone, and loop until the
+/// supervisor's restart intensity was exhausted. Transient restarts only on an abnormal exit, which is exactly the
+/// case worth recovering from: a panic in the expiration loop otherwise leaves the cache growing unbounded.
+///
+/// [supervisor]: https://docs.rs/saluki-core/latest/saluki_core/runtime/struct.Supervisor.html
+pub struct CacheWorker {
+    // Type-erased so that the worker's type doesn't carry the cache's. Nothing outside this module needs the key,
+    // value, weighter or hasher types: all a caller ever does with a worker is hand it to a supervisor. Dispatch
+    // through the box happens once per start or restart, never on the cache's own read/write path.
+    inner: Box<dyn Supervisable>,
+}
+
+#[async_trait]
+impl Supervisable for CacheWorker {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn shutdown_strategy(&self) -> ShutdownStrategy {
+        self.inner.shutdown_strategy()
+    }
+
+    fn wants_shutdown_signal(&self) -> bool {
+        self.inner.wants_shutdown_signal()
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        self.inner.initialize(process_shutdown).await
+    }
+}
+
+/// The typed half of a [`CacheWorker`], which holds what the background loops need.
+struct TypedCacheWorker<K, V, W, H> {
+    name: String,
+
+    // Weak on purpose. The supervisor holds this worker for as long as the child node exists so that it can restart
+    // it, so a strong reference here would keep the cache's storage alive long after the `Cache` itself was dropped
+    // -- which is exactly what happens when a component swaps one cache for another while it keeps running.
+    cache: Weak<RawCache<K, V, W, H>>,
+    telemetry: Telemetry,
+    expiration: Expiration<K>,
+    expiration_interval: Option<Duration>,
+    telemetry_enabled: bool,
+    shutdown_token: CancellationToken,
+}
+
+#[async_trait]
+impl<K, V, W, H> Supervisable for TypedCacheWorker<K, V, W, H>
+where
+    K: Eq + std::hash::Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+    W: Weighter<K, V> + Clone + Send + Sync + 'static,
+    H: std::hash::BuildHasher + Clone + Send + Sync + 'static,
+{
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        // Everything the loops need is `Arc`-backed or `Clone`, which is what lets this build a fresh future on every
+        // call and so makes the worker restartable.
+        //
+        // A failed upgrade means the cache was dropped, so there is nothing left to drive. Returning a future that
+        // completes immediately is a clean exit, which a transient child isn't restarted for.
+        let Some(cache) = self.cache.upgrade() else {
+            return Ok(Box::pin(std::future::ready(Ok(()))));
+        };
+
+        let telemetry = self.telemetry.clone();
+        let expiration = self.expiration.clone();
+        let expiration_interval = self.expiration_interval;
+        let telemetry_enabled = self.telemetry_enabled;
+        let shutdown_token = self.shutdown_token.clone();
+
+        Ok(Box::pin(async move {
+            let drive = async {
+                match (expiration_interval, telemetry_enabled) {
+                    (Some(interval), true) => {
+                        tokio::join!(
+                            drive_expiration(
+                                Arc::clone(&cache),
+                                telemetry.clone(),
+                                expiration,
+                                interval,
+                                shutdown_token.clone()
+                            ),
+                            drive_telemetry(cache, telemetry, shutdown_token),
+                        );
+                    }
+                    (Some(interval), false) => {
+                        drive_expiration(cache, telemetry, expiration, interval, shutdown_token).await
+                    }
+                    (None, true) => drive_telemetry(cache, telemetry, shutdown_token).await,
+                    // Nothing configured to drive, so there is nothing to wait for.
+                    (None, false) => {}
+                }
+            };
+
+            // Two independent reasons to stop: the supervisor is shutting the subtree down, or the cache this serves
+            // was dropped (which cancels `shutdown_token` through its drop guard, ending the loops above).
+            select! {
+                _ = process_shutdown => {},
+                _ = drive => {},
+            }
+
+            Ok(())
+        }))
     }
 }
 
@@ -422,7 +572,7 @@ mod tests {
         const CACHE_KEY: usize = 42;
         const CACHE_VALUE: &str = "value1";
 
-        let cache = CacheBuilder::for_tests().build();
+        let (cache, _worker) = CacheBuilder::for_tests().build();
 
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.weight(), 0);
@@ -442,7 +592,7 @@ mod tests {
     fn evict_at_capacity() {
         const CAPACITY: usize = 3;
 
-        let cache = CacheBuilder::for_tests()
+        let (cache, _worker) = CacheBuilder::for_tests()
             .with_capacity(NonZeroUsize::new(CAPACITY).unwrap())
             .build();
 
@@ -475,7 +625,7 @@ mod tests {
         const CAPACITY: usize = 10;
 
         // Create our cache using an "item value" weighter, which uses the item value itself as the weight.
-        let cache = CacheBuilder::for_tests()
+        let (cache, _worker) = CacheBuilder::for_tests()
             .with_capacity(NonZeroUsize::new(CAPACITY).unwrap())
             .with_item_weighter(ItemValueWeighter)
             .build();
@@ -495,7 +645,7 @@ mod tests {
         const CAPACITY: usize = 10;
 
         // Create our cache using an "item value" weighter, which uses the item value itself as the weight.
-        let cache = CacheBuilder::for_tests()
+        let (cache, _worker) = CacheBuilder::for_tests()
             .with_capacity(NonZeroUsize::new(CAPACITY).unwrap())
             .with_item_weighter(ItemValueWeighter)
             .build();
@@ -522,30 +672,90 @@ mod tests {
         assert_eq!(cache.get(&4), Some(CAPACITY - 1));
     }
 
-    #[tokio::test]
-    async fn tasks_stop_when_cache_dropped() {
-        let cache = CacheBuilder::<u64, u64>::from_identifier("test-drop")
+    fn expiring_cache(identifier: &str) -> (Cache<u64, u64>, CacheWorker) {
+        CacheBuilder::<u64, u64>::from_identifier(identifier)
             .expect("valid identifier")
             .with_time_to_idle(Some(Duration::from_secs(60)))
             .with_expiration_interval(Duration::from_millis(50))
-            .build();
+            .build()
+    }
 
-        // Grab a weak reference to the raw cache data held by the background tasks.
+    async fn run_to_completion(worker: &CacheWorker, shutdown: ShutdownHandle) {
+        let task = worker.initialize(shutdown).await.expect("worker should initialize");
+
+        // Owning the future is what makes these assertions real completions rather than a sleep-and-hope.
+        tokio::time::timeout(Duration::from_secs(5), tokio::spawn(task))
+            .await
+            .expect("worker should stop")
+            .expect("worker task should not panic")
+            .expect("worker should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn worker_stops_when_cache_dropped() {
+        // Dropping the cache stops the worker even though shutdown was never signalled: its lifetime is tied to the
+        // thing it serves, not only to its supervisor.
+        let (cache, worker) = expiring_cache("test-drop");
         let weak_cache = Arc::downgrade(&cache.inner.cache);
 
         drop(cache);
-
-        // When `InnerCache` is dropped, the cancellation token's drop guard is also dropped, which triggers
-        // cancellation, so both tasks should wake up immediately and exit, releasing their Arc<RawCache> references.
-        //
-        // TODO: There's no good way to assert the tasks have shutdown besides sleeping and checking the weak cache is
-        // gone. It would be nice if there was a way to asynchronously _and_ fallibly shutdown the runtime with a
-        // timeout, such that we could detect if they shutdown cleanly... but alas.
-        sleep(Duration::from_millis(100)).await;
+        run_to_completion(&worker, ShutdownHandle::noop()).await;
 
         assert!(
             weak_cache.upgrade().is_none(),
-            "raw cache should be released after background tasks exit"
+            "raw cache should be released after the worker exits"
         );
+    }
+
+    #[tokio::test]
+    async fn worker_stops_on_shutdown_while_cache_is_still_alive() {
+        // The other half of the pair: the supervisor's signal stops the worker while the cache it serves is still in
+        // use. Holding `cache` past the await is what makes this distinct from the test above.
+        let (cache, worker) = expiring_cache("test-shutdown");
+        let (coordinator, shutdown) = ShutdownHandle::paired();
+        coordinator.shutdown();
+
+        run_to_completion(&worker, shutdown).await;
+
+        assert_eq!(cache.len(), 0, "cache should still be usable after its worker stops");
+    }
+
+    #[tokio::test]
+    async fn worker_can_be_initialized_more_than_once() {
+        // The property the whole `Supervisable` shape exists for: `initialize` is a factory, so a restart gets a
+        // working loop rather than a spent future. Without it, a panicking expiration loop would stay dead and the
+        // cache would grow unbounded.
+        let (cache, worker) = expiring_cache("test-restart");
+
+        for _ in 0..2 {
+            let (coordinator, shutdown) = ShutdownHandle::paired();
+            coordinator.shutdown();
+            run_to_completion(&worker, shutdown).await;
+        }
+
+        drop(cache);
+    }
+
+    #[tokio::test]
+    async fn worker_without_expiration_or_telemetry_completes_immediately() {
+        let (_cache, worker) = CacheBuilder::<u64, u64>::for_tests().build();
+
+        // Nothing to drive, so it completes immediately rather than parking on a signal it doesn't need.
+        run_to_completion(&worker, ShutdownHandle::noop()).await;
+    }
+
+    #[test]
+    fn worker_name_drops_the_redundant_component_prefix() {
+        // The component identifier is already the parent supervisor's name, so only the trailing segments carry
+        // information -- but two resolvers under one component must still end up distinguishable.
+        assert_eq!(
+            worker_name_from_identifier("dsd_in/dsd/primary/contexts"),
+            "primary_contexts"
+        );
+        assert_eq!(
+            worker_name_from_identifier("dsd_in/dsd/no_agg/contexts"),
+            "no_agg_contexts"
+        );
+        assert_eq!(worker_name_from_identifier("origin_cache"), "origin_cache");
     }
 }

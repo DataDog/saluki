@@ -5,7 +5,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use regex::Regex;
-use saluki_common::cache::{Cache, CacheBuilder};
+use saluki_common::{
+    cache::{Cache, CacheBuilder},
+    supervision::{CompositeWorker, Supervisable},
+    sync::shutdown::ShutdownHandle,
+    task::spawn_traced_named,
+};
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
@@ -79,7 +84,7 @@ impl DogStatsDMapperConfiguration {
         }
     }
 
-    fn build_mapper(&self, context: BuildContext) -> Result<MetricMapper, GenericError> {
+    fn build_mapper(&self, context: BuildContext) -> Result<(MetricMapper, CompositeWorker), GenericError> {
         let mut profiles = Vec::with_capacity(self.profiles.len());
         for config_profile in &self.profiles {
             if config_profile.name.is_empty() {
@@ -133,27 +138,34 @@ impl DogStatsDMapperConfiguration {
             profiles.push(profile);
         }
 
-        let context_resolver =
+        let (context_resolver, context_resolver_worker) =
             ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(self.context_string_interner_bytes)
                 .with_idle_context_expiration(Duration::from_secs(30))
                 .build();
 
+        let mut workers: Vec<Box<dyn Supervisable>> = vec![Box::new(context_resolver_worker)];
+
         let cache = match NonZeroUsize::new(self.cache_size) {
-            Some(capacity) => Some(
-                CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
-                    .with_capacity(capacity)
-                    .build(),
-            ),
+            Some(capacity) => {
+                let (cache, cache_worker) =
+                    CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
+                        .with_capacity(capacity)
+                        .build();
+                workers.push(Box::new(cache_worker));
+                Some(cache)
+            }
             None => None,
         };
 
-        Ok(MetricMapper {
+        let mapper = MetricMapper {
             context_resolver,
             profiles,
             cache,
-        })
+        };
+
+        Ok((mapper, CompositeWorker::new("dsd_mapper_background", workers)))
     }
 }
 
@@ -318,7 +330,20 @@ impl MetricMapper {
 #[async_trait]
 impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        let metric_mapper = self.build_mapper(context)?;
+        let (metric_mapper, worker) = self.build_mapper(context)?;
+
+        // The one site that stays unsupervised, and the reason is structural: `SynchronousTransform` is a single
+        // `transform_buffer` call driven by whatever transform owns this one, so this component never has a process
+        // -- and therefore never a supervisor -- of its own. Giving it one would mean changing the trait for all of
+        // its implementors, which isn't worth it for two timer loops.
+        //
+        // It is leak-free regardless: both loops stop when the mapper they serve is dropped.
+        let background = worker
+            .initialize(ShutdownHandle::noop())
+            .await
+            .map_err(|e| generic_error!("Failed to initialize DogStatsD mapper background work: {}", e))?;
+        spawn_traced_named("dsd_mapper_background", background);
+
         Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
 }
@@ -424,7 +449,10 @@ mod tests {
     ) -> Result<MetricMapper, GenericError> {
         let config =
             DogStatsDMapperConfiguration::new(NonZeroUsize::new(64 * 1024).expect("not zero"), cache_size, profiles);
-        config.build_mapper(BuildContext::test_transform("test_mapper"))
+        // Tests exercise mapping directly and don't need the background work driven.
+        config
+            .build_mapper(BuildContext::test_transform("test_mapper"))
+            .map(|(mapper, _worker)| mapper)
     }
 
     fn assert_tags(context: &Context, expected_tags: &[&str]) {
@@ -914,7 +942,7 @@ mod tests {
           ]
         }]);
 
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let (mut resolver, _worker) = ContextResolverBuilder::for_tests().build();
         let context_a = resolver
             .resolve_with_host("test.job.duration.worker", "host-a", &[] as &[&str], None)
             .expect("context should resolve");
