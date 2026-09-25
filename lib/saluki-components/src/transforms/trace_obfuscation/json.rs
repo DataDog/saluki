@@ -132,7 +132,7 @@ fn transform_sql_value<'a>(value: &'a str, sql_config: &SqlObfuscationConfig) ->
             Ok(Cow::Borrowed(SQL_OBFUSCATION_FAILURE))
         }
         Err(error) => {
-            debug!(error = %error, query = value, "Failed to obfuscate SQL string.");
+            debug!(%error, query = value, "Failed to obfuscate SQL string.");
             Ok(Cow::Borrowed(SQL_OBFUSCATION_FAILURE))
         }
     }
