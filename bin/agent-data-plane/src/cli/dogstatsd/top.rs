@@ -1,12 +1,13 @@
-use std::io::Write;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio_util::sync::CancellationToken;
 
-use crate::cli::utils::DataPlaneAPIClient;
-use crate::dogstatsd_contexts::read_report;
+use crate::cli::{dogstatsd::open_regular_file, remote::CommandOutput, utils::DataPlaneAPIClient};
+use crate::dogstatsd_contexts::read_report_from_file;
 
 /// Displays the DogStatsD contexts with the highest cardinality.
 #[derive(FromArgs, Debug)]
@@ -26,23 +27,6 @@ pub(super) struct TopCommand {
 }
 
 impl TopCommand {
-    pub(super) fn validate(self) -> ValidatedTopCommand {
-        ValidatedTopCommand {
-            path: self.path,
-            num_metrics: self.num_metrics,
-            num_tags: self.num_tags.unwrap_or(5),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ValidatedTopCommand {
-    path: Option<PathBuf>,
-    num_metrics: usize,
-    num_tags: usize,
-}
-
-impl ValidatedTopCommand {
     pub(super) fn is_offline(&self) -> bool {
         self.path.is_some()
     }
@@ -53,12 +37,12 @@ impl ValidatedTopCommand {
 #[argh(subcommand, name = "dump-contexts")]
 pub(super) struct DumpContextsCommand {}
 
-#[async_trait(?Send)]
-pub(super) trait DogStatsDContextDumpRequester {
+#[async_trait]
+pub(super) trait DogStatsDContextDumpRequester: Send {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError>;
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
     async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
         self.dogstatsd_contexts_dump().await
@@ -66,67 +50,115 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 }
 
 pub(super) async fn handle_dogstatsd_top(
-    requester: Option<&mut dyn DogStatsDContextDumpRequester>, cmd: ValidatedTopCommand, output: &mut dyn Write,
+    requester: Option<&mut (dyn DogStatsDContextDumpRequester + Send)>, cmd: TopCommand,
+    output: &mut dyn CommandOutput, cancellation: &CancellationToken,
 ) -> Result<(), GenericError> {
     let path = match cmd.path {
         Some(path) => path,
         None => {
             let requester =
                 requester.ok_or_else(|| generic_error!("Online DogStatsD top requires a context dump requester."))?;
-            let path = requester
-                .request_context_dump()
-                .await
-                .error_context("Failed to request a DogStatsD context dump.")?;
-            write_dump_path(output, &path)?;
+            let path = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Ok(()),
+                result = requester.request_context_dump() => result,
+            }
+            .error_context("Failed to request a DogStatsD context dump.")?;
+            write_dump_path(output, &path).await?;
             path
         }
     };
 
-    let report = read_report(&path)
+    if cancellation.is_cancelled() {
+        return Ok(());
+    }
+
+    let file = open_context_report_file(&path)?;
+    let metric_limit = cmd.num_metrics;
+    let tag_limit = cmd.num_tags;
+    let task = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || render_report_from_file(&path, file, metric_limit, tag_limit)
+    });
+    let Some(rendered) =
+        super::run_cancellable_blocking(cancellation, task, "DogStatsD context report rendering").await?
+    else {
+        return Ok(());
+    };
+
+    write_rendered_report(output, &path, rendered).await
+}
+
+fn open_context_report_file(path: &Path) -> Result<File, GenericError> {
+    open_regular_file(
+        path,
+        "Failed to open DogStatsD context report from",
+        "Failed to inspect DogStatsD context report from",
+        "DogStatsD context report path",
+    )
+}
+
+fn render_report_from_file(
+    path: &Path, file: File, metric_limit: usize, tag_limit: Option<usize>,
+) -> Result<String, GenericError> {
+    let report = read_report_from_file(path, file)
         .with_error_context(|| format!("Failed to read DogStatsD context report from '{}'.", path.display()))?;
-    let rendered = report.render(cmd.num_metrics, cmd.num_tags);
+    Ok(report.render(metric_limit, tag_limit.unwrap_or(5)))
+}
+
+async fn write_rendered_report(
+    output: &mut dyn CommandOutput, path: &Path, rendered: String,
+) -> Result<(), GenericError> {
     output
-        .write_all(rendered.as_bytes())
+        .write_stdout(&rendered)
+        .await
         .with_error_context(|| format!("Failed to write DogStatsD context report for '{}'.", path.display()))?;
     output
-        .flush()
+        .flush_stdout()
+        .await
         .with_error_context(|| format!("Failed to flush DogStatsD context report for '{}'.", path.display()))?;
     Ok(())
 }
 
 pub(super) async fn handle_dogstatsd_dump_contexts(
-    requester: &mut dyn DogStatsDContextDumpRequester, output: &mut dyn Write,
+    requester: &mut (dyn DogStatsDContextDumpRequester + Send), output: &mut dyn CommandOutput,
 ) -> Result<(), GenericError> {
     let path = requester
         .request_context_dump()
         .await
         .error_context("Failed to request a DogStatsD context dump.")?;
-    write_dump_path(output, &path)
+    write_dump_path(output, &path).await
 }
 
-fn write_dump_path(output: &mut dyn Write, path: &Path) -> Result<(), GenericError> {
-    writeln!(output, "Wrote {}", path.display())
+async fn write_dump_path(output: &mut dyn CommandOutput, path: &Path) -> Result<(), GenericError> {
+    output
+        .write_stdout(&format!("Wrote {}\n", path.display()))
+        .await
         .with_error_context(|| format!("Failed to write the DogStatsD context dump path '{}'.", path.display()))?;
     output
-        .flush()
+        .flush_stdout()
+        .await
         .with_error_context(|| format!("Failed to flush the DogStatsD context dump path '{}'.", path.display()))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::path::{Path, PathBuf};
 
     use argh::FromArgs as _;
     use async_trait::async_trait;
     use saluki_error::{generic_error, GenericError};
+    use tokio_util::sync::CancellationToken;
 
     use super::{
-        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DogStatsDContextDumpRequester, TopCommand,
-        ValidatedTopCommand,
+        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, open_context_report_file, render_report_from_file,
+        DogStatsDContextDumpRequester, TopCommand,
     };
-    use crate::cli::dogstatsd::{DogstatsdCommand, DogstatsdSubcommand};
+    use crate::cli::{
+        dogstatsd::{DogstatsdCommand, DogstatsdSubcommand},
+        remote::CommandOutput,
+    };
 
     const PLAIN_FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -148,10 +180,7 @@ mod tests {
         assert_eq!(top.path, None);
         assert_eq!(top.num_metrics, 10);
         assert_eq!(top.num_tags, None);
-        let validated = top.validate();
-        assert_eq!(validated.path, None);
-        assert_eq!(validated.num_metrics, 10);
-        assert_eq!(validated.num_tags, 5);
+        assert!(!top.is_offline());
     }
 
     #[test]
@@ -165,10 +194,7 @@ mod tests {
         assert_eq!(top.path, Some(PathBuf::from(PLAIN_FIXTURE)));
         assert_eq!(top.num_metrics, 7);
         assert_eq!(top.num_tags, Some(3));
-        let validated = top.validate();
-        assert_eq!(validated.path, Some(PathBuf::from(PLAIN_FIXTURE)));
-        assert_eq!(validated.num_metrics, 7);
-        assert_eq!(validated.num_tags, 3);
+        assert!(top.is_offline());
     }
 
     #[test]
@@ -179,7 +205,6 @@ mod tests {
         };
 
         assert_eq!(top.num_tags, Some(4));
-        assert_eq!(top.validate().num_tags, 4);
     }
 
     #[test]
@@ -217,7 +242,7 @@ mod tests {
         let mut requester = FakeRequester::returning_path("unused");
         let mut output = RecordingWriter::default();
 
-        handle_dogstatsd_top(Some(&mut requester), command, &mut output)
+        handle_dogstatsd_top(Some(&mut requester), command, &mut output, &CancellationToken::new())
             .await
             .expect("offline top should succeed");
 
@@ -225,14 +250,57 @@ mod tests {
         assert_eq!(output.text(), GOLDEN_REPORT);
     }
 
+    #[test]
+    fn offline_top_renders_from_the_descriptor_opened_before_path_changes() {
+        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact should be created");
+        std::fs::write(
+            artifact.path(),
+            b"{\"Name\":\"original.metric\",\"Host\":\"\",\"Type\":\"Gauge\",\"TaggerTags\":[],\"MetricTags\":[],\"NoIndex\":false,\"Source\":1}\n",
+        )
+        .expect("original artifact should be written");
+        let file = open_context_report_file(artifact.path()).expect("original artifact should open");
+        let replacement = artifact.path().with_extension("replacement");
+        std::fs::write(&replacement, b"not-json").expect("replacement artifact should be written");
+        std::fs::rename(&replacement, artifact.path()).expect("artifact path should be replaced");
+
+        let rendered =
+            render_report_from_file(artifact.path(), file, 10, Some(5)).expect("opened artifact should render");
+
+        assert!(rendered.contains("original.metric"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_top_offline_does_not_render_after_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut output = RecordingWriter::default();
+
+        handle_dogstatsd_top(
+            None,
+            top_command(Some(PathBuf::from("missing-context-dump.ndjson")), 10, None),
+            &mut output,
+            &cancellation,
+        )
+        .await
+        .expect("cancelled offline top should not read or render the artifact");
+
+        assert_eq!(output.text(), "");
+        assert!(output.flushes.is_empty());
+    }
+
     #[tokio::test]
     async fn dogstatsd_top_triggers_one_online_dump_before_rendering_the_report() {
         let mut requester = FakeRequester::returning_path(PLAIN_FIXTURE);
         let mut output = RecordingWriter::default();
 
-        handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None), &mut output)
-            .await
-            .expect("online top should succeed");
+        handle_dogstatsd_top(
+            Some(&mut requester),
+            top_command(None, 10, None),
+            &mut output,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("online top should succeed");
 
         assert_eq!(requester.calls, 1);
         assert_eq!(output.text(), format!("Wrote {PLAIN_FIXTURE}\n{GOLDEN_REPORT}"));
@@ -278,9 +346,14 @@ mod tests {
         let mut requester = FakeRequester::returning_path(artifact.path());
         let mut output = RecordingWriter::default();
 
-        let error = handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None), &mut output)
-            .await
-            .expect_err("corrupt artifact should fail");
+        let error = handle_dogstatsd_top(
+            Some(&mut requester),
+            top_command(None, 10, None),
+            &mut output,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("corrupt artifact should fail");
 
         let wrote_line = format!("Wrote {}\n", artifact.path().display());
         assert_eq!(requester.calls, 1);
@@ -306,6 +379,7 @@ mod tests {
             None,
             top_command(Some(artifact.path().to_owned()), 10, None),
             &mut output,
+            &CancellationToken::new(),
         )
         .await
         .expect_err("wrong-typed artifact field should fail");
@@ -330,6 +404,7 @@ mod tests {
             None,
             top_command(Some(artifact.path().to_owned()), 10, None),
             &mut output,
+            &CancellationToken::new(),
         )
         .await
         .expect("empty artifact should render");
@@ -370,7 +445,7 @@ mod tests {
 
         for (command, expected) in cases {
             let mut output = RecordingWriter::default();
-            handle_dogstatsd_top(None, command, &mut output)
+            handle_dogstatsd_top(None, command, &mut output, &CancellationToken::new())
                 .await
                 .expect("offline report should render");
             assert_eq!(output.text(), expected);
@@ -381,13 +456,12 @@ mod tests {
         DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], args)
     }
 
-    fn top_command(path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>) -> ValidatedTopCommand {
+    fn top_command(path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>) -> TopCommand {
         TopCommand {
             path,
             num_metrics,
             num_tags,
         }
-        .validate()
     }
 
     struct FakeRequester {
@@ -411,7 +485,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl DogStatsDContextDumpRequester for FakeRequester {
         async fn request_context_dump(&mut self) -> Result<PathBuf, GenericError> {
             self.calls += 1;
@@ -431,13 +505,18 @@ mod tests {
         }
     }
 
-    impl io::Write for RecordingWriter {
-        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-            self.bytes.extend_from_slice(buffer);
-            Ok(buffer.len())
+    #[async_trait]
+    impl CommandOutput for RecordingWriter {
+        async fn write_progress(&mut self, _message: &str) -> std::io::Result<()> {
+            Ok(())
         }
 
-        fn flush(&mut self) -> io::Result<()> {
+        async fn write_stdout(&mut self, output: &str) -> std::io::Result<()> {
+            self.bytes.extend_from_slice(output.as_bytes());
+            Ok(())
+        }
+
+        async fn flush_stdout(&mut self) -> std::io::Result<()> {
             self.flushes.push(self.bytes.clone());
             Ok(())
         }

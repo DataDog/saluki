@@ -22,6 +22,9 @@ pub mod env;
 pub mod logging;
 
 pub mod remote_agent;
+
+mod remote_command;
+
 use self::remote_agent::RemoteAgentBootstrap;
 
 mod telemetry;

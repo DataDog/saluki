@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Exposes ``dogstatsd`` commands through the Remote Command Provider, allowing them to be executed via the Core Agent's ``agent remote ...`` CLI.

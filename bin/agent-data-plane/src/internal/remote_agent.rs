@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
+use agent_data_plane_config::SalukiConfiguration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::{
@@ -14,6 +15,7 @@ use datadog_protos::agent::v1::{
     ReportRemoteAgentEventRequest,
 };
 use datadog_protos::agent::{
+    command::v1::remote_command_provider_server::RemoteCommandProviderServer,
     config_event,
     flare::v1::{flare_provider_server::*, *},
     status::v1::{status_provider_server::*, *},
@@ -47,8 +49,10 @@ use tokio::{
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
-use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::get_datadog_agent_remappings;
+use crate::{
+    config::DataPlaneConfiguration, internal::remote_command::RemoteCommandProviderImpl,
+    state::metrics::get_datadog_agent_remappings,
+};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -100,6 +104,7 @@ impl RemoteAgentBootstrap {
             <StatusProviderServer<()> as NamedService>::NAME.to_string(),
             <FlareProviderServer<()> as NamedService>::NAME.to_string(),
             <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
+            <RemoteCommandProviderServer<RemoteCommandProviderImpl> as NamedService>::NAME.to_string(),
         ];
 
         let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
@@ -176,6 +181,13 @@ impl RemoteAgentBootstrap {
     /// Creates a new `FlareProviderServer` tied to this remote agent.
     pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
         FlareProviderServer::new(self.build_impl())
+    }
+
+    /// Creates a remote-command service bound to the current runtime configuration.
+    pub fn create_command_service(
+        &self, current_config: Arc<arc_swap::ArcSwap<SalukiConfiguration>>,
+    ) -> RemoteCommandProviderServer<RemoteCommandProviderImpl> {
+        RemoteCommandProviderServer::new(RemoteCommandProviderImpl::new(self.session_id.clone(), current_config))
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
