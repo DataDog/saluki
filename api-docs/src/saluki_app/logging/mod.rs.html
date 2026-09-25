@@ -68,7 +68,7 @@
 <a href=#68 id=68 data-nosnippet>68</a>    /// inaccessible) or if the override worker is no longer running.
 <a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub async fn </span>reload(<span class="kw-2">&amp;mut </span><span class="self">self</span>, config: LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#70 id=70 data-nosnippet>70</a>        <span class="kw">let </span>(new_stack, new_guards) = build_output_stack(<span class="kw-2">&amp;</span>config)<span class="question-mark">?</span>;
-<a href=#71 id=71 data-nosnippet>71</a>        <span class="kw">let </span>new_filter = config.log_level.as_env_filter();
+<a href=#71 id=71 data-nosnippet>71</a>        <span class="kw">let </span>new_filter = config.log_level.as_targets();
 <a href=#72 id=72 data-nosnippet>72</a>
 <a href=#73 id=73 data-nosnippet>73</a>        <span class="self">self</span>.stack_handle
 <a href=#74 id=74 data-nosnippet>74</a>            .reload(new_stack)
@@ -108,7 +108,7 @@
 <a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">let </span>(output_layer, stack_handle) = reload::Layer::new(output_stack);
 <a href=#109 id=109 data-nosnippet>109</a>
 <a href=#110 id=110 data-nosnippet>110</a>    <span class="comment">// Set up our log level filtering and dynamic filter layer.
-<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">let </span>(filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">let </span>(filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_targets());
 <a href=#112 id=112 data-nosnippet>112</a>
 <a href=#113 id=113 data-nosnippet>113</a>    <span class="comment">// The override worker owns the canonical base filter -- the directives the system restores to after an override
 <a href=#114 id=114 data-nosnippet>114</a>    // expires or is reset. It seeds the base from the reload handle on startup and is updated via the controller,
@@ -232,7 +232,7 @@
 <a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>config = logging_config_without_outputs();
 <a href=#233 id=233 data-nosnippet>233</a>        <span class="kw">let </span>(output_stack, worker_guards) = build_output_stack(<span class="kw-2">&amp;</span>config).expect(<span class="string">"build initial output stack"</span>);
 <a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span>(output_layer, stack_handle) = reload::Layer::new(output_stack);
-<a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">let </span>(filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">let </span>(filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_targets());
 <a href=#236 id=236 data-nosnippet>236</a>        <span class="kw">let </span>(override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
 <a href=#237 id=237 data-nosnippet>237</a>        <span class="kw">let </span><span class="kw-2">mut </span>guard = LoggingGuard {
 <a href=#238 id=238 data-nosnippet>238</a>            worker_guards,

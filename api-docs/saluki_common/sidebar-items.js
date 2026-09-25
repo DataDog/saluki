@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["buf","cache","collections","deser","hash","iter","rate","resource_tracking","scrubber","strings","supervision","sync","task","time"]};
+window.SIDEBAR_ITEMS = {"mod":["buf","cache","collections","deser","hash","iter","logging","rate","resource_tracking","scrubber","strings","supervision","sync","task","time"]};

@@ -7,7 +7,7 @@
 <a href=#7 id=7 data-nosnippet>7</a>    routing::{post, Router},
 <a href=#8 id=8 data-nosnippet>8</a>    APIHandler, DynamicRoute, EndpointType, StatusCode,
 <a href=#9 id=9 data-nosnippet>9</a>};
-<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_common::{logging::parse_filter_directives, sync::shutdown::ShutdownHandle};
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_error::{generic_error, GenericError};
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>serde::Deserialize;
@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a>    time::sleep,
 <a href=#18 id=18 data-nosnippet>18</a>};
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>tracing::{error, info};
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>tracing_subscriber::{reload::Handle, EnvFilter, Registry};
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>tracing_subscriber::{filter::Targets, reload::Handle, Registry};
 <a href=#21 id=21 data-nosnippet>21</a>
 <a href=#22 id=22 data-nosnippet>22</a><span class="attr">#[derive(Deserialize)]
 <a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">struct </span>OverrideQueryParams {
@@ -30,7 +30,7 @@
 <a href=#30 id=30 data-nosnippet>30</a>    ///
 <a href=#31 id=31 data-nosnippet>31</a>    /// When the duration elapses, or a [`Reset`][LoggingOverrideAction::Reset] arrives, the worker restores the
 <a href=#32 id=32 data-nosnippet>32</a>    /// current base filter.
-<a href=#33 id=33 data-nosnippet>33</a>    </span>Override { duration: Duration, filter: EnvFilter },
+<a href=#33 id=33 data-nosnippet>33</a>    </span>Override { duration: Duration, filter: Targets },
 <a href=#34 id=34 data-nosnippet>34</a>
 <a href=#35 id=35 data-nosnippet>35</a>    <span class="doccomment">/// Clear any active override, immediately restoring the current base filter.
 <a href=#36 id=36 data-nosnippet>36</a>    </span>Reset,
@@ -39,7 +39,7 @@
 <a href=#39 id=39 data-nosnippet>39</a>    ///
 <a href=#40 id=40 data-nosnippet>40</a>    /// Applied immediately if no override is active. If an override is active, the new base is stored and applied
 <a href=#41 id=41 data-nosnippet>41</a>    /// once the override expires (or is reset), so we don't clobber an in-flight override.
-<a href=#42 id=42 data-nosnippet>42</a>    </span>UpdateBase(EnvFilter),
+<a href=#42 id=42 data-nosnippet>42</a>    </span>UpdateBase(Targets),
 <a href=#43 id=43 data-nosnippet>43</a>}
 <a href=#44 id=44 data-nosnippet>44</a>
 <a href=#45 id=45 data-nosnippet>45</a><span class="doccomment">/// Controls the dynamic logging filter at runtime.
@@ -54,7 +54,7 @@
 <a href=#54 id=54 data-nosnippet>54</a>
 <a href=#55 id=55 data-nosnippet>55</a><span class="kw">impl </span>LoggingOverrideController {
 <a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// Applies `filter` as a temporary override for `duration`, after which the base filter is restored.
-<a href=#57 id=57 data-nosnippet>57</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>override_for(<span class="kw-2">&amp;</span><span class="self">self</span>, duration: Duration, filter: EnvFilter) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
+<a href=#57 id=57 data-nosnippet>57</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>override_for(<span class="kw-2">&amp;</span><span class="self">self</span>, duration: Duration, filter: Targets) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#58 id=58 data-nosnippet>58</a>        <span class="self">self</span>.send(LoggingOverrideAction::Override { duration, filter }).<span class="kw">await
 <a href=#59 id=59 data-nosnippet>59</a>    </span>}
 <a href=#60 id=60 data-nosnippet>60</a>
@@ -66,7 +66,7 @@
 <a href=#66 id=66 data-nosnippet>66</a>    <span class="doccomment">/// Replaces the current base filter.
 <a href=#67 id=67 data-nosnippet>67</a>    ///
 <a href=#68 id=68 data-nosnippet>68</a>    /// Applied immediately if no override is active; otherwise stored and applied when the override expires.
-<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub async fn </span>update_base(<span class="kw-2">&amp;</span><span class="self">self</span>, filter: EnvFilter) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
+<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub async fn </span>update_base(<span class="kw-2">&amp;</span><span class="self">self</span>, filter: Targets) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#70 id=70 data-nosnippet>70</a>        <span class="self">self</span>.send(LoggingOverrideAction::UpdateBase(filter)).<span class="kw">await
 <a href=#71 id=71 data-nosnippet>71</a>    </span>}
 <a href=#72 id=72 data-nosnippet>72</a>
@@ -124,7 +124,7 @@
 <a href=#124 id=124 data-nosnippet>124</a>
 <a href=#125 id=125 data-nosnippet>125</a>        <span class="comment">// Parse the override duration and create a new filter from the body.
 <a href=#126 id=126 data-nosnippet>126</a>        </span><span class="kw">let </span>duration = Duration::from_secs(params.time_secs);
-<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>new_filter = <span class="kw">match </span>EnvFilter::try_new(body) {
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>new_filter = <span class="kw">match </span>parse_filter_directives(<span class="kw-2">&amp;</span>body) {
 <a href=#128 id=128 data-nosnippet>128</a>            <span class="prelude-val">Ok</span>(filter) =&gt; filter,
 <a href=#129 id=129 data-nosnippet>129</a>            <span class="prelude-val">Err</span>(e) =&gt; {
 <a href=#130 id=130 data-nosnippet>130</a>                <span class="kw">return </span>(
@@ -170,7 +170,7 @@
 <a href=#170 id=170 data-nosnippet>170</a>}
 <a href=#171 id=171 data-nosnippet>171</a>
 <a href=#172 id=172 data-nosnippet>172</a><span class="kw">struct </span>LoggingOverrideWorkerState {
-<a href=#173 id=173 data-nosnippet>173</a>    reload_handle: Handle&lt;EnvFilter, Registry&gt;,
+<a href=#173 id=173 data-nosnippet>173</a>    reload_handle: Handle&lt;Targets, Registry&gt;,
 <a href=#174 id=174 data-nosnippet>174</a>    rx: mpsc::Receiver&lt;LoggingOverrideAction&gt;,
 <a href=#175 id=175 data-nosnippet>175</a>}
 <a href=#176 id=176 data-nosnippet>176</a>
@@ -180,7 +180,7 @@
 <a href=#180 id=180 data-nosnippet>180</a>    /// When the worker starts, the filter directives present in the reload handle will be used as the "base" filter:
 <a href=#181 id=181 data-nosnippet>181</a>    /// the filter that's reapplied after an override expires or is reset. This base filter can then be subsequently
 <a href=#182 id=182 data-nosnippet>182</a>    /// updated through the [`LoggingOverrideController`] handle that's returned.
-<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>new(reload_handle: Handle&lt;EnvFilter, Registry&gt;) -&gt; (<span class="self">Self</span>, LoggingOverrideController) {
+<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>new(reload_handle: Handle&lt;Targets, Registry&gt;) -&gt; (<span class="self">Self</span>, LoggingOverrideController) {
 <a href=#184 id=184 data-nosnippet>184</a>        <span class="kw">let </span>(tx, rx) = mpsc::channel(<span class="number">1</span>);
 <a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">let </span>controller = LoggingOverrideController { tx };
 <a href=#186 id=186 data-nosnippet>186</a>        <span class="kw">let </span>handler = LoggingAPIHandler::new(controller.clone());
@@ -260,79 +260,79 @@
 <a href=#260 id=260 data-nosnippet>260</a>                <span class="prelude-val">Some</span>(LoggingOverrideAction::UpdateBase(new_base)) =&gt; {
 <a href=#261 id=261 data-nosnippet>261</a>                    <span class="comment">// Before replacing the base filter, check if the new base is different from the current one before we trigger a reload
 <a href=#262 id=262 data-nosnippet>262</a>                    // and log a big, noisy message.
-<a href=#263 id=263 data-nosnippet>263</a>                    //
-<a href=#264 id=264 data-nosnippet>264</a>                    // We do this in a hacky way and compare the stringified version of each filter since `EnvFilter` can't be directly compared.
-<a href=#265 id=265 data-nosnippet>265</a>                    </span><span class="kw">let </span>existing_base_filter_str = base_filter.to_string();
-<a href=#266 id=266 data-nosnippet>266</a>                    <span class="kw">let </span>new_base_filter_str = new_base.to_string();
-<a href=#267 id=267 data-nosnippet>267</a>                    <span class="kw">if </span>new_base_filter_str == existing_base_filter_str {
-<a href=#268 id=268 data-nosnippet>268</a>                        <span class="kw">continue</span>;
-<a href=#269 id=269 data-nosnippet>269</a>                    }
-<a href=#270 id=270 data-nosnippet>270</a>
-<a href=#271 id=271 data-nosnippet>271</a>                    base_filter = new_base;
-<a href=#272 id=272 data-nosnippet>272</a>
-<a href=#273 id=273 data-nosnippet>273</a>                    <span class="kw">if </span>override_active {
-<a href=#274 id=274 data-nosnippet>274</a>                        <span class="comment">// An override is currently active. Don't clobber it -- the new base will take effect when
-<a href=#275 id=275 data-nosnippet>275</a>                        // the override expires.
-<a href=#276 id=276 data-nosnippet>276</a>                        </span><span class="macro">info!</span>(
-<a href=#277 id=277 data-nosnippet>277</a>                            directives = %base_filter,
-<a href=#278 id=278 data-nosnippet>278</a>                            <span class="string">"Updated base log filtering directives; application deferred until active override expires."
-<a href=#279 id=279 data-nosnippet>279</a>                        </span>);
-<a href=#280 id=280 data-nosnippet>280</a>                    } <span class="kw">else </span>{
-<a href=#281 id=281 data-nosnippet>281</a>                        <span class="kw">let </span>new_directives = base_filter.to_string();
-<a href=#282 id=282 data-nosnippet>282</a>                        <span class="kw">match </span>state.reload_handle.reload(base_filter.clone()) {
-<a href=#283 id=283 data-nosnippet>283</a>                            <span class="prelude-val">Ok</span>(()) =&gt; <span class="macro">info!</span>(directives = %new_directives, <span class="string">"Updated base log filtering directives."</span>),
-<a href=#284 id=284 data-nosnippet>284</a>                            <span class="prelude-val">Err</span>(e) =&gt; <span class="macro">error!</span>(error = %e, <span class="string">"Failed to update base log filtering directives."</span>),
-<a href=#285 id=285 data-nosnippet>285</a>                        }
-<a href=#286 id=286 data-nosnippet>286</a>                    }
-<a href=#287 id=287 data-nosnippet>287</a>                },
-<a href=#288 id=288 data-nosnippet>288</a>
-<a href=#289 id=289 data-nosnippet>289</a>                <span class="comment">// Our sender has dropped, so there's no more actions for us to handle.
-<a href=#290 id=290 data-nosnippet>290</a>                </span><span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
-<a href=#291 id=291 data-nosnippet>291</a>            },
-<a href=#292 id=292 data-nosnippet>292</a>            <span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>override_timeout =&gt; {
-<a href=#293 id=293 data-nosnippet>293</a>                <span class="comment">// Our override timeout has fired. If we have an active override, reset it back to the base filter.
-<a href=#294 id=294 data-nosnippet>294</a>                //
-<a href=#295 id=295 data-nosnippet>295</a>                // Otherwise, this just means that we've been running for a while without any overrides, so we can just
-<a href=#296 id=296 data-nosnippet>296</a>                // reset the timeout with a long duration.
-<a href=#297 id=297 data-nosnippet>297</a>                </span><span class="kw">if </span>override_active {
-<a href=#298 id=298 data-nosnippet>298</a>                    override_active = <span class="bool-val">false</span>;
-<a href=#299 id=299 data-nosnippet>299</a>
-<a href=#300 id=300 data-nosnippet>300</a>                    <span class="kw">let </span>restore_directives = base_filter.to_string();
-<a href=#301 id=301 data-nosnippet>301</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = state.reload_handle.reload(base_filter.clone()) {
-<a href=#302 id=302 data-nosnippet>302</a>                        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to reset log filtering directives."</span>);
-<a href=#303 id=303 data-nosnippet>303</a>                    }
-<a href=#304 id=304 data-nosnippet>304</a>
-<a href=#305 id=305 data-nosnippet>305</a>                    <span class="macro">info!</span>(directives = %restore_directives, <span class="string">"Restored base log filtering directives."</span>);
-<a href=#306 id=306 data-nosnippet>306</a>                }
-<a href=#307 id=307 data-nosnippet>307</a>
-<a href=#308 id=308 data-nosnippet>308</a>                override_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(<span class="number">3600</span>));
-<a href=#309 id=309 data-nosnippet>309</a>            }
-<a href=#310 id=310 data-nosnippet>310</a>        }
-<a href=#311 id=311 data-nosnippet>311</a>    }
-<a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>    <span class="comment">// Reset our filter to the base one before we exit.
-<a href=#314 id=314 data-nosnippet>314</a>    </span><span class="kw">if let </span><span class="prelude-val">Err</span>(e) = state.reload_handle.reload(base_filter) {
-<a href=#315 id=315 data-nosnippet>315</a>        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to reset log filtering directives before override handler shutdown."</span>);
-<a href=#316 id=316 data-nosnippet>316</a>    }
-<a href=#317 id=317 data-nosnippet>317</a>}
+<a href=#263 id=263 data-nosnippet>263</a>                    </span><span class="kw">if </span>new_base == base_filter {
+<a href=#264 id=264 data-nosnippet>264</a>                        <span class="kw">continue</span>;
+<a href=#265 id=265 data-nosnippet>265</a>                    }
+<a href=#266 id=266 data-nosnippet>266</a>
+<a href=#267 id=267 data-nosnippet>267</a>                    base_filter = new_base;
+<a href=#268 id=268 data-nosnippet>268</a>
+<a href=#269 id=269 data-nosnippet>269</a>                    <span class="kw">if </span>override_active {
+<a href=#270 id=270 data-nosnippet>270</a>                        <span class="comment">// An override is currently active. Don't clobber it -- the new base will take effect when
+<a href=#271 id=271 data-nosnippet>271</a>                        // the override expires.
+<a href=#272 id=272 data-nosnippet>272</a>                        </span><span class="macro">info!</span>(
+<a href=#273 id=273 data-nosnippet>273</a>                            directives = %base_filter,
+<a href=#274 id=274 data-nosnippet>274</a>                            <span class="string">"Updated base log filtering directives; application deferred until active override expires."
+<a href=#275 id=275 data-nosnippet>275</a>                        </span>);
+<a href=#276 id=276 data-nosnippet>276</a>                    } <span class="kw">else </span>{
+<a href=#277 id=277 data-nosnippet>277</a>                        <span class="kw">let </span>new_directives = base_filter.to_string();
+<a href=#278 id=278 data-nosnippet>278</a>                        <span class="kw">match </span>state.reload_handle.reload(base_filter.clone()) {
+<a href=#279 id=279 data-nosnippet>279</a>                            <span class="prelude-val">Ok</span>(()) =&gt; <span class="macro">info!</span>(directives = %new_directives, <span class="string">"Updated base log filtering directives."</span>),
+<a href=#280 id=280 data-nosnippet>280</a>                            <span class="prelude-val">Err</span>(e) =&gt; <span class="macro">error!</span>(error = %e, <span class="string">"Failed to update base log filtering directives."</span>),
+<a href=#281 id=281 data-nosnippet>281</a>                        }
+<a href=#282 id=282 data-nosnippet>282</a>                    }
+<a href=#283 id=283 data-nosnippet>283</a>                },
+<a href=#284 id=284 data-nosnippet>284</a>
+<a href=#285 id=285 data-nosnippet>285</a>                <span class="comment">// Our sender has dropped, so there's no more actions for us to handle.
+<a href=#286 id=286 data-nosnippet>286</a>                </span><span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
+<a href=#287 id=287 data-nosnippet>287</a>            },
+<a href=#288 id=288 data-nosnippet>288</a>            <span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>override_timeout =&gt; {
+<a href=#289 id=289 data-nosnippet>289</a>                <span class="comment">// Our override timeout has fired. If we have an active override, reset it back to the base filter.
+<a href=#290 id=290 data-nosnippet>290</a>                //
+<a href=#291 id=291 data-nosnippet>291</a>                // Otherwise, this just means that we've been running for a while without any overrides, so we can just
+<a href=#292 id=292 data-nosnippet>292</a>                // reset the timeout with a long duration.
+<a href=#293 id=293 data-nosnippet>293</a>                </span><span class="kw">if </span>override_active {
+<a href=#294 id=294 data-nosnippet>294</a>                    override_active = <span class="bool-val">false</span>;
+<a href=#295 id=295 data-nosnippet>295</a>
+<a href=#296 id=296 data-nosnippet>296</a>                    <span class="kw">let </span>restore_directives = base_filter.to_string();
+<a href=#297 id=297 data-nosnippet>297</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = state.reload_handle.reload(base_filter.clone()) {
+<a href=#298 id=298 data-nosnippet>298</a>                        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to reset log filtering directives."</span>);
+<a href=#299 id=299 data-nosnippet>299</a>                    }
+<a href=#300 id=300 data-nosnippet>300</a>
+<a href=#301 id=301 data-nosnippet>301</a>                    <span class="macro">info!</span>(directives = %restore_directives, <span class="string">"Restored base log filtering directives."</span>);
+<a href=#302 id=302 data-nosnippet>302</a>                }
+<a href=#303 id=303 data-nosnippet>303</a>
+<a href=#304 id=304 data-nosnippet>304</a>                override_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(<span class="number">3600</span>));
+<a href=#305 id=305 data-nosnippet>305</a>            }
+<a href=#306 id=306 data-nosnippet>306</a>        }
+<a href=#307 id=307 data-nosnippet>307</a>    }
+<a href=#308 id=308 data-nosnippet>308</a>
+<a href=#309 id=309 data-nosnippet>309</a>    <span class="comment">// Reset our filter to the base one before we exit.
+<a href=#310 id=310 data-nosnippet>310</a>    </span><span class="kw">if let </span><span class="prelude-val">Err</span>(e) = state.reload_handle.reload(base_filter) {
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to reset log filtering directives before override handler shutdown."</span>);
+<a href=#312 id=312 data-nosnippet>312</a>    }
+<a href=#313 id=313 data-nosnippet>313</a>}
+<a href=#314 id=314 data-nosnippet>314</a>
+<a href=#315 id=315 data-nosnippet>315</a><span class="attr">#[cfg(test)]
+<a href=#316 id=316 data-nosnippet>316</a></span><span class="kw">mod </span>tests {
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="kw">use </span>std::time::Duration;
 <a href=#318 id=318 data-nosnippet>318</a>
-<a href=#319 id=319 data-nosnippet>319</a><span class="attr">#[cfg(test)]
-<a href=#320 id=320 data-nosnippet>320</a></span><span class="kw">mod </span>tests {
-<a href=#321 id=321 data-nosnippet>321</a>    <span class="kw">use </span>std::time::Duration;
-<a href=#322 id=322 data-nosnippet>322</a>
-<a href=#323 id=323 data-nosnippet>323</a>    <span class="kw">use </span>tokio::{sync::mpsc, time::sleep};
-<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">use </span>tracing_subscriber::{reload, EnvFilter, Registry};
-<a href=#325 id=325 data-nosnippet>325</a>
-<a href=#326 id=326 data-nosnippet>326</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#319 id=319 data-nosnippet>319</a>    <span class="kw">use </span>tokio::{sync::mpsc, time::sleep};
+<a href=#320 id=320 data-nosnippet>320</a>    <span class="kw">use </span>tracing_subscriber::{reload, Registry};
+<a href=#321 id=321 data-nosnippet>321</a>
+<a href=#322 id=322 data-nosnippet>322</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#323 id=323 data-nosnippet>323</a>
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">fn </span>filter(directives: <span class="kw-2">&amp;</span>str) -&gt; Targets {
+<a href=#325 id=325 data-nosnippet>325</a>        parse_filter_directives(directives).expect(<span class="string">"valid filter directives"</span>)
+<a href=#326 id=326 data-nosnippet>326</a>    }
 <a href=#327 id=327 data-nosnippet>327</a>
-<a href=#328 id=328 data-nosnippet>328</a>    <span class="kw">fn </span>current_filter(handle: <span class="kw-2">&amp;</span>reload::Handle&lt;EnvFilter, Registry&gt;) -&gt; String {
+<a href=#328 id=328 data-nosnippet>328</a>    <span class="kw">fn </span>current_filter(handle: <span class="kw-2">&amp;</span>reload::Handle&lt;Targets, Registry&gt;) -&gt; String {
 <a href=#329 id=329 data-nosnippet>329</a>        handle
 <a href=#330 id=330 data-nosnippet>330</a>            .clone_current()
 <a href=#331 id=331 data-nosnippet>331</a>            .expect(<span class="string">"reload layer should be alive"</span>)
 <a href=#332 id=332 data-nosnippet>332</a>            .to_string()
 <a href=#333 id=333 data-nosnippet>333</a>    }
 <a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>    <span class="kw">async fn </span>wait_for_filter(handle: <span class="kw-2">&amp;</span>reload::Handle&lt;EnvFilter, Registry&gt;, expected: <span class="kw-2">&amp;</span>str) {
+<a href=#335 id=335 data-nosnippet>335</a>    <span class="kw">async fn </span>wait_for_filter(handle: <span class="kw-2">&amp;</span>reload::Handle&lt;Targets, Registry&gt;, expected: <span class="kw-2">&amp;</span>str) {
 <a href=#336 id=336 data-nosnippet>336</a>        <span class="kw">let </span>deadline = tokio::time::Instant::now() + Duration::from_secs(<span class="number">1</span>);
 <a href=#337 id=337 data-nosnippet>337</a>
 <a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">loop </span>{
@@ -351,12 +351,12 @@
 <a href=#351 id=351 data-nosnippet>351</a>    }
 <a href=#352 id=352 data-nosnippet>352</a>
 <a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">fn </span>spawn_processor(
-<a href=#354 id=354 data-nosnippet>354</a>        base_filter: EnvFilter,
+<a href=#354 id=354 data-nosnippet>354</a>        base_filter: Targets,
 <a href=#355 id=355 data-nosnippet>355</a>    ) -&gt; (
 <a href=#356 id=356 data-nosnippet>356</a>        LoggingOverrideController,
-<a href=#357 id=357 data-nosnippet>357</a>        reload::Handle&lt;EnvFilter, Registry&gt;,
+<a href=#357 id=357 data-nosnippet>357</a>        reload::Handle&lt;Targets, Registry&gt;,
 <a href=#358 id=358 data-nosnippet>358</a>        tokio::task::JoinHandle&lt;()&gt;,
-<a href=#359 id=359 data-nosnippet>359</a>        reload::Layer&lt;EnvFilter, Registry&gt;,
+<a href=#359 id=359 data-nosnippet>359</a>        reload::Layer&lt;Targets, Registry&gt;,
 <a href=#360 id=360 data-nosnippet>360</a>    ) {
 <a href=#361 id=361 data-nosnippet>361</a>        <span class="kw">let </span>(filter_layer, reload_handle) = reload::Layer::new(base_filter);
 <a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>(tx, rx) = mpsc::channel(<span class="number">1</span>);
@@ -376,60 +376,76 @@
 <a href=#376 id=376 data-nosnippet>376</a>
 <a href=#377 id=377 data-nosnippet>377</a>    <span class="attr">#[tokio::test]
 <a href=#378 id=378 data-nosnippet>378</a>    </span><span class="kw">async fn </span>reset_restores_current_base_filter() {
-<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>(controller, reload_handle, processor, _filter_layer) =
-<a href=#380 id=380 data-nosnippet>380</a>            spawn_processor(EnvFilter::new(<span class="string">"agent_data_plane=info"</span>));
-<a href=#381 id=381 data-nosnippet>381</a>
-<a href=#382 id=382 data-nosnippet>382</a>        controller
-<a href=#383 id=383 data-nosnippet>383</a>            .override_for(Duration::from_secs(<span class="number">60</span>), EnvFilter::new(<span class="string">"hyper=warn"</span>))
-<a href=#384 id=384 data-nosnippet>384</a>            .<span class="kw">await
-<a href=#385 id=385 data-nosnippet>385</a>            </span>.expect(<span class="string">"send override"</span>);
-<a href=#386 id=386 data-nosnippet>386</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"hyper=warn"</span>).<span class="kw">await</span>;
-<a href=#387 id=387 data-nosnippet>387</a>
-<a href=#388 id=388 data-nosnippet>388</a>        controller
-<a href=#389 id=389 data-nosnippet>389</a>            .update_base(EnvFilter::new(<span class="string">"agent_data_plane=debug"</span>))
-<a href=#390 id=390 data-nosnippet>390</a>            .<span class="kw">await
-<a href=#391 id=391 data-nosnippet>391</a>            </span>.expect(<span class="string">"send update_base"</span>);
-<a href=#392 id=392 data-nosnippet>392</a>        controller.reset().<span class="kw">await</span>.expect(<span class="string">"send reset"</span>);
-<a href=#393 id=393 data-nosnippet>393</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"agent_data_plane=debug"</span>).<span class="kw">await</span>;
-<a href=#394 id=394 data-nosnippet>394</a>
-<a href=#395 id=395 data-nosnippet>395</a>        drop(controller);
-<a href=#396 id=396 data-nosnippet>396</a>        processor.<span class="kw">await</span>.expect(<span class="string">"override processor should exit cleanly"</span>);
-<a href=#397 id=397 data-nosnippet>397</a>    }
-<a href=#398 id=398 data-nosnippet>398</a>
-<a href=#399 id=399 data-nosnippet>399</a>    <span class="attr">#[tokio::test]
-<a href=#400 id=400 data-nosnippet>400</a>    </span><span class="kw">async fn </span>override_expiration_restores_current_base_filter() {
-<a href=#401 id=401 data-nosnippet>401</a>        <span class="kw">let </span>(controller, reload_handle, processor, _filter_layer) =
-<a href=#402 id=402 data-nosnippet>402</a>            spawn_processor(EnvFilter::new(<span class="string">"agent_data_plane=info"</span>));
-<a href=#403 id=403 data-nosnippet>403</a>
-<a href=#404 id=404 data-nosnippet>404</a>        controller
-<a href=#405 id=405 data-nosnippet>405</a>            .override_for(Duration::from_millis(<span class="number">100</span>), EnvFilter::new(<span class="string">"hyper=warn"</span>))
-<a href=#406 id=406 data-nosnippet>406</a>            .<span class="kw">await
-<a href=#407 id=407 data-nosnippet>407</a>            </span>.expect(<span class="string">"send override"</span>);
-<a href=#408 id=408 data-nosnippet>408</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"hyper=warn"</span>).<span class="kw">await</span>;
-<a href=#409 id=409 data-nosnippet>409</a>
-<a href=#410 id=410 data-nosnippet>410</a>        controller
-<a href=#411 id=411 data-nosnippet>411</a>            .update_base(EnvFilter::new(<span class="string">"agent_data_plane=warn"</span>))
-<a href=#412 id=412 data-nosnippet>412</a>            .<span class="kw">await
-<a href=#413 id=413 data-nosnippet>413</a>            </span>.expect(<span class="string">"send update_base"</span>);
-<a href=#414 id=414 data-nosnippet>414</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"agent_data_plane=warn"</span>).<span class="kw">await</span>;
-<a href=#415 id=415 data-nosnippet>415</a>
-<a href=#416 id=416 data-nosnippet>416</a>        drop(controller);
-<a href=#417 id=417 data-nosnippet>417</a>        processor.<span class="kw">await</span>.expect(<span class="string">"override processor should exit cleanly"</span>);
-<a href=#418 id=418 data-nosnippet>418</a>    }
-<a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a>    <span class="attr">#[tokio::test]
-<a href=#421 id=421 data-nosnippet>421</a>    </span><span class="kw">async fn </span>update_base_applies_immediately_when_no_override_active() {
-<a href=#422 id=422 data-nosnippet>422</a>        <span class="kw">let </span>(controller, reload_handle, processor, _filter_layer) =
-<a href=#423 id=423 data-nosnippet>423</a>            spawn_processor(EnvFilter::new(<span class="string">"agent_data_plane=info"</span>));
-<a href=#424 id=424 data-nosnippet>424</a>
-<a href=#425 id=425 data-nosnippet>425</a>        controller
-<a href=#426 id=426 data-nosnippet>426</a>            .update_base(EnvFilter::new(<span class="string">"agent_data_plane=debug"</span>))
-<a href=#427 id=427 data-nosnippet>427</a>            .<span class="kw">await
-<a href=#428 id=428 data-nosnippet>428</a>            </span>.expect(<span class="string">"send update_base"</span>);
-<a href=#429 id=429 data-nosnippet>429</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"agent_data_plane=debug"</span>).<span class="kw">await</span>;
-<a href=#430 id=430 data-nosnippet>430</a>
-<a href=#431 id=431 data-nosnippet>431</a>        drop(controller);
-<a href=#432 id=432 data-nosnippet>432</a>        processor.<span class="kw">await</span>.expect(<span class="string">"override processor should exit cleanly"</span>);
-<a href=#433 id=433 data-nosnippet>433</a>    }
-<a href=#434 id=434 data-nosnippet>434</a>}
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>(controller, reload_handle, processor, _filter_layer) = spawn_processor(filter(<span class="string">"agent_data_plane=info"</span>));
+<a href=#380 id=380 data-nosnippet>380</a>
+<a href=#381 id=381 data-nosnippet>381</a>        controller
+<a href=#382 id=382 data-nosnippet>382</a>            .override_for(Duration::from_secs(<span class="number">60</span>), filter(<span class="string">"hyper=warn"</span>))
+<a href=#383 id=383 data-nosnippet>383</a>            .<span class="kw">await
+<a href=#384 id=384 data-nosnippet>384</a>            </span>.expect(<span class="string">"send override"</span>);
+<a href=#385 id=385 data-nosnippet>385</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"hyper=warn"</span>).<span class="kw">await</span>;
+<a href=#386 id=386 data-nosnippet>386</a>
+<a href=#387 id=387 data-nosnippet>387</a>        controller
+<a href=#388 id=388 data-nosnippet>388</a>            .update_base(filter(<span class="string">"agent_data_plane=debug"</span>))
+<a href=#389 id=389 data-nosnippet>389</a>            .<span class="kw">await
+<a href=#390 id=390 data-nosnippet>390</a>            </span>.expect(<span class="string">"send update_base"</span>);
+<a href=#391 id=391 data-nosnippet>391</a>        controller.reset().<span class="kw">await</span>.expect(<span class="string">"send reset"</span>);
+<a href=#392 id=392 data-nosnippet>392</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"agent_data_plane=debug"</span>).<span class="kw">await</span>;
+<a href=#393 id=393 data-nosnippet>393</a>
+<a href=#394 id=394 data-nosnippet>394</a>        drop(controller);
+<a href=#395 id=395 data-nosnippet>395</a>        processor.<span class="kw">await</span>.expect(<span class="string">"override processor should exit cleanly"</span>);
+<a href=#396 id=396 data-nosnippet>396</a>    }
+<a href=#397 id=397 data-nosnippet>397</a>
+<a href=#398 id=398 data-nosnippet>398</a>    <span class="attr">#[tokio::test]
+<a href=#399 id=399 data-nosnippet>399</a>    </span><span class="kw">async fn </span>override_expiration_restores_current_base_filter() {
+<a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">let </span>(controller, reload_handle, processor, _filter_layer) = spawn_processor(filter(<span class="string">"agent_data_plane=info"</span>));
+<a href=#401 id=401 data-nosnippet>401</a>
+<a href=#402 id=402 data-nosnippet>402</a>        controller
+<a href=#403 id=403 data-nosnippet>403</a>            .override_for(Duration::from_millis(<span class="number">100</span>), filter(<span class="string">"hyper=warn"</span>))
+<a href=#404 id=404 data-nosnippet>404</a>            .<span class="kw">await
+<a href=#405 id=405 data-nosnippet>405</a>            </span>.expect(<span class="string">"send override"</span>);
+<a href=#406 id=406 data-nosnippet>406</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"hyper=warn"</span>).<span class="kw">await</span>;
+<a href=#407 id=407 data-nosnippet>407</a>
+<a href=#408 id=408 data-nosnippet>408</a>        controller
+<a href=#409 id=409 data-nosnippet>409</a>            .update_base(filter(<span class="string">"agent_data_plane=warn"</span>))
+<a href=#410 id=410 data-nosnippet>410</a>            .<span class="kw">await
+<a href=#411 id=411 data-nosnippet>411</a>            </span>.expect(<span class="string">"send update_base"</span>);
+<a href=#412 id=412 data-nosnippet>412</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"agent_data_plane=warn"</span>).<span class="kw">await</span>;
+<a href=#413 id=413 data-nosnippet>413</a>
+<a href=#414 id=414 data-nosnippet>414</a>        drop(controller);
+<a href=#415 id=415 data-nosnippet>415</a>        processor.<span class="kw">await</span>.expect(<span class="string">"override processor should exit cleanly"</span>);
+<a href=#416 id=416 data-nosnippet>416</a>    }
+<a href=#417 id=417 data-nosnippet>417</a>
+<a href=#418 id=418 data-nosnippet>418</a>    <span class="attr">#[tokio::test]
+<a href=#419 id=419 data-nosnippet>419</a>    </span><span class="kw">async fn </span>update_base_applies_immediately_when_no_override_active() {
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="kw">let </span>(controller, reload_handle, processor, _filter_layer) = spawn_processor(filter(<span class="string">"agent_data_plane=info"</span>));
+<a href=#421 id=421 data-nosnippet>421</a>
+<a href=#422 id=422 data-nosnippet>422</a>        controller
+<a href=#423 id=423 data-nosnippet>423</a>            .update_base(filter(<span class="string">"agent_data_plane=debug"</span>))
+<a href=#424 id=424 data-nosnippet>424</a>            .<span class="kw">await
+<a href=#425 id=425 data-nosnippet>425</a>            </span>.expect(<span class="string">"send update_base"</span>);
+<a href=#426 id=426 data-nosnippet>426</a>        wait_for_filter(<span class="kw-2">&amp;</span>reload_handle, <span class="string">"agent_data_plane=debug"</span>).<span class="kw">await</span>;
+<a href=#427 id=427 data-nosnippet>427</a>
+<a href=#428 id=428 data-nosnippet>428</a>        drop(controller);
+<a href=#429 id=429 data-nosnippet>429</a>        processor.<span class="kw">await</span>.expect(<span class="string">"override processor should exit cleanly"</span>);
+<a href=#430 id=430 data-nosnippet>430</a>    }
+<a href=#431 id=431 data-nosnippet>431</a>
+<a href=#432 id=432 data-nosnippet>432</a>    <span class="attr">#[tokio::test]
+<a href=#433 id=433 data-nosnippet>433</a>    </span><span class="kw">async fn </span>override_handler_rejects_span_and_field_filters() {
+<a href=#434 id=434 data-nosnippet>434</a>        <span class="kw">let </span>(tx, <span class="kw-2">mut </span>rx) = mpsc::channel(<span class="number">1</span>);
+<a href=#435 id=435 data-nosnippet>435</a>        <span class="kw">let </span>state = LoggingHandlerState {
+<a href=#436 id=436 data-nosnippet>436</a>            controller: LoggingOverrideController { tx },
+<a href=#437 id=437 data-nosnippet>437</a>        };
+<a href=#438 id=438 data-nosnippet>438</a>
+<a href=#439 id=439 data-nosnippet>439</a>        <span class="kw">let </span>response = LoggingAPIHandler::override_handler(
+<a href=#440 id=440 data-nosnippet>440</a>            State(state),
+<a href=#441 id=441 data-nosnippet>441</a>            Query(OverrideQueryParams { time_secs: <span class="number">60 </span>}),
+<a href=#442 id=442 data-nosnippet>442</a>            <span class="string">"saluki[span]=debug"</span>.to_string(),
+<a href=#443 id=443 data-nosnippet>443</a>        )
+<a href=#444 id=444 data-nosnippet>444</a>        .<span class="kw">await
+<a href=#445 id=445 data-nosnippet>445</a>        </span>.into_response();
+<a href=#446 id=446 data-nosnippet>446</a>
+<a href=#447 id=447 data-nosnippet>447</a>        <span class="macro">assert_eq!</span>(response.status(), StatusCode::BAD_REQUEST);
+<a href=#448 id=448 data-nosnippet>448</a>        <span class="macro">assert!</span>(rx.try_recv().is_err(), <span class="string">"a rejected override must not reach the worker"</span>);
+<a href=#449 id=449 data-nosnippet>449</a>    }
+<a href=#450 id=450 data-nosnippet>450</a>}
 </code></pre></div></section></main></body></html>
