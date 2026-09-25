@@ -906,12 +906,15 @@ The following settings work in ADP with the same behavior as the core agent.
 | `agent_ipc.grpc_max_message_size`                                                          | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                                                     | Relax backend tag validation via HTTP header       |
 | `api_key`                                                                                  | API key for endpoint auth                          |
+| `apm_config.analyzed_rate_by_service`                                                      | Legacy per-service event extraction rates          |
+| `apm_config.analyzed_spans`                                                                | Per service|operation APM event extraction rates   |
 | `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
 | `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
 | `apm_config.errors_per_second`                                                             | APM error-span sampling rate (per sec)             |
 | `apm_config.extra_sample_rate`                                                             | Extra sample rate multiplier                       |
 | `apm_config.max_catalog_entries`                                                           | Priority sampler service-signature catalog cap     |
+| `apm_config.max_events_per_second`                                                         | Upper bound on sampled APM events per second       |
 | `apm_config.max_traces_per_second`                                                         | Deprecated alias for target_traces_per_second      |
 | `apm_config.obfuscation.credit_cards.enabled`                                              | apm_config.obfuscation.credit_cards.enabled        |
 | `apm_config.obfuscation.credit_cards.keep_values`                                          | apm_config.obfuscation.credit_cards.keep_values    |

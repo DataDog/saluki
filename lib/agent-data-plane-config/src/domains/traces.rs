@@ -1,5 +1,7 @@
 //! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::defaults::{
@@ -96,6 +98,29 @@ pub struct Domain {
     /// is preserved while the total scales.
     pub extra_sample_rate: f64,
 
+    /// Event extraction rates by service, for the legacy analytics configuration.
+    ///
+    /// Empty by default, so no spans are nominated through this map. Rates apply only to
+    /// top-level spans of the named service. Superseded by `analyzed_spans_by_service`; the
+    /// legacy map is ignored when both are set.
+    pub analyzed_rate_by_service: HashMap<String, f64>,
+
+    /// Event extraction rates by service and operation name.
+    ///
+    /// Empty by default. Configured keys combine service and operation as
+    /// `service|operation` with exactly one separator; malformed keys and non-numeric rates
+    /// are dropped with a warning at translation. Takes precedence over
+    /// `analyzed_rate_by_service` when non-empty.
+    pub analyzed_spans_by_service: HashMap<String, HashMap<String, f64>>,
+
+    /// Upper bound on the average number of extracted events sampled per second.
+    ///
+    /// Defaults to 200. A decaying rate estimate caps survivors at this budget; spans of
+    /// manually kept traces bypass the budget entirely. Raise it when customers need more
+    /// event volume than the default allows; in normal traffic it should sit high enough that
+    /// the cap never engages, since capped events are dropped probabilistically.
+    pub max_events_per_second: f64,
+
     /// Maximum number of service signatures the priority sampler tracks rates for.
     ///
     /// Defaults to 5000. If set to `0`, the default of 5000 applies. Distinct services beyond
@@ -161,6 +186,9 @@ impl Default for Domain {
             errors_per_second: 0.0,
             target_traces_per_second: 0.0,
             extra_sample_rate: 1.0,
+            analyzed_rate_by_service: HashMap::new(),
+            analyzed_spans_by_service: HashMap::new(),
+            max_events_per_second: 0.0,
             max_catalog_entries: 0,
             features: Vec::new(),
             enable_rare_sampler: false,

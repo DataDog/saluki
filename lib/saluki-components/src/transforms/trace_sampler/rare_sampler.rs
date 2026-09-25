@@ -33,7 +33,7 @@ const TTL_RENEWAL_PERIOD: Duration = Duration::from_secs(60);
 pub(super) const RARE_KEY: &str = "_dd.rare";
 
 /// Metric key indicating a span is a top-level span (legacy, set by the agent).
-const KEY_TOP_LEVEL: &str = "_top_level";
+pub(super) const KEY_TOP_LEVEL: &str = "_top_level";
 
 /// Metric key indicating a span is a top-level span, set directly by tracers/SDKs.
 ///
