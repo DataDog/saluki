@@ -135,6 +135,22 @@ impl SourceTree {
         self.root.to_value()
     }
 
+    /// Returns every value in this layer under its dotted key, with the provenance of the input that
+    /// supplied it.
+    ///
+    /// This is the by-key view of the layer, for consumers that work a key at a time rather than
+    /// deserializing a model: they need every key present, including the ones no model describes.
+    ///
+    /// An object-valued leaf is descended into, so a key nested inside a value the models do not
+    /// describe is still reported under its full path. Every key that comes out of one leaf carries
+    /// that leaf's provenance, because one input supplied the whole value. A leaf holding an array or
+    /// a scalar is reported as it stands.
+    pub(crate) fn flattened_keys(&self) -> Vec<(String, &Value, Provenance)> {
+        let mut keys = Vec::new();
+        self.root.flatten(&mut String::new(), &mut keys);
+        keys
+    }
+
     /// Returns whether an input set `key`'s value explicitly.
     ///
     /// A key this layer does not supply reports [`Provenance::Default`]: a setting nobody supplied
@@ -224,6 +240,25 @@ impl Node {
         }
     }
 
+    /// Collects the dotted key of every value at and beneath this node. See
+    /// [`SourceTree::flattened_keys`].
+    fn flatten<'a>(&'a self, prefix: &mut String, keys: &mut Vec<(String, &'a Value, Provenance)>) {
+        match self {
+            Node::Section(children) => {
+                for (key, child) in children {
+                    let prefix_len = prefix.len();
+                    if !prefix.is_empty() {
+                        prefix.push('.');
+                    }
+                    prefix.push_str(key);
+                    child.flatten(prefix, keys);
+                    prefix.truncate(prefix_len);
+                }
+            }
+            Node::Leaf { value, provenance } => flatten_value(value, *provenance, prefix, keys),
+        }
+    }
+
     /// Returns the values at and beneath this node, discarding provenance.
     fn to_value(&self) -> Value {
         match self {
@@ -235,6 +270,28 @@ impl Node {
                     .collect(),
             ),
         }
+    }
+}
+
+/// Collects the dotted key of every value at and beneath one leaf's value, all under `provenance`.
+///
+/// Object entries are descended into; anything else is a value in its own right.
+fn flatten_value<'a>(
+    value: &'a Value, provenance: Provenance, prefix: &mut String, keys: &mut Vec<(String, &'a Value, Provenance)>,
+) {
+    let Value::Object(entries) = value else {
+        keys.push((prefix.clone(), value, provenance));
+        return;
+    };
+
+    for (key, entry) in entries {
+        let prefix_len = prefix.len();
+        if !prefix.is_empty() {
+            prefix.push('.');
+        }
+        prefix.push_str(key);
+        flatten_value(entry, provenance, prefix, keys);
+        prefix.truncate(prefix_len);
     }
 }
 
@@ -450,6 +507,58 @@ mod tests {
         assert_eq!(
             local.overlay(&agent).to_value(),
             json!({ "not_a_datadog_key": { "a": 9 } })
+        );
+    }
+
+    #[test]
+    fn flattened_keys_report_dotted_paths_and_provenance() {
+        let local = SourceTree::all_explicit(json!({ "site": "datadoghq.eu" }));
+        let agent = agent_layer(&[
+            ("dogstatsd_port", json!(9125), StreamProvenance::Explicit),
+            ("otlp_config.traces.enabled", json!(true), StreamProvenance::Default),
+            // An array value is one key, not one key per element.
+            (
+                "dogstatsd_mapper_profiles",
+                json!([{ "name": "a" }]),
+                StreamProvenance::Default,
+            ),
+        ]);
+
+        let merged = local.overlay(&agent);
+        let keys = merged.flattened_keys();
+
+        assert_eq!(
+            keys,
+            vec![
+                (
+                    "dogstatsd_mapper_profiles".to_string(),
+                    &json!([{ "name": "a" }]),
+                    Provenance::Default
+                ),
+                ("dogstatsd_port".to_string(), &json!(9125), Provenance::Explicit),
+                (
+                    "otlp_config.traces.enabled".to_string(),
+                    &json!(true),
+                    Provenance::Default
+                ),
+                ("site".to_string(), &json!("datadoghq.eu"), Provenance::Explicit),
+            ]
+        );
+    }
+
+    #[test]
+    fn flattened_keys_descend_into_an_object_value() {
+        // A key no model describes is one leaf holding a whole object, but a by-key consumer still has
+        // to see the keys inside it: an unsupported key is exactly the kind of key no model declares.
+        // They all report the provenance of the input that supplied the object.
+        let tree = SourceTree::all_explicit(json!({ "not_a_datadog_key": { "a": 1, "b": { "c": 2 } } }));
+
+        assert_eq!(
+            tree.flattened_keys(),
+            vec![
+                ("not_a_datadog_key.a".to_string(), &json!(1), Provenance::Explicit),
+                ("not_a_datadog_key.b.c".to_string(), &json!(2), Provenance::Explicit),
+            ]
         );
     }
 
