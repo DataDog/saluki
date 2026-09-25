@@ -64,9 +64,24 @@ mod tests {
                 ),
                 2.0,
             )),
+            // The untagged aggregate should be skipped in favor of the per-domain series.
             Event::Metric(Metric::gauge(
-                Context::from_static_parts("adp.network_http_retry_queue_size", &[]),
+                Context::from_static_parts("adp.network_http_retry_queue_size", &["component_id:dd_out"]),
+                99.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
                 4.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:mrf_dd_out", "domain:https://api.datadoghq.eu"],
+                ),
+                6.0,
             )),
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
@@ -93,7 +108,9 @@ mod tests {
         assert!(
             output.contains("transactions__requeued{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 2")
         );
-        assert!(output.contains("transactions__retry_queue_size 4"));
+        assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.com\"} 4"));
+        assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.eu\"} 6"));
+        assert!(!output.contains("transactions__retry_queue_size 99"));
         assert!(output.contains("dogstatsd__uds_origin_detection_error 9"));
 
         // Unmatched metrics should NOT appear.

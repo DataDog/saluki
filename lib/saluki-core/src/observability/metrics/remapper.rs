@@ -1,9 +1,9 @@
 //! Remapper rules for translating source metrics into a different name and tag shape.
 //!
 //! A [`RemapperRule`] declares how to match a source metric (by name, optionally with a required
-//! tag set) and how the matched metric should be rewritten: a new name, a set of tags copied
-//! and/or renamed from the source, and an optional set of additional fixed tags. Rules also carry
-//! optional help text that the renderer emits in the Prometheus `# HELP` header.
+//! tag set and required tag keys) and how the matched metric should be rewritten: a new name, a set
+//! of tags copied and/or renamed from the source, and an optional set of additional fixed tags.
+//! Rules also carry optional help text that the renderer emits in the Prometheus `# HELP` header.
 
 use saluki_context::{tags::TagSet, Context};
 use stringtheory::MetaString;
@@ -18,6 +18,7 @@ use stringtheory::MetaString;
 pub struct RemapperRule {
     existing_name: &'static str,
     existing_tags: &'static [&'static str],
+    required_tag_keys: Vec<&'static str>,
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
     additional_tags: Vec<MetaString>,
@@ -31,6 +32,7 @@ impl RemapperRule {
         Self {
             existing_name,
             existing_tags: &[],
+            required_tag_keys: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
@@ -46,12 +48,27 @@ impl RemapperRule {
         Self {
             existing_name,
             existing_tags,
+            required_tag_keys: Vec::new(),
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
             continue_matching: false,
             help_text: None,
         }
+    }
+
+    /// Adds a set of tag names that must be present on the source metric, with any value, for this rule to match.
+    ///
+    /// This is useful when the same metric name is emitted both with and without a given tag (for example, an
+    /// aggregate series alongside per-dimension series), and only the tagged series should be remapped.
+    ///
+    /// This method is additive, so it can be called multiple times to add more required tag keys.
+    pub fn with_required_tag_keys<I>(mut self, required_tag_keys: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.required_tag_keys.extend(required_tag_keys);
+        self
     }
 
     /// Adds a set of tags to remap from the source metric by changing their name.
@@ -147,6 +164,10 @@ impl RemapperRule {
             }
         }
 
+        for required_tag_key in &self.required_tag_keys {
+            metric_tags.get_single_tag(required_tag_key)?;
+        }
+
         let tags = self.build_remapped_tags(metric_tags);
         Some(RemappedMetric {
             name: self.new_name,
@@ -238,6 +259,18 @@ mod tests {
                 description: "by_name_and_tags rejects when only one of several required tags is present",
                 rule: RemapperRule::by_name_and_tags("src.metric", &["env:prod", "role:api"], "dst.metric"),
                 context: Context::from_static_parts("src.metric", &["env:prod"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "with_required_tag_keys matches when the tag key is present with any value",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").with_required_tag_keys(["domain"]),
+                context: Context::from_static_parts("src.metric", &["domain:example.com"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "with_required_tag_keys rejects when the tag key is absent",
+                rule: RemapperRule::by_name("src.metric", "dst.metric").with_required_tag_keys(["domain"]),
+                context: Context::from_static_parts("src.metric", &["component_id:forwarder"]),
                 expected_name: None,
             },
         ];
