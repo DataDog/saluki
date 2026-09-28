@@ -78,14 +78,51 @@ impl SamplerName {
     }
 }
 
-/// Returns the `sampling_priority` tag value for a sampling priority.
-fn priority_tag_value(priority: i32) -> &'static str {
-    match priority {
-        -1 => "manual_drop",
-        0 => "auto_drop",
-        1 => "auto_keep",
-        2 => "manual_keep",
-        _ => "none",
+/// A sampling priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Priority {
+    ManualDrop,
+    AutoDrop,
+    AutoKeep,
+    ManualKeep,
+    /// Any value outside -1..=2, kept so the conversion round-trips.
+    Unknown(i32),
+}
+
+impl Priority {
+    /// Returns the `sampling_priority` tag value; unknown priorities read as "none".
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualDrop => "manual_drop",
+            Self::AutoDrop => "auto_drop",
+            Self::AutoKeep => "auto_keep",
+            Self::ManualKeep => "manual_keep",
+            Self::Unknown(_) => "none",
+        }
+    }
+}
+
+impl From<i32> for Priority {
+    fn from(value: i32) -> Self {
+        match value {
+            -1 => Self::ManualDrop,
+            0 => Self::AutoDrop,
+            1 => Self::AutoKeep,
+            2 => Self::ManualKeep,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl From<Priority> for i32 {
+    fn from(priority: Priority) -> Self {
+        match priority {
+            Priority::ManualDrop => -1,
+            Priority::AutoDrop => 0,
+            Priority::AutoKeep => 1,
+            Priority::ManualKeep => 2,
+            Priority::Unknown(value) => value,
+        }
     }
 }
 
@@ -98,7 +135,7 @@ pub(super) struct DecisionKey {
     pub(super) sampler: SamplerName,
     pub(super) service: MetaString,
     pub(super) env: MetaString,
-    pub(super) priority: Option<i32>,
+    pub(super) priority: Option<Priority>,
 }
 
 impl DecisionKey {
@@ -111,7 +148,7 @@ impl DecisionKey {
         tags.push(("sampler", self.sampler.as_str().to_string()));
         if self.sampler == SamplerName::Priority {
             if let Some(priority) = self.priority {
-                tags.push(("sampling_priority", priority_tag_value(priority).to_string()));
+                tags.push(("sampling_priority", priority.as_str().to_string()));
             }
         }
         if !self.service.is_empty() {
@@ -187,7 +224,7 @@ impl SamplerCounters {
     }
 
     #[cfg(test)]
-    fn rare_totals(&self) -> (u64, u64, u64) {
+    pub(super) fn rare_totals(&self) -> (u64, u64, u64) {
         (
             self.inner.rare_hits.load(Ordering::Relaxed),
             self.inner.rare_misses.load(Ordering::Relaxed),
@@ -207,9 +244,6 @@ pub(super) struct DecisionWindow {
     decisions: FastHashMap<DecisionKey, DecisionCounts>,
     max_decision_keys: usize,
     counters: SamplerCounters,
-    priority_tracked: i64,
-    no_priority_tracked: i64,
-    error_tracked: i64,
 }
 
 impl DecisionWindow {
@@ -225,9 +259,6 @@ impl DecisionWindow {
             decisions: FastHashMap::default(),
             max_decision_keys,
             counters: SamplerCounters::new(),
-            priority_tracked: 0,
-            no_priority_tracked: 0,
-            error_tracked: 0,
         }
     }
 
@@ -247,7 +278,7 @@ impl DecisionWindow {
             sampler,
             service,
             env,
-            priority: (sampler == SamplerName::Priority).then_some(priority),
+            priority: (sampler == SamplerName::Priority).then(|| Priority::from(priority)),
         };
         // A full window rolls unseen combinations into one overflow bucket per sampler, so burst
         // cardinality cannot grow the map without bound; keys already present keep counting.
@@ -273,19 +304,14 @@ impl DecisionWindow {
         }
     }
 
-    /// Publishes the tracked-signature counts of the adaptive samplers.
-    pub(super) fn set_tracked_signature_counts(&mut self, priority: i64, no_priority: i64, error: i64) {
-        self.priority_tracked = priority;
-        self.no_priority_tracked = no_priority;
-        self.error_tracked = error;
-    }
-
     /// Reports the window as metric events and starts a new one.
     ///
     /// Every decision reports its seen count, and keys that kept nothing never report a kept
     /// series. The signature-count gauges and the rare-sampler counters are reported every window,
     /// including quiet ones, so readers see gauges republished unchanged between active windows.
-    pub(super) fn take_window_events(&mut self) -> Vec<Event> {
+    pub(super) fn take_window_events(
+        &mut self, priority_tracked: u64, no_priority_tracked: u64, error_tracked: u64,
+    ) -> Vec<Event> {
         let mut events = Vec::new();
 
         // Drain the window map in place so its capacity carries into the next window.
@@ -306,17 +332,17 @@ impl DecisionWindow {
         events.push(gauge_event(
             METRIC_SAMPLER_SIZE,
             &[("sampler", SamplerName::Priority.as_str())],
-            self.priority_tracked as f64,
+            priority_tracked as f64,
         ));
         events.push(gauge_event(
             METRIC_SAMPLER_SIZE,
             &[("sampler", SamplerName::NoPriority.as_str())],
-            self.no_priority_tracked as f64,
+            no_priority_tracked as f64,
         ));
         events.push(gauge_event(
             METRIC_SAMPLER_SIZE,
             &[("sampler", SamplerName::Error.as_str())],
-            self.error_tracked as f64,
+            error_tracked as f64,
         ));
 
         let hits = self.counters.inner.rare_hits.swap(0, Ordering::Relaxed);
@@ -403,7 +429,7 @@ mod tests {
             sampler: SamplerName::Priority,
             service: MetaString::from("checkout"),
             env: MetaString::from("prod"),
-            priority: Some(2),
+            priority: Some(Priority::ManualKeep),
         };
         assert_eq!(
             priority.tags(),
@@ -435,7 +461,7 @@ mod tests {
             sampler: SamplerName::Priority,
             service: MetaString::empty(),
             env: MetaString::empty(),
-            priority: Some(9),
+            priority: Some(Priority::Unknown(9)),
         };
         assert_eq!(
             unknown_priority.tags(),
@@ -461,7 +487,7 @@ mod tests {
             .unwrap();
         assert_eq!(checkout, DecisionCounts { seen: 2, kept: 1 });
 
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         assert!(has_counter(
             &events,
             METRIC_SAMPLER_SEEN,
@@ -477,7 +503,7 @@ mod tests {
         assert!(telemetry.snapshot_decisions().is_empty());
 
         // A second, quiet window republishes the gauges but reports no decision counters.
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         assert!(!metric_with_tags(
             &events,
             METRIC_SAMPLER_SEEN,
@@ -540,14 +566,14 @@ mod tests {
         telemetry.counters().record_rare_shrink();
         assert_eq!(telemetry.counters().rare_totals(), (2, 1, 1));
 
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         assert!(has_counter(&events, METRIC_RARE_HITS, &[], 2.0));
         assert!(has_counter(&events, METRIC_RARE_MISSES, &[], 1.0));
         assert!(has_gauge(&events, METRIC_RARE_SHRINKS, &[], 1.0));
         assert_eq!(telemetry.counters().rare_totals(), (0, 0, 1));
 
         telemetry.counters().record_rare_shrink();
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         // A quiet window for hits and misses still republishes the cumulative shrink gauge.
         assert!(!metric_with_tags(&events, METRIC_RARE_HITS, &[]));
         assert!(has_gauge(&events, METRIC_RARE_SHRINKS, &[], 2.0));
@@ -558,7 +584,7 @@ mod tests {
         let mut telemetry = DecisionWindow::new();
         record(&mut telemetry, false, SamplerName::Probabilistic, "checkout", "prod");
 
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         assert!(has_counter(
             &events,
             METRIC_SAMPLER_SEEN,
@@ -572,7 +598,7 @@ mod tests {
         ));
 
         record(&mut telemetry, true, SamplerName::Probabilistic, "checkout", "prod");
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         assert!(has_counter(
             &events,
             METRIC_SAMPLER_KEPT,
@@ -587,16 +613,14 @@ mod tests {
         telemetry.counters().record_rare_hit();
         telemetry.counters().record_rare_miss();
         telemetry.counters().record_rare_shrink();
-        telemetry.set_tracked_signature_counts(11, 7, 3);
-
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(11, 7, 3);
         assert!(has_gauge(&events, METRIC_SAMPLER_SIZE, &["sampler:priority"], 11.0));
         assert!(has_gauge(&events, METRIC_SAMPLER_SIZE, &["sampler:no_priority"], 7.0));
         assert!(has_gauge(&events, METRIC_SAMPLER_SIZE, &["sampler:error"], 3.0));
 
         // A quiet window leaves the delta counters unreported and republishes the gauges
         // unchanged.
-        let events = telemetry.take_window_events();
+        let events = telemetry.take_window_events(0, 0, 0);
         assert!(!metric_with_tags(&events, METRIC_RARE_HITS, &[]));
         assert!(has_gauge(&events, METRIC_RARE_SHRINKS, &[], 1.0));
     }

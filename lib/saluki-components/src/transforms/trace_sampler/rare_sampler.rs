@@ -126,6 +126,16 @@ pub(super) struct RareSampler {
     telemetry: SamplerCounters,
 }
 
+/// The result of running the rare sampler over a trace.
+enum RareOutcome {
+    /// A new or expired signature was kept by the limiter.
+    Kept,
+    /// A new or expired signature was denied by the limiter.
+    Missed,
+    /// No span carried a new or expired signature: steady-state traffic.
+    NoCandidate,
+}
+
 impl RareSampler {
     pub(super) fn new(enabled: bool, tps: f64, ttl: Duration, cardinality: usize, telemetry: SamplerCounters) -> Self {
         Self {
@@ -141,30 +151,36 @@ impl RareSampler {
     /// Sample a trace. Returns `true` if the trace should be kept by the rare sampler.
     ///
     /// Iterates top-level and measured spans. If any span has a signature that hasn't been seen
-    /// within the TTL, the sampler attempts to consume a token and keep the trace.
+    /// within the TTL, the sampler attempts to consume a token and keep the trace. Only a genuine
+    /// limiter denial counts as a miss: traces with no new or expired signature are steady-state
+    /// traffic and move neither counter.
     pub(super) fn sample(&mut self, trace: &mut Trace, root_span_idx: usize) -> bool {
         if !self.enabled {
             return false;
         }
-        let hit = self.handle_trace(trace, root_span_idx);
-        if hit {
-            self.telemetry.record_rare_hit();
-        } else {
-            self.telemetry.record_rare_miss();
+        match self.handle_trace(trace, root_span_idx) {
+            RareOutcome::Kept => {
+                self.telemetry.record_rare_hit();
+                true
+            }
+            RareOutcome::Missed => {
+                self.telemetry.record_rare_miss();
+                false
+            }
+            RareOutcome::NoCandidate => false,
         }
-        hit
     }
 
-    fn handle_trace(&mut self, trace: &mut Trace, root_span_idx: usize) -> bool {
+    fn handle_trace(&mut self, trace: &mut Trace, root_span_idx: usize) -> RareOutcome {
         let now = Instant::now();
         let env = get_trace_env(trace, root_span_idx).map(|e| e.as_ref()).unwrap_or("");
 
         let Some(sampled_idx) = self.find_rare_span(trace, env, now) else {
-            return false;
+            return RareOutcome::NoCandidate;
         };
 
         if !self.token_bucket.allow() {
-            return false;
+            return RareOutcome::Missed;
         }
 
         // Update TTLs first (last use of env — NLL ends the borrow of trace here).
@@ -176,7 +192,7 @@ impl RareSampler {
                 .insert(MetaString::from_static(RARE_KEY), AttributeValue::Float(1.0));
         }
 
-        true
+        RareOutcome::Kept
     }
 
     /// Find the index of the first top-level or measured span whose signature has expired or is new.
@@ -318,9 +334,10 @@ mod tests {
         let mut trace1 = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace1, 0));
 
-        // Same signature, within TTL: should be dropped.
+        // Same signature, within TTL: dropped, and steady-state traffic moves neither counter.
         let mut trace2 = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(!sampler.sample(&mut trace2, 0));
+        assert_eq!(sampler.telemetry.rare_totals(), (1, 0, 0));
     }
 
     #[test]

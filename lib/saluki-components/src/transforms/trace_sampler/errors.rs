@@ -35,7 +35,7 @@ impl ErrorsSampler {
     }
 
     /// Returns the number of signatures tracked by the underlying sampler.
-    pub(super) fn tracked_signature_count(&self) -> i64 {
+    pub(super) fn tracked_signature_count(&self) -> u64 {
         self.score_sampler.tracked_signature_count()
     }
 }

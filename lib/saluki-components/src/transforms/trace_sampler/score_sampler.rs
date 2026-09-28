@@ -58,7 +58,7 @@ impl NoPrioritySampler {
     }
 
     /// Returns the number of signatures tracked by the underlying sampler.
-    pub(super) fn tracked_signature_count(&self) -> i64 {
+    pub(super) fn tracked_signature_count(&self) -> u64 {
         self.score_sampler.tracked_signature_count()
     }
 }
@@ -75,8 +75,8 @@ impl ScoreSampler {
     }
 
     /// Returns the number of signatures tracked by the underlying sampler.
-    pub(super) fn tracked_signature_count(&self) -> i64 {
-        self.sampler.size()
+    pub(super) fn tracked_signature_count(&self) -> u64 {
+        self.sampler.size() as u64
     }
 
     /// Sample counts an incoming trace and tells if it's a sample which has to be kept

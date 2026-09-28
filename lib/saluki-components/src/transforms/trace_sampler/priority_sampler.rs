@@ -42,8 +42,8 @@ impl PrioritySampler {
     }
 
     /// Returns the number of service signatures tracked by the underlying sampler.
-    pub(super) fn tracked_signature_count(&self) -> i64 {
-        self.sampler.size()
+    pub(super) fn tracked_signature_count(&self) -> u64 {
+        self.sampler.size() as u64
     }
 
     /// Returns the current target traces per second.
