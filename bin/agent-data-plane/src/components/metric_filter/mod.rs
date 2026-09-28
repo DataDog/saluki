@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;
+use metrics::{Counter, Gauge};
 use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -12,13 +13,18 @@ use saluki_core::{
         BuildContext,
     },
     data_model::event::{Event, EventType},
+    observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
 
 use super::metric_name::{is_normalized, normalize_into, NameBuf};
+
+const ALLOWLIST_FILTERED_METRICS_METRIC: &str = "metrics_endpoint_allowlist_filtered_metrics_total";
+const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
@@ -63,6 +69,13 @@ enum FilterSource {
 }
 
 impl FilterSource {
+    fn telemetry(&self, builder: &MetricsBuilder) -> Telemetry {
+        match self {
+            Self::Allowlist { .. } => Telemetry::new(builder),
+            Self::Mrf { .. } => Telemetry::noop(),
+        }
+    }
+
     fn filter(&self) -> Filter {
         match self {
             Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, routing),
@@ -149,12 +162,18 @@ impl Filter {
         }
     }
 
-    async fn process_event_batch(
-        &self, mut events: EventsBuffer, context: &mut TransformContext,
-    ) -> Result<(), GenericError> {
+    fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
         let input_count = events.len();
         events.remove_if(|event| !self.should_forward(event));
         let dropped_count = input_count.saturating_sub(events.len());
+        telemetry.record_filtered_metrics(dropped_count);
+        dropped_count
+    }
+
+    async fn process_event_batch(
+        &self, mut events: EventsBuffer, context: &mut TransformContext, telemetry: &Telemetry,
+    ) -> Result<(), GenericError> {
+        let dropped_count = self.filter_events(&mut events, telemetry);
         let sent_count = context.dispatcher().buffered()?.send_all(events).await?;
         debug!(
             forwarded_events = sent_count,
@@ -165,16 +184,60 @@ impl Filter {
     }
 }
 
+struct Telemetry {
+    filtered_metrics: Counter,
+    exact_size: Gauge,
+    prefix_size: Gauge,
+}
+
+impl Telemetry {
+    fn new(builder: &MetricsBuilder) -> Self {
+        Self {
+            filtered_metrics: builder.register_counter(ALLOWLIST_FILTERED_METRICS_METRIC),
+            exact_size: builder.register_gauge_with_tags(ALLOWLIST_SIZE_METRIC, [("match_type", "exact")]),
+            prefix_size: builder.register_gauge_with_tags(ALLOWLIST_SIZE_METRIC, [("match_type", "prefix")]),
+        }
+    }
+
+    fn noop() -> Self {
+        Self {
+            filtered_metrics: Counter::noop(),
+            exact_size: Gauge::noop(),
+            prefix_size: Gauge::noop(),
+        }
+    }
+
+    fn set_allowlist_sizes(&self, filter: &Filter) {
+        match filter {
+            Filter::Allowlist { names, prefixes } => {
+                // Report stored matcher entries, after exact-name deduplication and prefix compaction.
+                self.exact_size.set(names.len() as f64);
+                self.prefix_size.set(prefixes.len() as f64);
+            }
+            Filter::DropAll | Filter::All | Filter::MrfAllowlist(_) => {}
+        }
+    }
+
+    fn record_filtered_metrics(&self, count: usize) {
+        if count != 0 {
+            self.filtered_metrics.increment(count as u64);
+        }
+    }
+}
+
 /// Metric filter shared by live MRF routing and fixed endpoint allow lists.
 struct MetricFilter {
     source: FilterSource,
+    telemetry: Telemetry,
 }
 
 #[async_trait]
 impl TransformBuilder for MetricFilterConfiguration {
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         Ok(Box::new(MetricFilter {
             source: self.source.clone(),
+            telemetry: self.source.telemetry(&metrics_builder),
         }))
     }
 
@@ -216,8 +279,9 @@ impl MemoryBounds for MetricFilterConfiguration {
 impl Transform for MetricFilter {
     async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
-        let Self { mut source } = *self;
+        let Self { mut source, telemetry } = *self;
         let mut filter = source.filter();
+        telemetry.set_allowlist_sizes(&filter);
         health.mark_ready();
 
         loop {
@@ -225,7 +289,7 @@ impl Transform for MetricFilter {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        if let Err(e) = filter.process_event_batch(events, &mut context).await {
+                        if let Err(e) = filter.process_event_batch(events, &mut context, &telemetry).await {
                             error!(error = %e, "Metric filter failed to process event batch.");
                         }
                     }
@@ -244,11 +308,14 @@ mod tests {
 
     use agent_data_plane_config::SalukiConfiguration;
     use arc_swap::ArcSwap;
+    use metrics::{set_default_local_recorder, Key};
     use saluki_core::{
         accounting::ComponentRegistry,
+        components::ComponentContext,
         data_model::event::{metric::Metric, Event},
         support::SubsystemIdentifier,
     };
+    use saluki_metrics::test::TestRecorder;
     use tokio::sync::watch;
 
     use super::*;
@@ -341,6 +408,62 @@ mod tests {
 
     fn distribution(name: &'static str) -> Event {
         Event::Metric(Metric::distribution(name, 1.0))
+    }
+
+    #[test]
+    fn telemetry_reports_stored_allowlist_sizes() {
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default());
+        let filter = Filter::for_allowlist(
+            &["exact".into(), "exact".into(), "prefix.metric".into()],
+            &["prefix.".into(), "prefix.".into(), "prefix.narrow.".into()],
+        );
+        telemetry.set_allowlist_sizes(&filter);
+
+        // Stored entries: exact names are deduplicated (but may overlap prefixes), and prefixes are compacted.
+        for (match_type, expected) in [("exact", 2.0), ("prefix", 1.0)] {
+            let key = Key::from_parts(ALLOWLIST_SIZE_METRIC, &[("match_type", match_type)]);
+            assert_eq!(recorder.gauge(key), Some(expected));
+        }
+    }
+
+    #[test]
+    fn telemetry_counts_drops_across_batches_per_component() {
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        for (component_id, names, prefixes, expected) in [
+            ("partial", vec!["allowed".into()], vec![], 2),
+            ("all", vec![], vec!["".into()], 0),
+            ("none", vec![], vec![], 4),
+        ] {
+            let context = ComponentContext::test_transform(component_id);
+            let source = MetricFilterConfiguration::for_allowlist(names, prefixes).source;
+            let telemetry = source.telemetry(&MetricsBuilder::from_component_context(&context));
+            let filter = source.filter();
+            for _ in 0..2 {
+                let mut events = EventsBuffer::default();
+                for make_metric in [counter, distribution] {
+                    for name in ["allowed", "blocked"] {
+                        assert!(events.try_push(make_metric(name)).is_none());
+                    }
+                }
+                assert_eq!(filter.filter_events(&mut events, &telemetry), expected);
+                assert_eq!(events.len(), 4 - expected);
+            }
+            assert_eq!(filter.filter_events(&mut EventsBuffer::default(), &telemetry), 0);
+        }
+        for (component_id, expected) in [("partial", 4), ("all", 0), ("none", 8)] {
+            let context = ComponentContext::test_transform(component_id);
+            let key = Key::from_parts(
+                ALLOWLIST_FILTERED_METRICS_METRIC,
+                &[
+                    ("component_id", component_id),
+                    ("component_type", context.component_type().as_str()),
+                ],
+            );
+            assert_eq!(recorder.counter(key), Some(expected));
+        }
     }
 
     /// Waits for the transform's source to process an update, failing rather than hanging.
