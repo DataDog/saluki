@@ -18,9 +18,10 @@
 //! - A numeric string is accepted in decimal only, not in Go's base-prefixed or underscored integer
 //!   literal forms. YAML and JSON parse those spellings into numbers before ADP sees them.
 
-use std::fmt;
+use std::{collections::HashMap, fmt, marker::PhantomData};
 
-use serde::de::{self, Deserializer, Unexpected, Visitor};
+use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Unexpected, Visitor};
+use serde::Deserialize;
 
 /// `cast.ToBoolE` for a string: Go's `strconv.ParseBool` grammar, exactly.
 ///
@@ -117,6 +118,56 @@ where
     D: Deserializer<'de>,
 {
     deserializer.deserialize_any(StringVisitor)
+}
+
+/// Deserializes a map, or a string holding a JSON-encoded map (`cast.ToStringMap*E`).
+///
+/// The Agent stores a map-typed environment variable as its raw string and decodes the JSON when the
+/// key is read, so its configuration stream carries the string.
+///
+/// # Errors
+///
+/// Returns an error when the value is neither a map nor a string that decodes to one, or when a map
+/// value does not deserialize as `V`.
+pub(crate) fn deserialize_map_or_json_string<'de, D, V>(deserializer: D) -> Result<HashMap<String, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    V: DeserializeOwned,
+{
+    struct MapOrJsonString<V>(PhantomData<V>);
+
+    impl<'de, V: DeserializeOwned> Visitor<'de> for MapOrJsonString<V> {
+        type Value = HashMap<String, V>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map or a JSON-encoded map string")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            serde_json::from_str(value).map_err(|e| E::custom(format_args!("invalid JSON-encoded map: {e}")))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            HashMap::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(MapOrJsonString(PhantomData))
+}
+
+/// Deserializes a free-form JSON object, or a string holding one (`cast.ToStringMapE`).
+///
+/// # Errors
+///
+/// Returns an error when the value is neither a map nor a string that decodes to one (see
+/// [`deserialize_map_or_json_string`]).
+pub(crate) fn deserialize_json_object_or_string<'de, D>(
+    deserializer: D,
+) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_map_or_json_string::<_, serde_json::Value>(deserializer).map(|values| values.into_iter().collect())
 }
 
 /// Renders a JSON value as a `string` leaf (`cast.ToStringE`).
@@ -370,6 +421,9 @@ mod tests {
     #[derive(Deserialize)]
     struct OptStr(#[serde(deserialize_with = "deserialize_optional_string")] Option<String>);
 
+    #[derive(Deserialize)]
+    struct JsonObject(#[serde(deserialize_with = "deserialize_json_object_or_string")] serde_json::Map<String, Value>);
+
     fn as_bool(value: Value) -> Result<bool, String> {
         serde_json::from_value::<Bool>(value)
             .map(|b| b.0)
@@ -496,6 +550,25 @@ mod tests {
     fn string_rejects_compound_values() {
         for rejected in [json!(["a"]), json!({"a": "b"})] {
             assert!(as_string(rejected.clone()).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn json_object_accepts_a_map_or_a_json_encoded_string() {
+        for value in [
+            json!({ "https://app.datadoghq.com": true }),
+            json!(r#"{"https://app.datadoghq.com": true}"#),
+        ] {
+            let object = serde_json::from_value::<JsonObject>(value.clone())
+                .unwrap_or_else(|e| panic!("{value}: {e}"))
+                .0;
+            assert_eq!(object["https://app.datadoghq.com"], json!(true), "{value}");
+        }
+        for rejected in [json!("not json"), json!(r#"["a"]"#), json!(["a"])] {
+            assert!(
+                serde_json::from_value::<JsonObject>(rejected.clone()).is_err(),
+                "{rejected}"
+            );
         }
     }
 
