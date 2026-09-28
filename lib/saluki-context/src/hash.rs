@@ -129,7 +129,39 @@ pub struct ContextKey {
     hash: u64,
 }
 
+/// An order-independent, deduplicated fingerprint of instrumented tags.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TagSetKey {
     hash: u64,
+}
+
+pub(super) fn prepare_tagset<I, T>(tags: I, seen: &mut PrehashedHashSet<u64>) -> TagSetKey
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    seen.clear();
+    let mut hash = 0;
+    for tag in tags {
+        let tag_hash = hash_single_fast(tag.as_ref());
+        if seen.insert(tag_hash) {
+            hash ^= tag_hash;
+        }
+    }
+    TagSetKey { hash }
+}
+
+pub(super) fn finish_prepared_context<I, T>(
+    name: &str, host: Option<&str>, tags: TagSetKey, origin_tags: I, seen: &mut PrehashedHashSet<u64>,
+) -> ContextKey
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut hasher = get_fast_hasher();
+    name.hash(&mut hasher);
+    host.hash(&mut hasher);
+    hasher.write_u64(tags.hash);
+    hasher.write_u64(prepare_tagset(origin_tags, seen).hash);
+    ContextKey { hash: hasher.finish() }
 }

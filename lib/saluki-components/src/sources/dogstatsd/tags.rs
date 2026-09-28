@@ -23,6 +23,7 @@ impl RawTagsFilterPredicate for WellKnownTagsFilterPredicate {
 ///
 /// Well-known tags are tags which are generally set by the DogStatsD client to convey structured information
 /// about the source of the metric, event, or service check.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WellKnownTags<'a> {
     pub hostname: Option<&'a str>,
     pub pod_uid: Option<&'a str>,
@@ -31,6 +32,26 @@ pub struct WellKnownTags<'a> {
 }
 
 impl<'a> WellKnownTags<'a> {
+    /// Extracts one special tag, returning whether it should be excluded from context tags.
+    pub fn extract(&mut self, tag: &'a str) -> bool {
+        if let Some(value) = tag.strip_prefix(HOST_TAG_KEY_SUFFIXED) {
+            self.hostname = Some(value);
+        } else if let Some(value) = tag.strip_prefix(ENTITY_ID_TAG_KEY_SUFFIXED) {
+            if value != ENTITY_ID_IGNORE_VALUE {
+                self.pod_uid = Some(value);
+            }
+        } else if let Some(value) = tag.strip_prefix(JMX_CHECK_NAME_TAG_KEY_SUFFIXED) {
+            self.jmx_check_name = Some(value);
+        } else if let Some(value) = tag.strip_prefix(CARDINALITY_TAG_KEY_SUFFIXED) {
+            if let Ok(cardinality) = OriginTagCardinality::try_from(value) {
+                self.cardinality = Some(cardinality);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
     /// Extracts well-known tags from the raw tags of a DogStatsD payload.
     ///
     /// All fields default to `None`.

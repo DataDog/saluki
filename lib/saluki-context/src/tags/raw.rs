@@ -64,6 +64,13 @@ impl<'a> RawTags<'a> {
             max_tag_count: self.max_tag_count,
         }
     }
+
+    /// Returns the backing tag block before count and length limits are applied.
+    ///
+    /// Offsets into this block are valid only while this `RawTags` instance remains alive.
+    pub fn as_str(&self) -> &str {
+        &self.raw_tags
+    }
 }
 
 #[derive(Clone)]
