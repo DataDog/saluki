@@ -1999,6 +1999,7 @@ pub struct UseV3ApiSeries {
     pub enabled: String,
 
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_json_object_or_string")]
     pub endpoints: ::serde_json::Map<String, ::serde_json::Value>,
 }
 

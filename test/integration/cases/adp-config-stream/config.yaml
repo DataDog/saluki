@@ -14,6 +14,8 @@ env:
   # No dd_url is set, so the config stream supplies it at its schema default. The primary endpoint
   # must still be derived from this site rather than from that defaulted URL.
   DD_SITE: "datadoghq.eu"
+  # The Agent streams this map-typed setting as the raw JSON string from the environment.
+  DD_ADDITIONAL_ENDPOINTS: '{"https://additional-endpoint.test": ["11111111111111111111111111111111"]}'
   # The resolved endpoint is reported when each endpoint I/O task starts, which is a debug record.
   DD_LOG_LEVEL: "debug"
 
@@ -36,6 +38,12 @@ procedure:
   # field carries that prefix, so it embeds the ADP version and is not matched here.
   - assertion: log_contains
     pattern: 'configured_endpoint:"https://app\.datadoghq\.eu"'
+    regex: true
+    timeout: 60s
+  # The additional endpoint gets its own I/O task, so the streamed JSON string was decoded. Its URL
+  # appears nowhere else, so no default can satisfy this.
+  - assertion: log_contains
+    pattern: 'configured_endpoint:"https://additional-endpoint\.test"'
     regex: true
     timeout: 60s
   # The same site, read back from the translated runtime configuration that components are built
