@@ -1180,7 +1180,8 @@ impl<T: Retryable> PendingTransactions<T> {
     }
 
     fn record_retry_queue_size(&self) {
-        self.telemetry.record_retry_queue_size(self.low_priority.len());
+        self.telemetry
+            .record_retry_queue_size(&self.domain, self.low_priority.len());
     }
 
     async fn record_incoming_transaction_size(&mut self, bytes: u64) {
@@ -1837,6 +1838,10 @@ mod tests {
 
         assert!(!push_result.had_drops());
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+        assert_eq!(
+            recorder.gauge(("network_http_retry_queue_size", &[("domain", "https://example.com")])),
+            Some(1.0)
+        );
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
         assert!(matches!(
             pending_txns.pop().await,

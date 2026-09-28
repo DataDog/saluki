@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
+    config::CaseConfig as _,
     correctness::{
         analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
         config::{Config, TargetConfig},
@@ -891,7 +892,7 @@ async fn build_agent_config_volumes(
             )
         })?;
 
-        let host_abs = config.get_canonicalized_config_path(host_rel);
+        let host_abs = config.resolve_path(host_rel);
         let content = std::fs::read_to_string(&host_abs)
             .with_error_context(|| format!("Failed to read config file: {}", host_abs.display()))?;
 

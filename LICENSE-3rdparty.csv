@@ -485,7 +485,7 @@ symlink,https://gitlab.com/chris-morgan/symlink,MIT OR Apache-2.0,Chris Morgan <
 syn,https://github.com/dtolnay/syn,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 sync_wrapper,https://github.com/Actyx/sync_wrapper,Apache-2.0,Actyx AG <developer@actyx.io>
 synstructure,https://github.com/mystor/synstructure,MIT,Nika Layzell <nika@thelayzells.com>
-target-triple,https://github.com/dtolnay/target-triple,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
+target-tuple,https://github.com/dtolnay/target-tuple,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 tempfile,https://github.com/Stebalien/tempfile,MIT OR Apache-2.0,"Steven Allen <steven@stebalien.com>, The Rust Project Developers, Ashley Mannix <ashleymannix@live.com.au>, Jason White <me@jasonwhite.io>"
 termcolor,https://github.com/BurntSushi/termcolor,Unlicense OR MIT,Andrew Gallant <jamslam@gmail.com>
 thin-vec,https://github.com/mozilla/thin-vec,MIT OR Apache-2.0,Aria Beingessner <a.beingessner@gmail.com>
@@ -621,7 +621,5 @@ zerovec-derive,https://github.com/unicode-org/icu4x,Unicode-3.0,Manish Goregaoka
 zlib-rs,https://github.com/trifectatechfoundation/zlib-rs,Zlib,The zlib-rs Authors
 zmij,https://github.com/dtolnay/zmij,MIT,David Tolnay <dtolnay@gmail.com>
 zstd,https://github.com/gyscos/zstd-rs,BSD-3-Clause,Alexandre Bury <alexandre.bury@gmail.com>
-zstd,https://github.com/gyscos/zstd-rs,MIT,Alexandre Bury <alexandre.bury@gmail.com>
 zstd-safe,https://github.com/gyscos/zstd-rs,BSD-3-Clause,Alexandre Bury <alexandre.bury@gmail.com>
-zstd-safe,https://github.com/gyscos/zstd-rs,MIT OR Apache-2.0,Alexandre Bury <alexandre.bury@gmail.com>
 zstd-sys,https://github.com/gyscos/zstd-rs,BSD-3-Clause,Alexandre Bury <alexandre.bury@gmail.com>

@@ -500,6 +500,43 @@ mod tests {
         .await;
     }
 
+    // Regression: the Agent streams `DD_ADDITIONAL_ENDPOINTS` as the raw JSON string it stores, and the
+    // map deserializer rejected it, so the startup gate failed and ADP restarted in a loop.
+    #[tokio::test]
+    async fn connected_startup_accepts_json_encoded_map_settings() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit(
+                    "additional_endpoints",
+                    json!(r#"{"https://app.datadoghq.com": ["second-org-key"]}"#),
+                ),
+                ConfigSetting::explicit(
+                    "use_v3_api.series.endpoints",
+                    json!(r#"{"https://app.datadoghq.com": "true"}"#),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        let system =
+            ConfigurationSystem::connected(agent_rx, compat_tx.expect("dynamic sender exists"), compat_map, base)
+                .await
+                .expect("startup accepts the streamed JSON strings");
+
+        let config = system.config();
+        assert_eq!(
+            config.shared.endpoints.additional_endpoints["https://app.datadoghq.com"],
+            ["second-org-key"]
+        );
+        assert_eq!(
+            config.shared.metrics_encoding.v3_series_endpoint_modes["https://app.datadoghq.com"],
+            V3SeriesMode::Enabled
+        );
+    }
+
     #[tokio::test]
     async fn connected_stream_translates_metrics_v3_routing_configuration() {
         let (system, agent_tx) = connected_system(json!({
@@ -646,7 +683,10 @@ mod tests {
         let system = standalone_system(
             Some(json!({
                 "experimental": {
-                    "metrics_endpoint_routing": { "metric_allowlist": policies.clone() }
+                    "metrics_endpoint_routing": {
+                        "metric_allowlist": policies.clone(),
+                        "metric_prefix_allowlist": { "https://primary.example.com": ["billing."] }
+                    }
                 }
             })),
             None,
@@ -658,6 +698,17 @@ mod tests {
             serde_json::to_value(&system.config().domains.metrics_endpoint_routing.metric_allowlists).unwrap(),
             policies
         );
+        assert_eq!(
+            system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_prefix_allowlists,
+            std::collections::HashMap::from([(
+                "https://primary.example.com".to_string(),
+                vec!["billing.".to_string()]
+            )])
+        );
     }
 
     #[tokio::test]
@@ -667,6 +718,7 @@ mod tests {
             json!({ "experimental": {} }),
             json!({ "experimental": { "metrics_endpoint_routing": {} } }),
             json!({ "experimental": { "metrics_endpoint_routing": { "metric_allowlist": {} } } }),
+            json!({ "experimental": { "metrics_endpoint_routing": { "metric_prefix_allowlist": {} } } }),
         ] {
             let system = standalone_system(Some(source), None).await.expect("system builds");
             assert!(system
@@ -674,6 +726,12 @@ mod tests {
                 .domains
                 .metrics_endpoint_routing
                 .metric_allowlists
+                .is_empty());
+            assert!(system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_prefix_allowlists
                 .is_empty());
         }
     }

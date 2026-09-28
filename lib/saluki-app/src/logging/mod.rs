@@ -68,7 +68,7 @@ impl LoggingGuard {
     /// inaccessible) or if the override worker is no longer running.
     pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
         let (new_stack, new_guards) = build_output_stack(&config)?;
-        let new_filter = config.log_level.as_env_filter();
+        let new_filter = config.log_level.as_targets();
 
         self.stack_handle
             .reload(new_stack)
@@ -108,7 +108,7 @@ pub(crate) async fn initialize_logging(
     let (output_layer, stack_handle) = reload::Layer::new(output_stack);
 
     // Set up our log level filtering and dynamic filter layer.
-    let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+    let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_targets());
 
     // The override worker owns the canonical base filter -- the directives the system restores to after an override
     // expires or is reset. It seeds the base from the reload handle on startup and is updated via the controller,
@@ -232,7 +232,7 @@ mod tests {
         let config = logging_config_without_outputs();
         let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
         let (output_layer, stack_handle) = reload::Layer::new(output_stack);
-        let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+        let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_targets());
         let (override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
         let mut guard = LoggingGuard {
             worker_guards,

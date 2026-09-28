@@ -111,7 +111,7 @@ fn first_alpha(name: &str) -> Option<usize> {
 /// Returns whether `name` is a name the intake would store unchanged, meaning normalizing it would be the identity.
 ///
 /// This is a single pass and never allocates, which is what lets filterlist matching skip the rewrite entirely for the
-/// overwhelmingly common case of an already-normalized name. See [`super::Blocklist::contains`].
+/// overwhelmingly common case of an already-normalized name.
 ///
 /// The predicate is exact: `is_normalized(s)` is true if and only if normalizing `s` yields `s` unchanged. The tests in
 /// this module pin that equivalence.

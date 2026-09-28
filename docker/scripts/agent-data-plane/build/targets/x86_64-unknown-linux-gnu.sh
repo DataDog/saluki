@@ -19,5 +19,8 @@ fi
 
 TARGET_CARGO_ARGS="--target x86_64-unknown-linux-gnu"
 TARGET_CFLAGS=""
-TARGET_RUSTFLAGS="-C link-arg=-static-libgcc"
+# Always request a GNU build ID (`.note.gnu.build-id`), which profilers and symbolizers use to identify the binary.
+# rustc doesn't ask for one, and unlike distribution-packaged GCC, the crosstool-NG toolchain above isn't configured to
+# pass `--build-id` to the linker by default.
+TARGET_RUSTFLAGS="-C link-arg=-static-libgcc -C link-arg=-Wl,--build-id"
 TARGET_OUTPUT_DIR="/adp/target/x86_64-unknown-linux-gnu/${BUILD_PROFILE}"

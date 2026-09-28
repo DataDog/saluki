@@ -7,7 +7,7 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, DynamicRoute, EndpointType, StatusCode,
 };
-use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_common::{logging::parse_filter_directives, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
@@ -17,7 +17,7 @@ use tokio::{
     time::sleep,
 };
 use tracing::{error, info};
-use tracing_subscriber::{reload::Handle, EnvFilter, Registry};
+use tracing_subscriber::{filter::Targets, reload::Handle, Registry};
 
 #[derive(Deserialize)]
 struct OverrideQueryParams {
@@ -30,7 +30,7 @@ enum LoggingOverrideAction {
     ///
     /// When the duration elapses, or a [`Reset`][LoggingOverrideAction::Reset] arrives, the worker restores the
     /// current base filter.
-    Override { duration: Duration, filter: EnvFilter },
+    Override { duration: Duration, filter: Targets },
 
     /// Clear any active override, immediately restoring the current base filter.
     Reset,
@@ -39,7 +39,7 @@ enum LoggingOverrideAction {
     ///
     /// Applied immediately if no override is active. If an override is active, the new base is stored and applied
     /// once the override expires (or is reset), so we don't clobber an in-flight override.
-    UpdateBase(EnvFilter),
+    UpdateBase(Targets),
 }
 
 /// Controls the dynamic logging filter at runtime.
@@ -54,7 +54,7 @@ pub struct LoggingOverrideController {
 
 impl LoggingOverrideController {
     /// Applies `filter` as a temporary override for `duration`, after which the base filter is restored.
-    pub(crate) async fn override_for(&self, duration: Duration, filter: EnvFilter) -> Result<(), GenericError> {
+    pub(crate) async fn override_for(&self, duration: Duration, filter: Targets) -> Result<(), GenericError> {
         self.send(LoggingOverrideAction::Override { duration, filter }).await
     }
 
@@ -66,7 +66,7 @@ impl LoggingOverrideController {
     /// Replaces the current base filter.
     ///
     /// Applied immediately if no override is active; otherwise stored and applied when the override expires.
-    pub async fn update_base(&self, filter: EnvFilter) -> Result<(), GenericError> {
+    pub async fn update_base(&self, filter: Targets) -> Result<(), GenericError> {
         self.send(LoggingOverrideAction::UpdateBase(filter)).await
     }
 
@@ -124,7 +124,7 @@ impl LoggingAPIHandler {
 
         // Parse the override duration and create a new filter from the body.
         let duration = Duration::from_secs(params.time_secs);
-        let new_filter = match EnvFilter::try_new(body) {
+        let new_filter = match parse_filter_directives(&body) {
             Ok(filter) => filter,
             Err(e) => {
                 return (
@@ -170,7 +170,7 @@ pub struct LoggingOverrideWorker {
 }
 
 struct LoggingOverrideWorkerState {
-    reload_handle: Handle<EnvFilter, Registry>,
+    reload_handle: Handle<Targets, Registry>,
     rx: mpsc::Receiver<LoggingOverrideAction>,
 }
 
@@ -180,7 +180,7 @@ impl LoggingOverrideWorker {
     /// When the worker starts, the filter directives present in the reload handle will be used as the "base" filter:
     /// the filter that's reapplied after an override expires or is reset. This base filter can then be subsequently
     /// updated through the [`LoggingOverrideController`] handle that's returned.
-    pub(super) fn new(reload_handle: Handle<EnvFilter, Registry>) -> (Self, LoggingOverrideController) {
+    pub(super) fn new(reload_handle: Handle<Targets, Registry>) -> (Self, LoggingOverrideController) {
         let (tx, rx) = mpsc::channel(1);
         let controller = LoggingOverrideController { tx };
         let handler = LoggingAPIHandler::new(controller.clone());
@@ -260,11 +260,7 @@ async fn process_override_actions(state: &mut LoggingOverrideWorkerState, proces
                 Some(LoggingOverrideAction::UpdateBase(new_base)) => {
                     // Before replacing the base filter, check if the new base is different from the current one before we trigger a reload
                     // and log a big, noisy message.
-                    //
-                    // We do this in a hacky way and compare the stringified version of each filter since `EnvFilter` can't be directly compared.
-                    let existing_base_filter_str = base_filter.to_string();
-                    let new_base_filter_str = new_base.to_string();
-                    if new_base_filter_str == existing_base_filter_str {
+                    if new_base == base_filter {
                         continue;
                     }
 
@@ -321,18 +317,22 @@ mod tests {
     use std::time::Duration;
 
     use tokio::{sync::mpsc, time::sleep};
-    use tracing_subscriber::{reload, EnvFilter, Registry};
+    use tracing_subscriber::{reload, Registry};
 
     use super::*;
 
-    fn current_filter(handle: &reload::Handle<EnvFilter, Registry>) -> String {
+    fn filter(directives: &str) -> Targets {
+        parse_filter_directives(directives).expect("valid filter directives")
+    }
+
+    fn current_filter(handle: &reload::Handle<Targets, Registry>) -> String {
         handle
             .clone_current()
             .expect("reload layer should be alive")
             .to_string()
     }
 
-    async fn wait_for_filter(handle: &reload::Handle<EnvFilter, Registry>, expected: &str) {
+    async fn wait_for_filter(handle: &reload::Handle<Targets, Registry>, expected: &str) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
 
         loop {
@@ -351,12 +351,12 @@ mod tests {
     }
 
     fn spawn_processor(
-        base_filter: EnvFilter,
+        base_filter: Targets,
     ) -> (
         LoggingOverrideController,
-        reload::Handle<EnvFilter, Registry>,
+        reload::Handle<Targets, Registry>,
         tokio::task::JoinHandle<()>,
-        reload::Layer<EnvFilter, Registry>,
+        reload::Layer<Targets, Registry>,
     ) {
         let (filter_layer, reload_handle) = reload::Layer::new(base_filter);
         let (tx, rx) = mpsc::channel(1);
@@ -376,17 +376,16 @@ mod tests {
 
     #[tokio::test]
     async fn reset_restores_current_base_filter() {
-        let (controller, reload_handle, processor, _filter_layer) =
-            spawn_processor(EnvFilter::new("agent_data_plane=info"));
+        let (controller, reload_handle, processor, _filter_layer) = spawn_processor(filter("agent_data_plane=info"));
 
         controller
-            .override_for(Duration::from_secs(60), EnvFilter::new("hyper=warn"))
+            .override_for(Duration::from_secs(60), filter("hyper=warn"))
             .await
             .expect("send override");
         wait_for_filter(&reload_handle, "hyper=warn").await;
 
         controller
-            .update_base(EnvFilter::new("agent_data_plane=debug"))
+            .update_base(filter("agent_data_plane=debug"))
             .await
             .expect("send update_base");
         controller.reset().await.expect("send reset");
@@ -398,17 +397,16 @@ mod tests {
 
     #[tokio::test]
     async fn override_expiration_restores_current_base_filter() {
-        let (controller, reload_handle, processor, _filter_layer) =
-            spawn_processor(EnvFilter::new("agent_data_plane=info"));
+        let (controller, reload_handle, processor, _filter_layer) = spawn_processor(filter("agent_data_plane=info"));
 
         controller
-            .override_for(Duration::from_millis(100), EnvFilter::new("hyper=warn"))
+            .override_for(Duration::from_millis(100), filter("hyper=warn"))
             .await
             .expect("send override");
         wait_for_filter(&reload_handle, "hyper=warn").await;
 
         controller
-            .update_base(EnvFilter::new("agent_data_plane=warn"))
+            .update_base(filter("agent_data_plane=warn"))
             .await
             .expect("send update_base");
         wait_for_filter(&reload_handle, "agent_data_plane=warn").await;
@@ -419,16 +417,34 @@ mod tests {
 
     #[tokio::test]
     async fn update_base_applies_immediately_when_no_override_active() {
-        let (controller, reload_handle, processor, _filter_layer) =
-            spawn_processor(EnvFilter::new("agent_data_plane=info"));
+        let (controller, reload_handle, processor, _filter_layer) = spawn_processor(filter("agent_data_plane=info"));
 
         controller
-            .update_base(EnvFilter::new("agent_data_plane=debug"))
+            .update_base(filter("agent_data_plane=debug"))
             .await
             .expect("send update_base");
         wait_for_filter(&reload_handle, "agent_data_plane=debug").await;
 
         drop(controller);
         processor.await.expect("override processor should exit cleanly");
+    }
+
+    #[tokio::test]
+    async fn override_handler_rejects_span_and_field_filters() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let state = LoggingHandlerState {
+            controller: LoggingOverrideController { tx },
+        };
+
+        let response = LoggingAPIHandler::override_handler(
+            State(state),
+            Query(OverrideQueryParams { time_secs: 60 }),
+            "saluki[span]=debug".to_string(),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(rx.try_recv().is_err(), "a rejected override must not reach the worker");
     }
 }

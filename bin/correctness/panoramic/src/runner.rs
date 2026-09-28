@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 use crate::test::{RunnerSettings, Test, TestContext};
 use crate::{
     assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
-    config::{parse_file_spec, parse_port_spec, IntegrationConfig},
+    config::{parse_file_spec, parse_port_spec, CaseConfig as _, IntegrationConfig},
     events::TestEvent,
     reporter::{ErrorKind, PhaseTiming, TestResult, TimeoutAttribution},
 };
@@ -870,7 +870,9 @@ impl IntegrationRunner {
             ContainerOs::Linux
         };
 
-        let image = crate::config::target_image_for_runtime(&self.test_case.active_runtime)
+        let image = self
+            .test_case
+            .image(crate::config::TARGET_IMAGE_NAME)
             .ok_or_else(|| {
                 generic_error!(
                     "Runtime '{}' has no associated container image; integration tests are unsupported.",
@@ -936,8 +938,14 @@ impl IntegrationRunner {
     /// reaches it by network alias. Returns the sidecar's driver and the host port that its HTTP
     /// endpoint is published on.
     async fn start_intake(&self) -> Result<(Driver, u16), GenericError> {
+        let intake_image = self
+            .test_case
+            .image(crate::config::INTAKE_IMAGE_NAME)
+            .ok_or_else(|| generic_error!("The intake sidecar is not enabled for this test case."))?
+            .to_string();
+
         let config = DriverConfig::datadog_intake(airlock::config::DatadogIntakeConfig {
-            image: crate::config::DEFAULT_INTAKE_IMAGE.to_string(),
+            image: intake_image,
             binary_path: None,
         })
         .await?
@@ -1232,6 +1240,10 @@ mod tests {
 
         fn images(&self) -> BTreeMap<&str, String> {
             BTreeMap::new()
+        }
+
+        fn set_image(&mut self, _name: &str, _image: &str) -> bool {
+            false
         }
 
         async fn run(&self, tctx: TestContext) -> TestResult {

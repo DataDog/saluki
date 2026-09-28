@@ -145,6 +145,40 @@
       ],
       allowedVersions: "<1.18",
     },
+    // Crates whose newer patch releases raised their aws-lc-rs floor to ^1.18, which conflicts with the
+    // aws-lc-rs pin above. Renovate cannot generate a Cargo.lock for these bumps, and a single failed
+    // `cargo update` leaves the entire weekly non-major group PR with an empty diff. Remove alongside the
+    // aws-lc-rs rule above.
+    {
+      matchManagers: [
+        "cargo",
+      ],
+      matchPackageNames: [
+        "rcgen",
+      ],
+      allowedVersions: "<0.14.10",
+    },
+    {
+      matchManagers: [
+        "cargo",
+      ],
+      matchPackageNames: [
+        "rustls-webpki",
+      ],
+      allowedVersions: "<0.103.14",
+    },
+    // smallvec 1.16 is blocked transitively: serde-saphyr 0.0.29 (via kube-client, used by panoramic)
+    // requires `smallvec <1.16`. As above, the failed lock file update would empty the whole group PR.
+    // Remove once serde-saphyr/kube accept smallvec 1.16.
+    {
+      matchManagers: [
+        "cargo",
+      ],
+      matchPackageNames: [
+        "smallvec",
+      ],
+      allowedVersions: "<1.16",
+    },
   ],
 
   // Custom managers for Datadog Agent version pins that Renovate's built-in managers don't see.

@@ -64,6 +64,32 @@ mod tests {
                 ),
                 2.0,
             )),
+            // The untagged aggregate should be skipped in favor of the per-domain series.
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.network_http_retry_queue_size", &["component_id:dd_out"]),
+                99.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:dd_out", "domain:https://api.datadoghq.com"],
+                ),
+                4.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_size",
+                    &["component_id:mrf_dd_out", "domain:https://api.datadoghq.eu"],
+                ),
+                6.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "error_type:origin_detection"],
+                ),
+                9.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -76,12 +102,16 @@ mod tests {
         // Matched metrics should appear with remapped names.
         assert!(output.contains("dogstatsd__packet_pool_get "));
         assert!(output.contains("dogstatsd__packet_pool "));
-        assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
-        assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
+        assert!(output.contains("points__sent{domain=\"https://api.datadoghq.com\"} 12"));
+        assert!(output.contains("points__dropped{domain=\"https://api.datadoghq.com\"} 3"));
         assert!(output.contains("transactions__retries{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 5"));
         assert!(
             output.contains("transactions__requeued{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 2")
         );
+        assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.com\"} 4"));
+        assert!(output.contains("transactions__retry_queue_size{domain=\"https://api.datadoghq.eu\"} 6"));
+        assert!(!output.contains("transactions__retry_queue_size 99"));
+        assert!(output.contains("dogstatsd__uds_origin_detection_error 9"));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -89,10 +119,12 @@ mod tests {
         // Should have TYPE headers.
         assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
-        assert!(output.contains("# TYPE point__sent gauge"));
-        assert!(output.contains("# TYPE point__dropped gauge"));
+        assert!(output.contains("# TYPE points__sent gauge"));
+        assert!(output.contains("# TYPE points__dropped gauge"));
         assert!(output.contains("# TYPE transactions__retries counter"));
         assert!(output.contains("# TYPE transactions__requeued counter"));
+        assert!(output.contains("# TYPE transactions__retry_queue_size gauge"));
+        assert!(output.contains("# TYPE dogstatsd__uds_origin_detection_error counter"));
     }
 
     #[test]
@@ -567,6 +599,11 @@ mod tests {
         );
         assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
         assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
+        assert_eq!(find("transactions.retry_queue_size"), Some("Retry queue size"));
+        assert_eq!(
+            find("dogstatsd.uds_origin_detection_error"),
+            Some("Dogstatsd UDS origin detection error count")
+        );
     }
 
     #[test]

@@ -140,6 +140,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn endpoint_metric_prefix_allowlists_decode_from_json() {
+        let _guard = test_env_lock();
+        std::env::set_var(
+            "DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST",
+            r#"{"https://secondary.example.com":["billing."]}"#,
+        );
+        let provider = EnvironmentProvider::new().expect("environment reads");
+        std::env::remove_var("DD_EXPERIMENTAL_METRICS_ENDPOINT_ROUTING_METRIC_PREFIX_ALLOWLIST");
+        assert_eq!(
+            values_of(&provider).pointer("/experimental/metrics_endpoint_routing/metric_prefix_allowlist"),
+            Some(&serde_json::json!({"https://secondary.example.com": ["billing."]}))
+        );
+    }
+
     /// The documented environment variable must appear at the key's canonical nested path in the
     /// provider output.
     #[test]

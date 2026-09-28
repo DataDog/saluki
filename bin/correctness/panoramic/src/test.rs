@@ -120,6 +120,12 @@ pub(crate) trait Test: Send + Sync {
     /// so we offer a command by which a build process can see these.
     fn images(&self) -> BTreeMap<&str, String>;
 
+    /// Replaces the image used for the container named `name`, reporting whether the test has one.
+    ///
+    /// The names are those [`Test::images`] reports, so every image a test declares can be replaced
+    /// from the command line. A test that has no such container returns `false` and is left alone.
+    fn set_image(&mut self, name: &str, image: &str) -> bool;
+
     /// The runtime identifier for this test (for example, `"docker"`, `"kubernetes_in_docker"`).
     ///
     /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
