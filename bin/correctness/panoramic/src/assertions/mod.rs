@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use crate::config::{AssertionConfig, AssertionStep, LogStream};
+use crate::integration::IntegrationTestCase;
 
 mod adp_config_key_equals;
 mod adp_exits;
@@ -308,7 +309,7 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
 /// between runtimes is how `ctx` is constructed (port mappings come from a Docker driver vs.
 /// identity-mapped from the test config; `is_host_process` and `host_process_exit_code` flip).
 pub(crate) async fn run_assertion_steps(
-    test_case: &crate::integration::IntegrationTestCase, ctx: &AssertionContext,
+    test_case: &IntegrationTestCase, ctx: &AssertionContext,
 ) -> Vec<AssertionResult> {
     let mut results = Vec::new();
     let total_steps = test_case.procedure.len();
