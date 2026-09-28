@@ -23,7 +23,7 @@ use tracing::{debug, error};
 
 use super::metric_name::{is_normalized, normalize_into, NameBuf};
 
-const ALLOWLIST_FILTERED_METRICS_METRIC: &str = "metrics_endpoint_allowlist_filtered_metrics_total";
+const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
 const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
 
 /// Configuration for a metric filter between enrichment and encoding.
@@ -166,7 +166,7 @@ impl Filter {
         let input_count = events.len();
         events.remove_if(|event| !self.should_forward(event));
         let dropped_count = input_count.saturating_sub(events.len());
-        telemetry.record_filtered_metrics(dropped_count);
+        telemetry.record_metrics_filtered(dropped_count);
         dropped_count
     }
 
@@ -185,7 +185,7 @@ impl Filter {
 }
 
 struct Telemetry {
-    filtered_metrics: Counter,
+    metrics_filtered: Counter,
     exact_size: Gauge,
     prefix_size: Gauge,
 }
@@ -193,7 +193,7 @@ struct Telemetry {
 impl Telemetry {
     fn new(builder: &MetricsBuilder) -> Self {
         Self {
-            filtered_metrics: builder.register_counter(ALLOWLIST_FILTERED_METRICS_METRIC),
+            metrics_filtered: builder.register_counter(ALLOWLIST_METRICS_FILTERED_METRIC),
             exact_size: builder.register_gauge_with_tags(ALLOWLIST_SIZE_METRIC, [("match_type", "exact")]),
             prefix_size: builder.register_gauge_with_tags(ALLOWLIST_SIZE_METRIC, [("match_type", "prefix")]),
         }
@@ -201,7 +201,7 @@ impl Telemetry {
 
     fn noop() -> Self {
         Self {
-            filtered_metrics: Counter::noop(),
+            metrics_filtered: Counter::noop(),
             exact_size: Gauge::noop(),
             prefix_size: Gauge::noop(),
         }
@@ -218,9 +218,9 @@ impl Telemetry {
         }
     }
 
-    fn record_filtered_metrics(&self, count: usize) {
+    fn record_metrics_filtered(&self, count: usize) {
         if count != 0 {
-            self.filtered_metrics.increment(count as u64);
+            self.metrics_filtered.increment(count as u64);
         }
     }
 }
@@ -456,7 +456,7 @@ mod tests {
         for (component_id, expected) in [("partial", 4), ("all", 0), ("none", 8)] {
             let context = ComponentContext::test_transform(component_id);
             let key = Key::from_parts(
-                ALLOWLIST_FILTERED_METRICS_METRIC,
+                ALLOWLIST_METRICS_FILTERED_METRIC,
                 &[
                     ("component_id", component_id),
                     ("component_type", context.component_type().as_str()),
