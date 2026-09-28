@@ -69,6 +69,8 @@ where
 ///
 /// Scalar values are normalized into one-element vectors. Unlike standalone string-list fields,
 /// scalar map values are not split on whitespace because each scalar represents one complete value.
+/// The map may also arrive as a JSON-encoded string (see
+/// [`deserialize_map_or_json_string`](crate::cast_de::deserialize_map_or_json_string)).
 pub(crate) fn deserialize_string_map_scalar_or_seq<'de, D>(
     deserializer: D,
 ) -> Result<HashMap<String, Vec<String>>, D::Error>
@@ -82,7 +84,7 @@ where
         Seq(Vec<String>),
     }
 
-    let values = HashMap::<String, ScalarOrSeq>::deserialize(deserializer)?;
+    let values = crate::cast_de::deserialize_map_or_json_string::<_, ScalarOrSeq>(deserializer)?;
     Ok(values
         .into_iter()
         .map(|(key, value)| {
@@ -158,6 +160,21 @@ mod tests {
     #[test]
     fn string_map_rejects_non_string_values() {
         assert!(serde_json::from_str::<MapHolder>(r#"{"map":{"endpoint":5}}"#).is_err());
+    }
+
+    #[test]
+    fn string_map_accepts_a_json_encoded_string() {
+        let parsed = parse_map(r#"{"map":"{\"one\":\"api-key\",\"many\":[\"first\",\"second\"]}"}"#);
+        assert_eq!(parsed["one"], ["api-key"]);
+        assert_eq!(parsed["many"], ["first", "second"]);
+    }
+
+    #[test]
+    fn string_map_rejects_a_string_that_is_not_a_json_map() {
+        for encoded in [r#""not json""#, r#""[\"api-key\"]""#, r#""{\"endpoint\":5}""#] {
+            let json = format!(r#"{{"map":{encoded}}}"#);
+            assert!(serde_json::from_str::<MapHolder>(&json).is_err(), "{json}");
+        }
     }
 
     #[derive(serde::Deserialize)]

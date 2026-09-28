@@ -500,6 +500,43 @@ mod tests {
         .await;
     }
 
+    // Regression: the Agent streams `DD_ADDITIONAL_ENDPOINTS` as the raw JSON string it stores, and the
+    // map deserializer rejected it, so the startup gate failed and ADP restarted in a loop.
+    #[tokio::test]
+    async fn connected_startup_accepts_json_encoded_map_settings() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit(
+                    "additional_endpoints",
+                    json!(r#"{"https://app.datadoghq.com": ["second-org-key"]}"#),
+                ),
+                ConfigSetting::explicit(
+                    "use_v3_api.series.endpoints",
+                    json!(r#"{"https://app.datadoghq.com": "true"}"#),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        let system =
+            ConfigurationSystem::connected(agent_rx, compat_tx.expect("dynamic sender exists"), compat_map, base)
+                .await
+                .expect("startup accepts the streamed JSON strings");
+
+        let config = system.config();
+        assert_eq!(
+            config.shared.endpoints.additional_endpoints["https://app.datadoghq.com"],
+            ["second-org-key"]
+        );
+        assert_eq!(
+            config.shared.metrics_encoding.v3_series_endpoint_modes["https://app.datadoghq.com"],
+            V3SeriesMode::Enabled
+        );
+    }
+
     #[tokio::test]
     async fn connected_stream_translates_metrics_v3_routing_configuration() {
         let (system, agent_tx) = connected_system(json!({

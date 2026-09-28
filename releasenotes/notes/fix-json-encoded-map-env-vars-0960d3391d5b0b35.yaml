@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Fix a startup failure when a map setting, such as ``additional_endpoints``, is set through a
+    JSON-encoded environment variable like ``DD_ADDITIONAL_ENDPOINTS``. Agent Data Plane now accepts
+    the value from the Datadog Agent instead of exiting with ``expected a map``.
