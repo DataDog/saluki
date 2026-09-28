@@ -33,6 +33,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_APM_NON_LOCAL_TRAFFIC"],
+        path: &["apm_config", "apm_non_local_traffic"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_APM_COMPUTE_STATS_BY_SPAN_KIND"],
         path: &["apm_config", "compute_stats_by_span_kind"],
         decode: EnvDecode::Bool,
@@ -196,6 +201,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE"],
         path: &["apm_config", "probabilistic_sampler", "sampling_percentage"],
         decode: EnvDecode::Float,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_RECEIVER_PORT", "DD_RECEIVER_PORT"],
+        path: &["apm_config", "receiver_port"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_RECEIVER_SOCKET"],
+        path: &["apm_config", "receiver_socket"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_APM_REPLACE_TAGS"],
