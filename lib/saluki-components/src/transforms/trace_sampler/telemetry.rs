@@ -90,7 +90,7 @@ pub(super) enum Priority {
 }
 
 impl Priority {
-    /// Returns the `sampling_priority` tag value; unknown priorities read as "none".
+    /// Returns the `sampling_priority` tag value; unknown priorities read as `none`.
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::ManualDrop => "manual_drop",
