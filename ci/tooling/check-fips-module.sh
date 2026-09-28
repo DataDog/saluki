@@ -16,7 +16,7 @@ CERTIFIED_FIPS_MODULE_VERSIONS=(3)
 
 echo "[*] Checking that FIPS builds use a certified AWS-LC FIPS module..."
 
-manifest_paths="$(cargo metadata --format-version 1 --locked --features fips | jq -r '
+manifest_paths="$(cargo metadata --format-version 1 --locked --package agent-data-plane --features fips | jq -r '
     . as $m
     | [.resolve.nodes[].id] as $resolved
     | $m.packages[]
