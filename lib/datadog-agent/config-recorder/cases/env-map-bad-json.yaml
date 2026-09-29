@@ -4,4 +4,4 @@ why: [getter-map-from-bad-json-empty]
 env:
   DD_ADDITIONAL_ENDPOINTS: "{bad"
 keys:
-  - {key: additional_endpoints, getters: [GetStringMap, GetStringMapString]}
+  - {key: additional_endpoints, getters: [GetStringMap, GetStringMapString, GetStringMapStringSlice]}
