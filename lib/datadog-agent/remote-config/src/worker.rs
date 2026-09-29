@@ -139,27 +139,23 @@ async fn poll_loop(
                 }
                 Err(e) => {
                     // `GenericError::to_string` omits the cause chain, so two errors with the same outer message but
-                    // different causes would otherwise look identical here; compare the full chain instead so a
-                    // changed cause still logs at error.
-                    let chain = format!("{e:#}");
-                    if schedule.invalid_response.as_ref() == Some(&chain) {
+                    // different causes would otherwise look identical here.
+                    if schedule.repeats(Failure::InvalidResponse(format!("{e:#}"))) {
                         debug!(error = %e, "Discarded an invalid Remote Configuration response.");
                     } else {
                         error!(error = %e, "Discarded an invalid Remote Configuration response.");
                     }
                     repository.last_error = Some(e.to_string());
-                    schedule.invalid_response = Some(chain);
                     (PollOutcome::InvalidResponse, schedule.failed())
                 }
             },
             Err(FetchError::Unimplemented(e)) => (PollOutcome::Unimplemented, schedule.unimplemented(&e)),
             Err(FetchError::Rpc(e)) => {
-                if schedule.rpc_failing {
+                if schedule.repeats(Failure::Rpc) {
                     debug!(error = %e, "Failed to poll the Agent for Remote Configuration.");
                 } else {
                     warn!(error = %e, "Failed to poll the Agent for Remote Configuration.");
                 }
-                schedule.rpc_failing = true;
                 repository.last_error = Some(e.to_string());
                 (PollOutcome::RpcError, schedule.failed())
             }
@@ -183,7 +179,19 @@ async fn poll_loop(
     }
 }
 
-/// Decides how long to wait before the next poll.
+/// A failed poll, as compared against the one before it to decide whether it is a repeat.
+#[derive(PartialEq)]
+enum Failure {
+    /// An RPC error with any message: a changed message during one outage is still the same outage.
+    Rpc,
+
+    /// An invalid response, with its full error chain.
+    InvalidResponse(String),
+
+    Unimplemented,
+}
+
+/// Decides how long to wait before the next poll, and whether a failure repeats the one before it.
 struct Schedule {
     poll_interval: Duration,
     max_backoff: Duration,
@@ -191,14 +199,13 @@ struct Schedule {
     succeeded_once: bool,
     failures: u32,
 
-    /// Whether an RPC has failed since the last success, so that only the first such failure warns. Unlike
-    /// `failures`, an invalid response does not set it.
-    rpc_failing: bool,
+    /// The most recent failure since the last success. A failure identical to it logs at debug; any other logs at its
+    /// normal level.
+    last_failure: Option<Failure>,
 
-    /// The last invalid response's error since the last success, so that only a changed error logs at error level.
-    invalid_response: Option<String>,
-
-    unimplemented: bool,
+    /// Whether the Agent answered `Unimplemented` since the last success, so that the next success says polling
+    /// resumed rather than recovered.
+    unimplemented_seen: bool,
 }
 
 impl Schedule {
@@ -209,14 +216,13 @@ impl Schedule {
             backoff: ExponentialBackoff::with_jitter(config.poll_interval, config.max_backoff, 2.0),
             succeeded_once: false,
             failures: 0,
-            rpc_failing: false,
-            invalid_response: None,
-            unimplemented: false,
+            last_failure: None,
+            unimplemented_seen: false,
         }
     }
 
     fn succeeded(&mut self) -> Duration {
-        if self.unimplemented {
+        if self.unimplemented_seen {
             info!("Remote Configuration is enabled on the Agent; polling resumed.");
         } else if self.failures > 0 {
             info!(
@@ -226,9 +232,8 @@ impl Schedule {
         }
         self.succeeded_once = true;
         self.failures = 0;
-        self.rpc_failing = false;
-        self.invalid_response = None;
-        self.unimplemented = false;
+        self.last_failure = None;
+        self.unimplemented_seen = false;
         self.poll_interval
     }
 
@@ -241,16 +246,19 @@ impl Schedule {
         }
     }
 
+    /// Records `failure` as the most recent one and returns whether it is identical to the one it replaces.
+    fn repeats(&mut self, failure: Failure) -> bool {
+        let repeated = self.last_failure.as_ref() == Some(&failure);
+        self.last_failure = Some(failure);
+        repeated
+    }
+
     /// Remote Configuration is disabled on the Agent, which is expected to last, so the worker keeps checking slowly.
     fn unimplemented(&mut self, error: &GenericError) -> Duration {
-        if !self.unimplemented {
+        if !self.repeats(Failure::Unimplemented) {
             info!(error = %error, "Remote Configuration is not enabled on the Agent; checking again periodically.");
         }
-        self.unimplemented = true;
-        // An `Unimplemented` answer means the Agent has moved on from whatever it last reported, so an invalid
-        // response or RPC error repeated afterwards is not a repeat of that report and must log above debug again.
-        self.invalid_response = None;
-        self.rpc_failing = false;
+        self.unimplemented_seen = true;
         self.max_backoff
     }
 }

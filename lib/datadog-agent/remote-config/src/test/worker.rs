@@ -1705,6 +1705,92 @@ fn an_unimplemented_answer_between_two_rpc_errors_still_warns_on_the_second() {
     assert!(!at(&logs, Level::DEBUG).contains(&RPC_FAILED));
 }
 
+/// One poll's outcome in [`a_failure_logs_at_debug_only_when_it_repeats_the_last_one`].
+#[derive(Clone, Copy, Debug)]
+enum Outcome {
+    Success,
+    Rpc(&'static str),
+    /// An invalid response with these targets, which always fail with the same outer message but a cause that
+    /// depends on the targets.
+    Invalid(&'static [u8]),
+    Unimplemented,
+}
+
+const X: Outcome = Outcome::Invalid(b"{");
+const Y: Outcome = Outcome::Invalid(b"[]");
+const RPC: Outcome = Outcome::Rpc("unavailable");
+const UNIMPLEMENTED: Outcome = Outcome::Unimplemented;
+const SUCCESS: Outcome = Outcome::Success;
+
+const NOT_ENABLED: &str = "Remote Configuration is not enabled on the Agent; checking again periodically.";
+const RESUMED: &str = "Remote Configuration is enabled on the Agent; polling resumed.";
+const RECOVERED: &str = "Polling the Agent for Remote Configuration recovered.";
+
+/// A sequence of poll outcomes and the level and message of each line they log.
+type Row = (&'static [Outcome], &'static [(Level, &'static str)]);
+
+#[test]
+fn a_failure_logs_at_debug_only_when_it_repeats_the_last_one() {
+    use Level as L;
+    #[rustfmt::skip]
+    let table: &[Row] = &[
+        (&[X, X], &[(L::ERROR, INVALID_RESPONSE), (L::DEBUG, INVALID_RESPONSE)]),
+        (&[RPC, Outcome::Rpc("reset")], &[(L::WARN, RPC_FAILED), (L::DEBUG, RPC_FAILED)]),
+        (&[UNIMPLEMENTED, UNIMPLEMENTED], &[(L::INFO, NOT_ENABLED)]),
+        (&[X, RPC, X], &[(L::ERROR, INVALID_RESPONSE), (L::WARN, RPC_FAILED), (L::ERROR, INVALID_RESPONSE)]),
+        (&[RPC, X, RPC], &[(L::WARN, RPC_FAILED), (L::ERROR, INVALID_RESPONSE), (L::WARN, RPC_FAILED)]),
+        (&[RPC, UNIMPLEMENTED, RPC], &[(L::WARN, RPC_FAILED), (L::INFO, NOT_ENABLED), (L::WARN, RPC_FAILED)]),
+        (&[X, UNIMPLEMENTED, X], &[(L::ERROR, INVALID_RESPONSE), (L::INFO, NOT_ENABLED), (L::ERROR, INVALID_RESPONSE)]),
+        (&[UNIMPLEMENTED, RPC, UNIMPLEMENTED], &[(L::INFO, NOT_ENABLED), (L::WARN, RPC_FAILED), (L::INFO, NOT_ENABLED)]),
+        (&[X, Y], &[(L::ERROR, INVALID_RESPONSE), (L::ERROR, INVALID_RESPONSE)]),
+        (&[X, SUCCESS, X], &[(L::ERROR, INVALID_RESPONSE), (L::INFO, RECOVERED), (L::ERROR, INVALID_RESPONSE)]),
+        (&[RPC, SUCCESS, RPC], &[(L::WARN, RPC_FAILED), (L::INFO, RECOVERED), (L::WARN, RPC_FAILED)]),
+        (&[UNIMPLEMENTED, RPC, SUCCESS], &[(L::INFO, NOT_ENABLED), (L::WARN, RPC_FAILED), (L::INFO, RESUMED)]),
+    ];
+
+    let mut mismatches = Vec::new();
+    for (outcomes, expected) in table {
+        let logs = logged(|| async {
+            let (client, worker, mut agent) = client();
+            let _alpha = client.subscribe::<Recorder>().unwrap();
+            tokio::spawn(worker.run());
+
+            for outcome in *outcomes {
+                match outcome {
+                    Outcome::Success => {
+                        agent.exchange(Response::new(10).build()).await;
+                    }
+                    Outcome::Rpc(message) => {
+                        agent.poll().await;
+                        agent.respond(Err(FetchError::Rpc(generic_error!("{message}"))));
+                    }
+                    Outcome::Invalid(targets) => {
+                        let mut invalid = Response::new(11).build();
+                        invalid.targets = targets.to_vec();
+                        agent.exchange(invalid).await;
+                    }
+                    Outcome::Unimplemented => {
+                        agent.poll().await;
+                        agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
+                    }
+                }
+            }
+            agent.poll().await;
+        });
+        let lines: Vec<(Level, &str)> = logs
+            .iter()
+            .filter(|(_, message)| {
+                [RPC_FAILED, INVALID_RESPONSE, NOT_ENABLED, RESUMED, RECOVERED].contains(&message.as_str())
+            })
+            .map(|(level, message)| (*level, message.as_str()))
+            .collect();
+        if lines != *expected {
+            mismatches.push(format!("{outcomes:?}: expected {expected:?}, logged {lines:?}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
 #[test]
 fn logs_a_rejection_once_per_change_of_inputs() {
     let logs = logged(|| async {

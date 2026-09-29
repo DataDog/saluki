@@ -752,7 +752,7 @@ fn a_panic_dropping_a_pruned_snapshot_does_not_poison_the_registry() {
     abandon_a_panicking_snapshot(&client, &worker);
 
     assert!(std::panic::catch_unwind(AssertUnwindSafe(|| worker.shared.live_products())).is_err());
-    assert!(!worker.shared.registry.is_poisoned());
+    assert!(!worker.shared.is_poisoned());
     let _last_valid = client.subscribe::<TestLastValidDecoder>().unwrap();
     assert!(worker
         .shared
@@ -766,7 +766,7 @@ fn a_panic_dropping_a_replaced_snapshot_does_not_poison_the_registry() {
     abandon_a_panicking_snapshot(&client, &worker);
 
     assert!(std::panic::catch_unwind(AssertUnwindSafe(|| client.subscribe::<TestPanicOnDropDecoder>())).is_err());
-    assert!(!worker.shared.registry.is_poisoned());
+    assert!(!worker.shared.is_poisoned());
     client.subscribe::<TestLastValidDecoder>().unwrap();
 }
 
@@ -774,13 +774,10 @@ fn a_panic_dropping_a_replaced_snapshot_does_not_poison_the_registry() {
 fn the_registry_recovers_from_a_poisoned_lock() {
     let (client, worker) = client();
     let shared = Arc::clone(&worker.shared);
-    std::thread::spawn(move || {
-        let _registry = shared.registry.lock().unwrap();
-        panic!("poisoning the registry");
-    })
-    .join()
-    .unwrap_err();
-    assert!(worker.shared.registry.is_poisoned());
+    std::thread::spawn(move || shared.panic_while_locked())
+        .join()
+        .unwrap_err();
+    assert!(worker.shared.is_poisoned());
 
     let _last_valid = client.subscribe::<TestLastValidDecoder>().unwrap();
     assert!(worker

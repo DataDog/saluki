@@ -22,7 +22,7 @@ pub(crate) struct Shared {
     /// The ID the client reports in every poll, generated once per client.
     pub(crate) client_id: String,
 
-    pub(crate) registry: Mutex<Registry>,
+    registry: Mutex<Registry>,
 
     /// Wakes the worker to poll after a subscribe.
     ///
@@ -30,7 +30,7 @@ pub(crate) struct Shared {
     pub(crate) wake: Notify,
 }
 
-pub(crate) struct Registry {
+struct Registry {
     /// Each subscribed product's publisher, keyed by its protocol string so that two decoders naming one product share
     /// its entry.
     ///
@@ -64,6 +64,19 @@ impl Shared {
     /// locked, so a poisoned lock holds valid state.
     fn lock(&self) -> MutexGuard<'_, Registry> {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Returns whether a panic while the registry was locked poisoned its lock.
+    #[cfg(test)]
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.registry.is_poisoned()
+    }
+
+    /// Panics while holding the registry lock, which poisons it.
+    #[cfg(test)]
+    pub(crate) fn panic_while_locked(&self) {
+        let _registry = self.registry.lock().unwrap();
+        panic!("poisoning the registry");
     }
 
     /// Registers a subscription to the product `P` decodes, replacing an entry with no live subscriptions.
