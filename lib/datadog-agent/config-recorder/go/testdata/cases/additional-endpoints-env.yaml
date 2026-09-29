@@ -1,0 +1,6 @@
+name: additional-endpoints-env
+group: behavior
+why: [env-map-raw-string]
+env:
+  DD_ADDITIONAL_ENDPOINTS: '{"https://x.test": ["k"]}'
+keys: [additional_endpoints]
