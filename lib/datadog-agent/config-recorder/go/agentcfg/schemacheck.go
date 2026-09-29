@@ -6,6 +6,7 @@
 package agentcfg
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/DataDog/datadog-agent/pkg/config/model"
@@ -29,6 +30,21 @@ func CheckSchemaKeys(s schema.Schema, cfg model.Reader) error {
 	diff := DiffKeys(lowered, cfg.AllKeysLowercased())
 	if !diff.Empty() {
 		return diff
+	}
+	return nil
+}
+
+// CheckEnvBindings checks that the env var names the schema binds (schema.EnvBindings) are exactly
+// the Agent's GetEnvVars() for the config cfg. A difference means the recorder's reading of the
+// schema's env rules disagrees with the Agent's.
+func CheckEnvBindings(s schema.Schema, cfg model.Reader) error {
+	var bound []string
+	for _, names := range s.EnvBindings() {
+		bound = append(bound, names...)
+	}
+	diff := DiffKeys(bound, cfg.GetEnvVars())
+	if !diff.Empty() {
+		return fmt.Errorf("env bindings: %w", diff)
 	}
 	return nil
 }
