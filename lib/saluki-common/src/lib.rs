@@ -12,4 +12,5 @@ pub mod strings;
 pub mod supervision;
 pub mod sync;
 pub mod task;
+pub mod throttle;
 pub mod time;
