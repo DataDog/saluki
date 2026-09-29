@@ -303,3 +303,5 @@ composable
 unmodeled
 vendoring
 agentic
+getter(s?)
+protojson
