@@ -62,6 +62,11 @@ async fn main() -> Result<(), GenericError> {
     #[cfg(feature = "antithesis")]
     initialize_antithesis();
 
+    // Installed after any instrumentation hook, so panic reporting observes first and chains it:
+    // the hook below counts the panic, logs it with a bounded stack, and defers to whatever hook
+    // was already present.
+    components::panic_reporter::install_panic_reporter();
+
     let cli: Cli = argh::from_env();
 
     // Print version and exit early without requiring config.

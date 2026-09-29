@@ -68,7 +68,7 @@ use crate::{
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, metric_filter::MetricFilterConfiguration,
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
+        panic_reporter, static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -395,6 +395,9 @@ async fn create_topology(
     if !dp.standalone_mode() {
         let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
         add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
+        blueprint
+            .add_source("panic_reporter_in", panic_reporter::PanicReporterConfiguration)?
+            .connect_components("panic_reporter_in.metrics", "metrics_enrich")?;
     }
 
     // Now we move on to our actual data pipelines.
