@@ -113,14 +113,15 @@ pub trait ProductDecoder: Default + Send + 'static {
 
     /// Validates the accumulated configurations and produces the snapshot to publish.
     ///
-    /// Validation that spans configurations belongs here, including checking that a required configuration is present.
-    /// When the product has no configurations, such as after the backend removes the last one or when the Agent reports
-    /// its configuration expired, the client calls this without having called [`decode`](Self::decode).
+    /// Check requirements across configurations here, including whether a required configuration is present when the
+    /// decoder receives a non-empty assignment. The client also calls this without calling [`decode`](Self::decode)
+    /// when no configurations are assigned (after the backend removes the last one or the Agent reports its
+    /// configuration expired), or when every assigned configuration was rejected for sharing an ID.
     ///
-    /// An empty assignment means the product has no configuration, and this method **MUST** build a snapshot that
-    /// says so. A rejection keeps the last accepted snapshot, so a decoder that rejects an empty assignment leaves
-    /// subscribers reading configuration the backend removed, or that expired with the Agent's cache, until a
-    /// non-empty assignment builds.
+    /// An empty assignment to the decoder means "no configuration," even if files were assigned but all collided.
+    /// This method **MUST** build a snapshot representing that state. Rejecting an empty assignment leaves subscribers
+    /// reading configuration the backend removed or that expired with the Agent's cache until a non-empty assignment
+    /// builds successfully, because a rejection keeps the last accepted snapshot.
     ///
     /// The client acknowledges successfully decoded configurations only when this method succeeds.
     ///

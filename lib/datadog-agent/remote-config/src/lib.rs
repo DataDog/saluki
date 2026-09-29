@@ -1,10 +1,10 @@
 //! Provides a client for remote configuration.
 //!
-//! Configuration assigned to this client is delivered by polling the Datadog Agent, which fetches it from the
-//! Datadog backend. This crate hides that protocol: a subscriber supplies a [`ProductDecoder`], which names its product
-//! and decodes that product's payloads, and receives typed snapshots through a [`Subscription`]. The client's identity,
-//! its protocol cursor, its cache advertisement, the paths configurations arrive under, and the numeric apply states it
-//! reports are all private.
+//! Configuration assigned to this client arrives through polling the Datadog Agent, which fetches it from the Datadog
+//! backend. A subscriber supplies a [`ProductDecoder`] that names a product and decodes its payloads, then receives
+//! typed snapshots through a [`Subscription`]. The crate keeps the client's identity, its protocol cursor (the last
+//! targets version), the cached paths it reports to the Agent, configuration path structure, and numeric apply states
+//! private.
 //!
 //! # Testing
 //!

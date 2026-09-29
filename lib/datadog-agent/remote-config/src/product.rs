@@ -3,10 +3,9 @@ use std::ops::Deref;
 
 /// Identifies one configuration assigned to a product.
 ///
-/// A configuration's identity is its configuration ID: the `semantic.v1` in
-/// `employee/APM_SEMANTIC_CORE_DD/semantic.v1/config`. Nothing else about where the configuration came from is part of
-/// its identity, because nothing else is something the protocol can act on -- an apply status is reported against a
-/// product and this ID alone.
+/// A configuration's ID is the `semantic.v1` segment of `employee/APM_SEMANTIC_CORE_DD/semantic.v1/config`.
+/// The protocol reports apply status by product and configuration ID alone, so the rest of the path is not part of
+/// the configuration's identity.
 ///
 /// Ordering is the order in which the client presents a product's configurations to its decoder.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

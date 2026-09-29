@@ -57,8 +57,8 @@ impl<T, E> Subscription<T, E> {
     ///
     /// Returns `None` until the first snapshot is accepted, whether because the worker has not yet polled, is not
     /// running, or the subscription is [inert](Self::inert). `None` does not mean the product has no configuration
-    /// assigned: an empty assignment is a snapshot that a default decoder's [`build`](crate::ProductDecoder::build) may
-    /// accept.
+    /// assigned: a fresh decoder's [`build`](crate::ProductDecoder::build) must produce a snapshot even for an empty
+    /// assignment.
     pub fn current(&self) -> Option<Arc<T>> {
         self.receiver.borrow().accepted.clone()
     }

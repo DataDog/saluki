@@ -33,8 +33,8 @@ const FIRST_POLL_RETRY: Duration = Duration::from_secs(1);
 /// the restarted worker fetches and decodes everything again. Subscribers may therefore see a snapshot equal to the one
 /// they already hold.
 ///
-/// Everything that happens outside a subscriber's view (polls that fail, responses that cannot be applied,
-/// configurations the client rejects) is counted in the client's own metrics, since subscribers cannot see it.
+/// Failed polls, responses the client cannot apply, and rejected configurations are counted in the client's metrics.
+/// Subscribers see only their own decoding errors, so they need the metrics or worker logs to see other failures.
 pub struct RemoteConfigurationWorker {
     /// The subscriptions and client ID, shared with every client handle and kept across restarts.
     pub(crate) shared: Arc<Shared>,

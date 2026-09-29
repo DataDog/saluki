@@ -8,9 +8,9 @@ use tonic::{Code, Status};
 
 /// Answers the worker's configuration polls.
 ///
-/// The production implementation forwards to the Agent's `ClientGetConfigs` call. The crate's own tests implement it
-/// with a scripted fake that returns prepared responses and errors in order and records every request, so the worker's
-/// polling, integrity checks, status reporting, and backoff can be tested without an Agent, and under a paused clock.
+/// In production, this forwards to the Agent's `ClientGetConfigs` call. Tests use a scripted fake that records each
+/// request and returns prepared responses or errors in order. Under a paused clock, they test the worker's polling,
+/// integrity checks, status reporting, and backoff without an Agent.
 ///
 /// This trait is private. Subscribers never see it: [`RemoteConfigurationClient::new`] takes a [`RemoteAgentClient`],
 /// and the worker holds the source as a `Box<dyn RcAgent>` so that no public type gains a type parameter.

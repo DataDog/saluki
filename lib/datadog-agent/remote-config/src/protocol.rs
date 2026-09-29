@@ -13,8 +13,8 @@ use crate::ConfigId;
 ///
 /// Configurations are identified on the wire as `datadog/<org_id>/<PRODUCT>/<config_id>/<name>`, or as
 /// `employee/<PRODUCT>/<config_id>/<name>` for employee-signed products, which carry no organization segment. The
-/// client keys its own state by the whole path because cache advertisement echoes paths back to the Agent, and
-/// publishes only the configuration ID segment as a [`ConfigId`].
+/// client keys its state by the full path, which it reports back to the Agent when advertising cached files. It gives
+/// subscribers only the configuration ID segment as a [`ConfigId`].
 ///
 /// The trailing name segment is conventionally the literal `config` but is not required to be, and the client never
 /// acts on it: an apply status cannot be reported against it, so it is parsed and discarded.

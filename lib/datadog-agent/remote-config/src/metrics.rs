@@ -1,7 +1,7 @@
 //! The client's observability telemetry.
 //!
-//! Subscribers see only their snapshots and their own decoding errors, so every other failure (a poll that fails, a
-//! response that cannot be applied, a product whose assignment never builds) is visible only through these metrics
+//! Subscribers see only their snapshots and their own decoders' errors. Failed polls, responses the client cannot
+//! apply, and configurations it rejects before decoding, such as colliding IDs, are visible only through these metrics
 //! and the worker's logs.
 
 use saluki_metrics::MetricsBuilder;
