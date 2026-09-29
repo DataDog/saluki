@@ -1,0 +1,6 @@
+name: logs-enabled-yes-yaml
+group: behavior
+why: [getter-bool-string-strict-parsebool, yaml-type-mismatch-scalar-leaf-keeps-raw]
+yaml: |
+  logs_enabled: "yes"
+keys: [logs_enabled]
