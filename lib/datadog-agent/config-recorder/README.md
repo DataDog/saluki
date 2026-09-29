@@ -9,6 +9,25 @@ The output is [`corpus.jsonl`](corpus.jsonl): one header line, then a case line 
 case. The Rust tests replay it to check that Saluki reads configuration the way the Agent does. It
 is generated; do not edit it by hand.
 
+## Section reads
+
+Some Agent code reads a setting through something other than a typed getter. A case names one of
+these explicit-only reads (getter-map.md §2.1) in a key's `getters` list; default getter selection
+never picks them.
+
+The Agent's OTLP pipeline does not read its receiver settings with getters. It reads the whole
+`otlp_config.receiver` section with `configcheck.ReadConfigSection`, which keeps only the leaves
+the user configured and the sections the user declared with a nil value, so schema defaults never
+reach the collector. The function exists only under the Agent's `otlp` build tag, so
+`regenerate.sh` vets, tests and builds the recorder with `-tags otlp`. That tag selects no file
+under `pkg/config`, `comp/core/config` or `comp/core/configstream`, so it does not change how the
+config is built or streamed.
+
+`IsConfigured` reports whether the user set a key, not what its value is: the Agent uses it to
+gate behavior such as the `dd_url`/`site` endpoints and the forwarder retry-queue sizes. A case
+names `IsConfigured` in a key's `getters` list to record that answer directly, instead of Rust
+re-deriving the rule from the streamed source and value.
+
 ## Generated cases
 
 Besides the hand-written cases in `cases/`, `regenerate.sh` runs the recorder's `generate`

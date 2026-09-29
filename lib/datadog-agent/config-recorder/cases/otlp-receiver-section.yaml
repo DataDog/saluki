@@ -1,0 +1,77 @@
+name: otlp-receiver-section
+group: behavior
+why: [otlp-receiver-read-as-section]
+yaml: |
+  otlp_config:
+    receiver:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4417
+          dialer:
+            timeout: 7s
+          keepalive:
+            enforcement_policy:
+              permit_without_stream: true
+            server_parameters:
+              max_connection_age: 31s
+              max_connection_age_grace: 32s
+              max_connection_idle: 33s
+              time: 34s
+              timeout: 35s
+          tls:
+            ca_file: /g/ca.pem
+            ca_pem: g-ca
+            cert_file: /g/cert.pem
+            cert_pem: g-cert
+            cipher_suites: [TLS_AES_128_GCM_SHA256]
+            client_ca_file: /g/client-ca.pem
+            client_ca_file_reload: true
+            curve_preferences: [X25519]
+            include_system_ca_certs_pool: true
+            key_file: /g/key.pem
+            key_pem: g-key
+            max_version: "1.3"
+            min_version: "1.3"
+            reload_interval: 1h
+            tpm:
+              auth: g-auth
+              enabled: true
+              owner_auth: g-owner
+              path: /dev/tpmrm0
+        http:
+          compression_algorithms: [gzip]
+          cors:
+            exposed_headers: [X-E]
+            max_age: 600
+          idle_timeout: 41s
+          keep_alives_enabled: false
+          logs_url_path: /l
+          metrics_url_path: /m
+          read_header_timeout: 42s
+          read_timeout: 43s
+          response_headers:
+            x-r: v
+          tls:
+            ca_file: /h/ca.pem
+            ca_pem: h-ca
+            cert_file: /h/cert.pem
+            cert_pem: h-cert
+            cipher_suites: [TLS_AES_256_GCM_SHA384]
+            client_ca_file: /h/client-ca.pem
+            client_ca_file_reload: true
+            curve_preferences: [P256]
+            include_system_ca_certs_pool: true
+            key_file: /h/key.pem
+            key_pem: h-key
+            max_version: "1.3"
+            min_version: "1.3"
+            reload_interval: 2h
+            tpm:
+              auth: h-auth
+              enabled: true
+              owner_auth: h-owner
+              path: /dev/tpm0
+          traces_url_path: /t
+          write_timeout: 44s
+keys:
+  - {key: otlp_config.receiver, getters: [Get, ReadConfigSection]}

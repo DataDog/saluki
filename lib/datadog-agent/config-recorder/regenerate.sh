@@ -233,14 +233,45 @@ run_go_step() {
                 echo "$unformatted" >&2
                 exit 1
             fi
+            # The otlp tag gives the recorder the Agent'"'"'s OTLP section read (configcheck.ReadConfigSection).
+            # It selects no file under pkg/config, comp/core/config or comp/core/configstream, so it does
+            # not change how the config is built or streamed. Check that stays true: compare the recorder'"'"'s
+            # dependency graph with and without the tag, and fail if any Agent package other than
+            # comp/otelcol/otlp/configcheck differs in file set or appears only with the tag.
+            echo "[*] checking the otlp build tag against the rest of the dependency graph"
+            go list -e -deps -f "{{.ImportPath}} {{.GoFiles}}" ./cmd/config-recorder | sort > /tmp/deps-no-tag.txt
+            go list -e -deps -tags otlp -f "{{.ImportPath}} {{.GoFiles}}" ./cmd/config-recorder | sort > /tmp/deps-otlp.txt
+            agent_pkgs="$(cut -d" " -f1 /tmp/deps-no-tag.txt /tmp/deps-otlp.txt \
+                | grep "^github.com/DataDog/datadog-agent/" \
+                | grep -v "^github.com/DataDog/datadog-agent/comp/otelcol/otlp/configcheck$" \
+                | sort -u)"
+            echo "[*] Agent packages compared for build-tag drift:"
+            echo "$agent_pkgs"
+            tag_fail=0
+            for pkg in $agent_pkgs; do
+                no_tag="$(grep -F "$pkg " /tmp/deps-no-tag.txt || true)"
+                with_tag="$(grep -F "$pkg " /tmp/deps-otlp.txt || true)"
+                if [ -z "$no_tag" ]; then
+                    echo "[!] $pkg appears only with -tags otlp" >&2
+                    tag_fail=1
+                    continue
+                fi
+                if [ "$no_tag" != "$with_tag" ]; then
+                    echo "[!] $pkg has a different file set with -tags otlp" >&2
+                    echo "    without: $no_tag" >&2
+                    echo "    with:    $with_tag" >&2
+                    tag_fail=1
+                fi
+            done
+            [ "$tag_fail" -eq 0 ] || exit 1
             echo "[*] go vet"
-            go vet ./cmd/config-recorder/...
+            go vet -tags otlp ./cmd/config-recorder/...
             echo "[*] go test"
             # CONFIG_RECORDER_TEST_SCHEMA lets the integration test (go/integration_test.go) build
             # the recorder binary and run its real drive/run-case subcommands on go/testdata/.
-            CONFIG_RECORDER_TEST_SCHEMA="$0" go test -count=1 ./cmd/config-recorder/...
+            CONFIG_RECORDER_TEST_SCHEMA="$0" go test -tags otlp -count=1 ./cmd/config-recorder/...
             echo "[*] go build"
-            go build -o /tmp/config-recorder ./cmd/config-recorder
+            go build -tags otlp -o /tmp/config-recorder ./cmd/config-recorder
             echo "[*] generate"
             /tmp/config-recorder generate --schema "$0" --overlay /overlay.yaml --out /generated
             echo "[*] drive"
