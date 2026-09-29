@@ -50,16 +50,16 @@ func TestSelectGetters(t *testing.T) {
 
 func TestGettersForKey(t *testing.T) {
 	override := KeyEntry{Key: "k", Getters: []string{"GetInt"}}
-	if got, _ := GettersForKey(override, KeyLeaf, true, "string", "", "", SchemaTags{}); !reflect.DeepEqual(got, []string{"GetInt"}) {
+	if got, _ := GettersForKey(override, SchemaKey{Kind: KeyLeaf}, true, "string"); !reflect.DeepEqual(got, []string{"GetInt"}) {
 		t.Errorf("override: %v", got)
 	}
 	for _, kind := range []KeyKind{KeyUnknown, KeySection} {
-		if got, _ := GettersForKey(KeyEntry{Key: "k"}, kind, true, "", "", "", SchemaTags{}); !reflect.DeepEqual(got, []string{"Get"}) {
+		if got, _ := GettersForKey(KeyEntry{Key: "k"}, SchemaKey{Kind: kind}, true, ""); !reflect.DeepEqual(got, []string{"Get"}) {
 			t.Errorf("kind %d: %v", kind, got)
 		}
 	}
 	// A leaf with no default falls back to the declared-type table (getter-map.md §1.1).
-	if got, _ := GettersForKey(KeyEntry{Key: "k"}, KeyLeaf, false, "", "boolean", "", SchemaTags{}); !reflect.DeepEqual(got, []string{"Get", "GetBool"}) {
+	if got, _ := GettersForKey(KeyEntry{Key: "k"}, SchemaKey{Kind: KeyLeaf, DeclaredType: "boolean"}, false, ""); !reflect.DeepEqual(got, []string{"Get", "GetBool"}) {
 		t.Errorf("no default: %v", got)
 	}
 }

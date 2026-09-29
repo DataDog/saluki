@@ -27,9 +27,6 @@ var (
 	ErrRecordUpdateIndex    = errors.New("update index must equal its position")
 	ErrRecordSideEffects    = errors.New("side_effects must be sorted by unique key")
 	ErrRecordAbsent         = errors.New("absent setting must have empty sources and no value")
-	ErrRecordEventKind      = errors.New("event kind must be update or snapshot")
-	ErrRecordEventUpdate    = errors.New("event with a null update must precede attributed events")
-	ErrRecordEventAbsent    = errors.New("only a snapshot event may be absent")
 	ErrRecordField          = errors.New("required member is empty")
 )
 
@@ -67,14 +64,14 @@ type SideEffect struct {
 	Absent bool
 }
 
-// Event is one later stream event carrying a key.
+// Event is one later stream event carrying a key. Every event belongs to an update (record.md
+// §4.2, §5.2); a resync snapshot is a harness failure in format 1, so no event kind or absence
+// remains here (side_effects still uses Absent, on SideEffect).
 type Event struct {
 	Setting
-	Kind string
-	Seq  uint64
-	// Update is the index of the update the event belongs to; nil for events before the first one.
-	Update *int
-	Absent bool
+	Seq uint64
+	// Update is the index of the update the event belongs to.
+	Update int
 }
 
 // UpdateResult is what one case update did.
@@ -335,25 +332,6 @@ func (k *KeyLine) Validate() error {
 	if k.Case == "" || k.Key == "" {
 		return fmt.Errorf("%w: case or key", ErrRecordField)
 	}
-	attributed := false
-	for i, e := range k.Events {
-		if e.Kind != "update" && e.Kind != "snapshot" {
-			return fmt.Errorf("%w: %q", ErrRecordEventKind, e.Kind)
-		}
-		if e.Update != nil {
-			attributed = true
-		} else if attributed {
-			return fmt.Errorf("%w: event %d", ErrRecordEventUpdate, i)
-		}
-		if e.Absent {
-			if e.Kind != "snapshot" {
-				return fmt.Errorf("%w: event %d", ErrRecordEventAbsent, i)
-			}
-			if e.Source != "" || e.UnsetSource != "" || e.Value != nil {
-				return fmt.Errorf("%w: event %d", ErrRecordAbsent, i)
-			}
-		}
-	}
 	if err := validateRead(&k.SnapshotRead); err != nil {
 		return err
 	}
@@ -388,16 +366,8 @@ func (k *KeyLine) object() (jsonObject, error) {
 		list := make([]interface{}, 0, len(k.Events))
 		for _, e := range k.Events {
 			o := settingObject(&e.Setting)
-			o["kind"] = e.Kind
 			o["seq"] = e.Seq
-			if e.Update != nil {
-				o["update"] = *e.Update
-			} else {
-				o["update"] = nil
-			}
-			if e.Absent {
-				o["absent"] = true
-			}
+			o["update"] = e.Update
 			list = append(list, o)
 		}
 		obj["events"] = list

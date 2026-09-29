@@ -88,15 +88,26 @@ type errConstruction struct{ err error }
 
 func (e errConstruction) Error() string { return e.err.Error() }
 
+// session is what a case run works with once the first snapshot has arrived: the config, the
+// first snapshot, the one subscription's later events, and the first snapshot's sequence ID, from
+// which every later event's relative sequence is taken.
+type session struct {
+	cfg      config.Component
+	snapshot *pb.ConfigSnapshot
+	events   <-chan *pb.ConfigEvent
+	base     uint64
+}
+
 // withFirstSnapshot builds the config by the Agent's fx path, subscribes to the config stream,
-// waits for the first event, and calls fn with the config and the first snapshot.
+// waits for the first event, and calls fn with a session holding the config, the first snapshot
+// and the subscription's event channel, which stays open until fn returns.
 //
 // Before building the app it runs fx.ValidateApp on the same fx options, the way the Agent's own
 // fxutil.TestOneShot does (pkg/util/fxutil/test.go): a wiring error there (a missing or ambiguous
 // dependency in the fx graph) is returned as a plain error, a harness failure. Only an error from
 // running the validated graph before fn is entered -- from the config's own construction -- is
 // returned as errConstruction, a startup error (record.md §4.1).
-func withFirstSnapshot(params config.Params, fn func(config.Component, *pb.ConfigSnapshot) error) error {
+func withFirstSnapshot(params config.Params, fn func(*session) error) error {
 	entered := false
 	oneShotFunc := func(cfg config.Component, stream configstream.Component) error {
 		entered = true
@@ -112,7 +123,10 @@ func withFirstSnapshot(params config.Params, fn func(config.Component, *pb.Confi
 		if snapshot == nil {
 			return errors.New("first config stream event is not a snapshot")
 		}
-		return fn(cfg, snapshot)
+		if snapshot.GetSequenceId() < 0 {
+			return fmt.Errorf("first snapshot has a negative sequence ID %d", snapshot.GetSequenceId())
+		}
+		return fn(&session{cfg: cfg, snapshot: snapshot, events: events, base: uint64(snapshot.GetSequenceId())})
 	}
 	opts := []fx.Option{
 		fx.Supply(params),
