@@ -193,9 +193,6 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 		if err != nil {
 			return err
 		}
-		for i := range run.Updates {
-			run.Updates[i].Events = attributed.UpdateEvents[i]
-		}
 		for i, entry := range c.Keys {
 			run.Keys[i].Events = attributed.KeyEvents[i]
 			read, err := readKey(cfg, entry.Key, lists[i], capture)
@@ -262,7 +259,7 @@ func applyUpdates(sess *session, c *corpus.Case, capture *logCapture, names []st
 		}
 		r := corpus.UpdateRange{Before: before, After: after}
 		ranges = append(ranges, r)
-		result := corpus.UpdateResult{Index: i, SeqDelta: r.SeqDelta(), Warnings: warnings}
+		result := corpus.UpdateResult{SeqDelta: r.SeqDelta(), Warnings: warnings}
 		if r.WaitsFor() {
 			received, timedOut, err := waitForUpdate(sess, r)
 			if err != nil {

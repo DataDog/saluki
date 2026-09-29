@@ -8,7 +8,6 @@ package corpus
 import (
 	"encoding/json"
 	"errors"
-	"reflect"
 	"testing"
 )
 
@@ -40,11 +39,9 @@ func TestAttributeRanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got.UpdateEvents, []int{1, 0, 2}) {
-		t.Errorf("update events %v", got.UpdateEvents)
-	}
 	a := got.KeyEvents[0]
-	if len(a) != 2 || a[0].Update != 0 || a[1].Update != 2 || a[1].Source != "file" {
+	// Seq is relative to the update's before: update 2's range starts after seq 1.
+	if len(a) != 2 || a[0].Update != 0 || a[0].Seq != 1 || a[1].Update != 2 || a[1].Seq != 2 || a[1].Source != "file" {
 		t.Errorf("key a: %+v", a)
 	}
 	if len(got.KeyEvents[1]) != 1 || got.KeyEvents[1][0].Update != 2 || len(got.KeyEvents[2]) != 0 {
