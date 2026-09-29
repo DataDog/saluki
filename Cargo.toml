@@ -13,6 +13,7 @@ members = [
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
   "lib/datadog-agent/metrics-v3",
+  "lib/datadog-agent/remote-config",
   "lib/ddsketch",
   "lib/go-duration",
   "lib/ottl",

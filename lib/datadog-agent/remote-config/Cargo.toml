@@ -1,0 +1,42 @@
+[package]
+name = "datadog-agent-remote-config"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[features]
+# Exposes `TestPublisher` so subscribers can drive a `Subscription` in their own tests. Not enabled in normal builds.
+test-util = []
+
+[dependencies]
+async-trait = { workspace = true }
+# `aws-lc-sys` is the backend when nothing else selects one. In a FIPS build, `saluki-tls/fips` enables `aws-lc-rs/fips`,
+# and `aws-lc-rs` then uses the validated module instead.
+aws-lc-rs = { workspace = true, features = ["aws-lc-sys"] }
+base64 = { workspace = true }
+datadog-agent-commons = { workspace = true }
+datadog-protos = { workspace = true }
+faster-hex = { workspace = true, features = ["alloc"] }
+saluki-common = { workspace = true }
+saluki-core = { workspace = true }
+saluki-error = { workspace = true }
+saluki-io = { workspace = true }
+saluki-metrics = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tonic = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+datadog-agent-remote-config = { path = ".", features = ["test-util"] }
+metrics = { workspace = true }
+metrics-util = { workspace = true, features = ["debugging"] }
+snafu = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }
+
+[lints]
+workspace = true
