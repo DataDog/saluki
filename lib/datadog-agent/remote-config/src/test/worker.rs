@@ -75,7 +75,9 @@ impl Agent {
     ///
     /// The Agent answers a request already at its targets version with an empty response, but sends an
     /// expiry before comparing versions ([service.go]). A test that needs another answer calls [`poll`](Self::poll) and
-    /// [`respond`](Self::respond) instead.
+    /// [`respond`](Self::respond) instead. A test that means to exercise this swap, a scripted response whose
+    /// version equals the request's current one, should say so, since a failing assertion downstream of `exchange`
+    /// otherwise gives no hint that the built response was never actually sent.
     ///
     /// [service.go]:
     ///     https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/config/remote/service/service.go#L1018-L1064
@@ -84,6 +86,8 @@ impl Agent {
         let expired = response.config_status == ConfigStatus::Expired as i32;
         let current = targets_version(&response) == Some(state(&request).targets_version);
         self.respond(Ok(if current && !expired {
+            // Mirrors the Agent's own behavior: a request already at the scripted response's version gets an empty
+            // response instead, so this swap can silently turn a scripted update into a no-op.
             ClientGetConfigsResponse::default()
         } else {
             response
@@ -977,6 +981,31 @@ async fn configurations_return_when_the_agent_recovers_from_expiry_at_the_same_t
     assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
 }
 
+// The strict test Agent in `exchange` mirrors the real Agent by discarding a scripted response whose version equals
+// the request's current one, sending an empty response instead. A scripted response with an unchanged version but a
+// changed file exercises that discard, rather than one where the change happens to be a no-op anyway.
+#[tokio::test(start_paused = true)]
+async fn a_scripted_response_at_the_current_version_with_a_changed_file_is_discarded() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+
+    // Still version 10, but the file's contents changed; the strict test Agent discards this rather than forwarding
+    // it, since the client's request already carries version 10.
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 2, b"two").build())
+        .await;
+    assert_unpublished(&mut alpha).await;
+
+    let request = agent.poll().await;
+    assert_eq!(state(&request).targets_version, 10);
+}
+
 #[tokio::test(start_paused = true)]
 async fn empty_files_are_delivered_but_not_advertised_as_cached() {
     let (client, worker, mut agent) = client();
@@ -1606,6 +1635,52 @@ fn an_rpc_error_after_an_invalid_response_still_warns() {
     );
     assert_eq!(at(&logs, Level::WARN), [RPC_FAILED]);
     assert!(!at(&logs, Level::DEBUG).contains(&RPC_FAILED));
+}
+
+#[test]
+fn a_changed_cause_with_the_same_outer_message_logs_at_error() {
+    let logs = logged(|| async {
+        let (client, worker, mut agent) = client();
+        let _alpha = client.subscribe::<Recorder>().unwrap();
+        tokio::spawn(worker.run());
+
+        // Both fail with the outer message "Targets metadata is malformed.", but from different underlying
+        // `serde_json` errors, so `to_string` alone would make the second look like a repeat of the first.
+        let mut truncated = Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build();
+        truncated.targets = b"{".to_vec();
+        let mut wrong_shape = Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build();
+        wrong_shape.targets = b"[]".to_vec();
+
+        agent.exchange(truncated).await;
+        agent.exchange(wrong_shape).await;
+        agent.poll().await;
+    });
+
+    assert_eq!(at(&logs, Level::ERROR), [INVALID_RESPONSE, INVALID_RESPONSE]);
+    assert!(at(&logs, Level::DEBUG).is_empty());
+}
+
+#[test]
+fn recovering_from_unimplemented_resets_the_repeat_check() {
+    let logs = logged(|| async {
+        let (client, worker, mut agent) = client();
+        let _alpha = client.subscribe::<Recorder>().unwrap();
+        tokio::spawn(worker.run());
+
+        let mut invalid = Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build();
+        invalid.targets = b"{".to_vec();
+
+        agent.exchange(invalid.clone()).await;
+        agent.poll().await;
+        agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
+        agent.exchange(invalid).await;
+        agent.poll().await;
+    });
+
+    // Without the fix, the second invalid response would log at debug: same outer message, and nothing else resets
+    // `invalid_response` between the two.
+    assert_eq!(at(&logs, Level::ERROR), [INVALID_RESPONSE, INVALID_RESPONSE]);
+    assert!(at(&logs, Level::DEBUG).is_empty());
 }
 
 #[test]

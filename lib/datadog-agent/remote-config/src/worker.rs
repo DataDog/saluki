@@ -138,14 +138,17 @@ async fn poll_loop(
                     (outcome, schedule.succeeded())
                 }
                 Err(e) => {
-                    let error = e.to_string();
-                    if schedule.invalid_response.as_ref() == Some(&error) {
+                    // `GenericError::to_string` omits the cause chain, so two errors with the same outer message but
+                    // different causes would otherwise look identical here; compare the full chain instead so a
+                    // changed cause still logs at error.
+                    let chain = format!("{e:#}");
+                    if schedule.invalid_response.as_ref() == Some(&chain) {
                         debug!(error = %e, "Discarded an invalid Remote Configuration response.");
                     } else {
                         error!(error = %e, "Discarded an invalid Remote Configuration response.");
                     }
-                    repository.last_error = Some(error.clone());
-                    schedule.invalid_response = Some(error);
+                    repository.last_error = Some(e.to_string());
+                    schedule.invalid_response = Some(chain);
                     (PollOutcome::InvalidResponse, schedule.failed())
                 }
             },
@@ -244,6 +247,9 @@ impl Schedule {
             info!(error = %error, "Remote Configuration is not enabled on the Agent; checking again periodically.");
         }
         self.unimplemented = true;
+        // An `Unimplemented` answer means the Agent has moved on from whatever it last reported, so an invalid
+        // response repeated afterwards is not a repeat of that report and must log at error again.
+        self.invalid_response = None;
         self.max_backoff
     }
 }
