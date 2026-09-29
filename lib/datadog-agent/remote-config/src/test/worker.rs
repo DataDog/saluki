@@ -113,6 +113,7 @@ struct Response {
     files: Vec<File>,
     roots: Vec<Vec<u8>>,
     expired: bool,
+    custom: Option<serde_json::Value>,
 }
 
 impl Response {
@@ -124,6 +125,7 @@ impl Response {
             files: Vec::new(),
             roots: Vec::new(),
             expired: false,
+            custom: Some(serde_json::json!({"opaque_backend_state": STANDARD.encode(format!("state-{version}"))})),
         }
     }
 
@@ -165,16 +167,22 @@ impl Response {
         self
     }
 
+    /// Replaces the targets `custom` object, or omits it if `None`.
+    fn custom(mut self, custom: Option<serde_json::Value>) -> Self {
+        self.custom = custom;
+        self
+    }
+
     fn build(self) -> ClientGetConfigsResponse {
-        let targets = serde_json::json!({
-            "signed": {
-                "_type": "targets",
-                "version": self.version,
-                "custom": {"opaque_backend_state": STANDARD.encode(format!("state-{}", self.version))},
-                "targets": self.targets,
-            },
-            "signatures": [],
+        let mut signed = serde_json::json!({
+            "_type": "targets",
+            "version": self.version,
+            "targets": self.targets,
         });
+        if let Some(custom) = self.custom {
+            signed["custom"] = custom;
+        }
+        let targets = serde_json::json!({"signed": signed, "signatures": []});
         ClientGetConfigsResponse {
             roots: self.roots,
             targets: targets.to_string().into_bytes(),
@@ -627,6 +635,155 @@ async fn a_hash_mismatch_aborts_the_whole_poll() {
     assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "two")]));
     assert_eq!(next(&mut beta).await.unwrap(), snapshot(&[("b", "fine")]));
     assert!(!state(&agent.poll().await).has_error);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_path_listed_twice_in_one_response_delivers_the_newest_bytes() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+
+    // Applying the second listing used to pair the new metadata with the cached bytes the first had replaced.
+    let mut response = Response::new(11).send("employee/ALPHA/a/config", 2, b"two").build();
+    response.client_configs.push("employee/ALPHA/a/config".to_owned());
+    agent.exchange(response).await;
+
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "two")]));
+    let request = agent.poll().await;
+    let cached = cached(&request);
+    assert_eq!(
+        cached["employee/ALPHA/a/config"].hashes[0].hash,
+        faster_hex::hex_string(&sha256(b"two"))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_path_for_an_unrequested_product_is_ignored() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    // BETA's payload does not match its metadata, which would abort the poll were BETA validated.
+    agent
+        .exchange(
+            Response::new(10)
+                .send("employee/ALPHA/a/config", 1, b"one")
+                .tampered("employee/BETA/b/config", 1, b"two", b"tw0")
+                .build(),
+        )
+        .await;
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
+
+    let request = agent.poll().await;
+    assert!(!state(&request).has_error, "{}", state(&request).error);
+    assert_eq!(state(&request).targets_version, 10);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_root_version_of_zero_is_rejected_rather_than_cached() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(
+            Response::new(10)
+                .send("employee/ALPHA/a/config", 1, b"one")
+                .root(2)
+                .build(),
+        )
+        .await;
+    next(&mut alpha).await.unwrap();
+
+    // TUF root versions only increase, so a lower version, here one the Agent itself would reject, is not adopted.
+    agent
+        .exchange(
+            Response::new(11)
+                .send("employee/ALPHA/a/config", 2, b"two")
+                .root(0)
+                .build(),
+        )
+        .await;
+
+    let request = agent.poll().await;
+    assert_eq!(
+        state(&request).root_version,
+        2,
+        "a root version of 0 should not overwrite the cursor"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_response_without_roots_keeps_the_root_version() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(
+            Response::new(10)
+                .send("employee/ALPHA/a/config", 1, b"one")
+                .root(2)
+                .build(),
+        )
+        .await;
+    next(&mut alpha).await.unwrap();
+    agent
+        .exchange(Response::new(11).send("employee/ALPHA/a/config", 2, b"two").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+
+    assert_eq!(state(&agent.poll().await).root_version, 2);
+}
+
+/// Returns the backend state the client reports after a response at version 10 and then one with `custom`.
+async fn backend_state_after(custom: Option<serde_json::Value>) -> Vec<u8> {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+    agent
+        .exchange(
+            Response::new(11)
+                .send("employee/ALPHA/a/config", 2, b"two")
+                .custom(custom)
+                .build(),
+        )
+        .await;
+    next(&mut alpha).await.unwrap();
+
+    let request = agent.poll().await;
+    assert_eq!(state(&request).targets_version, 11);
+    state(&request).backend_client_state.clone()
+}
+
+// Ported from the Go repository, which replaces the backend state only when the targets have a `custom` object:
+// https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/remoteconfig/state/repository.go#L270-L273
+#[tokio::test(start_paused = true)]
+async fn targets_without_a_custom_object_keep_the_backend_state() {
+    assert_eq!(backend_state_after(None).await, b"state-10");
+}
+
+// https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/remoteconfig/state/repository.go#L480-L491
+#[tokio::test(start_paused = true)]
+async fn a_custom_object_without_a_backend_state_clears_it() {
+    assert!(backend_state_after(Some(serde_json::json!({}))).await.is_empty());
+}
+
+// https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/remoteconfig/state/repository.go#L480-L491
+#[tokio::test(start_paused = true)]
+async fn an_invalid_base64_backend_state_is_accepted_as_empty() {
+    let custom = serde_json::json!({"opaque_backend_state": "not base64!"});
+    assert!(backend_state_after(Some(custom)).await.is_empty());
 }
 
 #[tokio::test(start_paused = true)]

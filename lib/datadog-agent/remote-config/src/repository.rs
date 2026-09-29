@@ -2,7 +2,7 @@
 //!
 //! All of this is discarded when the worker restarts, so a restarted worker fetches and decodes everything again.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use datadog_protos::remote_config::{
     Client, ClientAgent, ClientGetConfigsRequest, ClientGetConfigsResponse, ClientState, ConfigState, ConfigStatus,
@@ -211,6 +211,8 @@ impl Repository {
         // The Agent sends an empty response when nothing has changed. An expired status is a change on its own.
         let expired = config_status == ConfigStatus::Expired as i32;
         if !expired && roots.is_empty() && targets.is_empty() && target_files.is_empty() && client_configs.is_empty() {
+            // This leaves `self.expired` set after an expiry, so the next poll asks for the full assignment once more.
+            // That is harmless: the Agent answers it with the files it has.
             return Ok(PollOutcome::Ok);
         }
 
@@ -222,12 +224,18 @@ impl Repository {
             Some(Targets::parse(&targets)?)
         };
         let root_version = match roots.last() {
-            Some(root) => root_version(root)?,
+            // TUF root versions only increase, so a lower one never moves the cursor back.
+            Some(root) => root_version(root)?.max(self.root_version),
             None => self.root_version,
         };
         let mut sent: HashMap<String, Vec<u8>> = target_files.into_iter().map(|file| (file.path, file.raw)).collect();
         let mut assigned = Vec::with_capacity(client_configs.len());
+        let mut seen = HashSet::with_capacity(client_configs.len());
         for raw in &client_configs {
+            // A later duplicate would pair its metadata with bytes the first occurrence already replaced.
+            if !seen.insert(raw.as_str()) {
+                continue;
+            }
             let path = ConfigPath::parse(raw)
                 .ok_or_else(|| generic_error!("Assigned configuration path {raw} is malformed."))?;
             if !requested.contains_key(&path.product) {
@@ -261,18 +269,22 @@ impl Repository {
         for (path, meta) in assigned {
             let contents = match sent.remove(&path.raw) {
                 Some(payload) => payload,
-                None => match previous.remove(&path.raw) {
-                    Some(cached) => cached.contents,
-                    // The same path was assigned twice and its cached copy has already been moved.
-                    None => continue,
-                },
+                None => {
+                    previous
+                        .remove(&path.raw)
+                        .expect("an unsent path was validated as cached, and each path is assigned once")
+                        .contents
+                }
             };
             self.files.insert(path.raw.clone(), CachedFile { path, meta, contents });
         }
         self.root_version = root_version;
-        if let Some(targets) = targets {
+        if let Some(targets) = &targets {
             self.targets_version = targets.version;
-            self.backend_state = targets.backend_state;
+        }
+        // Responses without targets and targets without a `custom` object both keep the previous backend state.
+        if let Some(backend_state) = targets.and_then(|targets| targets.backend_state) {
+            self.backend_state = backend_state;
         }
 
         if expired && !self.expired {

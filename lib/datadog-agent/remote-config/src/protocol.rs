@@ -34,12 +34,12 @@ impl ConfigPath {
     /// Parses a path in either form, returning `None` if it matches neither.
     ///
     /// The forms match the Agent's own validation, which rejects a request that advertises a cached path it cannot
-    /// parse.
+    /// parse. That includes an organization ID that does not fit in a signed 64-bit integer.
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         let segments: Vec<&str> = raw.split('/').collect();
         let (product, config_id, name) = match segments.as_slice() {
             ["datadog", org_id, product, config_id, name]
-                if !org_id.is_empty() && org_id.bytes().all(|b| b.is_ascii_digit()) =>
+                if org_id.bytes().all(|b| b.is_ascii_digit()) && org_id.parse::<i64>().is_ok() =>
             {
                 (*product, *config_id, *name)
             }
@@ -105,8 +105,11 @@ pub(crate) struct Targets {
     /// The targets version, which the client echoes back as its cursor.
     pub(crate) version: u64,
 
-    /// Backend state the client echoes back unchanged.
-    pub(crate) backend_state: Vec<u8>,
+    /// Backend state the client echoes back unchanged, or `None` if the metadata has no `custom` object.
+    ///
+    /// `None` keeps the previous backend state. A `custom` object without a valid base64 `opaque_backend_state` yields
+    /// an empty state, as the Go client does.
+    pub(crate) backend_state: Option<Vec<u8>>,
 
     /// Metadata for every file the Agent knows about, including ones not assigned to this client.
     ///
@@ -134,13 +137,13 @@ impl Targets {
         let Signed { signed } = serde_json::from_slice(raw).error_context("Targets metadata is malformed.")?;
 
         // The Go client ignores a missing or malformed backend state rather than failing the update.
-        let backend_state = signed
-            .custom
-            .as_ref()
-            .and_then(|custom| custom.get("opaque_backend_state"))
-            .and_then(|state| state.as_str())
-            .and_then(|state| STANDARD.decode(state).ok())
-            .unwrap_or_default();
+        let backend_state = signed.custom.map(|custom| {
+            custom
+                .get("opaque_backend_state")
+                .and_then(|state| state.as_str())
+                .and_then(|state| STANDARD.decode(state).ok())
+                .unwrap_or_default()
+        });
 
         Ok(Self {
             version: signed.version,
@@ -224,6 +227,9 @@ mod tests {
         assert_eq!(datadog.product, "APM_SAMPLING");
         assert_eq!(&*datadog.config_id, "sampling.v1");
 
+        let largest = ConfigPath::parse("datadog/9223372036854775807/APM_SAMPLING/sampling.v1/config").unwrap();
+        assert_eq!(largest.product, "APM_SAMPLING");
+
         let employee = ConfigPath::parse("employee/APM_SEMANTIC_CORE_DD/semantic.v1/backup").unwrap();
         assert_eq!(employee.product, "APM_SEMANTIC_CORE_DD");
         assert_eq!(&*employee.config_id, "semantic.v1");
@@ -237,6 +243,9 @@ mod tests {
             "datadog/APM_SAMPLING/sampling.v1/config",
             "datadog/x2/APM_SAMPLING/sampling.v1/config",
             "datadog//APM_SAMPLING/sampling.v1/config",
+            "datadog/+2/APM_SAMPLING/sampling.v1/config",
+            // The Agent parses the organization ID as a signed 64-bit integer, so this is one past its range.
+            "datadog/9223372036854775808/APM_SAMPLING/sampling.v1/config",
             "datadog/2/APM_SAMPLING/sampling.v1/config/extra",
             "employee/2/APM_SEMANTIC_CORE_DD/semantic.v1/config",
             "employee/APM_SEMANTIC_CORE_DD//config",
@@ -259,6 +268,8 @@ mod tests {
                     "employee/P/unversioned/config": {"length": 2, "hashes": {"sha256": hash}},
                     "employee/P/unhashed/config": {"length": 2, "hashes": {}, "custom": {"v": 3}},
                     "employee/P/badhash/config": {"length": 2, "hashes": {"sha256": "zz"}, "custom": {"v": 3}},
+                    "employee/P/shorthash/config": {"length": 2, "hashes": {"sha256": &hash[..62]}, "custom": {"v": 3}},
+                    "employee/P/longhash/config": {"length": 2, "hashes": {"sha256": format!("{hash}00")}, "custom": {"v": 3}},
                 },
             },
             "signatures": [],
@@ -266,7 +277,7 @@ mod tests {
         let targets = Targets::parse(raw.to_string().as_bytes()).unwrap();
 
         assert_eq!(targets.version, 7);
-        assert_eq!(targets.backend_state, b"state");
+        assert_eq!(targets.backend_state.as_deref(), Some(&b"state"[..]));
         let meta = targets.meta("employee/P/good/config").unwrap();
         assert_eq!((meta.version, meta.length, meta.sha256), (3, 2, sha256(b"{}")));
         meta.verify("employee/P/good/config", b"{}").unwrap();
@@ -277,10 +288,23 @@ mod tests {
             "employee/P/unversioned/config",
             "employee/P/unhashed/config",
             "employee/P/badhash/config",
+            "employee/P/shorthash/config",
+            "employee/P/longhash/config",
             "employee/P/absent/config",
         ] {
             assert!(targets.meta(path).is_err(), "{path} should be rejected");
         }
+    }
+
+    #[test]
+    fn a_payload_with_the_right_hash_but_the_wrong_length_is_rejected() {
+        let meta = TargetMeta {
+            version: 1,
+            length: 3,
+            sha256: sha256(b"{}"),
+        };
+        let error = meta.verify("employee/P/c/config", b"{}").unwrap_err();
+        assert!(error.to_string().contains("is 2 bytes"), "{error}");
     }
 
     #[test]
