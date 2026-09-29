@@ -117,7 +117,7 @@ func caseNode(c *Case) (*yaml.Node, error) {
 	m := mapping()
 	add := func(key string, v *yaml.Node) { m.Content = append(m.Content, str(key), v) }
 	add("name", str(c.Name))
-	add("group", str(c.Group))
+	add("group", str(string(c.Group)))
 	if len(c.Why) > 0 {
 		add("why", strs(c.Why))
 	}

@@ -278,7 +278,7 @@ func (c *CaseLine) object() (jsonObject, error) {
 	obj := jsonObject{
 		"type":   "case",
 		"case":   c.Inputs.Name,
-		"group":  c.Inputs.Group,
+		"group":  string(c.Inputs.Group),
 		"why":    why,
 		"inputs": inputs,
 	}
@@ -297,12 +297,7 @@ func (c *CaseLine) object() (jsonObject, error) {
 	if len(c.SideEffects) > 0 {
 		list := make([]interface{}, 0, len(c.SideEffects))
 		for _, se := range c.SideEffects {
-			o := settingObject(&se.Setting)
-			o["key"] = se.Key
-			if se.Absent {
-				o["absent"] = true
-			}
-			list = append(list, o)
+			list = append(list, sideEffectObject(se))
 		}
 		obj["side_effects"] = list
 	}

@@ -162,8 +162,10 @@ docker run --rm --platform "$PLATFORM" \
 # 5. Build, check, test and run the recorder over the hand-written and generated cases. The
 # overlay is read only to choose the generated cases' keys; it is not a digest input.
 step "checking, testing, building and running the recorder"
-rm -rf "$OUT_DIR" "$GENERATED_DIR"
-mkdir -p "$OUT_DIR" "$GENERATED_DIR"
+# The drive workdir keeps the written case files and first-snapshot dumps on the host.
+WORK_DIR="$STATE_DIR/work"
+rm -rf "$OUT_DIR" "$GENERATED_DIR" "$WORK_DIR"
+mkdir -p "$OUT_DIR" "$GENERATED_DIR" "$WORK_DIR"
 # The checkout is mounted read-only, but Go in workspace mode must write go.work.sum (gitignored,
 # absent at the pin). Create it on the host so the mountpoint exists, and bind it read-write.
 [ -f "$AGENT_DIR/go.work.sum" ] || : > "$AGENT_DIR/go.work.sum"
@@ -179,6 +181,7 @@ run_go_step() {
         -v "$OVERLAY_FILE":/overlay.yaml:ro \
         -v "$GENERATED_DIR":/generated \
         -v "$OUT_DIR":/out \
+        -v "$WORK_DIR":/work \
         -v "$GOMOD_VOLUME":/go/pkg/mod \
         -v "$GOBUILD_VOLUME":/tmp/go-build-cache \
         -e GOMODCACHE=/go/pkg/mod \
@@ -207,15 +210,17 @@ run_go_step() {
             echo "[*] go vet"
             go vet ./cmd/config-recorder/...
             echo "[*] go test"
-            go test -count=1 ./cmd/config-recorder/...
+            # CONFIG_RECORDER_TEST_SCHEMA lets the integration test (go/integration_test.go) build
+            # the recorder binary and run its real drive/run-case subcommands on go/testdata/.
+            CONFIG_RECORDER_TEST_SCHEMA="$0" go test -count=1 ./cmd/config-recorder/...
             echo "[*] go build"
             go build -o /tmp/config-recorder ./cmd/config-recorder
             echo "[*] generate"
             /tmp/config-recorder generate --schema "$0" --overlay /overlay.yaml --out /generated
             echo "[*] drive"
-            /tmp/config-recorder drive --schema "$0" --cases /cases --cases /generated --workdir /tmp/w --out /out/corpus.jsonl \
-                --agent-commit "$1" --container-image "$2" --inputs-digest "$3"
-        ' "$C_SCHEMA" "$AGENT_COMMIT" "$GO_IMAGE" "$INPUTS_DIGEST"
+            /tmp/config-recorder drive --schema "$0" --cases /cases --cases /generated --workdir /work --out /out/corpus.jsonl \
+                --agent-commit "$1" --container-image "$2" --inputs-digest "$3" --jobs "$4"
+        ' "$C_SCHEMA" "$AGENT_COMMIT" "$GO_IMAGE" "$INPUTS_DIGEST" "${CONFIG_RECORDER_JOBS:-0}"
 }
 
 run_go_step || die "the Go step failed"

@@ -417,7 +417,7 @@ func TestNumberValuesKeepFraction(t *testing.T) {
 }
 
 func TestSanitizeLowercases(t *testing.T) {
-	if got := sanitize("Apm_Config.X"); got != "apm-config-x" {
+	if got := record.Sanitize("Apm_Config.X"); got != "apm-config-x" {
 		t.Fatalf("sanitize: %q", got)
 	}
 }

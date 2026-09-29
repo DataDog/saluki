@@ -70,7 +70,7 @@ func randCase(r *rand.Rand, i int) *Case {
 		sources = append(sources, s)
 	}
 	sort.Strings(sources)
-	c := &Case{Name: fmt.Sprintf("case-%d", i), Group: groups[r.Intn(len(groups))], Why: []string{}}
+	c := &Case{Name: fmt.Sprintf("case-%d", i), Group: Group(groups[r.Intn(len(groups))]), Why: []string{}}
 	for n := r.Intn(3); n > 0 || (c.Group == "behavior" && len(c.Why) == 0); n-- {
 		c.Why = append(c.Why, fmt.Sprintf("why-%d", r.Intn(5)))
 	}
