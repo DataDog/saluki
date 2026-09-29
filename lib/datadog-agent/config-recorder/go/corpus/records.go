@@ -32,6 +32,12 @@ var (
 
 var commitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// inputsDigestRe matches the header's inputs_digest: `sha256:` and 64 lowercase hex (record.md §2).
+var inputsDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// ErrRecordInputsDigest marks a header inputs_digest that is not `sha256:` and 64 lowercase hex.
+var ErrRecordInputsDigest = errors.New("inputs_digest must be sha256: and 64 lowercase hex digits")
+
 // ErrWarningLevel marks a warning whose level record.md §7 does not allow.
 var ErrWarningLevel = errors.New("warning level must be WARN or ERROR")
 
@@ -107,6 +113,7 @@ type HeaderLine struct {
 	ContainerImage string
 	Containerized  bool
 	Features       []string
+	InputsDigest   string
 }
 
 // CaseLine is the one line per case. Its case, group and why come from Inputs, its parsed case:
@@ -149,6 +156,9 @@ func (h *HeaderLine) Validate() error {
 	if !sort.StringsAreSorted(h.Features) {
 		return ErrRecordFeaturesOrder
 	}
+	if !inputsDigestRe.MatchString(h.InputsDigest) {
+		return fmt.Errorf("%w: %q", ErrRecordInputsDigest, h.InputsDigest)
+	}
 	return nil
 }
 
@@ -167,6 +177,7 @@ func (h *HeaderLine) object() (jsonObject, error) {
 		"container_image": h.ContainerImage,
 		"containerized":   h.Containerized,
 		"features":        features,
+		"inputs_digest":   h.InputsDigest,
 	}, nil
 }
 

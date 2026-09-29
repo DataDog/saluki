@@ -12,39 +12,79 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/corpus"
 )
 
-// placeholderCommit stands in for the Agent commit when the build does not record it.
-const placeholderCommit = "0000000000000000000000000000000000000000"
+// commitPattern matches a full lowercase hex git commit ID.
+var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// inputsDigestPattern matches the header's inputs_digest: `sha256:` and 64 lowercase hex
+// (record.md §2).
+var inputsDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// driveFlags holds the parsed flags of the drive subcommand.
+type driveFlags struct {
+	casesDir       string
+	workdir        string
+	out            string
+	schemaPath     string
+	agentCommit    string
+	containerImage string
+	inputsDigest   string
+}
+
+// parseDriveFlags parses and validates the drive subcommand's flags. Every flag is required. A
+// missing or malformed flag is a usage error.
+func parseDriveFlags(args []string) (*driveFlags, error) {
+	var f driveFlags
+	fs := flag.NewFlagSet("drive", flag.ContinueOnError)
+	fs.StringVar(&f.casesDir, "cases", "", "directory of *.yaml case files")
+	fs.StringVar(&f.workdir, "workdir", "", "directory for per-case work directories and result files")
+	fs.StringVar(&f.out, "out", "", "corpus file to write")
+	fs.StringVar(&f.schemaPath, "schema", "", "the Agent's merged core schema YAML, passed to each case process")
+	fs.StringVar(&f.agentCommit, "agent-commit", "", "full 40-hex Agent commit the recorder was built from")
+	fs.StringVar(&f.containerImage, "container-image", "", "digest-pinned reference of the image the recorder runs in")
+	fs.StringVar(&f.inputsDigest, "inputs-digest", "", "sha256: and 64 lowercase hex digest of the recorder inputs (record.md \u00a72)")
+	if err := fs.Parse(args); err != nil {
+		return nil, fmt.Errorf("%w: %v", errUsage, err)
+	}
+	if f.casesDir == "" || f.workdir == "" || f.out == "" || f.schemaPath == "" || f.agentCommit == "" ||
+		f.containerImage == "" || f.inputsDigest == "" || fs.NArg() > 0 {
+		return nil, fmt.Errorf("%w: drive --cases <dir> --workdir <dir> --out <file> --schema <file> "+
+			"--agent-commit <sha> --container-image <ref@sha256:digest> --inputs-digest <sha256:hex>", errUsage)
+	}
+	if !commitPattern.MatchString(f.agentCommit) {
+		return nil, fmt.Errorf("%w: --agent-commit %q is not a 40-character lowercase hex commit", errUsage, f.agentCommit)
+	}
+	if !strings.Contains(f.containerImage, "@sha256:") {
+		return nil, fmt.Errorf("%w: --container-image %q is not digest-pinned (no @sha256:)", errUsage, f.containerImage)
+	}
+	if !inputsDigestPattern.MatchString(f.inputsDigest) {
+		return nil, fmt.Errorf("%w: --inputs-digest %q is not sha256: and 64 lowercase hex digits", errUsage, f.inputsDigest)
+	}
+	return &f, nil
+}
 
 // driveMain is a minimal driver: it runs the baseline and each case in its own process and writes
 // the corpus lines. It does not compute side effects.
 func driveMain(args []string) error {
-	fs := flag.NewFlagSet("drive", flag.ContinueOnError)
-	casesDir := fs.String("cases", "", "directory of *.yaml case files")
-	workdir := fs.String("workdir", "", "directory for per-case work directories and result files")
-	out := fs.String("out", "", "corpus file to write")
-	schemaPath := fs.String("schema", "", "the Agent's merged core schema YAML, passed to each case process (required)")
-	image := fs.String("container-image", "unknown", "image reference written in the header")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %v", errUsage, err)
+	flags, err := parseDriveFlags(args)
+	if err != nil {
+		return err
 	}
-	if *casesDir == "" || *workdir == "" || *out == "" || *schemaPath == "" || fs.NArg() > 0 {
-		return fmt.Errorf("%w: drive --cases <dir> --workdir <dir> --out <file> --schema <file>", errUsage)
-	}
-	files, err := filepath.Glob(filepath.Join(*casesDir, "*.yaml"))
+	files, err := filepath.Glob(filepath.Join(flags.casesDir, "*.yaml"))
 	if err != nil {
 		return err
 	}
 	sort.Strings(files)
 
-	baseResult, err := runChild(*workdir, "baseline", nil, *schemaPath, "--baseline")
+	baseResult, err := runChild(flags.workdir, "baseline", nil, flags.schemaPath, "--baseline")
 	if err != nil {
 		return err
 	}
@@ -53,13 +93,14 @@ func driveMain(args []string) error {
 		return fmt.Errorf("baseline: no run result")
 	}
 	header := &corpus.HeaderLine{
-		AgentCommit:    agentCommit(),
+		AgentCommit:    flags.agentCommit,
 		GOOS:           runtime.GOOS,
 		GOARCH:         runtime.GOARCH,
 		GoVersion:      runtime.Version(),
-		ContainerImage: *image,
+		ContainerImage: flags.containerImage,
 		Containerized:  base.Containerized,
 		Features:       base.Features,
+		InputsDigest:   flags.inputsDigest,
 	}
 
 	type record struct {
@@ -72,7 +113,7 @@ func driveMain(args []string) error {
 		if err != nil {
 			return err
 		}
-		r, err := runChild(*workdir, "case-"+c.Name, c.Env, *schemaPath, "--case", file)
+		r, err := runChild(flags.workdir, "case-"+c.Name, c.Env, flags.schemaPath, "--case", file)
 		if err != nil {
 			return err
 		}
@@ -99,7 +140,7 @@ func driveMain(args []string) error {
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].caseLine.Inputs.Name < records[j].caseLine.Inputs.Name })
 
-	f, err := os.Create(*out)
+	f, err := os.Create(flags.out)
 	if err != nil {
 		return err
 	}
@@ -156,16 +197,4 @@ func runChild(workdir, name string, env map[string]string, schemaPath string, ca
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return corpus.ReadRunResult(resultPath)
-}
-
-// agentCommit is the VCS revision the build recorded, or a placeholder.
-func agentCommit() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			if s.Key == "vcs.revision" && len(s.Value) == 40 {
-				return s.Value
-			}
-		}
-	}
-	return placeholderCommit
 }
