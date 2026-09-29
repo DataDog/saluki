@@ -152,6 +152,11 @@ build-schema-overlay: ## Builds the config schema overlay packages
 	@echo "[*] Building config schema overlay packages..."
 	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-testing
 
+.PHONY: build-agent-config-corpus
+build-agent-config-corpus: ## Regenerates the Agent config corpus (needs Docker)
+	@echo "[*] Regenerating the Agent config corpus..."
+	@lib/datadog-agent/config-recorder/regenerate.sh
+
 .PHONY: build-adp-image-base
 build-adp-image-base:
 	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
