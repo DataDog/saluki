@@ -3,22 +3,22 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2026-present Datadog, Inc.
 
-package corpus
+package agentcfg
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestDiffSchemaKeysEqual(t *testing.T) {
-	d := DiffSchemaKeys([]string{"b", "a", "a"}, []string{"a", "b"})
+func TestDiffKeysEqual(t *testing.T) {
+	d := DiffKeys([]string{"b", "a", "a"}, []string{"a", "b"})
 	if !d.Empty() {
 		t.Errorf("equal key sets (in different order, with a duplicate): got diff %+v", d)
 	}
 }
 
-func TestDiffSchemaKeysMismatch(t *testing.T) {
-	d := DiffSchemaKeys([]string{"only_schema", "shared"}, []string{"shared", "only_agent"})
+func TestDiffKeysMismatch(t *testing.T) {
+	d := DiffKeys([]string{"only_schema", "shared"}, []string{"shared", "only_agent"})
 	if d.Empty() {
 		t.Fatal("expected a non-empty diff")
 	}
@@ -36,18 +36,18 @@ func TestDiffSchemaKeysMismatch(t *testing.T) {
 	}
 }
 
-func TestDiffSchemaKeysSamplesCapped(t *testing.T) {
+func TestDiffKeysSamplesCapped(t *testing.T) {
 	var schemaOnly []string
 	for i := 0; i < 25; i++ {
 		schemaOnly = append(schemaOnly, string(rune('a'+i)))
 	}
-	d := DiffSchemaKeys(schemaOnly, nil)
+	d := DiffKeys(schemaOnly, nil)
 	if len(d.OnlySchema) != 25 {
 		t.Fatalf("diff itself must keep every key: got %d", len(d.OnlySchema))
 	}
 	msg := d.Error()
-	if strings.Count(msg, ",") > maxSchemaKeyDiffSample {
-		t.Errorf("Error() shows more than %d keys: %q", maxSchemaKeyDiffSample, msg)
+	if strings.Count(msg, ",") > maxKeyDiffSample {
+		t.Errorf("Error() shows more than %d keys: %q", maxKeyDiffSample, msg)
 	}
 	if !strings.Contains(msg, "and 5 more") {
 		t.Errorf("Error() = %q, want the overflow count", msg)
