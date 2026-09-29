@@ -1,0 +1,8 @@
+name: int-string-base-prefix
+group: behavior
+why: [cast-int-string-base-prefix]
+env:
+  DD_DOGSTATSD_PORT: "0x10"
+yaml: |
+  dogstatsd_buffer_size: "010"
+keys: [dogstatsd_buffer_size, dogstatsd_port]
