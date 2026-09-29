@@ -7,8 +7,8 @@
 set -euo pipefail
 
 GO_IMAGE="golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1"
-PYTHON_IMAGE="ghcr.io/astral-sh/uv@sha256:a2e8b64aed3382a20c03fc6f1e03fe95fb312425e071ad27d7936a0f02c3e497"
-PLATFORM="linux/arm64"
+# Multi-arch index of uv 0.9-python3.12-bookworm-slim (uv 0.9.30, Python 3.12.12).
+PYTHON_IMAGE="ghcr.io/astral-sh/uv@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58"
 GOMOD_VOLUME="saluki-config-recorder-gomod"
 GOBUILD_VOLUME="saluki-config-recorder-gobuild"
 UV_VOLUME="saluki-config-recorder-uv"
@@ -39,11 +39,18 @@ HOST_GID="$(id -g)"
 # Pass the host's Go module proxy through, the same way AGENT_REPO_URL already is.
 # Empty-array expansions use ${a[@]+...}: macOS /bin/bash 3.2 treats "${a[@]}" of an empty array as unbound under set -u.
 GOPROXY_ARGS=()
+# Every `docker run` gets --platform linux/arm64 unless CONFIG_RECORDER_PLATFORM overrides it, so the
+# corpus is the same whatever the host until an amd64 run proves the records byte-identical.
+PLATFORM_ARGS=(--platform "${CONFIG_RECORDER_PLATFORM:-linux/arm64}")
 if [ -n "${GOPROXY:-}" ]; then
     GOPROXY_ARGS=(-e GOPROXY="$GOPROXY")
 fi
 
 step() { echo "[*] $*"; }
+warn() { echo "[!] warning: $*" >&2; }
+# The pin fetch reads a public repository. Ignore the host's global and system git config, whose
+# URL rewrites (for example https to ssh) would otherwise demand SSH credentials.
+agent_git() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$AGENT_DIR" "$@"; }
 die() { echo "[!] $*" >&2; exit 1; }
 
 # 1. The pin.
@@ -58,8 +65,8 @@ mkdir -p "$STATE_DIR"
 head=""
 dirty=""
 if [ -d "$AGENT_DIR/.git" ]; then
-    head="$(git -C "$AGENT_DIR" rev-parse HEAD 2>/dev/null || true)"
-    if [ "$head" = "$PIN" ] && ! git -C "$AGENT_DIR" diff --quiet HEAD; then
+    head="$(agent_git rev-parse HEAD 2>/dev/null || true)"
+    if [ "$head" = "$PIN" ] && ! agent_git diff --quiet HEAD; then
         dirty=1
     fi
 fi
@@ -77,15 +84,34 @@ else
     if [ ! -d "$AGENT_DIR/.git" ]; then
         rm -rf "$AGENT_DIR"
         mkdir -p "$AGENT_DIR"
-        git -C "$AGENT_DIR" init -q
+        agent_git init -q
     fi
-    git -C "$AGENT_DIR" fetch -q --depth 1 "$AGENT_REPO_URL" "$PIN"
-    git -C "$AGENT_DIR" checkout -q --force --detach "$PIN"
+    agent_git fetch -q --depth 1 "$AGENT_REPO_URL" "$PIN"
+    agent_git checkout -q --force --detach "$PIN"
     # Keep gitignored codegen output; remove everything else that is untracked.
-    git -C "$AGENT_DIR" clean -q -fd
+    agent_git clean -q -fd
 fi
-AGENT_COMMIT="$(git -C "$AGENT_DIR" rev-parse HEAD)"
+AGENT_COMMIT="$(agent_git rev-parse HEAD)"
 [ "$AGENT_COMMIT" = "$PIN" ] || die "Agent checkout is at $AGENT_COMMIT, not the pin $PIN"
+
+# 2a. The vendored schema should be the pin's schema. A difference means `_version.txt` and the
+# vendored files disagree, which is fatal unless CONFIG_RECORDER_ALLOW_SCHEMA_DIFF=1. diff exit 2 (a
+# missing directory, an unreadable file) means the comparison never happened, so it is always fatal.
+VENDORED_SCHEMA_DIR="$REPO_ROOT/lib/datadog-agent/config/schema/core"
+AGENT_SCHEMA_DIR="$AGENT_DIR/pkg/config/schema/yaml"
+vendor_status=0
+vendor_diff="$(diff -rq -x _version.txt "$VENDORED_SCHEMA_DIR" "$AGENT_SCHEMA_DIR" 2>&1)" || vendor_status=$?
+if [ "$vendor_status" -gt 1 ]; then
+    echo "$vendor_diff" >&2
+    die "cannot compare lib/datadog-agent/config/schema/core/ with the pin's pkg/config/schema/yaml/"
+elif [ "$vendor_status" -eq 1 ]; then
+    echo "$vendor_diff" >&2
+    if [ "${CONFIG_RECORDER_ALLOW_SCHEMA_DIFF:-}" = "1" ]; then
+        warn "lib/datadog-agent/config/schema/core/ differs from the pin's pkg/config/schema/yaml/ (allowed)"
+    else
+        die "lib/datadog-agent/config/schema/core/ differs from the pin's pkg/config/schema/yaml/; re-vendor the schema, or set CONFIG_RECORDER_ALLOW_SCHEMA_DIFF=1"
+    fi
+fi
 
 # 3. The recorder source, copied fresh into the checkout.
 step "copying the recorder into cmd/config-recorder"
@@ -100,7 +126,7 @@ docker volume create "$UV_VOLUME" >/dev/null
 # out root-owned; fix ownership in one short root step, only when it is wrong, so a fixed volume
 # costs nothing on later runs.
 step "checking cache volume ownership"
-docker run --rm --platform "$PLATFORM" \
+docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
     -v "$GOMOD_VOLUME":/vol/gomod \
     -v "$GOBUILD_VOLUME":/vol/gobuild \
     -v "$UV_VOLUME":/vol/uv \
@@ -119,7 +145,7 @@ docker run --rm --platform "$PLATFORM" \
 # developer can run by hand with `shasum`, computed here with `sha256sum` in the Go image, over
 # the recorder directory mounted read-only.
 step "computing the inputs digest"
-INPUTS_DIGEST_HEX="$(docker run --rm --platform "$PLATFORM" \
+INPUTS_DIGEST_HEX="$(docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
     --user "$HOST_UID:$HOST_GID" \
     -v "$RECORDER_DIR":/recorder:ro \
     -w /recorder \
@@ -137,9 +163,9 @@ step "inputs digest is $INPUTS_DIGEST"
 # 4. The Agent's schema codegen and core schema merge, with the Agent's pinned Python packages.
 # Codegen always starts from a checkout with no gitignored files under pkg/config, so a reused
 # checkout builds exactly what a fresh checkout builds.
-git -C "$AGENT_DIR" clean -fdXq -- pkg/config
+agent_git clean -fdXq -- pkg/config
 step "running the Agent's schema codegen and merge"
-docker run --rm --platform "$PLATFORM" \
+docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
     --user "$HOST_UID:$HOST_GID" \
     -e HOME=/tmp/home \
     -v "$STATE_DIR":"$C_STATE" \
@@ -172,7 +198,7 @@ mkdir -p "$OUT_DIR" "$GENERATED_DIR" "$WORK_DIR"
 CHECKOUT_MOUNTS=(-v "$AGENT_DIR":"$C_AGENT":ro -v "$AGENT_DIR/go.work.sum":"$C_AGENT/go.work.sum")
 
 run_go_step() {
-    docker run --rm --platform "$PLATFORM" \
+    docker run --rm ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
         --user "$HOST_UID:$HOST_GID" \
         -e HOME=/tmp/home \
         "${CHECKOUT_MOUNTS[@]}" \
