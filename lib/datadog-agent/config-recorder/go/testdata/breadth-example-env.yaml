@@ -1,0 +1,6 @@
+name: breadth-example-env
+group: breadth
+env:
+  DD_LOG_LEVEL: debug
+  DD_CMD_PORT: "5099"
+keys: [log_level, cmd_port]

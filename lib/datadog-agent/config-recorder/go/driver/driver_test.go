@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
@@ -27,52 +29,73 @@ func TestLoadCasesAcrossDirectories(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	writeCase(t, a, "one", "group: baseline\nkeys: [a]\n")
 	writeCase(t, b, "two", "group: baseline\nkeys: [a]\n")
-	cases, files, err := LoadCases([]string{a, b})
+	cases, err := LoadCases([]string{a, b})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != 2 || cases[0].Name != "one" || cases[1].Name != "two" || len(files) != 2 {
-		t.Fatalf("got %d cases, %v", len(cases), files)
+	if len(cases) != 2 || cases[0].Name != "one" || cases[1].Name != "two" {
+		t.Fatalf("got %d cases", len(cases))
 	}
 	writeCase(t, b, "one", "group: baseline\nkeys: [a]\n")
-	if _, _, err := LoadCases([]string{a, b}); !errors.Is(err, ErrDuplicateCase) {
+	if _, err := LoadCases([]string{a, b}); !errors.Is(err, ErrDuplicateCase) {
 		t.Fatalf("duplicate name: got %v, want ErrDuplicateCase", err)
 	}
 }
 
-// fakeRunner records each run and answers with one key line per case key, all from the default
-// layer, or with a startup error for the cases named in fail.
+// fakeRunner answers each case with one key line per case key, all from the default layer, or
+// with a startup error for the cases named in fail, or by answer when it is set.
 type fakeRunner struct {
+	mu   sync.Mutex
 	runs []string
-	envs []map[string]string
-	fail map[string]bool
+	// scratch are the scratches of the case runs, in run order.
+	scratch []Scratch
+	fail    map[string]bool
+	answer  func(c *record.Case) *record.RunResult
 }
 
-func (f *fakeRunner) Run(name string, env map[string]string, caseArgs ...string) (*record.RunResult, error) {
-	f.runs = append(f.runs, name+" "+strings.Join(caseArgs, " "))
-	f.envs = append(f.envs, env)
-	run := &record.CaseRun{Origin: "datadog.yaml", Features: []string{}, Snapshot: map[string]record.Setting{}}
-	if name == "baseline" {
-		return &record.RunResult{Run: run}, nil
-	}
-	c, err := record.ParseCaseFile(caseArgs[1])
-	if err != nil {
-		return nil, err
+func (f *fakeRunner) RunBaseline() (*record.RunResult, error) {
+	f.mu.Lock()
+	f.runs = append(f.runs, "baseline")
+	f.mu.Unlock()
+	snap := map[string]record.Setting{"b": {Source: "default"}, "gone": {Source: "default"}}
+	return &record.RunResult{Run: &record.CaseRun{Origin: "datadog.yaml", Features: []string{}, Snapshot: snap}}, nil
+}
+
+func (f *fakeRunner) Run(c *record.Case, s Scratch) (*record.RunResult, error) {
+	f.mu.Lock()
+	f.runs = append(f.runs, c.Name)
+	f.scratch = append(f.scratch, s)
+	f.mu.Unlock()
+	if f.answer != nil {
+		return f.answer(c), nil
 	}
 	if f.fail[c.Name] {
 		msg := "boom"
 		return &record.RunResult{StartupError: &msg}, nil
 	}
+	return defaultRun(c, nil), nil
+}
+
+// defaultRun answers every key from the default layer, except the keys in sources.
+func defaultRun(c *record.Case, sources map[string]string) *record.RunResult {
+	run := &record.CaseRun{Origin: "datadog.yaml", Features: []string{}, Snapshot: map[string]record.Setting{
+		"b": {Source: "default"}, "gone": {Source: "default"}}}
 	for _, k := range c.Keys {
+		src := "default"
+		if s, ok := sources[k.Key]; ok {
+			src = s
+		}
+		st := record.Setting{Source: src}
+		run.Snapshot[k.Key] = st
 		run.Keys = append(run.Keys, record.KeyLine{Case: c.Name, Key: k.Key,
-			Snapshot: &record.Setting{Source: "default"}, SnapshotRead: record.Read{GoType: "<nil>", Source: "default"}})
+			Snapshot: &st, SnapshotRead: record.Read{GoType: "<nil>", Source: src}})
 	}
-	return &record.RunResult{Run: run}, nil
+	return &record.RunResult{Run: run}
 }
 
 func TestDriveOrdersCasesAndKeys(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	writeCase(t, a, "zeta", "group: breadth\nenv: {DD_Z: \"1\"}\nkeys: [z, b, a]\n")
+	writeCase(t, a, "zeta", "group: behavior\nwhy: [w]\nenv: {DD_Z: \"1\"}\nkeys: [z, b, a]\n")
 	writeCase(t, a, "alpha", "group: breadth\nkeys: [m]\n")
 	writeCase(t, b, "mid", "group: breadth\nyaml: \"x: 1\\n\"\nkeys: [k]\n")
 	out := filepath.Join(t.TempDir(), "corpus.jsonl")
@@ -83,18 +106,9 @@ func TestDriveOrdersCasesAndKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The baseline runs first, then the cases in directory order and then file name order.
-	wantRuns := []string{
-		"baseline --baseline",
-		"case-alpha --case " + filepath.Join(a, "alpha.yaml"),
-		"case-zeta --case " + filepath.Join(a, "zeta.yaml"),
-		"case-mid --case " + filepath.Join(b, "mid.yaml"),
-	}
-	if !reflect.DeepEqual(runner.runs, wantRuns) {
-		t.Fatalf("runs:\n got %v\nwant %v", runner.runs, wantRuns)
-	}
-	if runner.envs[0] != nil || !reflect.DeepEqual(runner.envs[2], map[string]string{"DD_Z": "1"}) {
-		t.Errorf("envs: %v", runner.envs)
+	slices.Sort(runner.runs)
+	if want := []string{"alpha", "baseline", "mid", "zeta"}; !reflect.DeepEqual(runner.runs, want) {
+		t.Fatalf("runs: got %v, want %v", runner.runs, want)
 	}
 
 	// The corpus has the header, then cases by name, each followed by its keys in byte order.
@@ -134,7 +148,11 @@ func TestDriveRejectsBadRecord(t *testing.T) {
 // missingKeyRunner answers every case with no key lines.
 type missingKeyRunner struct{}
 
-func (missingKeyRunner) Run(string, map[string]string, ...string) (*record.RunResult, error) {
+func (missingKeyRunner) Run(*record.Case, Scratch) (*record.RunResult, error) {
+	return &record.RunResult{Run: &record.CaseRun{Origin: "datadog.yaml", Features: []string{}}}, nil
+}
+
+func (missingKeyRunner) RunBaseline() (*record.RunResult, error) {
 	return &record.RunResult{Run: &record.CaseRun{Origin: "datadog.yaml", Features: []string{}}}, nil
 }
 
