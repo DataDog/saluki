@@ -1,0 +1,17 @@
+histogram_aggregates: ["max", "median", "avg", "count"]
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+experimental:
+  metrics_endpoint_routing:
+    metric_prefix_allowlist:
+      "http://127.0.0.1:9091":
+        - routing.metric.10000
+        - routing.metric.10001
+        - routing.metric.10002
+        - routing.metric.10003
+        - routing.metric.10004
+        - routing.metric.10005
+        - routing.metric.10006
+        - routing.metric.10007
+        - routing.metric.10008
+        - routing.metric.10009

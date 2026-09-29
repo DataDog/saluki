@@ -312,10 +312,8 @@ contexts drawn from 10 metric names and randomized tags. Each scenario measures 
 and ingress throughput:
 
 - `metric_routing_dual_ship_500mb_3k_contexts`: both endpoints receive everything without filtering.
-- `metric_routing_all_match_500mb_3k_contexts`: the secondary has an allowlist matching every
+- `metric_routing_all_match_500mb_3k_contexts`: the primary has an allowlist matching every
   generated metric; both endpoints receive everything.
-- `metric_mirroring_drop_all_500mb_3k_contexts`: the secondary's allowlist matches nothing;
-  only the primary receives metrics.
 - `metric_mirroring_primary_drop_all_500mb_3k_contexts`: the primary's allowlist matches nothing;
   only the secondary receives metrics.
 
@@ -330,14 +328,14 @@ Compare these named-corpus cases with each other, not directly with earlier 100-
 runs or the ordinary `dsd_uds_500mb_3k_contexts` case. These experiments belong to the full suite and do
 not define pass/fail quality gates or assert on received metric contents.
 
-#### Ad-hoc secondary all-miss scaling
+#### Ad-hoc primary all-miss scaling
 
-The `metric_routing_secondary_miss_<N>_entries_500mb_3k_contexts` experiments vary only the
-secondary allowlist size: 10, 100, 1,000, 10,000, and 100,000 entries. Each size measures CPU,
+The `metric_routing_primary_miss_<N>_entries_500mb_3k_contexts` experiments vary only the
+primary allowlist size: 10, 100, 1,000, 10,000, and 100,000 entries. Each size measures CPU,
 memory, and ingress throughput, for 15 additional full-suite cases on this experimental branch.
-The existing regression cases and quality gates are unchanged.
+The quality gates are unchanged.
 
-The primary has no allowlist and receives all metrics. The secondary has exactly N unique
+The secondary has no allowlist and receives all metrics. The primary has exactly N unique
 names, all under `routing.absent.`, which cannot match the `routing.metric.` input names or
 their histogram-derived outputs. Names are deterministic and equal-length across all sizes
 so results do not depend on a new random list each run. Unlike the earlier routing cases,
@@ -350,7 +348,7 @@ seed, 500 MiB/s offered traffic, target resources, and V3 settings for both endp
 Compare each size against the dual-shipping control for the same optimization goal and build
 variant within a run. Report CPU, memory, and ingress throughput deltas relative to that control.
 This measures the net effect of enabling the allowlist: filtering cost plus the savings from
-not encoding and forwarding the secondary's metrics. SMP's `baseline` and `comparison` labels
+not encoding and forwarding the primary's metrics. SMP's `baseline` and `comparison` labels
 identify build variants, not filtering disabled and enabled; both variants run each case's config.
 Compare the five filtered sizes with each other as a separate measure of allowlist-size overhead.
 Separate startup from steady-state results: the current full-suite CI job uses zero warmup seconds.
@@ -361,6 +359,28 @@ Run the manual `run-benchmarks-adp-full` job to include these cases; the automat
 `run-benchmarks-adp` job runs only the unchanged quality gates. These experiments do not assert
 on received metric contents. Their generated configurations are intentionally large and are
 for this benchmark-only branch, not the implementation PR.
+
+#### Ad-hoc primary prefix scaling
+
+The `metric_routing_primary_prefix_{miss,match}_<N>_entries_500mb_3k_contexts`
+experiments use 10, 100, 1,000, 10,000, and 100,000 literal prefixes. CPU, memory,
+and ingress throughput produce 30 additional full-suite cases. Traffic, resources,
+and endpoint settings remain identical to the unfiltered dual-shipping control.
+Only the primary has a prefix policy; the secondary remains unfiltered.
+
+All-miss policies contain N distinct `routing.absent.` prefixes. All-match policies
+contain ten prefixes covering the ten input metric names (including histogram-derived
+outputs), plus N-10 nonmatching prefixes. “All-match” describes the traffic, not the
+fraction of configured prefixes that are used. These tests retain only ten input names;
+they do not model traffic spread across 100,000 different matching prefixes.
+
+Fixed-width numeric suffixes and disjoint namespaces prevent prefixes from covering
+one another, so compaction retains exactly N entries. Neither case uses exact-name
+policies or an empty-string prefix. Compare against the unfiltered control within the
+same build variant, and separate startup from steady state. All-match retains primary
+delivery and exposes filtering plus separate encoding costs; all-miss also includes
+the savings from suppressing primary delivery. These are performance experiments,
+not assertions on received payload contents.
 
 ## Regenerating Experiments
 
