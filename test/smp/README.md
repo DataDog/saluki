@@ -330,7 +330,7 @@ not define pass/fail quality gates or assert on received metric contents.
 
 #### Ad-hoc primary all-miss scaling
 
-The `metric_routing_primary_miss_<N>_entries_500mb_3k_contexts` experiments vary only the
+The `primary_exact_miss_<N>` experiments vary only the
 primary allowlist size: 10, 100, 1,000, 10,000, and 100,000 entries. Each size measures CPU,
 memory, and ingress throughput, for 15 additional full-suite cases on this experimental branch.
 The quality gates are unchanged.
@@ -362,11 +362,15 @@ for this benchmark-only branch, not the implementation PR.
 
 #### Ad-hoc primary prefix scaling
 
-The `metric_routing_primary_prefix_{miss,match}_<N>_entries_500mb_3k_contexts`
+The `primary_prefix_{miss,match}_<N>`
 experiments use 10, 100, 1,000, 10,000, and 100,000 literal prefixes. CPU, memory,
 and ingress throughput produce 30 additional full-suite cases. Traffic, resources,
 and endpoint settings remain identical to the unfiltered dual-shipping control.
 Only the primary has a prefix policy; the secondary remains unfiltered.
+
+Scaling case names omit the shared traffic settings to leave room for SMP's job ID,
+replicate index, and variant in SNS identifiers, which have a 128-character limit.
+The generator appends `_cpu`, `_memory`, or `_throughput` to each case name.
 
 All-miss policies contain N distinct `routing.absent.` prefixes. All-match policies
 contain ten prefixes covering the ten input metric names (including histogram-derived

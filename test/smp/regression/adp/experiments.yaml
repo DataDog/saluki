@@ -575,101 +575,101 @@ experiments:
 
   # Ad-hoc scaling sweep: exact allowlist-entry counts, without histogram-name expansion.
   # Keep the 10-name input corpus, ~3K contexts, and 500 MiB/s traffic identical for every size.
-  - name: metric_routing_primary_miss_10_entries_500mb_3k_contexts
+  - name: primary_exact_miss_10
     extends: metric_routing_primary_miss_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 10
 
-  - name: metric_routing_primary_miss_100_entries_500mb_3k_contexts
+  - name: primary_exact_miss_100
     extends: metric_routing_primary_miss_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 100
 
-  - name: metric_routing_primary_miss_1000_entries_500mb_3k_contexts
+  - name: primary_exact_miss_1000
     extends: metric_routing_primary_miss_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 1000
 
-  - name: metric_routing_primary_miss_10000_entries_500mb_3k_contexts
+  - name: primary_exact_miss_10000
     extends: metric_routing_primary_miss_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 10000
 
-  - name: metric_routing_primary_miss_100000_entries_500mb_3k_contexts
+  - name: primary_exact_miss_100000
     extends: metric_routing_primary_miss_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 100000
 
   # Prefix scaling: fixed input traffic, N nonredundant prefixes, primary only.
-  - name: metric_routing_primary_prefix_miss_10_entries_500mb_3k_contexts
+  - name: primary_prefix_miss_10
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 10
       prefix_all_match: false
 
-  - name: metric_routing_primary_prefix_miss_100_entries_500mb_3k_contexts
+  - name: primary_prefix_miss_100
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 100
       prefix_all_match: false
 
-  - name: metric_routing_primary_prefix_miss_1000_entries_500mb_3k_contexts
+  - name: primary_prefix_miss_1000
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 1000
       prefix_all_match: false
 
-  - name: metric_routing_primary_prefix_miss_10000_entries_500mb_3k_contexts
+  - name: primary_prefix_miss_10000
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 10000
       prefix_all_match: false
 
-  - name: metric_routing_primary_prefix_miss_100000_entries_500mb_3k_contexts
+  - name: primary_prefix_miss_100000
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 100000
       prefix_all_match: false
 
-  - name: metric_routing_primary_prefix_match_10_entries_500mb_3k_contexts
+  - name: primary_prefix_match_10
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 10
       prefix_all_match: true
 
-  - name: metric_routing_primary_prefix_match_100_entries_500mb_3k_contexts
+  - name: primary_prefix_match_100
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 100
       prefix_all_match: true
 
-  - name: metric_routing_primary_prefix_match_1000_entries_500mb_3k_contexts
+  - name: primary_prefix_match_1000
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 1000
       prefix_all_match: true
 
-  - name: metric_routing_primary_prefix_match_10000_entries_500mb_3k_contexts
+  - name: primary_prefix_match_10000
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
       allowlist_entries: 10000
       prefix_all_match: true
 
-  - name: metric_routing_primary_prefix_match_100000_entries_500mb_3k_contexts
+  - name: primary_prefix_match_100000
     extends: metric_routing_primary_prefix_scaling
     optimization_goals: [cpu, memory, ingress_throughput]
     variables:
