@@ -374,3 +374,82 @@ fn corpus_env_cases_stream_env_source() {
         unexpected.join("\n")
     );
 }
+
+/// A schema shape that no config recorder case covers because the schema at the pin has no setting of that shape.
+struct UnrecordedShape {
+    /// Whether a setting node has the shape.
+    matches: fn(&serde_json::Map<String, serde_json::Value>) -> bool,
+    /// What the schema update that adds the shape must also do.
+    message: &'static str,
+}
+
+const UNRECORDED_SHAPES: &[UnrecordedShape] = &[
+    UnrecordedShape {
+        matches: |setting| setting.contains_key("renamed_from"),
+        message: "the schema now declares deprecated key names (`renamed_from`); add config recorder cases that set \
+                  one key under both its current and deprecated names, by env and by YAML",
+    },
+    UnrecordedShape {
+        matches: |setting| {
+            let numeric = matches!(setting.get("type").and_then(|t| t.as_str()), Some("integer" | "number"));
+            // Tags are a list in the schema today; accept a lone string too, so a malformed edit cannot hide the tag.
+            let duration_tag = match setting.get("tags") {
+                Some(serde_json::Value::Array(tags)) => tags.iter().any(|t| t.as_str() == Some("golang_type:duration")),
+                Some(serde_json::Value::String(tag)) => tag == "golang_type:duration",
+                _ => false,
+            };
+            numeric && duration_tag
+        },
+        message: "the schema now has integer or number settings tagged `golang_type:duration`; add a config recorder \
+                  case that reads such a key with each duration spelling",
+    },
+];
+
+/// Collect the dotted path of every `node_type: setting` node under `properties` that `matches` accepts.
+fn settings_matching(
+    properties: &serde_json::Map<String, serde_json::Value>, prefix: &str,
+    matches: fn(&serde_json::Map<String, serde_json::Value>) -> bool, out: &mut Vec<String>,
+) {
+    for (name, node) in properties {
+        let Some(node) = node.as_object() else {
+            continue;
+        };
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if node.get("node_type").and_then(|t| t.as_str()) == Some("setting") {
+            if matches(node) {
+                out.push(path);
+            }
+        } else if let Some(children) = node.get("properties").and_then(|p| p.as_object()) {
+            settings_matching(children, &path, matches, out);
+        }
+    }
+}
+
+#[test]
+fn vendored_schema_has_no_unrecorded_shapes() {
+    let files = Files::default();
+    let schema = load_resolved_schema(&files.datadog_schema).unwrap_or_else(|e| panic!("schema: {e}"));
+    // The schema's mapping keys are all strings, so it converts to JSON losslessly for traversal.
+    let schema = serde_json::to_value(&schema).unwrap_or_else(|e| panic!("schema as JSON: {e}"));
+    let properties = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("the vendored schema has a root `properties` mapping");
+    let mut problems = Vec::new();
+    for shape in UNRECORDED_SHAPES {
+        let mut found = Vec::new();
+        settings_matching(properties, "", shape.matches, &mut found);
+        if !found.is_empty() {
+            problems.push(format!("{}: {}", shape.message, found.join(", ")));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{}\nwrite the cases in lib/datadog-agent/config-recorder/cases/, then run `make build-agent-config-corpus`",
+        problems.join("\n")
+    );
+}
