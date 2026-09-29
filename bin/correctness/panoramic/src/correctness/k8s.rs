@@ -23,10 +23,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::CaseConfig as _,
     correctness::{
         analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
-        config::{Config, TargetConfig},
+        case::CorrectnessTestCase,
+        config::TargetConfig,
         runner::make_error_result,
         traffic::{self, Side},
     },
@@ -42,7 +42,8 @@ const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const MILLSTONE_EXIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Entry point called by the correctness runner when `runtime: kubernetes_in_docker` is set.
-pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
+pub async fn run_k8s_correctness_test(case: CorrectnessTestCase, tctx: TestContext) -> TestResult {
+    let name = case.name.clone();
     let started = Instant::now();
 
     // Phases are marked on the shared tracker so the runner can name the one a test was in when a
@@ -105,7 +106,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let comparison_socket_dir = format!("/tmp/saluki-correctness/{}/comparison", run_id);
 
     let phase = phases.enter("read_millstone_config");
-    let millstone_cfg = config.millstone_config();
+    let millstone_cfg = case.millstone_config();
     let millstone_template = match std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
         format!(
             "Failed to read millstone config: {}",
@@ -147,16 +148,16 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         prepare_agent_group(
             client.clone(),
             baseline_ns.clone(),
-            &config,
-            &config.baseline,
+            &case,
+            &case.config.baseline,
             &baseline_socket_dir,
             tctx.log_dir().join("baseline"),
         ),
         prepare_agent_group(
             client.clone(),
             comparison_ns.clone(),
-            &config,
-            &config.comparison,
+            &case,
+            &case.config.comparison,
             &comparison_socket_dir,
             tctx.log_dir().join("comparison"),
         ),
@@ -377,15 +378,20 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     );
 
     let phase = phases.enter("analysis");
-    let traces_options = match config.analysis_mode {
+    let traces_options = match case.config.analysis_mode {
         AnalysisMode::Traces => Some(TracesAnalysisOptions {
-            otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
-            additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
+            otlp_direct_analysis_mode: case.config.otlp_direct_analysis_mode,
+            additional_span_ignore_fields: case.config.additional_span_ignore_fields.clone(),
         }),
         _ => None,
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
-        .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
+    let analysis_runner = AnalysisRunner::new(
+        case.config.analysis_mode,
+        baseline_data,
+        comparison_data,
+        traces_options,
+    )
+    .with_dogstatsd_forwarding_requirement(case.config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = phase.elapsed();
     let phase_timings = phase.finish_and_collect();
@@ -429,17 +435,17 @@ const MILLSTONE_CONTAINER_NAMES: &[&str] = &["millstone"];
 /// The airlock volume is a HostPath directory on the kind node so the shared millstone pod can
 /// mount both groups' socket directories simultaneously.
 async fn prepare_agent_group(
-    client: Client, namespace: String, config: &Config, target_config: &crate::correctness::config::TargetConfig,
-    socket_dir: &str, log_dir: PathBuf,
+    client: Client, namespace: String, case: &CorrectnessTestCase,
+    target_config: &crate::correctness::config::TargetConfig, socket_dir: &str, log_dir: PathBuf,
 ) -> Result<(), GenericError> {
-    let intake_cfg = config.datadog_intake_config();
+    let intake_cfg = case.datadog_intake_config();
 
     create_namespace(client.clone(), &namespace)
         .await
         .with_error_context(|| format!("Failed to create namespace '{}'", namespace))?;
 
     let (agent_volumes, agent_volume_mounts) =
-        build_agent_config_volumes(client.clone(), &namespace, config, target_config)
+        build_agent_config_volumes(client.clone(), &namespace, case, target_config)
             .await
             .error_context("Failed to create agent config ConfigMaps")?;
 
@@ -877,7 +883,7 @@ fn build_millstone_pod(cfg: MillstonePodConfig<'_>) -> Pod {
 /// Reads target `files:` entries, creates one ConfigMap per unique container directory,
 /// and returns the corresponding Volume and VolumeMount definitions.
 async fn build_agent_config_volumes(
-    client: Client, namespace: &str, config: &Config, target_config: &TargetConfig,
+    client: Client, namespace: &str, case: &CorrectnessTestCase, target_config: &TargetConfig,
 ) -> Result<(Vec<Volume>, Vec<VolumeMount>), GenericError> {
     use std::path::Path;
 
@@ -892,7 +898,7 @@ async fn build_agent_config_volumes(
             )
         })?;
 
-        let host_abs = config.resolve_path(host_rel);
+        let host_abs = crate::test::resolve_case_path(&case.config.loaded_from, host_rel);
         let content = std::fs::read_to_string(&host_abs)
             .with_error_context(|| format!("Failed to read config file: {}", host_abs.display()))?;
 
