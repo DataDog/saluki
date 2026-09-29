@@ -154,6 +154,42 @@ where
     deserializer.deserialize_any(MapOrJsonString(PhantomData))
 }
 
+/// Deserializes a free-form map, or a string holding a JSON-encoded map.
+///
+/// The Agent streams a map-typed environment variable as the raw string it stores, so a free-form
+/// map accepts the same two shapes as a typed one; see
+/// [`deserialize_map_or_json_string`].
+///
+/// # Errors
+///
+/// Returns an error when the value is neither a map nor a string that decodes to one.
+pub(crate) fn deserialize_json_map_or_json_string<'de, D>(
+    deserializer: D,
+) -> Result<::serde_json::Map<String, ::serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct JsonMapOrJsonString;
+
+    impl<'de> Visitor<'de> for JsonMapOrJsonString {
+        type Value = ::serde_json::Map<String, ::serde_json::Value>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map or a JSON-encoded map string")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            serde_json::from_str(value).map_err(|e| E::custom(format_args!("invalid JSON-encoded map: {e}")))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+            ::serde_json::Map::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(JsonMapOrJsonString)
+}
+
 /// Deserializes a string map, coercing each value as the Agent does.
 ///
 /// # Errors
@@ -184,7 +220,7 @@ pub(crate) fn deserialize_number_map<'de, D>(deserializer: D) -> Result<HashMap<
 where
     D: Deserializer<'de>,
 {
-    let values = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let values = deserialize_map_or_json_string::<_, serde_json::Value>(deserializer)?;
     values
         .into_iter()
         .map(|(key, value)| cast_to_f64(&value).map(|value| (key, value)).map_err(de::Error::custom))
@@ -462,6 +498,12 @@ mod tests {
     #[derive(Deserialize)]
     struct NumberMap(#[serde(deserialize_with = "deserialize_number_map")] HashMap<String, f64>);
 
+    #[derive(Deserialize)]
+    struct FreeFormMap(
+        #[serde(deserialize_with = "deserialize_json_map_or_json_string")]
+        ::serde_json::Map<String, ::serde_json::Value>,
+    );
+
     fn as_bool(value: Value) -> Result<bool, String> {
         serde_json::from_value::<Bool>(value)
             .map(|b| b.0)
@@ -640,6 +682,42 @@ mod tests {
         assert_eq!(values["string"], 0.25);
         assert!(serde_json::from_value::<NumberMap>(json!({ "compound": [] })).is_err());
         assert!(serde_json::from_value::<NumberMap>(json!({ "text": "datadog_only" })).is_err());
+    }
+
+    #[test]
+    fn number_map_accepts_a_json_encoded_string() {
+        let values = serde_json::from_value::<NumberMap>(json!(r#"{"one": 0.5, "two": 2}"#))
+            .expect("JSON-encoded map deserializes")
+            .0;
+
+        assert_eq!(values["one"], 0.5);
+        assert_eq!(values["two"], 2.0);
+        for rejected in [json!("not json"), json!(r#"["a"]"#), json!(r#"{"compound": []}"#)] {
+            assert!(
+                serde_json::from_value::<NumberMap>(rejected.clone()).is_err(),
+                "{rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn free_form_map_accepts_a_json_encoded_string() {
+        let values = serde_json::from_value::<FreeFormMap>(json!(r#"{"svc|op": 0.75}"#))
+            .expect("JSON-encoded map deserializes")
+            .0;
+
+        assert_eq!(values["svc|op"], json!(0.75));
+        // The parsed form arrives from YAML-sourced settings and must keep working.
+        let parsed = serde_json::from_value::<FreeFormMap>(json!({ "svc|op": 0.75 }))
+            .expect("parsed map deserializes")
+            .0;
+        assert_eq!(parsed["svc|op"], json!(0.75));
+        for rejected in [json!("not json"), json!(r#"["a"]"#), json!(5)] {
+            assert!(
+                serde_json::from_value::<FreeFormMap>(rejected.clone()).is_err(),
+                "{rejected}"
+            );
+        }
     }
 
     #[test]

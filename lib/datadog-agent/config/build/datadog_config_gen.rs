@@ -482,6 +482,13 @@ fn is_f64(ty: &syn::Type) -> bool {
     plain_ident(ty).is_some_and(|ident| ident == "f64")
 }
 
+/// Returns whether `ty` is a free-form `serde_json::Map`.
+fn is_json_map(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    let segments = tp.path.segments.iter().collect::<Vec<_>>();
+    segments.len() == 2 && segments[0].ident == "serde_json" && segments[1].ident == "Map"
+}
+
 fn map_types(ty: &syn::Type) -> Option<(&syn::Type, &syn::Type)> {
     let syn::Type::Path(tp) = ty else { return None };
     let last = tp.path.segments.last()?;
@@ -628,6 +635,7 @@ fn permissivize(file: &mut syn::File) {
                 LeafKind::Text => "crate::cast_de::deserialize_string",
                 LeafKind::StringMap => "crate::cast_de::deserialize_string_map",
                 LeafKind::NumberMap => "crate::cast_de::deserialize_number_map",
+                LeafKind::JsonMap => "crate::cast_de::deserialize_json_map_or_json_string",
                 LeafKind::OptionalText => "crate::cast_de::deserialize_optional_string",
                 LeafKind::OptionalInteger => "crate::cast_de::deserialize_optional_i64",
                 LeafKind::Exempt => continue,
@@ -652,6 +660,7 @@ enum LeafKind {
     Text,
     StringMap,
     NumberMap,
+    JsonMap,
     OptionalText,
     OptionalInteger,
     /// A nested section, or a leaf whose shape another pass or its own consumer handles.
@@ -675,6 +684,11 @@ fn leaf_kind(ty: &syn::Type, struct_names: &HashSet<String>) -> LeafKind {
     }
     if is_string_map_f64(ty) {
         return LeafKind::NumberMap;
+    }
+    // A free-form map is a leaf, not a container: it gets the same map-or-JSON-string shape
+    // tolerance as the typed maps, so environment-sourced settings decode like YAML-sourced ones.
+    if is_json_map(ty) {
+        return LeafKind::JsonMap;
     }
     // An optional `integer` leaf uses the same permissive coercion as a plain `i64`, while an
     // absent or null value stays `None`.

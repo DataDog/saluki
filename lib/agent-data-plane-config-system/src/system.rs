@@ -552,6 +552,40 @@ mod tests {
         );
     }
 
+    // Regression: the Agent streams `DD_APM_ANALYZED_SPANS` as the raw JSON string it stores, and the
+    // map deserializers rejected it, so the startup gate failed and ADP restarted in a loop.
+    #[tokio::test]
+    async fn connected_startup_accepts_json_encoded_event_extraction_settings() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit(
+                    "apm_config.analyzed_spans",
+                    json!(r#"{"test-service|operation": 0.75}"#),
+                ),
+                ConfigSetting::explicit(
+                    "apm_config.analyzed_rate_by_service",
+                    json!(r#"{"legacy-service": 0.5}"#),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        let system =
+            ConfigurationSystem::connected(agent_rx, compat_tx.expect("dynamic sender exists"), compat_map, base)
+                .await
+                .expect("startup accepts the streamed JSON strings");
+
+        let config = system.config();
+        assert_eq!(
+            config.domains.traces.analyzed_spans_by_service["test-service"]["operation"],
+            0.75
+        );
+        assert_eq!(config.domains.traces.analyzed_rate_by_service["legacy-service"], 0.5);
+    }
+
     #[tokio::test]
     async fn connected_stream_translates_metrics_v3_routing_configuration() {
         let (system, agent_tx) = connected_system(json!({
