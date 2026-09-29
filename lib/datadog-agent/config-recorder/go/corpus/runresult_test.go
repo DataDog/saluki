@@ -37,10 +37,10 @@ func TestCheckCaseRecord(t *testing.T) {
 	u := mustParse(t, checkCaseUpdates)
 	ok := &CaseLine{Inputs: c, Origin: strp("datadog.yaml")}
 	failed := &CaseLine{Inputs: c, StartupError: strp("boom")}
-	oneUpdate := []UpdateResult{{Index: 0, SeqDelta: 1, Events: 1}}
+	oneUpdate := []UpdateResult{{SeqDelta: 1}}
 	updated := &CaseLine{Inputs: u, Origin: strp("datadog.yaml"), Updates: oneUpdate}
 	noResults := &CaseLine{Inputs: u, Origin: strp("datadog.yaml")}
-	timedOutZero := &CaseLine{Inputs: u, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{Index: 0, TimedOut: true}}}
+	timedOutZero := &CaseLine{Inputs: u, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{TimedOut: true}}}
 	failedUpdates := &CaseLine{Inputs: u, StartupError: strp("boom"), Updates: oneUpdate}
 	withEvents := func(k string, events ...Event) []KeyLine {
 		kl := keyLine("with-updates", k, true)
@@ -83,7 +83,7 @@ func TestRunResultRoundTrip(t *testing.T) {
 	path := t.TempDir() + "/r.gob"
 	kl := keyLine("c", "a", true)
 	kl.Events = []Event{{Seq: 1, Update: 0}, {Seq: 2, Update: 1}}
-	in := &RunResult{Run: &CaseRun{Origin: "datadog.yaml", Keys: []KeyLine{kl}, Updates: []UpdateResult{{Index: 0, SeqDelta: 1, Events: 1}}}}
+	in := &RunResult{Run: &CaseRun{Origin: "datadog.yaml", Keys: []KeyLine{kl}, Updates: []UpdateResult{{SeqDelta: 1}}}}
 	if err := WriteRunResult(path, in); err != nil {
 		t.Fatal(err)
 	}
