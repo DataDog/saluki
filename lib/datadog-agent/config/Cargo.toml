@@ -22,5 +22,10 @@ serde_yaml = { workspace = true }
 syn = { workspace = true }
 typify = { workspace = true }
 
+[dev-dependencies]
+datadog-agent-config-corpus = { workspace = true }
+datadog-agent-config-overlay-model = { workspace = true }
+sha2 = { workspace = true }
+
 [lints]
 workspace = true

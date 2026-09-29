@@ -1,5 +1,6 @@
-name: breadth-yaml-and-set
-group: breadth
+name: yaml-then-runtime-set
+group: behavior
+why: [set-notifies-only-on-resolved-change]
 yaml: |
   logs_enabled: true
   dogstatsd_port: 8126
