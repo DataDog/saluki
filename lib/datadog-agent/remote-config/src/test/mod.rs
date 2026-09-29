@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Barrier, OnceLock};
+use std::time::Duration;
 
 use datadog_protos::remote_config::{ClientGetConfigsRequest, ClientGetConfigsResponse};
 use serde::de::DeserializeOwned;
@@ -235,7 +237,10 @@ async fn rejects_a_snapshot_missing_a_required_configuration() {
     ]);
     assert!(matches!(
         evaluated.outcome,
-        Outcome::Rejected(TestProductError::MissingAttributes)
+        Outcome::Rejected {
+            error: TestProductError::MissingAttributes,
+            ..
+        }
     ));
     assert!(matches!(&evaluated.verdicts[0].1,
         Verdict::BuildRejected(reason) if reason == "No attribute mappings were assigned."
@@ -261,7 +266,10 @@ async fn rejects_an_empty_assignment_when_configuration_is_required() {
     let evaluated = evaluate::<TestProductDecoder>(vec![]);
     assert!(matches!(
         evaluated.outcome,
-        Outcome::Rejected(TestProductError::MissingAttributes)
+        Outcome::Rejected {
+            error: TestProductError::MissingAttributes,
+            ..
+        }
     ));
     assert!(evaluated.verdicts.is_empty());
 }
@@ -758,6 +766,50 @@ fn a_panic_dropping_a_pruned_snapshot_does_not_poison_the_registry() {
         .shared
         .live_products()
         .contains_key(TestLastValidDecoder::PRODUCT));
+}
+
+/// A snapshot and rejection whose `Drop` reads the subscription it was published to, as a subscriber's `Drop` might.
+struct TestReadsOnDrop {
+    subscription: Arc<OnceLock<Subscription<TestReadsOnDrop, TestReadsOnDrop>>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl Drop for TestReadsOnDrop {
+    fn drop(&mut self) {
+        if let Some(subscription) = self.subscription.get() {
+            let _ = subscription.current();
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[test]
+fn a_replaced_snapshot_or_rejection_can_read_the_subscription_when_dropped() {
+    let (done, finished) = mpsc::channel();
+    // A drop under the channel's lock deadlocks this thread, so the test waits for it with a timeout.
+    std::thread::spawn(move || {
+        let (publisher, subscription) = TestPublisher::<TestReadsOnDrop, TestReadsOnDrop>::new();
+        let shared = Arc::new(OnceLock::new());
+        let reads = Arc::new(AtomicUsize::new(0));
+        let value = || TestReadsOnDrop {
+            subscription: Arc::clone(&shared),
+            reads: Arc::clone(&reads),
+        };
+        let _ = shared.set(subscription);
+
+        publisher.accept(value());
+        publisher.reject(value());
+        // Replaces the rejection.
+        publisher.reject(value());
+        // Replaces the accepted snapshot and the second rejection.
+        publisher.accept(value());
+        done.send(reads.load(Ordering::SeqCst)).unwrap();
+    });
+
+    let reads = finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("dropping a replaced value should not wait for the channel's lock");
+    assert_eq!(reads, 3);
 }
 
 #[test]

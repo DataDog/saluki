@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{fmt, mem};
@@ -32,7 +33,7 @@ use super::{test_settings, TEST_CLIENT_NAME, TEST_CLIENT_VERSION};
 use crate::protocol::sha256;
 use crate::source::{FetchError, RcAgent};
 use crate::{
-    AgentIdentity, ClientKind, ConfigId, ProductDecoder, RcClientConfiguration, RemoteConfigurationClient,
+    AgentIdentity, ApplyError, ClientKind, ConfigId, ProductDecoder, RcClientConfiguration, RemoteConfigurationClient,
     RemoteConfigurationWorker, Subscription,
 };
 
@@ -587,6 +588,53 @@ async fn a_build_failure_rejects_the_configurations_that_decoded() {
             ("ALPHA", "c", 1, ERROR, "Cannot build."),
         ]
     );
+}
+
+/// A build rejection whose apply reason panics if it is asked for more than once.
+struct ReportedOnce(AtomicBool);
+
+impl ApplyError for ReportedOnce {
+    fn apply_error(&self) -> String {
+        assert!(!self.0.swap(true, Ordering::SeqCst), "apply_error called twice");
+        "Cannot build.".to_owned()
+    }
+}
+
+/// Decodes everything and rejects every build with a [`ReportedOnce`].
+#[derive(Default)]
+struct RejectsOnce;
+
+impl ProductDecoder for RejectsOnce {
+    const PRODUCT: &'static str = Alpha::NAME;
+
+    type Snapshot = ();
+    type Error = ReportedOnce;
+
+    fn decode(&mut self, _id: &ConfigId, _payload: &[u8]) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn build(self) -> Result<Self::Snapshot, Self::Error> {
+        Err(ReportedOnce(AtomicBool::new(false)))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_build_rejection_asks_for_its_apply_reason_only_inside_the_panic_guard() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<RejectsOnce>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    timeout(Duration::from_secs(1), alpha.changed())
+        .await
+        .expect("should publish")
+        .unwrap_err();
+
+    // A second call outside the guard would panic and end the worker, and this poll would never arrive.
+    assert_eq!(rows(&agent.poll().await), [("ALPHA", "a", 1, ERROR, "Cannot build.")]);
 }
 
 #[tokio::test(start_paused = true)]

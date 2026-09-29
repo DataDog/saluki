@@ -84,7 +84,8 @@
 //! publisher.assign::<ExampleDecoder>([("greeting.v1", "hello"), ("greeting.v2", "hi")]);
 //! assert_eq!(subscription.changed().await.unwrap().message, "hi");
 //!
-//! // An empty assignment fails to build, and the last accepted snapshot is kept.
+//! // A rejection keeps the last accepted snapshot. This decoder rejects an empty assignment only to show that; a real
+//! // decoder must build from one, or an expired Agent cache leaves its last snapshot live.
 //! publisher.assign::<ExampleDecoder>(Vec::<(&str, &str)>::new());
 //! assert_eq!(*subscription.changed().await.unwrap_err(), "No message was assigned.");
 //! assert_eq!(subscription.current().unwrap().message, "hi");

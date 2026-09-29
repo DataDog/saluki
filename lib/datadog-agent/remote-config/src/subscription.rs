@@ -131,25 +131,30 @@ impl<T, E> Publisher<T, E> {
     }
 
     pub(crate) fn accept(&self, snapshot: T) {
-        // Replacing `accepted` can drop the last reference to the previous snapshot. A panic in its `Drop` escapes the
-        // decoder's `catch_unwind` and ends the worker, which its supervisor restarts.
+        // The replaced values are dropped after `send_modify` releases the channel's lock, so a subscriber's `Drop` for
+        // its previous snapshot or rejection can read the subscription instead of deadlocking. A panic in that `Drop`
+        // escapes the decoder's `catch_unwind` and ends the worker, which its supervisor restarts.
+        let mut replaced = (None, None);
         self.sender.send_modify(|state| {
-            state.accepted = Some(Arc::new(snapshot));
-            state.rejection = None;
+            replaced = (state.accepted.replace(Arc::new(snapshot)), state.rejection.take());
         });
+        drop(replaced);
     }
 
     pub(crate) fn reject(&self, error: E) {
+        // Dropped after the lock is released, as in `accept`.
+        let mut replaced = None;
         self.sender.send_modify(|state| {
-            state.rejection = Some(Arc::new(error));
+            replaced = state.rejection.replace(Arc::new(error));
         });
+        drop(replaced);
     }
 
     /// Publishes the outcome of a decoder run. A panicked run publishes nothing, so subscribers are not notified.
     pub(crate) fn publish(&self, outcome: Outcome<T, E>) {
         match outcome {
             Outcome::Accepted(snapshot) => self.accept(snapshot),
-            Outcome::Rejected(error) => self.reject(error),
+            Outcome::Rejected { error, .. } => self.reject(error),
             Outcome::Panicked => {}
         }
     }

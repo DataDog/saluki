@@ -21,6 +21,9 @@ use crate::{ApplyError, ConfigId};
 /// client then asks the Agent for the full assignment until a response is not expired, so configurations that return
 /// are decoded as new.
 ///
+/// A rejected snapshot leaves subscribers with the last accepted one, so an implementation must build a snapshot
+/// from an empty assignment; see [`build`](Self::build).
+///
 /// Decoding runs on the client's worker task and delays polling for every product while it runs, so implementations
 /// **MUST NOT** block. A panic in [`decode`](Self::decode) or [`build`](Self::build) is caught: the client discards the
 /// decoder, rejects every configuration in the assignment, and publishes nothing, so subscribers keep the last accepted
@@ -112,8 +115,12 @@ pub trait ProductDecoder: Default + Send + 'static {
     ///
     /// Validation that spans configurations belongs here, including checking that a required configuration is present.
     /// When the product has no configurations, such as after the backend removes the last one or when the Agent reports
-    /// its configuration expired, the client calls this without having called [`decode`](Self::decode). This method
-    /// therefore decides whether a product with no configurations is acceptable.
+    /// its configuration expired, the client calls this without having called [`decode`](Self::decode).
+    ///
+    /// An empty assignment means the product has no configuration, and this method **MUST** build a snapshot that
+    /// says so. A rejection keeps the last accepted snapshot, so a decoder that rejects an empty assignment leaves
+    /// subscribers reading configuration the backend removed, or that expired with the Agent's cache, until a
+    /// non-empty assignment builds.
     ///
     /// The client acknowledges successfully decoded configurations only when this method succeeds.
     ///
@@ -170,7 +177,13 @@ pub(crate) enum Outcome<T, E> {
     Accepted(T),
 
     /// `build` failed; the error is published as a rejection and `current` keeps the last accepted snapshot.
-    Rejected(E),
+    Rejected {
+        error: E,
+
+        /// The error's apply reason, computed inside the decoder's `catch_unwind` so that a panic in
+        /// [`ApplyError::apply_error`] is caught like any other decoder panic.
+        reason: String,
+    },
 
     /// `decode` or `build` panicked; nothing is published and subscribers are not notified.
     Panicked,
@@ -204,7 +217,7 @@ pub(crate) fn evaluate<P: ProductDecoder>(mut assignment: Vec<(ConfigId, &[u8])>
                         *verdict = Verdict::BuildRejected(reason.clone());
                     }
                 }
-                Outcome::Rejected(error)
+                Outcome::Rejected { error, reason }
             }
         }
     }));

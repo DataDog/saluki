@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::decoder::{evaluate, Evaluation, Outcome};
 use crate::subscription::Publisher;
-use crate::{ApplyError, ConfigId, Error, ProductDecoder, Result, Subscription};
+use crate::{ConfigId, Error, ProductDecoder, Result, Subscription};
 
 /// Identifies one subscription to a product, so the worker can tell a new subscription from the one it replaced.
 pub(crate) type Generation = u64;
@@ -141,7 +141,7 @@ impl Shared {
     /// matches [`live_products`](Self::live_products), so the worker decodes the replacement on its next poll.
     pub(crate) fn assign(
         &self, product: &str, assignment: Vec<(ConfigId, &[u8])>,
-    ) -> Option<(Generation, Evaluation<(), String>)> {
+    ) -> Option<(Generation, Evaluation<(), ()>)> {
         let (generation, product) = {
             let registry = self.lock();
             let registration = registry.products.get(product)?;
@@ -156,9 +156,8 @@ trait Product: Send + Sync {
     /// Returns whether any clone of the product's subscription is still alive.
     fn is_subscribed(&self) -> bool;
 
-    /// Decodes and publishes an assignment, returning the outcome with the subscriber's error reduced to its apply
-    /// reason.
-    fn assign(&self, assignment: Vec<(ConfigId, &[u8])>) -> Evaluation<(), String>;
+    /// Decodes and publishes an assignment, returning the outcome with the subscriber's snapshot and error erased.
+    fn assign(&self, assignment: Vec<(ConfigId, &[u8])>) -> Evaluation<(), ()>;
 }
 
 struct Decoded<P: ProductDecoder> {
@@ -171,11 +170,14 @@ impl<P: ProductDecoder> Product for Decoded<P> {
         self.publisher.is_subscribed()
     }
 
-    fn assign(&self, assignment: Vec<(ConfigId, &[u8])>) -> Evaluation<(), String> {
+    fn assign(&self, assignment: Vec<(ConfigId, &[u8])>) -> Evaluation<(), ()> {
         let Evaluation { outcome, verdicts } = evaluate::<P>(assignment);
         let reduced = match &outcome {
             Outcome::Accepted(_) => Outcome::Accepted(()),
-            Outcome::Rejected(error) => Outcome::Rejected(error.apply_error()),
+            Outcome::Rejected { reason, .. } => Outcome::Rejected {
+                error: (),
+                reason: reason.clone(),
+            },
             Outcome::Panicked => Outcome::Panicked,
         };
         self.publisher.publish(outcome);

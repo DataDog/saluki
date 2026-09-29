@@ -351,7 +351,7 @@ impl Repository {
                 debug!(product, "Published a configuration snapshot.");
                 metrics.count_snapshot_published(product);
             }
-            Outcome::Rejected(reason) => warn!(product, reason, "Rejected a configuration snapshot."),
+            Outcome::Rejected { reason, .. } => warn!(product, reason, "Rejected a configuration snapshot."),
             Outcome::Panicked => {
                 error!(
                     product,
