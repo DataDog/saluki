@@ -11,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/DataDog/datadog-agent/cmd/config-recorder/corpus"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/agentcfg"
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/gen"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 // generateMain writes the generated case files. It builds the Agent config with no inputs, as
@@ -32,11 +34,11 @@ func generateMain(args []string) error {
 	if len(entries) > 0 {
 		return fmt.Errorf("%w: --out %s is not empty", errUsage, *out)
 	}
-	schemaData, err := os.ReadFile(*schemaPath)
+	s, err := schema.Load(*schemaPath)
 	if err != nil {
 		return err
 	}
-	schema, err := gen.ParseSchema(schemaData)
+	leaves, err := s.LowercasedLeaves()
 	if err != nil {
 		return err
 	}
@@ -45,10 +47,6 @@ func generateMain(args []string) error {
 		return err
 	}
 	overlay, err := gen.ParseOverlay(overlayData)
-	if err != nil {
-		return err
-	}
-	agentSchema, err := corpus.LoadSchema(*schemaPath)
 	if err != nil {
 		return err
 	}
@@ -62,7 +60,7 @@ func generateMain(args []string) error {
 		return err
 	}
 	defer os.RemoveAll(workdir)
-	params, err := writeInputs(&corpus.Case{}, workdir)
+	params, err := writeInputs(&record.Case{}, workdir)
 	if err != nil {
 		return err
 	}
@@ -70,11 +68,11 @@ func generateMain(args []string) error {
 	err = withFirstSnapshot(params, func(sess *session) error {
 		cfg := sess.cfg
 		capture.take()
-		if err := corpus.CheckSchemaKeys(agentSchema, cfg); err != nil {
+		if err := agentcfg.CheckSchemaKeys(s, cfg); err != nil {
 			return err
 		}
-		for _, key := range schema.Keys() {
-			typ, ok := corpus.DefaultLayerType(cfg, key)
+		for key := range leaves {
+			typ, ok := agentcfg.DefaultLayerType(cfg, key)
 			if !ok {
 				typ = "<nil>"
 			}
@@ -90,16 +88,12 @@ func generateMain(args []string) error {
 		return err
 	}
 
-	res, err := gen.Generate(schema, overlay, facts)
+	res, err := gen.Generate(s, overlay, facts)
 	if err != nil {
 		return err
 	}
 	for _, c := range res.Cases {
-		data, err := c.Marshal()
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(*out, c.Name+".yaml"), data, 0o644); err != nil {
+		if err := record.WriteCaseFile(filepath.Join(*out, c.Name+".yaml"), c); err != nil {
 			return err
 		}
 	}

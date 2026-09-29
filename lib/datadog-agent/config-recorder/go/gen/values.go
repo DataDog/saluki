@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 // Values is the pair of generated values for one key: Input is written to YAML (and rendered for
@@ -42,7 +44,7 @@ type Values struct {
 //     are `service|operation` pairs and the values rates, the form that parser reads.
 //
 // A value equal to the default where the rule says it must differ is an error.
-func ValuesFor(s *Setting) (Values, error) {
+func ValuesFor(s *schema.Key) (Values, error) {
 	var v Values
 	switch s.Type {
 	case "boolean":
@@ -78,25 +80,25 @@ func ValuesFor(s *Setting) (Values, error) {
 		v = Values{Input: p[0], Set: p[1]}
 	}
 	if sameJSON(v.Input, s.Default) {
-		return v, fmt.Errorf("key %q: generated value %v equals the default", s.Key, v.Input)
+		return v, fmt.Errorf("key %q: generated value %v equals the default", strings.ToLower(s.Path), v.Input)
 	}
 	if sameJSON(v.Input, v.Set) || (s.Type != "boolean" && sameJSON(v.Set, s.Default)) {
-		return v, fmt.Errorf("key %q: generated set value %v is not distinct", s.Key, v.Set)
+		return v, fmt.Errorf("key %q: generated set value %v is not distinct", strings.ToLower(s.Path), v.Set)
 	}
 	return v, nil
 }
 
-func intDefault(s *Setting) (int, error) {
+func intDefault(s *schema.Key) (int, error) {
 	switch d := s.Default.(type) {
 	case nil:
 		return 0, nil
 	case int:
 		return d, nil
 	}
-	return 0, fmt.Errorf("key %q: integer default %v is not an integer", s.Key, s.Default)
+	return 0, fmt.Errorf("key %q: integer default %v is not an integer", strings.ToLower(s.Path), s.Default)
 }
 
-func floatDefault(s *Setting) (float64, error) {
+func floatDefault(s *schema.Key) (float64, error) {
 	switch d := s.Default.(type) {
 	case nil:
 		return 0, nil
@@ -105,7 +107,7 @@ func floatDefault(s *Setting) (float64, error) {
 	case float64:
 		return d, nil
 	}
-	return 0, fmt.Errorf("key %q: number default %v is not a number", s.Key, s.Default)
+	return 0, fmt.Errorf("key %q: number default %v is not a number", strings.ToLower(s.Path), s.Default)
 }
 
 func arrayValues(item string) Values {
@@ -167,7 +169,7 @@ var commaParsers = map[string]bool{
 //     a list read from an unparsed env string. A list of objects has no split form and is JSON.
 //   - maps: JSON text, except `env_parser: traces_span`, which reads `service|operation=rate`
 //     entries joined by `,`.
-func EnvText(s *Setting, v interface{}) (string, error) {
+func EnvText(s *schema.Key, v interface{}) (string, error) {
 	switch x := v.(type) {
 	case bool:
 		return strconv.FormatBool(x), nil
@@ -218,7 +220,7 @@ func EnvText(s *Setting, v interface{}) (string, error) {
 		}
 		return jsonText(x)
 	}
-	return "", fmt.Errorf("key %q: no env text for %T", s.Key, v)
+	return "", fmt.Errorf("key %q: no env text for %T", strings.ToLower(s.Path), v)
 }
 
 func jsonText(v interface{}) (string, error) {

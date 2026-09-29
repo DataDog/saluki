@@ -3,7 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2026-present Datadog, Inc.
 
-package corpus
+package record
 
 import (
 	"encoding/json"
@@ -29,10 +29,12 @@ var (
 	ErrRecordField          = errors.New("required member is empty")
 )
 
-var commitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+// CommitPattern matches a full lowercase hex git commit ID.
+var CommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// inputsDigestRe matches the header's inputs_digest: `sha256:` and 64 lowercase hex (record.md §2).
-var inputsDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+// InputsDigestPattern matches the header's inputs_digest: `sha256:` and 64 lowercase hex
+// (record.md §2).
+var InputsDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // ErrRecordInputsDigest marks a header inputs_digest that is not `sha256:` and 64 lowercase hex.
 var ErrRecordInputsDigest = errors.New("inputs_digest must be sha256: and 64 lowercase hex digits")
@@ -188,7 +190,7 @@ func (k *KeyLine) omitsUpdate() bool {
 
 // Validate checks the header line.
 func (h *HeaderLine) Validate() error {
-	if !commitRe.MatchString(h.AgentCommit) {
+	if !CommitPattern.MatchString(h.AgentCommit) {
 		return fmt.Errorf("%w: %q", ErrRecordCommit, h.AgentCommit)
 	}
 	for name, v := range map[string]string{"goos": h.GOOS, "goarch": h.GOARCH, "go_version": h.GoVersion, "container_image": h.ContainerImage} {
@@ -199,7 +201,7 @@ func (h *HeaderLine) Validate() error {
 	if !sort.StringsAreSorted(h.Features) {
 		return ErrRecordFeaturesOrder
 	}
-	if !inputsDigestRe.MatchString(h.InputsDigest) {
+	if !InputsDigestPattern.MatchString(h.InputsDigest) {
 		return fmt.Errorf("%w: %q", ErrRecordInputsDigest, h.InputsDigest)
 	}
 	return nil
