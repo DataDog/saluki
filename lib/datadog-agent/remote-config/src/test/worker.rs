@@ -948,6 +948,32 @@ async fn expiry_withdraws_every_configuration() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_expiry_at_the_current_targets_version_withdraws_and_recovery_restores() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
+
+    // The Agent flushes its cache without comparing the client's targets version, so an expiry arrives at the version
+    // the client already has ([service.go]).
+    //
+    // [service.go]:
+    //     https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/config/remote/service/service.go#L1018-L1031
+    let request = agent.exchange(Response::new(10).expired().build()).await;
+    assert_eq!(state(&request).targets_version, 10);
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[]));
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_expired_status_with_nothing_else_still_withdraws_configurations() {
     let (client, worker, mut agent) = client();
     let mut alpha = client.subscribe::<Recorder>().unwrap();

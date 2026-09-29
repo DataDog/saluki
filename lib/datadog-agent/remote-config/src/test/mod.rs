@@ -700,7 +700,9 @@ async fn subscribing_wakes_the_worker_once() {
     let _last_valid = client.subscribe::<TestLastValidDecoder>().unwrap();
     let _product = client.subscribe::<TestProductDecoder>().unwrap();
 
-    worker.shared.wake.notified().await;
+    tokio::time::timeout(std::time::Duration::from_millis(10), worker.shared.wake.notified())
+        .await
+        .expect("subscribing should wake the worker");
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(10), worker.shared.wake.notified())
             .await
