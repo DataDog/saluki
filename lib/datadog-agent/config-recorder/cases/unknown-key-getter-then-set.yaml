@@ -1,6 +1,6 @@
 name: unknown-key-getter-then-set
 group: behavior
-why: [getter-unknown-key-joins-keyset]
+why: [getter-unknown-key-joins-keyset, stream-snapshot-skips-nil]
 updates:
   - {key: unknown_read_xyz, value: v, source: agent-runtime}
 keys:

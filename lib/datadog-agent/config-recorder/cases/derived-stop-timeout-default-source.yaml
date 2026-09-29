@@ -1,6 +1,6 @@
 name: derived-stop-timeout-default-source
 group: behavior
-why: [derived-value-written-with-source-default]
+why: [derived-value-written-with-source-default, derived-value-not-recomputed-after-update]
 yaml: |
   aggregator_stop_timeout: 7
 updates:

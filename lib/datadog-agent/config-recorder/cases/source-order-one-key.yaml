@@ -1,0 +1,23 @@
+name: source-order-one-key
+group: behavior
+why: [fleet-policies-outranked, fleet-policy-lost-after-higher-unset]
+yaml: |
+  dogstatsd_port: 8100
+env:
+  DD_DOGSTATSD_PORT: "8101"
+fleet_policy: |
+  dogstatsd_port: 8102
+updates:
+  - {key: dogstatsd_port, value: 8104, source: config-post-init}
+  - {key: dogstatsd_port, value: 8105, source: secret}
+  - {key: dogstatsd_port, value: 8106, source: local-config-process}
+  - {key: dogstatsd_port, value: 8107, source: agent-runtime}
+  - {key: dogstatsd_port, value: 8108, source: remote-config}
+  - {key: dogstatsd_port, value: 8109, source: cli}
+  - {op: unset, key: dogstatsd_port, source: cli}
+  - {op: unset, key: dogstatsd_port, source: remote-config}
+  - {op: unset, key: dogstatsd_port, source: agent-runtime}
+  - {op: unset, key: dogstatsd_port, source: local-config-process}
+  - {op: unset, key: dogstatsd_port, source: secret}
+  - {op: unset, key: dogstatsd_port, source: config-post-init}
+keys: [dogstatsd_port]
