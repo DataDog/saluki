@@ -20,7 +20,6 @@
 use std::{collections::HashMap, fmt, marker::PhantomData};
 
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Unexpected, Visitor};
-use serde::Deserialize;
 
 /// `cast.ToBoolE` for a string: Go's `strconv.ParseBool` grammar, exactly.
 ///
@@ -128,15 +127,15 @@ where
 ///
 /// Returns an error when the value is neither a map nor a string that decodes to one, or when a map
 /// value does not deserialize as `V`.
-pub(crate) fn deserialize_map_or_json_string<'de, D, V>(deserializer: D) -> Result<HashMap<String, V>, D::Error>
+pub(crate) fn deserialize_map_or_json_string<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
-    V: DeserializeOwned,
+    T: DeserializeOwned,
 {
-    struct MapOrJsonString<V>(PhantomData<V>);
+    struct MapOrJsonString<T>(PhantomData<T>);
 
-    impl<'de, V: DeserializeOwned> Visitor<'de> for MapOrJsonString<V> {
-        type Value = HashMap<String, V>;
+    impl<'de, T: DeserializeOwned> Visitor<'de> for MapOrJsonString<T> {
+        type Value = T;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("a map or a JSON-encoded map string")
@@ -147,47 +146,11 @@ where
         }
 
         fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-            HashMap::deserialize(de::value::MapAccessDeserializer::new(map))
+            T::deserialize(de::value::MapAccessDeserializer::new(map))
         }
     }
 
     deserializer.deserialize_any(MapOrJsonString(PhantomData))
-}
-
-/// Deserializes a free-form map, or a string holding a JSON-encoded map.
-///
-/// The Agent streams a map-typed environment variable as the raw string it stores, so a free-form
-/// map accepts the same two shapes as a typed one; see
-/// [`deserialize_map_or_json_string`].
-///
-/// # Errors
-///
-/// Returns an error when the value is neither a map nor a string that decodes to one.
-pub(crate) fn deserialize_json_map_or_json_string<'de, D>(
-    deserializer: D,
-) -> Result<::serde_json::Map<String, ::serde_json::Value>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct JsonMapOrJsonString;
-
-    impl<'de> Visitor<'de> for JsonMapOrJsonString {
-        type Value = ::serde_json::Map<String, ::serde_json::Value>;
-
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a map or a JSON-encoded map string")
-        }
-
-        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-            serde_json::from_str(value).map_err(|e| E::custom(format_args!("invalid JSON-encoded map: {e}")))
-        }
-
-        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-            ::serde_json::Map::deserialize(de::value::MapAccessDeserializer::new(map))
-        }
-    }
-
-    deserializer.deserialize_any(JsonMapOrJsonString)
 }
 
 /// Deserializes a string map, coercing each value as the Agent does.
@@ -200,7 +163,7 @@ pub(crate) fn deserialize_string_map<'de, D>(deserializer: D) -> Result<HashMap<
 where
     D: Deserializer<'de>,
 {
-    let values = deserialize_map_or_json_string::<_, serde_json::Value>(deserializer)?;
+    let values = deserialize_map_or_json_string::<_, HashMap<String, serde_json::Value>>(deserializer)?;
     values
         .into_iter()
         .map(|(key, value)| {
@@ -220,7 +183,7 @@ pub(crate) fn deserialize_number_map<'de, D>(deserializer: D) -> Result<HashMap<
 where
     D: Deserializer<'de>,
 {
-    let values = deserialize_map_or_json_string::<_, serde_json::Value>(deserializer)?;
+    let values = deserialize_map_or_json_string::<_, HashMap<String, serde_json::Value>>(deserializer)?;
     values
         .into_iter()
         .map(|(key, value)| cast_to_f64(&value).map(|value| (key, value)).map_err(de::Error::custom))
@@ -500,8 +463,7 @@ mod tests {
 
     #[derive(Deserialize)]
     struct FreeFormMap(
-        #[serde(deserialize_with = "deserialize_json_map_or_json_string")]
-        ::serde_json::Map<String, ::serde_json::Value>,
+        #[serde(deserialize_with = "deserialize_map_or_json_string")] ::serde_json::Map<String, ::serde_json::Value>,
     );
 
     fn as_bool(value: Value) -> Result<bool, String> {
