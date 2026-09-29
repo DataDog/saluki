@@ -1,0 +1,6 @@
+name: site-without-dd-url
+group: behavior
+why: [site-derived-url-getter-only]
+yaml: |
+  site: datadoghq.eu
+keys: [dd_url, site]

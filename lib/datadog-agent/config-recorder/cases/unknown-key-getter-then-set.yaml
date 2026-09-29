@@ -1,0 +1,7 @@
+name: unknown-key-getter-then-set
+group: behavior
+why: [getter-unknown-key-joins-keyset]
+updates:
+  - {key: unknown_read_xyz, value: v, source: agent-runtime}
+keys:
+  - {key: unknown_read_xyz, getters: [GetString]}

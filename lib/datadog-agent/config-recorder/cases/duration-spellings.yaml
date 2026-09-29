@@ -1,0 +1,11 @@
+name: duration-spellings
+group: behavior
+why: [stream-duration-as-nanoseconds, getter-duration-bare-number-is-nanoseconds]
+env:
+  DD_EXPECTED_TAGS_DURATION: "10"
+yaml: |
+  expected_tags_duration: 10s
+updates:
+  - {op: unset, key: expected_tags_duration, source: environment-variable}
+  - {key: expected_tags_duration, value: 10, source: file}
+keys: [expected_tags_duration]
