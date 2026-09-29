@@ -24,7 +24,6 @@ var (
 	ErrRecordOrigin         = errors.New("case line must have exactly one of origin and startup_error")
 	ErrRecordStartupFailure = errors.New("case line with startup_error must omit features, containerized and side_effects")
 	ErrRecordTimedOut       = errors.New("update timed_out requires seq_delta > 0")
-	ErrRecordUpdateIndex    = errors.New("update index must equal its position")
 	ErrRecordSideEffects    = errors.New("side_effects must be sorted by unique key")
 	ErrRecordAbsent         = errors.New("absent setting must have empty sources and no value")
 	ErrRecordField          = errors.New("required member is empty")
@@ -75,6 +74,8 @@ type SideEffect struct {
 // remains here (side_effects still uses Absent, on SideEffect).
 type Event struct {
 	Setting
+	// Seq is the event's sequence ID minus the `before` sequence ID of its update, so an update's
+	// first event has Seq 1 (record.md §5.2).
 	Seq uint64
 	// Update is the index of the update the event belongs to.
 	Update int
@@ -82,9 +83,7 @@ type Event struct {
 
 // UpdateResult is what one case update did.
 type UpdateResult struct {
-	Index    int
 	SeqDelta uint64
-	Events   int
 	TimedOut bool
 	Warnings []Warning
 }
@@ -141,6 +140,50 @@ type KeyLine struct {
 	// FinalRead is set only when the case has updates.
 	SnapshotRead Read
 	FinalRead    *Read
+
+	// caseUpdates are the case's updates, which decide whether events write `update`. The line
+	// writer needs them only for a key line with events; see BindCase.
+	caseUpdates []Update
+	bound       bool
+}
+
+// ErrRecordUnboundEvents marks a key line with events whose case updates were never given.
+var ErrRecordUnboundEvents = errors.New("key line with events needs its case's updates (BindCase)")
+
+// BindCase gives the key line its case's updates. The line writer omits each event's `update`
+// when exactly one of them names the line's key and every event belongs to it (record.md §5.2).
+func (k *KeyLine) BindCase(updates []Update) {
+	k.caseUpdates = updates
+	k.bound = true
+}
+
+// impliedUpdate is the update a reader attributes the key's events to when they carry no
+// `update`: the only case update whose key is key, or -1 when there is not exactly one.
+func impliedUpdate(key string, updates []Update) int {
+	found := -1
+	for i, u := range updates {
+		if u.Key == key {
+			if found >= 0 {
+				return -1
+			}
+			found = i
+		}
+	}
+	return found
+}
+
+// omitsUpdate reports whether the line's events leave out `update`.
+func (k *KeyLine) omitsUpdate() bool {
+	implied := impliedUpdate(k.Key, k.caseUpdates)
+	if implied < 0 {
+		return false
+	}
+	for _, e := range k.Events {
+		if e.Update != implied {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate checks the header line.
@@ -209,9 +252,6 @@ func (c *CaseLine) Validate() error {
 		}
 	}
 	for i, u := range c.Updates {
-		if u.Index != i {
-			return fmt.Errorf("%w: %d at %d", ErrRecordUpdateIndex, u.Index, i)
-		}
 		if u.TimedOut && u.SeqDelta == 0 {
 			return fmt.Errorf("%w: update %d", ErrRecordTimedOut, i)
 		}
@@ -229,7 +269,7 @@ func (c *CaseLine) object() (jsonObject, error) {
 	if why == nil {
 		why = []string{}
 	}
-	inputs, err := inputsObject(c.Inputs)
+	inputs, err := inputsObject(c.Inputs, c.StartupError != nil)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +310,7 @@ func (c *CaseLine) object() (jsonObject, error) {
 	if len(c.Updates) > 0 {
 		list := make([]interface{}, 0, len(c.Updates))
 		for _, u := range c.Updates {
-			o := jsonObject{"index": u.Index, "seq_delta": u.SeqDelta, "events": u.Events}
+			o := jsonObject{"seq_delta": u.SeqDelta}
 			if u.TimedOut {
 				o["timed_out"] = true
 			}
@@ -285,7 +325,7 @@ func (c *CaseLine) object() (jsonObject, error) {
 }
 
 // inputsObject re-encodes the case inputs as the case file gave them.
-func inputsObject(c *Case) (jsonObject, error) {
+func inputsObject(c *Case, startupFailed bool) (jsonObject, error) {
 	obj := jsonObject{}
 	if c.Env != nil {
 		env := jsonObject{}
@@ -314,8 +354,10 @@ func inputsObject(c *Case) (jsonObject, error) {
 	if len(c.Updates) > 0 {
 		list := make([]interface{}, 0, len(c.Updates))
 		for _, u := range c.Updates {
-			o := jsonObject{"op": u.Op, "key": u.Key, "source": u.Source}
-			if u.Op == "set" {
+			o := jsonObject{"key": u.Key, "source": u.Source}
+			if u.Op == "unset" {
+				o["op"] = u.Op
+			} else {
 				v, err := encodeTypedValue(u.Value)
 				if err != nil {
 					return nil, fmt.Errorf("update %q: %w", u.Key, err)
@@ -325,6 +367,9 @@ func inputsObject(c *Case) (jsonObject, error) {
 			list = append(list, o)
 		}
 		obj["updates"] = list
+	}
+	if keysElided(c, startupFailed) {
+		return obj, nil
 	}
 	keys := make([]interface{}, 0, len(c.Keys))
 	for _, k := range c.Keys {
@@ -336,6 +381,20 @@ func inputsObject(c *Case) (jsonObject, error) {
 	}
 	obj["keys"] = keys
 	return obj, nil
+}
+
+// keysElided reports whether `inputs.keys` is left out: the case started, no key has a `getters`
+// override, and its keys are in byte order, so its key lines list exactly them (record.md §3.1).
+func keysElided(c *Case, startupFailed bool) bool {
+	if startupFailed {
+		return false
+	}
+	for i, k := range c.Keys {
+		if k.Getters != nil || (i > 0 && c.Keys[i-1].Key >= k.Key) {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate checks the key line's consistency rules.
@@ -351,8 +410,22 @@ func (k *KeyLine) Validate() error {
 			return err
 		}
 	}
+	if len(k.Events) > 0 && !k.bound {
+		return fmt.Errorf("%w: key %q", ErrRecordUnboundEvents, k.Key)
+	}
+	for j, e := range k.Events {
+		if e.Seq == 0 {
+			return fmt.Errorf("%w: key %q, event %d has seq 0", ErrRecordEventSeq, k.Key, j)
+		}
+		if k.bound && (e.Update < 0 || e.Update >= len(k.caseUpdates)) {
+			return fmt.Errorf("%w: key %q, event %d names update %d", ErrRecordEventIndex, k.Key, j, e.Update)
+		}
+	}
 	return nil
 }
+
+// ErrRecordEventSeq marks an event whose relative seq is not positive.
+var ErrRecordEventSeq = errors.New("event seq must be at least 1")
 
 // validateRead checks every getter warning in one read.
 func validateRead(r *Read) error {
@@ -374,11 +447,14 @@ func (k *KeyLine) object() (jsonObject, error) {
 		obj["snapshot"] = nil
 	}
 	if len(k.Events) > 0 {
+		omit := k.omitsUpdate()
 		list := make([]interface{}, 0, len(k.Events))
 		for _, e := range k.Events {
 			o := settingObject(&e.Setting)
 			o["seq"] = e.Seq
-			o["update"] = e.Update
+			if !omit {
+				o["update"] = e.Update
+			}
 			list = append(list, o)
 		}
 		obj["events"] = list

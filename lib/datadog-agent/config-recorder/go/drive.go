@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -30,7 +31,7 @@ var inputsDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // driveFlags holds the parsed flags of the drive subcommand.
 type driveFlags struct {
-	casesDir       string
+	casesDirs      caseDirs
 	workdir        string
 	out            string
 	schemaPath     string
@@ -44,7 +45,7 @@ type driveFlags struct {
 func parseDriveFlags(args []string) (*driveFlags, error) {
 	var f driveFlags
 	fs := flag.NewFlagSet("drive", flag.ContinueOnError)
-	fs.StringVar(&f.casesDir, "cases", "", "directory of *.yaml case files")
+	fs.Var(&f.casesDirs, "cases", "directory of *.yaml case files; may be repeated")
 	fs.StringVar(&f.workdir, "workdir", "", "directory for per-case work directories and result files")
 	fs.StringVar(&f.out, "out", "", "corpus file to write")
 	fs.StringVar(&f.schemaPath, "schema", "", "the Agent's merged core schema YAML, passed to each case process")
@@ -54,9 +55,9 @@ func parseDriveFlags(args []string) (*driveFlags, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, fmt.Errorf("%w: %v", errUsage, err)
 	}
-	if f.casesDir == "" || f.workdir == "" || f.out == "" || f.schemaPath == "" || f.agentCommit == "" ||
+	if len(f.casesDirs) == 0 || f.workdir == "" || f.out == "" || f.schemaPath == "" || f.agentCommit == "" ||
 		f.containerImage == "" || f.inputsDigest == "" || fs.NArg() > 0 {
-		return nil, fmt.Errorf("%w: drive --cases <dir> --workdir <dir> --out <file> --schema <file> "+
+		return nil, fmt.Errorf("%w: drive --cases <dir> [--cases <dir>...] --workdir <dir> --out <file> --schema <file> "+
 			"--agent-commit <sha> --container-image <ref@sha256:digest> --inputs-digest <sha256:hex>", errUsage)
 	}
 	if !commitPattern.MatchString(f.agentCommit) {
@@ -78,11 +79,10 @@ func driveMain(args []string) error {
 	if err != nil {
 		return err
 	}
-	files, err := filepath.Glob(filepath.Join(flags.casesDir, "*.yaml"))
+	cases, files, err := loadCases(flags.casesDirs)
 	if err != nil {
 		return err
 	}
-	sort.Strings(files)
 
 	baseResult, err := runChild(flags.workdir, "baseline", nil, flags.schemaPath, "--baseline")
 	if err != nil {
@@ -108,11 +108,8 @@ func driveMain(args []string) error {
 		keys     []corpus.KeyLine
 	}
 	var records []record
-	for _, file := range files {
-		c, err := corpus.ParseCaseFile(file)
-		if err != nil {
-			return err
-		}
+	for i, c := range cases {
+		file := files[i]
 		r, err := runChild(flags.workdir, "case-"+c.Name, c.Env, flags.schemaPath, "--case", file)
 		if err != nil {
 			return err
@@ -121,7 +118,7 @@ func driveMain(args []string) error {
 		var keys []corpus.KeyLine
 		if run := r.Run; run != nil {
 			cl.Origin = &run.Origin
-			cl.ConstructionWarnings = run.ConstructionWarnings
+			cl.ConstructionWarnings = corpus.SortConstructionWarnings(run.ConstructionWarnings)
 			cl.Updates = run.Updates
 			keys = run.Keys
 			if run.Containerized != header.Containerized {
@@ -164,7 +161,19 @@ func driveMain(args []string) error {
 		f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// Read the corpus back with the strict reader, so what the writer wrote is exactly what a reader
+	// accepts and reconstructs.
+	data, err := os.ReadFile(flags.out)
+	if err != nil {
+		return err
+	}
+	if _, err := corpus.ReadCorpus(data); err != nil {
+		return fmt.Errorf("corpus does not read back: %w", err)
+	}
+	return nil
 }
 
 // runChild runs one run-case process with exactly the given env and a fresh work directory, and
@@ -197,4 +206,45 @@ func runChild(workdir, name string, env map[string]string, schemaPath string, ca
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return corpus.ReadRunResult(resultPath)
+}
+
+// caseDirs is the repeatable --cases flag.
+type caseDirs []string
+
+func (d *caseDirs) String() string { return strings.Join(*d, ",") }
+
+func (d *caseDirs) Set(v string) error {
+	if v == "" {
+		return errors.New("empty directory")
+	}
+	*d = append(*d, v)
+	return nil
+}
+
+// loadCases parses every *.yaml case file in each directory, in directory order and then file
+// name order. A case name found twice across the directories is a usage error.
+func loadCases(dirs []string) ([]*corpus.Case, []string, error) {
+	var cases []*corpus.Case
+	var files []string
+	names := map[string]string{}
+	for _, dir := range dirs {
+		dirFiles, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
+		if err != nil {
+			return nil, nil, err
+		}
+		sort.Strings(dirFiles)
+		for _, file := range dirFiles {
+			c, err := corpus.ParseCaseFile(file)
+			if err != nil {
+				return nil, nil, err
+			}
+			if other, dup := names[c.Name]; dup {
+				return nil, nil, fmt.Errorf("%w: case name %q is in both %s and %s", errUsage, c.Name, other, file)
+			}
+			names[c.Name] = file
+			cases = append(cases, c)
+			files = append(files, file)
+		}
+	}
+	return cases, files, nil
 }

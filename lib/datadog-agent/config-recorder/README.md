@@ -9,6 +9,21 @@ The output is [`corpus.jsonl`](corpus.jsonl): one header line, then a case line 
 case. The Rust tests replay it to check that Saluki reads configuration the way the Agent does. It
 is generated; do not edit it by hand.
 
+## Generated cases
+
+Besides the hand-written cases in `cases/`, `regenerate.sh` runs the recorder's `generate`
+subcommand. It reads the merged Agent schema and saluki's `schema_overlay.yaml`, and writes the
+`baseline`, `breadth`, `unsupported`, `excluded` and `unknown` cases into
+`target/config-recorder/generated-cases/` (emptied on every run, never checked in). `drive` then
+records both directories.
+
+- `baseline` is one case with no inputs, holding every modeled key.
+- Other groups batch keys by top-level schema section. Top-level leaves (no dot) are batched by
+  first character, as section `top-<c>`. A section with more than 40 keys is split by its second
+  path component. A case name depends only on key paths, so a new key changes only its own batch.
+- Every value comes from a fixed rule on the key's schema type, default and format, so two runs
+  write the same cases.
+
 ## Regenerating the corpus
 
 ```sh

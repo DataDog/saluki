@@ -16,9 +16,9 @@ import (
 
 // goldenLines are the record format's example lines, one line each.
 const goldenLines = `{"agent_commit":"281d921619d52ce7b99aef40607285992c9c2e89","container_image":"golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1","containerized":false,"features":[],"format":1,"go_version":"go1.26.7","goarch":"arm64","goos":"linux","inputs_digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","type":"header"}
-{"case":"additional-endpoints-env","group":"behavior","inputs":{"env":{"DD_ADDITIONAL_ENDPOINTS":"{\"https://x.test\": [\"k\"]}"},"keys":[{"key":"additional_endpoints"}]},"origin":"datadog.yaml","type":"case","why":["env-map-raw-string"]}
+{"case":"additional-endpoints-env","group":"behavior","inputs":{"env":{"DD_ADDITIONAL_ENDPOINTS":"{\"https://x.test\": [\"k\"]}"}},"origin":"datadog.yaml","type":"case","why":["env-map-raw-string"]}
 {"case":"additional-endpoints-env","key":"additional_endpoints","reads":{"snapshot":{"getters":[{"getter":"GetStringMapStringSlice","result":{"https://x.test":["k"]}}],"go_type":"string"}},"snapshot":{"source":"environment-variable","value":"{\"https://x.test\": [\"k\"]}"},"type":"key"}
-{"case":"logs-enabled-yes-yaml","group":"behavior","inputs":{"keys":[{"key":"logs_enabled"}],"yaml":"logs_enabled: \"yes\"\n"},"origin":"datadog.yaml","type":"case","why":["getter-bool-string-strict-parsebool","yaml-type-mismatch-scalar-leaf-keeps-raw"]}
+{"case":"logs-enabled-yes-yaml","group":"behavior","inputs":{"yaml":"logs_enabled: \"yes\"\n"},"origin":"datadog.yaml","type":"case","why":["getter-bool-string-strict-parsebool","yaml-type-mismatch-scalar-leaf-keeps-raw"]}
 {"case":"logs-enabled-yes-yaml","key":"logs_enabled","reads":{"snapshot":{"getters":[{"getter":"GetBool","result":false,"warnings":[{"level":"WARN","message":"failed to get configuration value for key \"logs_enabled\": strconv.ParseBool: parsing \"yes\": invalid syntax"}]}],"go_type":"string"}},"snapshot":{"source":"file","value":"yes"},"type":"key"}
 `
 
@@ -92,12 +92,12 @@ func TestGoldenLines(t *testing.T) {
 func TestLineDetails(t *testing.T) {
 	c := mustParse(t, exampleLayersCase)
 	lines := map[string]Line{
-		// Update value omitted for unset, op always written, getters override kept, <>& unescaped.
-		`{"case":"dogstatsd-port-layers","group":"behavior","inputs":{"cli":[{"key":"cmd_port","value":"5099"}],"fleet_policy":"dogstatsd_port: 8130\n","keys":[{"key":"dogstatsd_port"},{"getters":["GetInt","GetString"],"key":"cmd_port"}],"updates":[{"key":"dogstatsd_port","op":"set","source":"remote-config","value":8131},{"key":"dogstatsd_port","op":"unset","source":"remote-config"}]},"startup_error":"a <b> & c","type":"case","why":["fleet-policies-outranked","unset-always-notifies-even-if-unchanged"]}`: &CaseLine{
+		// Update value omitted for unset, op written only for unset, getters override kept, <>& unescaped.
+		`{"case":"dogstatsd-port-layers","group":"behavior","inputs":{"cli":[{"key":"cmd_port","value":"5099"}],"fleet_policy":"dogstatsd_port: 8130\n","keys":[{"key":"dogstatsd_port"},{"getters":["GetInt","GetString"],"key":"cmd_port"}],"updates":[{"key":"dogstatsd_port","source":"remote-config","value":8131},{"key":"dogstatsd_port","op":"unset","source":"remote-config"}]},"startup_error":"a <b> & c","type":"case","why":["fleet-policies-outranked","unset-always-notifies-even-if-unchanged"]}`: &CaseLine{
 			Inputs: c, StartupError: strp("a <b> & c"),
 		},
-		// Final source compared with the last event; snapshot null forces source.
-		`{"case":"k","events":[{"seq":1,"source":"remote-config","update":0,"value":8131}],"key":"x","reads":{"final":{"getters":[],"go_type":"<nil>","source":"default"},"snapshot":{"getters":[{"getter":"Get","result":null}],"go_type":"<nil>","source":"default"}},"snapshot":null,"type":"key"}`: &KeyLine{
+		// Final source compared with the last event; snapshot null forces source; update implied.
+		`{"case":"k","events":[{"seq":1,"source":"remote-config","value":8131}],"key":"x","reads":{"final":{"getters":[],"go_type":"<nil>","source":"default"},"snapshot":{"getters":[{"getter":"Get","result":null}],"go_type":"<nil>","source":"default"}},"snapshot":null,"type":"key"}`: &KeyLine{
 			Case: "k", Key: "x",
 			Events: []Event{
 				{Setting: Setting{Source: "remote-config", Value: json.RawMessage(`8131`)}, Seq: 1, Update: 0},
@@ -105,6 +105,11 @@ func TestLineDetails(t *testing.T) {
 			SnapshotRead: Read{Getters: []GetterResult{{Getter: "Get", Result: mustResult(t, nil)}}, GoType: "<nil>", Source: "default"},
 			FinalRead:    &Read{GoType: "<nil>", Source: "default"},
 		},
+	}
+	for _, l := range lines {
+		if k, ok := l.(*KeyLine); ok {
+			k.BindCase([]Update{{Op: "set", Key: "x", Source: "remote-config"}})
+		}
 	}
 	for want, l := range lines {
 		got, err := MarshalLine(l)
@@ -130,7 +135,7 @@ func TestValidate(t *testing.T) {
 		{"neither origin nor startup_error", &CaseLine{Inputs: c}, ErrRecordOrigin},
 		{"features on startup failure", &CaseLine{Inputs: c, StartupError: strp("boom"), Features: &features}, ErrRecordStartupFailure},
 		{"containerized on startup failure", &CaseLine{Inputs: c, StartupError: strp("boom"), Containerized: &yes}, ErrRecordStartupFailure},
-		{"timed_out with seq_delta 0", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{Index: 0, SeqDelta: 0, TimedOut: true}}}, ErrRecordTimedOut},
+		{"timed_out with seq_delta 0", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{SeqDelta: 0, TimedOut: true}}}, ErrRecordTimedOut},
 		{"side effects unsorted", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), SideEffects: []SideEffect{{Key: "b"}, {Key: "a"}}}, ErrRecordSideEffects},
 		{"construction warning bad level", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), ConstructionWarnings: []Warning{{Level: "WARN+1", Message: "boom"}}}, ErrWarningLevel},
 		{"getter warning bad level", &KeyLine{Case: "a", Key: "x", SnapshotRead: Read{Getters: []GetterResult{{Getter: "Get", Warnings: []Warning{{Level: "WARN+1", Message: "boom"}}}}}}, ErrWarningLevel},
@@ -150,7 +155,7 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
-	ok := &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{Index: 0, SeqDelta: 1, TimedOut: true}}}
+	ok := &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{SeqDelta: 1, TimedOut: true}}}
 	if err := ok.Validate(); err != nil {
 		t.Errorf("timed_out with seq_delta 1: %v", err)
 	}

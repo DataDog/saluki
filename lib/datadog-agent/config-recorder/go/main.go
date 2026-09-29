@@ -9,7 +9,8 @@
 // Subcommands:
 //
 //	run-case  runs one case in this process and writes an internal result file
-//	drive     runs a baseline and every case in a directory, each in its own process
+//	drive     runs a baseline and every case in one or more directories, each in its own process
+//	generate  writes the generated case files
 //	probe     reports getter selection over every schema leaf
 package main
 
@@ -24,7 +25,7 @@ var errUsage = errors.New("usage")
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: config-recorder run-case|drive|probe [flags]")
+		fmt.Fprintln(os.Stderr, "usage: config-recorder run-case|drive|generate|probe [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -33,6 +34,8 @@ func main() {
 		err = runCaseMain(os.Args[2:])
 	case "drive":
 		err = driveMain(os.Args[2:])
+	case "generate":
+		err = generateMain(os.Args[2:])
 	case "probe":
 		err = probeMain(os.Args[2:])
 	default:

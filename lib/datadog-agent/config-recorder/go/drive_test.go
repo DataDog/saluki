@@ -7,6 +7,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -46,5 +48,41 @@ func TestParseDriveFlags(t *testing.T) {
 		if _, err := parseDriveFlags(args); !errors.Is(err, errUsage) {
 			t.Errorf("%s: got %v, want a usage error", name, err)
 		}
+	}
+}
+
+func TestLoadCasesAcrossDirectories(t *testing.T) {
+	write := func(dir, name string) {
+		body := "name: " + name + "\ngroup: baseline\nkeys: [a]\n"
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := t.TempDir(), t.TempDir()
+	write(a, "one")
+	write(b, "two")
+	cases, files, err := loadCases([]string{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 2 || cases[0].Name != "one" || cases[1].Name != "two" || len(files) != 2 {
+		t.Fatalf("got %d cases, %v", len(cases), files)
+	}
+	write(b, "one")
+	if _, _, err := loadCases([]string{a, b}); !errors.Is(err, errUsage) {
+		t.Fatalf("duplicate name: got %v, want a usage error", err)
+	}
+}
+
+func TestParseDriveFlagsRepeatedCases(t *testing.T) {
+	f, err := parseDriveFlags([]string{"--cases", "c1", "--cases", "c2", "--workdir", "w", "--out", "o", "--schema", "s",
+		"--agent-commit", "281d921619d52ce7b99aef40607285992c9c2e89",
+		"--container-image", "golang@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1",
+		"--inputs-digest", "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.casesDirs) != 2 || f.casesDirs[0] != "c1" || f.casesDirs[1] != "c2" {
+		t.Fatalf("got %v", f.casesDirs)
 	}
 }

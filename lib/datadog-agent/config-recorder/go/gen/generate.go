@@ -1,0 +1,470 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License Version 2.0.
+// This product includes software developed at Datadog (https://www.datadoghq.com/).
+// Copyright 2026-present Datadog, Inc.
+
+package gen
+
+import (
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Fixed names for the unknown group's unknown keys.
+const (
+	unknownName   = "config_recorder_unknown"
+	unknownEnvVar = "DD_CONFIG_RECORDER_UNKNOWN"
+	// setSource is the layer a breadth case's `set` updates write.
+	setSource = "agent-runtime"
+)
+
+// Case is one generated case, in the case-file fields it uses.
+type Case struct {
+	Name    string            `yaml:"name"`
+	Group   string            `yaml:"group"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	YAML    string            `yaml:"yaml,omitempty"`
+	Updates []Update          `yaml:"updates,omitempty"`
+	Keys    []string          `yaml:"keys"`
+}
+
+// Update is one `set` update of a generated case.
+type Update struct {
+	Key    string      `yaml:"key"`
+	Value  interface{} `yaml:"value"`
+	Source string      `yaml:"source"`
+}
+
+// Marshal renders the case as a case file.
+func (c *Case) Marshal() ([]byte, error) { return yaml.Marshal(c) }
+
+// Skip is a key left out of one source of a group, with the reason.
+type Skip struct {
+	Group, Source, Key, Reason string
+}
+
+// Result is every generated case, sorted by name, and the keys skipped.
+type Result struct {
+	Cases   []*Case
+	Skipped []Skip
+}
+
+var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// sanitize maps s to the case-name alphabet: lowercase, and every character outside [a-z0-9]
+// becomes `-`.
+func sanitize(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
+// splitThreshold is the most keys a top-level section's batch holds before it is split by its
+// second path component (case.md §3.2).
+const splitThreshold = 40
+
+// section is the key's top-level batch: its first path component, sanitized, for a key with a
+// dot; for a top-level leaf (a key with no dot), `top-<c>` where `<c>` is the key's first
+// character, sanitized (case.md §3.2).
+func section(key string) string {
+	first, _, found := strings.Cut(key, ".")
+	if !found {
+		r, _ := utf8.DecodeRuneInString(first)
+		return "top-" + sanitize(string(r))
+	}
+	return sanitize(first)
+}
+
+// subSection is the batch of a key in a split section: `<section>` for the section's direct
+// leaves, `<section>-<sub>` for a key under the sub-section `<sub>`.
+func subSection(key string) string {
+	parts := strings.SplitN(key, ".", 3)
+	if len(parts) < 3 {
+		return section(key)
+	}
+	return section(key) + "-" + sanitize(parts[1])
+}
+
+// rawSection is the unsanitized path prefix that section(key) derives its batch name from: the
+// raw first path component for a key with a dot, or the raw first character for a top-level
+// leaf.
+func rawSection(key string) string {
+	first, _, found := strings.Cut(key, ".")
+	if !found {
+		r, _ := utf8.DecodeRuneInString(first)
+		return string(r)
+	}
+	return first
+}
+
+// rawSubSection is the unsanitized path prefix that subSection(key) derives its batch name from:
+// the raw first two path components, joined by ".", for a key under a sub-section; rawSection's
+// prefix for a section's direct leaf.
+func rawSubSection(key string) string {
+	parts := strings.SplitN(key, ".", 3)
+	if len(parts) < 3 {
+		return rawSection(key)
+	}
+	return parts[0] + "." + parts[1]
+}
+
+// batch splits keys by top-level section; a section with more than splitThreshold keys, other
+// than a `top-<c>` batch, is split once more by subSection. A batch name depends only on the key
+// paths. It returns each batch's name suffix and keys, both in byte order.
+//
+// Batch names are keyed only by their sanitized form, so two different raw prefixes that sanitize
+// alike (case.md §3.2), or a sub-section split name that equals another section's name, would
+// otherwise merge silently. batch tracks the raw prefix behind each name and fails if a name is
+// reached by two different raw prefixes.
+func batch(keys []string) ([]string, [][]string, error) {
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	bySection := map[string][]string{}
+	sectionRaw := map[string]string{}
+	for _, k := range sorted {
+		name := section(k)
+		raw := rawSection(k)
+		if prev, ok := sectionRaw[name]; ok && prev != raw {
+			return nil, nil, fmt.Errorf("batch name %q is reached by two different raw prefixes: %q and %q", name, prev, raw)
+		}
+		sectionRaw[name] = raw
+		bySection[name] = append(bySection[name], k)
+	}
+	byName := map[string][]string{}
+	nameRaw := map[string]string{}
+	for s, ks := range bySection {
+		if len(ks) <= splitThreshold || strings.HasPrefix(s, "top-") {
+			if prev, ok := nameRaw[s]; ok && prev != sectionRaw[s] {
+				return nil, nil, fmt.Errorf("batch name %q is reached by two different raw prefixes: %q and %q", s, prev, sectionRaw[s])
+			}
+			nameRaw[s] = sectionRaw[s]
+			byName[s] = append(byName[s], ks...)
+			continue
+		}
+		for _, k := range ks {
+			subName := subSection(k)
+			raw := rawSubSection(k)
+			if prev, ok := nameRaw[subName]; ok && prev != raw {
+				return nil, nil, fmt.Errorf("batch name %q is reached by two different raw prefixes: %q and %q", subName, prev, raw)
+			}
+			nameRaw[subName] = raw
+			byName[subName] = append(byName[subName], k)
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for n := range byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([][]string, len(names))
+	for i, n := range names {
+		out[i] = byName[n]
+		sort.Strings(out[i])
+	}
+	return names, out, nil
+}
+
+type generator struct {
+	schema Schema
+	facts  *AgentFacts
+	res    Result
+	names  map[string]bool
+}
+
+func (g *generator) add(c *Case) error {
+	if !namePattern.MatchString(c.Name) {
+		return fmt.Errorf("generated case name %q does not match %s", c.Name, namePattern)
+	}
+	if g.names[c.Name] {
+		return fmt.Errorf("generated case name %q is used twice", c.Name)
+	}
+	g.names[c.Name] = true
+	g.res.Cases = append(g.res.Cases, c)
+	return nil
+}
+
+// envName is the key's env var: none for a `no-env` key; otherwise the first of the schema's
+// `env_vars`, or, when it lists none, the name the Agent derives (`DD_` and the key uppercased,
+// `.` as `_`). The name must be one the Agent bound; if not, the generator's reading of the
+// schema disagrees with the Agent, a harness failure.
+func (g *generator) envName(s *Setting) (string, bool, error) {
+	if s.NoEnv {
+		return "", false, nil
+	}
+	name := "DD_" + strings.ToUpper(strings.ReplaceAll(s.Key, ".", "_"))
+	if len(s.EnvVars) > 0 {
+		name = s.EnvVars[0]
+	}
+	if !g.facts.EnvVars[name] {
+		return "", false, fmt.Errorf("key %q: env var %s is not in the Agent's GetEnvVars()", s.Key, name)
+	}
+	return name, true, nil
+}
+
+// yamlText writes the dotted keys' values as nested YAML mappings.
+func yamlText(values map[string]interface{}) (string, error) {
+	root := map[string]interface{}{}
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts := strings.Split(k, ".")
+		m := root
+		for _, p := range parts[:len(parts)-1] {
+			next, ok := m[p].(map[string]interface{})
+			if !ok {
+				if _, taken := m[p]; taken {
+					return "", fmt.Errorf("yaml: %q is both a value and a mapping", p)
+				}
+				next = map[string]interface{}{}
+				m[p] = next
+			}
+			m = next
+		}
+		if _, taken := m[parts[len(parts)-1]]; taken {
+			return "", fmt.Errorf("yaml: key %q is written twice", k)
+		}
+		m[parts[len(parts)-1]] = values[k]
+	}
+	b, err := yaml.Marshal(root)
+	return string(b), err
+}
+
+// envAndYAML adds a group's env and YAML cases for schema keys; withSet adds the breadth case's
+// `set` updates to the YAML cases.
+func (g *generator) envAndYAML(group string, keys []string, withSet bool) error {
+	var envKeys []string
+	for _, k := range keys {
+		_, ok, err := g.envName(g.schema[k])
+		if err != nil {
+			return err
+		}
+		if ok {
+			envKeys = append(envKeys, k)
+		} else {
+			g.res.Skipped = append(g.res.Skipped, Skip{group, "env", k, "no env binding (no-env)"})
+		}
+	}
+	names, batches, err := batch(envKeys)
+	if err != nil {
+		return err
+	}
+	for i, ks := range batches {
+		c := &Case{Name: group + "-env-" + names[i], Group: group, Env: map[string]string{}, Keys: ks}
+		for _, k := range ks {
+			s := g.schema[k]
+			v, err := ValuesFor(s)
+			if err != nil {
+				return err
+			}
+			name, _, _ := g.envName(s)
+			text, err := EnvText(s, v.Input)
+			if err != nil {
+				return err
+			}
+			if _, dup := c.Env[name]; dup {
+				return fmt.Errorf("case %q: env var %s is bound by two keys", c.Name, name)
+			}
+			c.Env[name] = text
+		}
+		if err := g.add(c); err != nil {
+			return err
+		}
+	}
+	names, batches, err = batch(keys)
+	if err != nil {
+		return err
+	}
+	for i, ks := range batches {
+		c := &Case{Name: group + "-yaml-" + names[i], Group: group, Keys: ks}
+		values := map[string]interface{}{}
+		for _, k := range ks {
+			v, err := ValuesFor(g.schema[k])
+			if err != nil {
+				return err
+			}
+			values[k] = v.Input
+			if withSet {
+				c.Updates = append(c.Updates, Update{Key: k, Value: v.Set, Source: setSource})
+			}
+		}
+		text, err := yamlText(values)
+		if err != nil {
+			return fmt.Errorf("case %q: %w", c.Name, err)
+		}
+		c.YAML = text
+		if err := g.add(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Generate writes the generated groups `baseline`, `breadth`, `unsupported`, `excluded` and
+// `unknown`, batched by section (case.md §3.2). Overlay keys that are not schema keys are in no
+// generated group; a key the overlay both inventories and excludes is an error.
+func Generate(schema Schema, overlay *Overlay, facts *AgentFacts) (*Result, error) {
+	g := &generator{schema: schema, facts: facts, names: map[string]bool{}}
+	var both []string
+	for k := range overlay.Support {
+		if overlay.Excluded[k] {
+			both = append(both, k)
+		}
+	}
+	if len(both) > 0 {
+		sort.Strings(both)
+		return nil, fmt.Errorf("overlay keys are both inventoried and excluded; each must be one or the other: %s",
+			strings.Join(both, ", "))
+	}
+	var modeled, unsupported []string
+	for k, sup := range overlay.Support {
+		if _, ok := schema[k]; !ok {
+			continue
+		}
+		switch sup {
+		case "full", "partial":
+			modeled = append(modeled, k)
+		default:
+			unsupported = append(unsupported, k)
+		}
+	}
+	sort.Strings(modeled)
+	sort.Strings(unsupported)
+
+	// baseline: every modeled key in one case, with no inputs.
+	if err := g.add(&Case{Name: "baseline-default", Group: "baseline", Keys: modeled}); err != nil {
+		return nil, err
+	}
+	if err := g.envAndYAML("breadth", modeled, true); err != nil {
+		return nil, err
+	}
+	if err := g.envAndYAML("unsupported", unsupported, false); err != nil {
+		return nil, err
+	}
+
+	// excluded: per default-layer Go type, the byte-first excluded schema key.
+	firstByType := map[string]string{}
+	for _, k := range schema.Keys() {
+		if !overlay.Excluded[k] {
+			continue
+		}
+		t, ok := facts.DefaultType[k]
+		if !ok {
+			return nil, fmt.Errorf("key %q: no default-layer type from the Agent", k)
+		}
+		if _, seen := firstByType[t]; !seen {
+			firstByType[t] = k
+		}
+	}
+	var excluded []string
+	for _, k := range firstByType {
+		excluded = append(excluded, k)
+	}
+	sort.Strings(excluded)
+	if err := g.envAndYAML("excluded", excluded, false); err != nil {
+		return nil, err
+	}
+
+	if err := g.unknownGroup(modeled); err != nil {
+		return nil, err
+	}
+	sort.Slice(g.res.Cases, func(i, j int) bool { return g.res.Cases[i].Name < g.res.Cases[j].Name })
+	return &g.res, nil
+}
+
+// unknownGroup adds the `unknown` cases (case.md §3.3): in YAML, an unknown top-level key, an unknown key under the byte-first modeled section, and the byte-first
+// deprecated name of a modeled key; by env, an unknown DD_* variable and that deprecated name.
+// Unknown keys take the string rule's value, since the schema gives them no type.
+func (g *generator) unknownGroup(modeled []string) error {
+	yamlValues := map[string]interface{}{}
+	yamlValues[unknownName] = "cr-a"
+	for _, k := range modeled {
+		if strings.Contains(k, ".") {
+			first, _, _ := strings.Cut(k, ".")
+			yamlValues[first+"."+unknownName] = "cr-a"
+			break
+		}
+	}
+	envKeys := map[string]string{unknownName: unknownEnvVar}
+	envValues := map[string]string{unknownName: "cr-a"}
+
+	var deprecated, owner string
+	for _, k := range modeled {
+		for _, old := range g.schema[k].RenamedFrom {
+			if deprecated == "" || old < deprecated {
+				deprecated, owner = old, k
+			}
+		}
+	}
+	if deprecated != "" {
+		s := g.schema[owner]
+		v, err := ValuesFor(s)
+		if err != nil {
+			return err
+		}
+		yamlValues[deprecated] = v.Input
+		name := "DD_" + strings.ToUpper(strings.ReplaceAll(deprecated, ".", "_"))
+		if !g.facts.EnvVars[name] {
+			return fmt.Errorf("deprecated name %q of %q: env var %s is not in the Agent's GetEnvVars()", deprecated, owner, name)
+		}
+		text, err := EnvText(s, v.Input)
+		if err != nil {
+			return err
+		}
+		envKeys[deprecated] = name
+		envValues[deprecated] = text
+	}
+
+	keys := make([]string, 0, len(yamlValues))
+	for k := range yamlValues {
+		keys = append(keys, k)
+	}
+	names, batches, err := batch(keys)
+	if err != nil {
+		return err
+	}
+	for i, ks := range batches {
+		sub := map[string]interface{}{}
+		for _, k := range ks {
+			sub[k] = yamlValues[k]
+		}
+		text, err := yamlText(sub)
+		if err != nil {
+			return err
+		}
+		if err := g.add(&Case{Name: "unknown-yaml-" + names[i], Group: "unknown", YAML: text, Keys: ks}); err != nil {
+			return err
+		}
+	}
+	keys = keys[:0]
+	for k := range envKeys {
+		keys = append(keys, k)
+	}
+	names, batches, err = batch(keys)
+	if err != nil {
+		return err
+	}
+	for i, ks := range batches {
+		c := &Case{Name: "unknown-env-" + names[i], Group: "unknown", Env: map[string]string{}, Keys: ks}
+		for _, k := range ks {
+			c.Env[envKeys[k]] = envValues[k]
+		}
+		if err := g.add(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
