@@ -1,0 +1,6 @@
+name: docker-dd-agent-env-only
+group: behavior
+why: [env-detection-outside-config]
+env:
+  DOCKER_DD_AGENT: "true"
+keys: [procfs_path]

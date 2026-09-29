@@ -1,0 +1,11 @@
+name: getter-parses-raw-strings
+group: behavior
+why: [cast-int-string-base-prefix, getter-duration-bare-number-is-nanoseconds]
+yaml: |
+  unknown_bare_duration_xyz: "10"
+  unknown_hex_xyz: "0x10"
+  unknown_unit_duration_xyz: "10s"
+keys:
+  - {key: unknown_bare_duration_xyz, getters: [GetDuration]}
+  - {key: unknown_hex_xyz, getters: [GetInt, GetInt64]}
+  - {key: unknown_unit_duration_xyz, getters: [GetDuration]}

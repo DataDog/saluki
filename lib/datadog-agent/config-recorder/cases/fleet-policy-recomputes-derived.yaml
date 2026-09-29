@@ -1,0 +1,6 @@
+name: fleet-policy-recomputes-derived
+group: behavior
+why: [fleet-policy-merge-not-notified]
+fleet_policy: |
+  forwarder_stop_timeout: 6
+keys: [data_plane.stop_timeout, forwarder_stop_timeout]

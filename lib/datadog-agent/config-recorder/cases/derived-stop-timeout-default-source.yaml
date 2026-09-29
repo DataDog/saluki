@@ -1,0 +1,8 @@
+name: derived-stop-timeout-default-source
+group: behavior
+why: [derived-value-written-with-source-default]
+yaml: |
+  aggregator_stop_timeout: 7
+updates:
+  - {key: forwarder_stop_timeout, value: 9, source: remote-config}
+keys: [aggregator_stop_timeout, data_plane.stop_timeout, forwarder_stop_timeout]
