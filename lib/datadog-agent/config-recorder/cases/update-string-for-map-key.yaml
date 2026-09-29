@@ -1,0 +1,7 @@
+name: update-string-for-map-key
+group: behavior
+why: [config-set-api-string-under-cli]
+updates:
+  - {key: additional_endpoints, value: '{"https://x.test": ["k"]}', source: cli}
+keys:
+  - {key: additional_endpoints, getters: [Get, GetStringMapStringSlice]}
