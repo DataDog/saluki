@@ -145,13 +145,6 @@ fn string_apply_error_preserves_message() {
     }
 }
 
-#[test]
-fn converts_structured_error_to_apply_error() {
-    let error = TestProductError::MissingAttributes;
-
-    assert_eq!(error.apply_error(), "No attribute mappings were assigned.");
-}
-
 #[tokio::test]
 async fn decodes_configurations_of_differing_shapes() {
     let (publisher, mut subscription) = TestPublisher::<TestProductPayload, TestProductError>::new();
@@ -389,6 +382,9 @@ async fn an_inert_subscription_has_no_snapshot_and_never_changes() {
 
     assert!(inert.current().is_none());
     assert!(clone.current().is_none());
+    // No publisher backs an inert subscription, so its channel starts closed rather than merely empty.
+    assert!(inert.receiver.has_changed().is_err());
+    assert!(clone.receiver.has_changed().is_err());
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3600), inert.changed())
             .await

@@ -719,7 +719,7 @@ async fn a_path_listed_twice_in_one_response_delivers_the_newest_bytes() {
         .await;
     next(&mut alpha).await.unwrap();
 
-    // Applying the second listing used to pair the new metadata with the cached bytes the first had replaced.
+    // The second listing's metadata must pair with its own bytes, not the ones the first listing had cached.
     let mut response = Response::new(11).send("employee/ALPHA/a/config", 2, b"two").build();
     response.client_configs.push("employee/ALPHA/a/config".to_owned());
     agent.exchange(response).await;
@@ -1687,98 +1687,6 @@ fn at(logs: &[(Level, String)], level: Level) -> Vec<&str> {
 const RPC_FAILED: &str = "Failed to poll the Agent for Remote Configuration.";
 const INVALID_RESPONSE: &str = "Discarded an invalid Remote Configuration response.";
 
-#[test]
-fn an_rpc_error_after_an_invalid_response_still_warns() {
-    let logs = logged(|| async {
-        let (client, worker, mut agent) = client();
-        let _alpha = client.subscribe::<Recorder>().unwrap();
-        tokio::spawn(worker.run());
-
-        agent.exchange(Response::new(10).build()).await;
-        let mut invalid = Response::new(11).build();
-        invalid.targets = b"{".to_vec();
-        agent.exchange(invalid).await;
-        agent.poll().await;
-        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
-        agent.poll().await;
-    });
-
-    assert_eq!(
-        at(&logs, Level::ERROR),
-        ["Discarded an invalid Remote Configuration response."]
-    );
-    assert_eq!(at(&logs, Level::WARN), [RPC_FAILED]);
-    assert!(!at(&logs, Level::DEBUG).contains(&RPC_FAILED));
-}
-
-#[test]
-fn a_changed_cause_with_the_same_outer_message_logs_at_error() {
-    let logs = logged(|| async {
-        let (client, worker, mut agent) = client();
-        let _alpha = client.subscribe::<Recorder>().unwrap();
-        tokio::spawn(worker.run());
-
-        // Both fail with the outer message "Targets metadata is malformed.", but from different underlying
-        // `serde_json` errors, so `to_string` alone would make the second look like a repeat of the first.
-        let mut truncated = Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build();
-        truncated.targets = b"{".to_vec();
-        let mut wrong_shape = Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build();
-        wrong_shape.targets = b"[]".to_vec();
-
-        agent.exchange(truncated).await;
-        agent.exchange(wrong_shape).await;
-        agent.poll().await;
-    });
-
-    assert_eq!(at(&logs, Level::ERROR), [INVALID_RESPONSE, INVALID_RESPONSE]);
-    assert!(at(&logs, Level::DEBUG).is_empty());
-}
-
-#[test]
-fn recovering_from_unimplemented_resets_the_repeat_check() {
-    let logs = logged(|| async {
-        let (client, worker, mut agent) = client();
-        let _alpha = client.subscribe::<Recorder>().unwrap();
-        tokio::spawn(worker.run());
-
-        let mut invalid = Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build();
-        invalid.targets = b"{".to_vec();
-
-        agent.exchange(invalid.clone()).await;
-        agent.poll().await;
-        agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
-        agent.exchange(invalid).await;
-        agent.poll().await;
-    });
-
-    // Without the fix, the second invalid response would log at debug: same outer message, and nothing else resets
-    // `invalid_response` between the two.
-    assert_eq!(at(&logs, Level::ERROR), [INVALID_RESPONSE, INVALID_RESPONSE]);
-    assert!(at(&logs, Level::DEBUG).is_empty());
-}
-
-#[test]
-fn an_unimplemented_answer_between_two_rpc_errors_still_warns_on_the_second() {
-    let logs = logged(|| async {
-        let (client, worker, mut agent) = client();
-        let _alpha = client.subscribe::<Recorder>().unwrap();
-        tokio::spawn(worker.run());
-
-        agent.poll().await;
-        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
-        agent.poll().await;
-        agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
-        agent.poll().await;
-        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
-        agent.poll().await;
-    });
-
-    // Without the fix, the third outcome (an RPC error again) would log at debug: nothing but a successful poll
-    // reset `rpc_failing` between the two RPC errors, and the `Unimplemented` answer in between was not a success.
-    assert_eq!(at(&logs, Level::WARN), [RPC_FAILED, RPC_FAILED]);
-    assert!(!at(&logs, Level::DEBUG).contains(&RPC_FAILED));
-}
-
 /// One poll's outcome in [`a_failure_logs_at_debug_only_when_it_repeats_the_last_one`].
 #[derive(Clone, Copy, Debug)]
 enum Outcome {
@@ -1788,6 +1696,8 @@ enum Outcome {
     /// depends on the targets.
     Invalid(&'static [u8]),
     Unimplemented,
+    /// A response the Agent marks expired, which is a success rather than a failure.
+    Expired,
 }
 
 const X: Outcome = Outcome::Invalid(b"{");
@@ -1795,6 +1705,7 @@ const Y: Outcome = Outcome::Invalid(b"[]");
 const RPC: Outcome = Outcome::Rpc("unavailable");
 const UNIMPLEMENTED: Outcome = Outcome::Unimplemented;
 const SUCCESS: Outcome = Outcome::Success;
+const EXPIRED: Outcome = Outcome::Expired;
 
 const NOT_ENABLED: &str = "Remote Configuration is not enabled on the Agent; checking again periodically.";
 const RESUMED: &str = "Remote Configuration is enabled on the Agent; polling resumed.";
@@ -1820,6 +1731,9 @@ fn a_failure_logs_at_debug_only_when_it_repeats_the_last_one() {
         (&[X, SUCCESS, X], &[(L::ERROR, INVALID_RESPONSE), (L::INFO, RECOVERED), (L::ERROR, INVALID_RESPONSE)]),
         (&[RPC, SUCCESS, RPC], &[(L::WARN, RPC_FAILED), (L::INFO, RECOVERED), (L::WARN, RPC_FAILED)]),
         (&[UNIMPLEMENTED, RPC, SUCCESS], &[(L::INFO, NOT_ENABLED), (L::WARN, RPC_FAILED), (L::INFO, RESUMED)]),
+        // An expired response is a success, so it clears the failure it follows just as an accepted one does.
+        (&[X, EXPIRED, X], &[(L::ERROR, INVALID_RESPONSE), (L::INFO, RECOVERED), (L::ERROR, INVALID_RESPONSE)]),
+        (&[RPC, EXPIRED, RPC], &[(L::WARN, RPC_FAILED), (L::INFO, RECOVERED), (L::WARN, RPC_FAILED)]),
     ];
 
     let mut mismatches = Vec::new();
@@ -1846,6 +1760,9 @@ fn a_failure_logs_at_debug_only_when_it_repeats_the_last_one() {
                     Outcome::Unimplemented => {
                         agent.poll().await;
                         agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
+                    }
+                    Outcome::Expired => {
+                        agent.exchange(Response::new(10).expired().build()).await;
                     }
                 }
             }
