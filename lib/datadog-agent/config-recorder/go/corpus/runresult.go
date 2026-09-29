@@ -121,14 +121,9 @@ func CheckCaseRecord(c *CaseLine, keys []KeyLine) error {
 		if (k.FinalRead != nil) != hasUpdates {
 			return fmt.Errorf("%w: key %q", ErrRecordFinalRead, k.Key)
 		}
+		k.BindCase(c.Inputs.Updates)
 		if err := k.Validate(); err != nil {
 			return err
-		}
-		for j := range k.Events {
-			e := &k.Events[j]
-			if e.Update < 0 || e.Update >= len(c.Updates) {
-				return fmt.Errorf("%w: key %q, event %d names update %d", ErrRecordEventIndex, k.Key, j, e.Update)
-			}
 		}
 	}
 	return nil

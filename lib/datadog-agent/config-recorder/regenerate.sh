@@ -22,6 +22,8 @@ STATE_DIR="$REPO_ROOT/target/config-recorder"
 AGENT_DIR="$STATE_DIR/datadog-agent"
 OUT_DIR="$STATE_DIR/out"
 SCHEMA_FILE="$STATE_DIR/core_schema.merged.yaml"
+GENERATED_DIR="$STATE_DIR/generated-cases"
+OVERLAY_FILE="$REPO_ROOT/lib/datadog-agent/config/schema/schema_overlay.yaml"
 CORPUS="$RECORDER_DIR/corpus.jsonl"
 
 # Paths inside the containers. Both containers see the checkout and the schema at the same paths.
@@ -157,10 +159,11 @@ docker run --rm --platform "$PLATFORM" \
     ' "$REQUESTS_PIN" "$C_SCHEMA"
 [ -s "$SCHEMA_FILE" ] || die "schema merge did not write $SCHEMA_FILE"
 
-# 5. Build, check, test and run the recorder over the cases.
+# 5. Build, check, test and run the recorder over the hand-written and generated cases. The
+# overlay is read only to choose the generated cases' keys; it is not a digest input.
 step "checking, testing, building and running the recorder"
-rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR"
+rm -rf "$OUT_DIR" "$GENERATED_DIR"
+mkdir -p "$OUT_DIR" "$GENERATED_DIR"
 # The checkout is mounted read-only, but Go in workspace mode must write go.work.sum (gitignored,
 # absent at the pin). Create it on the host so the mountpoint exists, and bind it read-write.
 [ -f "$AGENT_DIR/go.work.sum" ] || : > "$AGENT_DIR/go.work.sum"
@@ -173,6 +176,8 @@ run_go_step() {
         "${CHECKOUT_MOUNTS[@]}" \
         -v "$SCHEMA_FILE":"$C_SCHEMA":ro \
         -v "$RECORDER_DIR/cases":/cases:ro \
+        -v "$OVERLAY_FILE":/overlay.yaml:ro \
+        -v "$GENERATED_DIR":/generated \
         -v "$OUT_DIR":/out \
         -v "$GOMOD_VOLUME":/go/pkg/mod \
         -v "$GOBUILD_VOLUME":/tmp/go-build-cache \
@@ -205,8 +210,10 @@ run_go_step() {
             go test -count=1 ./cmd/config-recorder/...
             echo "[*] go build"
             go build -o /tmp/config-recorder ./cmd/config-recorder
+            echo "[*] generate"
+            /tmp/config-recorder generate --schema "$0" --overlay /overlay.yaml --out /generated
             echo "[*] drive"
-            /tmp/config-recorder drive --schema "$0" --cases /cases --workdir /tmp/w --out /out/corpus.jsonl \
+            /tmp/config-recorder drive --schema "$0" --cases /cases --cases /generated --workdir /tmp/w --out /out/corpus.jsonl \
                 --agent-commit "$1" --container-image "$2" --inputs-digest "$3"
         ' "$C_SCHEMA" "$AGENT_COMMIT" "$GO_IMAGE" "$INPUTS_DIGEST"
 }

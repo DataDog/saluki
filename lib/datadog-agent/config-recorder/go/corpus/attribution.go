@@ -84,15 +84,13 @@ type StreamEvent struct {
 type Attribution struct {
 	// KeyEvents holds, per recorded key in `keys` order, the events carrying it in arrival order.
 	KeyEvents [][]Event
-	// UpdateEvents holds, per update, how many stream events are attributed to it.
-	UpdateEvents []int
 }
 
 // Attribute attributes each event, in arrival order, to the update whose range holds its
 // sequence ID. An event whose sequence ID is in no update's range is ErrAttribution; an event
 // whose key is not one of keys is ErrOrphanEvent (record.md §4.2). Both are harness failures.
 func Attribute(keys []string, ranges []UpdateRange, events []StreamEvent) (*Attribution, error) {
-	a := &Attribution{KeyEvents: make([][]Event, len(keys)), UpdateEvents: make([]int, len(ranges))}
+	a := &Attribution{KeyEvents: make([][]Event, len(keys))}
 	for n, ev := range events {
 		update := -1
 		for i, r := range ranges {
@@ -104,12 +102,11 @@ func Attribute(keys []string, ranges []UpdateRange, events []StreamEvent) (*Attr
 		if update < 0 {
 			return nil, fmt.Errorf("%w: event %d has seq %d; ranges %s", ErrAttribution, n, ev.Seq, describeRanges(ranges))
 		}
-		a.UpdateEvents[update]++
 		found := false
 		for k, key := range keys {
 			if key == ev.Key {
 				found = true
-				a.KeyEvents[k] = append(a.KeyEvents[k], Event{Setting: ev.Setting, Seq: ev.Seq, Update: update})
+				a.KeyEvents[k] = append(a.KeyEvents[k], Event{Setting: ev.Setting, Seq: ev.Seq - ranges[update].Before, Update: update})
 			}
 		}
 		if !found {

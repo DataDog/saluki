@@ -7,6 +7,7 @@ package corpus
 
 import (
 	"log/slog"
+	"sort"
 	"strings"
 )
 
@@ -92,4 +93,19 @@ func FilterWarnings(ws []Warning, names []string) []Warning {
 		}
 	}
 	return out
+}
+
+// SortConstructionWarnings orders construction_warnings by message then level, in byte order,
+// keeping duplicates (record.md §7): the Agent emits some of them while iterating a Go map
+// (unknown YAML keys, env bindings), so their emission order is not stable across runs. It does
+// not mutate ws. Getter-call and update warnings keep emission order and must not be sorted.
+func SortConstructionWarnings(ws []Warning) []Warning {
+	sorted := append([]Warning(nil), ws...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Message != sorted[j].Message {
+			return sorted[i].Message < sorted[j].Message
+		}
+		return sorted[i].Level < sorted[j].Level
+	})
+	return sorted
 }
