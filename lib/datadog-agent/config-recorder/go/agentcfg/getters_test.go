@@ -6,12 +6,14 @@
 package agentcfg
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/DataDog/datadog-agent/pkg/config/model"
+	"github.com/DataDog/datadog-agent/pkg/config/nodetreemodel"
 
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
@@ -113,6 +115,120 @@ func TestCallGetterHandlesGetterNames(t *testing.T) {
 		if _, err := CallGetter(cfg, name, "some.key"); !errors.Is(err, ErrGetterName) {
 			t.Errorf("CallGetter handled unlisted name %s: %v", name, err)
 		}
+	}
+}
+
+// sectionReader is a stubReader holding one section's stored value, with the given leaves
+// configured and the given sections declared, as the Agent's IsConfigured and HasSection report.
+type sectionReader struct {
+	stubReader
+	section    string
+	value      map[string]interface{}
+	configured map[string]bool
+	declared   map[string]bool
+}
+
+func (r sectionReader) Get(key string) interface{} {
+	if key == r.section {
+		return r.value
+	}
+	return nil
+}
+func (r sectionReader) IsConfigured(key string) bool { return r.configured[key] }
+func (r sectionReader) HasSection(key string) bool   { return r.declared[key] }
+
+// TestCallGetterReadConfigSection checks that the section read keeps configured leaves and
+// declared sections, drops defaults, and returns the nested map.
+func TestCallGetterReadConfigSection(t *testing.T) {
+	cfg := sectionReader{
+		section: "otlp_config.receiver",
+		value: map[string]interface{}{
+			"protocols": map[string]interface{}{
+				"grpc": map[string]interface{}{"endpoint": "0.0.0.0:4417", "transport": "tcp"},
+				"http": map[string]interface{}{"endpoint": "0.0.0.0:4318"},
+			},
+		},
+		configured: map[string]bool{"otlp_config.receiver.protocols.grpc.endpoint": true},
+		declared:   map[string]bool{"otlp_config.receiver.protocols.http": true},
+	}
+	got, err := CallGetter(cfg, "ReadConfigSection", "otlp_config.receiver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{
+		"protocols": map[string]interface{}{
+			"grpc": map[string]interface{}{"endpoint": "0.0.0.0:4417"},
+			"http": nil,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v; want %#v", got, want)
+	}
+	if _, err := record.EncodeResult(got); err != nil {
+		t.Errorf("encode: %v", err)
+	}
+}
+
+// TestCallGetterIsConfigured checks IsConfigured against a real Agent config (not a stub), since
+// getter-map.md §2.1 records the Agent's own answer rather than a rule saluki re-derives: a key
+// set by the user to its default value, a key the user declared with a YAML null value, a section
+// with one configured child, and an untouched key.
+//
+// The first attempt set null_value with Set(key, nil, ...) instead of through YAML: the Agent
+// converts that nil to the default's zero value (here ""), which is non-nil, so IsConfigured came
+// back true. Reading real YAML with an empty scalar (as TestCompareEmptyLeafSetting in
+// nodetreemodel/compatibility_test.go does) is what actually stores a nil leaf value.
+func TestCallGetterIsConfigured(t *testing.T) {
+	cfg := nodetreemodel.NewNodeTreeConfig("test-is-configured", "TEST_IS_CONFIGURED", nil)
+	cfg.SetDefault("default_value", "x")
+	cfg.SetDefault("null_value", "x")
+	cfg.SetDefault("section.configured_child", "x")
+	cfg.SetDefault("section.other_child", "x")
+	cfg.SetDefault("untouched", "x")
+	cfg.BuildSchema()
+
+	cfg.SetConfigType("yaml")
+	yamlInput := "default_value: x\nnull_value:\nsection:\n  configured_child: y\n"
+	if err := cfg.ReadConfig(bytes.NewBufferString(yamlInput)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]bool{
+		"default_value": true,
+		"null_value":    false,
+		"section":       true,
+		"untouched":     false,
+	}
+	for key, w := range want {
+		got, err := CallGetter(cfg, "IsConfigured", key)
+		if err != nil {
+			t.Fatalf("IsConfigured(%q): %v", key, err)
+		}
+		if got != w {
+			t.Errorf("IsConfigured(%q) = %v, want %v", key, got, w)
+		}
+	}
+}
+
+// TestCallGetterReadConfigSectionEmpty checks that a section with no configured leaves and no
+// declared child sections reads back as {}, and that the harness's own non-map check accepts it
+// (an empty map is still a map).
+func TestCallGetterReadConfigSectionEmpty(t *testing.T) {
+	cfg := sectionReader{
+		section:    "otlp_config.receiver",
+		value:      map[string]interface{}{"protocols": map[string]interface{}{}},
+		configured: map[string]bool{},
+		declared:   map[string]bool{},
+	}
+	got, err := CallGetter(cfg, "ReadConfigSection", "otlp_config.receiver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]interface{}{}; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v; want %#v", got, want)
+	}
+	if _, err := record.EncodeResult(got); err != nil {
+		t.Errorf("encode: %v", err)
 	}
 }
 
