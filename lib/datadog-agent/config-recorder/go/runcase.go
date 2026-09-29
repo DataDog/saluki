@@ -20,7 +20,9 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/config/model"
 	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/core"
 
-	"github.com/DataDog/datadog-agent/cmd/config-recorder/corpus"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/agentcfg"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 func runCaseMain(args []string) error {
@@ -37,17 +39,17 @@ func runCaseMain(args []string) error {
 		return fmt.Errorf("%w: run-case (--case <file> | --baseline) --workdir <dir> --result-out <file> --schema <file>", errUsage)
 	}
 
-	c := &corpus.Case{}
+	c := &record.Case{}
 	if !*baseline {
 		var err error
-		if c, err = corpus.ParseCaseFile(*casePath); err != nil {
+		if c, err = record.ParseCaseFile(*casePath); err != nil {
 			return err
 		}
 	}
 	if err := checkEnv(c.Env); err != nil {
 		return err
 	}
-	schema, err := corpus.LoadSchema(*schemaPath)
+	sch, err := schema.Load(*schemaPath)
 	if err != nil {
 		return err
 	}
@@ -59,11 +61,11 @@ func runCaseMain(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := runCase(c, params, capture, schema, *baseline)
+	result, err := runCase(c, params, capture, sch, *baseline)
 	if err != nil {
 		return err
 	}
-	return corpus.WriteRunResult(*resultOut, result)
+	return record.WriteRunResult(*resultOut, result)
 }
 
 // checkEnv checks that the process environment is exactly the case's env.
@@ -92,7 +94,7 @@ func checkEnv(want map[string]string) error {
 }
 
 // writeInputs writes the case's config files into workdir and returns the config params.
-func writeInputs(c *corpus.Case, workdir string) (config.Params, error) {
+func writeInputs(c *record.Case, workdir string) (config.Params, error) {
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return config.Params{}, err
 	}
@@ -130,22 +132,22 @@ const updateWait = 5 * time.Second
 // own key set (getter-map.md §1), and a construction error is a harness failure rather than a
 // startup_error (record.md §4.1): the baseline has no inputs to get wrong, so a construction
 // failure there means the harness itself is broken.
-func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema corpus.AgentSchema, baseline bool) (*corpus.RunResult, error) {
-	run := &corpus.CaseRun{}
+func runCase(c *record.Case, params config.Params, capture *logCapture, sch schema.Schema, baseline bool) (*record.RunResult, error) {
+	run := &record.CaseRun{}
 	err := withFirstSnapshot(params, func(sess *session) error {
 		cfg := sess.cfg
-		names := corpus.CaseWarningNames(c)
+		names := record.CaseWarningNames(c)
 		construction := capture.take()
-		run.ConstructionWarnings = corpus.FilterWarnings(construction, names)
+		run.ConstructionWarnings = record.FilterWarnings(construction, names)
 		if baseline {
-			if err := corpus.CheckSchemaKeys(schema, cfg); err != nil {
+			if err := agentcfg.CheckSchemaKeys(sch, cfg); err != nil {
 				return err
 			}
 		}
 		run.Origin = sess.snapshot.GetOrigin()
-		run.Snapshot = map[string]corpus.Setting{}
+		run.Snapshot = map[string]record.Setting{}
 		for _, s := range sess.snapshot.GetSettings() {
-			setting, err := corpus.SettingFromProto(s)
+			setting, err := agentcfg.SettingFromProto(s)
 			if err != nil {
 				return fmt.Errorf("key %q: %w", s.GetKey(), err)
 			}
@@ -157,7 +159,7 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 		}
 		sort.Strings(run.Features)
 
-		lists, err := getterLists(cfg, c.Keys, schema)
+		lists, err := getterLists(cfg, c.Keys, sch)
 		capture.take()
 		if err != nil {
 			return err
@@ -169,7 +171,7 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 			if err != nil {
 				return err
 			}
-			kl := corpus.KeyLine{Case: c.Name, Key: entry.Key, SnapshotRead: read}
+			kl := record.KeyLine{Case: c.Name, Key: entry.Key, SnapshotRead: read}
 			if s, ok := run.Snapshot[entry.Key]; ok {
 				kl.Snapshot = &s
 			}
@@ -182,14 +184,14 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 			if err != nil {
 				return err
 			}
-			return corpus.CheckSequenceEnd(final, nil)
+			return record.CheckSequenceEnd(final, nil)
 		}
 
 		ranges, events, err := applyUpdates(sess, c, capture, names, run)
 		if err != nil {
 			return err
 		}
-		attributed, err := corpus.Attribute(keys, ranges, events)
+		attributed, err := record.Attribute(keys, ranges, events)
 		if err != nil {
 			return err
 		}
@@ -205,7 +207,7 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 		if err != nil {
 			return err
 		}
-		return corpus.CheckSequenceEnd(final, ranges)
+		return record.CheckSequenceEnd(final, ranges)
 	})
 	var ce errConstruction
 	if errors.As(err, &ce) {
@@ -214,12 +216,12 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 			return nil, fmt.Errorf("baseline: config construction failed: %w", ce)
 		}
 		msg := ce.Error()
-		return &corpus.RunResult{StartupError: &msg}, nil
+		return &record.RunResult{StartupError: &msg}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &corpus.RunResult{Run: run}, nil
+	return &record.RunResult{Run: run}, nil
 }
 
 // applyUpdates applies the case's updates in order (case.md §5). For each it reads the sequence
@@ -227,17 +229,17 @@ func runCase(c *corpus.Case, params config.Params, capture *logCapture, schema c
 // sequence ID moved, receives events until one reaches the update's last sequence ID or the wait
 // times out (record.md §4.2). It returns each update's range and every event received during a
 // wait, in arrival order, for attribution.
-func applyUpdates(sess *session, c *corpus.Case, capture *logCapture, names []string, run *corpus.CaseRun) ([]corpus.UpdateRange, []corpus.StreamEvent, error) {
+func applyUpdates(sess *session, c *record.Case, capture *logCapture, names []string, run *record.CaseRun) ([]record.UpdateRange, []record.StreamEvent, error) {
 	cfg := sess.cfg
-	var events []corpus.StreamEvent
-	var ranges []corpus.UpdateRange
+	var events []record.StreamEvent
+	var ranges []record.UpdateRange
 	for i, u := range c.Updates {
 		before, err := relativeSeq(sess, cfg.GetSequenceID())
 		if err != nil {
 			return nil, nil, err
 		}
 		if i == 0 {
-			if err := corpus.CheckSequenceStart(before); err != nil {
+			if err := record.CheckSequenceStart(before); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -252,14 +254,14 @@ func applyUpdates(sess *session, c *corpus.Case, capture *logCapture, names []st
 		}
 		// The stream's notification callback runs inside Set and UnsetForSource, so its warnings
 		// land here; the stream goroutine's own warnings (resync) do not.
-		warnings := corpus.FilterWarnings(capture.take(), names)
+		warnings := record.FilterWarnings(capture.take(), names)
 		after, err := relativeSeq(sess, cfg.GetSequenceID())
 		if err != nil {
 			return nil, nil, err
 		}
-		r := corpus.UpdateRange{Before: before, After: after}
+		r := record.UpdateRange{Before: before, After: after}
 		ranges = append(ranges, r)
-		result := corpus.UpdateResult{SeqDelta: r.SeqDelta(), Warnings: warnings}
+		result := record.UpdateResult{SeqDelta: r.SeqDelta(), Warnings: warnings}
 		if r.WaitsFor() {
 			received, timedOut, err := waitForUpdate(sess, r)
 			if err != nil {
@@ -275,8 +277,8 @@ func applyUpdates(sess *session, c *corpus.Case, capture *logCapture, names []st
 
 // waitForUpdate receives events until one whose relative sequence reaches r.After arrives, or
 // updateWait passes. It returns the events received, in arrival order.
-func waitForUpdate(sess *session, r corpus.UpdateRange) ([]corpus.StreamEvent, bool, error) {
-	var out []corpus.StreamEvent
+func waitForUpdate(sess *session, r record.UpdateRange) ([]record.StreamEvent, bool, error) {
+	var out []record.StreamEvent
 	deadline := time.NewTimer(updateWait)
 	defer deadline.Stop()
 	for {
@@ -318,28 +320,28 @@ func eventSeq(sess *session, id int32) (uint64, error) {
 // streamEvent converts one stream event received during a wait. A resync ConfigSnapshot after
 // the first snapshot is a harness failure in format 1 (record.md §4.2, §5.2); it needs a sequence
 // gap this harness never produces (one update at a time, values that always encode).
-func streamEvent(sess *session, ev *pb.ConfigEvent) (corpus.StreamEvent, error) {
+func streamEvent(sess *session, ev *pb.ConfigEvent) (record.StreamEvent, error) {
 	u := ev.GetUpdate()
 	if u == nil {
-		return corpus.StreamEvent{}, errors.New("config stream event is a resync snapshot, a harness failure in format 1")
+		return record.StreamEvent{}, errors.New("config stream event is a resync snapshot, a harness failure in format 1")
 	}
 	seq, err := eventSeq(sess, u.GetSequenceId())
 	if err != nil {
-		return corpus.StreamEvent{}, fmt.Errorf("update event: %w", err)
+		return record.StreamEvent{}, fmt.Errorf("update event: %w", err)
 	}
-	setting, err := corpus.SettingFromProto(u.GetSetting())
+	setting, err := agentcfg.SettingFromProto(u.GetSetting())
 	if err != nil {
-		return corpus.StreamEvent{}, fmt.Errorf("update event, key %q: %w", u.GetSetting().GetKey(), err)
+		return record.StreamEvent{}, fmt.Errorf("update event, key %q: %w", u.GetSetting().GetKey(), err)
 	}
-	return corpus.StreamEvent{Seq: seq, Key: u.GetSetting().GetKey(), Setting: setting}, nil
+	return record.StreamEvent{Seq: seq, Key: u.GetSetting().GetKey(), Setting: setting}, nil
 }
 
 // getterLists selects each key's getter list. The caller discards the warnings of the
 // GetAllSources calls it makes.
-func getterLists(cfg model.Reader, keys []corpus.KeyEntry, schema corpus.AgentSchema) ([][]string, error) {
+func getterLists(cfg model.Reader, keys []record.KeyEntry, sch schema.Schema) ([][]string, error) {
 	lists := make([][]string, len(keys))
 	for i, entry := range keys {
-		list, _, _, err := corpus.SelectGetters(cfg, entry, schema)
+		list, _, _, err := agentcfg.SelectGetters(cfg, entry, sch)
 		if err != nil {
 			return nil, fmt.Errorf("key %q: %w", entry.Key, err)
 		}
@@ -350,21 +352,21 @@ func getterLists(cfg model.Reader, keys []corpus.KeyEntry, schema corpus.AgentSc
 
 // readKey calls each getter in order, attributing to each the warnings logged during its call,
 // then Get and GetSource.
-func readKey(cfg model.Reader, key string, getters []string, capture *logCapture) (corpus.Read, error) {
+func readKey(cfg model.Reader, key string, getters []string, capture *logCapture) (record.Read, error) {
 	names := []string{strings.ToLower(key)}
-	var read corpus.Read
+	var read record.Read
 	for _, g := range getters {
 		capture.take()
-		v, err := corpus.CallGetter(cfg, g, key)
+		v, err := agentcfg.CallGetter(cfg, g, key)
 		if err != nil {
 			return read, err
 		}
-		warnings := corpus.FilterWarnings(capture.take(), names)
-		encoded, err := corpus.EncodeResult(v)
+		warnings := record.FilterWarnings(capture.take(), names)
+		encoded, err := record.EncodeResult(v)
 		if err != nil {
 			return read, fmt.Errorf("key %q, %s: %w", key, g, err)
 		}
-		read.Getters = append(read.Getters, corpus.GetterResult{Getter: g, Result: encoded, Warnings: warnings})
+		read.Getters = append(read.Getters, record.GetterResult{Getter: g, Result: encoded, Warnings: warnings})
 	}
 	read.GoType = fmt.Sprintf("%T", cfg.Get(key))
 	read.Source = cfg.GetSource(key).String()

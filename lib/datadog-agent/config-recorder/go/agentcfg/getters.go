@@ -3,7 +3,9 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2026-present Datadog, Inc.
 
-package corpus
+// Package agentcfg is the config recorder's code that reads the Agent's config: getter selection
+// and calls, stream proto conversion, and the check that the schema's key set is the Agent's.
+package agentcfg
 
 import (
 	"errors"
@@ -11,6 +13,9 @@ import (
 	"strings"
 
 	"github.com/DataDog/datadog-agent/pkg/config/model"
+
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 // Errors for getter selection and dispatch.
@@ -18,23 +23,6 @@ var (
 	ErrGetterDefaultType = errors.New("no getter rule for the default-layer Go type")
 	ErrGetterName        = errors.New("unknown getter name")
 )
-
-// getterNames are the getters a list may name, in the record format's order. GetSource is
-// recorded separately and is not one of them.
-var getterNames = []string{
-	"Get", "GetString", "GetBool", "GetInt", "GetInt32", "GetInt64", "GetFloat64",
-	"GetFloat64Slice", "GetDuration", "GetStringSlice", "GetStringMap", "GetStringMapString",
-	"GetStringMapStringSlice", "GetSizeInBytes",
-}
-
-func isGetterName(name string) bool {
-	for _, n := range getterNames {
-		if n == name {
-			return true
-		}
-	}
-	return false
-}
 
 // primaryGetters maps the `%T` of a key's default-layer value to its default getter list.
 var primaryGetters = map[string][]string{
@@ -56,8 +44,8 @@ var primaryGetters = map[string][]string{
 	"<nil>":                   {"Get"},
 }
 
-// SchemaTags are the schema annotations that may add secondary getters to a key.
-type SchemaTags struct {
+// Tags are the schema annotations that may add secondary getters to a key.
+type Tags struct {
 	// Format is the schema's `format`, e.g. "duration".
 	Format string
 	// GolangType is the schema's `golang_type`, e.g. "duration".
@@ -67,7 +55,7 @@ type SchemaTags struct {
 // selectGetters returns the default getter list for a schema leaf, from the `%T` of its
 // default-layer value and its schema tags. The default value's type, not the schema type, decides
 // the primary getter, because that is the type the Agent's getters convert from.
-func selectGetters(defaultType string, tags SchemaTags) ([]string, error) {
+func selectGetters(defaultType string, tags Tags) ([]string, error) {
 	primary, ok := primaryGetters[defaultType]
 	if !ok && strings.HasPrefix(defaultType, "[]map[string]") {
 		primary, ok = []string{"Get"}, true
@@ -84,24 +72,12 @@ func selectGetters(defaultType string, tags SchemaTags) ([]string, error) {
 	return getters, nil
 }
 
-// KeyKind says how the schema knows a key.
-type KeyKind int
-
-const (
-	// KeyUnknown is a key the schema does not have.
-	KeyUnknown KeyKind = iota
-	// KeyLeaf is a schema setting.
-	KeyLeaf
-	// KeySection is a schema section, an inner node.
-	KeySection
-)
-
 // selectGettersNoDefault returns the getter list for a schema leaf with no default (getter-map.md
 // §1.1), whose declaredType is the schema's `type` and elementType is its `items` type (for
 // `array`) or `additionalProperties` type (for `object`), or "" when the schema has none. A missing
 // or nil default is not a harness failure, so this never errors: an unmatched declared type or
 // element type falls back to `Get` alone, exactly as the table's "any other or no ..." rows do.
-func selectGettersNoDefault(declaredType, elementType string, tags SchemaTags) []string {
+func selectGettersNoDefault(declaredType, elementType string, tags Tags) []string {
 	var primary []string
 	switch declaredType {
 	case "boolean":
@@ -148,17 +124,18 @@ func selectGettersNoDefault(declaredType, elementType string, tags SchemaTags) [
 // declared schema type and element type instead (getter-map.md §1.1).
 //
 // Both the probe and case runs select through SelectGetters, which calls this.
-func GettersForKey(entry KeyEntry, sk SchemaKey, hasDefault bool, defaultType string) ([]string, error) {
+func GettersForKey(entry record.KeyEntry, sk *schema.Key, hasDefault bool, defaultType string) ([]string, error) {
 	if entry.Getters != nil {
 		return append([]string{}, entry.Getters...), nil
 	}
-	if sk.Kind != KeyLeaf {
+	if sk.Kind != schema.Leaf {
 		return []string{"Get"}, nil
 	}
+	tags := Tags{Format: sk.Format, GolangType: sk.GolangType()}
 	if !hasDefault {
-		return selectGettersNoDefault(sk.DeclaredType, sk.ElementType, sk.Tags), nil
+		return selectGettersNoDefault(sk.Type, sk.ElementType(), tags), nil
 	}
-	return selectGetters(defaultType, sk.Tags)
+	return selectGetters(defaultType, tags)
 }
 
 // DefaultLayerType returns the `%T` of a schema leaf's default-layer value, and whether it has
@@ -214,9 +191,9 @@ func CallGetter(r model.Reader, name, key string) (interface{}, error) {
 // otherwise the default list from the schema and, for a schema leaf, its default-layer type.
 // GetAllSources is called only on schema leaves without an override; the caller discards its
 // warnings. It also returns the default-layer type it used and whether the key has a default.
-func SelectGetters(r model.Reader, entry KeyEntry, schema AgentSchema) (list []string, defaultType string, hasDefault bool, err error) {
-	sk := schema.Key(entry.Key)
-	if entry.Getters == nil && sk.Kind == KeyLeaf {
+func SelectGetters(r model.Reader, entry record.KeyEntry, s schema.Schema) (list []string, defaultType string, hasDefault bool, err error) {
+	sk := s.Key(entry.Key)
+	if entry.Getters == nil && sk.Kind == schema.Leaf {
 		defaultType, hasDefault = DefaultLayerType(r, entry.Key)
 	}
 	list, err = GettersForKey(entry, sk, hasDefault, defaultType)

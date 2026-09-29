@@ -28,7 +28,7 @@ import (
 	pkglog "github.com/DataDog/datadog-agent/pkg/util/log"
 	ddslog "github.com/DataDog/datadog-agent/pkg/util/log/slog"
 
-	"github.com/DataDog/datadog-agent/cmd/config-recorder/corpus"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
 )
 
 // logCapture is an slog.Handler that keeps every record the Agent's logger delivers.
@@ -50,13 +50,13 @@ func (c *logCapture) WithAttrs([]stdslog.Attr) stdslog.Handler { return c }
 func (c *logCapture) WithGroup(string) stdslog.Handler         { return c }
 
 // take flushes the Agent's logger and returns the warnings delivered so far, clearing them.
-func (c *logCapture) take() []corpus.Warning {
+func (c *logCapture) take() []record.Warning {
 	pkglog.Flush()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []corpus.Warning
+	var out []record.Warning
 	for _, r := range c.records {
-		if w, ok := corpus.WarningFromRecord(r); ok {
+		if w, ok := record.WarningFromRecord(r); ok {
 			out = append(out, w)
 		}
 	}

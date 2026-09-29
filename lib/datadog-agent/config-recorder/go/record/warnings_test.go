@@ -3,7 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2026-present Datadog, Inc.
 
-package corpus
+package record
 
 import (
 	"errors"
@@ -80,5 +80,40 @@ func TestWarningValidate(t *testing.T) {
 		if err := (Warning{Level: level, Message: "x"}).Validate(); !errors.Is(err, ErrWarningLevel) {
 			t.Errorf("level %q: got %v, want ErrWarningLevel", level, err)
 		}
+	}
+}
+
+func TestMentions(t *testing.T) {
+	tests := []struct {
+		s, name string
+		want    bool
+	}{
+		{`key "logs_enabled": bad`, "logs_enabled", true},
+		{"logs_enabled", "logs_enabled", true},
+		{"logs_enabled_extra is set", "logs_enabled", false},
+		{"logs.logs_enabled is set", "logs_enabled", false},
+		{"xlogs_enabled", "logs_enabled", false},
+		{"logs_enabled2 and logs_enabled.", "logs_enabled", false},
+		{"logs_enabled2 and (logs_enabled)", "logs_enabled", true},
+		{"DD_API_KEY=", "DD_API_KEY", true},
+		{"anything", "", false},
+	}
+	for _, tc := range tests {
+		if got := mentions(tc.s, tc.name); got != tc.want {
+			t.Errorf("mentions(%q, %q) = %v", tc.s, tc.name, got)
+		}
+	}
+
+	c := mustParse(t, exampleLayersCase)
+	ws := []Warning{
+		{"WARN", "dogstatsd_port overridden"},
+		{"WARN", "unrelated"},
+		{"ERROR", "bad cmd_port"},
+		{"WARN", "cmd_ports"},
+	}
+	got := FilterWarnings(ws, CaseWarningNames(c))
+	want := []Warning{ws[0], ws[2]}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("filter: %v", got)
 	}
 }

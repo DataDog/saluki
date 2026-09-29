@@ -11,6 +11,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 const testSchema = `
@@ -65,7 +68,7 @@ func testFacts() *AgentFacts {
 
 func mustGenerate(t *testing.T, facts *AgentFacts) *Result {
 	t.Helper()
-	s, err := ParseSchema([]byte(testSchema))
+	s, err := schema.Parse([]byte(testSchema))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +83,8 @@ func mustGenerate(t *testing.T, facts *AgentFacts) *Result {
 	return r
 }
 
-func byName(r *Result) map[string]*Case {
-	m := map[string]*Case{}
+func byName(r *Result) map[string]*record.Case {
+	m := map[string]*record.Case{}
 	for _, c := range r.Cases {
 		m[c.Name] = c
 	}
@@ -89,7 +92,7 @@ func byName(r *Result) map[string]*Case {
 }
 
 func TestValueRules(t *testing.T) {
-	s, err := ParseSchema([]byte(testSchema))
+	s, err := schema.Parse([]byte(testSchema))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,21 +120,21 @@ func TestValueRules(t *testing.T) {
 		t.Errorf("platform_default: got %v, want the linux value", s["sock"].Default)
 	}
 	for _, c := range []struct {
-		s    Setting
+		s    schema.Key
 		want Values
 	}{
-		{Setting{Type: "array", ItemType: "integer"}, Values{[]interface{}{1, 2}, []interface{}{3}}},
-		{Setting{Type: "array", ItemType: "number"}, Values{[]interface{}{1.5, 2.5}, []interface{}{3.5}}},
-		{Setting{Type: "array", ItemType: "object"}, Values{[]interface{}{map[string]interface{}{"cr_a": "cr-a"}},
+		{schema.Key{Type: "array", ItemType: "integer"}, Values{[]interface{}{1, 2}, []interface{}{3}}},
+		{schema.Key{Type: "array", ItemType: "number"}, Values{[]interface{}{1.5, 2.5}, []interface{}{3.5}}},
+		{schema.Key{Type: "array", ItemType: "object"}, Values{[]interface{}{map[string]interface{}{"cr_a": "cr-a"}},
 			[]interface{}{map[string]interface{}{"cr_b": "cr-b"}}}},
-		{Setting{Type: "object", ItemType: "string"}, Values{map[string]interface{}{"cr_a": "cr-a"},
+		{schema.Key{Type: "object", ItemType: "string"}, Values{map[string]interface{}{"cr_a": "cr-a"},
 			map[string]interface{}{"cr_b": "cr-b"}}},
-		{Setting{Type: "object", ItemType: "number"}, Values{map[string]interface{}{"cr_a": 1.5},
+		{schema.Key{Type: "object", ItemType: "number"}, Values{map[string]interface{}{"cr_a": 1.5},
 			map[string]interface{}{"cr_b": 2.5}}},
-		{Setting{Type: "object"}, Values{map[string]interface{}{"cr_a": "cr-a"}, map[string]interface{}{"cr_b": "cr-b"}}},
-		{Setting{Type: "string", Format: "duration", Default: "62s"}, Values{"71s", "72s"}},
-		{Setting{Type: "boolean"}, Values{true, false}},
-		{Setting{Type: "number", Default: 0.25}, Values{1.5, 2.5}},
+		{schema.Key{Type: "object"}, Values{map[string]interface{}{"cr_a": "cr-a"}, map[string]interface{}{"cr_b": "cr-b"}}},
+		{schema.Key{Type: "string", Format: "duration", Default: "62s"}, Values{"71s", "72s"}},
+		{schema.Key{Type: "boolean"}, Values{true, false}},
+		{schema.Key{Type: "number", Default: 0.25}, Values{1.5, 2.5}},
 	} {
 		got, err := ValuesFor(&c.s)
 		if err != nil {
@@ -141,7 +144,7 @@ func TestValueRules(t *testing.T) {
 			t.Errorf("%+v: got %#v, want %#v", c.s, got, c.want)
 		}
 	}
-	if _, err := ValuesFor(&Setting{Key: "k", Type: "array", Default: []interface{}{"cr-a", "cr-b"}}); err == nil {
+	if _, err := ValuesFor(&schema.Key{Path: "k", Type: "array", Default: []interface{}{"cr-a", "cr-b"}}); err == nil {
 		t.Error("a value equal to the default must fail")
 	}
 }
@@ -171,7 +174,7 @@ func TestEnvText(t *testing.T) {
 		{"", map[string]interface{}{"cr_a": []interface{}{"cr-a"}}, `{"cr_a":["cr-a"]}`},
 		{"traces_span", map[string]interface{}{"cr-a|cr-b": 0.5}, "cr-a|cr-b=0.5"},
 	} {
-		got, err := EnvText(&Setting{Key: "k", EnvParser: c.parser}, c.v)
+		got, err := EnvText(&schema.Key{Path: "k", EnvParser: c.parser}, c.v)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +207,7 @@ func TestGroupsAndNames(t *testing.T) {
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("names:\n got %v\nwant %v", names, want)
 	}
-	if got := cases["baseline-default"].Keys; len(got) != 12 || got[0] != "apm_config.a" {
+	if got := cases["baseline-default"].Keys; len(got) != 12 || got[0].Key != "apm_config.a" {
 		t.Errorf("batch keys: %v", got)
 	}
 	env := cases["breadth-env-apm-config"].Env
@@ -215,11 +218,11 @@ func TestGroupsAndNames(t *testing.T) {
 		t.Errorf("env list: %q", got)
 	}
 	y := cases["breadth-yaml-apm-config"]
-	if y.YAML != "apm_config:\n    a: 1\n    b: 1\n    c: 1\n" {
-		t.Errorf("yaml: %q", y.YAML)
+	if y.YAML == nil || *y.YAML != "apm_config:\n    a: 1\n    b: 1\n    c: 1\n" {
+		t.Errorf("yaml: %v", y.YAML)
 	}
-	if !reflect.DeepEqual(y.Updates, []Update{{"apm_config.a", 2, "agent-runtime"}, {"apm_config.b", 2, "agent-runtime"},
-		{"apm_config.c", 2, "agent-runtime"}}) {
+	if !reflect.DeepEqual(y.Updates, []record.Update{{Op: "set", Key: "apm_config.a", Value: 2, Source: "agent-runtime"}, {Op: "set", Key: "apm_config.b", Value: 2, Source: "agent-runtime"},
+		{Op: "set", Key: "apm_config.c", Value: 2, Source: "agent-runtime"}}) {
 		t.Errorf("updates: %v", y.Updates)
 	}
 	if len(cases["unsupported-yaml-top-g"].Updates) != 0 {
@@ -227,7 +230,7 @@ func TestGroupsAndNames(t *testing.T) {
 	}
 	for _, c := range r.Cases {
 		for _, k := range c.Keys {
-			if k == "otlp_config.x.y" {
+			if k.Key == "otlp_config.x.y" {
 				t.Errorf("case %s lists an overlay-only key", c.Name)
 			}
 		}
@@ -244,8 +247,11 @@ func TestGroupsAndNames(t *testing.T) {
 func TestDeterministic(t *testing.T) {
 	a, b := mustGenerate(t, testFacts()), mustGenerate(t, testFacts())
 	for i := range a.Cases {
-		x, _ := a.Cases[i].Marshal()
-		y, _ := b.Cases[i].Marshal()
+		x, err := record.MarshalCase(a.Cases[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		y, _ := record.MarshalCase(b.Cases[i])
 		if string(x) != string(y) {
 			t.Fatalf("case %s differs between runs", a.Cases[i].Name)
 		}
@@ -255,7 +261,7 @@ func TestDeterministic(t *testing.T) {
 func TestEnvNameMustBeBound(t *testing.T) {
 	f := testFacts()
 	delete(f.EnvVars, "DD_APM_A")
-	s, _ := ParseSchema([]byte(testSchema))
+	s, _ := schema.Parse([]byte(testSchema))
 	o, _ := ParseOverlay([]byte(testOverlay))
 	if _, err := Generate(s, o, f); err == nil || !strings.Contains(err.Error(), "DD_APM_A") {
 		t.Fatalf("got %v, want an unbound env var failure", err)
@@ -263,7 +269,7 @@ func TestEnvNameMustBeBound(t *testing.T) {
 }
 
 func TestExcludedPerType(t *testing.T) {
-	s, _ := ParseSchema([]byte(testSchema))
+	s, _ := schema.Parse([]byte(testSchema))
 	o := &Overlay{Support: map[string]string{}, Excluded: map[string]bool{"port": true, "gone": true, "flag": true}}
 	f := testFacts()
 	f.DefaultType = map[string]string{"port": "int", "gone": "int", "flag": "bool"}
@@ -387,7 +393,7 @@ func TestLargeSectionSplitsBySubSection(t *testing.T) {
 }
 
 func TestInventoriedAndExcludedFails(t *testing.T) {
-	s, _ := ParseSchema([]byte(testSchema))
+	s, _ := schema.Parse([]byte(testSchema))
 	o, _ := ParseOverlay([]byte(testOverlay))
 	o.Excluded["port"] = true
 	if _, err := Generate(s, o, testFacts()); err == nil || !strings.Contains(err.Error(), "port") {
@@ -397,7 +403,7 @@ func TestInventoriedAndExcludedFails(t *testing.T) {
 
 func TestNumberValuesKeepFraction(t *testing.T) {
 	for _, d := range []interface{}{nil, 0, 1, 0.5, 2.25, -0.5} {
-		v, err := ValuesFor(&Setting{Key: "n", Type: "number", Default: d})
+		v, err := ValuesFor(&schema.Key{Path: "n", Type: "number", Default: d})
 		if err != nil {
 			t.Fatal(err)
 		}

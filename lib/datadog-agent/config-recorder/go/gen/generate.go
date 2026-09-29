@@ -6,6 +6,7 @@
 package gen
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"sort"
@@ -13,6 +14,9 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 // Fixed names for the unknown group's unknown keys.
@@ -23,26 +27,6 @@ const (
 	setSource = "agent-runtime"
 )
 
-// Case is one generated case, in the case-file fields it uses.
-type Case struct {
-	Name    string            `yaml:"name"`
-	Group   string            `yaml:"group"`
-	Env     map[string]string `yaml:"env,omitempty"`
-	YAML    string            `yaml:"yaml,omitempty"`
-	Updates []Update          `yaml:"updates,omitempty"`
-	Keys    []string          `yaml:"keys"`
-}
-
-// Update is one `set` update of a generated case.
-type Update struct {
-	Key    string      `yaml:"key"`
-	Value  interface{} `yaml:"value"`
-	Source string      `yaml:"source"`
-}
-
-// Marshal renders the case as a case file.
-func (c *Case) Marshal() ([]byte, error) { return yaml.Marshal(c) }
-
 // Skip is a key left out of one source of a group, with the reason.
 type Skip struct {
 	Group, Source, Key, Reason string
@@ -50,7 +34,7 @@ type Skip struct {
 
 // Result is every generated case, sorted by name, and the keys skipped.
 type Result struct {
-	Cases   []*Case
+	Cases   []*record.Case
 	Skipped []Skip
 }
 
@@ -175,14 +159,33 @@ func batch(keys []string) ([]string, [][]string, error) {
 	return names, out, nil
 }
 
+// newCase is a case with no inputs, in the form record.ParseCase gives it.
+func newCase(name, group string, keys []string) *record.Case {
+	c := &record.Case{Name: name, Group: group, Why: []string{}}
+	for _, k := range keys {
+		c.Keys = append(c.Keys, record.KeyEntry{Key: k})
+	}
+	return c
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 type generator struct {
-	schema Schema
+	// leaves is every schema leaf by lowercased path.
+	leaves map[string]*schema.Key
 	facts  *AgentFacts
 	res    Result
 	names  map[string]bool
 }
 
-func (g *generator) add(c *Case) error {
+func (g *generator) add(c *record.Case) error {
 	if !namePattern.MatchString(c.Name) {
 		return fmt.Errorf("generated case name %q does not match %s", c.Name, namePattern)
 	}
@@ -198,16 +201,16 @@ func (g *generator) add(c *Case) error {
 // `env_vars`, or, when it lists none, the name the Agent derives (`DD_` and the key uppercased,
 // `.` as `_`). The name must be one the Agent bound; if not, the generator's reading of the
 // schema disagrees with the Agent, a harness failure.
-func (g *generator) envName(s *Setting) (string, bool, error) {
+func (g *generator) envName(s *schema.Key) (string, bool, error) {
 	if s.NoEnv {
 		return "", false, nil
 	}
-	name := "DD_" + strings.ToUpper(strings.ReplaceAll(s.Key, ".", "_"))
+	name := "DD_" + strings.ToUpper(strings.ReplaceAll(s.Path, ".", "_"))
 	if len(s.EnvVars) > 0 {
 		name = s.EnvVars[0]
 	}
 	if !g.facts.EnvVars[name] {
-		return "", false, fmt.Errorf("key %q: env var %s is not in the Agent's GetEnvVars()", s.Key, name)
+		return "", false, fmt.Errorf("key %q: env var %s is not in the Agent's GetEnvVars()", strings.ToLower(s.Path), name)
 	}
 	return name, true, nil
 }
@@ -239,8 +242,15 @@ func yamlText(values map[string]interface{}) (string, error) {
 		}
 		m[parts[len(parts)-1]] = values[k]
 	}
-	b, err := yaml.Marshal(root)
-	return string(b), err
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	if err := enc.Encode(root); err != nil {
+		return "", err
+	}
+	if err := enc.Close(); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 // envAndYAML adds a group's env and YAML cases for schema keys; withSet adds the breadth case's
@@ -248,7 +258,7 @@ func yamlText(values map[string]interface{}) (string, error) {
 func (g *generator) envAndYAML(group string, keys []string, withSet bool) error {
 	var envKeys []string
 	for _, k := range keys {
-		_, ok, err := g.envName(g.schema[k])
+		_, ok, err := g.envName(g.leaves[k])
 		if err != nil {
 			return err
 		}
@@ -263,9 +273,10 @@ func (g *generator) envAndYAML(group string, keys []string, withSet bool) error 
 		return err
 	}
 	for i, ks := range batches {
-		c := &Case{Name: group + "-env-" + names[i], Group: group, Env: map[string]string{}, Keys: ks}
+		c := newCase(group+"-env-"+names[i], group, ks)
+		c.Env = map[string]string{}
 		for _, k := range ks {
-			s := g.schema[k]
+			s := g.leaves[k]
 			v, err := ValuesFor(s)
 			if err != nil {
 				return err
@@ -289,23 +300,23 @@ func (g *generator) envAndYAML(group string, keys []string, withSet bool) error 
 		return err
 	}
 	for i, ks := range batches {
-		c := &Case{Name: group + "-yaml-" + names[i], Group: group, Keys: ks}
+		c := newCase(group+"-yaml-"+names[i], group, ks)
 		values := map[string]interface{}{}
 		for _, k := range ks {
-			v, err := ValuesFor(g.schema[k])
+			v, err := ValuesFor(g.leaves[k])
 			if err != nil {
 				return err
 			}
 			values[k] = v.Input
 			if withSet {
-				c.Updates = append(c.Updates, Update{Key: k, Value: v.Set, Source: setSource})
+				c.Updates = append(c.Updates, record.Update{Op: "set", Key: k, Value: v.Set, Source: setSource})
 			}
 		}
 		text, err := yamlText(values)
 		if err != nil {
 			return fmt.Errorf("case %q: %w", c.Name, err)
 		}
-		c.YAML = text
+		c.YAML = &text
 		if err := g.add(c); err != nil {
 			return err
 		}
@@ -316,8 +327,12 @@ func (g *generator) envAndYAML(group string, keys []string, withSet bool) error 
 // Generate writes the generated groups `baseline`, `breadth`, `unsupported`, `excluded` and
 // `unknown`, batched by section (case.md §3.2). Overlay keys that are not schema keys are in no
 // generated group; a key the overlay both inventories and excludes is an error.
-func Generate(schema Schema, overlay *Overlay, facts *AgentFacts) (*Result, error) {
-	g := &generator{schema: schema, facts: facts, names: map[string]bool{}}
+func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, error) {
+	leaves, err := s.LowercasedLeaves()
+	if err != nil {
+		return nil, err
+	}
+	g := &generator{leaves: leaves, facts: facts, names: map[string]bool{}}
 	var both []string
 	for k := range overlay.Support {
 		if overlay.Excluded[k] {
@@ -331,7 +346,7 @@ func Generate(schema Schema, overlay *Overlay, facts *AgentFacts) (*Result, erro
 	}
 	var modeled, unsupported []string
 	for k, sup := range overlay.Support {
-		if _, ok := schema[k]; !ok {
+		if _, ok := leaves[k]; !ok {
 			continue
 		}
 		switch sup {
@@ -345,7 +360,7 @@ func Generate(schema Schema, overlay *Overlay, facts *AgentFacts) (*Result, erro
 	sort.Strings(unsupported)
 
 	// baseline: every modeled key in one case, with no inputs.
-	if err := g.add(&Case{Name: "baseline-default", Group: "baseline", Keys: modeled}); err != nil {
+	if err := g.add(newCase("baseline-default", "baseline", modeled)); err != nil {
 		return nil, err
 	}
 	if err := g.envAndYAML("breadth", modeled, true); err != nil {
@@ -357,7 +372,7 @@ func Generate(schema Schema, overlay *Overlay, facts *AgentFacts) (*Result, erro
 
 	// excluded: per default-layer Go type, the byte-first excluded schema key.
 	firstByType := map[string]string{}
-	for _, k := range schema.Keys() {
+	for _, k := range sortedKeys(leaves) {
 		if !overlay.Excluded[k] {
 			continue
 		}
@@ -403,14 +418,14 @@ func (g *generator) unknownGroup(modeled []string) error {
 
 	var deprecated, owner string
 	for _, k := range modeled {
-		for _, old := range g.schema[k].RenamedFrom {
+		for _, old := range g.leaves[k].RenamedFrom {
 			if deprecated == "" || old < deprecated {
 				deprecated, owner = old, k
 			}
 		}
 	}
 	if deprecated != "" {
-		s := g.schema[owner]
+		s := g.leaves[owner]
 		v, err := ValuesFor(s)
 		if err != nil {
 			return err
@@ -445,7 +460,9 @@ func (g *generator) unknownGroup(modeled []string) error {
 		if err != nil {
 			return err
 		}
-		if err := g.add(&Case{Name: "unknown-yaml-" + names[i], Group: "unknown", YAML: text, Keys: ks}); err != nil {
+		c := newCase("unknown-yaml-"+names[i], "unknown", ks)
+		c.YAML = &text
+		if err := g.add(c); err != nil {
 			return err
 		}
 	}
@@ -458,7 +475,8 @@ func (g *generator) unknownGroup(modeled []string) error {
 		return err
 	}
 	for i, ks := range batches {
-		c := &Case{Name: "unknown-env-" + names[i], Group: "unknown", Env: map[string]string{}, Keys: ks}
+		c := newCase("unknown-env-"+names[i], "unknown", ks)
+		c.Env = map[string]string{}
 		for _, k := range ks {
 			c.Env[envKeys[k]] = envValues[k]
 		}
