@@ -237,7 +237,7 @@ func readCase(line []byte) (*CaseLine, error) {
 	if err := decodeStrict(line, &r); err != nil {
 		return nil, err
 	}
-	c := &Case{Name: r.Case, Group: r.Group, Why: r.Why, Env: r.Inputs.Env, YAML: r.Inputs.YAML,
+	c := &Case{Name: r.Case, Group: Group(r.Group), Why: r.Why, Env: r.Inputs.Env, YAML: r.Inputs.YAML,
 		FleetPolicy: r.Inputs.FleetPolicy}
 	if len(c.Why) == 0 {
 		c.Why = nil

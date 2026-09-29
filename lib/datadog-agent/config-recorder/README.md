@@ -24,6 +24,27 @@ records both directories.
 - Every value comes from a fixed rule on the key's schema type, default and format, so two runs
   write the same cases.
 
+## Splitting batches
+
+`drive` records a batch as it ran only when every key streams the source its inputs set. Otherwise
+it splits the batch, its *root*, by the rules of case.md §3.1:
+
+- When the root starts, each key that is not clean is *peeled* into a single-key part
+  `<root>--<key>`, and the rest reruns under the root's name until it is clean or empty.
+- When the root fails to start, `drive` halves it in key order to find the single keys that fail
+  alone. It records each one's failed run as its part and reruns the rest. When no single key
+  fails alone, every key becomes a part.
+
+`baseline` and `behavior` cases, and single-key cases, are never split.
+
+The drive workdir, `target/config-recorder/work/`, keeps what each process used and saw:
+
+- `run/<root>/<i>-<name>/`: the `<i>`-th process of a root, counted from 1. It holds the case file
+  `<name>.yaml`, the process's work directory `work/` and its result `result.gob`.
+- `snapshots/<name>.jsonl`: the first snapshot of each recorded case, from the run that was
+  recorded, and `_baseline.jsonl` for the baseline.
+- `snapshots/discarded/<root>/<i>-<name>.jsonl`: the first snapshot of every other run.
+
 ## Regenerating the corpus
 
 ```sh

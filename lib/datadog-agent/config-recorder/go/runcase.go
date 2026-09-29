@@ -143,6 +143,9 @@ func runCase(c *record.Case, params config.Params, capture *logCapture, sch sche
 			if err := agentcfg.CheckSchemaKeys(sch, cfg); err != nil {
 				return err
 			}
+			if err := agentcfg.CheckEnvBindings(sch, cfg); err != nil {
+				return err
+			}
 		}
 		run.Origin = sess.snapshot.GetOrigin()
 		run.Snapshot = map[string]record.Setting{}
