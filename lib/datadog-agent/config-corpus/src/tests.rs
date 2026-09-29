@@ -212,6 +212,39 @@ fn getter_result_shapes() {
 }
 
 #[test]
+fn section_read_result_is_an_object() {
+    let Ok(GetterResult::Section(section)) = result("ReadConfigSection", r#"{"protocols":{"grpc":null,"n":1}}"#) else {
+        panic!("section")
+    };
+    let GoValue::Map(protocols) = &section["protocols"] else {
+        panic!("nested map")
+    };
+    assert_eq!(protocols["grpc"], GoValue::Null);
+    assert!(matches!(protocols["n"], GoValue::Int(_)));
+    assert!(matches!(result("ReadConfigSection", "{}"), Ok(GetterResult::Section(m)) if m.is_empty()));
+    for not_a_map in ["null", "[]", "1", r#"{"$float":"NaN"}"#] {
+        let err = result("ReadConfigSection", not_a_map).unwrap_err();
+        assert_eq!(err[0].rule, Rule::GetterResult, "{not_a_map}");
+    }
+}
+
+#[test]
+fn is_configured_result_is_a_bool() {
+    assert!(matches!(
+        result("IsConfigured", "true"),
+        Ok(GetterResult::IsConfigured(true))
+    ));
+    assert!(matches!(
+        result("IsConfigured", "false"),
+        Ok(GetterResult::IsConfigured(false))
+    ));
+    for not_a_bool in ["null", "1", r#""x""#, "[]", "{}"] {
+        let err = result("IsConfigured", not_a_bool).unwrap_err();
+        assert_eq!(err[0].rule, Rule::GetterResult, "{not_a_bool}");
+    }
+}
+
+#[test]
 fn baseline_case_is_required_and_unique() {
     // No case of group baseline at all.
     let good = key(r#"{"getter":"GetInt","result":2}"#);

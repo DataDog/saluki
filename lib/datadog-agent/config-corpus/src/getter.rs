@@ -79,6 +79,10 @@ pub enum GetterResult {
     StringMapStringSlice(BTreeMap<String, Option<Vec<String>>>),
     /// `Get`.
     Get(GoValue),
+    /// `ReadConfigSection` (getter-map.md §2.1): the nested section map, never `null`.
+    Section(BTreeMap<String, GoValue>),
+    /// `IsConfigured` (getter-map.md §2.1): whether the user set the key.
+    IsConfigured(bool),
 }
 
 type R<T> = Result<T, String>;
@@ -212,5 +216,10 @@ pub(crate) fn decode(getter: Getter, v: &Json) -> R<GetterResult> {
             GetterResult::StringMapStringSlice(map(v, what, |x| nullable(x, |x| list(x, what, |s| string(s, what))))?)
         }
         Getter::Get => GetterResult::Get(go_value(v)?),
+        Getter::ReadConfigSection => GetterResult::Section(map(v, what, go_value)?),
+        Getter::IsConfigured => match v {
+            Json::Bool(b) => GetterResult::IsConfigured(*b),
+            other => return Err(format!("{what}: expected a boolean, found {}", describe(other))),
+        },
     })
 }

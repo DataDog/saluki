@@ -129,6 +129,13 @@ string_enum! {
         GetStringMapStringSlice => "GetStringMapStringSlice",
         /// `GetSizeInBytes`, returning `uint`.
         GetSizeInBytes => "GetSizeInBytes",
+        /// The Agent's OTLP section read, `configcheck.ReadConfigSection(cfg, key).ToStringMap()`, returning
+        /// `map[string]interface{}` (getter-map.md §2.1). It keeps only the section's configured leaves, plus
+        /// sections declared with a nil value, so schema defaults are absent. It is never a default getter.
+        ReadConfigSection => "ReadConfigSection",
+        /// `cfg.IsConfigured(key)` (`nodetreemodel/config.go:878`), returning `bool` (getter-map.md §2.1). It
+        /// reports whether the user set the key, not the key's value. It is never a default getter.
+        IsConfigured => "IsConfigured",
     }
 }
 
