@@ -1,0 +1,8 @@
+name: yaml-noncanonical-map-keys
+group: behavior
+why: [yaml-noncanonical-map-key]
+yaml: |
+  additional_endpoints:
+    true: [k]
+    010: [j]
+keys: [additional_endpoints]

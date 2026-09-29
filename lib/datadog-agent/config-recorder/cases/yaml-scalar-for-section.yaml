@@ -1,0 +1,6 @@
+name: yaml-scalar-for-section
+group: behavior
+why: [yaml-scalar-into-structured-node-becomes-leaf]
+yaml: |
+  use_v2_api: false
+keys: [use_v2_api]
