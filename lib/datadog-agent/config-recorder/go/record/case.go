@@ -21,7 +21,7 @@ import (
 // Case is one parsed and validated case file.
 type Case struct {
 	Name  string
-	Group string
+	Group Group
 	Why   []string
 	// Env is nil when the file has no `env`; an empty map when it has `env: {}`.
 	Env         map[string]string
@@ -83,7 +83,7 @@ var (
 	envNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
-var caseGroups = map[string]bool{
+var caseGroups = map[Group]bool{
 	"baseline": true, "breadth": true, "depth": true, "unsupported": true,
 	"excluded": true, "unknown": true, "behavior": true,
 }
@@ -243,14 +243,14 @@ func (raw *rawCase) validate() (*Case, error) {
 	if raw.Group == nil {
 		return nil, fmt.Errorf("%w: group", ErrCaseMissingField)
 	}
-	c.Group = string(*raw.Group)
+	c.Group = Group(*raw.Group)
 	if !caseGroups[c.Group] {
 		return nil, fmt.Errorf("%w: %q", ErrCaseGroup, c.Group)
 	}
 	for _, w := range raw.Why {
 		c.Why = append(c.Why, string(w))
 	}
-	if c.Group == "behavior" && len(c.Why) == 0 {
+	if c.Group == GroupBehavior && len(c.Why) == 0 {
 		return nil, ErrCaseWhyRequired
 	}
 

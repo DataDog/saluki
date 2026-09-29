@@ -8,6 +8,8 @@ package main
 import (
 	"errors"
 	"testing"
+
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/driver"
 )
 
 func TestParseDriveFlags(t *testing.T) {
@@ -59,5 +61,18 @@ func TestParseDriveFlagsRepeatedCases(t *testing.T) {
 	}
 	if len(f.casesDirs) != 2 || f.casesDirs[0] != "c1" || f.casesDirs[1] != "c2" {
 		t.Fatalf("got %v", f.casesDirs)
+	}
+}
+
+func TestScratchDirIsPrivate(t *testing.T) {
+	// A root and its rerun share a case name, and so do a one-key half and its part: their
+	// positions keep their scratch directories apart.
+	dirs := map[string]bool{}
+	for _, s := range []driver.Scratch{{Root: "r", Index: 1, Name: "r"}, {Root: "r", Index: 3, Name: "r"},
+		{Root: "r", Index: 2, Name: "r--k"}, {Root: "r", Index: 4, Name: "r--k"}, driver.BaselineScratch} {
+		dirs[scratchDir("/w", s)] = true
+	}
+	if len(dirs) != 5 || !dirs["/w/run/r/3-r"] || !dirs["/w/run/r/2-r--k"] || !dirs["/w/run/_baseline/1-_baseline"] {
+		t.Fatalf("scratch dirs %v", dirs)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -40,20 +41,6 @@ type Result struct {
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
-// sanitize maps s to the case-name alphabet: lowercase, and every character outside [a-z0-9]
-// becomes `-`.
-func sanitize(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('-')
-		}
-	}
-	return b.String()
-}
-
 // splitThreshold is the most keys a top-level section's batch holds before it is split by its
 // second path component (case.md §3.2).
 const splitThreshold = 40
@@ -65,9 +52,9 @@ func section(key string) string {
 	first, _, found := strings.Cut(key, ".")
 	if !found {
 		r, _ := utf8.DecodeRuneInString(first)
-		return "top-" + sanitize(string(r))
+		return "top-" + record.Sanitize(string(r))
 	}
-	return sanitize(first)
+	return record.Sanitize(first)
 }
 
 // subSection is the batch of a key in a split section: `<section>` for the section's direct
@@ -77,7 +64,7 @@ func subSection(key string) string {
 	if len(parts) < 3 {
 		return section(key)
 	}
-	return section(key) + "-" + sanitize(parts[1])
+	return section(key) + "-" + record.Sanitize(parts[1])
 }
 
 // rawSection is the unsanitized path prefix that section(key) derives its batch name from: the
@@ -161,7 +148,7 @@ func batch(keys []string) ([]string, [][]string, error) {
 
 // newCase is a case with no inputs, in the form record.ParseCase gives it.
 func newCase(name, group string, keys []string) *record.Case {
-	c := &record.Case{Name: name, Group: group, Why: []string{}}
+	c := &record.Case{Name: name, Group: record.Group(group), Why: []string{}}
 	for _, k := range keys {
 		c.Keys = append(c.Keys, record.KeyEntry{Key: k})
 	}
@@ -181,8 +168,10 @@ type generator struct {
 	// leaves is every schema leaf by lowercased path.
 	leaves map[string]*schema.Key
 	facts  *AgentFacts
-	res    Result
-	names  map[string]bool
+	// envBindings is schema.EnvBindings: every leaf's bound env names, by lowercased path.
+	envBindings map[string][]string
+	res         Result
+	names       map[string]bool
 }
 
 func (g *generator) add(c *record.Case) error {
@@ -197,19 +186,18 @@ func (g *generator) add(c *record.Case) error {
 	return nil
 }
 
-// envName is the key's env var: none for a `no-env` key; otherwise the first of the schema's
-// `env_vars`, or, when it lists none, the name the Agent derives (`DD_` and the key uppercased,
-// `.` as `_`). The name must be one the Agent bound; if not, the generator's reading of the
-// schema disagrees with the Agent, a harness failure.
+// envName is the key's env var, or none for a `no-env` key: the first schema `env_vars` entry,
+// else the derived name (schema.DerivedEnvName). The name must be one the Agent bound; if not, the
+// generator's reading of the schema disagrees with the Agent, a harness failure.
 func (g *generator) envName(s *schema.Key) (string, bool, error) {
 	if s.NoEnv {
 		return "", false, nil
 	}
-	name := "DD_" + strings.ToUpper(strings.ReplaceAll(s.Path, ".", "_"))
+	name := schema.DerivedEnvName(s.Path)
 	if len(s.EnvVars) > 0 {
 		name = s.EnvVars[0]
 	}
-	if !g.facts.EnvVars[name] {
+	if !slices.Contains(g.envBindings[strings.ToLower(s.Path)], name) || !g.facts.EnvVars[name] {
 		return "", false, fmt.Errorf("key %q: env var %s is not in the Agent's GetEnvVars()", strings.ToLower(s.Path), name)
 	}
 	return name, true, nil
@@ -332,7 +320,7 @@ func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, er
 	if err != nil {
 		return nil, err
 	}
-	g := &generator{leaves: leaves, facts: facts, names: map[string]bool{}}
+	g := &generator{leaves: leaves, facts: facts, envBindings: s.EnvBindings(), names: map[string]bool{}}
 	var both []string
 	for k := range overlay.Support {
 		if overlay.Excluded[k] {

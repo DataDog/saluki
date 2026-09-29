@@ -10,6 +10,7 @@ package schema
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -203,4 +204,55 @@ func (s Schema) LowercasedLeaves() (map[string]*Key, error) {
 		return nil, fmt.Errorf("schema has no settings")
 	}
 	return out, nil
+}
+
+// EnvBindings returns, for every leaf by lowercased path, the set of env var names the Agent binds
+// for it, sorted, as the Agent's bindEnv and BindEnvAndSetDefaultWithDeprecation do
+// (pkg/config/nodetreemodel/config.go): the schema's `env_vars` when it lists any; otherwise the
+// derived name (DerivedEnvName) and, for a key with `renamed_from`, the derived names of its former
+// names. A `no-env` key binds none and is left out. The result is a set: it does not follow the
+// Agent's own order of a key's names (deprecated names first, the new name last), so a caller that
+// needs one name must choose it by its own rule.
+func (s Schema) EnvBindings() map[string][]string {
+	out := map[string][]string{}
+	for _, p := range s.Leaves() {
+		k := s[p]
+		if k.NoEnv {
+			continue
+		}
+		var names []string
+		if len(k.EnvVars) > 0 {
+			names = slices.Clone(k.EnvVars)
+		} else {
+			names = []string{DerivedEnvName(p)}
+			for _, old := range k.RenamedFrom {
+				names = append(names, DerivedEnvName(old))
+			}
+		}
+		slices.Sort(names)
+		out[strings.ToLower(p)] = slices.Compact(names)
+	}
+	return out
+}
+
+// EnvKeys inverts bindings: every bound env var name to the keys it binds, sorted.
+func EnvKeys(bindings map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for k, names := range bindings {
+		for _, n := range names {
+			if !slices.Contains(out[n], k) {
+				out[n] = append(out[n], k)
+			}
+		}
+	}
+	for n := range out {
+		sort.Strings(out[n])
+	}
+	return out
+}
+
+// DerivedEnvName is the env var name the Agent derives for a key with no `env_vars`: `DD_` and the
+// key uppercased, with `.` as `_`.
+func DerivedEnvName(key string) string {
+	return "DD_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
 }
