@@ -146,17 +146,19 @@ func selectGettersNoDefault(declaredType, elementType string, tags SchemaTags) [
 // otherwise unknown keys and sections use [Get]. A leaf with a default (hasDefault) uses
 // selectGetters from defaultType; a leaf with no default uses selectGettersNoDefault from its
 // declared schema type and element type instead (getter-map.md §1.1).
-func GettersForKey(entry KeyEntry, kind KeyKind, hasDefault bool, defaultType, declaredType, elementType string, tags SchemaTags) ([]string, error) {
+//
+// Both the probe and case runs select through SelectGetters, which calls this.
+func GettersForKey(entry KeyEntry, sk SchemaKey, hasDefault bool, defaultType string) ([]string, error) {
 	if entry.Getters != nil {
 		return append([]string{}, entry.Getters...), nil
 	}
-	if kind != KeyLeaf {
+	if sk.Kind != KeyLeaf {
 		return []string{"Get"}, nil
 	}
 	if !hasDefault {
-		return selectGettersNoDefault(declaredType, elementType, tags), nil
+		return selectGettersNoDefault(sk.DeclaredType, sk.ElementType, sk.Tags), nil
 	}
-	return selectGetters(defaultType, tags)
+	return selectGetters(defaultType, sk.Tags)
 }
 
 // DefaultLayerType returns the `%T` of a schema leaf's default-layer value, and whether it has
@@ -206,4 +208,17 @@ func CallGetter(r model.Reader, name, key string) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrGetterName, name)
 	}
+}
+
+// SelectGetters returns the getter list for one key entry of a case: the override if given,
+// otherwise the default list from the schema and, for a schema leaf, its default-layer type.
+// GetAllSources is called only on schema leaves without an override; the caller discards its
+// warnings. It also returns the default-layer type it used and whether the key has a default.
+func SelectGetters(r model.Reader, entry KeyEntry, schema AgentSchema) (list []string, defaultType string, hasDefault bool, err error) {
+	sk := schema.Key(entry.Key)
+	if entry.Getters == nil && sk.Kind == KeyLeaf {
+		defaultType, hasDefault = DefaultLayerType(r, entry.Key)
+	}
+	list, err = GettersForKey(entry, sk, hasDefault, defaultType)
+	return list, defaultType, hasDefault, err
 }

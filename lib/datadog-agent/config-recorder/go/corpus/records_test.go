@@ -90,18 +90,16 @@ func TestGoldenLines(t *testing.T) {
 
 func TestLineDetails(t *testing.T) {
 	c := mustParse(t, exampleLayersCase)
-	upd := 0
 	lines := map[string]Line{
 		// Update value omitted for unset, op always written, getters override kept, <>& unescaped.
 		`{"case":"dogstatsd-port-layers","group":"behavior","inputs":{"cli":[{"key":"cmd_port","value":"5099"}],"fleet_policy":"dogstatsd_port: 8130\n","keys":[{"key":"dogstatsd_port"},{"getters":["GetInt","GetString"],"key":"cmd_port"}],"updates":[{"key":"dogstatsd_port","op":"set","source":"remote-config","value":8131},{"key":"dogstatsd_port","op":"unset","source":"remote-config"}]},"startup_error":"a <b> & c","type":"case","why":["fleet-policies-outranked","unset-always-notifies-even-if-unchanged"]}`: &CaseLine{
 			Inputs: c, StartupError: strp("a <b> & c"),
 		},
-		// Final source compared with the last event; snapshot null forces source; absent resync.
-		`{"case":"k","events":[{"kind":"update","seq":1,"source":"remote-config","update":0,"value":8131},{"absent":true,"kind":"snapshot","seq":2,"source":"","update":0}],"key":"x","reads":{"final":{"getters":[],"go_type":"<nil>","source":"default"},"snapshot":{"getters":[{"getter":"Get","result":null}],"go_type":"<nil>","source":"default"}},"snapshot":null,"type":"key"}`: &KeyLine{
+		// Final source compared with the last event; snapshot null forces source.
+		`{"case":"k","events":[{"seq":1,"source":"remote-config","update":0,"value":8131}],"key":"x","reads":{"final":{"getters":[],"go_type":"<nil>","source":"default"},"snapshot":{"getters":[{"getter":"Get","result":null}],"go_type":"<nil>","source":"default"}},"snapshot":null,"type":"key"}`: &KeyLine{
 			Case: "k", Key: "x",
 			Events: []Event{
-				{Setting: Setting{Source: "remote-config", Value: json.RawMessage(`8131`)}, Kind: "update", Seq: 1, Update: &upd},
-				{Kind: "snapshot", Seq: 2, Update: &upd, Absent: true},
+				{Setting: Setting{Source: "remote-config", Value: json.RawMessage(`8131`)}, Seq: 1, Update: 0},
 			},
 			SnapshotRead: Read{Getters: []GetterResult{{Getter: "Get", Result: mustResult(t, nil)}}, GoType: "<nil>", Source: "default"},
 			FinalRead:    &Read{GoType: "<nil>", Source: "default"},
@@ -133,7 +131,6 @@ func TestValidate(t *testing.T) {
 		{"containerized on startup failure", &CaseLine{Inputs: c, StartupError: strp("boom"), Containerized: &yes}, ErrRecordStartupFailure},
 		{"timed_out with seq_delta 0", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), Updates: []UpdateResult{{Index: 0, SeqDelta: 0, TimedOut: true}}}, ErrRecordTimedOut},
 		{"side effects unsorted", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), SideEffects: []SideEffect{{Key: "b"}, {Key: "a"}}}, ErrRecordSideEffects},
-		{"null update after attributed", &KeyLine{Case: "a", Key: "x", Events: []Event{{Kind: "update", Update: new(int)}, {Kind: "update"}}}, ErrRecordEventUpdate},
 		{"construction warning bad level", &CaseLine{Inputs: c, Origin: strp("datadog.yaml"), ConstructionWarnings: []Warning{{Level: "WARN+1", Message: "boom"}}}, ErrWarningLevel},
 		{"getter warning bad level", &KeyLine{Case: "a", Key: "x", SnapshotRead: Read{Getters: []GetterResult{{Getter: "Get", Warnings: []Warning{{Level: "WARN+1", Message: "boom"}}}}}}, ErrWarningLevel},
 		{"bad commit", &HeaderLine{AgentCommit: "281d921619d", GOOS: "l", GOARCH: "a", GoVersion: "g", ContainerImage: "i"}, ErrRecordCommit},

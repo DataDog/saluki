@@ -1,0 +1,7 @@
+name: update-string-for-int
+group: behavior
+why: [config-set-api-string-under-cli]
+updates:
+  - {key: dogstatsd_port, value: "8200", source: cli}
+keys:
+  - {key: dogstatsd_port, getters: [GetInt, GetString]}
