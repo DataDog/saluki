@@ -299,7 +299,7 @@ impl OtlpMetricsTranslator {
         OtlpMetricsTranslator {
             config: Default::default(),
             default_hostname: MetaString::from_static("default-host"),
-            context_resolver: ContextResolverBuilder::for_tests().build(),
+            context_resolver: ContextResolverBuilder::for_tests().build().0,
             origin_tag_resolver: OtlpOriginTagResolver::new(std::sync::Arc::new(
                 saluki_env::workload::providers::NoopWorkloadProvider,
             )),

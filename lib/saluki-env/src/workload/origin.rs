@@ -3,7 +3,7 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use saluki_common::{
-    cache::{Cache, CacheBuilder},
+    cache::{Cache, CacheBuilder, CacheWorker},
     hash::hash_single_fast,
 };
 use saluki_context::origin::{OriginTagCardinality, RawOrigin};
@@ -114,16 +114,23 @@ pub struct OriginResolver {
 }
 
 impl OriginResolver {
-    /// Creates a new `OriginResolver`.
-    pub fn new(ed_resolver: ExternalDataStoreResolver) -> Self {
-        Self {
+    /// Creates a new `OriginResolver`, along with the worker that drives its cache.
+    ///
+    /// The resolver is usable immediately, but its cache never expires entries until the returned worker is running.
+    /// Add it to a supervisor as a transient child.
+    pub fn new(ed_resolver: ExternalDataStoreResolver) -> (Self, CacheWorker) {
+        let (origin_cache, worker) = CacheBuilder::from_identifier("origin_cache")
+            .expect("identifier cannot be invalid")
+            .with_capacity(DEFAULT_ORIGIN_CACHE_ITEM_LIMIT)
+            .with_time_to_idle(Some(DEFAULT_ORIGIN_CACHE_ITEM_TIME_TO_IDLE))
+            .build();
+
+        let resolver = Self {
             ed_resolver,
-            origin_cache: CacheBuilder::from_identifier("origin_cache")
-                .expect("identifier cannot be invalid")
-                .with_capacity(DEFAULT_ORIGIN_CACHE_ITEM_LIMIT)
-                .with_time_to_idle(Some(DEFAULT_ORIGIN_CACHE_ITEM_TIME_TO_IDLE))
-                .build(),
-        }
+            origin_cache,
+        };
+
+        (resolver, worker)
     }
 
     fn build_resolved_origin(&self, origin: RawOrigin<'_>) -> ResolvedOrigin {
@@ -182,7 +189,8 @@ mod tests {
 
     fn origin_resolver() -> OriginResolver {
         let external_data_store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(usize::MAX).unwrap());
-        OriginResolver::new(external_data_store.resolver())
+        // Tests exercise resolution directly and don't need the cache's background work driven.
+        OriginResolver::new(external_data_store.resolver()).0
     }
 
     fn raw_origin(

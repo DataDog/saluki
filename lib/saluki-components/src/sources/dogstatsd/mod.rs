@@ -20,6 +20,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes};
 use bytesize::ByteSize;
+use saluki_common::supervision::CompositeWorker;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_context::tags::{RawTags, RawTagsFilter};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr};
@@ -724,8 +725,9 @@ impl SourceBuilder for DogStatsDConfiguration {
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
             DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, captured_tagger.clone())
         });
-        let context_resolvers = ContextResolvers::new(self, context.component_context(), maybe_origin_tags_resolver)
-            .error_context("Failed to create context resolvers.")?;
+        let (context_resolvers, context_resolvers_worker) =
+            ContextResolvers::new(self, context.component_context(), maybe_origin_tags_resolver)
+                .error_context("Failed to create context resolvers.")?;
 
         let codec_config = DogStatsDCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
@@ -762,6 +764,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             io_buffer_pool,
             io_buffer_queue_capacity: max_buffers,
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
+            context_resolvers_worker: Some(context_resolvers_worker),
             codec,
             context_resolvers,
             default_hostname: self.default_hostname.clone(),
@@ -830,6 +833,11 @@ pub struct DogStatsD {
     io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
+
+    // Built here but spawned in `run`, so the resolvers' background work lands under the component's own supervisor
+    // rather than whatever supervisor happens to be ambient during `build`. Same shape as `io_buffer_pool_shrinker`.
+    // `Option` so `run` can take it out of `&mut self`.
+    context_resolvers_worker: Option<CompositeWorker>,
     default_hostname: MetaString,
     enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
@@ -971,6 +979,13 @@ impl Source for DogStatsD {
 
         // Brutal: the shrinker loops forever with no terminal condition of its own, so waiting for it would hold
         // every shutdown open until the component's budget elapsed.
+        // Transient: the resolvers' loops also stop when the resolvers are dropped, which is a clean exit that must
+        // not be restarted into a loop. A panic, though, is worth recovering from -- otherwise the context caches
+        // stop expiring and grow unbounded.
+        if let Some(worker) = self.context_resolvers_worker.take() {
+            runtime::supervisable(worker).transient().spawn();
+        }
+
         runtime::worker("io_buffer_pool_shrinker", self.io_buffer_pool_shrinker)
             .with_shutdown_strategy(ShutdownStrategy::Brutal)
             .spawn();
@@ -2447,8 +2462,8 @@ mod tests {
     }
 
     fn test_context_resolvers() -> ContextResolvers {
-        let tags_resolver = TagsResolverBuilder::for_tests().build();
-        let context_resolver = ContextResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests().build();
+        let (context_resolver, _resolver_worker) = ContextResolverBuilder::for_tests()
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
         ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver)
@@ -2924,8 +2939,8 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-        let tags_resolver = TagsResolverBuilder::for_tests().build();
-        let context_resolver = ContextResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests().build();
+        let (context_resolver, _resolver_worker) = ContextResolverBuilder::for_tests()
             .with_heap_allocations(false)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
@@ -3013,8 +3028,8 @@ mod tests {
     #[test]
     fn metric_with_additional_tags() {
         let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-        let tags_resolver = TagsResolverBuilder::for_tests().build();
-        let context_resolver = ContextResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests().build();
+        let (context_resolver, _resolver_worker) = ContextResolverBuilder::for_tests()
             .with_heap_allocations(false)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
@@ -3456,8 +3471,8 @@ mod tests {
             Arc::new(workload_provider),
             super::CapturedTaggerHandle::new(),
         );
-        let tags_resolver = TagsResolverBuilder::for_tests().build();
-        let context_resolver = ContextResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests().build();
+        let (context_resolver, _resolver_worker) = ContextResolverBuilder::for_tests()
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
         let mut context_resolvers = ContextResolvers::manual_with_origin(
@@ -4286,8 +4301,8 @@ mod supervision {
             DogStatsDConfiguration::for_test().buffer_size,
         );
 
-        let tags_resolver = TagsResolverBuilder::for_tests().build();
-        let context_resolver = ContextResolverBuilder::for_tests()
+        let (tags_resolver, _tags_worker) = TagsResolverBuilder::for_tests().build();
+        let (context_resolver, _resolver_worker) = ContextResolverBuilder::for_tests()
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
 
@@ -4297,6 +4312,8 @@ mod supervision {
             io_buffer_pool,
             io_buffer_queue_capacity: 16,
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
+            // Tests drive the source directly and don't assert on cache expiration.
+            context_resolvers_worker: None,
             codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
             context_resolvers: ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver),
             default_hostname: MetaString::from_static("test-host"),

@@ -46,6 +46,8 @@ use crate::common::otlp::{
 mod logs;
 mod metrics;
 mod resolver;
+use saluki_common::supervision::CompositeWorker;
+
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
@@ -232,7 +234,8 @@ impl SourceBuilder for OtlpConfiguration {
 
         // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
         // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.otlp.contexts, context.component_context(), None)?;
+        let (context_resolver, context_resolver_worker) =
+            build_context_resolver(&self.otlp.contexts, context.component_context(), None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
@@ -252,6 +255,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         Ok(Box::new(Otlp {
             context_resolver,
+            context_resolver_worker: Some(context_resolver_worker),
             origin_tag_resolver,
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
@@ -282,6 +286,10 @@ impl MemoryBounds for OtlpConfiguration {
 
 pub struct Otlp {
     context_resolver: ContextResolver,
+
+    // Built in `build` but spawned in `run`, so the resolver's background work lands under the component's own
+    // supervisor rather than whatever supervisor happens to be ambient during `build`. `Option` so `run` can take it.
+    context_resolver_worker: Option<CompositeWorker>,
     origin_tag_resolver: OtlpOriginTagResolver,
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
@@ -304,6 +312,7 @@ impl Source for Otlp {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let Self {
             context_resolver,
+            context_resolver_worker,
             origin_tag_resolver,
             grpc_endpoint,
             http_endpoint,
@@ -320,6 +329,12 @@ impl Source for Otlp {
             metrics,
             translator_metrics,
         } = *self;
+
+        // Transient: the resolver's loops also stop when the resolver is dropped, which is a clean exit that must not
+        // be restarted into a loop. A panic is worth recovering from -- otherwise the context cache stops expiring.
+        if let Some(worker) = context_resolver_worker {
+            runtime::supervisable(worker).transient().spawn();
+        }
 
         let global_shutdown = context.take_shutdown_handle();
         pin!(global_shutdown);

@@ -22,7 +22,7 @@ use metrics::{
     Recorder, SetRecorderError, SharedString, Unit,
 };
 use metrics_util::storage::AtomicBucket;
-use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
+use saluki_common::{collections::FastHashMap, supervision::CompositeWorker, sync::shutdown::ShutdownHandle};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -38,7 +38,7 @@ use tracing::debug;
 
 use crate::{
     data_model::event::{metric::*, Event},
-    runtime::{InitializationError, Supervisable, SupervisorFuture},
+    runtime::{self, InitializationError, Supervisable, SupervisorFuture},
 };
 
 mod aggregated;
@@ -514,7 +514,12 @@ impl FlushState {
 }
 
 async fn flush_metrics() {
-    let mut context_resolver = MetricsContextResolver::new(INTERNAL_METRICS_INTERNER_SIZE);
+    let (mut context_resolver, resolver_worker) = MetricsContextResolver::new(INTERNAL_METRICS_INTERNER_SIZE);
+
+    // The resolver is created inside the flusher's own supervised process, so its background work becomes a sibling
+    // child rather than an unparented task. Transient is deliberate: this function is the flusher's whole body, so a
+    // flusher restart drops the resolver, which is a clean exit that must not be restarted into a loop.
+    runtime::supervisable(resolver_worker).transient().spawn();
 
     let state = RECEIVER_STATE.get().expect("metrics receiver should be set");
 
@@ -663,16 +668,20 @@ struct MetricsContextResolver {
 }
 
 impl MetricsContextResolver {
-    fn new(resolver_interner_size_bytes: NonZeroUsize) -> Self {
-        Self {
-            // Set up our context resolver without caching, since we will be caching the contexts ourselves.
-            context_resolver: ContextResolverBuilder::from_name("core/internal_metrics")
-                .expect("resolver name is not empty")
-                .with_interner_capacity_bytes(resolver_interner_size_bytes)
-                .without_caching()
-                .build(),
+    fn new(resolver_interner_size_bytes: NonZeroUsize) -> (Self, CompositeWorker) {
+        // Set up our context resolver without caching, since we will be caching the contexts ourselves.
+        let (context_resolver, worker) = ContextResolverBuilder::from_name("core/internal_metrics")
+            .expect("resolver name is not empty")
+            .with_interner_capacity_bytes(resolver_interner_size_bytes)
+            .without_caching()
+            .build();
+
+        let resolver = Self {
+            context_resolver,
             key_context_cache: FastHashMap::default(),
-        }
+        };
+
+        (resolver, worker)
     }
 
     fn resolve_from_key(&mut self, key: Key) -> Context {
@@ -801,7 +810,8 @@ mod tests {
     }
 
     fn resolver() -> MetricsContextResolver {
-        MetricsContextResolver::new(INTERNAL_METRICS_INTERNER_SIZE)
+        // Tests exercise resolution directly and don't need the background work driven.
+        MetricsContextResolver::new(INTERNAL_METRICS_INTERNER_SIZE).0
     }
 
     // Mimics `MetricsRecorder::register_counter` against a raw key (no prefixing needed in tests).

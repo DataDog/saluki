@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use saluki_common::cache::{Cache, CacheBuilder};
+use saluki_common::{
+    cache::{Cache, CacheBuilder},
+    supervision::CompositeWorker,
+};
+use saluki_core::runtime;
 
 use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
@@ -34,20 +38,35 @@ pub struct PointsCache {
 }
 
 impl PointsCache {
+    /// Creates a `PointsCache` from the given configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a supervised process. The caches here expire entries on a timer, and this spawns
+    /// that work on the ambient supervisor so it belongs to the component that owns the cache. This is reached from
+    /// `Otlp::run`, which satisfies that; tests should use [`PointsCache::for_tests`] instead.
     pub fn from_config(config: OtlpMetricsTranslatorConfig) -> Self {
         let ttl = config.delta_ttl;
         let interval = std::cmp::max(Duration::from_secs(1), ttl / 2);
 
-        let number_points = CacheBuilder::from_identifier("otlp/metrics/number_points")
+        let (number_points, number_points_worker) = CacheBuilder::from_identifier("otlp/metrics/number_points")
             .expect("identifier cannot be invalid")
             .with_time_to_idle(Some(ttl))
             .with_expiration_interval(interval)
             .build();
-        let extrema_points = CacheBuilder::from_identifier("otlp/metrics/extrema_points")
+        let (extrema_points, extrema_points_worker) = CacheBuilder::from_identifier("otlp/metrics/extrema_points")
             .expect("identifier cannot be invalid")
             .with_time_to_idle(Some(ttl))
             .with_expiration_interval(interval)
             .build();
+
+        // Transient: both loops also stop when their cache is dropped, which is a clean exit that must not be
+        // restarted into a loop. A panic is worth recovering from, since otherwise deltas accumulate forever.
+        let worker = CompositeWorker::new(
+            "points_cache",
+            vec![Box::new(number_points_worker), Box::new(extrema_points_worker)],
+        );
+        runtime::supervisable(worker).transient().spawn();
 
         Self {
             number_points,
@@ -187,10 +206,13 @@ impl PointsCache {
     }
 
     /// Creates a new `PointsCache` for tests.
+    ///
+    /// Unlike [`from_config`][Self::from_config] this spawns nothing, so it works outside a supervised process. The
+    /// caches it builds have no expiration, which tests don't exercise.
     pub fn for_tests() -> Self {
         Self {
-            number_points: CacheBuilder::for_tests().build(),
-            extrema_points: CacheBuilder::for_tests().build(),
+            number_points: CacheBuilder::for_tests().build().0,
+            extrema_points: CacheBuilder::for_tests().build().0,
         }
     }
 }
