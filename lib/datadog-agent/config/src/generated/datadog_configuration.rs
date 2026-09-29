@@ -762,7 +762,7 @@ pub struct ApmConfig {
     pub analyzed_rate_by_service: HashMap<String, f64>,
 
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    #[serde(deserialize_with = "crate::cast_de::deserialize_json_map_or_json_string")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_map_or_json_string")]
     pub analyzed_spans: ::serde_json::Map<String, ::serde_json::Value>,
 
     #[serde(default = "defaults::default_bool::<true>")]

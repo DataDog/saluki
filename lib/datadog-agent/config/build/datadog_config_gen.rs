@@ -635,7 +635,7 @@ fn permissivize(file: &mut syn::File) {
                 LeafKind::Text => "crate::cast_de::deserialize_string",
                 LeafKind::StringMap => "crate::cast_de::deserialize_string_map",
                 LeafKind::NumberMap => "crate::cast_de::deserialize_number_map",
-                LeafKind::JsonMap => "crate::cast_de::deserialize_json_map_or_json_string",
+                LeafKind::JsonMap => "crate::cast_de::deserialize_map_or_json_string",
                 LeafKind::OptionalText => "crate::cast_de::deserialize_optional_string",
                 LeafKind::OptionalInteger => "crate::cast_de::deserialize_optional_i64",
                 LeafKind::Exempt => continue,
