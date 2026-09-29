@@ -17,7 +17,7 @@ use crate::decoder::{evaluate, Outcome, Verdict};
 use crate::source::{FetchError, RcAgent};
 use crate::{
     AgentIdentity, ApplyError, ClientKind, ConfigId, Error, ProductDecoder, RcClientConfiguration,
-    RemoteConfigurationClient, RemoteConfigurationWorker, TestPublisher,
+    RemoteConfigurationClient, RemoteConfigurationWorker, Subscription, TestPublisher,
 };
 
 const TEST_CLIENT_NAME: &str = "test-client";
@@ -362,6 +362,69 @@ async fn a_pending_publication_is_observed_after_the_publisher_stops() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_inert_subscription_has_no_snapshot_and_never_changes() {
+    let mut inert = Subscription::<u32>::inert();
+    let mut clone = inert.clone();
+
+    assert!(inert.current().is_none());
+    assert!(clone.current().is_none());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(3600), inert.changed())
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(3600), clone.changed())
+            .await
+            .is_err()
+    );
+}
+
+/// A snapshot type without `Debug`, so the tests below show that no `Debug` bound is needed on it.
+struct TestOpaque;
+
+/// A consumer that holds a subscription and derives `Debug`, which compiles only if `Subscription` implements `Debug`
+/// without requiring it of the snapshot.
+#[derive(Debug)]
+struct TestConsumer {
+    subscription: Subscription<TestOpaque>,
+}
+
+#[test]
+fn a_consumer_holding_a_subscription_can_derive_debug() {
+    let (publisher, subscription) = TestPublisher::<TestOpaque>::new();
+    let consumer = TestConsumer { subscription };
+    assert_eq!(
+        format!("{consumer:?}"),
+        "TestConsumer { subscription: Subscription { accepted: false, .. } }"
+    );
+
+    publisher.accept(TestOpaque);
+    assert!(consumer.subscription.current().is_some());
+    assert_eq!(
+        format!("{consumer:?}"),
+        "TestConsumer { subscription: Subscription { accepted: true, .. } }"
+    );
+
+    let inert = TestConsumer {
+        subscription: Subscription::inert(),
+    };
+    assert_eq!(
+        format!("{inert:?}"),
+        "TestConsumer { subscription: Subscription { accepted: false, .. } }"
+    );
+}
+
+#[test]
+fn a_test_publisher_debug_shows_whether_it_is_subscribed() {
+    let (publisher, subscription) = TestPublisher::<TestOpaque>::new();
+    assert_eq!(format!("{publisher:?}"), "TestPublisher { subscribed: true, .. }");
+
+    drop(subscription);
+    assert_eq!(format!("{publisher:?}"), "TestPublisher { subscribed: false, .. }");
+}
+
 #[test]
 #[should_panic(expected = "duplicate configuration ID")]
 fn test_publisher_rejects_duplicate_ids() {
@@ -590,6 +653,33 @@ fn each_client_has_its_own_random_id() {
     assert_eq!(id.get_version(), Some(uuid::Version::Random));
     assert_ne!(first.shared.client_id, second.shared.client_id);
     assert_eq!(first.shared.client_id, first.clone().shared.client_id);
+}
+
+#[test]
+fn an_inert_subscription_does_not_count_against_a_client() {
+    let (client, _worker) = client();
+    let _inert = Subscription::<TestInstance>::inert();
+
+    client.subscribe::<TestLastValidDecoder>().unwrap();
+}
+
+#[test]
+fn the_client_and_worker_debug_show_the_client_id() {
+    let (client, worker) = client();
+    let id = client.shared.client_id.clone();
+
+    assert_eq!(
+        format!("{client:?}"),
+        format!("RemoteConfigurationClient {{ client_id: {id:?}, .. }}")
+    );
+    let worker_debug = format!("{worker:?}");
+    assert!(
+        worker_debug.starts_with(&format!(
+            "RemoteConfigurationWorker {{ client_id: {id:?}, config: RcClientConfiguration {{"
+        )),
+        "{worker_debug}"
+    );
+    assert!(worker_debug.ends_with(", .. }"), "{worker_debug}");
 }
 
 #[tokio::test]

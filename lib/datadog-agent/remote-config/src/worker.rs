@@ -1,3 +1,4 @@
+use std::fmt;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +43,15 @@ pub struct RemoteConfigurationWorker {
     agent: Arc<Mutex<Box<dyn RcAgent>>>,
 
     config: RcClientConfiguration,
+}
+
+impl fmt::Debug for RemoteConfigurationWorker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoteConfigurationWorker")
+            .field("client_id", &self.shared.client_id)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RemoteConfigurationWorker {

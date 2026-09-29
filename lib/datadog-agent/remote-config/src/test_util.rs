@@ -2,6 +2,8 @@
 //! implementations and of the components that consume their subscriptions. It is compiled with the `test-util` cargo
 //! feature.
 
+use std::fmt;
+
 use crate::decoder::evaluate;
 use crate::subscription::Publisher;
 use crate::{ConfigId, ProductDecoder, Subscription};
@@ -129,5 +131,13 @@ impl<T, E> TestPublisher<T, E> {
             .map(|(id, payload)| (id.clone(), payload.as_slice()))
             .collect();
         self.publisher.publish(evaluate::<P>(assignment).outcome);
+    }
+}
+
+impl<T, E> fmt::Debug for TestPublisher<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestPublisher")
+            .field("subscribed", &self.publisher.is_subscribed())
+            .finish_non_exhaustive()
     }
 }

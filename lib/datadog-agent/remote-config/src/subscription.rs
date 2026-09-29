@@ -1,5 +1,6 @@
 //! Typed subscriptions to a product's configuration.
 
+use std::fmt;
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -36,9 +37,26 @@ pub struct Subscription<T, E = String> {
 }
 
 impl<T, E> Subscription<T, E> {
+    /// Creates a subscription that never receives a snapshot.
+    ///
+    /// Use this where a component takes a subscription but the process has no client to subscribe with, for example
+    /// because Remote Configuration is turned off. The component then runs the same code path as one whose client has
+    /// not delivered anything yet: [`current`](Self::current) always returns `None`, and [`changed`](Self::changed)
+    /// waits indefinitely.
+    ///
+    /// An inert subscription is not registered with any client, so it does not count against a client's one
+    /// subscription per product.
+    pub fn inert() -> Self {
+        // `changed` turns a closed channel into a future that never completes.
+        let (publisher, subscription) = Publisher::new();
+        drop(publisher);
+        subscription
+    }
+
     /// Returns the most recently accepted configuration.
     ///
-    /// Returns `None` until the first snapshot is accepted. `None` does not mean the product has no configuration
+    /// Returns `None` until the first snapshot is accepted, whether because the worker has not yet polled, is not
+    /// running, or the subscription is [inert](Self::inert). `None` does not mean the product has no configuration
     /// assigned: an empty assignment is a snapshot that a default decoder's [`build`](crate::ProductDecoder::build) may
     /// accept.
     pub fn current(&self) -> Option<Arc<T>> {
@@ -46,6 +64,9 @@ impl<T, E> Subscription<T, E> {
     }
 
     /// Waits for a newly published snapshot.
+    ///
+    /// This takes `&mut self` because the subscription tracks which publication it has observed. Each task that waits
+    /// holds its own clone.
     ///
     /// Slow consumers may skip intermediate publications and observe only the latest state. Once the worker stops,
     /// this waits indefinitely after any pending publication has been observed, so a caller may `select!` on it.
@@ -71,6 +92,14 @@ impl<T, E> Subscription<T, E> {
                 snapshot.accepted.as_ref().expect("published snapshot has a value"),
             ))
         }
+    }
+}
+
+impl<T, E> fmt::Debug for Subscription<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Subscription")
+            .field("accepted", &self.receiver.borrow().accepted.is_some())
+            .finish_non_exhaustive()
     }
 }
 

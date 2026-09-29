@@ -7,7 +7,8 @@ use crate::{ApplyError, ConfigId};
 /// Decodes one product's assigned configurations into a snapshot.
 ///
 /// A decoder names the product it decodes, so subscribing with a decoder cannot attach it to the wrong product. Define
-/// a decoder in the crate that owns its snapshot type; this crate knows no product's payload.
+/// a decoder in the crate that owns its snapshot type. A decoder for a product whose type has no other owner belongs in
+/// this crate instead; otherwise this crate knows no product's payload.
 ///
 /// The client drives an implementation once per published snapshot: it constructs a decoder with [`Default`], calls
 /// [`decode`](Self::decode) once per assigned configuration in ascending [`ConfigId`] order, and then calls
@@ -15,8 +16,10 @@ use crate::{ApplyError, ConfigId};
 /// configuration is well defined.
 ///
 /// A product is decoded again only when its assigned configurations or their contents change, so a rejected
-/// assignment is not retried until it changes. When the Agent reports its configuration expired, every product is
-/// decoded as an empty assignment.
+/// assignment is not retried until it changes. When the Agent reports its configuration expired, every product that
+/// had configurations is decoded as an empty assignment; a product that already had none is not decoded again. The
+/// client then asks the Agent for the full assignment until a response is not expired, so configurations that return
+/// are decoded as new.
 ///
 /// Decoding runs on the client's worker task and delays polling for every product while it runs, so implementations
 /// **MUST NOT** block. A panic in [`decode`](Self::decode) or [`build`](Self::build) is caught: the client discards the
@@ -35,6 +38,45 @@ use crate::{ApplyError, ConfigId};
 /// Accumulating into the decoder, rather than returning one decoded value per configuration, is what lets a product
 /// whose configurations have different shapes hold each of them in a field of its own type instead of funneling them
 /// through a shared enum.
+///
+/// # Examples
+///
+/// A product that accepts at most one configuration records every configuration it is given and rejects more than one
+/// in [`build`](Self::build), since only `build` sees the whole assignment:
+///
+/// ```
+/// use datadog_agent_remote_config::{ConfigId, ProductDecoder};
+///
+/// /// Holds the product's single configuration, if it has one.
+/// #[derive(Default)]
+/// struct SingleDecoder {
+///     payloads: Vec<(ConfigId, Vec<u8>)>,
+/// }
+///
+/// impl ProductDecoder for SingleDecoder {
+///     const PRODUCT: &'static str = "EXAMPLE_SINGLE";
+///
+///     type Snapshot = Option<Vec<u8>>;
+///     type Error = String;
+///
+///     fn decode(&mut self, id: &ConfigId, payload: &[u8]) -> Result<(), Self::Error> {
+///         self.payloads.push((id.clone(), payload.to_vec()));
+///         Ok(())
+///     }
+///
+///     fn build(mut self) -> Result<Self::Snapshot, Self::Error> {
+///         if self.payloads.len() > 1 {
+///             return Err(format!("Expected at most one configuration; got {}.", self.payloads.len()));
+///         }
+///         Ok(self.payloads.pop().map(|(_, payload)| payload))
+///     }
+/// }
+///
+/// let mut decoder = SingleDecoder::default();
+/// decoder.decode(&ConfigId::new("a"), b"one").unwrap();
+/// decoder.decode(&ConfigId::new("b"), b"two").unwrap();
+/// assert!(decoder.build().is_err());
+/// ```
 pub trait ProductDecoder: Default + Send + 'static {
     /// The product this decoder decodes, by its protocol name, such as `APM_SEMANTIC_CORE_DD`.
     ///

@@ -93,6 +93,7 @@
 
 #![deny(missing_docs)]
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -138,7 +139,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// rejects invalid settings.
 ///
 /// Whatever the settings, the worker polls once immediately when it starts, and retries every second until its first
-/// successful poll.
+/// successful poll. The exception is an Agent that answers that Remote Configuration is not enabled: the worker then
+/// waits `max_backoff` between attempts, first success or not.
 #[derive(Clone, Debug)]
 pub struct RcClientConfiguration {
     /// The kind of client the Agent sees, and the details it reports in every poll.
@@ -241,12 +243,22 @@ pub struct RemoteConfigurationClient {
     shared: Arc<registry::Shared>,
 }
 
+impl fmt::Debug for RemoteConfigurationClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoteConfigurationClient")
+            .field("client_id", &self.shared.client_id)
+            .finish_non_exhaustive()
+    }
+}
+
 // TODO: consider opt-in health notifications when a subscriber needs them (e.g. CWS enforcement).
 // TODO: consider per-product option to keep last good when the Agent reports expired (e.g. Cluster Agent autoscaling).
 impl RemoteConfigurationClient {
     /// Creates a client and its worker from a connected Datadog Agent client.
     ///
-    /// The connection must be dedicated to Remote Configuration. Construction does not spawn the worker or probe
+    /// The connection must be dedicated to Remote Configuration rather than a clone of another subsystem's client,
+    /// following the Saluki pattern of one connection per subsystem. The connection type is cloneable, so nothing here
+    /// enforces that; it is a convention of the caller's wiring. Construction does not spawn the worker or probe
     /// Remote Configuration availability; the caller schedules the worker through a supervisor or its `run` method.
     ///
     /// The client identifies itself to the Agent with a random ID, generated here and kept for the life of the client,

@@ -685,7 +685,7 @@ async fn a_path_for_an_unrequested_product_is_ignored() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_root_version_of_zero_is_rejected_rather_than_cached() {
+async fn a_response_with_a_lower_root_version_is_applied_without_moving_the_root_version() {
     let (client, worker, mut agent) = client();
     let mut alpha = client.subscribe::<Recorder>().unwrap();
     tokio::spawn(worker.run());
@@ -709,6 +709,7 @@ async fn a_root_version_of_zero_is_rejected_rather_than_cached() {
                 .build(),
         )
         .await;
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "two")]));
 
     let request = agent.poll().await;
     assert_eq!(

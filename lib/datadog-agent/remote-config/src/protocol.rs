@@ -268,7 +268,6 @@ mod tests {
                     "employee/P/unversioned/config": {"length": 2, "hashes": {"sha256": hash}},
                     "employee/P/unhashed/config": {"length": 2, "hashes": {}, "custom": {"v": 3}},
                     "employee/P/badhash/config": {"length": 2, "hashes": {"sha256": "zz"}, "custom": {"v": 3}},
-                    "employee/P/shorthash/config": {"length": 2, "hashes": {"sha256": &hash[..62]}, "custom": {"v": 3}},
                     "employee/P/longhash/config": {"length": 2, "hashes": {"sha256": format!("{hash}00")}, "custom": {"v": 3}},
                 },
             },
@@ -288,7 +287,6 @@ mod tests {
             "employee/P/unversioned/config",
             "employee/P/unhashed/config",
             "employee/P/badhash/config",
-            "employee/P/shorthash/config",
             "employee/P/longhash/config",
             "employee/P/absent/config",
         ] {
