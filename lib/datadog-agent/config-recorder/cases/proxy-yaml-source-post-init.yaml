@@ -1,0 +1,8 @@
+name: proxy-yaml-source-post-init
+group: behavior
+why: [proxy-source-config-post-init]
+yaml: |
+  use_proxy_for_cloud_metadata: true
+  proxy:
+    https: http://yaml.test:3128
+keys: [proxy.https, proxy.no_proxy]

@@ -1,0 +1,6 @@
+name: env-list-of-maps-raw-string
+group: behavior
+why: [env-unhandled-default-type-raw-string]
+env:
+  DD_METRIC_TAG_FILTERLIST: '[{"metric_name":"m","tags":["t"]}]'
+keys: [metric_tag_filterlist]

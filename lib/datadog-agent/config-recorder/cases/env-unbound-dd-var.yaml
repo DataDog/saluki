@@ -1,0 +1,6 @@
+name: env-unbound-dd-var
+group: behavior
+why: [env-unbound-dd-vars-warned-not-applied]
+env:
+  DD_NOT_A_REAL_SETTING_XYZ: "1"
+keys: [not_a_real_setting_xyz]
