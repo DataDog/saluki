@@ -1,0 +1,6 @@
+name: yaml-float-nan
+group: behavior
+why: [stream-sanitize-error-drops-key]
+yaml: |
+  forwarder_backoff_factor: .nan
+keys: [forwarder_backoff_factor]

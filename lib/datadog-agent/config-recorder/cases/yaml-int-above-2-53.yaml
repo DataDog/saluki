@@ -1,0 +1,6 @@
+name: yaml-int-above-2-53
+group: behavior
+why: [json-roundtrip-large-int-precision-loss]
+yaml: |
+  cri_connection_timeout: 9007199254740993
+keys: [cri_connection_timeout]

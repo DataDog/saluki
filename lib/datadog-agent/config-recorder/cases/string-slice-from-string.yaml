@@ -1,0 +1,11 @@
+name: string-slice-from-string
+group: behavior
+why: [getter-stringslice-json-then-whitespace]
+yaml: |
+  unknown_comma_xyz: a,b,c
+  unknown_json_xyz: '["a b", "c"]'
+  unknown_space_xyz: a b, c
+keys:
+  - {key: unknown_comma_xyz, getters: [GetStringSlice]}
+  - {key: unknown_json_xyz, getters: [GetStringSlice]}
+  - {key: unknown_space_xyz, getters: [GetStringSlice]}

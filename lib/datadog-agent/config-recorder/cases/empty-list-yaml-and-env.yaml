@@ -1,0 +1,8 @@
+name: empty-list-yaml-and-env
+group: behavior
+why: [empty-list-streams-null-or-empty]
+env:
+  DD_HISTOGRAM_AGGREGATES: ""
+yaml: |
+  histogram_aggregates: []
+keys: [histogram_aggregates]
