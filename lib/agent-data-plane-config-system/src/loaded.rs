@@ -117,7 +117,7 @@ impl LoadedConfiguration {
     pub async fn standalone(self) -> Result<ConfigurationSystem, Error> {
         validate(&self.local)?;
         let compat_map = self.loader.into_generic().await?;
-        Ok(ConfigurationSystem::standalone(compat_map, self.local))
+        Ok(ConfigurationSystem::standalone(compat_map, self.local, self.base))
     }
 }
 
