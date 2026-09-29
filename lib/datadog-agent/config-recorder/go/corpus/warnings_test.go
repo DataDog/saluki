@@ -8,6 +8,7 @@ package corpus
 import (
 	"errors"
 	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -41,6 +42,30 @@ func TestWarningFromRecord(t *testing.T) {
 		if err := w.Validate(); err != nil {
 			t.Errorf("level %v: Validate: %v", tc.level, err)
 		}
+	}
+}
+
+func TestSortConstructionWarnings(t *testing.T) {
+	in := []Warning{
+		{Level: "WARN", Message: "b"},
+		{Level: "ERROR", Message: "a"},
+		{Level: "WARN", Message: "a"},
+		{Level: "WARN", Message: "b"},
+	}
+	got := SortConstructionWarnings(in)
+	want := []Warning{
+		{Level: "ERROR", Message: "a"},
+		{Level: "WARN", Message: "a"},
+		{Level: "WARN", Message: "b"},
+		{Level: "WARN", Message: "b"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	// The input is untouched and its own order (emission order) is preserved for callers that
+	// must not sort it (getter-call and update warnings).
+	if in[0].Message != "b" || in[1].Message != "a" {
+		t.Fatalf("input mutated: %+v", in)
 	}
 }
 
