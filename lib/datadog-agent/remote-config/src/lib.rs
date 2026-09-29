@@ -111,10 +111,10 @@ mod registry;
 mod repository;
 mod source;
 mod subscription;
-#[cfg(test)]
-mod test;
 #[cfg(any(test, feature = "test-util"))]
 mod test_util;
+#[cfg(test)]
+mod tests;
 mod worker;
 
 pub use decoder::ProductDecoder;
