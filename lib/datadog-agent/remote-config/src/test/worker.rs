@@ -713,9 +713,94 @@ async fn expiry_withdraws_every_configuration() {
     assert_eq!(*required.current().unwrap(), snapshot(&[("b", "two")]));
 
     let request = agent.poll().await;
-    assert_eq!(state(&request).targets_version, 11);
+    assert_eq!(state(&request).targets_version, 0);
     assert!(rows(&request).is_empty());
     assert!(request.cached_target_files.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_expired_status_with_nothing_else_still_withdraws_configurations() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+
+    // No roots, targets, target files, or client configs: only the expired status differs from an unchanged poll.
+    agent
+        .exchange(ClientGetConfigsResponse {
+            config_status: ConfigStatus::Expired as i32,
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[]));
+
+    // The response is applied rather than rejected, and it keeps the cursor it had no targets to replace.
+    let request = agent.poll().await;
+    assert!(!state(&request).has_error);
+    assert_eq!(state(&request).backend_client_state, b"state-10");
+    assert!(rows(&request).is_empty());
+    assert!(request.cached_target_files.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn requests_ask_for_the_full_assignment_until_a_response_is_not_expired() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+    assert_eq!(
+        state(&agent.exchange(Response::new(11).expired().build()).await).targets_version,
+        10
+    );
+    next(&mut alpha).await.unwrap();
+
+    // Every product is decoded, so only the expiry asks for version 0, for as long as the Agent stays expired.
+    assert_eq!(
+        state(&agent.exchange(Response::new(11).expired().build()).await).targets_version,
+        0
+    );
+    assert_eq!(
+        state(
+            &agent
+                .exchange(Response::new(12).send("employee/ALPHA/a/config", 2, b"two").build())
+                .await
+        )
+        .targets_version,
+        0
+    );
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "two")]));
+    assert_eq!(state(&agent.poll().await).targets_version, 12);
+}
+
+#[tokio::test(start_paused = true)]
+async fn configurations_return_when_the_agent_recovers_from_expiry_at_the_same_targets_version() {
+    let (client, worker, mut agent) = client();
+    let mut alpha = client.subscribe::<Recorder>().unwrap();
+    tokio::spawn(worker.run());
+
+    agent
+        .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
+    next(&mut alpha).await.unwrap();
+    agent.exchange(Response::new(11).expired().build()).await;
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[]));
+
+    // The recovered Agent is still at version 11, so, as the Agent does, it answers "no update" to a request at 11.
+    let request = agent.poll().await;
+    if state(&request).targets_version == 11 {
+        agent.respond(Ok(ClientGetConfigsResponse::default()));
+    } else {
+        agent.respond(Ok(Response::new(11).send("employee/ALPHA/a/config", 1, b"one").build()));
+    }
+    assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1192,6 +1277,70 @@ fn tracks_time_since_the_last_successful_poll() {
     assert_eq!(
         gauge(&snapshot, "remote_config_seconds_since_last_successful_poll"),
         5.0
+    );
+}
+
+#[test]
+fn remote_configuration_disabled_on_the_agent_does_not_age_the_last_successful_poll() {
+    let snapshot = recorded(|| async {
+        let (client, worker, mut agent) = client();
+        let _alpha = client.subscribe::<Recorder>().unwrap();
+        tokio::spawn(worker.run());
+
+        // Each answer comes a maximum backoff after the last, and each resets the gauge.
+        for _ in 0..3 {
+            agent.poll().await;
+            agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
+        }
+        agent.poll().await;
+    });
+
+    assert_eq!(
+        gauge(&snapshot, "remote_config_seconds_since_last_successful_poll"),
+        0.0
+    );
+}
+
+#[test]
+fn an_rpc_error_ages_the_last_successful_poll_from_an_unimplemented_answer() {
+    let snapshot = recorded(|| async {
+        let (client, worker, mut agent) = client();
+        let _alpha = client.subscribe::<Recorder>().unwrap();
+        tokio::spawn(worker.run());
+
+        // The first failure is retried after a second, and the `Unimplemented` answer after the maximum backoff.
+        agent.poll().await;
+        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
+        agent.poll().await;
+        agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
+        agent.poll().await;
+        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
+        agent.poll().await;
+    });
+
+    assert_eq!(
+        gauge(&snapshot, "remote_config_seconds_since_last_successful_poll"),
+        90.0
+    );
+}
+
+#[test]
+fn an_expired_response_resets_the_last_successful_poll() {
+    let snapshot = recorded(|| async {
+        let (client, worker, mut agent) = client();
+        let _alpha = client.subscribe::<Recorder>().unwrap();
+        tokio::spawn(worker.run());
+
+        // The failure is retried after a second, which the expired response then resets.
+        agent.poll().await;
+        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
+        agent.exchange(Response::new(10).expired().build()).await;
+        agent.poll().await;
+    });
+
+    assert_eq!(
+        gauge(&snapshot, "remote_config_seconds_since_last_successful_poll"),
+        0.0
     );
 }
 

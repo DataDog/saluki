@@ -16,6 +16,10 @@ const CONFIGURATIONS_REJECTED_TOTAL: &str = "remote_config_configurations_reject
 const SNAPSHOTS_PUBLISHED_TOTAL: &str = "remote_config_snapshots_published_total";
 
 /// Measures how long the client has gone without a successful poll, in seconds.
+///
+/// A poll succeeds when the Agent answers, including an expired response and an answer that Remote Configuration is
+/// disabled on the Agent, so the gauge does not climb while Remote Configuration is deliberately off. The polls
+/// counter's `unimplemented` outcome shows that case.
 const SECONDS_SINCE_SUCCESSFUL_POLL: &str = "remote_config_seconds_since_last_successful_poll";
 
 /// How one completed poll ended.
@@ -123,6 +127,9 @@ impl Metrics {
     }
 
     /// Records how long the client has gone without a successful poll.
+    ///
+    /// Any definitive answer from the Agent is a success here: an applied response, an expired one, or `Unimplemented`.
+    /// An RPC error or an invalid response is not.
     ///
     /// Until the first success, `seconds` measures from when the worker started, which is how long the client has been
     /// without one.

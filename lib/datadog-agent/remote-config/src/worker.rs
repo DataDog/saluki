@@ -146,7 +146,12 @@ async fn poll_loop(
             }
         };
         metrics.count_poll(outcome);
-        if matches!(outcome, PollOutcome::Ok | PollOutcome::Expired) {
+        // An `Unimplemented` answer is definitive, so it is not staleness; the polls counter still shows that Remote
+        // Configuration is off.
+        if matches!(
+            outcome,
+            PollOutcome::Ok | PollOutcome::Expired | PollOutcome::Unimplemented
+        ) {
             last_success = tokio::time::Instant::now();
         }
         metrics.set_seconds_since_successful_poll(last_success.elapsed().as_secs());

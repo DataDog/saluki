@@ -97,13 +97,10 @@ impl Repository {
     pub(crate) fn request(
         &self, client_id: &str, config: &RcClientConfiguration, live: &BTreeMap<String, Generation>,
     ) -> ClientGetConfigsRequest {
-        // The Agent answers with nothing at all while our targets version matches its own, even when our product list
-        // has changed. Sending version 0 makes it send the full assignment, omitting only the files we advertise as
-        // cached, so a product subscribed after the first poll is delivered without waiting for an unrelated change.
-        let targets_version = if live.keys().all(|product| self.decoded.contains_key(product)) {
-            self.targets_version
-        } else {
+        let targets_version = if self.needs_full_assignment(live) {
             0
+        } else {
+            self.targets_version
         };
 
         let ClientKind::Agent(agent) = &config.kind;
@@ -144,6 +141,21 @@ impl Repository {
                 })
                 .collect(),
         }
+    }
+
+    /// Whether the next poll must ask for the full assignment by sending targets version 0.
+    ///
+    /// The Agent answers with nothing at all while our targets version matches its own, even when our product list has
+    /// changed or its configuration has since recovered. Sending version 0 makes it send the full assignment, omitting
+    /// only the files we advertise as cached. That is needed in two cases:
+    ///
+    /// - A live product has not been decoded, so a product subscribed after the first poll is delivered without waiting
+    ///   for an unrelated change.
+    /// - The last response was expired. The client adopted its targets version and forgot every file, so a recovery
+    ///   that leaves the version unchanged would otherwise never deliver the configurations again. While the Agent
+    ///   stays expired it answers with its expiry response before comparing versions, so this costs nothing.
+    fn needs_full_assignment(&self, live: &BTreeMap<String, Generation>) -> bool {
+        self.expired || !live.keys().all(|product| self.decoded.contains_key(product))
     }
 
     /// Reports one row per configuration ID, which is the finest identity the protocol can report against.
@@ -196,13 +208,19 @@ impl Repository {
             config_status,
         } = response;
 
-        // The Agent sends an empty response when nothing has changed.
-        if roots.is_empty() && targets.is_empty() && target_files.is_empty() && client_configs.is_empty() {
+        // The Agent sends an empty response when nothing has changed. An expired status is a change on its own.
+        let expired = config_status == ConfigStatus::Expired as i32;
+        if !expired && roots.is_empty() && targets.is_empty() && target_files.is_empty() && client_configs.is_empty() {
             return Ok(PollOutcome::Ok);
         }
 
-        // Validate everything before changing anything.
-        let targets = Targets::parse(&targets)?;
+        // Validate everything before changing anything. The Agent sends targets with every expired response, but the
+        // message allows none; such a response assigns nothing and leaves the targets version where it was.
+        let targets = if expired && targets.is_empty() {
+            None
+        } else {
+            Some(Targets::parse(&targets)?)
+        };
         let root_version = match roots.last() {
             Some(root) => root_version(root)?,
             None => self.root_version,
@@ -215,7 +233,14 @@ impl Repository {
             if !requested.contains_key(&path.product) {
                 continue;
             }
-            let meta = targets.meta(raw)?;
+            let meta = match &targets {
+                Some(targets) => targets.meta(raw)?,
+                None => {
+                    return Err(generic_error!(
+                        "Configuration {raw} is assigned without targets metadata."
+                    ))
+                }
+            };
             match sent.get(raw) {
                 Some(payload) => meta.verify(raw, payload)?,
                 None => {
@@ -245,10 +270,11 @@ impl Repository {
             self.files.insert(path.raw.clone(), CachedFile { path, meta, contents });
         }
         self.root_version = root_version;
-        self.targets_version = targets.version;
-        self.backend_state = targets.backend_state;
+        if let Some(targets) = targets {
+            self.targets_version = targets.version;
+            self.backend_state = targets.backend_state;
+        }
 
-        let expired = config_status == ConfigStatus::Expired as i32;
         if expired && !self.expired {
             warn!("The Agent reports its Remote Configuration as expired; configurations are withdrawn until it recovers.");
         } else if !expired && self.expired {
