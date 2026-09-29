@@ -13,9 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DataDog/datadog-agent/comp/core/config"
-	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/core"
-
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/corpus"
 )
 
@@ -27,7 +24,7 @@ func probeMain(args []string) error {
 	if err := fs.Parse(args); err != nil || *schemaPath == "" || fs.NArg() > 0 {
 		return fmt.Errorf("%w: probe --schema <file>", errUsage)
 	}
-	schema, err := loadSchema(*schemaPath)
+	schema, err := corpus.LoadSchema(*schemaPath)
 	if err != nil {
 		return err
 	}
@@ -47,15 +44,15 @@ func probeMain(args []string) error {
 	withDefault := map[string]int{}
 	noDefault := map[string]int{}
 	var unknown []string
-	err = withFirstSnapshot(params, func(cfg config.Component, _ *pb.ConfigSnapshot) error {
+	err = withFirstSnapshot(params, func(sess *session) error {
+		cfg := sess.cfg
 		capture.take()
-		if err := checkSchemaKeys(schema, cfg); err != nil {
+		if err := corpus.CheckSchemaKeys(schema, cfg); err != nil {
 			return err
 		}
-		for _, key := range schema.leaves() {
+		for _, key := range schema.Leaves() {
 			sk := schema[key]
-			typ, hasDefault := corpus.DefaultLayerType(cfg, key)
-			list, err := corpus.GettersForKey(corpus.KeyEntry{Key: key}, sk.Kind, hasDefault, typ, sk.DeclaredType, sk.ElementType, sk.Tags)
+			list, typ, hasDefault, err := corpus.SelectGetters(cfg, corpus.KeyEntry{Key: key}, schema)
 			if errors.Is(err, corpus.ErrGetterDefaultType) {
 				unknown = append(unknown, fmt.Sprintf("%s %s", key, typ))
 				continue
@@ -86,7 +83,7 @@ func probeMain(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("schema leaves: %d\n", len(schema.leaves()))
+	fmt.Printf("schema leaves: %d\n", len(schema.Leaves()))
 	printCounts("with a default, by default-layer %T", withDefault)
 	printCounts("no default, by declared schema type", noDefault)
 	fmt.Printf("default %%T not in the getter table: %d\n", len(unknown))

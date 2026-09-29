@@ -44,9 +44,13 @@ func driveMain(args []string) error {
 	}
 	sort.Strings(files)
 
-	base, err := runChild(*workdir, "baseline", nil, *schemaPath, "--baseline")
+	baseResult, err := runChild(*workdir, "baseline", nil, *schemaPath, "--baseline")
 	if err != nil {
 		return err
+	}
+	base := baseResult.Run
+	if base == nil {
+		return fmt.Errorf("baseline: no run result")
 	}
 	header := &corpus.HeaderLine{
 		AgentCommit:    agentCommit(),
@@ -72,26 +76,26 @@ func driveMain(args []string) error {
 		if err != nil {
 			return err
 		}
-		cl := &corpus.CaseLine{
-			Inputs:               c,
-			Origin:               r.Origin,
-			StartupError:         r.StartupError,
-			ConstructionWarnings: r.ConstructionWarnings,
-		}
-		if r.StartupError == nil {
-			if r.Containerized != header.Containerized {
-				v := r.Containerized
+		cl := &corpus.CaseLine{Inputs: c, StartupError: r.StartupError}
+		var keys []corpus.KeyLine
+		if run := r.Run; run != nil {
+			cl.Origin = &run.Origin
+			cl.ConstructionWarnings = run.ConstructionWarnings
+			cl.Updates = run.Updates
+			keys = run.Keys
+			if run.Containerized != header.Containerized {
+				v := run.Containerized
 				cl.Containerized = &v
 			}
-			if !slices.Equal(r.Features, header.Features) {
-				v := r.Features
+			if !slices.Equal(run.Features, header.Features) {
+				v := run.Features
 				cl.Features = &v
 			}
 		}
-		if err := corpus.CheckCaseRecord(cl, r.Keys); err != nil {
+		if err := corpus.CheckCaseRecord(cl, keys); err != nil {
 			return fmt.Errorf("case %q: %w", c.Name, err)
 		}
-		records = append(records, record{cl, r.Keys})
+		records = append(records, record{cl, keys})
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].caseLine.Inputs.Name < records[j].caseLine.Inputs.Name })
 
@@ -151,7 +155,7 @@ func runChild(workdir, name string, env map[string]string, schemaPath string, ca
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	return readResult(resultPath)
+	return corpus.ReadRunResult(resultPath)
 }
 
 // agentCommit is the VCS revision the build recorded, or a placeholder.
