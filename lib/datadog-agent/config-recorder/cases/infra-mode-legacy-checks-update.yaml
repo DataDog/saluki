@@ -1,6 +1,6 @@
 name: infra-mode-legacy-checks-update
 group: behavior
-why: [infra-mode-alias-oneshot]
+why: [infra-mode-alias-oneshot, override-funcs-registered-twice]
 yaml: |
   allowed_additional_checks: [check_a]
 updates:
