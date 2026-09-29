@@ -1,0 +1,7 @@
+name: yaml-map-for-string-key
+group: behavior
+why: [getter-string-on-map-returns-empty]
+yaml: |
+  dogstatsd_socket:
+    a: b
+keys: [dogstatsd_socket]
