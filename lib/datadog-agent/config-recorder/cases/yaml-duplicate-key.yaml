@@ -1,0 +1,7 @@
+name: yaml-duplicate-key
+group: behavior
+why: [yaml-duplicate-key-last-wins]
+yaml: |
+  log_level: warn
+  log_level: error
+keys: [log_level]

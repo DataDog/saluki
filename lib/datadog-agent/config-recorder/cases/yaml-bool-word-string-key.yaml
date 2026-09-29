@@ -1,0 +1,7 @@
+name: yaml-bool-word-string-key
+group: behavior
+why: [yaml-bool-word-coercion]
+yaml: |
+  env: yes
+  unknown_word_xyz: Off
+keys: [env, unknown_word_xyz]
