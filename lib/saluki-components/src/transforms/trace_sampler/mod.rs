@@ -387,12 +387,6 @@ impl TraceSampler {
         Some((priority, dm))
     }
 
-    /// Apply analyzed span sampling to the trace.
-    ///
-    /// Returns `true` if the trace was modified.
-
-    /// Returns `true` if the given trace has any analyzed spans.
-
     /// Retains only the analyzed-marker spans of a dropped trace and forwards it as events.
     fn forward_analyzed_spans(&self, trace: &mut Trace, priority: i32) -> bool {
         let retained = trace.retain_spans(|_, span| span.attributes.contains_key(KEY_ANALYZED_SPANS));
