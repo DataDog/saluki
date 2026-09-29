@@ -13,7 +13,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DataDog/datadog-agent/cmd/config-recorder/corpus"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/agentcfg"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
+	"github.com/DataDog/datadog-agent/cmd/config-recorder/schema"
 )
 
 // probeMain builds the config with no inputs and reports getter selection for every schema leaf,
@@ -24,7 +26,7 @@ func probeMain(args []string) error {
 	if err := fs.Parse(args); err != nil || *schemaPath == "" || fs.NArg() > 0 {
 		return fmt.Errorf("%w: probe --schema <file>", errUsage)
 	}
-	schema, err := corpus.LoadSchema(*schemaPath)
+	s, err := schema.Load(*schemaPath)
 	if err != nil {
 		return err
 	}
@@ -37,7 +39,7 @@ func probeMain(args []string) error {
 		return err
 	}
 	defer os.RemoveAll(workdir)
-	params, err := writeInputs(&corpus.Case{}, workdir)
+	params, err := writeInputs(&record.Case{}, workdir)
 	if err != nil {
 		return err
 	}
@@ -47,13 +49,13 @@ func probeMain(args []string) error {
 	err = withFirstSnapshot(params, func(sess *session) error {
 		cfg := sess.cfg
 		capture.take()
-		if err := corpus.CheckSchemaKeys(schema, cfg); err != nil {
+		if err := agentcfg.CheckSchemaKeys(s, cfg); err != nil {
 			return err
 		}
-		for _, key := range schema.Leaves() {
-			sk := schema[key]
-			list, typ, hasDefault, err := corpus.SelectGetters(cfg, corpus.KeyEntry{Key: key}, schema)
-			if errors.Is(err, corpus.ErrGetterDefaultType) {
+		for _, key := range s.Leaves() {
+			sk := s[key]
+			list, typ, hasDefault, err := agentcfg.SelectGetters(cfg, record.KeyEntry{Key: key}, s)
+			if errors.Is(err, agentcfg.ErrGetterDefaultType) {
 				unknown = append(unknown, fmt.Sprintf("%s %s", key, typ))
 				continue
 			}
@@ -67,12 +69,12 @@ func probeMain(args []string) error {
 				}
 				withDefault[fmt.Sprintf("%-28s -> %s", typ, getters)]++
 			} else {
-				row := sk.DeclaredType
+				row := sk.Type
 				if row == "" {
 					row = "(no type)"
 				}
-				if sk.ElementType != "" {
-					row += " of " + sk.ElementType
+				if sk.ElementType() != "" {
+					row += " of " + sk.ElementType()
 				}
 				noDefault[fmt.Sprintf("%-28s -> %s", row, getters)]++
 			}
@@ -83,7 +85,7 @@ func probeMain(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("schema leaves: %d\n", len(schema.Leaves()))
+	fmt.Printf("schema leaves: %d\n", len(s.Leaves()))
 	printCounts("with a default, by default-layer %T", withDefault)
 	printCounts("no default, by declared schema type", noDefault)
 	fmt.Printf("default %%T not in the getter table: %d\n", len(unknown))

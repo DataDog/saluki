@@ -3,7 +3,7 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2026-present Datadog, Inc.
 
-package corpus
+package record
 
 import (
 	"bytes"
@@ -377,7 +377,7 @@ func (rk *rawKey) validate() (KeyEntry, error) {
 		seen := map[string]bool{}
 		for _, g := range rk.Getters {
 			name := string(g)
-			if !isGetterName(name) {
+			if !IsGetterName(name) {
 				return k, fmt.Errorf("%w: %q", ErrCaseGetterUnknown, name)
 			}
 			if seen[name] {
