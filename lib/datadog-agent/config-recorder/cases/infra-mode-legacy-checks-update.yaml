@@ -1,0 +1,8 @@
+name: infra-mode-legacy-checks-update
+group: behavior
+why: [infra-mode-alias-oneshot]
+yaml: |
+  allowed_additional_checks: [check_a]
+updates:
+  - {key: allowed_additional_checks, value: [check_b], source: remote-config}
+keys: [allowed_additional_checks, integration.additional]
