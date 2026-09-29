@@ -30,7 +30,8 @@ func TestDriveOnTestdata(t *testing.T) {
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "config-recorder")
-	build := exec.Command("go", "build", "-o", bin, ".")
+	// The recorder calls the Agent's OTLP section read, which exists only under the otlp tag.
+	build := exec.Command("go", "build", "-tags", "otlp", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}

@@ -1,0 +1,10 @@
+name: otlp-receiver-nil-grpc
+group: behavior
+why: [otlp-receiver-read-as-section]
+yaml: |
+  otlp_config:
+    receiver:
+      protocols:
+        grpc:
+keys:
+  - {key: otlp_config.receiver, getters: [ReadConfigSection]}

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DataDog/datadog-agent/comp/otelcol/otlp/configcheck"
 	"github.com/DataDog/datadog-agent/pkg/config/model"
 
 	"github.com/DataDog/datadog-agent/cmd/config-recorder/record"
@@ -22,6 +23,7 @@ import (
 var (
 	ErrGetterDefaultType = errors.New("no getter rule for the default-layer Go type")
 	ErrGetterName        = errors.New("unknown getter name")
+	ErrSectionRead       = errors.New("section read did not return a map")
 )
 
 // primaryGetters maps the `%T` of a key's default-layer value to its default getter list.
@@ -151,7 +153,11 @@ func DefaultLayerType(r model.Reader, key string) (typ string, hasDefault bool) 
 	return fmt.Sprintf("%T", sources[0].Value), true
 }
 
-// CallGetter calls the named getter on the Agent's config reader.
+// CallGetter calls the named getter on the Agent's config reader. ReadConfigSection is not a
+// method of the config: it is the Agent's OTLP pipeline's section read, which keeps only the
+// section's configured leaves and nil-declared sections. It exists only under the `otlp` build
+// tag, so the config recorder is built with that tag. IsConfigured is a config method, but is
+// explicit-only (getter-map.md §2.1): it reports whether the user set a key, not the key's value.
 func CallGetter(r model.Reader, name, key string) (interface{}, error) {
 	switch name {
 	case "Get":
@@ -182,6 +188,10 @@ func CallGetter(r model.Reader, name, key string) (interface{}, error) {
 		return r.GetStringMapStringSlice(key), nil
 	case "GetSizeInBytes":
 		return r.GetSizeInBytes(key), nil
+	case "ReadConfigSection":
+		return readConfigSection(r, key)
+	case "IsConfigured":
+		return r.IsConfigured(key), nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrGetterName, name)
 	}
@@ -198,4 +208,15 @@ func SelectGetters(r model.Reader, entry record.KeyEntry, s schema.Schema) (list
 	}
 	list, err = GettersForKey(entry, sk, hasDefault, defaultType)
 	return list, defaultType, hasDefault, err
+}
+
+// readConfigSection reads a section the way the Agent's OTLP pipeline does, in the nested form
+// of confmap's ToStringMap. A result that is not a map is a harness failure.
+func readConfigSection(r model.Reader, key string) (interface{}, error) {
+	var v interface{} = configcheck.ReadConfigSection(r, key).ToStringMap()
+	m, ok := v.(map[string]interface{})
+	if !ok || m == nil {
+		return nil, fmt.Errorf("%w: ReadConfigSection of %q returned %T, not a map", ErrSectionRead, key, v)
+	}
+	return m, nil
 }
