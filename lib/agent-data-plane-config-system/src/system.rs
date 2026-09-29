@@ -1,7 +1,7 @@
 //! [`ConfigurationSystem`]: the runtime configuration, translated from the raw sources and kept
 //! current as the Datadog Agent streams updates.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
@@ -65,9 +65,9 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct ConfigurationSystem {
     current: Arc<ArcSwap<SalukiConfiguration>>,
     // The merged sources the current configuration was translated from, kept so consumers that work
-    // a key at a time have a by-key view carrying provenance. Replaced along with `current`, so the
-    // two always describe the same accepted configuration.
-    pub(crate) sources: Arc<ArcSwap<SourceTree>>,
+    // a key at a time have a by-key view carrying provenance. The update task holds the write lock
+    // while it replaces both, so a reader never sees sources that `current` does not match.
+    sources: Arc<RwLock<Arc<SourceTree>>>,
     // Fired once after each accepted update so live views wake and re-project. Shared with the
     // update task via `Arc` because `watch::Sender` is not `Clone` and both the system (to mint
     // views) and the task (to notify) need it.
@@ -101,7 +101,7 @@ impl ConfigurationSystem {
         let config = translate_authoritative(&merged)?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
-        let sources = Arc::new(ArcSwap::from_pointee(merged));
+        let sources = Arc::new(RwLock::new(Arc::new(merged)));
         // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
         // each live view subscribes its own receiver from the sender.
         let (tick, _) = watch::channel(());
@@ -127,7 +127,7 @@ impl ConfigurationSystem {
         let (tick, _) = watch::channel(());
         Self {
             current,
-            sources: Arc::new(ArcSwap::from_pointee(sources)),
+            sources: Arc::new(RwLock::new(Arc::new(sources))),
             tick: Arc::new(tick),
         }
     }
@@ -161,8 +161,17 @@ impl ConfigurationSystem {
     /// consistent with the running configuration.
     pub fn raw_snapshot(&self) -> Arc<dyn Fn() -> Value + Send + Sync> {
         let sources = Arc::clone(&self.sources);
-        Arc::new(move || sources.load().to_value())
+        Arc::new(move || load_sources(&sources).to_value())
     }
+
+    /// Loads the merged sources the current configuration was translated from.
+    pub(crate) fn sources(&self) -> Arc<SourceTree> {
+        load_sources(&self.sources)
+    }
+}
+
+fn load_sources(sources: &RwLock<Arc<SourceTree>>) -> Arc<SourceTree> {
+    Arc::clone(&sources.read().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// Owns the Datadog Agent config stream for the life of the process: validates each update against
@@ -172,7 +181,7 @@ impl ConfigurationSystem {
 /// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
 async fn agent_loop(
     mut agent_rx: mpsc::Receiver<ConfigUpdate>, base: SourceTree, mut agent: SourceTree,
-    current: Arc<ArcSwap<SalukiConfiguration>>, sources: Arc<ArcSwap<SourceTree>>, tick: Arc<watch::Sender<()>>,
+    current: Arc<ArcSwap<SalukiConfiguration>>, sources: Arc<RwLock<Arc<SourceTree>>>, tick: Arc<watch::Sender<()>>,
 ) {
     while let Some(update) = agent_rx.recv().await {
         // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
@@ -184,8 +193,11 @@ async fn agent_loop(
         match translate_authoritative(&merged) {
             Ok(config) => {
                 agent = tentative;
-                sources.store(Arc::new(merged));
-                current.store(Arc::new(config));
+                {
+                    let mut sources = sources.write().unwrap_or_else(PoisonError::into_inner);
+                    *sources = Arc::new(merged);
+                    current.store(Arc::new(config));
+                }
                 tick.send_replace(());
                 debug!("Applied configuration update.");
             }

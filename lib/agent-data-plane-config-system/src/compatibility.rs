@@ -25,7 +25,7 @@ impl ConfigurationSystem {
         let classifier = ConfigClassifier::new();
         let mut high_severity_incompatibilities = 0u32;
         debug!("Analyzing configuration.");
-        for (key, value, provenance) in self.sources.load().flattened_keys() {
+        for (key, value, provenance) in self.sources().flattened_keys() {
             let Some(classification) = classifier.classify(&key, value) else {
                 continue;
             };
