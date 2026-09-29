@@ -8,20 +8,20 @@ disable-model-invocation: false
 ---
 # /config-system
 
-Saluki configures its runtime through a typed boundary rather than direct reads from the raw
-`GenericConfiguration` map. No ADP production code reads that map. It stays in `saluki-config`,
-which is general-purpose infrastructure: another process consuming a configuration stream can still
-use its by-key view, and the configuration smoke tests and `bin/correctness` use the loader. Do not
-delete it for want of an ADP caller. This skill explains the architecture and workflows.
+This skill explains the architecture and workflows of the configuration system.
+
+Saluki configures its runtime through a typed boundary. An alternate method of reading
+configuration, `GenericConfiguration`, exists in `saluki-config` for external clients who may want a
+raw map view, but `agent-data-plane` does not use it. Do not delete it as dead code; it is library
+code that other projects may depend on.
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
 ## Why this system exists
 
-`GenericConfiguration` leaked source-language details into components such as serde names, aliases,
-parsing, and defaults. String-keyed reads hide dependencies from the compiler.
-
-The typed system places a translation boundary between configuration sources and runtime code:
+`GenericConfiguration` previously leaked source-language details into components such as serde
+names, aliases, parsing, and defaults. The typed system places a translation boundary between
+configuration sources and runtime code:
 
 ```text
  Datadog schema config ──> DatadogConfiguration ──> witness drive ──┐
@@ -50,7 +50,7 @@ into `SalukiConfiguration`.
 | Vendored Datadog JSON-schema (written in YAML)                  | `lib/datadog-agent/config/schema/core/`                                    |
 | Overlay types, validation, `SALUKI_KEYS`, smoke-test metadata   | `lib/datadog-agent/config-overlay-model/`                                  |
 | Config registry, `run_config_smoke_tests`, doc gen              | `lib/datadog-agent/config-testing/`                                        |
-| Raw map and loader, general-purpose, no ADP caller              | `lib/saluki-config/`                                                       |
+| Raw map and loader, general-purpose lib, unused by ADP          | `lib/saluki-config/`                                                       |
 | Hand-written Datadog witness implementation                     | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed`                             | `lib/agent-data-plane-config-system/src/saluki_only.rs`                    |
 | Saluki-only defaults                                            | `lib/agent-data-plane-config/src/defaults.rs`                              |
@@ -69,7 +69,6 @@ The intended end state is:
 
 - `agent-data-plane-config` depends on neither the raw map nor the Datadog source model.
 - `agent-data-plane-config-system` bridges sources to the model and constructs no components.
-- Components and runtime code do not access `GenericConfiguration`.
 - `saluki-components` define their own input arguments and structs.
 - `bin/agent-data-plane` hands each component what it requires.
 
@@ -94,8 +93,8 @@ are no help: `data_plane.foo` can belong to either class.
 
 The vendored schema and overlay have different jobs:
 
-- `schema/core/*.yaml` defines Datadog keys. Keep it a pristine upstream copy, not hand-edited.
-  Warn the user about proposed or existing hand edits.
+- `schema/core/*.yaml` defines Datadog keys. Keep it a pristine upstream copy, not hand-edited. Warn
+  the user about proposed or existing hand edits.
 - `schema_overlay.yaml` classifies every schema leaf for ADP. Its shape is defined by ADP.
 
 Under `inventory`, support is `full|partial|none|unknown`; `excluded` is a separate section.
@@ -112,15 +111,11 @@ make build-schema-overlay
 The Datadog Agent does not derive a variable's name from its key path: `DD_PROXY_HTTP` reaches
 `proxy.http` while `DD_DOGSTATSD_PORT` reaches the flat `dogstatsd_port`. No separator convention
 reproduces this. Datadog keys read the environment through the generated tables. Saluki-only keys
-have no table: the name is the canonical path, upper-cased, underscore-joined, `DD_`-prefixed. The
-typed path reads both through `apply_datadog_env` plus the Saluki-only reader.
+are derived through a serde hack. The environment is read by `apply_datadog_env` and the Saluki-only
+reader.
 
-**A modeled key arrives in the Agent's canonical shape.** A source model MUST read that shape. Do not
-add a `#[serde(rename)]` or `#[serde(alias)]` and do not reintroduce a key-alias or
-environment-remapping table. A key no model declares is not read from the environment at all.
-
-For deserialization paths, reserve `#[serde(flatten)]` for a struct that groups several *top-level*
-Agent keys (for example, the forwarder's `forwarder_*` retry settings).
+**A modeled key arrives in the Agent's canonical shape.** A source model MUST read that shape. Do
+not add a `#[serde(rename)]` or `#[serde(alias)]`. Unmodeled environment variables are not read.
 
 ## Scalar leaf coercion
 
@@ -171,13 +166,11 @@ the startup compatibility gate, the privileged `/config` route, and the `runtime
 flare artifact read. Those readers need the keys the typed model does not carry, so they read the
 sources rather than the model.
 
-Do not introduce new component uses of `GenericConfiguration`.
-
 ### Runtime updates
 
 Startup translation is strict. Live updates are translated against tentative state: success
-atomically replaces both the typed model and the retained sources; failure retains the last-known-good
-model and leaves the sources as they were.
+atomically replaces both the typed model and the retained sources; failure retains the
+last-known-good model and leaves the sources as they were.
 
 ## Workflows
 
@@ -190,8 +183,8 @@ model and leaves the sources as they were.
 4. Implement the generated `consume_<key>` in `DatadogTranslator`. Find the right home for it in
    `SalukiConfiguration`.
 
-An inventory key marked `none` or `unknown`, or a key under `excluded`, is deliberately absent from
-the witnessed model.
+An inventory key marked `none` or `unknown`, or a key under `excluded`, is absent from the witnessed
+model.
 
 ### Add or change a Saluki-only key
 
@@ -200,8 +193,8 @@ the witnessed model.
 3. If it has a default, define it once in `agent-data-plane-config/src/defaults.rs` and reference it
    from the model and source defaults.
 4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`. A **nested** key
-   *requires* this: the Saluki-only environment reader discovers paths from `SalukiOnly`, so without a
-   field the key is unreachable from the environment.
+   *requires* this: the Saluki-only environment reader discovers paths from `SalukiOnly`, so without
+   a field the key is unreachable from the environment.
 5. Add one `seed` assignment to the destination.
 6. (legacy): Keep `SALUKI_KEYS` consistent with the source key, type, and default.
 
