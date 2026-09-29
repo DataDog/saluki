@@ -71,10 +71,23 @@ impl Agent {
         self.responses.send(response).unwrap();
     }
 
-    /// Waits for the next poll and answers it.
+    /// Waits for the next poll and answers it as the Agent would.
+    ///
+    /// The Agent answers a request already at its targets version with an empty response, but sends an
+    /// expiry before comparing versions ([service.go]). A test that needs another answer calls [`poll`](Self::poll) and
+    /// [`respond`](Self::respond) instead.
+    ///
+    /// [service.go]:
+    ///     https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/config/remote/service/service.go#L1018-L1064
     async fn exchange(&mut self, response: ClientGetConfigsResponse) -> ClientGetConfigsRequest {
         let request = self.poll().await;
-        self.respond(Ok(response));
+        let expired = response.config_status == ConfigStatus::Expired as i32;
+        let current = targets_version(&response) == Some(state(&request).targets_version);
+        self.respond(Ok(if current && !expired {
+            ClientGetConfigsResponse::default()
+        } else {
+            response
+        }));
         request
     }
 
@@ -320,6 +333,12 @@ fn snapshot(items: &[(&str, &str)]) -> Vec<(String, String)> {
         .iter()
         .map(|(id, payload)| (id.to_string(), payload.to_string()))
         .collect()
+}
+
+/// Returns the targets version a response carries, or `None` if its targets are malformed.
+fn targets_version(response: &ClientGetConfigsResponse) -> Option<u64> {
+    let targets: serde_json::Value = serde_json::from_slice(&response.targets).ok()?;
+    targets["signed"]["version"].as_u64()
 }
 
 fn state(request: &ClientGetConfigsRequest) -> &datadog_protos::remote_config::ClientState {
@@ -951,13 +970,10 @@ async fn configurations_return_when_the_agent_recovers_from_expiry_at_the_same_t
     agent.exchange(Response::new(11).expired().build()).await;
     assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[]));
 
-    // The recovered Agent is still at version 11, so, as the Agent does, it answers "no update" to a request at 11.
-    let request = agent.poll().await;
-    if state(&request).targets_version == 11 {
-        agent.respond(Ok(ClientGetConfigsResponse::default()));
-    } else {
-        agent.respond(Ok(Response::new(11).send("employee/ALPHA/a/config", 1, b"one").build()));
-    }
+    // The recovered Agent is still at version 11, so it answers "no update" to a request at 11.
+    agent
+        .exchange(Response::new(11).send("employee/ALPHA/a/config", 1, b"one").build())
+        .await;
     assert_eq!(next(&mut alpha).await.unwrap(), snapshot(&[("a", "one")]));
 }
 
@@ -1566,6 +1582,7 @@ fn at(logs: &[(Level, String)], level: Level) -> Vec<&str> {
 }
 
 const RPC_FAILED: &str = "Failed to poll the Agent for Remote Configuration.";
+const INVALID_RESPONSE: &str = "Discarded an invalid Remote Configuration response.";
 
 #[test]
 fn an_rpc_error_after_an_invalid_response_still_warns() {
@@ -1701,17 +1718,17 @@ fn logs_integrity_failures_and_panics_as_errors_and_collisions_as_warnings() {
         let mut alpha = client.subscribe::<Recorder>().unwrap();
         tokio::spawn(worker.run());
 
-        agent
-            .exchange(
-                Response::new(10)
-                    .tampered("employee/ALPHA/a/config", 1, b"one", b"on3")
-                    .build(),
-            )
-            .await;
+        let tampered = |version, path| Response::new(version).tampered(path, 1, b"one", b"on3").build();
+        // An identical repeat logs at debug; a changed error logs at error again.
+        agent.exchange(tampered(10, "employee/ALPHA/a/config")).await;
+        agent.exchange(tampered(10, "employee/ALPHA/a/config")).await;
+        agent.exchange(tampered(10, "employee/ALPHA/b/config")).await;
         agent
             .exchange(Response::new(10).send("employee/ALPHA/a/config", 1, b"panic").build())
             .await;
         assert_unpublished(&mut alpha).await;
+        // A success resets the repeat detection.
+        agent.exchange(tampered(11, "employee/ALPHA/b/config")).await;
         agent
             .exchange(
                 Response::new(11)
@@ -1726,10 +1743,17 @@ fn logs_integrity_failures_and_panics_as_errors_and_collisions_as_warnings() {
     assert_eq!(
         at(&logs, Level::ERROR),
         [
-            "Discarded an invalid Remote Configuration response.",
+            INVALID_RESPONSE,
+            INVALID_RESPONSE,
             "Product decoder panicked; rejected its configuration snapshot.",
+            INVALID_RESPONSE,
         ]
     );
+    let repeats = at(&logs, Level::DEBUG)
+        .into_iter()
+        .filter(|message| *message == INVALID_RESPONSE)
+        .count();
+    assert_eq!(repeats, 1);
     assert_eq!(
         at(&logs, Level::WARN),
         ["Rejected configurations that share a configuration ID."]

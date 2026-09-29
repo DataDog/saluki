@@ -6,6 +6,7 @@
 //! the client's subscription registry, all without the polling loop, which [`worker`] exercises instead.
 
 use std::collections::BTreeMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Barrier};
 
 use datadog_protos::remote_config::{ClientGetConfigsRequest, ClientGetConfigsResponse};
@@ -208,14 +209,24 @@ async fn rejects_one_configuration_and_keeps_the_rest() {
     ));
 }
 
+/// Awaits a rejection, failing rather than hanging if none is published.
+async fn expect_rejection<T, E>(changed: impl std::future::Future<Output = Result<T, E>>) -> E {
+    tokio::time::timeout(std::time::Duration::from_secs(5), changed)
+        .await
+        .expect("a rejection should be published")
+        .err()
+        .expect("the publication should be a rejection")
+}
+
 #[tokio::test]
 async fn rejects_a_snapshot_missing_a_required_configuration() {
     let (publisher, mut subscription) = TestPublisher::<TestProductPayload, TestProductError>::new();
     publisher.assign::<TestProductDecoder>([("metrics.v1", br#"{"drop":[]}"#)]);
 
-    assert!(
-        matches!(subscription.changed().await, Err(error) if matches!(&*error, TestProductError::MissingAttributes))
-    );
+    assert!(matches!(
+        &*expect_rejection(subscription.changed()).await,
+        TestProductError::MissingAttributes
+    ));
     assert!(subscription.current().is_none());
 
     let evaluated = evaluate::<TestProductDecoder>(vec![
@@ -241,9 +252,10 @@ async fn rejects_an_empty_assignment_when_configuration_is_required() {
     let accepted = subscription.changed().await.unwrap();
 
     publisher.assign::<TestProductDecoder>(Vec::<(&str, &[u8])>::new());
-    assert!(
-        matches!(subscription.changed().await, Err(error) if matches!(&*error, TestProductError::MissingAttributes))
-    );
+    assert!(matches!(
+        &*expect_rejection(subscription.changed()).await,
+        TestProductError::MissingAttributes
+    ));
     assert!(std::sync::Arc::ptr_eq(&accepted, &subscription.current().unwrap()));
 
     let evaluated = evaluate::<TestProductDecoder>(vec![]);
@@ -335,8 +347,8 @@ async fn clones_observe_latest_state_and_closed_subscriptions_wait() {
     assert_eq!(*clone.changed().await.unwrap(), 2);
 
     publisher.reject("invalid".to_owned());
-    assert_eq!(subscription.changed().await.unwrap_err().to_string(), "invalid");
-    assert_eq!(clone.changed().await.unwrap_err().to_string(), "invalid");
+    assert_eq!(*expect_rejection(subscription.changed()).await, "invalid");
+    assert_eq!(*expect_rejection(clone.changed()).await, "invalid");
     assert_eq!(*subscription.current().unwrap(), 2);
     assert_eq!(*clone.current().unwrap(), 2);
 
@@ -656,14 +668,6 @@ fn each_client_has_its_own_random_id() {
 }
 
 #[test]
-fn an_inert_subscription_does_not_count_against_a_client() {
-    let (client, _worker) = client();
-    let _inert = Subscription::<TestInstance>::inert();
-
-    client.subscribe::<TestLastValidDecoder>().unwrap();
-}
-
-#[test]
 fn the_client_and_worker_debug_show_the_client_id() {
     let (client, worker) = client();
     let id = client.shared.client_id.clone();
@@ -702,6 +706,91 @@ async fn subscribing_wakes_the_worker_once() {
             .await
             .is_err()
     );
+}
+
+/// A snapshot whose `Drop` panics, standing in for a subscriber type with a faulty destructor.
+struct TestPanicOnDrop;
+
+impl Drop for TestPanicOnDrop {
+    fn drop(&mut self) {
+        panic!("a subscriber's snapshot panicked on drop");
+    }
+}
+
+#[derive(Default)]
+struct TestPanicOnDropDecoder;
+
+impl ProductDecoder for TestPanicOnDropDecoder {
+    const PRODUCT: &'static str = "TEST_PANIC_ON_DROP";
+
+    type Snapshot = TestPanicOnDrop;
+    type Error = String;
+
+    fn decode(&mut self, _id: &ConfigId, _payload: &[u8]) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn build(self) -> Result<Self::Snapshot, Self::Error> {
+        Ok(TestPanicOnDrop)
+    }
+}
+
+/// Subscribes to [`TestPanicOnDropDecoder`], publishes a snapshot, and drops the subscription, leaving the registry
+/// holding the snapshot's last reference.
+fn abandon_a_panicking_snapshot(client: &RemoteConfigurationClient, worker: &RemoteConfigurationWorker) {
+    let subscription = client.subscribe::<TestPanicOnDropDecoder>().unwrap();
+    worker
+        .shared
+        .assign(TestPanicOnDropDecoder::PRODUCT, Vec::new())
+        .unwrap();
+    drop(subscription);
+}
+
+#[test]
+fn a_panic_dropping_a_pruned_snapshot_does_not_poison_the_registry() {
+    let (client, worker) = client();
+    abandon_a_panicking_snapshot(&client, &worker);
+
+    assert!(std::panic::catch_unwind(AssertUnwindSafe(|| worker.shared.live_products())).is_err());
+    assert!(!worker.shared.registry.is_poisoned());
+    let _last_valid = client.subscribe::<TestLastValidDecoder>().unwrap();
+    assert!(worker
+        .shared
+        .live_products()
+        .contains_key(TestLastValidDecoder::PRODUCT));
+}
+
+#[test]
+fn a_panic_dropping_a_replaced_snapshot_does_not_poison_the_registry() {
+    let (client, worker) = client();
+    abandon_a_panicking_snapshot(&client, &worker);
+
+    assert!(std::panic::catch_unwind(AssertUnwindSafe(|| client.subscribe::<TestPanicOnDropDecoder>())).is_err());
+    assert!(!worker.shared.registry.is_poisoned());
+    client.subscribe::<TestLastValidDecoder>().unwrap();
+}
+
+#[test]
+fn the_registry_recovers_from_a_poisoned_lock() {
+    let (client, worker) = client();
+    let shared = Arc::clone(&worker.shared);
+    std::thread::spawn(move || {
+        let _registry = shared.registry.lock().unwrap();
+        panic!("poisoning the registry");
+    })
+    .join()
+    .unwrap_err();
+    assert!(worker.shared.registry.is_poisoned());
+
+    let _last_valid = client.subscribe::<TestLastValidDecoder>().unwrap();
+    assert!(worker
+        .shared
+        .live_products()
+        .contains_key(TestLastValidDecoder::PRODUCT));
+    assert!(worker
+        .shared
+        .assign(TestLastValidDecoder::PRODUCT, instance_payload())
+        .is_some());
 }
 
 static DECODING: Barrier = Barrier::new(2);

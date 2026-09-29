@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ pub(crate) struct Shared {
     /// The ID the client reports in every poll, generated once per client.
     pub(crate) client_id: String,
 
-    registry: Mutex<Registry>,
+    pub(crate) registry: Mutex<Registry>,
 
     /// Wakes the worker to poll after a subscribe.
     ///
@@ -30,7 +30,7 @@ pub(crate) struct Shared {
     pub(crate) wake: Notify,
 }
 
-struct Registry {
+pub(crate) struct Registry {
     /// Each subscribed product's publisher, keyed by its protocol string so that two decoders naming one product share
     /// its entry.
     ///
@@ -58,10 +58,18 @@ impl Shared {
         }
     }
 
+    /// Locks the registry, recovering it from a panic in another thread.
+    ///
+    /// Every locked section leaves the registry consistent between statements, and no subscriber code runs while it is
+    /// locked, so a poisoned lock holds valid state.
+    fn lock(&self) -> MutexGuard<'_, Registry> {
+        self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Registers a subscription to the product `P` decodes, replacing an entry with no live subscriptions.
     pub(crate) fn subscribe<P: ProductDecoder>(&self) -> Result<Subscription<P::Snapshot, P::Error>> {
         let product = P::PRODUCT;
-        let mut registry = self.registry.lock().unwrap();
+        let mut registry = self.lock();
         if registry
             .products
             .get(product)
@@ -75,7 +83,8 @@ impl Shared {
         let (publisher, subscription) = Publisher::new();
         let generation = registry.next_generation;
         registry.next_generation += 1;
-        registry.products.insert(
+        // Dropping the replaced entry can run the subscriber's `Drop` for its last snapshot, so it waits for the unlock.
+        let replaced = registry.products.insert(
             product.to_owned(),
             Registration {
                 generation,
@@ -86,6 +95,7 @@ impl Shared {
             },
         );
         drop(registry);
+        drop(replaced);
 
         self.wake.notify_one();
         Ok(subscription)
@@ -93,15 +103,20 @@ impl Shared {
 
     /// Forgets products with no live subscriptions and returns the rest.
     pub(crate) fn live_products(&self) -> BTreeMap<String, Generation> {
-        let mut registry = self.registry.lock().unwrap();
-        registry
+        let mut registry = self.lock();
+        // Dropped after the unlock, like a replaced entry in `subscribe`.
+        let pruned: Vec<_> = registry
             .products
-            .retain(|_, registration| registration.product.is_subscribed());
-        registry
+            .extract_if(|_, registration| !registration.product.is_subscribed())
+            .collect();
+        let live = registry
             .products
             .iter()
             .map(|(product, registration)| (product.clone(), registration.generation))
-            .collect()
+            .collect();
+        drop(registry);
+        drop(pruned);
+        live
     }
 
     /// Decodes `assignment` with the product's decoder and publishes the outcome to its subscriptions.
@@ -115,7 +130,7 @@ impl Shared {
         &self, product: &str, assignment: Vec<(ConfigId, &[u8])>,
     ) -> Option<(Generation, Evaluation<(), String>)> {
         let (generation, product) = {
-            let registry = self.registry.lock().unwrap();
+            let registry = self.lock();
             let registration = registry.products.get(product)?;
             (registration.generation, Arc::clone(&registration.product))
         };

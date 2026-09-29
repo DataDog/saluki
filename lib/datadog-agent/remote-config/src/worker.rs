@@ -138,8 +138,14 @@ async fn poll_loop(
                     (outcome, schedule.succeeded())
                 }
                 Err(e) => {
-                    error!(error = %e, "Discarded an invalid Remote Configuration response.");
-                    repository.last_error = Some(e.to_string());
+                    let error = e.to_string();
+                    if schedule.invalid_response.as_ref() == Some(&error) {
+                        debug!(error = %e, "Discarded an invalid Remote Configuration response.");
+                    } else {
+                        error!(error = %e, "Discarded an invalid Remote Configuration response.");
+                    }
+                    repository.last_error = Some(error.clone());
+                    schedule.invalid_response = Some(error);
                     (PollOutcome::InvalidResponse, schedule.failed())
                 }
             },
@@ -186,6 +192,9 @@ struct Schedule {
     /// `failures`, an invalid response does not set it.
     rpc_failing: bool,
 
+    /// The last invalid response's error since the last success, so that only a changed error logs at error level.
+    invalid_response: Option<String>,
+
     unimplemented: bool,
 }
 
@@ -198,6 +207,7 @@ impl Schedule {
             succeeded_once: false,
             failures: 0,
             rpc_failing: false,
+            invalid_response: None,
             unimplemented: false,
         }
     }
@@ -214,6 +224,7 @@ impl Schedule {
         self.succeeded_once = true;
         self.failures = 0;
         self.rpc_failing = false;
+        self.invalid_response = None;
         self.unimplemented = false;
         self.poll_interval
     }

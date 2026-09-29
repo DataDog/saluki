@@ -97,8 +97,9 @@ impl<T, E> Subscription<T, E> {
 
 impl<T, E> fmt::Debug for Subscription<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let accepted = self.receiver.borrow().accepted.is_some();
         f.debug_struct("Subscription")
-            .field("accepted", &self.receiver.borrow().accepted.is_some())
+            .field("accepted", &accepted)
             .finish_non_exhaustive()
     }
 }
@@ -130,6 +131,8 @@ impl<T, E> Publisher<T, E> {
     }
 
     pub(crate) fn accept(&self, snapshot: T) {
+        // Replacing `accepted` can drop the last reference to the previous snapshot. A panic in its `Drop` escapes the
+        // decoder's `catch_unwind` and ends the worker, which its supervisor restarts.
         self.sender.send_modify(|state| {
             state.accepted = Some(Arc::new(snapshot));
             state.rejection = None;

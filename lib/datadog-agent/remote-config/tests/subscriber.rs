@@ -1,6 +1,7 @@
 //! Exercises the `test-util` surface as a subscriber's own tests would, through the public API alone.
 
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -100,6 +101,15 @@ async fn assign_decodes_in_ascending_order_and_skips_rejected_configurations() {
     assert!(Arc::ptr_eq(&snapshot, &subscription.current().unwrap()));
 }
 
+/// Awaits a rejection, failing rather than hanging if none is published.
+async fn expect_rejection<T, E>(changed: impl Future<Output = Result<T, E>>) -> E {
+    timeout(Duration::from_secs(5), changed)
+        .await
+        .expect("a rejection should be published")
+        .err()
+        .expect("the publication should be a rejection")
+}
+
 #[tokio::test]
 async fn a_rejection_keeps_the_last_accepted_snapshot() {
     let (publisher, mut subscription) = TestPublisher::<Rules, RulesError>::new();
@@ -111,7 +121,7 @@ async fn a_rejection_keeps_the_last_accepted_snapshot() {
         ("rules.a", r#"{"service": "api", "rate": 1.0}"#),
         ("rules.b", r#"{"service": "api", "rate": 0.1}"#),
     ]);
-    let error = subscription.changed().await.unwrap_err();
+    let error = expect_rejection(subscription.changed()).await;
     assert!(matches!(&*error, RulesError::DuplicateService { service } if service == "api"));
     assert_eq!(error.apply_error(), "Several rules name api.");
     assert!(Arc::ptr_eq(&accepted, &subscription.current().unwrap()));
@@ -121,7 +131,7 @@ async fn a_rejection_keeps_the_last_accepted_snapshot() {
         service: "api".to_owned(),
     });
     assert!(matches!(
-        &*subscription.changed().await.unwrap_err(),
+        &*expect_rejection(subscription.changed()).await,
         RulesError::OutOfRange { .. }
     ));
     assert!(Arc::ptr_eq(&accepted, &subscription.current().unwrap()));
