@@ -1,0 +1,6 @@
+name: startup-error
+group: behavior
+why: [yaml-malformed-file-startup-error]
+yaml: |
+  logs_enabled: [
+keys: [logs_enabled]

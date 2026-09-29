@@ -1,0 +1,10 @@
+name: layers-no-updates
+group: behavior
+why: [fleet-policies-outranked]
+fleet_policy: |
+  dogstatsd_port: 8130
+cli:
+  - {key: cmd_port, value: "5099"}
+keys:
+  - dogstatsd_port
+  - {key: cmd_port, getters: [GetInt, GetString]}
