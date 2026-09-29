@@ -100,7 +100,7 @@ impl LoggingConfigurationTranslator {
 
 /// Parses a configured log level, expanding a plain level name into per-target directives.
 ///
-/// Plain levels apply to ADP crates; other values are `EnvFilter` directives.
+/// Plain levels apply to ADP crates; other values are `target=level` filter directives.
 fn parse_adp_log_level(value: &str) -> Result<LogLevel, GenericError> {
     let trimmed = value.trim();
     if let Some(level) = plain_log_level(trimmed) {
@@ -168,7 +168,7 @@ impl Supervisable for DynamicLogLevelWorker {
                     new_level = level.changed() => {
                         match parse_adp_log_level(&new_level) {
                             Ok(log_level) => {
-                                if let Err(e) = controller.update_base(log_level.as_env_filter()).await {
+                                if let Err(e) = controller.update_base(log_level.as_targets()).await {
                                     warn!(error = %e, %log_level, "Failed to apply updated log level.");
                                 }
                             }
@@ -214,7 +214,7 @@ mod tests {
         };
 
         LoggingConfigurationTranslator::translate(&logging)
-            .map(|config| config.log_level.as_env_filter().to_string())
+            .map(|config| config.log_level.as_targets().to_string())
             .map(|filter| filter.split(',').map(str::to_string).collect())
     }
 

@@ -52,6 +52,9 @@ impl CollapsingHighestDenseStore {
     }
 
     /// Ensures the store can accommodate the given index, growing and collapsing if necessary.
+    ///
+    /// On return, `index` is always representable: it either falls inside `[offset, offset + bins.len())`, or it sits
+    /// above the window, in which case it belongs to the collapsed highest bin. [`Self::bin_index`] relies on this.
     fn grow(&mut self, index: i32) {
         if self.bins.is_empty() {
             self.bins.push(0);
@@ -64,78 +67,104 @@ impl CollapsingHighestDenseStore {
             let new_len = (index - self.offset + 1) as usize;
 
             if new_len > self.max_num_bins {
-                // We need to collapse the new high indices into the current highest
-                // Don't actually add the bins, just record that we collapsed
+                // The index sits above the widest window the store can represent. Widen the window upwards to the cap
+                // first, so the collapsed counts land on the highest index that's still representable, then let
+                // `bin_index` fold `index` into the top bin.
+                //
+                // Widening matters for accuracy: without it the collapsed ceiling is wherever the window happened to
+                // already end, which makes the result depend on insertion order. Ascending input would pin every
+                // observation to the first index seen instead of spreading it across the available bins. The reference
+                // implementation places the ceiling at `min_index + max_num_bins - 1`, which is what widening to the
+                // cap achieves here.
+                if self.bins.len() < self.max_num_bins {
+                    self.bins.resize(self.max_num_bins, 0);
+                }
+
                 self.is_collapsed = true;
-                // The index is above our range, so when we add the count,
-                // we'll add it to the highest bin
                 return;
             }
 
             self.bins.resize(new_len, 0);
         } else if index < self.offset {
             // Need to prepend bins
-            let num_prepend = (self.offset - index) as usize;
-            let new_len = self.bins.len() + num_prepend;
+            let new_len = self.bins.len() + (self.offset - index) as usize;
 
             if new_len > self.max_num_bins {
-                // Need to collapse highest bins to make room for lower indices
-                let bins_to_collapse = new_len - self.max_num_bins;
-                self.collapse_highest(bins_to_collapse);
+                // The window can't stretch far enough down to cover `index`, so slide its top down to the highest
+                // index that keeps `index` in range, collapsing everything above that point.
+                self.collapse_above(index + self.max_num_bins as i32 - 1);
             }
 
-            // Now prepend
-            let target_prepend =
-                ((self.offset - index) as usize).min(self.max_num_bins - self.bins.len().min(self.max_num_bins));
-            if target_prepend > 0 {
-                let mut new_bins = vec![0u64; target_prepend + self.bins.len()];
-                new_bins[target_prepend..].copy_from_slice(&self.bins);
+            // Now prepend. `collapse_above` has already freed exactly as many bins as this needs, so the full
+            // distance always fits within the capacity.
+            let num_prepend = (self.offset - index) as usize;
+            if num_prepend > 0 {
+                let mut new_bins = vec![0u64; num_prepend + self.bins.len()];
+                new_bins[num_prepend..].copy_from_slice(&self.bins);
                 self.bins = new_bins;
                 self.offset = index;
             }
         }
+
+        debug_assert!(
+            index >= self.offset,
+            "grow must leave `index` representable: index={}, offset={}, len={}",
+            index,
+            self.offset,
+            self.bins.len()
+        );
+        debug_assert!(
+            self.bins.len() <= self.max_num_bins,
+            "grow must respect the bin cap: len={}, max_num_bins={}",
+            self.bins.len(),
+            self.max_num_bins
+        );
     }
 
-    /// Collapses the highest `n` bins into the bin at index `len - n - 1`.
-    fn collapse_highest(&mut self, n: usize) {
-        if n == 0 || self.bins.is_empty() {
+    /// Collapses every bin above `new_ceiling` into the bin at `new_ceiling`, making it the new highest bin.
+    ///
+    /// Taking the new highest index rather than a number of bins to shift by is what keeps this correct when
+    /// `new_ceiling` lands below the window entirely: that case folds the whole store into a single bin, instead of
+    /// clamping the shift and leaving the window short of where it needs to be.
+    fn collapse_above(&mut self, new_ceiling: i32) {
+        if self.bins.is_empty() {
             return;
         }
 
         self.is_collapsed = true;
 
-        let n = n.min(self.bins.len() - 1);
-        if n == 0 {
-            return;
+        // How many bins, counting up from the bottom of the window, sit at or below the new ceiling.
+        let keep = (new_ceiling as i64 - self.offset as i64 + 1).max(0) as usize;
+
+        if keep == 0 {
+            // Every bin sits above the new highest index, so the whole store folds into one bin.
+            let collapsed_count: u64 = self.bins.iter().sum();
+            self.bins.clear();
+            self.bins.push(collapsed_count);
+            self.offset = new_ceiling;
+        } else if keep < self.bins.len() {
+            let collapsed_count: u64 = self.bins[keep..].iter().sum();
+            self.bins[keep - 1] = self.bins[keep - 1].saturating_add(collapsed_count);
+            self.bins.truncate(keep);
         }
-
-        let collapse_start = self.bins.len() - n;
-
-        // Sum up the bins to collapse
-        let collapsed_count: u64 = self.bins[collapse_start..].iter().sum();
-
-        // Add to the bin that will become the new highest
-        self.bins[collapse_start - 1] = self.bins[collapse_start - 1].saturating_add(collapsed_count);
-
-        // Remove the collapsed bins
-        self.bins.truncate(collapse_start);
     }
 
     /// Returns the index into the bins array for the given logical index.
+    ///
+    /// Indices above the window map to the highest bin, which is where collapsed counts accumulate. [`Self::grow`]
+    /// guarantees no index arrives here from below the window, and that the store holds at least one bin.
     #[inline]
-    fn bin_index(&self, index: i32) -> Option<usize> {
+    fn bin_index(&self, index: i32) -> usize {
         if index >= self.offset + self.bins.len() as i32 {
             // Index is above our range, map to highest bin
-            if self.bins.is_empty() {
-                None
-            } else {
-                Some(self.bins.len() - 1)
-            }
-        } else if index < self.offset {
-            None
-        } else {
-            Some((index - self.offset) as usize)
+            return self.bins.len() - 1;
         }
+
+        debug_assert!(index >= self.offset, "grow should have made `index` representable");
+
+        // Clamping keeps the bins consistent with `count` even if that invariant is ever broken: the observation
+        // loses accuracy instead of being dropped outright.
+        (index.max(self.offset) - self.offset) as usize
     }
 }
 
@@ -147,9 +176,8 @@ impl Store for CollapsingHighestDenseStore {
 
         self.grow(index);
 
-        if let Some(bin_idx) = self.bin_index(index) {
-            self.bins[bin_idx] = self.bins[bin_idx].saturating_add(count);
-        }
+        let bin_idx = self.bin_index(index);
+        self.bins[bin_idx] = self.bins[bin_idx].saturating_add(count);
         self.count = self.count.saturating_add(count);
     }
 

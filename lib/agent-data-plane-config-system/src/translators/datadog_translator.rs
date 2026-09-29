@@ -29,7 +29,7 @@ use agent_data_plane_config::domains::otlp::{
     CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
-use agent_data_plane_config::domains::traces::ReplaceRule;
+use agent_data_plane_config::domains::traces::{ApmFeature, ReplaceRule};
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
@@ -49,6 +49,10 @@ pub(crate) struct DatadogTranslator<'a> {
     sources: &'a SourceTree,
     config: SalukiConfiguration,
     errors: Vec<TranslateError>,
+    // Deprecated `apm_config.max_traces_per_second` value, held until the drive completes so the
+    // alias can be applied when `target_traces_per_second` was not set explicitly. Initialized to
+    // the schema default, which the drive always overwrites.
+    max_traces_per_second: f64,
 }
 
 type Result<T> = std::result::Result<T, TranslateError>;
@@ -62,6 +66,7 @@ impl<'a> DatadogTranslator<'a> {
             sources,
             config: SalukiConfiguration::default(),
             errors: Vec::new(),
+            max_traces_per_second: 10.0,
         }
     }
 
@@ -70,7 +75,20 @@ impl<'a> DatadogTranslator<'a> {
     pub(crate) fn translate(mut self) -> (SalukiConfiguration, Option<TranslateErrors>) {
         let datadog = self.datadog;
         let errors = drive(datadog, &mut self).err();
+        self.apply_deprecated_max_tps_alias();
         (self.config, errors)
+    }
+
+    /// Applies the deprecated `max_traces_per_second` alias to the target rate.
+    ///
+    /// `target_traces_per_second` wins when an input set it explicitly; otherwise the deprecated
+    /// value supplies the target. Both keys default to 10, so inputs setting neither are
+    /// unaffected.
+    fn apply_deprecated_max_tps_alias(&mut self) {
+        if self.sources.provenance("apm_config.target_traces_per_second") == Provenance::Explicit {
+            return;
+        }
+        self.config.domains.traces.target_traces_per_second = self.max_traces_per_second;
     }
 
     /// Records a translation error encountered while consuming.
@@ -298,6 +316,35 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.errors_per_second = value;
     }
 
+    fn consume_apm_config_extra_sample_rate(&mut self, value: f64) {
+        // The schema default is 0, which would keep nothing from the adaptive samplers; the
+        // effective default is 1.0. Only a value an input actually set passes through, so an
+        // explicit 0 keeps its meaning.
+        let extra_sample_rate = if self.sources.provenance("apm_config.extra_sample_rate") == Provenance::Explicit {
+            value
+        } else {
+            1.0
+        };
+        self.config.domains.traces.extra_sample_rate = extra_sample_rate;
+    }
+
+    fn consume_apm_config_features(&mut self, value: Vec<String>) {
+        self.config.domains.traces.features = value.iter().map(|feature| ApmFeature::from(feature.as_str())).collect();
+    }
+
+    fn consume_apm_config_max_catalog_entries(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(entries) => self.config.domains.traces.max_catalog_entries = entries,
+            Err(error) => self.record_error(TranslateError::new("apm_config.max_catalog_entries", error)),
+        }
+    }
+
+    fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
+        // Applied to the target rate after the drive completes; see
+        // `apply_deprecated_max_tps_alias`.
+        self.max_traces_per_second = value;
+    }
+
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool) {
         self.config.domains.traces.obfuscation.credit_cards.enabled = value;
     }
@@ -393,6 +440,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool) {
         self.config.domains.traces.probabilistic_sampler.enabled = value;
+    }
+
+    fn consume_apm_config_probabilistic_sampler_hash_seed(&mut self, value: i64) {
+        match u32::try_from(value) {
+            Ok(hash_seed) => self.config.domains.traces.probabilistic_sampler.hash_seed = hash_seed,
+            Err(error) => self.record_error(TranslateError::new("apm_config.probabilistic_sampler.hash_seed", error)),
+        }
     }
 
     fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
@@ -1548,6 +1602,7 @@ mod tests {
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
+        traces::ApmFeature,
     };
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -1649,6 +1704,116 @@ mod tests {
         assert_eq!(traces.replace_tags[0].name, "http.url");
         assert_eq!(traces.replace_tags[0].pattern, "p");
         assert_eq!(traces.replace_tags[0].repl, "");
+    }
+
+    #[test]
+    fn apm_config_features_and_probabilistic_hash_seed_translate() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "features": ["probabilistic_sampler_full_trace_id", "unrelated_feature"],
+                "probabilistic_sampler": { "hash_seed": 22 }
+            }
+        }));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.probabilistic_sampler.hash_seed, 22);
+        assert_eq!(
+            traces.features,
+            [
+                ApmFeature::ProbabilisticSamplerFullTraceId,
+                ApmFeature::Other("unrelated_feature".to_owned()),
+            ]
+        );
+
+        // Unset, both arrive at their schema defaults.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.probabilistic_sampler.hash_seed, 0);
+        assert!(config.domains.traces.features.is_empty());
+    }
+
+    #[test]
+    fn apm_config_extra_sample_rate_passes_explicit_values_and_defaults_to_one() {
+        // Unset, the schema default of 0 must not pass through: the effective default is 1.0,
+        // leaving every computed rate unchanged.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.extra_sample_rate, 1.0);
+
+        // An explicitly set 0 is meaningful (keeps nothing from the adaptive samplers) and passes
+        // through unchanged.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "extra_sample_rate": 0.0 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.extra_sample_rate, 0.0);
+
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "extra_sample_rate": 2.5 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.extra_sample_rate, 2.5);
+    }
+
+    #[test]
+    fn apm_config_max_catalog_entries_translates_and_rejects_negative() {
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "max_catalog_entries": 100 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.max_catalog_entries, 100);
+
+        // Unset arrives as 0, which the priority sampler's catalog reads as its default.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.max_catalog_entries, 0);
+
+        let (_, errors) = translate_explicit(json!({
+            "apm_config": { "max_catalog_entries": -1 }
+        }));
+        let errors = errors.expect("negative catalog size should record a translation error");
+        assert!(errors.to_string().contains("apm_config.max_catalog_entries"));
+    }
+
+    #[test]
+    fn deprecated_max_traces_per_second_supplies_target_when_current_key_unset() {
+        // Only the deprecated key set: it supplies the target.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": { "max_traces_per_second": 100.0 }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.target_traces_per_second, 100.0);
+
+        // Both keys set: the current key wins.
+        let (config, errors) = translate_explicit(json!({
+            "apm_config": {
+                "target_traces_per_second": 50.0,
+                "max_traces_per_second": 100.0
+            }
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.target_traces_per_second, 50.0);
+
+        // Neither set: the shared default of 10.
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.traces.target_traces_per_second, 10.0);
+    }
+
+    #[test]
+    fn out_of_range_probabilistic_hash_seed_records_translation_error() {
+        // The sampler hashes the seed as four bytes, so values outside u32 are configuration
+        // failures rather than clamps.
+        for value in [-1, u32::MAX as i64 + 1] {
+            let (_, errors) = translate_explicit(json!({
+                "apm_config": { "probabilistic_sampler": { "hash_seed": value } }
+            }));
+            let errors = errors.unwrap_or_else(|| panic!("{value} should record a translation error"));
+            assert!(errors
+                .to_string()
+                .contains("apm_config.probabilistic_sampler.hash_seed"));
+        }
     }
 
     #[test]

@@ -4,6 +4,8 @@ use std::collections::HashSet;
 
 use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;
+use metrics::{Counter, Gauge};
+use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -11,11 +13,18 @@ use saluki_core::{
         BuildContext,
     },
     data_model::event::{Event, EventType},
+    observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
+
+use super::metric_name::{is_normalized, normalize_into, NameBuf};
+
+const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
+const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
@@ -35,10 +44,13 @@ impl MetricFilterConfiguration {
         }
     }
 
-    /// Creates a fixed metric filter. Unlisted names are dropped; an empty list drops everything.
-    pub fn for_allowlist(allowlist: Vec<String>) -> Self {
+    /// Creates a fixed metric filter accepting exact names or literal prefixes. Two empty lists drop everything.
+    ///
+    /// Incoming names are normalized as the intake stores them for comparison only. Configured entries and
+    /// forwarded metric names are left unchanged.
+    pub fn for_allowlist(names: Vec<String>, prefixes: Vec<String>) -> Self {
         Self {
-            source: FilterSource::Allowlist(allowlist),
+            source: FilterSource::Allowlist { names, prefixes },
         }
     }
 }
@@ -50,28 +62,38 @@ enum FilterSource {
         enabled: bool,
         routing: Live<MetricMirroring>,
     },
-    Allowlist(Vec<String>),
+    Allowlist {
+        names: Vec<String>,
+        prefixes: Vec<String>,
+    },
 }
 
 impl FilterSource {
-    fn filter(&self) -> Filter {
+    fn telemetry(&self, builder: &MetricsBuilder) -> Telemetry {
         match self {
-            Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, routing),
-            Self::Allowlist(names) => Filter::Allowlist(names.iter().cloned().collect()),
+            Self::Allowlist { .. } => Telemetry::new(builder),
+            Self::Mrf { .. } => Telemetry::noop(),
         }
     }
 
-    fn allowlist(&self) -> &[String] {
+    fn filter(&self) -> Filter {
         match self {
-            Self::Mrf { routing, .. } => &routing.allowlist,
-            Self::Allowlist(names) => names,
+            Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, routing),
+            Self::Allowlist { names, prefixes } => Filter::for_allowlist(names, prefixes),
+        }
+    }
+
+    fn allowlists(&self) -> (&[String], &[String]) {
+        match self {
+            Self::Mrf { routing, .. } => (&routing.allowlist, &[]),
+            Self::Allowlist { names, prefixes } => (names, prefixes),
         }
     }
 
     async fn changed(&mut self) -> Filter {
         match self {
             Self::Mrf { enabled, routing } => Filter::for_mrf(*enabled, &routing.changed().await),
-            Self::Allowlist(_) => std::future::pending().await,
+            Self::Allowlist { .. } => std::future::pending().await,
         }
     }
 }
@@ -80,17 +102,31 @@ impl FilterSource {
 enum Filter {
     DropAll,
     All,
-    Allowlist(HashSet<String>),
+    MrfAllowlist(HashSet<String>),
+    Allowlist {
+        names: HashSet<Vec<u8>>,
+        prefixes: Vec<String>,
+    },
 }
 
 impl Filter {
+    fn for_allowlist(names: &[String], prefixes: &[String]) -> Self {
+        let mut prefixes = prefixes.to_vec();
+        // Remove covered prefixes so a binary search only needs to check its predecessor.
+        compact_metric_prefixes(&mut prefixes);
+        Self::Allowlist {
+            names: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
+            prefixes,
+        }
+    }
+
     fn for_mrf(enabled: bool, routing: &MetricMirroring) -> Self {
         if !enabled || !routing.enabled {
             Self::DropAll
         } else if routing.allowlist.is_empty() {
             Self::All
         } else {
-            Self::Allowlist(routing.allowlist.iter().cloned().collect())
+            Self::MrfAllowlist(routing.allowlist.iter().cloned().collect())
         }
     }
 
@@ -101,16 +137,43 @@ impl Filter {
         match self {
             Self::DropAll => false,
             Self::All => true,
-            Self::Allowlist(names) => names.contains(metric.context().name().as_ref()),
+            Self::MrfAllowlist(names) => names.contains(metric.context().name().as_ref()),
+            Self::Allowlist { names, prefixes } => {
+                let name = metric.context().name().as_ref();
+                if is_normalized(name) {
+                    return Self::matches_allowlist(name.as_bytes(), names, prefixes);
+                }
+                let mut buf = NameBuf::new();
+                match normalize_into(&mut buf, name) {
+                    Some(normalized) => Self::matches_allowlist(normalized, names, prefixes),
+                    None => false,
+                }
+            }
         }
     }
 
-    async fn process_event_batch(
-        &self, mut events: EventsBuffer, context: &mut TransformContext,
-    ) -> Result<(), GenericError> {
+    fn matches_allowlist(name: &[u8], names: &HashSet<Vec<u8>>, prefixes: &[String]) -> bool {
+        if names.contains(name) {
+            return true;
+        }
+        match prefixes.binary_search_by(|prefix| prefix.as_bytes().cmp(name)) {
+            Ok(_) => true,
+            Err(index) => index > 0 && name.starts_with(prefixes[index - 1].as_bytes()),
+        }
+    }
+
+    fn filter_events(&self, events: &mut EventsBuffer, telemetry: &Telemetry) -> usize {
         let input_count = events.len();
         events.remove_if(|event| !self.should_forward(event));
         let dropped_count = input_count.saturating_sub(events.len());
+        telemetry.record_metrics_filtered(dropped_count);
+        dropped_count
+    }
+
+    async fn process_event_batch(
+        &self, mut events: EventsBuffer, context: &mut TransformContext, telemetry: &Telemetry,
+    ) -> Result<(), GenericError> {
+        let dropped_count = self.filter_events(&mut events, telemetry);
         let sent_count = context.dispatcher().buffered()?.send_all(events).await?;
         debug!(
             forwarded_events = sent_count,
@@ -121,16 +184,60 @@ impl Filter {
     }
 }
 
+struct Telemetry {
+    metrics_filtered: Counter,
+    exact_size: Gauge,
+    prefix_size: Gauge,
+}
+
+impl Telemetry {
+    fn new(builder: &MetricsBuilder) -> Self {
+        Self {
+            metrics_filtered: builder.register_counter(ALLOWLIST_METRICS_FILTERED_METRIC),
+            exact_size: builder.register_gauge_with_tags(ALLOWLIST_SIZE_METRIC, [("match_type", "exact")]),
+            prefix_size: builder.register_gauge_with_tags(ALLOWLIST_SIZE_METRIC, [("match_type", "prefix")]),
+        }
+    }
+
+    fn noop() -> Self {
+        Self {
+            metrics_filtered: Counter::noop(),
+            exact_size: Gauge::noop(),
+            prefix_size: Gauge::noop(),
+        }
+    }
+
+    fn set_allowlist_sizes(&self, filter: &Filter) {
+        match filter {
+            Filter::Allowlist { names, prefixes } => {
+                // Report stored matcher entries, after exact-name deduplication and prefix compaction.
+                self.exact_size.set(names.len() as f64);
+                self.prefix_size.set(prefixes.len() as f64);
+            }
+            Filter::DropAll | Filter::All | Filter::MrfAllowlist(_) => {}
+        }
+    }
+
+    fn record_metrics_filtered(&self, count: usize) {
+        if count != 0 {
+            self.metrics_filtered.increment(count as u64);
+        }
+    }
+}
+
 /// Metric filter shared by live MRF routing and fixed endpoint allow lists.
 struct MetricFilter {
     source: FilterSource,
+    telemetry: Telemetry,
 }
 
 #[async_trait]
 impl TransformBuilder for MetricFilterConfiguration {
-    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         Ok(Box::new(MetricFilter {
             source: self.source.clone(),
+            telemetry: self.source.telemetry(&metrics_builder),
         }))
     }
 
@@ -146,7 +253,7 @@ impl TransformBuilder for MetricFilterConfiguration {
 
 impl MemoryBounds for MetricFilterConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let allowlist = self.source.allowlist();
+        let (allowlist, prefixes) = self.source.allowlists();
         builder
             .minimum()
             .with_single_value::<MetricFilter>("component struct")
@@ -156,6 +263,7 @@ impl MemoryBounds for MetricFilterConfiguration {
                 "allowlist strings",
                 allowlist
                     .iter()
+                    .chain(prefixes)
                     .map(|name| name.len() + std::mem::size_of::<String>())
                     .sum::<usize>()
                     * 2,
@@ -171,8 +279,9 @@ impl MemoryBounds for MetricFilterConfiguration {
 impl Transform for MetricFilter {
     async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
-        let Self { mut source } = *self;
+        let Self { mut source, telemetry } = *self;
         let mut filter = source.filter();
+        telemetry.set_allowlist_sizes(&filter);
         health.mark_ready();
 
         loop {
@@ -180,7 +289,7 @@ impl Transform for MetricFilter {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        if let Err(e) = filter.process_event_batch(events, &mut context).await {
+                        if let Err(e) = filter.process_event_batch(events, &mut context, &telemetry).await {
                             error!(error = %e, "Metric filter failed to process event batch.");
                         }
                     }
@@ -199,11 +308,14 @@ mod tests {
 
     use agent_data_plane_config::SalukiConfiguration;
     use arc_swap::ArcSwap;
+    use metrics::{set_default_local_recorder, Key};
     use saluki_core::{
         accounting::ComponentRegistry,
+        components::ComponentContext,
         data_model::event::{metric::Metric, Event},
         support::SubsystemIdentifier,
     };
+    use saluki_metrics::test::TestRecorder;
     use tokio::sync::watch;
 
     use super::*;
@@ -263,7 +375,7 @@ mod tests {
     #[test]
     fn static_constructor_filters_and_fails_closed_for_an_empty_list() {
         for allowlist in [vec![], vec!["allowed.metric".to_string()]] {
-            let config = MetricFilterConfiguration::for_allowlist(allowlist.clone());
+            let config = MetricFilterConfiguration::for_allowlist(allowlist.clone(), vec![]);
             let routing = config.source.filter();
             assert_eq!(
                 routing.should_forward(&counter("allowed.metric")),
@@ -296,6 +408,62 @@ mod tests {
 
     fn distribution(name: &'static str) -> Event {
         Event::Metric(Metric::distribution(name, 1.0))
+    }
+
+    #[test]
+    fn telemetry_reports_stored_allowlist_sizes() {
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        let telemetry = Telemetry::new(&MetricsBuilder::default());
+        let filter = Filter::for_allowlist(
+            &["exact".into(), "exact".into(), "prefix.metric".into()],
+            &["prefix.".into(), "prefix.".into(), "prefix.narrow.".into()],
+        );
+        telemetry.set_allowlist_sizes(&filter);
+
+        // Stored entries: exact names are deduplicated (but may overlap prefixes), and prefixes are compacted.
+        for (match_type, expected) in [("exact", 2.0), ("prefix", 1.0)] {
+            let key = Key::from_parts(ALLOWLIST_SIZE_METRIC, &[("match_type", match_type)]);
+            assert_eq!(recorder.gauge(key), Some(expected));
+        }
+    }
+
+    #[test]
+    fn telemetry_counts_drops_across_batches_per_component() {
+        let recorder = TestRecorder::default();
+        let _local = set_default_local_recorder(&recorder);
+        for (component_id, names, prefixes, expected) in [
+            ("partial", vec!["allowed".into()], vec![], 2),
+            ("all", vec![], vec!["".into()], 0),
+            ("none", vec![], vec![], 4),
+        ] {
+            let context = ComponentContext::test_transform(component_id);
+            let source = MetricFilterConfiguration::for_allowlist(names, prefixes).source;
+            let telemetry = source.telemetry(&MetricsBuilder::from_component_context(&context));
+            let filter = source.filter();
+            for _ in 0..2 {
+                let mut events = EventsBuffer::default();
+                for make_metric in [counter, distribution] {
+                    for name in ["allowed", "blocked"] {
+                        assert!(events.try_push(make_metric(name)).is_none());
+                    }
+                }
+                assert_eq!(filter.filter_events(&mut events, &telemetry), expected);
+                assert_eq!(events.len(), 4 - expected);
+            }
+            assert_eq!(filter.filter_events(&mut EventsBuffer::default(), &telemetry), 0);
+        }
+        for (component_id, expected) in [("partial", 4), ("all", 0), ("none", 8)] {
+            let context = ComponentContext::test_transform(component_id);
+            let key = Key::from_parts(
+                ALLOWLIST_METRICS_FILTERED_METRIC,
+                &[
+                    ("component_id", component_id),
+                    ("component_type", context.component_type().as_str()),
+                ],
+            );
+            assert_eq!(recorder.counter(key), Some(expected));
+        }
     }
 
     /// Waits for the transform's source to process an update, failing rather than hanging.
@@ -356,16 +524,20 @@ mod tests {
 
     #[tokio::test]
     async fn an_allowlist_forwards_only_matching_metrics() {
-        let source = LiveSource::new(true, &["allowed.metric"]);
-        let routing = routing(true, &source);
-
-        assert!(routing.should_forward(&counter("allowed.metric")));
-        assert!(!routing.should_forward(&counter("blocked.metric")));
+        for (allowed, blocked) in [
+            ("my-service.requests", "my_service.requests"),
+            ("my_service.requests", "my-service.requests"),
+        ] {
+            let source = LiveSource::new(true, &[allowed]);
+            let routing = routing(true, &source);
+            assert!(routing.should_forward(&counter(allowed)));
+            assert!(!routing.should_forward(&counter(blocked)));
+        }
     }
 
     #[test]
     fn fixed_allowlist_filters_series_and_sketches_by_name() {
-        let routing = MetricFilterConfiguration::for_allowlist(vec!["allowed".to_string()])
+        let routing = MetricFilterConfiguration::for_allowlist(vec!["allowed".to_string()], vec![])
             .source
             .filter();
 
@@ -378,6 +550,99 @@ mod tests {
         assert!(!routing.should_forward(&counter("blocked.counter")));
         assert!(!routing.should_forward(&histogram("blocked.histogram")));
         assert!(!routing.should_forward(&distribution("blocked.distribution")));
+    }
+
+    #[test]
+    fn literal_prefixes_combine_with_exact_names_for_series_and_sketches() {
+        let routing = MetricFilterConfiguration::for_allowlist(
+            vec!["exact.metric".to_string()],
+            vec![
+                "billing.".to_string(),
+                "billing.latency.".to_string(),
+                "billing.".to_string(),
+                "literal.*".to_string(),
+            ],
+        )
+        .source
+        .filter();
+        for make_metric in [counter, gauge, rate, set, histogram, distribution] {
+            for name in ["exact.metric", "billing.", "billing.latency.p99", "billing.requests"] {
+                assert!(routing.should_forward(&make_metric(name)), "{name}");
+            }
+            for name in [
+                "exact.metric.extra",
+                "billing",
+                "billing_other",
+                "Billing.requests",
+                "literal.name",
+                "literal.*name",
+                "other",
+            ] {
+                assert!(!routing.should_forward(&make_metric(name)), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_only_filter_preserves_literal_starts_with_semantics() {
+        for (prefixes, expected) in [
+            (vec![], false),
+            (vec!["".to_string()], true),
+            (vec!["any".to_string()], true),
+        ] {
+            let routing = MetricFilterConfiguration::for_allowlist(vec![], prefixes)
+                .source
+                .filter();
+            assert_eq!(routing.should_forward(&counter("any.metric")), expected);
+            assert_eq!(routing.should_forward(&distribution("any.metric")), expected);
+            assert!(!routing.should_forward(&counter("123")));
+        }
+    }
+
+    #[test]
+    fn prefix_binary_search_matches_a_linear_search() {
+        let candidates = ["", "a", "a.", "a.b", "ab", "b", "z."];
+        for mask in 0..(1 << candidates.len()) {
+            let prefixes = candidates
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, s)| s.to_string())
+                .collect::<Vec<_>>();
+            let filter = Filter::for_allowlist(&[], &prefixes);
+            for name in ["a", "a.", "a.b", "a.c", "ab", "abc", "b", "bc", "y", "z.", "z.foo"] {
+                assert_eq!(
+                    filter.should_forward(&counter(name)),
+                    prefixes.iter().any(|prefix| name.starts_with(prefix)),
+                    "name={name}, prefixes={prefixes:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_allowlists_compare_normalized_names_without_rewriting_metrics() {
+        let filter = Filter::for_allowlist(
+            &["my_service.requests".to_string(), "literal-name".to_string()],
+            &["redis.checkpoint_".to_string()],
+        );
+        for make_metric in [counter, distribution] {
+            for (name, expected) in [
+                ("my-service.requests", true),
+                ("my_service.requests", true),
+                ("redis.checkpoint-bytes", true),
+                ("my-service.other", false),
+                ("redis.checkpointing.count", false),
+                ("literal-name", false),
+            ] {
+                let event = make_metric(name);
+                assert_eq!(filter.should_forward(&event), expected, "{name}");
+                let Event::Metric(metric) = event else {
+                    panic!("expected a metric")
+                };
+                assert_eq!(metric.context().name().as_ref(), name);
+            }
+        }
     }
 
     #[test]

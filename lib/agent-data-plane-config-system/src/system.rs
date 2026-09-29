@@ -76,6 +76,10 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct ConfigurationSystem {
     raw_map: GenericConfiguration,
     current: Arc<ArcSwap<SalukiConfiguration>>,
+    // The merged sources the current configuration was translated from, kept so consumers that work
+    // a key at a time have a by-key view carrying provenance. Replaced along with `current`, so the
+    // two always describe the same accepted configuration.
+    pub(crate) sources: Arc<ArcSwap<SourceTree>>,
     // Fired once after each accepted update so live views wake and re-project. Shared with the
     // update task via `Arc` because `watch::Sender` is not `Clone` and both the system (to mint
     // views) and the task (to notify) need it.
@@ -114,9 +118,11 @@ impl ConfigurationSystem {
         // fails the boot and we never run on bad config. At runtime (see `agent_loop`) the same
         // check instead rejects the offending update and keeps the last-known-good configuration,
         // because a runtime update must never take the system down.
-        let config = translate_authoritative(&base.overlay(&agent))?;
+        let merged = base.overlay(&agent);
+        let config = translate_authoritative(&merged)?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
+        let sources = Arc::new(ArcSwap::from_pointee(merged));
         // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
         // each live view subscribes its own receiver from the sender.
         let (tick, _) = watch::channel(());
@@ -128,12 +134,14 @@ impl ConfigurationSystem {
             base,
             agent,
             Arc::clone(&current),
+            Arc::clone(&sources),
             Arc::clone(&tick),
         ));
 
         Ok(Self {
             raw_map: compat_map,
             current,
+            sources,
             tick,
         })
     }
@@ -141,12 +149,15 @@ impl ConfigurationSystem {
     /// Installs a static configuration without an update task.
     ///
     /// Live views retain their initial values because this system sends no update notifications.
-    pub(crate) fn standalone(compat_map: GenericConfiguration, config: SalukiConfiguration) -> Self {
+    pub(crate) fn standalone(
+        compat_map: GenericConfiguration, config: SalukiConfiguration, sources: SourceTree,
+    ) -> Self {
         let current = Arc::new(ArcSwap::from_pointee(config));
         let (tick, _) = watch::channel(());
         Self {
             raw_map: compat_map,
             current,
+            sources: Arc::new(ArcSwap::from_pointee(sources)),
             tick: Arc::new(tick),
         }
     }
@@ -193,7 +204,8 @@ impl ConfigurationSystem {
 /// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
 async fn agent_loop(
     mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>, base: SourceTree,
-    mut agent: SourceTree, current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,
+    mut agent: SourceTree, current: Arc<ArcSwap<SalukiConfiguration>>, sources: Arc<ArcSwap<SourceTree>>,
+    tick: Arc<watch::Sender<()>>,
 ) {
     while let Some(update) = agent_rx.recv().await {
         // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
@@ -201,9 +213,11 @@ async fn agent_loop(
         // value never lingers to re-poison a later merge.
         let mut tentative = agent.clone();
         fold(&mut tentative, &update);
-        match translate_authoritative(&base.overlay(&tentative)) {
+        let merged = base.overlay(&tentative);
+        match translate_authoritative(&merged) {
             Ok(config) => {
                 agent = tentative;
+                sources.store(Arc::new(merged));
                 current.store(Arc::new(config));
                 tick.send_replace(());
                 debug!("Applied configuration update.");
@@ -344,6 +358,7 @@ fn translate(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -378,7 +393,7 @@ mod tests {
         let (compat_map, _) = ConfigurationLoader::for_tests(file, env, false).await;
         let base = SourceTree::all_explicit(compat_map.as_typed::<Value>().expect("base extracts"));
         let config = translate_strict(&base)?;
-        Ok(ConfigurationSystem::standalone(compat_map, config))
+        Ok(ConfigurationSystem::standalone(compat_map, config, base))
     }
 
     /// Builds a connected system whose base is `base` and whose authority is the returned Agent
@@ -498,6 +513,43 @@ mod tests {
                 == V3SeriesMode::Disabled
         })
         .await;
+    }
+
+    // Regression: the Agent streams `DD_ADDITIONAL_ENDPOINTS` as the raw JSON string it stores, and the
+    // map deserializer rejected it, so the startup gate failed and ADP restarted in a loop.
+    #[tokio::test]
+    async fn connected_startup_accepts_json_encoded_map_settings() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit(
+                    "additional_endpoints",
+                    json!(r#"{"https://app.datadoghq.com": ["second-org-key"]}"#),
+                ),
+                ConfigSetting::explicit(
+                    "use_v3_api.series.endpoints",
+                    json!(r#"{"https://app.datadoghq.com": "true"}"#),
+                ),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        let system =
+            ConfigurationSystem::connected(agent_rx, compat_tx.expect("dynamic sender exists"), compat_map, base)
+                .await
+                .expect("startup accepts the streamed JSON strings");
+
+        let config = system.config();
+        assert_eq!(
+            config.shared.endpoints.additional_endpoints["https://app.datadoghq.com"],
+            ["second-org-key"]
+        );
+        assert_eq!(
+            config.shared.metrics_encoding.v3_series_endpoint_modes["https://app.datadoghq.com"],
+            V3SeriesMode::Enabled
+        );
     }
 
     #[tokio::test]
@@ -646,7 +698,10 @@ mod tests {
         let system = standalone_system(
             Some(json!({
                 "experimental": {
-                    "metrics_endpoint_routing": { "metric_allowlist": policies.clone() }
+                    "metrics_endpoint_routing": {
+                        "metric_allowlist": policies.clone(),
+                        "metric_prefix_allowlist": { "https://primary.example.com": ["billing."] }
+                    }
                 }
             })),
             None,
@@ -658,6 +713,17 @@ mod tests {
             serde_json::to_value(&system.config().domains.metrics_endpoint_routing.metric_allowlists).unwrap(),
             policies
         );
+        assert_eq!(
+            system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_prefix_allowlists,
+            std::collections::HashMap::from([(
+                "https://primary.example.com".to_string(),
+                vec!["billing.".to_string()]
+            )])
+        );
     }
 
     #[tokio::test]
@@ -667,6 +733,7 @@ mod tests {
             json!({ "experimental": {} }),
             json!({ "experimental": { "metrics_endpoint_routing": {} } }),
             json!({ "experimental": { "metrics_endpoint_routing": { "metric_allowlist": {} } } }),
+            json!({ "experimental": { "metrics_endpoint_routing": { "metric_prefix_allowlist": {} } } }),
         ] {
             let system = standalone_system(Some(source), None).await.expect("system builds");
             assert!(system
@@ -674,6 +741,12 @@ mod tests {
                 .domains
                 .metrics_endpoint_routing
                 .metric_allowlists
+                .is_empty());
+            assert!(system
+                .config()
+                .domains
+                .metrics_endpoint_routing
+                .metric_prefix_allowlists
                 .is_empty());
         }
     }
@@ -1057,6 +1130,64 @@ mod tests {
         })
         .await;
         assert!(system.config().shared.endpoints.dd_url.is_explicit());
+    }
+
+    #[tokio::test]
+    async fn the_retained_sources_follow_accepted_updates_only() {
+        // The retained sources are the by-key view of the same configuration `current` holds, so an
+        // update the typed path rejected must not appear in them. `check_compatibility` is the reader
+        // that shows it: it classifies keys the typed model does not carry.
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let all_pipelines = HashSet::new();
+        system
+            .check_compatibility(&all_pipelines)
+            .expect("nothing unsupported is set yet");
+
+        // The cardinality value fails translation, so the whole snapshot is rejected and the
+        // unsupported key it also carries never reaches the sources.
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("heroku_dyno", json!(true)),
+                ConfigSetting::explicit("dogstatsd_tag_cardinality", json!("bogus")),
+            ]))
+            .await
+            .unwrap();
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
+            .await
+            .unwrap();
+        await_config(&system, "the update following the rejected snapshot", |config| {
+            config.control.logging.level == "error"
+        })
+        .await;
+        system
+            .check_compatibility(&all_pipelines)
+            .expect("a rejected update does not reach the sources");
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "heroku_dyno",
+                json!(true),
+            )))
+            .await
+            .unwrap();
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("warn"),
+            )))
+            .await
+            .unwrap();
+        await_config(&system, "the accepted unsupported key", |config| {
+            config.control.logging.level == "warn"
+        })
+        .await;
+        system
+            .check_compatibility(&all_pipelines)
+            .expect_err("an accepted update reaches the sources");
     }
 
     #[tokio::test]

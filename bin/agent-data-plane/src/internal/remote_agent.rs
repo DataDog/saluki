@@ -127,7 +127,7 @@ impl RemoteAgentBootstrap {
         Ok(Self {
             client,
             session_id,
-            internal_metrics: get_shared_metrics_state().await,
+            internal_metrics: get_shared_metrics_state(),
             dataspace: Arc::new(OnceLock::new()),
         })
     }

@@ -11,7 +11,7 @@ use std::path::Path;
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::apply_datadog_env;
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::ConfigurationLoader;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -86,12 +86,6 @@ impl LoadedConfiguration {
         &self.local
     }
 
-    /// Returns the local file and environment through the legacy by-key configuration API.
-    // TODO: Remove this compatibility view once bootstrap consumers use `local`.
-    pub fn raw_config(&self) -> GenericConfiguration {
-        self.loader.bootstrap_generic()
-    }
-
     /// Uses the Datadog Agent's configuration stream as the runtime authority.
     ///
     /// Waits for the initial Agent snapshot, layers it over the local sources, strictly translates
@@ -123,7 +117,7 @@ impl LoadedConfiguration {
     pub async fn standalone(self) -> Result<ConfigurationSystem, Error> {
         validate(&self.local)?;
         let compat_map = self.loader.into_generic().await?;
-        Ok(ConfigurationSystem::standalone(compat_map, self.local))
+        Ok(ConfigurationSystem::standalone(compat_map, self.local, self.base))
     }
 }
 
@@ -404,62 +398,35 @@ mod tests {
     }
 
     #[test]
-    fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
-        // `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
-        // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
-        let _guard = test_env_lock();
-        let path = std::env::temp_dir().join(format!("adp_bykey_env_{}.yaml", std::process::id()));
-        std::fs::write(&path, "{}\n").unwrap();
-        std::env::set_var("DD_PROXY_HTTP", "http://proxy.example.com");
-
-        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
-        let raw = loaded.raw_config();
-
-        std::env::remove_var("DD_PROXY_HTTP");
-        std::fs::remove_file(&path).ok();
-        assert_eq!(
-            raw.try_get_typed::<String>("proxy.http").expect("key reads"),
-            Some("http://proxy.example.com".to_string())
-        );
-    }
-
-    #[test]
-    fn the_adp_zstd_override_reaches_both_views_from_the_environment() {
-        // The documented environment variable must produce the same canonical nested path in the
-        // by-key view and the typed model.
+    fn the_adp_zstd_override_reaches_the_model_from_the_environment() {
+        // The documented environment variable for a Saluki-only key must reach the model, since no
+        // Datadog schema key covers it.
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_zstd_env_{}.yaml", std::process::id()));
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL", "7");
 
         let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
-        let from_by_key = loaded
-            .raw_config()
-            .try_get_typed::<i32>("data_plane.serializer_zstd_compressor_level")
-            .expect("key reads");
-        let from_typed = loaded.local().shared.endpoints.compression.effective_zstd_level();
+        let level = loaded.local().shared.endpoints.compression.effective_zstd_level();
 
         std::env::remove_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL");
         std::fs::remove_file(&path).ok();
-        assert_eq!(from_by_key, Some(7));
-        assert_eq!(from_typed, 7);
+        assert_eq!(level, 7);
     }
 
     #[test]
-    fn the_adp_stop_timeout_override_reaches_both_views_from_the_environment() {
+    fn the_adp_stop_timeout_override_reaches_the_model_from_the_environment() {
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_stop_timeout_env_{}.yaml", std::process::id()));
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DATA_PLANE_STOP_TIMEOUT", "45");
 
         let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
-        let from_by_key = loaded.raw_config().try_get_typed::<u64>("data_plane.stop_timeout");
-        let from_typed = loaded.local().control.stop_timeout;
+        let stop_timeout = loaded.local().control.stop_timeout;
 
         std::env::remove_var("DD_DATA_PLANE_STOP_TIMEOUT");
         std::fs::remove_file(&path).ok();
-        assert_eq!(from_by_key.expect("key reads"), Some(45));
-        assert_eq!(from_typed, Some(std::time::Duration::from_secs(45)));
+        assert_eq!(stop_timeout, Some(std::time::Duration::from_secs(45)));
     }
 
     #[test]

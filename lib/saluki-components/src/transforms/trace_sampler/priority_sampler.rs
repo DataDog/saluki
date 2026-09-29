@@ -26,11 +26,13 @@ pub struct PrioritySampler {
 // note that any logic involving tracers were removed because ADP does not currently support tracers.
 impl PrioritySampler {
     /// Creates a new priority sampler with the given configuration.
-    pub(super) fn new(agent_env: MetaString, extra_sample_rate: f64, target_tps: f64) -> Self {
+    pub(super) fn new(
+        agent_env: MetaString, extra_sample_rate: f64, target_tps: f64, max_catalog_entries: usize,
+    ) -> Self {
         PrioritySampler {
             agent_env,
             sampler: Sampler::new(extra_sample_rate, target_tps),
-            catalog: ServiceKeyCatalog::new(),
+            catalog: ServiceKeyCatalog::with_max_entries(max_catalog_entries),
         }
     }
 
@@ -122,7 +124,7 @@ mod tests {
     const PRIORITY_USER_DROP: i32 = -1;
 
     fn get_test_priority_sampler(target_tps: f64) -> PrioritySampler {
-        PrioritySampler::new(MetaString::from("agent-env"), 1.0, target_tps)
+        PrioritySampler::new(MetaString::from("agent-env"), 1.0, target_tps, 5000)
     }
 
     fn get_test_trace_with_service(service: &str, trace_id: u64) -> (Trace, usize) {

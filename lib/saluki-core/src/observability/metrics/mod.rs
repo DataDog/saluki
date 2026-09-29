@@ -43,7 +43,8 @@ use crate::{
 
 mod aggregated;
 pub use self::aggregated::{
-    get_shared_metrics_state, AggregatedMetricValue, AggregatedMetricsProcessor, AggregatedMetricsState,
+    get_shared_metrics_state, initialize_shared_metrics_state, AggregatedMetricValue, AggregatedMetricsProcessor,
+    AggregatedMetricsState, SharedMetricsWorker,
 };
 
 mod histogram;
@@ -53,7 +54,7 @@ mod processor;
 pub use self::processor::TelemetryProcessor;
 
 mod reflector;
-pub use self::reflector::{Processor, Reflector};
+pub use self::reflector::{Processor, Reflector, ReflectorWorker};
 
 mod remapper;
 pub use self::remapper::{RemappedMetric, RemapperRule};
@@ -743,7 +744,7 @@ pub struct MetricsFlusherWorker;
 #[async_trait]
 impl Supervisable for MetricsFlusherWorker {
     fn name(&self) -> &str {
-        "internal-telemetry-metrics-flusher"
+        "flusher"
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {

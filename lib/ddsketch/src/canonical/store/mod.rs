@@ -16,6 +16,9 @@ pub use self::dense::DenseStore;
 mod sparse;
 pub use self::sparse::SparseStore;
 
+#[cfg(test)]
+mod reference_tests;
+
 /// Storage for sketch observations.
 ///
 /// Stores manage holding the counts of mapped values, such that they contain a list of bins and the number of

@@ -30,8 +30,14 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["domain", "endpoint"])
         .with_help_text("Successful transaction sizes in bytes"),
-        RemapperRule::by_name("adp.component_data_points_sent_total", "point.sent").with_original_tags(["domain"]),
-        RemapperRule::by_name("adp.component_data_points_dropped_total", "point.dropped")
+        // Only match the per-domain gauges: the untagged aggregate is emitted once per forwarder, and those would
+        // collide once remapped.
+        RemapperRule::by_name("adp.network_http_retry_queue_size", "transactions.retry_queue_size")
+            .with_required_tag_keys(["domain"])
+            .with_original_tags(["domain"])
+            .with_help_text("Retry queue size"),
+        RemapperRule::by_name("adp.component_data_points_sent_total", "points.sent").with_original_tags(["domain"]),
+        RemapperRule::by_name("adp.component_data_points_dropped_total", "points.dropped")
             .with_original_tags(["domain"]),
         RemapperRule::by_name_and_tags(
             "adp.network_http_requests_errors_total",

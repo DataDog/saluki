@@ -20,10 +20,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes};
 use bytesize::ByteSize;
-use saluki_common::{
-    sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
-    task::spawn_traced_named,
-};
+use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_context::tags::{RawTags, RawTagsFilter};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr};
 use saluki_core::data_model::event::{
@@ -57,7 +54,6 @@ use stringtheory::MetaString;
 use tokio::{
     pin, select,
     sync::{mpsc, oneshot, Mutex},
-    task::JoinHandle,
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -1333,7 +1329,9 @@ impl Drop for ReceivedBuffer {
 
 struct BufferedStreamReader {
     receiver: Option<mpsc::Receiver<io::Result<ReceivedBuffer>>>,
-    task: JoinHandle<()>,
+
+    // Held but never fired explicitly, so that dropping this reader signals the worker to stop.
+    _shutdown_coordinator: ShutdownCoordinator,
 }
 
 impl BufferedStreamReader {
@@ -1344,33 +1342,34 @@ impl BufferedStreamReader {
     ) -> Self {
         debug_assert!(!stream.is_connectionless());
         let (packets_tx, receiver) = mpsc::channel(1);
-        let task = spawn_traced_named(
-            "dogstatsd-stream-reader",
-            receive_connected_stream(
-                stream,
-                io_buffer_pool,
-                memory_limiter,
-                origin_detection_enabled,
-                traffic_capture,
-                capture_entity_resolver,
-                packets_tx,
-            ),
+        let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
+
+        let reader = receive_connected_stream(
+            stream,
+            io_buffer_pool,
+            memory_limiter,
+            origin_detection_enabled,
+            traffic_capture,
+            capture_entity_resolver,
+            packets_tx,
         );
+
+        runtime::worker("stream_reader", async move {
+            select! {
+                _ = shutdown_handle => debug!("Stream reader cancelled."),
+                _ = reader => {},
+            }
+        })
+        .spawn();
 
         Self {
             receiver: Some(receiver),
-            task,
+            _shutdown_coordinator: shutdown_coordinator,
         }
     }
 
     fn take_receiver(&mut self) -> mpsc::Receiver<io::Result<ReceivedBuffer>> {
         self.receiver.take().expect("Buffered stream receiver already taken")
-    }
-}
-
-impl Drop for BufferedStreamReader {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 
@@ -4513,7 +4512,7 @@ mod supervision {
     #[tokio::test]
     async fn stream_handlers_are_supervised_children() {
         // Per-connection handlers are supervised too, under one fixed name per listener type. Accepting a connection
-        // adds a child, and tearing the source down takes it with everything else.
+        // adds children, and tearing the source down takes them with everything else.
         let mut supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
 
@@ -4537,7 +4536,11 @@ mod supervision {
         let _client = tokio::net::TcpStream::connect(listen_addr)
             .await
             .expect("client should connect");
-        supervisor.wait_for_children(baseline + 1).await;
+
+        // Two children per connection, not one: the handler, and the stream reader it starts. Spawning on the
+        // ambient supervisor makes the reader the handler's *sibling* rather than its descendant, which is why it
+        // shows up in the supervisor's own child count.
+        supervisor.wait_for_children(baseline + 2).await;
 
         supervisor.signal_shutdown();
         timeout(RUN_TIMEOUT, run)

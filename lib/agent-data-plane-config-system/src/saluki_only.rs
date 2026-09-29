@@ -255,9 +255,17 @@ pub struct MetricsEndpointRouting {
     /// Exact metric names permitted per configured primary or additional endpoint
     /// (`experimental.metrics_endpoint_routing.metric_allowlist`).
     ///
-    /// Defaults to absent, leaving routing unchanged. An empty allowlist drops all metrics for that endpoint,
+    /// Defaults to absent, leaving routing unchanged unless a prefix policy selects the endpoint. If neither list
+    /// allows a name, the metric is dropped for that endpoint,
     /// including sketches. Operators can use this to reduce metric volume at selected destinations.
     pub metric_allowlist: Option<HashMap<String, Vec<String>>>,
+    /// Literal metric-name prefixes permitted per configured endpoint
+    /// (`experimental.metrics_endpoint_routing.metric_prefix_allowlist`).
+    ///
+    /// Defaults to absent. Names matching either the exact list or a case-sensitive prefix are forwarded,
+    /// An empty allowlist allows nothing,
+    /// An empty string prefix allows everything.  
+    pub metric_prefix_allowlist: Option<HashMap<String, Vec<String>>>,
 }
 
 /// `data_plane.*` Saluki-only knobs.
@@ -604,6 +612,9 @@ impl SalukiOnly {
         let destination = &mut config.domains.metrics_endpoint_routing;
         if let Some(v) = &routing.metric_allowlist {
             destination.metric_allowlists.clone_from(v);
+        }
+        if let Some(v) = &routing.metric_prefix_allowlist {
+            destination.metric_prefix_allowlists.clone_from(v);
         }
 
         // domains.dogstatsd

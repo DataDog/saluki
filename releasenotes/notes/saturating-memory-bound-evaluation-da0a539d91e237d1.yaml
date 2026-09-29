@@ -1,0 +1,4 @@
+fixes:
+  - |
+    Fixed a crash at startup when configured values make a component's memory bound too large to
+    represent rather than silently wrapping such that the bounds weren't respected.

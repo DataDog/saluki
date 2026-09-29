@@ -309,23 +309,6 @@ impl ConfigurationLoader {
         figment.extract().map_err(Into::into)
     }
 
-    /// Creates a bootstrap `GenericConfiguration` without consuming the loader.
-    ///
-    /// This creates a static snapshot of the configuration loaded so far. As this is intended for bootstrapping
-    /// before dynamic configuration is active, the dynamic provider is ignored.
-    pub fn bootstrap_generic(&self) -> GenericConfiguration {
-        let figment = build_figment_from_sources(&self.provider_sources);
-
-        GenericConfiguration {
-            inner: Arc::new(Inner {
-                figment: RwLock::new(figment),
-                lookup_sources: self.lookup_sources.clone(),
-                event_sender: None,
-                ready_signal: Mutex::new(None),
-            }),
-        }
-    }
-
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(mut self) -> Result<GenericConfiguration, ConfigurationError> {
         let has_dynamic_provider = self

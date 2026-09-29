@@ -134,3 +134,13 @@ pub(crate) trait Test: Send + Sync {
     /// structure. When a cancellation signal is received, the test should stop executing and tear down its resources.
     async fn run(&self, tctx: TestContext) -> TestResult;
 }
+
+/// Resolves a file-relative path without requiring the destination to exist.
+pub(crate) fn resolve_case_path(loaded_from: &Path, path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        loaded_from.parent().unwrap_or(Path::new("")).join(path)
+    }
+}

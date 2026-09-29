@@ -10,7 +10,8 @@
 
 use std::io::Write;
 
-use saluki_error::{generic_error, GenericError};
+use saluki_core::runtime::Supervisor;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
@@ -67,7 +68,7 @@ impl LoggingGuard {
     /// inaccessible) or if the override worker is no longer running.
     pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
         let (new_stack, new_guards) = build_output_stack(&config)?;
-        let new_filter = config.log_level.as_env_filter();
+        let new_filter = config.log_level.as_targets();
 
         self.stack_handle
             .reload(new_stack)
@@ -90,24 +91,24 @@ impl LoggingGuard {
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
 /// at runtime.
 ///
-/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a
-/// [`LoggingOverrideWorker`] that must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] to drive
-/// the dynamic override processor; the worker also asserts the privileged API routes for runtime filter control.
-/// Without the worker running, override requests are accepted but never applied.
+/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a [`Supervisor`]
+/// holding the subsystem's background workers. The caller must arrange for that supervisor to run -- typically by
+/// adding it to a parent supervisor -- or override requests are accepted but never applied.
 ///
 /// # Errors
 ///
-/// If the logging subsystem was already initialized, an error will be returned.
+/// If the logging subsystem was already initialized, or its supervisor can't be constructed, an error will be
+/// returned.
 pub(crate) async fn initialize_logging(
     config: LoggingConfiguration,
-) -> Result<(LoggingGuard, LoggingOverrideWorker), GenericError> {
+) -> Result<(LoggingGuard, Supervisor), GenericError> {
     // Build the initial output stack from the supplied configuration. This is later swappable via
     // `BootstrapGuard::reload_logging` once the Datadog Agent provides authoritative configuration.
     let (output_stack, worker_guards) = build_output_stack(&config)?;
     let (output_layer, stack_handle) = reload::Layer::new(output_stack);
 
     // Set up our log level filtering and dynamic filter layer.
-    let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+    let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_targets());
 
     // The override worker owns the canonical base filter -- the directives the system restores to after an override
     // expires or is reset. It seeds the base from the reload handle on startup and is updated via the controller,
@@ -119,13 +120,18 @@ pub(crate) async fn initialize_logging(
         .with(output_layer.with_filter(filter_layer))
         .try_init()?;
 
+    // The override worker also asserts the privileged API routes for runtime filter control, so nothing driven
+    // through those routes takes effect until this supervisor is running.
+    let mut supervisor = Supervisor::new("logging").error_context("Failed to construct logging supervisor.")?;
+    supervisor.add_worker(override_worker);
+
     Ok((
         LoggingGuard {
             worker_guards,
             stack_handle,
             controller,
         },
-        override_worker,
+        supervisor,
     ))
 }
 
@@ -226,7 +232,7 @@ mod tests {
         let config = logging_config_without_outputs();
         let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
         let (output_layer, stack_handle) = reload::Layer::new(output_stack);
-        let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+        let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_targets());
         let (override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
         let mut guard = LoggingGuard {
             worker_guards,

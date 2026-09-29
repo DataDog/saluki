@@ -421,6 +421,7 @@ default values.
 | Config Key                                   | Description                                  |
 | -------------------------------------------- | -------------------------------------------- |
 | `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
+| `apm_config.features`                        | Beta APM feature flags                       |
 | `cri_socket_path`                            | containerd/CRI socket path                   |
 | `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
 | `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
@@ -455,6 +456,18 @@ Support is partial because ADP does not apply this timeout only to an aggregator
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
 aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
+
+### `apm_config.features`
+
+The core Agent uses `apm_config.features` to toggle beta APM behaviors.
+
+ADP recognizes a single value, `probabilistic_sampler_full_trace_id`, which switches the
+probabilistic sampler from hashing the low 64 bits of the trace ID to hashing the full
+128-bit ID, aligning its keep decisions with samplers that decide on 128-bit IDs. Every
+other value is ignored, without a warning: the flag inventory is not stable across agent
+versions, so unrecognized entries are inert rather than errors. Operators running multiple
+probabilistic samplers in one ingestion path should enable the flag consistently on every
+sampler that supports it.
 
 ### `cri_socket_path`
 
@@ -560,12 +573,17 @@ log_level: debug
 This keeps third-party dependencies such as `hyper`, `tokio`, and `tonic` at their
 default filtering unless you opt them in.
 
-To control dependency logs or set a global fallback, use advanced `EnvFilter` directives
-in `log_level`. ADP applies those directive strings as configured:
+To control dependency logs or set a global fallback, use advanced filter directives in
+`log_level`: a comma-separated list of bare levels (`warn`), which set the global
+fallback, and `target=level` pairs, which apply to that target and any target nested
+under it. ADP applies those directive strings as configured:
 
 ```yaml
 log_level: warn,agent_data_plane=debug,hyper=warn
 ```
+
+Span and field filters, such as `agent_data_plane[span{field=value}]=debug`, are not
+supported. ADP fails to start if `log_level` contains one.
 
 ### `min_tls_version`
 
@@ -725,6 +743,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP                                   | 0              |
 | `enable_global_limiter`                                         | Global memory limiter toggle                                                | true           |
 | `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                                             | {}             |
+| `experimental.metrics_endpoint_routing.metric_prefix_allowlist` | Per-endpoint literal metric-prefix allow lists                              | {}             |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)                                                |                |
 | `memory_limit`                                                  | Process memory limit                                                        |                |
 | `memory_mode`                                                   | Memory bounds validation mode                                               | disabled       |
@@ -747,9 +766,9 @@ ADP can route a selected subset of metrics to the primary intake or to specific 
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward compatibility.
 
-Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string. For the primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure additional destinations and their API keys through `additional_endpoints`, and use those exact map keys. The allowlist filters both series and sketches by metric name. An empty endpoint allowlist sends no metrics to that endpoint. Endpoints absent from the policy map retain their ordinary behavior.
+Key `experimental.metrics_endpoint_routing.metric_allowlist` by the exact configured endpoint string. For the primary, use the effective endpoint configured through `dd_url` or derived from `site`. Configure additional destinations and their API keys through `additional_endpoints`, and use those exact map keys. The allowlist filters both series and sketches by metric name. A metric is forwarded if its name matches this exact list or the endpoint's `metric_prefix_allowlist`. If both lists are empty, no metrics are sent to that endpoint. Endpoints absent from both policy maps retain their ordinary behavior.
 
-ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies are read when the topology is built, so changing the map requires an ADP restart. An absent or empty policy map leaves ordinary endpoint routing unchanged.
+ADP rejects a policy whose endpoint matches neither the primary endpoint nor a key in `additional_endpoints`, preventing a typo from silently sending an unfiltered stream. Endpoint policies are read when the topology is built, so changing the map requires an ADP restart. An absent or empty pair of policy maps leaves ordinary endpoint routing unchanged.
 
 To filter the primary while leaving an additional endpoint on its ordinary full stream:
 
@@ -785,6 +804,29 @@ experimental:
       https://app.datadoghq.eu:
         - billing.latency
 ```
+
+### `experimental.metrics_endpoint_routing.metric_prefix_allowlist`
+
+Allows metric-name families at selected primary or additional endpoints. Defaults to `{}`. Endpoint keys follow the same rules as `metric_allowlist`; an unknown endpoint is rejected. These experimental settings may change, move, or be removed without backward compatibility.
+
+Prefixes are case-sensitive literal strings, using the same starts-with semantics as the DogStatsD filterlist's prefix mode. There are no wildcards or regular expressions: `billing.` matches `billing.latency` but not `billing_other`. A prefix without the dot, `billing`, matches both. An empty string prefix matches every metric name; an empty list allows no names.
+
+A metric matching either an exact name in `metric_allowlist` or a prefix in this map is forwarded. This applies to both series and sketches. Endpoints present in either map are filtered; endpoints absent from both keep ordinary delivery. If both lists for a selected endpoint are empty, all its metrics are dropped. Prefixes also allow future names in the family, so choose them carefully to avoid forwarding more traffic than intended.
+
+To combine exact names and prefixes for one endpoint:
+
+```yaml
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://primary.example.com:
+        - critical.slo
+    metric_prefix_allowlist:
+      https://primary.example.com:
+        - billing.
+```
+
+The example endpoint must also be configured as the primary or an additional endpoint.
 
 ### `data_plane.apm.*`
 
@@ -873,6 +915,9 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
 | `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
 | `apm_config.errors_per_second`                                                             | APM error-span sampling rate (per sec)             |
+| `apm_config.extra_sample_rate`                                                             | Extra sample rate multiplier                       |
+| `apm_config.max_catalog_entries`                                                           | Priority sampler service-signature catalog cap     |
+| `apm_config.max_traces_per_second`                                                         | Deprecated alias for target_traces_per_second      |
 | `apm_config.obfuscation.credit_cards.enabled`                                              | apm_config.obfuscation.credit_cards.enabled        |
 | `apm_config.obfuscation.credit_cards.keep_values`                                          | apm_config.obfuscation.credit_cards.keep_values    |
 | `apm_config.obfuscation.credit_cards.luhn`                                                 | apm_config.obfuscation.credit_cards.luhn           |
@@ -896,6 +941,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `apm_config.peer_tags`                                                                     | Extra peer tags for stats aggregation              |
 | `apm_config.peer_tags_aggregation`                                                         | Aggregate APM stats by peer tags                   |
 | `apm_config.probabilistic_sampler.enabled`                                                 | Enable APM probabilistic sampler                   |
+| `apm_config.probabilistic_sampler.hash_seed`                                               | Probabilistic sampler hash seed                    |
 | `apm_config.probabilistic_sampler.sampling_percentage`                                     | Probabilistic sampler percentage                   |
 | `apm_config.replace_tags`                                                                  | Regex-based trace tag replacement rules            |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |

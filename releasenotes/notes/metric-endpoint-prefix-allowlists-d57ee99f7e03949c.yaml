@@ -1,0 +1,5 @@
+enhancements:
+  - |
+    Add per-endpoint literal metric-name prefix allowlists, which can be combined
+    with exact-name allowlists for series and sketches using
+    ``experimental.metrics_endpoint_routing.metric_prefix_allowlist``.

@@ -1,9 +1,10 @@
 use std::fmt;
 
 use bytesize::ByteSize;
+use saluki_common::logging::parse_filter_directives;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tracing_subscriber::{filter::LevelFilter, EnvFilter};
+use tracing_subscriber::filter::{LevelFilter, Targets};
 
 const DEFAULT_LOG_FILE_MAX_SIZE: ByteSize = ByteSize::mib(10);
 const DEFAULT_LOG_FILE_MAX_ROLLS: usize = 1;
@@ -92,7 +93,7 @@ mod tests {
     fn simple_defaults_to_console_only_logging_with_syslog_disabled() {
         let config = LoggingConfiguration::simple();
 
-        assert_eq!(config.log_level.as_env_filter().to_string(), "info");
+        assert_eq!(config.log_level.as_targets().to_string(), "info");
         assert!(!config.log_format_json);
         assert!(!config.log_format_rfc3339);
         assert!(config.log_to_console);
@@ -119,27 +120,28 @@ mod tests {
     #[test]
     fn log_level_try_from_parses_valid_directive() {
         let log_level = LogLevel::try_from("saluki=debug".to_string()).expect("a valid directive should parse");
-        assert_eq!(log_level.as_env_filter().to_string(), "saluki=debug");
+        assert_eq!(log_level.as_targets().to_string(), "saluki=debug");
     }
 }
 
 /// A parsed `tracing` log level filter.
 ///
-/// Wraps [`EnvFilter`] so it can be deserialized from a string (for example, `"info"`, `"saluki=trace,info"`).
+/// Wraps [`Targets`] so it can be deserialized from a string (for example, `"info"`, `"saluki=trace,info"`). See
+/// [`parse_filter_directives`] for the accepted syntax.
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
-pub struct LogLevel(EnvFilter);
+pub struct LogLevel(Targets);
 
 impl LogLevel {
-    /// Returns the underlying `EnvFilter`.
-    pub fn as_env_filter(&self) -> EnvFilter {
+    /// Returns the underlying `Targets` filter.
+    pub fn as_targets(&self) -> Targets {
         self.0.clone()
     }
 }
 
 impl From<LevelFilter> for LogLevel {
     fn from(level: LevelFilter) -> Self {
-        Self(EnvFilter::default().add_directive(level.into()))
+        Self(Targets::new().with_default(level))
     }
 }
 
@@ -151,8 +153,7 @@ impl TryFrom<String> for LogLevel {
             return Err(generic_error!("Log level cannot be empty."));
         }
 
-        EnvFilter::builder()
-            .parse(value)
+        parse_filter_directives(&value)
             .map(Self)
             .error_context("Failed to parse valid log level.")
     }

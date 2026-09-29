@@ -91,7 +91,8 @@ atty = { version = "0.2", default-features = false }
 # and https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5298) to AWS-LC-FIPS
 # 4.x, which has only been submitted for FIPS 140-3 validation, not certified yet. Track certification status
 # via the CMVP Modules In Process list (https://csrc.nist.gov/Projects/cryptographic-module-validation-program/modules-in-process/Modules-In-Process-List)
-# and aws-lc-rs release notes (https://github.com/aws/aws-lc-rs/releases) before lifting this pin.
+# and aws-lc-rs release notes (https://github.com/aws/aws-lc-rs/releases) before lifting this pin. The
+# `aws-lc-fips-sys` ban in deny.toml enforces this in CI and must be lifted alongside it.
 aws-lc-rs = { version = ">=1, <1.18", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
@@ -102,7 +103,7 @@ protobuf = { version = "3.7", default-features = false, features = [
 protobuf-codegen = { version = "3.7", default-features = false }
 piecemeal = { git = "https://github.com/tobz/piecemeal" }
 piecemeal-build = { git = "https://github.com/tobz/piecemeal" }
-libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog.git", rev = "3c2afd0cabe165c97c6f0eefa7a667352cec14dc", default-features = false }
+libdd-trace-obfuscation = { git = "https://github.com/DataDog/libdatadog.git", rev = "9b339e98215443e3764b741eef06565f3f91a6a6", default-features = false }
 serde = { version = "1", default-features = false, features = [
   "derive",
   "std",
@@ -244,11 +245,11 @@ fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
 shake = { version = "0.1", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
-opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false }
+opentelemetry-semantic-conventions = { version = "0.33.0", default-features = false }
 comfy-table = { version = "8", default-features = false }
 dtoa = { version = "1", default-features = false }
 itoa = { version = "1", default-features = false }
-vergen-gix = { version = "9", default-features = false }
+vergen-gix = { version = "10", default-features = false }
 ryu = { version = "1", default-features = false }
 colored = { version = "3", default-features = false }
 tracing-rolling-file = "0.1"

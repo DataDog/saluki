@@ -1,32 +1,32 @@
-//! Compatibility checks against the raw Datadog configuration.
+//! Compatibility checks against the merged configuration sources.
 //!
-//! The typed model excludes unsupported keys, so classification uses the by-key view.
+//! The typed model is the Agent schema pruned to the keys ADP supports, so the unsupported keys this
+//! check exists to catch are absent from it by construction. It reads the by-key view of the merged
+//! sources instead, which holds every key any input supplied along with the provenance of each.
 
 use std::collections::HashSet;
 
+use agent_data_plane_config::Provenance;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error, trace, warn};
 
 use crate::ConfigurationSystem;
 
 impl ConfigurationSystem {
-    /// Checks non-default settings that affect active pipelines and logs their severity.
+    /// Checks settings that an input set explicitly and that affect active pipelines, logging the
+    /// severity of each.
     ///
     /// # Errors
     ///
-    /// Returns an error if flattening fails or high-severity incompatibilities exist. All keys are
-    /// checked before returning, so the error includes the total count.
+    /// Returns an error if high-severity incompatibilities exist. All keys are checked before
+    /// returning, so the error includes the total count.
     pub fn check_compatibility(&self, active_pipelines: &HashSet<Pipeline>) -> Result<(), GenericError> {
         let classifier = ConfigClassifier::new();
         let mut high_severity_incompatibilities = 0u32;
         debug!("Analyzing configuration.");
-        for (key, val) in self
-            .raw_map()
-            .flattened_keys()
-            .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
-        {
-            let Some(classification) = classifier.classify(&key, &val) else {
+        for (key, value, provenance) in self.sources.load().flattened_keys() {
+            let Some(classification) = classifier.classify(&key, value) else {
                 continue;
             };
 
@@ -38,9 +38,10 @@ impl ConfigurationSystem {
                 continue;
             }
 
-            // The Agent includes schema defaults even when the operator did not set them.
-            if classification.is_default {
-                trace!(key = %key, "Configuration key has a default value.");
+            // A producer publishes every key it knows about, the ones nobody configured included, so
+            // only a key an input set explicitly says anything about what the operator asked for.
+            if provenance == Provenance::Default {
+                trace!(key = %key, "Configuration key is not set by any input.");
                 continue;
             }
 
@@ -81,17 +82,34 @@ mod tests {
     use std::collections::HashSet;
 
     use datadog_agent_config::classifier::Pipeline;
+    use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
     use saluki_config::ConfigurationLoader;
     use serde_json::{json, Value};
 
     use crate::system::translate_strict;
     use crate::{source::SourceTree, ConfigurationSystem};
 
+    /// Builds a system whose sources are a local configuration file, so every key present was set
+    /// explicitly.
     async fn system_with(file: Value) -> ConfigurationSystem {
-        let (raw_map, _) = ConfigurationLoader::for_tests(Some(file), None, false).await;
-        let base = SourceTree::all_explicit(raw_map.as_typed::<Value>().expect("base extracts"));
-        let config = translate_strict(&base).expect("sources translate");
-        ConfigurationSystem::standalone(raw_map, config)
+        system_from(SourceTree::all_explicit(file)).await
+    }
+
+    /// Builds a system whose sources are the settings a configuration producer published, each
+    /// carrying its own provenance.
+    async fn system_from_settings(settings: &[(&str, Value, StreamProvenance)]) -> ConfigurationSystem {
+        let settings: Vec<_> = settings
+            .iter()
+            .map(|(key, value, provenance)| ConfigSetting::new(*key, value.clone(), *provenance))
+            .collect();
+
+        system_from(SourceTree::from_settings(&settings)).await
+    }
+
+    async fn system_from(sources: SourceTree) -> ConfigurationSystem {
+        let (raw_map, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let config = translate_strict(&sources).expect("sources translate");
+        ConfigurationSystem::standalone(raw_map, config, sources)
     }
 
     fn pipelines(active: &[Pipeline]) -> HashSet<Pipeline> {
@@ -124,12 +142,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_high_severity_key_holding_its_default_is_skipped() {
-        let system = system_with(otlp_tls_settings("", "")).await;
+    async fn a_high_severity_key_nobody_set_is_skipped() {
+        // The Agent publishes every key it knows about, so a key it reports at its own default is a
+        // key nobody configured, whatever value it holds.
+        let system = system_from_settings(&[
+            (
+                "otlp_config.receiver.protocols.http.tls.cert_pem",
+                json!("/etc/adp/cert.pem"),
+                StreamProvenance::Default,
+            ),
+            (
+                "otlp_config.receiver.protocols.http.tls.key_pem",
+                json!("/etc/adp/key.pem"),
+                StreamProvenance::Default,
+            ),
+        ])
+        .await;
 
         system
             .check_compatibility(&pipelines(&[Pipeline::Otlp]))
-            .expect("default-valued keys are not incompatibilities");
+            .expect("a key nobody set is not an incompatibility");
+    }
+
+    #[tokio::test]
+    async fn a_high_severity_key_set_to_its_default_value_is_still_checked() {
+        // Writing an unsupported key is a request ADP cannot honor, so it is reported even when the
+        // value written happens to be the one the schema would have supplied.
+        let system = system_with(otlp_tls_settings("", "")).await;
+
+        let error = system
+            .check_compatibility(&pipelines(&[Pipeline::Otlp]))
+            .expect_err("an explicitly set key should fail the check");
+
+        assert!(error.to_string().contains("2 incompatible configuration detected"));
     }
 
     #[tokio::test]

@@ -13,10 +13,11 @@ use std::{
 
 use chrono::Local;
 use clap::Parser as _;
+use saluki_common::logging::{filter_from_env, parse_filter_directives};
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
+use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use crate::runner::Runner;
 
@@ -31,11 +32,14 @@ use self::cli::{Cli, Command, LogLevel};
 
 mod config;
 mod dynamic_vars;
+mod integration;
 mod mounts;
 use self::config::{default_host_runtime, discover_tests};
 
 mod events;
 use self::events::{create_event_channel, TestEvent};
+
+mod image_override;
 
 mod machine_output;
 use self::machine_output::RunReport;
@@ -106,14 +110,11 @@ async fn main() -> ExitCode {
 }
 
 fn initialize_logging(log_level: LogLevel) {
-    let env_filter = if std::env::var_os(EnvFilter::DEFAULT_ENV).is_some() {
-        EnvFilter::from_default_env()
-    } else {
-        EnvFilter::new(log_level.filter_directives())
-    };
+    let default_filter = parse_filter_directives(&log_level.filter_directives())
+        .expect("first-party log filter directives should always be valid");
 
     tracing_subscriber::registry()
-        .with(env_filter)
+        .with(filter_from_env(default_filter))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
@@ -184,7 +185,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &cmd.image_overrides) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -534,7 +535,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         .runtime
         .clone()
         .unwrap_or_else(|| default_host_runtime().to_string());
-    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime, &[]) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
@@ -592,9 +593,11 @@ mod tests {
 
     #[test]
     fn log_level_scopes_the_selected_level_to_first_party_crates() {
-        let directives = EnvFilter::new(LogLevel::Debug.filter_directives()).to_string();
+        let directives = parse_filter_directives(&LogLevel::Debug.filter_directives())
+            .expect("valid directives")
+            .to_string();
 
-        // `EnvFilter` reorders directives, so check membership rather than the whole string.
+        // Parsing reorders directives, so check membership rather than the whole string.
         assert!(
             directives.contains("panoramic=debug"),
             "directives were '{}'",
@@ -658,6 +661,44 @@ mod tests {
             exit_code_for(&suite_of(vec![failing("b"), errored])),
             ExitCode::from(EXIT_HARNESS_ERROR)
         );
+    }
+
+    #[tokio::test]
+    async fn image_override_validation_precedes_name_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let case_dir = dir.path().join("unselected");
+        std::fs::create_dir(&case_dir).unwrap();
+        std::fs::write(
+            case_dir.join("config.yaml"),
+            r#"
+type: correctness
+runtime: docker
+analysis_mode: metrics
+baseline: {image: base}
+comparison: {image: comp}
+"#,
+        )
+        .unwrap();
+        for (entry, expected) in [
+            ("millstone=tools:custom", EXIT_NO_TESTS_SELECTED),
+            ("typo=tools:custom", EXIT_HARNESS_ERROR),
+        ] {
+            let cli = Cli::try_parse_from([
+                "panoramic",
+                "run",
+                "-d",
+                dir.path().to_str().unwrap(),
+                "-t",
+                "not-discovered",
+                "--image-override",
+                entry,
+            ])
+            .unwrap();
+            let Command::Run(cmd) = cli.command else {
+                panic!("expected run")
+            };
+            assert_eq!(run_tests(cmd, false).await, ExitCode::from(expected));
+        }
     }
 
     #[test]

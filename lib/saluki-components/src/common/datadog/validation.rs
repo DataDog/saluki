@@ -4,14 +4,13 @@ use bytes::Bytes;
 use http::{Request, StatusCode, Uri};
 use http_body_util::Empty;
 use regex::Regex;
-use saluki_common::task::spawn_traced_named;
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
+use saluki_core::runtime::{self, ShutdownStrategy};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use tokio::{
     select,
     sync::mpsc,
-    task::JoinHandle,
     time::{self, MissedTickBehavior},
 };
 use tracing::{debug, warn};
@@ -65,10 +64,14 @@ impl ApiKeyValidator {
         }
     }
 
-    /// Spawns the API key validation task and returns a readiness handle.
+    /// Spawns the API key validation child and returns a readiness handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a supervision tree.
     pub(crate) fn spawn(self) -> ApiKeyValidationHandle {
         let (readiness_tx, readiness_rx) = mpsc::channel(1);
-        let task = spawn_validation_task(
+        spawn_validation_task(
             self.endpoints,
             self.client,
             self.api_key_changes,
@@ -78,15 +81,17 @@ impl ApiKeyValidator {
         );
 
         ApiKeyValidationHandle {
-            task,
             readiness_rx: Some(readiness_rx),
         }
     }
 }
 
 /// Handle for API key validation readiness updates.
+///
+/// Dropping the handle closes the readiness channel, which is the validation child's terminal condition. It is
+/// spawned as a [`Brutal`][ShutdownStrategy::Brutal] child regardless, because it only notices the closure on its
+/// next validation pass -- up to a whole interval later -- and a probe has nothing in flight worth preserving.
 pub(crate) struct ApiKeyValidationHandle {
-    task: JoinHandle<()>,
     readiness_rx: Option<mpsc::Receiver<ValidationReadiness>>,
 }
 
@@ -105,11 +110,6 @@ impl ApiKeyValidationHandle {
                 future::pending().await
             }
         }
-    }
-
-    /// Stops the validation task.
-    pub(crate) fn abort(&self) {
-        self.task.abort();
     }
 }
 
@@ -136,11 +136,13 @@ enum KeyValidationResult {
 fn spawn_validation_task(
     endpoints: Vec<RoutableEndpoint>, client: HttpClient, api_key_changes: Option<ApiKeyChanges>, interval: Duration,
     readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
-) -> JoinHandle<()> {
-    spawn_traced_named(
-        "dd-api-key-validation",
+) {
+    runtime::worker(
+        "api_key_validation",
         run_validation_loop(endpoints, client, api_key_changes, interval, readiness_tx, emitter),
     )
+    .with_shutdown_strategy(ShutdownStrategy::Brutal)
+    .spawn();
 }
 
 async fn run_validation_loop(
@@ -351,6 +353,7 @@ mod tests {
         ConfigValue, SalukiConfiguration,
     };
     use axum::{extract::RawQuery, routing::get, Router};
+    use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_tls::initialize_default_crypto_provider;
     use tokio::net::TcpListener;
 
@@ -421,22 +424,31 @@ mod tests {
         let refresher =
             ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoint should follow the live views");
         let api_key_changes = refresher.changes();
-        refresher.spawn();
 
         let emitter = DiagnosticsEmitter::from_dataspace(
             SubsystemIdentifier::from_segments(["test-forwarder"]),
             DataspaceRegistry::new(),
         );
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
-        // An interval no test can wait out, so only a key change can drive the second validation.
-        let task = spawn_validation_task(
-            endpoints,
-            test_client(Duration::from_secs(1)),
-            Some(api_key_changes),
-            Duration::from_secs(3600),
-            readiness_tx,
-            emitter,
-        );
+
+        // Both the refresher and validation spawn on the ambient supervisor, and it is what keeps them running for the
+        // rest of the test.
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        supervisor
+            .scope(async move {
+                refresher.spawn();
+
+                // An interval no test can wait out, so only a key change can drive the second validation.
+                spawn_validation_task(
+                    endpoints,
+                    test_client(Duration::from_secs(1)),
+                    Some(api_key_changes),
+                    Duration::from_secs(3600),
+                    readiness_tx,
+                    emitter,
+                );
+            })
+            .await;
 
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::NotReady);
 
@@ -444,8 +456,6 @@ mod tests {
         live.store(live_config);
 
         assert_eq!(await_readiness(&mut readiness_rx).await, ValidationReadiness::Ready);
-
-        task.abort();
     }
 
     #[tokio::test]
@@ -551,9 +561,10 @@ mod tests {
         let endpoints = ForwarderConfiguration::from_configuration(&shared)
             .build_routable_endpoints()
             .expect("endpoints should resolve");
-        ApiKeyRefresher::new(&endpoints, &live.api_keys())
-            .expect("the endpoints should follow the live views")
-            .spawn();
+        let refresher =
+            ApiKeyRefresher::new(&endpoints, &live.api_keys()).expect("the endpoints should follow the live views");
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        supervisor.scope(async move { refresher.spawn() }).await;
 
         // Rotate the key at the configured position, and add a URL no endpoint was built for.
         live_config.shared.endpoints.additional_endpoints = HashMap::from([

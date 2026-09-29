@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Resolve the Agent Data Plane container when it runs in its own cgroup namespace, which is the default under
+    control groups v2 with containerd or CRI-O. In that configuration ``/proc/self/cgroup`` names no container, so
+    telemetry emitted about Agent Data Plane itself, such as its liveness service check, carried no container tags.
+    The cgroup controller inode is now used to identify the container when the cgroup path can't.

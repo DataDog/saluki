@@ -141,11 +141,18 @@ impl UsageExpr {
         Self::Sum { values: vec![lhs, rhs] }
     }
 
+    /// Evaluates this expression to a byte count.
+    ///
+    /// Every leaf is ultimately operator-controlled, so an expression can describe a size larger
+    /// than `usize` can hold. Arithmetic saturates at [`usize::MAX`] rather than overflowing: a bound
+    /// too large to represent is reported as the largest one that can be, which no memory grant can
+    /// satisfy, so bounds verification rejects it. Wrapping would instead report a small bound and
+    /// let verification pass.
     fn evaluate(&self) -> usize {
         match self {
             Self::Config { value, .. } | Self::StructSize { value, .. } | Self::Constant { value, .. } => *value,
-            Self::Product { values } => values.iter().map(UsageExpr::evaluate).product(),
-            Self::Sum { values } => values.iter().map(UsageExpr::evaluate).sum(),
+            Self::Product { values } => values.iter().map(UsageExpr::evaluate).fold(1, usize::saturating_mul),
+            Self::Sum { values } => values.iter().map(UsageExpr::evaluate).fold(0, usize::saturating_add),
         }
     }
 }
@@ -164,12 +171,8 @@ impl ComponentBounds {
         self.self_minimum_required_bytes
             .iter()
             .map(UsageExpr::evaluate)
-            .sum::<usize>()
-            + self
-                .subcomponents
-                .values()
-                .map(|cb| cb.total_minimum_required_bytes())
-                .sum::<usize>()
+            .chain(self.subcomponents.values().map(|cb| cb.total_minimum_required_bytes()))
+            .fold(0, usize::saturating_add)
     }
 
     /// Gets the total firm limit bytes for this component and all subcomponents.
@@ -178,18 +181,10 @@ impl ComponentBounds {
     pub fn total_firm_limit_bytes(&self) -> usize {
         self.self_minimum_required_bytes
             .iter()
+            .chain(self.self_firm_limit_bytes.iter())
             .map(UsageExpr::evaluate)
-            .sum::<usize>()
-            + self
-                .self_firm_limit_bytes
-                .iter()
-                .map(UsageExpr::evaluate)
-                .sum::<usize>()
-            + self
-                .subcomponents
-                .values()
-                .map(|cb| cb.total_firm_limit_bytes())
-                .sum::<usize>()
+            .chain(self.subcomponents.values().map(|cb| cb.total_firm_limit_bytes()))
+            .fold(0, usize::saturating_add)
     }
 
     /// Returns an iterator of all subcomponents within this component.
@@ -232,7 +227,9 @@ impl ComponentBounds {
 
 #[cfg(test)]
 mod tests {
-    use super::UsageExpr;
+    use std::collections::HashMap;
+
+    use super::{ComponentBounds, UsageExpr};
 
     #[test]
     fn leaf_expressions_evaluate_to_their_value() {
@@ -269,5 +266,59 @@ mod tests {
             UsageExpr::constant("factor", 4),
         );
         assert_eq!(expr.evaluate(), 20);
+    }
+
+    #[test]
+    fn empty_products_and_sums_keep_their_identities() {
+        // Folding by hand has to reproduce what `Iterator::product` and `Iterator::sum` return for an
+        // empty sequence, or an expression with no subexpressions changes meaning.
+        assert_eq!(UsageExpr::Product { values: Vec::new() }.evaluate(), 1);
+        assert_eq!(UsageExpr::Sum { values: Vec::new() }.evaluate(), 0);
+    }
+
+    #[test]
+    fn a_sum_too_large_to_represent_saturates() {
+        // An operator-supplied byte budget can be large enough that the total does not fit in a
+        // `usize`. Wrapping would report a tiny bound that verification happily accepts.
+        let expr = UsageExpr::sum(
+            "total",
+            UsageExpr::config("queue budget", usize::MAX),
+            UsageExpr::constant("overhead", 4096),
+        );
+
+        assert_eq!(expr.evaluate(), usize::MAX);
+    }
+
+    #[test]
+    fn a_product_too_large_to_represent_saturates() {
+        let expr = UsageExpr::product(
+            "scaled",
+            UsageExpr::config("count", usize::MAX),
+            UsageExpr::constant("size", 2),
+        );
+
+        assert_eq!(expr.evaluate(), usize::MAX);
+    }
+
+    #[test]
+    fn saturation_survives_aggregation_across_subcomponents() {
+        // Saturating inside `evaluate` is not enough on its own: the per-component totals add those
+        // results together, so an already-saturated expression must not overflow one level up.
+        let saturated = ComponentBounds {
+            self_minimum_required_bytes: vec![UsageExpr::config("queue budget", usize::MAX)],
+            self_firm_limit_bytes: vec![UsageExpr::constant("overhead", 4096)],
+            subcomponents: HashMap::new(),
+        };
+        let mut subcomponents = HashMap::new();
+        subcomponents.insert("forwarder".to_string(), saturated);
+
+        let bounds = ComponentBounds {
+            self_minimum_required_bytes: vec![UsageExpr::constant("root min", 1024)],
+            self_firm_limit_bytes: vec![UsageExpr::constant("root firm", 2048)],
+            subcomponents,
+        };
+
+        assert_eq!(bounds.total_minimum_required_bytes(), usize::MAX);
+        assert_eq!(bounds.total_firm_limit_bytes(), usize::MAX);
     }
 }

@@ -137,7 +137,7 @@ impl MetricsOverrideWorker {
 #[async_trait]
 impl Supervisable for MetricsOverrideWorker {
     fn name(&self) -> &str {
-        "dynamic-metrics-override-processor"
+        "level-override-processor"
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {

@@ -1,26 +1,9 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{collections::BTreeMap, path::PathBuf};
 
-use airlock::{
-    config::{
-        DatadogIntakeConfig as AirlockDatadogIntakeConfig, MillstoneConfig as AirlockMillstoneConfig,
-        TargetConfig as AirlockTargetConfig,
-    },
-    driver::{ContainerOs, DriverConfig},
-};
-use async_trait::async_trait;
-use saluki_config::ConfigurationLoader;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
+use crate::config::{deserialize_env_map, CaseConfig};
 use crate::correctness::analysis::AnalysisMode;
-use crate::reporter::TestResult;
-use crate::test::{Test, TestContext, TestSuite};
-
-// Correctness tests run two isolation groups (baseline + comparison), each with multiple
-// containers, so they need more time than the default.
-const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 
 /// The container runtime backend to use for a correctness test.
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -38,9 +21,6 @@ fn default_otlp_direct_analysis_mode() -> bool {
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
-    #[serde(skip)]
-    pub(crate) name: String,
-
     /// Container runtime backend to use.
     pub runtime: Runtime,
 
@@ -75,8 +55,9 @@ pub struct Config {
     #[serde(default)]
     pub require_dogstatsd_forwarded_packets: bool,
 
-    #[serde(skip, default = "PathBuf::new")]
-    pub(crate) base_config_path: PathBuf,
+    /// Canonical configuration file path, recorded by the loader.
+    #[serde(skip)]
+    pub(crate) loaded_from: PathBuf,
 }
 
 #[derive(Clone, Deserialize)]
@@ -167,163 +148,12 @@ pub struct TargetConfig {
     ///
     /// Defaults to no variables. Baseline and comparison own their own maps; nothing is shared
     /// between them.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: BTreeMap<String, String>,
 }
 
-impl TargetConfig {
-    /// Returns this target's environment as `KEY=VALUE` assignments, ordered by variable name.
-    ///
-    /// Airlock, and so the Docker backend, takes the environment in this process-level form rather
-    /// than as a map. The order comes from [`BTreeMap`], so the same case produces the same
-    /// container environment on every run. The kind backend builds pod environment variables from
-    /// the map directly, so both backends see the same names and values.
-    pub fn env_assignments(&self) -> Vec<String> {
-        self.env
-            .iter()
-            .map(|(name, value)| format!("{}={}", name, value))
-            .collect()
-    }
-}
-
-#[async_trait]
-impl Test for Config {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn suite(&self) -> TestSuite {
-        TestSuite::Correctness
-    }
-
-    fn description(&self) -> Option<String> {
-        None
-    }
-
-    fn case_path(&self) -> PathBuf {
-        self.base_config_path.clone()
-    }
-
-    fn timeout(&self) -> Duration {
-        CORRECTNESS_TIMEOUT
-    }
-
-    fn images(&self) -> BTreeMap<&str, String> {
-        let mut m = BTreeMap::new();
-        m.insert("baseline", self.baseline.image.clone());
-        m.insert("comparison", self.comparison.image.clone());
-        m.insert("datadog-intake", self.datadog_intake.image.clone());
-        m.insert("millstone", self.millstone.image.clone());
-        m
-    }
-
-    fn runtime(&self) -> String {
-        match self.runtime {
-            Runtime::Docker => "docker".to_string(),
-            Runtime::KubernetesInDocker => "kubernetes_in_docker".to_string(),
-        }
-    }
-
-    async fn run(&self, tctx: TestContext) -> TestResult {
-        crate::correctness::runner::run_correctness_test(self.name.clone(), self.clone(), tctx).await
-    }
-}
-
-impl Config {
-    pub fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
-        let config_path = PathBuf::from(config_path)
-            .canonicalize()
-            .error_context("Failed to canonicalize configuration file path.")?;
-
-        // We load the configuration file from the given path, and also environment variables, and then deserialize.
-        let mut config = ConfigurationLoader::default()
-            .from_yaml(&config_path)
-            .error_context("Failed to load configuration file.")?
-            .from_environment("PANORAMIC")
-            .expect("Environment variable prefix should not be empty.")
-            .into_typed::<Config>()
-            .error_context("Failed to deserialize configuration file.")?;
-
-        // Now that we've deserialized things, calculate the base path of the configuration file we loaded, which we
-        // then use as the base path for any configuration fields which also specify paths to files. We only use the
-        // base path if those paths aren't already absolute.
-        config.base_config_path = config_path
-            .parent()
-            .expect("Configuration file path must be an absolute file path.")
-            .to_path_buf();
-
-        Ok(config)
-    }
-
-    pub fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
-        let path = path.as_ref();
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.base_config_path.join(path)
-        }
-    }
-
-    pub fn millstone_config(&self) -> AirlockMillstoneConfig {
-        AirlockMillstoneConfig {
-            image: self.millstone.image.clone(),
-            binary_path: Some(self.millstone.binary_path.clone()),
-            config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
-        }
-    }
-
-    pub fn datadog_intake_config(&self) -> AirlockDatadogIntakeConfig {
-        AirlockDatadogIntakeConfig {
-            image: self.datadog_intake.image.clone(),
-            binary_path: Some(self.datadog_intake.binary_path.clone()),
-        }
-    }
-
-    async fn target_driver_config(&self, target_config: &TargetConfig) -> Result<DriverConfig, GenericError> {
-        let airlock_target_config = AirlockTargetConfig {
-            image: target_config.image.clone(),
-            entrypoint: target_config.entrypoint.clone(),
-            command: target_config.command.clone(),
-            additional_env_vars: target_config.env_assignments(),
-            container_os: ContainerOs::Linux,
-            host_cgroup_namespace: false,
-        };
-
-        let mut driver_config = DriverConfig::target("target", airlock_target_config).await?;
-
-        for file in &target_config.files {
-            // Parse the two file paths -- host path and container path -- from the entry,
-            // and canonicalize the host path. The container path must be absolute.
-            match file.split_once(':') {
-                Some((host_path, container_path)) => {
-                    let host_path = self.get_canonicalized_config_path(host_path);
-                    let container_path = Path::new(container_path);
-                    if !container_path.is_absolute() {
-                        return Err(generic_error!(
-                            "Container path '{}' must be absolute.",
-                            container_path.display()
-                        ));
-                    }
-
-                    driver_config = driver_config.with_bind_mount(host_path, container_path)
-                }
-                None => {
-                    return Err(generic_error!(
-                        "Invalid file entry format (expected 'host_path:container_path', got '{}')",
-                        file,
-                    ))
-                }
-            };
-        }
-
-        Ok(driver_config)
-    }
-
-    pub async fn baseline_target_driver_config(&self) -> Result<DriverConfig, GenericError> {
-        self.target_driver_config(&self.baseline).await
-    }
-
-    pub async fn comparison_target_driver_config(&self) -> Result<DriverConfig, GenericError> {
-        self.target_driver_config(&self.comparison).await
+impl CaseConfig for Config {
+    fn set_loaded_from(&mut self, path: PathBuf) {
+        self.loaded_from = path;
     }
 }

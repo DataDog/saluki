@@ -3,6 +3,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+use saluki_common::logging::filter_from_env;
 use saluki_error::{ErrorContext as _, GenericError};
 use socket2::SockRef;
 use tokio::{
@@ -10,7 +11,11 @@ use tokio::{
     sync::mpsc,
 };
 use tracing::{error, info, warn};
-use tracing_subscriber::{filter::LevelFilter, EnvFilter};
+use tracing_subscriber::{
+    filter::{LevelFilter, Targets},
+    layer::SubscriberExt as _,
+    util::SubscriberInitExt as _,
+};
 
 mod app;
 use crate::app::{initialize_app_router, DogStatsDForwardingState};
@@ -23,13 +28,10 @@ const MAX_UDP_PACKET_SIZE: usize = 65535;
 async fn main() {
     tracing_subscriber::fmt()
         .compact()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
         .with_ansi(true)
         .with_target(true)
+        .finish()
+        .with(filter_from_env(Targets::new().with_default(LevelFilter::INFO)))
         .init();
 
     match run().await {

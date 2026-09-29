@@ -10,7 +10,7 @@ use std::{
 use agent_data_plane_config::shared::{self, Secrets};
 use agent_data_plane_config::Live;
 use http::{Response, StatusCode};
-use saluki_common::task::spawn_traced_named;
+use saluki_core::runtime::{self, ShutdownStrategy};
 use saluki_io::net::util::retry::{
     ExponentialBackoff, RetryCauseTelemetry, RetryClassifier, RollingExponentialBackoffRetryPolicy,
     StandardHttpClassifier, StandardHttpRetryLifecycle,
@@ -70,14 +70,29 @@ impl SecretsGateRefresher {
         Self { secrets, gate }
     }
 
-    /// Spawns the task that follows the view.
-    pub(crate) fn spawn(mut self) {
-        spawn_traced_named("dd-secrets-gate-refresher", async move {
-            loop {
-                let secrets = self.secrets.changed().await;
-                self.gate.store(&secrets);
-            }
-        });
+    /// Spawns the supervised child that follows the view.
+    ///
+    /// The child follows its view forever and has no terminal condition, so it is spawned as a
+    /// [`Brutal`][ShutdownStrategy::Brutal] child: waiting for it at shutdown would hold the drain open until the
+    /// supervisor's budget elapsed, and there is nothing in flight to preserve.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a supervision tree.
+    pub(crate) fn spawn(self) {
+        let Self { secrets, gate } = self;
+
+        runtime::worker("secrets_gate_refresher", follow_secrets(secrets, gate))
+            .with_shutdown_strategy(ShutdownStrategy::Brutal)
+            .spawn();
+    }
+}
+
+/// Stores what `secrets` projects into `gate` for as long as the view keeps reporting changes.
+async fn follow_secrets(mut secrets: Live<Secrets>, gate: SecretsGate) {
+    loop {
+        let secrets = secrets.changed().await;
+        gate.store(&secrets);
     }
 }
 
@@ -289,6 +304,7 @@ mod tests {
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
     use http::{Request, Response};
     use metrics::{Key, Label};
+    use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use tower::retry::Policy;
 
@@ -374,7 +390,7 @@ mod tests {
         };
         let retry_config = RetryConfiguration::from_configuration(&forwarder, None);
 
-        assert_eq!(1024, retry_config.queue_max_size_bytes());
+        assert_eq!(1024 * 2 * 1024 * 1024, retry_config.queue_max_size_bytes());
     }
 
     #[test]
@@ -476,7 +492,11 @@ mod tests {
         let live_config = LiveConfiguration::new(SalukiConfiguration::default());
         let refresher = SecretsGateRefresher::new(live_config.live(|config| &config.shared.secrets));
         let gate = refresher.gate.clone();
-        refresher.spawn();
+
+        // The refresher spawns on the ambient supervisor, and the supervisor is what keeps it running for the rest of
+        // the test.
+        let supervisor = TestComponentSupervisor::start("test_forwarder").await;
+        supervisor.scope(async move { refresher.spawn() }).await;
 
         let retry_config = test_retry_config();
         let mut policy = retry_config.to_default_http_retry_policy(gate.clone(), test_retry_causes());

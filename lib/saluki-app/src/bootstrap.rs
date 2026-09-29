@@ -110,25 +110,21 @@ impl AppBootstrapper {
     pub async fn bootstrap(self) -> Result<Bootstrap, GenericError> {
         // Initialize the logging subsystem first, since we want to make it possible to get any logs from the rest of
         // the bootstrap process.
-        let (logging_guard, logging_override) = initialize_logging(self.logging_config)
+        let (logging_guard, logging_supervisor) = initialize_logging(self.logging_config)
             .await
             .error_context("Failed to initialize logging subsystem.")?;
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
-        let metrics_workers = initialize_metrics(self.metrics_prefix, self.metrics_default_level)
+        let metrics_supervisor = initialize_metrics(self.metrics_prefix, self.metrics_default_level)
             .await
             .error_context("Failed to initialize metrics subsystem.")?;
 
-        // Build the supervisor for all bootstrap-spawned background workers. The default ambient runtime mode is
-        // appropriate here: these are lightweight tasks that share the parent runtime, and the runtime metrics
-        // worker has already eagerly captured the parent's `Handle` so it always describes the right runtime.
+        // Build our combined supervisor for all bootstrap-related workers.
         let mut supervisor =
             Supervisor::new("app-bootstrap").error_context("Failed to construct app bootstrap supervisor.")?;
-        supervisor.add_worker(logging_override);
-        supervisor.add_worker(metrics_workers.flusher);
-        supervisor.add_worker(metrics_workers.runtime);
-        supervisor.add_worker(metrics_workers.override_processor);
+        supervisor.add_worker(logging_supervisor);
+        supervisor.add_worker(metrics_supervisor);
 
         Ok(Bootstrap {
             supervisor,
