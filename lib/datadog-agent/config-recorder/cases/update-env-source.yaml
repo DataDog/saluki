@@ -1,0 +1,6 @@
+name: update-env-source
+group: behavior
+why: [env-var-set-guard-is-test-only]
+updates:
+  - {key: log_level, value: warn, source: environment-variable}
+keys: [log_level]
