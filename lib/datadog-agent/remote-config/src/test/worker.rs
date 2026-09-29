@@ -1684,6 +1684,28 @@ fn recovering_from_unimplemented_resets_the_repeat_check() {
 }
 
 #[test]
+fn an_unimplemented_answer_between_two_rpc_errors_still_warns_on_the_second() {
+    let logs = logged(|| async {
+        let (client, worker, mut agent) = client();
+        let _alpha = client.subscribe::<Recorder>().unwrap();
+        tokio::spawn(worker.run());
+
+        agent.poll().await;
+        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
+        agent.poll().await;
+        agent.respond(Err(FetchError::Unimplemented(generic_error!("unimplemented"))));
+        agent.poll().await;
+        agent.respond(Err(FetchError::Rpc(generic_error!("unavailable"))));
+        agent.poll().await;
+    });
+
+    // Without the fix, the third outcome (an RPC error again) would log at debug: nothing but a successful poll
+    // reset `rpc_failing` between the two RPC errors, and the `Unimplemented` answer in between was not a success.
+    assert_eq!(at(&logs, Level::WARN), [RPC_FAILED, RPC_FAILED]);
+    assert!(!at(&logs, Level::DEBUG).contains(&RPC_FAILED));
+}
+
+#[test]
 fn logs_a_rejection_once_per_change_of_inputs() {
     let logs = logged(|| async {
         let (client, worker, mut agent) = client();

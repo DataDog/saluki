@@ -248,8 +248,9 @@ impl Schedule {
         }
         self.unimplemented = true;
         // An `Unimplemented` answer means the Agent has moved on from whatever it last reported, so an invalid
-        // response repeated afterwards is not a repeat of that report and must log at error again.
+        // response or RPC error repeated afterwards is not a repeat of that report and must log above debug again.
         self.invalid_response = None;
+        self.rpc_failing = false;
         self.max_backoff
     }
 }
