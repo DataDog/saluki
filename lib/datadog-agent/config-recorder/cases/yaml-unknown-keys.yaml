@@ -1,0 +1,8 @@
+name: yaml-unknown-keys
+group: behavior
+why: [yaml-unknown-key-stored-and-streamed]
+yaml: |
+  unknown_top_xyz: 1
+  apm_config:
+    unknown_child_xyz: [a]
+keys: [apm_config.unknown_child_xyz, unknown_top_xyz]

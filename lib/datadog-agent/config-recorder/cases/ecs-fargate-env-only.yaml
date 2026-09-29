@@ -1,0 +1,6 @@
+name: ecs-fargate-env-only
+group: behavior
+why: [ecs-fargate-raw-env-bypass]
+env:
+  ECS_FARGATE: "true"
+keys: [hostname]

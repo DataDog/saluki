@@ -1,0 +1,6 @@
+name: env-bool-unparseable-kept-raw
+group: behavior
+why: [env-conversion-error-keeps-raw-string]
+env:
+  DD_DOGSTATSD_ORIGIN_DETECTION: "yes"
+keys: [dogstatsd_origin_detection]

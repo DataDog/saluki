@@ -1,0 +1,7 @@
+name: yaml-null-values
+group: behavior
+why: [yaml-null-known-key-ignored]
+yaml: |
+  log_level:
+  unknown_null_xyz: ~
+keys: [log_level, unknown_null_xyz]

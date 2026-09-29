@@ -1,0 +1,7 @@
+name: yaml-plain-octal
+group: behavior
+why: [yaml-plain-octal-int]
+yaml: |
+  env: 0755
+  dogstatsd_buffer_size: 010
+keys: [dogstatsd_buffer_size, env]
