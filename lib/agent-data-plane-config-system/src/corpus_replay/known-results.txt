@@ -232,6 +232,9 @@ case	yaml-unknown-keys	0	0	0	2	0
 case	yaml-unknown-section	0	0	0	2	0
 count	cases	started	224
 count	cases	startup-failed	1
+count	derived	adp-rejects	0
+count	derived	differs	2
+count	derived	match	6
 count	leaf	adp-rejects	56
 count	leaf	differs	5
 count	leaf	explicit-only	2
@@ -249,6 +252,15 @@ count	system	accepted	15
 count	system	deserialize	26
 count	system	translate	21
 count	system	validate: blank api key	438
+derived	cli-stop-timeout-not-recomputed	snapshot	data_plane.stop_timeout	GetInt	I64	4	differs	8	4
+derived	derived-stop-timeout-default-source	final	data_plane.stop_timeout	GetInt	I64	9	differs	16	9
+derived-n/a	api-key-trim	ADP trims `api_key` on every update; comparing it needs the protocol tier (what is sent), not a getter
+derived-n/a	container-roots	depends on the process environment and filesystem, not only settings
+derived-n/a	cri-socket	depends on the process environment and filesystem, not only settings
+derived-n/a	main-endpoint	the Agent derives it in a consumer; no recorded getter returns the derived URL
+derived-n/a	mrf-endpoint	the Agent derives it in a consumer; no recorded getter returns the derived URL
+derived-n/a	no-proxy-cloud-metadata	effective no-proxy list appends cloud metadata IPs; the Agent's streamed list already has them; needs a proxy-list derivation in the table (follow-up)
+derived-n/a	otlp-receiver-endpoint-override	ADP-only keys overwrite the Agent's endpoint by design; never equal
 leaf	breadth-env-top-m	snapshot	metric_tag_filterlist	Get	JsonList	"cr-a cr-b"	adp-rejects	expected value at line 1 column 1
 leaf	depth-env-bool-words	snapshot	allow_arbitrary_tags	GetBool	Bool	"on"	adp-rejects	invalid value: string "on", expected a boolean, a boolean string, or a number
 leaf	depth-env-float	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	"1.342177295e+08"	adp-rejects	invalid value: string "1.342177295e+08", expected an integer, a numeric string, or a boolean

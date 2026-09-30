@@ -13,6 +13,12 @@
 //!   `... adp-rejects <error>`: every leaf row that is neither a match nor not compared. `<kind>` is
 //!   the key's `LeafValue` variant name (for example `Bool`); `<streamed>` is the value at the key's
 //!   path in the folded tree at that checkpoint (JSON), or `-` when the tree does not hold it.
+//! - `derived <case> <checkpoint> <key> <getter> <kind> <streamed> differs <adp value> <agent value>`,
+//!   `... adp-rejects <error>`, or `... not-compared <reason code>`: every derived row that is not a
+//!   match, with the leaf tier's columns. `<key>` is the Agent key the derivation stands for and
+//!   `<kind>` the derived value's `LeafValue` variant name. The derived tier's rows are counted by
+//!   verdict on `count derived` lines, always including `match`, `differs`, and `adp-rejects`.
+//! - `derived-n/a <name> <reason>`: every derivation ADP has that the derived tier does not replay.
 //! - `translator <case> <step> <key> <error>`: every key whose translation failed at a step.
 //! - `system <case> <step> <stage> <error>`: every rejected step except the blank API key, which the
 //!   corpus baseline makes every case hit and is counted instead. A translation failure gives its
@@ -35,6 +41,7 @@ use datadog_agent_config::LEAVES;
 use datadog_agent_config_corpus::{Corpus, Getter, Outcome};
 
 use super::compare::{Reason, Verdict};
+use super::derived::{corpus_derived_rows, NOT_REPLAYED};
 use super::driver::{replay_case, Stage};
 use super::leaf_replay::{corpus_rows, Checkpoint, RowResult};
 use crate::system::Error;
@@ -112,10 +119,10 @@ fn step_name(position: usize) -> String {
 fn identity_columns(tier: &str) -> usize {
     match tier {
         "count" => 3,
-        "leaf" => 5,
+        "leaf" | "derived" => 5,
         "translator" => 4,
         "system" => 4,
-        "case" | "startup-failed" | "not-modeled" | "uncovered" => 2,
+        "case" | "startup-failed" | "not-modeled" | "uncovered" | "derived-n/a" => 2,
         _ => usize::MAX,
     }
 }
@@ -197,6 +204,42 @@ fn known_results(corpus: &Corpus) -> String {
         }
         *counts.entry(("leaf", label)).or_default() += 1;
         case_counts.entry(row.case.as_str()).or_insert([0; CASE_VERDICTS.len()])[verdict_index] += 1;
+    }
+
+    let derived = corpus_derived_rows(corpus).unwrap_or_else(|errors| panic!("harness errors: {errors:#?}"));
+    for label in ["match", "differs", "adp-rejects"] {
+        counts.insert(("derived", label.to_string()), 0);
+    }
+    for row in &derived {
+        let streamed = row.streamed.as_ref().map_or("-".to_string(), |v| field(&v.to_string()));
+        let (label, detail) = match &row.verdict {
+            Verdict::Match => ("match".to_string(), None),
+            Verdict::Differs { adp, agent } => ("differs".to_string(), Some(vec![field(adp), field(agent)])),
+            Verdict::AdpRejects { error } => ("adp-rejects".to_string(), Some(vec![field(error)])),
+            Verdict::NotCompared { reason } => ("not-compared".to_string(), Some(vec![reason_code(reason)])),
+        };
+        if let Some(detail) = detail {
+            let mut columns = vec![
+                "derived".to_string(),
+                field(&row.case),
+                checkpoint_name(row.checkpoint).to_string(),
+                field(row.key),
+                row.getter.as_str().to_string(),
+                row.kind.to_string(),
+                streamed,
+                label.clone(),
+            ];
+            columns.extend(detail);
+            lines.insert(columns.join("\t"));
+        }
+        let label = match &row.verdict {
+            Verdict::NotCompared { reason } => reason_code(reason),
+            _ => label,
+        };
+        *counts.entry(("derived", label)).or_default() += 1;
+    }
+    for (name, reason) in NOT_REPLAYED {
+        lines.insert(format!("derived-n/a\t{}\t{}", field(name), field(reason)));
     }
 
     let blank_api_key = Error::MissingApiKey.to_string();

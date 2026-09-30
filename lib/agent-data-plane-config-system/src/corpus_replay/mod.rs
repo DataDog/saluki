@@ -1,7 +1,8 @@
 //! Replays config-recorder corpus cases through this crate's config system. `loader` turns a case
 //! into the exact `ConfigEvent` stream the Agent sent, and `driver` pushes that stream through the
 //! same update step the running process uses. `compare` decides whether a typed leaf agrees with a
-//! recorded getter result. `known_results` checks what they
+//! recorded getter result, and `derived` does the same for values ADP derives from several settings.
+//! `known_results` checks what they
 //! compute against the checked-in `known-results.txt`.
 //!
 //! The corpus and its contract (`lib/datadog-agent/config-recorder/docs/record.md`) are owned
@@ -12,6 +13,7 @@ use std::sync::OnceLock;
 use datadog_agent_config_corpus::{read, Corpus};
 
 mod compare;
+mod derived;
 mod driver;
 mod known_results;
 mod leaf_replay;
