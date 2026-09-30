@@ -5,10 +5,11 @@
 //! particular corpus replay tests) can build the exact `ConfigSnapshot`/`ConfigUpdate` events the
 //! Agent would send and check what they turn into, without depending on the binary crate.
 
-use datadog_protos::agent::{ConfigSetting as AgentConfigSetting, ConfigSnapshot};
+use datadog_protos::agent::{config_event, ConfigEvent, ConfigSetting as AgentConfigSetting, ConfigSnapshot};
 use prost_types::value::Kind;
-use saluki_config::dynamic::{ConfigSetting, Provenance};
+use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
 use serde_json::{Map, Value};
+use tracing::error;
 
 /// Sources that indicate the Agent supplied the value rather than an operator.
 pub const AGENT_DEFAULT_SOURCE: &str = "default";
@@ -35,6 +36,25 @@ pub fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting 
 /// Converts a `ConfigSnapshot` into the settings it carries.
 pub fn snapshot_to_settings(snapshot: &ConfigSnapshot) -> Vec<ConfigSetting> {
     snapshot.settings.iter().map(setting_to_config_setting).collect()
+}
+
+/// Converts one event from the Agent's config stream into the update it carries.
+///
+/// A snapshot event becomes [`ConfigUpdate::Snapshot`] and an update event becomes
+/// [`ConfigUpdate::Partial`]. Returns `None` for an update event that carries no setting, and logs an
+/// error and returns `None` for an event with no data at all.
+pub fn config_event_to_update(event: ConfigEvent) -> Option<ConfigUpdate> {
+    match event.event {
+        Some(config_event::Event::Snapshot(snapshot)) => Some(ConfigUpdate::Snapshot(snapshot_to_settings(&snapshot))),
+        Some(config_event::Event::Update(update)) => update
+            .setting
+            .as_ref()
+            .map(|setting| ConfigUpdate::Partial(setting_to_config_setting(setting))),
+        None => {
+            error!("Received a configuration update event with no data.");
+            None
+        }
+    }
 }
 
 /// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
