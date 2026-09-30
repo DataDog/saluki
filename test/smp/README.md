@@ -328,125 +328,44 @@ Compare these named-corpus cases with each other, not directly with earlier 100-
 runs or the ordinary `dsd_uds_500mb_3k_contexts` case. These experiments belong to the full suite and do
 not define pass/fail quality gates or assert on received metric contents.
 
-#### Ad-hoc primary all-miss scaling
-
-The `primary_exact_miss_<N>` experiments vary only the
-primary allowlist size: 10, 100, 1,000, 10,000, and 100,000 entries. Each size measures CPU,
-memory, and ingress throughput, for 15 additional full-suite cases on this experimental branch.
-The quality gates are unchanged.
-
-The secondary has no allowlist and receives all metrics. The primary has exactly N unique
-names, all under `routing.absent.`, which cannot match the `routing.metric.` input names or
-their histogram-derived outputs. Names are deterministic and equal-length across all sizes
-so results do not depend on a new random list each run. Unlike the earlier routing cases,
-these policies do not expand each entry into histogram-derived names.
-
-All sizes and the unfiltered `metric_routing_dual_ship_500mb_3k_contexts` control use the same
-10 input metric names, approximately 3,000 contexts, metric-type mix, randomized tags, generator
-seed, 500 MiB/s offered traffic, target resources, and V3 settings for both endpoints.
-
-Compare each size against the dual-shipping control for the same optimization goal and build
-variant within a run. Report CPU, memory, and ingress throughput deltas relative to that control.
-This measures filtering cost plus savings from suppressing primary delivery. The control encodes
-once for both endpoints; all-miss still encodes the secondary stream, but its additional filtered
-encoder receives nothing. SMP's `baseline` and `comparison` labels
-identify build variants, not filtering disabled and enabled; both variants run each case's config.
-Compare the five filtered sizes with each other as a separate measure of allowlist-size overhead.
-Separate startup from steady-state results: the current full-suite CI job uses zero warmup seconds.
-This measures all-miss filtering, not the all-match encoding and forwarding cost; it is not a
-claim that all-miss is the most expensive workload in every dimension.
-
-Run the manual `run-benchmarks-adp-full` job to include these cases; the automatic
-`run-benchmarks-adp` job runs only the unchanged quality gates. These experiments do not assert
-on received metric contents. Their generated configurations are intentionally large and are
-for this benchmark-only branch, not the implementation PR.
-
-#### Ad-hoc primary exact all-match
-
-`primary_exact_match_100000` adds CPU, memory, and ingress-throughput cases with exactly
-100,000 unique exact names: the 10 input names and their 50 histogram-derived names, plus
-99,940 nonmatching filler names. Every generated metric passes the primary's filter, and
-the secondary remains unfiltered. Traffic, resources, and V3 settings match the control.
-
-Compare with unfiltered dual-shipping and `primary_prefix_match_100000` within the same build.
-Both destinations retain full delivery, exposing the extra filtering and encoding work without
-output savings. This is a high-overhead scenario, not a universal worst-case bound: traffic still
-uses only 10 input names and approximately 3,000 contexts, not 100,000 active metric names.
-
-#### Ad-hoc primary prefix scaling
-
-The `primary_prefix_{miss,match}_<N>`
-experiments use 10, 100, 1,000, 10,000, and 100,000 literal prefixes. CPU, memory,
-and ingress throughput produce 30 additional full-suite cases. Traffic, resources,
-and endpoint settings remain identical to the unfiltered dual-shipping control.
-Only the primary has a prefix policy; the secondary remains unfiltered.
-
-Scaling case names omit the shared traffic settings to leave room for SMP's job ID,
-replicate index, and variant in SNS identifiers, which have a 128-character limit.
-The generator appends `_cpu`, `_memory`, or `_throughput` to each case name.
-
-All-miss policies contain N distinct `routing.absent.` prefixes. All-match policies
-contain ten prefixes covering the ten input metric names (including histogram-derived
-outputs), plus N-10 nonmatching prefixes. “All-match” describes the traffic, not the
-fraction of configured prefixes that are used. These tests retain only ten input names;
-they do not model traffic spread across 100,000 different matching prefixes.
-
-Fixed-width numeric suffixes and disjoint namespaces prevent prefixes from covering
-one another, so compaction retains exactly N entries. Neither case uses exact-name
-policies or an empty-string prefix. Compare against the unfiltered control within the
-same build variant, and separate startup from steady state. All-match retains primary
-delivery and exposes filtering plus separate encoding costs; all-miss also includes
-the savings from suppressing primary delivery. These are performance experiments,
-not assertions on received payload contents.
-
-#### High-cardinality all-match comparison
-
-`highcard_control`, `highcard_exact_match`, and `highcard_prefix_match` each add CPU,
-memory, and ingress-throughput cases. They share a 10,000-name input pool, approximately
-100,000 generated contexts, and 300 MiB/s offered traffic with the existing metric-type mix.
-The lower rate provides headroom for an equal-input CPU/RSS comparison: the initial 500 MiB/s
-run achieved less ingress throughput in the filtered cases than in the control.
-The aggregator limit is 101,000, the string interner is 32 MiB, and the generator's fixed
-prebuilt cache is 512 MiB in all three cases. Timestamped traffic is disabled.
-
-The control has no filtering. The exact policy contains 60,000 matching base/histogram-derived
-names plus 40,000 filler names; the prefix policy contains 10,000 matching prefixes plus 90,000
-fillers. Both policies retain exactly 100,000 unique entries. Both destinations receive the full
-metric stream in every case, exposing filtering and extra encoding work without output savings.
-
-Compare these cases only with their high-cardinality control in the same build and run, not
-with the 3,000-context control. The configured input pool is below Lading's 15,000-name expansion
-limit, but names are sampled: verify the observed name/context coverage and prebuilt-cache
-coverage rather than assuming every configured name is active.
-
-For the notebook, predeclare the same steady-state interval for each replicate: start 120 seconds
-after its first valid sample and exclude the final partial bucket. Keep startup/peak RSS separate.
-Report per-replicate CPU/RSS means and their spread across all ten replicates, and verify comparable
-accepted throughput, post-aggregation event rates, and successful output to both destinations.
-Check for context-limit drops and saturation; if any case cannot sustain 300 MiB/s, compare capacity
-or rerun all three at the same lower rate instead of interpreting lower CPU as better efficiency.
-These are bounded high-cardinality stress cases, not a universal worst-case guarantee or a test of
-timestamped traffic that bypasses aggregation.
-
 #### Matched policy-size comparison
 
 `matched_control`, `matched_exact_{1000,10000,100000}`, and
 `matched_prefix_{1000,10000,100000}` compare an unfiltered control with exact and prefix
-all-match policies at three sizes. Each has CPU, memory, and ingress-throughput cases.
-All seven share a 100-name input pool, approximately 100,000 generated contexts, and
-300 MiB/s offered traffic. Resources, tags, metric types, seed, and cache settings match
-the high-cardinality cases; only the input-name pool is smaller.
+all-match policies at three sizes. Each has CPU and memory cases, for 14 additional
+full-suite cases. All seven scenarios share a 100-name input pool, approximately
+100,000 generated contexts, and 300 MiB/s offered traffic. The aggregator limit is
+101,000, the string interner is 32 MiB, and the generator's fixed prebuilt cache is
+512 MiB. Target resources, tags, metric types, and seed are identical; timestamped
+traffic is disabled.
 
 The smaller pool lets every policy admit all traffic, including histogram-derived names,
 even at 1,000 entries. Exact policies contain 600 matching names and enough nonmatching
 filler names to reach the requested size. Prefix policies contain 100 matching prefixes
 and enough nonmatching fillers to reach the same size. Prefixes do not subsume each other.
+Only the primary has a policy; the secondary remains unfiltered. Both destinations
+retain the full metric stream, exposing filtering and extra encoding work without
+output savings. These experiments do not assert on received metric contents.
 
 Use this matched set for the notebook's CPU and RSS graphs, comparing each policy with
-`matched_control` in the same build and run. Apply the same steady-state window and
-throughput/drop checks described above. Do not compare these cases with `highcard_control`:
-the high-cardinality set remains a separate, larger active-name stress test. The throughput
-cases verify comparable input; they do not require a separate notebook graph.
+`matched_control` in the same build and run, not with the 3,000-context control.
+SMP's `baseline` and `comparison` labels identify build variants, not filtering
+disabled and enabled. All-match describes the traffic, not usage of every policy entry;
+this is not a universal worst-case bound or a test of 100,000 active metric names.
+
+Start the steady-state interval 120 seconds after each replicate's first valid sample
+and exclude the final partial bucket. Keep startup/peak RSS separate. Report per-replicate
+CPU/RSS means and their spread across all ten replicates. Use throughput telemetry from
+these same runs to verify comparable input; separate throughput experiments and graphs
+are unnecessary. Check for context-limit drops and successful output to both destinations.
+Names are sampled, so verify observed name/context coverage rather than assuming every
+configured name is active. If any case cannot sustain 300 MiB/s, rerun all seven at the
+same lower rate before interpreting the results as equal-input overhead.
+
+Run the manual `run-benchmarks-adp-full` job to include these cases; the automatic
+`run-benchmarks-adp` job runs only the unchanged quality gates. Earlier scaling sweeps
+and high-cardinality stress cases were removed from this branch's current suite;
+their configurations and results remain in Git history and previous CI runs.
 
 ## Regenerating Experiments
 

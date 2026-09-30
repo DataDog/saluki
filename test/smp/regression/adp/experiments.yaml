@@ -167,30 +167,12 @@ templates:
                 metric_names:
                   - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}"
 
-  # Scale only the primary's allowlist, not the input corpus or aggregation workload.
-  # The secondary receives everything; the primary's disjoint names never match.
-  # Inherit both endpoints' V3 settings so only the allowlist differs from the dual-shipping control.
-  metric_routing_primary_miss_scaling:
-    extends: metric_routing_base
-    target:
-      files:
-        metric-routing.yaml:
-          source: shared/metric-routing-miss-scaling.yaml.j2
-
-  metric_routing_primary_prefix_scaling:
-    extends: metric_routing_base
-    target:
-      files:
-        metric-routing.yaml:
-          source: shared/metric-routing-prefix-scaling.yaml.j2
-
-  # Increase the active working set as well as policy size. All three high-cardinality cases
-  # share this workload, including a separate unfiltered control.
-  metric_routing_high_cardinality:
+  # Keep the active name pool small enough for every exact name and histogram output
+  # to fit in the 1K policy; only policy size changes across the matched sweep.
+  metric_routing_matched_scaling:
     extends: metric_routing_base
     variables:
-      traffic_metrics: 10000
-      allowlist_entries: 100000
+      traffic_metrics: 100
     target:
       environment:
         DD_AGGREGATE_CONTEXT_LIMIT: "101000"
@@ -208,13 +190,6 @@ templates:
                     max: 100001
                 timestamp:
                   probability: 0.0
-
-  # Keep the active name pool small enough for every exact name and histogram output
-  # to fit in the 1K policy; only policy size changes across the matched sweep.
-  metric_routing_matched_scaling:
-    extends: metric_routing_high_cardinality
-    variables:
-      traffic_metrics: 100
 
   metric_routing_matched_prefix_scaling:
     extends: metric_routing_matched_scaling
@@ -614,180 +589,47 @@ experiments:
       routing_enabled: true
       allowlist_prefix: routing.absent.
 
-  # Ad-hoc scaling sweep: exact allowlist-entry counts, without histogram-name expansion.
-  # Keep the 10-name input corpus, ~3K contexts, and 500 MiB/s traffic identical for every size.
-  - name: primary_exact_miss_10
-    extends: metric_routing_primary_miss_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 10
-
-  - name: primary_exact_miss_100
-    extends: metric_routing_primary_miss_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 100
-
-  - name: primary_exact_miss_1000
-    extends: metric_routing_primary_miss_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 1000
-
-  - name: primary_exact_miss_10000
-    extends: metric_routing_primary_miss_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 10000
-
-  - name: primary_exact_miss_100000
-    extends: metric_routing_primary_miss_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 100000
-
-  # Retain full delivery to expose filtering and separate encoding costs at 100K exact names.
-  - name: primary_exact_match_100000
-    extends: metric_routing_base
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      routing_enabled: true
-      allowlist_entries: 100000
-
-  # Prefix scaling: fixed input traffic, N nonredundant prefixes, primary only.
-  - name: primary_prefix_miss_10
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 10
-      prefix_all_match: false
-
-  - name: primary_prefix_miss_100
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 100
-      prefix_all_match: false
-
-  - name: primary_prefix_miss_1000
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 1000
-      prefix_all_match: false
-
-  - name: primary_prefix_miss_10000
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 10000
-      prefix_all_match: false
-
-  - name: primary_prefix_miss_100000
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 100000
-      prefix_all_match: false
-
-  - name: primary_prefix_match_10
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 10
-      prefix_all_match: true
-
-  - name: primary_prefix_match_100
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 100
-      prefix_all_match: true
-
-  - name: primary_prefix_match_1000
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 1000
-      prefix_all_match: true
-
-  - name: primary_prefix_match_10000
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 10000
-      prefix_all_match: true
-
-  - name: primary_prefix_match_100000
-    extends: metric_routing_primary_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      allowlist_entries: 100000
-      prefix_all_match: true
-
-  # Separate controls are required: these cases generate many more post-aggregation metrics
-  # than the 10-name / 3K-context scaling sweep. Keep names short enough for SMP's SNS IDs.
-  - name: highcard_control
-    extends: metric_routing_high_cardinality
-    optimization_goals: [cpu, memory, ingress_throughput]
-
-  - name: highcard_exact_match
-    extends: metric_routing_high_cardinality
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      routing_enabled: true
-
-  - name: highcard_prefix_match
-    extends: metric_routing_high_cardinality
-    optimization_goals: [cpu, memory, ingress_throughput]
-    variables:
-      prefix_all_match: true
-    target:
-      files:
-        metric-routing.yaml:
-          source: shared/metric-routing-prefix-scaling.yaml.j2
-
   # Equal-input CPU/RSS comparison at realistic and stress policy sizes.
   - name: matched_control
     extends: metric_routing_matched_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
 
   - name: matched_exact_1000
     extends: metric_routing_matched_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
     variables:
       routing_enabled: true
       allowlist_entries: 1000
 
   - name: matched_exact_10000
     extends: metric_routing_matched_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
     variables:
       routing_enabled: true
       allowlist_entries: 10000
 
   - name: matched_exact_100000
     extends: metric_routing_matched_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
     variables:
       routing_enabled: true
       allowlist_entries: 100000
 
   - name: matched_prefix_1000
     extends: metric_routing_matched_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
     variables:
       allowlist_entries: 1000
 
   - name: matched_prefix_10000
     extends: metric_routing_matched_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
     variables:
       allowlist_entries: 10000
 
   - name: matched_prefix_100000
     extends: metric_routing_matched_prefix_scaling
-    optimization_goals: [cpu, memory, ingress_throughput]
+    optimization_goals: [cpu, memory]
     variables:
       allowlist_entries: 100000
 

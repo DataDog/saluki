@@ -1,3 +1,0 @@
-histogram_aggregates: ["max", "median", "avg", "count"]
-histogram_percentiles: ["0.95"]
-histogram_copy_to_distribution: false
