@@ -428,6 +428,26 @@ or rerun all three at the same lower rate instead of interpreting lower CPU as b
 These are bounded high-cardinality stress cases, not a universal worst-case guarantee or a test of
 timestamped traffic that bypasses aggregation.
 
+#### Matched policy-size comparison
+
+`matched_control`, `matched_exact_{1000,10000,100000}`, and
+`matched_prefix_{1000,10000,100000}` compare an unfiltered control with exact and prefix
+all-match policies at three sizes. Each has CPU, memory, and ingress-throughput cases.
+All seven share a 100-name input pool, approximately 100,000 generated contexts, and
+300 MiB/s offered traffic. Resources, tags, metric types, seed, and cache settings match
+the high-cardinality cases; only the input-name pool is smaller.
+
+The smaller pool lets every policy admit all traffic, including histogram-derived names,
+even at 1,000 entries. Exact policies contain 600 matching names and enough nonmatching
+filler names to reach the requested size. Prefix policies contain 100 matching prefixes
+and enough nonmatching fillers to reach the same size. Prefixes do not subsume each other.
+
+Use this matched set for the notebook's CPU and RSS graphs, comparing each policy with
+`matched_control` in the same build and run. Apply the same steady-state window and
+throughput/drop checks described above. Do not compare these cases with `highcard_control`:
+the high-cardinality set remains a separate, larger active-name stress test. The throughput
+cases verify comparable input; they do not require a separate notebook graph.
+
 ## Regenerating Experiments
 
 After modifying `experiments.yaml`, regenerate the case directories:

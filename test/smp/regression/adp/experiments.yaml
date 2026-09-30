@@ -209,6 +209,22 @@ templates:
                 timestamp:
                   probability: 0.0
 
+  # Keep the active name pool small enough for every exact name and histogram output
+  # to fit in the 1K policy; only policy size changes across the matched sweep.
+  metric_routing_matched_scaling:
+    extends: metric_routing_high_cardinality
+    variables:
+      traffic_metrics: 100
+
+  metric_routing_matched_prefix_scaling:
+    extends: metric_routing_matched_scaling
+    variables:
+      prefix_all_match: true
+    target:
+      files:
+        metric-routing.yaml:
+          source: shared/metric-routing-prefix-scaling.yaml.j2
+
   # Base template for the tag filtering experiments.
   tagfilter_base:
     variables:
@@ -730,6 +746,50 @@ experiments:
       files:
         metric-routing.yaml:
           source: shared/metric-routing-prefix-scaling.yaml.j2
+
+  # Equal-input CPU/RSS comparison at realistic and stress policy sizes.
+  - name: matched_control
+    extends: metric_routing_matched_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+
+  - name: matched_exact_1000
+    extends: metric_routing_matched_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      routing_enabled: true
+      allowlist_entries: 1000
+
+  - name: matched_exact_10000
+    extends: metric_routing_matched_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      routing_enabled: true
+      allowlist_entries: 10000
+
+  - name: matched_exact_100000
+    extends: metric_routing_matched_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      routing_enabled: true
+      allowlist_entries: 100000
+
+  - name: matched_prefix_1000
+    extends: metric_routing_matched_prefix_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 1000
+
+  - name: matched_prefix_10000
+    extends: metric_routing_matched_prefix_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 10000
+
+  - name: matched_prefix_100000
+    extends: metric_routing_matched_prefix_scaling
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      allowlist_entries: 100000
 
   # ============================================================================
   # DogStatsD: quality gates (memory)
