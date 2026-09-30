@@ -1,0 +1,112 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Decodes one product’s assigned configurations into a snapshot."><title>ProductDecoder in datadog_agent_remote_config - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="datadog_agent_remote_config" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc trait"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">ProductDecoder</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../datadog_agent_remote_config/index.html">datadog_<wbr>agent_<wbr>remote_<wbr>config</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Product<wbr>Decoder</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#design" title="Design">Design</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#required-associated-consts">Required Associated Constants</a></h3><ul class="block"><li><a href="#associatedconstant.PRODUCT" title="PRODUCT">PRODUCT</a></li></ul><h3><a href="#required-associated-types">Required Associated Types</a></h3><ul class="block"><li><a href="#associatedtype.Error" title="Error">Error</a></li><li><a href="#associatedtype.Snapshot" title="Snapshot">Snapshot</a></li></ul><h3><a href="#required-methods">Required Methods</a></h3><ul class="block"><li><a href="#tymethod.build" title="build">build</a></li><li><a href="#tymethod.decode" title="decode">decode</a></li></ul><h3><a href="#dyn-compatibility">Dyn Compatibility</a></h3><h3><a href="#implementors">Implementors</a></h3></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate datadog_<wbr>agent_<wbr>remote_<wbr>config</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">datadog_agent_remote_config</a></div><h1>Trait <span class="trait">Product<wbr>Decoder</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/datadog_agent_remote_config/decoder.rs.html#83-137">Source</a> </span></div><pre class="rust item-decl"><code>pub trait ProductDecoder:
+    <a class="trait" href="https://doc.rust-lang.org/nightly/core/default/trait.Default.html" title="trait core::default::Default">Default</a>
+    + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a>
+    + 'static {
+    type <a href="#associatedtype.Snapshot" class="associatedtype">Snapshot</a>: <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> + 'static;
+    type <a href="#associatedtype.Error" class="associatedtype">Error</a>: <a class="trait" href="trait.ApplyError.html" title="trait datadog_agent_remote_config::ApplyError">ApplyError</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> + 'static;
+
+    const <a href="#associatedconstant.PRODUCT" class="constant">PRODUCT</a>: &amp;'static <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a>;
+
+    // Required methods
+    fn <a href="#tymethod.decode" class="fn">decode</a>(
+        &amp;mut self,
+        id: &amp;<a class="struct" href="struct.ConfigId.html" title="struct datadog_agent_remote_config::ConfigId">ConfigId</a>,
+        payload: &amp;[<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u8.html">u8</a>],
+    ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>, Self::<a class="associatedtype" href="trait.ProductDecoder.html#associatedtype.Error" title="type datadog_agent_remote_config::ProductDecoder::Error">Error</a>&gt;;
+<span class="item-spacer"></span>    fn <a href="#tymethod.build" class="fn">build</a>(self) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;Self::<a class="associatedtype" href="trait.ProductDecoder.html#associatedtype.Snapshot" title="type datadog_agent_remote_config::ProductDecoder::Snapshot">Snapshot</a>, Self::<a class="associatedtype" href="trait.ProductDecoder.html#associatedtype.Error" title="type datadog_agent_remote_config::ProductDecoder::Error">Error</a>&gt;;
+}</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Decodes one product’s assigned configurations into a snapshot.</p>
+<p>A decoder names the product it decodes, so subscribing with a decoder cannot attach it to the wrong product. Define
+a decoder in the crate that owns its snapshot type. A decoder for a product whose type has no other owner belongs in
+this crate instead; otherwise this crate knows no product’s payload.</p>
+<p>The client drives an implementation once per published snapshot: it constructs a decoder with <a href="https://doc.rust-lang.org/nightly/core/default/trait.Default.html" title="trait core::default::Default"><code>Default</code></a>, calls
+<a href="trait.ProductDecoder.html#tymethod.decode" title="method datadog_agent_remote_config::ProductDecoder::decode"><code>decode</code></a> once per assigned configuration in ascending <a href="struct.ConfigId.html" title="struct datadog_agent_remote_config::ConfigId"><code>ConfigId</code></a> order, and then calls
+<a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a>. Ascending order is part of the contract, so a reduction that keeps the last valid
+configuration is well defined.</p>
+<p>A product is decoded again only when its assigned configurations or their contents change, so a rejected
+assignment is not retried until it changes. When the Agent reports its configuration expired, every product that
+had configurations is decoded as an empty assignment; a product that already had none is not decoded again. The
+client then asks the Agent for the full assignment until a response is not expired, so configurations that return
+are decoded as new.</p>
+<p>A rejected snapshot leaves subscribers with the last accepted one, so an implementation must build a snapshot
+from an empty assignment; see <a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a>.</p>
+<p>Decoding runs on the client’s worker task and delays polling for every product while it runs, so implementations
+<strong>MUST NOT</strong> block. A panic in <a href="trait.ProductDecoder.html#tymethod.decode" title="method datadog_agent_remote_config::ProductDecoder::decode"><code>decode</code></a> or <a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a> is caught: the client discards the
+decoder, rejects every configuration in the assignment, and publishes nothing, so subscribers keep the last accepted
+snapshot and are not notified.</p>
+<h2 id="design"><a class="doc-anchor" href="#design">§</a>Design</h2>
+<p>A product’s assignment is several configurations, each with its own payload, and the protocol carries an apply
+status for each one separately. Decoding therefore accumulates configuration by configuration rather than consuming
+the assignment as a whole: a configuration that <a href="trait.ProductDecoder.html#tymethod.decode" title="method datadog_agent_remote_config::ProductDecoder::decode"><code>decode</code></a> rejects is attributed to itself and
+skipped, and the decoder still builds from the rest. Because the client drives the loop, that attribution cannot be
+forgotten or misdirected. Whether a rejected configuration invalidates the whole snapshot remains the decoder’s
+choice: <a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a> may reject the snapshot, for example when a configuration it requires was rejected.</p>
+<p>Accumulating into the decoder, rather than returning one decoded value per configuration, is what lets a product
+whose configurations have different shapes hold each of them in a field of its own type instead of funneling them
+through a shared enum.</p>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<p>A product that accepts at most one configuration records every configuration it is given and rejects more than one
+in <a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a>, since only <code>build</code> sees the whole assignment:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>datadog_agent_remote_config::{ConfigId, ProductDecoder};
+
+<span class="doccomment">/// Holds the product's single configuration, if it has one.
+</span><span class="attr">#[derive(Default)]
+</span><span class="kw">struct </span>SingleDecoder {
+    payloads: Vec&lt;(ConfigId, Vec&lt;u8&gt;)&gt;,
+}
+
+<span class="kw">impl </span>ProductDecoder <span class="kw">for </span>SingleDecoder {
+    <span class="kw">const </span>PRODUCT: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str = <span class="string">"EXAMPLE_SINGLE"</span>;
+
+    <span class="kw">type </span>Snapshot = <span class="prelude-ty">Option</span>&lt;Vec&lt;u8&gt;&gt;;
+    <span class="kw">type </span>Error = String;
+
+    <span class="kw">fn </span>decode(<span class="kw-2">&amp;mut </span><span class="self">self</span>, id: <span class="kw-2">&amp;</span>ConfigId, payload: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="prelude-ty">Result</span>&lt;(), <span class="self">Self</span>::Error&gt; {
+        <span class="self">self</span>.payloads.push((id.clone(), payload.to_vec()));
+        <span class="prelude-val">Ok</span>(())
+    }
+
+    <span class="kw">fn </span>build(<span class="kw-2">mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::Snapshot, <span class="self">Self</span>::Error&gt; {
+        <span class="kw">if </span><span class="self">self</span>.payloads.len() &gt; <span class="number">1 </span>{
+            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">format!</span>(<span class="string">"Expected at most one configuration; got {}."</span>, <span class="self">self</span>.payloads.len()));
+        }
+        <span class="prelude-val">Ok</span>(<span class="self">self</span>.payloads.pop().map(|(<span class="kw">_</span>, payload)| payload))
+    }
+}
+
+<span class="kw">let </span><span class="kw-2">mut </span>decoder = SingleDecoder::default();
+decoder.decode(<span class="kw-2">&amp;</span>ConfigId::new(<span class="string">"a"</span>), <span class="string">b"one"</span>).unwrap();
+decoder.decode(<span class="kw-2">&amp;</span>ConfigId::new(<span class="string">"b"</span>), <span class="string">b"two"</span>).unwrap();
+<span class="macro">assert!</span>(decoder.build().is_err());</code></pre></div></div></details><h2 id="required-associated-consts" class="section-header">Required Associated Constants<a href="#required-associated-consts" class="anchor">§</a></h2><div class="methods"><details class="toggle" open><summary><section id="associatedconstant.PRODUCT" class="method"><a class="src rightside" href="../src/datadog_agent_remote_config/decoder.rs.html#89">Source</a><h4 class="code-header">const <a href="#associatedconstant.PRODUCT" class="constant">PRODUCT</a>: &amp;'static <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a></h4></section></summary><div class="docblock"><p>The product this decoder decodes, by its protocol name, such as <code>APM_SEMANTIC_CORE_DD</code>.</p>
+<p>The client requests this product from the Agent and keys the product’s subscription by this name. The client
+can only subscribe once per product: attempting a second subscription to the same product while the first is
+live returns <a href="enum.Error.html#variant.AlreadySubscribed" title="variant datadog_agent_remote_config::Error::AlreadySubscribed"><code>Error::AlreadySubscribed</code></a>, whichever decoder it uses.</p>
+</div></details></div><h2 id="required-associated-types" class="section-header">Required Associated Types<a href="#required-associated-types" class="anchor">§</a></h2><div class="methods"><details class="toggle" open><summary><section id="associatedtype.Snapshot" class="method"><a class="src rightside" href="../src/datadog_agent_remote_config/decoder.rs.html#94">Source</a><h4 class="code-header">type <a href="#associatedtype.Snapshot" class="associatedtype">Snapshot</a>: <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> + 'static</h4></section></summary><div class="docblock"><p>The type that holds the product’s decoded configuration.</p>
+<p><a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a> produces it from the product’s configurations, and subscribers receive it.</p>
+</div></details><details class="toggle" open><summary><section id="associatedtype.Error" class="method"><a class="src rightside" href="../src/datadog_agent_remote_config/decoder.rs.html#100">Source</a><h4 class="code-header">type <a href="#associatedtype.Error" class="associatedtype">Error</a>: <a class="trait" href="trait.ApplyError.html" title="trait datadog_agent_remote_config::ApplyError">ApplyError</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> + 'static</h4></section></summary><div class="docblock"><p>The error this product’s decoding and validation produces.</p>
+<p>Use <a href="https://doc.rust-lang.org/nightly/alloc/string/struct.String.html" title="struct alloc::string::String"><code>String</code></a> when there is nothing richer to report; a product that wants to describe a failure more
+precisely for its own diagnostics defines its own type and implements <a href="trait.ApplyError.html" title="trait datadog_agent_remote_config::ApplyError"><code>ApplyError</code></a> for it.</p>
+</div></details></div><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.decode" class="method"><a class="src rightside" href="../src/datadog_agent_remote_config/decoder.rs.html#112">Source</a><h4 class="code-header">fn <a href="#tymethod.decode" class="fn">decode</a>(&amp;mut self, id: &amp;<a class="struct" href="struct.ConfigId.html" title="struct datadog_agent_remote_config::ConfigId">ConfigId</a>, payload: &amp;[<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u8.html">u8</a>]) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>, Self::<a class="associatedtype" href="trait.ProductDecoder.html#associatedtype.Error" title="type datadog_agent_remote_config::ProductDecoder::Error">Error</a>&gt;</h4></section></summary><div class="docblock"><p>Accumulates one of the product’s assigned configurations.</p>
+<p>The client calls this at most once per distinct <code>id</code> within a single snapshot, then calls
+<a href="trait.ProductDecoder.html#tymethod.build" title="method datadog_agent_remote_config::ProductDecoder::build"><code>build</code></a> once. A decoder may therefore hold one slot per configuration ID without a second
+configuration silently displacing the first.</p>
+<h5 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h5>
+<p>Returns <a href="trait.ProductDecoder.html#associatedtype.Error" title="associated type datadog_agent_remote_config::ProductDecoder::Error"><code>Self::Error</code></a> to reject this configuration alone. The client attributes the rejection to it and skips
+it, and still decodes the product’s remaining configurations.</p>
+</div></details><details class="toggle method-toggle" open><summary><section id="tymethod.build" class="method"><a class="src rightside" href="../src/datadog_agent_remote_config/decoder.rs.html#136">Source</a><h4 class="code-header">fn <a href="#tymethod.build" class="fn">build</a>(self) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;Self::<a class="associatedtype" href="trait.ProductDecoder.html#associatedtype.Snapshot" title="type datadog_agent_remote_config::ProductDecoder::Snapshot">Snapshot</a>, Self::<a class="associatedtype" href="trait.ProductDecoder.html#associatedtype.Error" title="type datadog_agent_remote_config::ProductDecoder::Error">Error</a>&gt;</h4></section></summary><div class="docblock"><p>Validates the accumulated configurations and produces the snapshot to publish.</p>
+<p>Check requirements across configurations here, including whether a required configuration is present when the
+decoder receives a non-empty assignment. The client also calls this without calling <a href="trait.ProductDecoder.html#tymethod.decode" title="method datadog_agent_remote_config::ProductDecoder::decode"><code>decode</code></a>
+when no configurations are assigned (after the backend removes the last one or the Agent reports its
+configuration expired), or when every assigned configuration was rejected for sharing an ID.</p>
+<p>An empty assignment to the decoder means “no configuration,” even if files were assigned but all collided.
+This method <strong>MUST</strong> build a snapshot representing that state. Rejecting an empty assignment leaves subscribers
+reading configuration the backend removed or that expired with the Agent’s cache until a non-empty assignment
+builds successfully, because a rejection keeps the last accepted snapshot.</p>
+<p>The client acknowledges successfully decoded configurations only when this method succeeds.</p>
+<h5 id="errors-1"><a class="doc-anchor" href="#errors-1">§</a>Errors</h5>
+<p>Returns <a href="trait.ProductDecoder.html#associatedtype.Error" title="associated type datadog_agent_remote_config::ProductDecoder::Error"><code>Self::Error</code></a> to reject the snapshot. The client rejects every successfully decoded configuration
+with this error’s apply reason; configurations rejected by <a href="trait.ProductDecoder.html#tymethod.decode" title="method datadog_agent_remote_config::ProductDecoder::decode"><code>decode</code></a> keep their own errors.
+No new snapshot is published, and subscribers retain the last accepted snapshot.</p>
+<p>This method cannot reject selected configurations while publishing the rest. Selective rejection belongs in
+<a href="trait.ProductDecoder.html#tymethod.decode" title="method datadog_agent_remote_config::ProductDecoder::decode"><code>decode</code></a>.</p>
+</div></details></div><h2 id="dyn-compatibility" class="section-header">Dyn Compatibility<a href="#dyn-compatibility" class="anchor">§</a></h2><div class="dyn-compatibility-info"><p>This trait is <b>not</b> <a href="https://doc.rust-lang.org/nightly/reference/items/traits.html#dyn-compatibility">dyn compatible</a>.</p><p><i>In older versions of Rust, dyn compatibility was called "object safety", so this trait is not object safe.</i></p></div><h2 id="implementors" class="section-header">Implementors<a href="#implementors" class="anchor">§</a></h2><div id="implementors-list"></div><script src="../trait.impl/datadog_agent_remote_config/decoder/trait.ProductDecoder.js" async></script></section></div></main></body></html>

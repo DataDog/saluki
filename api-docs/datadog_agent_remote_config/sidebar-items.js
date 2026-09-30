@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ClientKind","Error"],"fn":["decode_json"],"struct":["AgentIdentity","ConfigId","JsonError","RcClientConfiguration","RemoteConfigurationClient","RemoteConfigurationWorker","Subscription"],"trait":["ApplyError","ProductDecoder"],"type":["Result"]};
