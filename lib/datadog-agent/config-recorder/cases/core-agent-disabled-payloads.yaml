@@ -1,0 +1,12 @@
+name: core-agent-disabled-payloads
+group: behavior
+why: [core-agent-disabled-forces-payloads-off]
+yaml: |
+  core_agent:
+    enabled: false
+keys:
+  - core_agent.enabled
+  - enable_payloads.events
+  - enable_payloads.series
+  - enable_payloads.service_checks
+  - enable_payloads.sketches
