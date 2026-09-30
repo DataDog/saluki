@@ -159,23 +159,8 @@ impl Replay {
 /// Returns an error if the loader cannot build the case's stream, the case never started, the stream
 /// does not open with a snapshot, or an event converts to no update.
 pub(crate) fn replay_case(corpus: &Corpus, case_name: &str) -> Result<CaseReplay, String> {
-    let events = match build_events(corpus, case_name, BASE_SEQUENCE_ID)? {
-        CaseEvents::Started(events) => events,
-        CaseEvents::StartupFailed => return Err(format!("case {case_name:?}: did not start")),
-    };
-
-    let mut updates = Vec::with_capacity(events.len());
-    for (position, event) in events.into_iter().enumerate() {
-        let update = config_event_to_update(event)
-            .ok_or_else(|| format!("case {case_name:?}: event {position} converts to no update"))?;
-        updates.push(update);
-    }
-    let Some((first, rest)) = updates.split_first() else {
-        return Err(format!("case {case_name:?}: the stream is empty"));
-    };
-    if !matches!(first, ConfigUpdate::Snapshot(_)) {
-        return Err(format!("case {case_name:?}: the stream does not open with a snapshot"));
-    }
+    let updates = case_updates(corpus, case_name)?;
+    let (first, rest) = updates.split_first().expect("case_updates returns a non-empty stream");
 
     let mut replay = Replay::new();
     let (record, snapshot) = replay.apply(first);
@@ -194,6 +179,32 @@ pub(crate) fn replay_case(corpus: &Corpus, case_name: &str) -> Result<CaseReplay
         last: (!rest.is_empty()).then_some(current),
         steps,
     })
+}
+
+/// Converts the started case `case_name` of `corpus` into the updates the process would apply, in
+/// stream order. The first is always a snapshot.
+///
+/// # Errors
+///
+/// Returns an error if the loader cannot build the case's stream, the case never started, the stream
+/// is empty or does not open with a snapshot, or an event converts to no update.
+pub(crate) fn case_updates(corpus: &Corpus, case_name: &str) -> Result<Vec<ConfigUpdate>, String> {
+    let events = match build_events(corpus, case_name, BASE_SEQUENCE_ID)? {
+        CaseEvents::Started(events) => events,
+        CaseEvents::StartupFailed => return Err(format!("case {case_name:?}: did not start")),
+    };
+
+    let mut updates = Vec::with_capacity(events.len());
+    for (position, event) in events.into_iter().enumerate() {
+        let update = config_event_to_update(event)
+            .ok_or_else(|| format!("case {case_name:?}: event {position} converts to no update"))?;
+        updates.push(update);
+    }
+    match updates.first() {
+        None => Err(format!("case {case_name:?}: the stream is empty")),
+        Some(ConfigUpdate::Snapshot(_)) => Ok(updates),
+        Some(ConfigUpdate::Partial(_)) => Err(format!("case {case_name:?}: the stream does not open with a snapshot")),
+    }
 }
 
 #[cfg(test)]
