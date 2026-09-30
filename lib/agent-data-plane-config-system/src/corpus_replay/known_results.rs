@@ -61,16 +61,16 @@
 //! | `agent-wire`       | lost on the Agent's protobuf stream                                  | no             |
 //! | `comparison`       | how the replay compares, not ADP's behavior                          | no             |
 //!
-//! Any line may end with a tab and `# <text>`, an annotation the comparison with the computed results ignores, as it
-//! ignores the type lines. Every `leaf`, `translator`, `derived`, `bootstrap` and `bootstrap-aborts` line **MUST**
-//! carry one that reads `# <type>` or `# <type>: <note>`, where `<type>` is a declared type name. On any other line
-//! (`count`, `case`, `startup-failed`, `system`, `derived-n/a`, `not-modeled`, `uncovered` and `type`) an annotation
-//! is an optional free-text note. The check fails, listing each offending line, when a line that needs an annotation
-//! has none, an annotation names an undeclared type, a declared type is used by no line, a type line is malformed or
-//! names an unknown layer, or a type is declared twice.
+//! A line may end with a tab followed by `# <text>`. Result comparison ignores these annotations
+//! and the type declarations. Every `leaf`, `translator`, `derived`, `bootstrap`, and
+//! `bootstrap-aborts` line **MUST** name a declared type as `# <type>` or `# <type>: <note>`.
+//! Annotations on `count`, `case`, `startup-failed`, `system`, `derived-n/a`, `not-modeled`,
+//! `uncovered`, and `type` lines are optional free-text notes. The check lists each line missing a
+//! required annotation or naming an undeclared type; it also fails on unused, duplicate, or
+//! malformed type declarations and unknown layers.
 //!
-//! Blessing keeps an annotation only on a line whose content, apart from the annotation, is unchanged: a new or
-//! changed line comes out unannotated, and the check then names it.
+//! Blessing preserves annotations only for unchanged lines (ignoring the annotation). New or
+//! changed lines have no annotation, so the check identifies them for review.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -585,10 +585,10 @@ mod tests {
     /// Fails unless the corpus replay computes exactly the checked-in known results, so both a new
     /// divergence and a fixed one (a listed line that no longer occurs) fail.
     ///
-    /// Bless (`ADP_CORPUS_REPLAY_BLESS=1`) is for a person updating the expected results after a corpus
-    /// or code change: it rewrites the file, keeping the type lines and the annotations of unchanged lines. The
-    /// file's diff is then the review of what changed. Either way, the test then fails unless every divergence names
-    /// a declared type, so a bless that adds or changes a divergence fails until its line is annotated.
+    /// Setting `ADP_CORPUS_REPLAY_BLESS=1` rewrites the expected results after a corpus or code
+    /// change. It keeps type declarations and annotations on unchanged lines, leaving the file diff
+    /// for review. The test still requires each typed divergence to name a declared type, so new or
+    /// changed divergence lines fail until annotated.
     #[test]
     fn corpus_replay_results_equal_the_known_results_file() {
         let computed = known_results(corpus());

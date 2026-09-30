@@ -1,16 +1,16 @@
-//! Produces one verdict per recorded getter for every key line of every started corpus case, at both
-//! of the corpus's checkpoints (record.md §5.3).
+//! Produces one verdict per recorded getter for every modeled key line of every started corpus case,
+//! and one not-modeled row for every other key line, at both of the corpus's checkpoints (record.md
+//! §5.3).
 //!
-//! This is the leaf tier. It compares against the Agent's stream with every update folded in,
-//! whether or not the typed configuration would have committed it: the Agent applied every update,
-//! so comparing against the last-known-good state instead would turn one rejected value into
-//! mismatches on every other key. The committed-state tier is the driver's.
+//! This is the leaf tier. The comparison applies every streamed update, even one the typed
+//! configuration would reject: the Agent applied it, and using the last committed state instead would
+//! turn one rejected value into mismatches on unrelated keys. The driver keeps the committed state
+//! separately: replay commits an update when it translates, whatever validation says.
 //!
-//! A whole-configuration deserialization failure names no key, so each leaf is deserialized in
-//! isolation: `DatadogConfiguration` is built from an object that holds only that leaf's value, and
-//! every other field takes its default. This is sound because the generated source model has no
-//! flattened fields and does not deny unknown fields, so its fields deserialize independently; the
-//! isolation invariant test checks that on the whole corpus.
+//! A whole-configuration deserialization error does not identify a key. To isolate failures, this
+//! comparison deserializes each setting from an object containing only that setting; other fields
+//! take their defaults. The generated model has no flattened fields and permits unknown fields, so
+//! fields deserialize independently. The isolation test checks this for the whole corpus.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -130,7 +130,7 @@ fn isolated_object(leaf: &Leaf, tree: &Value) -> Value {
     Value::Object(object)
 }
 
-/// The result of deserializing one isolated leaf.
+/// The result of deserializing a single setting while other fields take their defaults.
 type Isolated = Rc<Result<DatadogConfiguration, String>>;
 
 /// Deserializes leaves in isolation, remembering each distinct isolated object per leaf: across the

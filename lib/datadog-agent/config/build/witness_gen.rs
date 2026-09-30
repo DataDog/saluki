@@ -123,12 +123,10 @@ fn collect_structs(file: &syn::File) -> StructMap {
     out
 }
 
-/// Collect every `#[serde(alias = "...")]` value on a field.
+/// Collects every `#[serde(alias = "...")]` value on a field.
 ///
-/// Renders each `#[serde(...)]` attribute's argument list back to source text rather than walking
-/// `syn::Meta` by hand: the attribute mixes `alias` with other keys (`default`, `deserialize_with`)
-/// that this generator has no reason to understand, and rendering-then-scanning skips having to
-/// parse all of them just to find one.
+/// Scans rendered `#[serde(...)]` arguments instead of parsing `syn::Meta`: the attributes also
+/// contain keys such as `default` and `deserialize_with`, which this generator does not need.
 fn field_aliases(field: &syn::Field) -> Vec<String> {
     let mut aliases = Vec::new();
     for attr in &field.attrs {
@@ -385,8 +383,9 @@ fn leaf_kind(type_text: &str, dotted: &str) -> LeafKind {
     }
 }
 
-/// Render the full `leaves.rs` module source: the `LeafValue` enum, the `Leaf` descriptor, and the
-/// sorted `LEAVES` table, one entry per supported key.
+/// Renders the `leaves.rs` source: `LeafValue`, `Leaf`, and the sorted `LEAVES` table.
+///
+/// The table has one entry per supported key.
 fn render_leaves(resolved: &[ResolvedKey]) -> String {
     // One `LeafKind` per key, keeping the dotted key alongside for the panic message and the table
     // row. Distinct variants (deduplicated by name, so a repeated type contributes one enum arm)

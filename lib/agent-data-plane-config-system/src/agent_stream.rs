@@ -1,9 +1,7 @@
-//! Converts the Agent's config-stream wire types (`datadog_protos::agent`) into `saluki_config`'s
-//! dynamic [`ConfigSetting`] values.
+//! Converts the Agent's config-stream wire events into `saluki_config` updates.
 //!
-//! These conversions live here, rather than in `agent-data-plane`, so that library tests (in
-//! particular corpus replay tests) can build the exact `ConfigSnapshot`/`ConfigUpdate` events the
-//! Agent would send and check what they turn into, without depending on the binary crate.
+//! The running process and the library's corpus replay tests share this path. Tests can construct
+//! the exact snapshot and update events the Agent sends without depending on the binary crate.
 
 use datadog_protos::agent::{config_event, ConfigEvent, ConfigSetting as AgentConfigSetting, ConfigSnapshot};
 use prost_types::value::Kind;
@@ -13,12 +11,12 @@ use tracing::error;
 
 /// Sources that indicate the Agent supplied the value rather than an operator.
 pub const AGENT_DEFAULT_SOURCE: &str = "default";
-/// A value that was not set by the user nor does the schema define default value for.
+/// A value neither set by the user nor supplied with a schema default.
 pub const AGENT_DECLARED_ONLY_SOURCE: &str = "schema";
 /// The sources that mark a setting as an Agent-supplied default rather than an explicit value.
 pub const AGENT_UNSET_SOURCES: [&str; 2] = [AGENT_DEFAULT_SOURCE, AGENT_DECLARED_ONLY_SOURCE];
 
-/// Converts a setting from the Agent's RPC wire protocol to our `ConfigSetting` type.
+/// Converts an Agent wire setting to a [`ConfigSetting`], preserving whether its source is a default.
 pub fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
     let provenance = if AGENT_UNSET_SOURCES.contains(&setting.source.as_str()) {
         Provenance::Default

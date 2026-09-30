@@ -1,10 +1,9 @@
-//! Checks what ADP makes of the keys the corpus sets but the typed model leaves out: the schema keys ADP does not
-//! support or whose support is undetermined, the schema keys the overlay excludes, and keys that are not in the schema
-//! at all.
+//! Checks keys in the corpus that the typed configuration does not model.
 //!
-//! The leaf tier reports these keys only as not modeled. The tests here pin the two things ADP does with them: the
-//! classifier behind the compatibility check reads each key as the overlay declares it, and replaying a case that
-//! sets them fails no stage apart from the blank `api_key` validation every case without an `api_key` gets.
+//! These include schema keys marked unsupported or undetermined, keys excluded by the schema
+//! overlay, and keys outside the schema. The leaf comparison reports them as not modeled. These
+//! tests check that the compatibility classifier follows the overlay and that replaying cases with
+//! these keys fails no stage except validation of a blank `api_key` when a case lacks one.
 
 #[cfg(test)]
 mod tests {
@@ -66,9 +65,9 @@ mod tests {
         }
     }
 
-    /// Returns the support level `classify` should return for `key` given the overlay, or `None` for a key the
-    /// classifier does not know. A key of undetermined support is classified only when the overlay estimates its
-    /// severity.
+    /// Returns the support level the overlay assigns to `key`, or `None` if the classifier does not know it.
+    ///
+    /// For a key whose support is undetermined, the classifier needs an estimated severity to classify it.
     fn expected_classification(overlay: &SchemaOverlay, key: &str) -> Result<Option<SupportLevel>, String> {
         if overlay.excluded.contains_key(key) {
             return Ok(None);
@@ -158,10 +157,11 @@ mod tests {
         assert!(checked > 0, "no streamed value of a {group:?} case was checked");
     }
 
-    /// Every unsupported key the corpus streams classifies as incompatible, at the overlay's severity, and not as
-    /// its default, so the compatibility check reports it. The group also holds the keys whose support the overlay
-    /// has not determined: those classify the same way when the overlay estimates a severity, and not at all
-    /// otherwise.
+    /// Checks that streamed unsupported keys classify as incompatible, at the overlay's severity and not as defaults,
+    /// so the compatibility check reports them.
+    ///
+    /// This group also includes keys of undetermined support: they classify as incompatible when the
+    /// overlay estimates a severity, and remain unclassified otherwise.
     #[test]
     fn unsupported_corpus_keys_classify_as_incompatible_at_the_overlay_severity() {
         assert_classified_as_the_overlay_declares(Group::Unsupported);

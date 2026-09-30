@@ -115,8 +115,8 @@ pub(crate) fn build_events(corpus: &Corpus, case_name: &str, base: i32) -> Resul
 fn config_setting(case_name: &str, key: &str, setting: &Setting) -> Result<ConfigSetting, String> {
     // record.md §5.1: the real Agent proto has an `unset_source` field (proto field 4) that
     // saluki's vendored proto does not define; prost silently skips unknown fields when decoding,
-    // so the loader drops `unset_source` here too, to match what ADP actually sees on the wire.
-    // This is the only place `Setting::unset_source` is read and discarded.
+    // so the loader leaves `unset_source` out of the setting it builds here, to match what ADP
+    // actually sees on the wire.
     let value = match &setting.value {
         Some(value) => {
             Some(json_to_prost_value(value).map_err(|e| format!("case {case_name:?} key {key:?}: value: {e}"))?)

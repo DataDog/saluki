@@ -1,17 +1,15 @@
 //! Replays each corpus case's recorded inputs through ADP's own bootstrap reader and compares the
 //! result with what the Agent's getters returned after the first snapshot.
 //!
-//! This is the bootstrap tier. Before the Agent's configuration stream arrives, and in standalone
-//! mode instead of it, ADP reads `datadog.yaml` and the environment itself. This tier gives that
-//! reader the exact YAML text and environment a case gave the Agent, with the environment after the
-//! file, and reads each supported leaf from the resulting base in isolation, as the leaf tier reads
-//! it from the streamed tree. A difference means either that ADP reads a YAML shape or environment
-//! value differently from the Agent, or that the Agent changed the value while loading, which ADP's
-//! bootstrap cannot see.
+//! Before the Agent's configuration stream arrives, ADP reads `datadog.yaml` and the environment
+//! itself; standalone mode uses those inputs instead of the stream. This bootstrap comparison gives
+//! ADP the exact YAML and environment recorded for each case, applying the environment after the
+//! file. It compares each supported setting in isolation against the Agent's getter result, as the
+//! streamed-value comparison does. A difference may come from how ADP reads YAML or the environment,
+//! or from a value the Agent changed during loading that ADP's bootstrap reader cannot see.
 //!
-//! Only started cases whose inputs have no fleet policy and no CLI override are in scope: the Agent's
-//! first snapshot then comes from the YAML, the environment, and defaults alone. Updates come after
-//! the first snapshot, so only that checkpoint is compared.
+//! Only cases that started without a fleet policy or CLI override qualify: their first Agent
+//! snapshot comes from YAML, environment variables, and defaults alone. Later updates are not compared.
 
 use std::path::Path;
 
@@ -42,8 +40,9 @@ fn in_scope(inputs: &Inputs) -> bool {
     inputs.fleet_policy.is_none() && inputs.cli.is_empty()
 }
 
-/// Builds the bootstrap base from a case's inputs: its YAML (an empty object when absent) and its
-/// environment (empty when absent), the environment read after the file.
+/// Builds the bootstrap base from a case's YAML and environment, applying the environment after the file.
+///
+/// Missing YAML becomes an empty object; missing environment variables contribute nothing.
 fn case_base(inputs: &Inputs) -> Result<serde_json::Value, String> {
     let yaml = inputs.yaml.as_deref().unwrap_or("{}");
     let vars: Vec<(String, String)> = inputs
