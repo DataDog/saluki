@@ -1,0 +1,6 @@
+name: cli-stop-timeout-not-recomputed
+group: behavior
+why: [derived-value-written-with-source-default, cli-override-skips-fixups]
+cli:
+  - {key: forwarder_stop_timeout, value: "6"}
+keys: [data_plane.stop_timeout, forwarder_stop_timeout]
