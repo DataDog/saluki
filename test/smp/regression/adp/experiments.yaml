@@ -184,6 +184,30 @@ templates:
         metric-routing.yaml:
           source: shared/metric-routing-prefix-scaling.yaml.j2
 
+  # Increase the active working set as well as policy size. All three high-cardinality cases
+  # share this workload, including a separate unfiltered control.
+  metric_routing_high_cardinality:
+    extends: metric_routing_base
+    variables:
+      traffic_metrics: 10000
+      allowlist_entries: 100000
+    target:
+      environment:
+        DD_AGGREGATE_CONTEXT_LIMIT: "101000"
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+    lading:
+      generator:
+        - unix_datagram:
+            maximum_prebuild_cache_size_bytes: "512 MiB"
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 100000
+                    max: 100001
+                timestamp:
+                  probability: 0.0
+
   # Base template for the tag filtering experiments.
   tagfilter_base:
     variables:
@@ -605,6 +629,14 @@ experiments:
     variables:
       allowlist_entries: 100000
 
+  # Retain full delivery to expose filtering and separate encoding costs at 100K exact names.
+  - name: primary_exact_match_100000
+    extends: metric_routing_base
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      routing_enabled: true
+      allowlist_entries: 100000
+
   # Prefix scaling: fixed input traffic, N nonredundant prefixes, primary only.
   - name: primary_prefix_miss_10
     extends: metric_routing_primary_prefix_scaling
@@ -675,6 +707,28 @@ experiments:
     variables:
       allowlist_entries: 100000
       prefix_all_match: true
+
+  # Separate controls are required: these cases generate many more post-aggregation metrics
+  # than the 10-name / 3K-context scaling sweep. Keep names short enough for SMP's SNS IDs.
+  - name: highcard_control
+    extends: metric_routing_high_cardinality
+    optimization_goals: [cpu, memory, ingress_throughput]
+
+  - name: highcard_exact_match
+    extends: metric_routing_high_cardinality
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      routing_enabled: true
+
+  - name: highcard_prefix_match
+    extends: metric_routing_high_cardinality
+    optimization_goals: [cpu, memory, ingress_throughput]
+    variables:
+      prefix_all_match: true
+    target:
+      files:
+        metric-routing.yaml:
+          source: shared/metric-routing-prefix-scaling.yaml.j2
 
   # ============================================================================
   # DogStatsD: quality gates (memory)

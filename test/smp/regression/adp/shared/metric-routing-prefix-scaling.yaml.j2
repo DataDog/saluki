@@ -1,5 +1,5 @@
-{# Fixed-width suffixes prevent prefix compaction. In all-match cases, ten prefixes
-   cover the input names and their histogram-derived outputs; the remaining N-10 miss. #}
+{# Fixed-width suffixes prevent prefix compaction. In all-match cases, one prefix per
+   input name covers its histogram-derived outputs; the remaining entries miss. #}
 histogram_aggregates: ["max", "median", "avg", "count"]
 histogram_percentiles: ["0.95"]
 histogram_copy_to_distribution: false

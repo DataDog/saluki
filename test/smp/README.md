@@ -347,8 +347,9 @@ seed, 500 MiB/s offered traffic, target resources, and V3 settings for both endp
 
 Compare each size against the dual-shipping control for the same optimization goal and build
 variant within a run. Report CPU, memory, and ingress throughput deltas relative to that control.
-This measures the net effect of enabling the allowlist: filtering cost plus the savings from
-not encoding and forwarding the primary's metrics. SMP's `baseline` and `comparison` labels
+This measures filtering cost plus savings from suppressing primary delivery. The control encodes
+once for both endpoints; all-miss still encodes the secondary stream, but its additional filtered
+encoder receives nothing. SMP's `baseline` and `comparison` labels
 identify build variants, not filtering disabled and enabled; both variants run each case's config.
 Compare the five filtered sizes with each other as a separate measure of allowlist-size overhead.
 Separate startup from steady-state results: the current full-suite CI job uses zero warmup seconds.
@@ -359,6 +360,18 @@ Run the manual `run-benchmarks-adp-full` job to include these cases; the automat
 `run-benchmarks-adp` job runs only the unchanged quality gates. These experiments do not assert
 on received metric contents. Their generated configurations are intentionally large and are
 for this benchmark-only branch, not the implementation PR.
+
+#### Ad-hoc primary exact all-match
+
+`primary_exact_match_100000` adds CPU, memory, and ingress-throughput cases with exactly
+100,000 unique exact names: the 10 input names and their 50 histogram-derived names, plus
+99,940 nonmatching filler names. Every generated metric passes the primary's filter, and
+the secondary remains unfiltered. Traffic, resources, and V3 settings match the control.
+
+Compare with unfiltered dual-shipping and `primary_prefix_match_100000` within the same build.
+Both destinations retain full delivery, exposing the extra filtering and encoding work without
+output savings. This is a high-overhead scenario, not a universal worst-case bound: traffic still
+uses only 10 input names and approximately 3,000 contexts, not 100,000 active metric names.
 
 #### Ad-hoc primary prefix scaling
 
@@ -385,6 +398,33 @@ same build variant, and separate startup from steady state. All-match retains pr
 delivery and exposes filtering plus separate encoding costs; all-miss also includes
 the savings from suppressing primary delivery. These are performance experiments,
 not assertions on received payload contents.
+
+#### High-cardinality all-match comparison
+
+`highcard_control`, `highcard_exact_match`, and `highcard_prefix_match` each add CPU,
+memory, and ingress-throughput cases. They share a 10,000-name input pool, approximately
+100,000 generated contexts, and the existing 500 MiB/s offered traffic and metric-type mix.
+The aggregator limit is 101,000, the string interner is 32 MiB, and the generator's fixed
+prebuilt cache is 512 MiB in all three cases. Timestamped traffic is disabled.
+
+The control has no filtering. The exact policy contains 60,000 matching base/histogram-derived
+names plus 40,000 filler names; the prefix policy contains 10,000 matching prefixes plus 90,000
+fillers. Both policies retain exactly 100,000 unique entries. Both destinations receive the full
+metric stream in every case, exposing filtering and extra encoding work without output savings.
+
+Compare these cases only with their high-cardinality control in the same build and run, not
+with the 3,000-context control. The configured input pool is below Lading's 15,000-name expansion
+limit, but names are sampled: verify the observed name/context coverage and prebuilt-cache
+coverage rather than assuming every configured name is active.
+
+For the notebook, predeclare the same steady-state interval for each replicate: start 120 seconds
+after its first valid sample and exclude the final partial bucket. Keep startup/peak RSS separate.
+Report per-replicate CPU/RSS means and their spread across all ten replicates, and verify comparable
+accepted throughput, post-aggregation event rates, and successful output to both destinations.
+Check for context-limit drops and saturation; if any case cannot sustain 500 MiB/s, compare capacity
+or rerun all three at the same lower rate instead of interpreting lower CPU as better efficiency.
+These are bounded high-cardinality stress cases, not a universal worst-case guarantee or a test of
+timestamped traffic that bypasses aggregation.
 
 ## Regenerating Experiments
 
