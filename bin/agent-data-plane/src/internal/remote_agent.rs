@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
-use agent_data_plane_config_system::{setting_to_config_setting, snapshot_to_settings};
+use agent_data_plane_config_system::config_event_to_update;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::{
@@ -15,7 +15,6 @@ use datadog_protos::agent::v1::{
     ReportRemoteAgentEventRequest,
 };
 use datadog_protos::agent::{
-    config_event,
     flare::v1::{flare_provider_server::*, *},
     status::v1::{status_provider_server::*, *},
     telemetry::v1::{get_telemetry_response::*, telemetry_provider_server::*, *},
@@ -304,19 +303,7 @@ async fn run_config_stream_event_loop(
         while let Some(result) = stream.next().await {
             match result {
                 Ok(event) => {
-                    let update = match event.event {
-                        Some(config_event::Event::Snapshot(snapshot)) => {
-                            Some(ConfigUpdate::Snapshot(snapshot_to_settings(&snapshot)))
-                        }
-                        Some(config_event::Event::Update(update)) => update
-                            .setting
-                            .as_ref()
-                            .map(|setting| ConfigUpdate::Partial(setting_to_config_setting(setting))),
-                        None => {
-                            error!("Received a configuration update event with no data.");
-                            None
-                        }
-                    };
+                    let update = config_event_to_update(event);
 
                     if let Some(update) = update {
                         if sender.send(update).await.is_err() {
