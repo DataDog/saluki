@@ -64,7 +64,7 @@ func generateMain(args []string) error {
 	if err != nil {
 		return err
 	}
-	facts := &gen.AgentFacts{DefaultType: map[string]string{}, EnvVars: map[string]bool{}}
+	facts := &gen.AgentFacts{DefaultType: map[string]string{}, EnvVars: map[string]bool{}, Getters: map[string][]string{}}
 	err = withFirstSnapshot(params, func(sess *session) error {
 		cfg := sess.cfg
 		capture.take()
@@ -73,10 +73,15 @@ func generateMain(args []string) error {
 		}
 		for key := range leaves {
 			typ, ok := agentcfg.DefaultLayerType(cfg, key)
+			getters, err := agentcfg.GettersForKey(record.KeyEntry{Key: key}, leaves[key], ok, typ)
+			if err != nil {
+				return err
+			}
 			if !ok {
 				typ = "<nil>"
 			}
 			facts.DefaultType[key] = typ
+			facts.Getters[key] = getters
 		}
 		for _, v := range cfg.GetEnvVars() {
 			facts.EnvVars[v] = true

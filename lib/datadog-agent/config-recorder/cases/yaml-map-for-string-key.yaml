@@ -4,4 +4,8 @@ why: [getter-string-on-map-returns-empty]
 yaml: |
   dogstatsd_socket:
     a: b
-keys: [dogstatsd_socket]
+  apm_config:
+    features: [cr-a]
+keys:
+  - dogstatsd_socket
+  - {key: apm_config.features, getters: [GetStringSlice, GetString]}

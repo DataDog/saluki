@@ -5,4 +5,5 @@ env:
   DD_DOGSTATSD_PORT: "0x10"
 yaml: |
   dogstatsd_buffer_size: "010"
-keys: [dogstatsd_buffer_size, dogstatsd_port]
+  log_file_max_size: "0x10KB"
+keys: [dogstatsd_buffer_size, dogstatsd_port, {key: log_file_max_size, getters: [GetString, GetSizeInBytes]}]

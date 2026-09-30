@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 
 const SIZE_CAP: usize = 512_000;
 
+/// The most bytes of corpus lines the `depth` group may take, summed over its case and key lines.
+const DEPTH_BUDGET: usize = 80_000;
+
 /// The command that regenerates the corpus, named in every staleness failure.
 const REGENERATE: &str = "make build-agent-config-corpus";
 
@@ -74,6 +77,47 @@ fn corpus_within_size_cap() {
     assert!(
         len <= SIZE_CAP,
         "corpus.jsonl is {len} bytes, over the {SIZE_CAP}-byte cap; shrink the cases and run `{REGENERATE}`"
+    );
+}
+
+/// The `depth` group's lines must fit its budget. A variant's bytes are those of every line whose case is the variant's
+/// case or one of its single-key parts (`<variant>--<key>`), newlines included.
+#[test]
+fn depth_group_within_budget() {
+    let Some(corpus) = corpus() else {
+        return;
+    };
+    let depth: BTreeSet<&str> = corpus
+        .cases
+        .iter()
+        .filter(|c| c.group == Group::Depth)
+        .map(|c| c.name.as_str())
+        .collect();
+    let bytes = corpus_bytes();
+    let mut per_variant: BTreeMap<String, usize> = BTreeMap::new();
+    for line in bytes.split_inclusive(|&b| b == b'\n') {
+        let value: serde_json::Value =
+            serde_json::from_slice(line).unwrap_or_else(|e| panic!("corpus line is not JSON: {e}"));
+        let Some(case) = value.get("case").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !depth.contains(case) {
+            continue;
+        }
+        let variant = case.split_once("--").map_or(case, |(root, _)| root);
+        *per_variant.entry(variant.to_string()).or_default() += line.len();
+    }
+    let total: usize = per_variant.values().sum();
+    if total <= DEPTH_BUDGET {
+        return;
+    }
+    let mut listed: Vec<(&String, &usize)> = per_variant.iter().collect();
+    listed.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let shown: Vec<String> = listed.iter().map(|(v, n)| format!("{v}: {n}")).collect();
+    panic!(
+        "the depth group's corpus lines are {total} bytes, over the {DEPTH_BUDGET}-byte budget; cut variants from \
+         the bottom of the depth variant table in case.md §3.2.1 and run `{REGENERATE}`. Bytes per variant:\n{}",
+        shown.join("\n")
     );
 }
 
@@ -324,6 +368,30 @@ fn corpus_groups_match_overlay() {
         &unknown_keys - &leaves,
         unknown_keys.clone(),
     );
+    let depth_keys: BTreeSet<String> = sets
+        .iter()
+        .filter(|((group, _), _)| *group == Group::Depth)
+        .flat_map(|(_, keys)| keys.iter().cloned())
+        .collect();
+    compare(
+        "depth cases (keys that are not modeled schema leaves)",
+        &depth_keys & &modeled_leaves,
+        depth_keys.clone(),
+    );
+    let depth_cases: Vec<&str> = corpus
+        .cases
+        .iter()
+        .filter(|case| case.group == Group::Depth)
+        .map(|case| case.name.as_str())
+        .collect();
+    if depth_cases.is_empty() {
+        problems.push("no case of group depth".to_string());
+    }
+    for name in depth_cases.iter().filter(|name| !name.starts_with("depth-")) {
+        problems.push(format!(
+            "case {name}: group depth, but the name does not start with `depth-`"
+        ));
+    }
 
     assert!(
         problems.is_empty(),

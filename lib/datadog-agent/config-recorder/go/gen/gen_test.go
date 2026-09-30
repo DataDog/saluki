@@ -58,7 +58,23 @@ excluded:
 `
 
 func testFacts() *AgentFacts {
-	f := &AgentFacts{DefaultType: map[string]string{"other_key": "bool"}, EnvVars: map[string]bool{}}
+	f := &AgentFacts{DefaultType: map[string]string{"other_key": "bool"}, EnvVars: map[string]bool{},
+		Getters: map[string][]string{}}
+	for k, t := range map[string]string{
+		"flag": "bool", "port": "int", "rate": "float64", "name": "string", "wait": "time.Duration",
+		"sock": "string", "quiet": "<nil>", "tags": "[]string", "ends": "map[string][]string",
+		"apm_config.a": "int", "apm_config.b": "int", "apm_config.c": "int",
+	} {
+		f.DefaultType[k] = t
+	}
+	for k, g := range map[string][]string{
+		"flag": {"GetBool"}, "port": {"GetInt"}, "rate": {"GetFloat64"}, "name": {"GetString"},
+		"wait": {"GetDuration"}, "sock": {"GetString"}, "quiet": {"Get", "GetString"}, "tags": {"GetStringSlice"},
+		"ends": {"GetStringMapStringSlice"}, "apm_config.a": {"GetInt"}, "apm_config.b": {"GetInt"},
+		"apm_config.c": {"GetInt"},
+	} {
+		f.Getters[k] = g
+	}
 	for _, v := range []string{"DD_FLAG", "DD_PORT", "DD_RATE", "DD_NAME", "DD_WAIT", "DD_SOCK", "DD_TAGS", "DD_ENDS",
 		"DD_APM_A", "DD_A", "DD_APM_CONFIG_B", "DD_APM_CONFIG_C", "DD_GONE", "DD_OTHER_KEY"} {
 		f.EnvVars[v] = true
@@ -189,7 +205,9 @@ func TestGroupsAndNames(t *testing.T) {
 	cases := byName(r)
 	var names []string
 	for _, c := range r.Cases {
-		names = append(names, c.Name)
+		if c.Group != record.GroupDepth {
+			names = append(names, c.Name)
+		}
 	}
 	want := []string{
 		"baseline-default",
