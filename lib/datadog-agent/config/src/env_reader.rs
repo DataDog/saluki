@@ -96,6 +96,26 @@ pub fn apply_env_at_path(
     apply_one(root, &env, env_vars, path, decode, overwrite)
 }
 
+/// Reads one key from explicitly provided environment variable name/value pairs and writes it into
+/// `root`.
+///
+/// Identical to [`apply_env_at_path`] except for where the variables come from. Tests use this to
+/// avoid depending on the ambient process environment.
+///
+/// # Errors
+///
+/// Returns a message when the environment value is malformed for `decode`.
+pub fn apply_env_at_path_vars(
+    base: &mut Value, vars: impl IntoIterator<Item = (String, String)>, env_vars: &[&str], path: &[&str],
+    decode: EnvDecode, overwrite: bool,
+) -> Result<(), String> {
+    let Some(root) = base.as_object_mut() else {
+        return Ok(());
+    };
+    let env = EnvSnapshot::from_vars(vars);
+    apply_one(root, &env, env_vars, path, decode, overwrite)
+}
+
 /// The canonical proxy variables that carry no `DD_` prefix.
 ///
 /// `HTTP_PROXY` and `HTTPS_PROXY` are honored by the Datadog Agent but are not declared by the

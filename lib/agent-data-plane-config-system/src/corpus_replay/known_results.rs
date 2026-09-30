@@ -18,6 +18,15 @@
 //!   match, with the leaf tier's columns. `<key>` is the Agent key the derivation stands for and
 //!   `<kind>` the derived value's `LeafValue` variant name. The derived tier's rows are counted by
 //!   verdict on `count derived` lines, always including `match`, `differs`, and `adp-rejects`.
+//! - `bootstrap <case> <checkpoint> <key> <getter> <kind> <input> differs <adp value> <agent value>`, or
+//!   `... adp-rejects <error>`: every row of the bootstrap tier that is neither a match nor not
+//!   compared, with the leaf tier's columns. `<checkpoint>` is always `snapshot`, and `<input>` is the
+//!   value the bootstrap base holds at the key's path (JSON), or `-` when it does not hold it. The
+//!   tier's rows are counted by verdict on `count bootstrap` lines, always including `match`,
+//!   `differs`, `adp-rejects` and `not-modeled`, and so are its cases: `cases-in-scope`,
+//!   `cases-out-of-scope` (a fleet policy or a CLI override), and `cases-aborted`.
+//! - `bootstrap-aborts <case> <error>`: every case in scope whose bootstrap base does not build, with
+//!   the error ADP aborts its boot on; such a case has no `bootstrap` rows.
 //! - `derived-n/a <name> <reason>`: every derivation ADP has that the derived tier does not replay.
 //! - `translator <case> <step> <key> <error>`: every key whose translation failed at a step.
 //! - `system <case> <step> <stage> <error>`: every rejected step except the blank API key, which the
@@ -40,6 +49,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use datadog_agent_config::LEAVES;
 use datadog_agent_config_corpus::{Corpus, Getter, Outcome};
 
+use super::bootstrap::corpus_bootstrap;
 use super::compare::{Reason, Verdict};
 use super::derived::{corpus_derived_rows, NOT_REPLAYED};
 use super::driver::{replay_case, Stage};
@@ -119,10 +129,10 @@ fn step_name(position: usize) -> String {
 fn identity_columns(tier: &str) -> usize {
     match tier {
         "count" => 3,
-        "leaf" | "derived" => 5,
+        "leaf" | "derived" | "bootstrap" => 5,
         "translator" => 4,
         "system" => 4,
-        "case" | "startup-failed" | "not-modeled" | "uncovered" | "derived-n/a" => 2,
+        "case" | "startup-failed" | "not-modeled" | "uncovered" | "derived-n/a" | "bootstrap-aborts" => 2,
         _ => usize::MAX,
     }
 }
@@ -240,6 +250,46 @@ fn known_results(corpus: &Corpus) -> String {
     }
     for (name, reason) in NOT_REPLAYED {
         lines.insert(format!("derived-n/a\t{}\t{}", field(name), field(reason)));
+    }
+
+    let bootstrap = corpus_bootstrap(corpus);
+    for label in ["match", "differs", "adp-rejects", "not-modeled"] {
+        counts.insert(("bootstrap", label.to_string()), 0);
+    }
+    counts.insert(("bootstrap", "cases-in-scope".to_string()), bootstrap.in_scope);
+    counts.insert(("bootstrap", "cases-out-of-scope".to_string()), bootstrap.out_of_scope);
+    counts.insert(("bootstrap", "cases-aborted".to_string()), bootstrap.aborts.len());
+    for row in &bootstrap.rows {
+        let detail = match &row.result {
+            RowResult::Leaf(Verdict::Differs { adp, agent }) => Some(("differs", vec![field(adp), field(agent)])),
+            RowResult::Leaf(Verdict::AdpRejects { error }) => Some(("adp-rejects", vec![field(error)])),
+            _ => None,
+        };
+        if let Some((verdict, detail)) = detail {
+            let mut columns = vec![
+                "bootstrap".to_string(),
+                field(&row.case),
+                checkpoint_name(row.checkpoint).to_string(),
+                field(&row.key),
+                row.getter.map_or("-", Getter::as_str).to_string(),
+                row.kind.unwrap_or("-").to_string(),
+                row.streamed.as_ref().map_or("-".to_string(), |v| field(&v.to_string())),
+                verdict.to_string(),
+            ];
+            columns.extend(detail);
+            lines.insert(columns.join("\t"));
+        }
+        let label = match &row.result {
+            RowResult::Leaf(Verdict::Match) => "match".to_string(),
+            RowResult::Leaf(Verdict::Differs { .. }) => "differs".to_string(),
+            RowResult::Leaf(Verdict::AdpRejects { .. }) => "adp-rejects".to_string(),
+            RowResult::Leaf(Verdict::NotCompared { reason }) => reason_code(reason),
+            RowResult::NotModeled => "not-modeled".to_string(),
+        };
+        *counts.entry(("bootstrap", label)).or_default() += 1;
+    }
+    for (case, error) in &bootstrap.aborts {
+        lines.insert(format!("bootstrap-aborts\t{}\t{}", field(case), field(error)));
     }
 
     let blank_api_key = Error::MissingApiKey.to_string();
