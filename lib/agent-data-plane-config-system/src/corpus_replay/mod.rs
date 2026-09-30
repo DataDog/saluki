@@ -2,6 +2,7 @@
 //! into the exact `ConfigEvent` stream the Agent sent, and `driver` pushes that stream through the
 //! same update step the running process uses. `compare` decides whether a typed leaf agrees with a
 //! recorded getter result, and `derived` does the same for values ADP derives from several settings.
+//! `bootstrap` replays a case's YAML and environment through ADP's own bootstrap reader instead.
 //! `known_results` checks what they
 //! compute against the checked-in `known-results.txt`.
 //!
@@ -12,6 +13,7 @@ use std::sync::OnceLock;
 
 use datadog_agent_config_corpus::{read, Corpus};
 
+mod bootstrap;
 mod compare;
 mod derived;
 mod driver;
