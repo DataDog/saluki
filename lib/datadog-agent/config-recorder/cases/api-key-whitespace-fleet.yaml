@@ -1,6 +1,6 @@
 name: api-key-whitespace-fleet
 group: behavior
-why: [api-key-trimmed-at-load-not-fleet]
+why: [api-key-trimmed-at-load-not-fleet, load-fixup-skips-fleet-policy]
 fleet_policy: |
   api_key: " cr-key "
 keys: [api_key]
