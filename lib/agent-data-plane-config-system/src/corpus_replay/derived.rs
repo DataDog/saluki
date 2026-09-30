@@ -1,14 +1,11 @@
-//! Produces one verdict per recorded getter for every value ADP computes from settings that mirrors a
-//! value an Agent getter computes.
+//! Compares values ADP computes from settings with the Agent's recorded getter results.
 //!
-//! This is the derived tier. A value may combine several settings, such as the stop timeout, or parse
-//! one, such as a byte count parsed from a size string. The leaf tier compares each setting as ADP
-//! deserializes it, so it cannot see a value ADP computes itself: two equal size strings can still
-//! give different byte counts. When ADP and the Agent compute such a value differently, ADP runs
-//! with a value the Agent's getter does not return. For each case that records a derived key, this tier
-//! translates the folded sources at each checkpoint (every update applied, as the leaf tier folds
-//! them), derives the value from the translated configuration, and compares it with the recorded
-//! getter reads.
+//! ADP may combine settings, as it does for the shutdown timeout, or parse a setting, as it does
+//! for byte sizes. Comparing deserialized settings alone cannot catch differences in those computed
+//! values: equal size strings, for example, can produce different byte counts. For each case that
+//! records such a key, this comparison applies every update, translates the resulting sources at
+//! each recorded checkpoint, and compares the computed value with each recorded getter read. A
+//! difference means ADP runs with a value that the Agent's getter does not return.
 //!
 //! [`DERIVATIONS`] lists the derivations this tier replays; [`NOT_REPLAYED`] lists the ones it does
 //! not, and why.
@@ -41,7 +38,7 @@ pub(crate) enum Derived {
     Bytes(u64),
 }
 
-/// One value ADP derives that stands for a value the Agent derives and streams under `key`.
+/// A value ADP computes from translated settings, paired with the key whose Agent getter computes the counterpart.
 pub(crate) struct Derivation {
     /// The Agent key whose getter returns the Agent's derived value.
     pub(crate) key: &'static str,
@@ -70,7 +67,7 @@ pub(crate) const DERIVATIONS: &[Derivation] = &[
     },
 ];
 
-/// Every derivation ADP has that this tier does not replay: its name and the reason.
+/// Every value ADP computes but this comparison does not replay, each with a name and reason.
 pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
     (
         "api-key-trim",

@@ -1,8 +1,9 @@
 //! Decides whether a typed `DatadogConfiguration` leaf agrees with a recorded Agent getter result.
 //!
 //! The rules are fixed by `lib/datadog-agent/config-recorder/docs/comparison.md`. They are per
-//! (leaf kind, getter), never per key: each leaf kind stands for one getter (the emulation table,
-//! comparison.md §3), and one pure function per pair compares exactly (comparison.md §4).
+//! (leaf kind, getter), never per key: each leaf kind stands for the getters it emulates (the
+//! emulation table, comparison.md §3; `I64` stands for both `GetInt` and `GetInt64`), and one pure
+//! function per pair compares exactly (comparison.md §4).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;

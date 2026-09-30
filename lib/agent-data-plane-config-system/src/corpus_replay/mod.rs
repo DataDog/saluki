@@ -1,10 +1,11 @@
-//! Replays config-recorder corpus cases through this crate's config system. `loader` turns a case
-//! into the exact `ConfigEvent` stream the Agent sent, and `driver` pushes that stream through the
-//! same update step the running process uses. `compare` decides whether a typed leaf agrees with a
-//! recorded getter result, and `derived` does the same for values ADP derives from several settings.
-//! `bootstrap` replays a case's YAML and environment through ADP's own bootstrap reader instead.
-//! `known_results` checks what they compute against the checked-in `known-results.txt`, where every divergence names
-//! a declared divergence type: its cause, and the layer a fix would go in.
+//! Replays recorded Agent configuration cases through the running process's configuration system.
+//!
+//! `loader` reconstructs the exact wire events the Agent sent; `driver` runs them through the real
+//! update path.
+//! `compare` checks each modeled setting against recorded getter reads. `derived` compares values
+//! computed from settings, while `bootstrap` compares what ADP reads directly from a case's YAML and
+//! environment, without the Agent stream. `known_results` checks the results against
+//! `known-results.txt`, which groups annotated differences by cause and by where a fix belongs.
 //!
 //! The corpus and its contract (`lib/datadog-agent/config-recorder/docs/record.md`) are owned
 //! elsewhere; this module only reads them through `datadog_agent_config_corpus::read`.

@@ -1,9 +1,8 @@
-//! Replays one corpus case's event stream through the update step the running process uses, and
-//! records what the typed configuration makes of it.
+//! Replays a recorded Agent event stream through the running process's configuration update path.
 //!
-//! Each event passes through [`config_event_to_update`], the conversion the process applies to the
-//! Agent's real stream, and then through [`evaluate`], the step the update loop runs. Replay starts
-//! from an empty local base: only the Agent's stream contributes.
+//! [`config_event_to_update`] converts each wire event, and [`evaluate`] deserializes, translates,
+//! and validates the result against the accumulated Agent settings. Replay starts with no local
+//! configuration, so only the Agent's stream contributes.
 
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
@@ -63,11 +62,10 @@ pub(crate) struct StepRecord {
 pub(crate) struct CaseReplay {
     /// The state the first snapshot produced, whether or not it was committed.
     pub(crate) snapshot: State,
-    /// The state after the last update, or `None` if the stream carries no update.
+    /// The last committed state after the updates, or `None` when there are no updates.
     ///
-    /// This is the state of the last committed step, so an update that failed translation leaves the
-    /// previous state in place, as the running process keeps its last-known-good configuration. If no
-    /// step was ever committed, it is the first snapshot's state.
+    /// A failed translation leaves the previous state in place, as in the running process. If no
+    /// step was committed, this holds the first snapshot's state.
     pub(crate) last: Option<State>,
     /// One record per event, in stream order; the first is the snapshot.
     pub(crate) steps: Vec<StepRecord>,
