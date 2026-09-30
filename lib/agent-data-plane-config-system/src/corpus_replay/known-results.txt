@@ -16,6 +16,7 @@ type	malformed-json-string	adp-deserializer	a non-JSON string for a map or JSON-
 type	non-string-map-value	adp-deserializer	a non-string value in a string map; the Agent's getter stringifies it, ADP rejects
 type	null-collection	adp-deserializer	the stream carries null for an empty or unset list or map; the Agent's getter reads empty, ADP rejects
 type	scalar-given-collection	adp-deserializer	a map or list for a scalar key; the Agent's getter casts it to the zero value, ADP rejects
+type	size-unit-base	adp-translator	ADP parses KB, MB and GB byte sizes as powers of 1000; the Agent's GetSizeInBytes uses powers of 1024
 type	stop-timeout-recomputed	adp-derived	the Agent computes data_plane.stop_timeout once at load; ADP recomputes it from later inputs
 type	translator-narrow-parse	adp-translator	the translator rejects forms the Agent accepts: a base-prefixed size, a number for a string field
 type	translator-rejects-value	adp-translator	the translator rejects a string that is not a valid enum or size value, and with it the whole update; the Agent's getter passes it through
@@ -264,6 +265,8 @@ case	proxy-yaml-source-post-init	1	0	1	0	0
 case	runtime-use-dogstatsd-off	2	0	0	2	0
 case	set-nil-map-key	1	0	1	0	2
 case	site-without-dd-url	2	0	0	0	0
+case	size-in-bytes-kb	2	0	0	0	2
+case	size-in-bytes-units	2	0	0	0	2
 case	source-order-one-key	2	0	0	0	0
 case	string-slice-from-string	0	0	0	3	0
 case	unknown-env-top-c	0	0	0	1	0
@@ -321,34 +324,35 @@ case	yaml-unknown-keys	0	0	0	2	0
 case	yaml-unknown-section	0	0	0	2	0
 count	bootstrap	adp-rejects	32
 count	bootstrap	cases-aborted	9
-count	bootstrap	cases-in-scope	209
+count	bootstrap	cases-in-scope	211
 count	bootstrap	cases-out-of-scope	15
 count	bootstrap	differs	32
 count	bootstrap	explicit-only	2
-count	bootstrap	match	763
+count	bootstrap	match	767
 count	bootstrap	not-emulated:Bool	8
 count	bootstrap	not-emulated:Duration	6
 count	bootstrap	not-emulated:F64	9
 count	bootstrap	not-emulated:I64	14
-count	bootstrap	not-emulated:Str	7
+count	bootstrap	not-emulated:Str	11
 count	bootstrap	not-emulated:StringList	16
 count	bootstrap	not-emulated:StringListMap	11
 count	bootstrap	not-emulated:StringMap	10
 count	bootstrap	not-modeled	208
-count	cases	started	224
+count	cases	started	226
 count	cases	startup-failed	1
-count	derived	adp-rejects	0
-count	derived	differs	2
+count	derived	adp-rejects	1
+count	derived	differs	6
 count	derived	match	6
+count	derived	other-getter:GetSizeInBytes	13
 count	leaf	adp-rejects	56
 count	leaf	differs	5
 count	leaf	explicit-only	2
-count	leaf	match	1084
+count	leaf	match	1088
 count	leaf	not-emulated:Bool	12
 count	leaf	not-emulated:Duration	7
 count	leaf	not-emulated:F64	11
 count	leaf	not-emulated:I64	25
-count	leaf	not-emulated:Str	9
+count	leaf	not-emulated:Str	13
 count	leaf	not-emulated:StringList	22
 count	leaf	not-emulated:StringListMap	18
 count	leaf	not-emulated:StringMap	13
@@ -356,9 +360,14 @@ count	leaf	not-modeled	221
 count	system	accepted	15
 count	system	deserialize	26
 count	system	translate	21
-count	system	validate: blank api key	438
+count	system	validate: blank api key	440
 derived	cli-stop-timeout-not-recomputed	snapshot	data_plane.stop_timeout	GetInt	I64	4	differs	8	4	# stop-timeout-recomputed
 derived	derived-stop-timeout-default-source	final	data_plane.stop_timeout	GetInt	I64	9	differs	16	9	# stop-timeout-recomputed
+derived	int-string-base-prefix	snapshot	log_file_max_size	GetSizeInBytes	ByteCount	"0x10KB"	adp-rejects	1 config translation error(s):\n  - error translating config key `log_file_max_size`, couldn't parse "x10KB" into a known SI unit, Failed to parse unit "x10..."	# translator-narrow-parse
+derived	size-in-bytes-kb	snapshot	dogstatsd_log_file_max_size	GetSizeInBytes	ByteCount	"5KB"	differs	5000	5120	# size-unit-base
+derived	size-in-bytes-kb	snapshot	log_file_max_size	GetSizeInBytes	ByteCount	"10Mb"	differs	10000000	10485760	# size-unit-base
+derived	size-in-bytes-units	snapshot	dogstatsd_log_file_max_size	GetSizeInBytes	ByteCount	"10Mb"	differs	10000000	10485760	# size-unit-base
+derived	size-in-bytes-units	snapshot	log_file_max_size	GetSizeInBytes	ByteCount	"10MB"	differs	10000000	10485760	# size-unit-base
 derived-n/a	api-key-trim	ADP trims `api_key` on every update; comparing it needs the protocol tier (what is sent), not a getter
 derived-n/a	container-roots	depends on the process environment and filesystem, not only settings
 derived-n/a	cri-socket	depends on the process environment and filesystem, not only settings
