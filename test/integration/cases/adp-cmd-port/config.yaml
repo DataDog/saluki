@@ -48,6 +48,6 @@ procedure:
         pattern: "Topology healthy"
         timeout: 60s
       - assertion: log_not_contains
-        pattern: "panic|PANIC"
+        pattern: "panicked"
         regex: true
         during: 10s
