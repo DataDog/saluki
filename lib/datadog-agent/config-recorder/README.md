@@ -22,6 +22,8 @@ for compatibility tests. Its unit tests validate the recordings' format, size, c
 consistency with the current schema and recorder inputs. These checks run in CI without Go or
 Docker; they do not compare ADP's behavior with the Agent's.
 
+[`docs/comparison.md`](docs/comparison.md) fixes how agent-data-plane's typed values are compared with recorded getter results.
+
 ## Section reads
 
 Some Agent code reads a setting through something other than a typed getter. A case names one of
