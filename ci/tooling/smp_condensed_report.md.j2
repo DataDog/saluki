@@ -1,0 +1,139 @@
+{#- smp-report-schema: 1 -#}
+{#-
+  Condensed regression-detector report, sized for a PR comment.
+
+  A terser alternative to the built-in `report.md`: it drops the `Δ mean % CI`
+  and `trials` columns and folds the `perf` column into the `Δ mean %` cell as a
+  colored dot. Only regressions are shown up front; everything else is collapsed.
+
+  Render with:
+    smp report render --template-file ci/tooling/smp_condensed_report.md.j2 \
+      --report outputs/report.v1.json
+-#}
+{%- set job = report.job -%}
+{%- set start_ms = job.metrics_query_start * 1000 -%}
+{%- set end_ms = job.metrics_query_end * 1000 -%}
+{#- The profiling and logs views use a wider observation window around the
+    metrics query, matching the deployed constants. -#}
+{%- set filter_start_ms = (job.metrics_query_start - 7200) * 1000 -%}
+{%- set filter_end_ms = (job.metrics_query_end + 3600) * 1000 -%}
+{#- Decorate each goal-bearing experiment with its table-row data. -#}
+{%- set ns = namespace(rows=[]) -%}
+{%- for e in report.experiments | selectattr("optimization_goal") -%}
+{%- set g = e.optimization_goal -%}
+{%- set analyzed = g.result is not none -%}
+{%- set delta = (g.result.percent_change if analyzed else 0.0) -%}
+{%- set significant = (analyzed and g.result.is_significant_change) -%}
+{#- `rank` is the goal-relative change so ascending order puts the worst
+    direction first: a CPU rise sorts alongside a throughput drop rather than
+    at the opposite end of the table. It is |delta| when the change moves
+    toward improvement and -|delta| when it moves away: `is_improvement` is
+    directional for every analyzed row, so no per-goal direction knowledge is
+    needed here. The `analyzed and` guard keeps strict mode happy on rows
+    without a result, whose delta is 0 anyway. -#}
+{%- set rank = ((1 if (analyzed and g.result.is_improvement) else -1) * (delta | abs)) -%}
+{%- set ns.rows = ns.rows + [{
+      "experiment": e.name,
+      "goal": (g.goal | format_goal_label if g.goal else "?"),
+      "no_analysis": (not analyzed),
+      "regressed": (significant and not g.result.is_improvement and not e.erratic),
+      "dot": ("⚠️" if not analyzed else ("⚪" if e.erratic else ("🟢" if (significant and g.result.is_improvement) else ("🔴" if significant else "⚪")))),
+      "tag": (" **(no analysis)**" if not analyzed else (" **(ignored)**" if e.erratic else (" **(erratic)**" if g.result.is_erratic else ""))),
+      "delta_disp": ("%+.2f" | format(delta) if analyzed else "n/a"),
+      "rank": rank,
+    }] -%}
+{%- endfor -%}
+{%- set rows = ns.rows | sort(attribute="rank,experiment") -%}
+{%- set regressions = rows | selectattr("regressed") | list -%}
+{%- set others = rows | rejectattr("regressed") | list -%}
+{%- set unanalyzed = others | selectattr("no_analysis") | map(attribute="experiment") | list -%}
+{%- set checks = report.experiments | build_unified_check_rows | rejectattr("is_quantile") | list -%}
+{%- set bounds_passed = report.experiments | bounds_checks_all_passed -%}
+{%- set crashed = report.failed_replicates
+      | selectattr("replicate_type", "equalto", "non_profiling") | selectattr("is_dead")
+      | map(attribute="experiment") | unique | sort | list -%}
+{%- set retried = report.failed_replicates
+      | selectattr("replicate_type", "equalto", "non_profiling") | rejectattr("is_dead")
+      | map(attribute="experiment") | unique | sort | list -%}
+{#- Saluki's per-experiment report links, carried by the template since ADR-007
+    retired server-side link configuration. -#}
+{%- macro links(experiment) -%}
+[metrics](https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job.id }}&tpl_var_experiment%5B0%5D={{ experiment | urlencode }}&view=spans&from_ts={{ start_ms }}&to_ts={{ end_ms }}&live=false) [profiles](https://app.datadoghq.com/profiling/explorer?query=env%3Asingle-machine-performance%20service%3Aagent-data-plane%20job_id%3A{{ job.id }}%20experiment%3A{{ experiment | urlencode }}&agg_m=count&agg_m_source=base&agg_t=count&fromUser=false&viz=stream&start={{ filter_start_ms }}&end={{ filter_end_ms }}&paused=true) [logs](https://app.datadoghq.com/logs?query=experiment%3A{{ experiment | urlencode }}%20run_id%3A{{ job.id }}&agg_m=count&agg_m_source=base&agg_q=%40span.url&agg_q_source=base&agg_t=count&fromUser=true&index=single-machine-performance-target-logs&messageDisplay=inline&refresh_mode=paused&storage=hot&stream_sort=time%2Cdesc&top_n=100&top_o=top&viz=stream&x_missing=true&from_ts={{ filter_start_ms }}&to_ts={{ filter_end_ms }}&live=false)
+{%- endmacro -%}
+{%- macro goal_table(rows) -%}
+| experiment | goal | Δ mean % | links |
+|---|---|---|---|
+{%- for r in rows %}
+| {{ r.experiment }}{{ r.tag }} | {{ r.goal }} | {{ r.dot }} {{ r.delta_disp }} | {{ links(r.experiment) }} |
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro check_table(rows) -%}
+| experiment | check | replicates | observed | links |
+|---|---|---|---|---|
+{%- for c in rows %}
+| {{ c.experiment }} | {{ c | check_format_name }} | {{ c | check_format_replicates_passed }} | {{ c | check_format_perf_symbol }} {{ c | check_format_observed_value }} | {{ links(c.experiment) }} |
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro erratic_note() -%}
+Experiments configured `erratic: true` are tagged <code>(ignored)</code> and skipped when determining which experiments regressed or improved. Experiments which are _detected_ as erratic at runtime are tagged <code>(erratic)</code> to flag that the run's sample dispersion was high, but their regression / improvement signal still counts.
+{%- endmacro -%}
+{%- macro explanation() -%}
+A change is flagged as a regression when |Δ mean %| > **{{ job.tolerances.effect_size | format_percent }}** in the regressing direction for its optimization goal AND SMP marks the experiment as a regression (`is_regression: true`). Improvements use the matching criteria for the improving direction. Experiments configured `erratic: true` (tagged <code>(ignored)</code>) are skipped outright; experiments detected as erratic at runtime (tagged <code>(erratic)</code>) still count, since that flag describes sample dispersion rather than directional certainty. The Δ mean % cell is colored accordingly: 🟢 = improvement, 🔴 = regression, ⚪ = neutral. Reduction in CPU or memory is an improvement; reduction in ingress throughput is a regression. Experiments tagged <code>(no analysis)</code> show <code>⚠️ n/a</code>: SMP ran them but produced no analysis, usually because a replicate failed and exhausted its retries. Check the SMP report for that experiment's replicate failures.
+{%- endmacro -%}
+{%- set diff_link = "[diff](../../compare/" ~ job.baseline_sha ~ ".." ~ job.comparison_sha ~ ")" if (job.baseline_sha and job.comparison_sha) else "(diff unavailable)" -%}
+{%- set headline = "## Optimization Goals: ❌ " ~ (regressions | length) ~ " regression" ~ ("s" if (regressions | length) != 1 else "") ~ " detected" if regressions else "## Optimization Goals: ✅ No significant changes detected" -%}
+{%- if unanalyzed -%}
+{%- set headline = headline ~ " &middot; ⚠️ " ~ (unanalyzed | length) ~ " experiment" ~ ("s" if (unanalyzed | length) != 1 else "") ~ " without analysis" -%}
+{%- endif -%}
+{#- Sections are joined with single newlines, reproducing the deployed
+    "\n".join(sections).rstrip() + "\n" byte layout. -#}
+{#- Header lines first, then the optional warning block, then the blank
+    separator and the headline. -#}
+{%- set s = namespace(sections=[]) -%}
+{%- set s.sections = s.sections + [
+      "**Run ID:** `" ~ job.id ~ "`",
+      "**Baseline:** `" ~ (job.baseline_sha[:8] or "(unknown)") ~ "` &middot; **Comparison:** `" ~ (job.comparison_sha[:8] or "(unknown)") ~ "` &middot; " ~ diff_link,
+    ] -%}
+{%- if crashed -%}
+{%- set s.sections = s.sections + ["&#9888; **" ~ (crashed | length) ~ " experiment" ~ ("s" if (crashed | length) != 1 else "") ~ " lost every replicate to target crashes** (no analysis): " ~ (crashed | join(", "))] -%}
+{%- endif -%}
+{%- if retried -%}
+{%- set s.sections = s.sections + ["&#9888; **" ~ (retried | length) ~ " experiment" ~ ("s" if (retried | length) != 1 else "") ~ " had replicates retried after a crash**: " ~ (retried | join(", "))] -%}
+{%- endif -%}
+{%- if report.analysis_errors -%}
+{%- set s.sections = s.sections + ["&#9888; **" ~ (report.analysis_errors | length) ~ " analysis error" ~ ("s" if (report.analysis_errors | length) != 1 else "") ~ "**: " ~ (report.analysis_errors | map(attribute="experiment") | join(", "))] -%}
+{%- endif -%}
+{%- set s.sections = s.sections + ["", headline, ""] -%}
+{%- if regressions -%}
+{%- set s.sections = s.sections + [goal_table(regressions), ""] -%}
+{%- endif -%}
+{%- if others -%}
+{%- set s.sections = s.sections + [
+      "<details><summary><b>Fine details of change detection per experiment</b> (" ~ (others | length) ~ ")</summary>",
+      "",
+      erratic_note(),
+      "",
+      goal_table(others),
+      "",
+      "</details>",
+      "",
+    ] -%}
+{%- endif -%}
+{%- if checks -%}
+{%- set s.sections = s.sections + [
+      "<details><summary><b>Bounds Checks:</b> " ~ ("✅ Passed" if bounds_passed else "❌ Failed") ~ " (" ~ (checks | length) ~ ")</summary>",
+      "",
+      check_table(checks),
+      "",
+      "</details>",
+      "",
+    ] -%}
+{%- endif -%}
+{%- set s.sections = s.sections + [
+      "<details><summary><b>Explanation</b></summary>",
+      "",
+      explanation(),
+      "",
+      "</details>",
+    ] -%}
+{{ s.sections | join("\n") }}
