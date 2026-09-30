@@ -1,8 +1,10 @@
-//! Produces one verdict per recorded getter for every value ADP derives from several settings that
-//! mirrors a value the Agent derives and streams.
+//! Produces one verdict per recorded getter for every value ADP computes from settings that mirrors a
+//! value an Agent getter computes.
 //!
-//! This is the derived tier. The leaf tier compares each setting as ADP deserializes it, so it cannot
-//! see a value ADP computes itself. When ADP and the Agent compute such a value differently, ADP runs
+//! This is the derived tier. A value may combine several settings, such as the stop timeout, or parse
+//! one, such as a byte count parsed from a size string. The leaf tier compares each setting as ADP
+//! deserializes it, so it cannot see a value ADP computes itself: two equal size strings can still
+//! give different byte counts. When ADP and the Agent compute such a value differently, ADP runs
 //! with a value the Agent's getter does not return. For each case that records a derived key, this tier
 //! translates the folded sources at each checkpoint (every update applied, as the leaf tier folds
 //! them), derives the value from the translated configuration, and compares it with the recorded
@@ -19,7 +21,7 @@ use datadog_agent_config::LeafValue;
 use datadog_agent_config_corpus::{Corpus, Getter, GetterRead, GetterResult, Outcome};
 use serde_json::Value;
 
-use super::compare::{compare_result, Verdict};
+use super::compare::{compare_byte_count, compare_result, Reason, Verdict};
 use super::leaf_replay::{fold_case, kind_name, lookup, one_line, reads_at, Checkpoint};
 use crate::system::translate_strict;
 
@@ -35,6 +37,8 @@ pub(crate) enum Derived {
         /// The exact value, rendered.
         exact: String,
     },
+    /// A byte count, compared only with `GetSizeInBytes`.
+    Bytes(u64),
 }
 
 /// One value ADP derives that stands for a value the Agent derives and streams under `key`.
@@ -48,11 +52,23 @@ pub(crate) struct Derivation {
 }
 
 /// Every derivation this tier replays.
-pub(crate) const DERIVATIONS: &[Derivation] = &[Derivation {
-    key: "data_plane.stop_timeout",
-    getter: Getter::GetInt,
-    derive: stop_timeout,
-}];
+pub(crate) const DERIVATIONS: &[Derivation] = &[
+    Derivation {
+        key: "data_plane.stop_timeout",
+        getter: Getter::GetInt,
+        derive: stop_timeout,
+    },
+    Derivation {
+        key: "log_file_max_size",
+        getter: Getter::GetSizeInBytes,
+        derive: log_file_max_size,
+    },
+    Derivation {
+        key: "dogstatsd_log_file_max_size",
+        getter: Getter::GetSizeInBytes,
+        derive: dogstatsd_log_file_max_size,
+    },
+];
 
 /// Every derivation ADP has that this tier does not replay: its name and the reason.
 pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
@@ -92,6 +108,17 @@ fn stop_timeout(config: &SalukiConfiguration) -> Derived {
     whole_seconds(config.stop_timeout())
 }
 
+/// The size in bytes at which ADP rotates its own log file, translated from `log_file_max_size`.
+fn log_file_max_size(config: &SalukiConfiguration) -> Derived {
+    Derived::Bytes(config.control.logging.file_max_size.value)
+}
+
+/// The size in bytes at which ADP rotates the DogStatsD debug log, translated from
+/// `dogstatsd_log_file_max_size`.
+fn dogstatsd_log_file_max_size(config: &SalukiConfiguration) -> Derived {
+    Derived::Bytes(config.domains.dogstatsd.debug_log.log_file_max_size)
+}
+
 /// Expresses `duration` as whole seconds, or as [`Derived::NotWhole`] if it has a fractional second or
 /// more seconds than an `i64` holds.
 fn whole_seconds(duration: Duration) -> Derived {
@@ -108,11 +135,12 @@ fn whole_seconds(duration: Duration) -> Derived {
 }
 
 impl Derived {
-    /// The name of the value's `LeafValue` variant.
+    /// The name of the value's `LeafValue` variant, or `ByteCount` for a byte count.
     fn kind(&self) -> &'static str {
         match self {
             Derived::Exact(leaf) => kind_name(leaf),
             Derived::NotWhole { .. } => kind_name(&LeafValue::I64(0)),
+            Derived::Bytes(_) => "ByteCount",
         }
     }
 }
@@ -128,9 +156,11 @@ pub(crate) fn compare_derived(value: &Derived, reads: &[GetterRead]) -> Vec<(Get
 /// Compares a derived value against one recorded getter result, through [`compare_result`].
 ///
 /// A [`Derived::NotWhole`] value is compared as its nearest integer and then reported with its exact
-/// rendering, so a match of the nearest integer is a difference.
+/// rendering, so a match of the nearest integer is a difference. A [`Derived::Bytes`] value is
+/// compared through [`compare_byte_count`] instead.
 fn compare_derived_result(value: &Derived, getter: Getter, result: &GetterResult) -> Verdict {
     match value {
+        Derived::Bytes(adp) => compare_byte_count(*adp, getter, result),
         Derived::Exact(leaf) => compare_result(*leaf, getter, result),
         Derived::NotWhole { nearest, exact } => match compare_result(LeafValue::I64(*nearest), getter, result) {
             Verdict::Match => Verdict::Differs {
@@ -224,12 +254,26 @@ pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> Result<Vec<DerivedRow>, Ve
                             (value.kind(), compare_derived(&value, &read.getters))
                         }
                         Err(error) => {
+                            // A failed translation has no value, so only the derivation's own getter is
+                            // rejected; any other recorded getter is not compared, whatever the value.
                             let rejected = read
                                 .getters
                                 .iter()
-                                .map(|r| (r.getter, Verdict::AdpRejects { error: error.clone() }))
+                                .map(|r| {
+                                    let verdict = if r.getter == derivation.getter {
+                                        Verdict::AdpRejects { error: error.clone() }
+                                    } else {
+                                        Verdict::NotCompared {
+                                            reason: Reason::OtherGetter {
+                                                compared: derivation.getter,
+                                            },
+                                        }
+                                    };
+                                    (r.getter, verdict)
+                                })
                                 .collect();
-                            (kind_name(&LeafValue::I64(0)), rejected)
+                            // The kind does not depend on the value, so the default configuration names it.
+                            ((derivation.derive)(&SalukiConfiguration::default()).kind(), rejected)
                         }
                     };
                     rows.extend(verdicts.into_iter().map(|(getter, verdict)| DerivedRow {
@@ -296,16 +340,17 @@ mod tests {
     fn every_derivation_is_expressed_for_its_recorded_getter() {
         let config = SalukiConfiguration::default();
         for derivation in DERIVATIONS {
-            let Derived::Exact(leaf) = (derivation.derive)(&config) else {
-                panic!("{}: the default derives an exact value", derivation.key);
-            };
-            assert!(
-                LeafKind::of(&leaf).emulated().contains(&derivation.getter),
-                "{}: a {} value is not compared with {}",
-                derivation.key,
-                kind_name(&leaf),
-                derivation.getter
-            );
+            match (derivation.derive)(&config) {
+                Derived::Exact(leaf) => assert!(
+                    LeafKind::of(&leaf).emulated().contains(&derivation.getter),
+                    "{}: a {} value is not compared with {}",
+                    derivation.key,
+                    kind_name(&leaf),
+                    derivation.getter
+                ),
+                Derived::Bytes(_) => assert_eq!(derivation.getter, Getter::GetSizeInBytes, "{}", derivation.key),
+                Derived::NotWhole { .. } => panic!("{}: the default derives an exact value", derivation.key),
+            }
         }
     }
 
@@ -358,6 +403,59 @@ mod tests {
                     adp: exact,
                     agent: "9".to_string()
                 }
+            );
+        }
+    }
+
+    /// The derivation of [`DERIVATIONS`] for `key`.
+    fn derivation(key: &str) -> &'static Derivation {
+        DERIVATIONS
+            .iter()
+            .find(|d| d.key == key)
+            .unwrap_or_else(|| panic!("the table has {key}"))
+    }
+
+    /// A recorded `GetSizeInBytes` result of `value`.
+    fn get_size_in_bytes(value: u64) -> GetterResult {
+        GetterResult::SizeInBytes(Number {
+            value,
+            token: value.to_string(),
+        })
+    }
+
+    #[test]
+    fn byte_size_rows_read_their_own_translated_field() {
+        let mut config = SalukiConfiguration::default();
+        config.control.logging.file_max_size.value = 1_000;
+        config.domains.dogstatsd.debug_log.log_file_max_size = 2_000;
+        for (key, expected) in [("log_file_max_size", 1_000), ("dogstatsd_log_file_max_size", 2_000)] {
+            let row = derivation(key);
+            assert_eq!(row.getter, Getter::GetSizeInBytes, "{key}");
+            let value = (row.derive)(&config);
+            assert!(matches!(value, Derived::Bytes(n) if n == expected), "{key}: {value:?}");
+            assert_eq!(value.kind(), "ByteCount");
+            assert_eq!(
+                compare_derived_result(&value, row.getter, &get_size_in_bytes(expected)),
+                Verdict::Match,
+                "{key}"
+            );
+            assert_eq!(
+                compare_derived_result(&value, row.getter, &get_size_in_bytes(expected + 1)),
+                Verdict::Differs {
+                    adp: expected.to_string(),
+                    agent: (expected + 1).to_string()
+                },
+                "{key}"
+            );
+            // The size string is the leaf tier's; this tier compares only the byte count.
+            assert_eq!(
+                compare_derived_result(&value, Getter::GetString, &GetterResult::String("1KB".to_string())),
+                Verdict::NotCompared {
+                    reason: Reason::OtherGetter {
+                        compared: Getter::GetSizeInBytes
+                    }
+                },
+                "{key}"
             );
         }
     }

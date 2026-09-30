@@ -14,10 +14,12 @@
 //!   the key's `LeafValue` variant name (for example `Bool`); `<streamed>` is the value at the key's
 //!   path in the folded tree at that checkpoint (JSON), or `-` when the tree does not hold it.
 //! - `derived <case> <checkpoint> <key> <getter> <kind> <streamed> differs <adp value> <agent value>`,
-//!   `... adp-rejects <error>`, or `... not-compared <reason code>`: every derived row that is not a
-//!   match, with the leaf tier's columns. `<key>` is the Agent key the derivation stands for and
-//!   `<kind>` the derived value's `LeafValue` variant name. The derived tier's rows are counted by
-//!   verdict on `count derived` lines, always including `match`, `differs`, and `adp-rejects`.
+//!   or `... adp-rejects <error>`: every derived row that is neither a match nor not compared, with the
+//!   leaf tier's columns. `<key>` is the Agent key the derivation stands for and `<kind>` the derived
+//!   value's `LeafValue` variant name, or `ByteCount` for a byte count. The derived tier's rows are
+//!   counted by verdict on `count derived` lines (`NotCompared` by reason code, as for the leaf tier,
+//!   for example `other-getter:GetSizeInBytes` for a `GetString` read of a byte-size key), always
+//!   including `match`, `differs`, and `adp-rejects`.
 //! - `bootstrap <case> <checkpoint> <key> <getter> <kind> <input> differs <adp value> <agent value>`, or
 //!   `... adp-rejects <error>`: every row of the bootstrap tier that is neither a match nor not
 //!   compared, with the leaf tier's columns. `<checkpoint>` is always `snapshot`, and `<input>` is the
@@ -176,6 +178,7 @@ fn reason_code(reason: &Reason) -> String {
         Reason::NotEmulated { kind, .. } => format!("not-emulated:{kind:?}"),
         Reason::ExplicitOnly => "explicit-only".to_string(),
         Reason::ResultShape => "result-shape".to_string(),
+        Reason::OtherGetter { compared } => format!("other-getter:{compared}"),
     }
 }
 
@@ -267,7 +270,7 @@ fn known_results(corpus: &Corpus) -> String {
             Verdict::Match => ("match".to_string(), None),
             Verdict::Differs { adp, agent } => ("differs".to_string(), Some(vec![field(adp), field(agent)])),
             Verdict::AdpRejects { error } => ("adp-rejects".to_string(), Some(vec![field(error)])),
-            Verdict::NotCompared { reason } => ("not-compared".to_string(), Some(vec![reason_code(reason)])),
+            Verdict::NotCompared { reason } => (reason_code(reason), None),
         };
         if let Some(detail) = detail {
             let mut columns = vec![
@@ -283,10 +286,6 @@ fn known_results(corpus: &Corpus) -> String {
             columns.extend(detail);
             lines.insert(columns.join("\t"));
         }
-        let label = match &row.verdict {
-            Verdict::NotCompared { reason } => reason_code(reason),
-            _ => label,
-        };
         *counts.entry(("derived", label)).or_default() += 1;
     }
     for (name, reason) in NOT_REPLAYED {

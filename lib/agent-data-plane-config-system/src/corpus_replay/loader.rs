@@ -158,22 +158,17 @@ fn json_to_prost_value(value: &JsonValue) -> Result<ProstValue, String> {
 /// Converts a JSON number to `f64`, returning an error rather than rounding when the conversion is not exact.
 ///
 /// A number `serde_json` stored as an integer must round-trip through `f64` unchanged; a number it
-/// stored as a float is already an `f64` by construction, so it is exact by definition.
+/// stored as a float is already an `f64` by construction, so it is exact by definition. The round
+/// trip compares in `i128`, which holds every `i64`, every `u64` and every `f64` in their range
+/// exactly, so an integer near either type's bound cannot pass through a saturating cast.
 fn exact_f64(n: &Number) -> Result<f64, String> {
-    if let Some(i) = n.as_i64() {
+    let integer = n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
+    if let Some(i) = integer {
         let as_float = i as f64;
-        return if as_float as i64 == i {
+        return if as_float as i128 == i {
             Ok(as_float)
         } else {
             Err(format!("integer {i} has no exact f64 representation"))
-        };
-    }
-    if let Some(u) = n.as_u64() {
-        let as_float = u as f64;
-        return if as_float as u64 == u {
-            Ok(as_float)
-        } else {
-            Err(format!("integer {u} has no exact f64 representation"))
         };
     }
     n.as_f64()
@@ -566,6 +561,30 @@ mod tests {
         let err = build_events(&corpus, "z-huge-number", 1).expect_err("non-representable number must error");
         assert!(err.contains("z-huge-number"), "{err}");
         assert!(err.contains('f'), "{err}");
+    }
+
+    #[test]
+    fn exact_f64_accepts_only_integers_that_round_trip_through_f64() {
+        const TWO_POW_53: i64 = 1 << 53;
+        let accepted = [
+            (Number::from(TWO_POW_53), 9_007_199_254_740_992.0),
+            (Number::from(i64::MIN), -9_223_372_036_854_775_808.0),
+            (Number::from(-TWO_POW_53), -9_007_199_254_740_992.0),
+            (Number::from(1u64 << 63), 9_223_372_036_854_775_808.0),
+        ];
+        for (n, expected) in accepted {
+            assert_eq!(exact_f64(&n), Ok(expected), "{n}");
+        }
+        // Each of these rounds to a different f64; the two bounds would pass a saturating cast back.
+        let rejected = [
+            Number::from(TWO_POW_53 + 1),
+            Number::from(i64::MAX),
+            Number::from(u64::MAX),
+        ];
+        for n in rejected {
+            let err = exact_f64(&n).expect_err("an integer with no exact f64 is rejected");
+            assert_eq!(err, format!("integer {n} has no exact f64 representation"));
+        }
     }
 
     #[test]

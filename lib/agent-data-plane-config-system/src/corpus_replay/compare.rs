@@ -34,6 +34,8 @@ pub(crate) enum Reason {
     ExplicitOnly,
     /// The result's shape is not the getter's; the corpus reader rules this out.
     ResultShape,
+    /// The value is compared only with `compared`, and this read is of another getter.
+    OtherGetter { compared: Getter },
 }
 
 impl fmt::Display for Reason {
@@ -42,6 +44,7 @@ impl fmt::Display for Reason {
             Reason::NotEmulated { kind, emulated } => write!(f, "a {kind:?} leaf stands for {emulated}"),
             Reason::ExplicitOnly => f.write_str("explicit-only reads are not compared with a leaf"),
             Reason::ResultShape => f.write_str("the result does not have its getter's shape"),
+            Reason::OtherGetter { compared } => write!(f, "the value is compared only with {compared}"),
         }
     }
 }
@@ -161,6 +164,26 @@ fn rule(leaf: LeafValue<'_>, result: &GetterResult) -> Option<Verdict> {
         (LeafValue::StringMapList(a), GetterResult::Get(b)) => string_map_list_get(a, b),
         _ => return None,
     })
+}
+
+/// Compares a byte count ADP computes with one recorded getter result (comparison.md decision 14).
+///
+/// Only `GetSizeInBytes` returns a byte count, which the corpus encodes as a JSON integer (a Go `uint`).
+/// The rule is equal integers, with no other normalization. A read of any other getter is not compared,
+/// and neither is a `GetSizeInBytes` result that is not an integer.
+pub(crate) fn compare_byte_count(adp: u64, getter: Getter, result: &GetterResult) -> Verdict {
+    if matches!(getter, Getter::ReadConfigSection | Getter::IsConfigured) {
+        return not_compared(Reason::ExplicitOnly);
+    }
+    if getter != Getter::GetSizeInBytes {
+        return not_compared(Reason::OtherGetter {
+            compared: Getter::GetSizeInBytes,
+        });
+    }
+    match result {
+        GetterResult::SizeInBytes(agent) => verdict(adp == agent.value, || adp.to_string(), || agent.value.to_string()),
+        _ => not_compared(Reason::ResultShape),
+    }
 }
 
 fn not_compared(reason: Reason) -> Verdict {
@@ -491,6 +514,57 @@ mod tests {
         let strs = strings(&["1"]);
         let v = compare_result(LeafValue::StringList(&strs), Getter::Get, &GetterResult::Get(go_int(1)));
         assert!(matches!(v, Verdict::NotCompared { .. }));
+    }
+
+    #[test]
+    fn byte_count_rule() {
+        let size = |v: u64| {
+            GetterResult::SizeInBytes(Number {
+                value: v,
+                token: v.to_string(),
+            })
+        };
+        let rule = |adp: u64, getter: Getter, result: &GetterResult| compare_byte_count(adp, getter, result);
+        assert_eq!(
+            rule(10_485_760, Getter::GetSizeInBytes, &size(10_485_760)),
+            Verdict::Match
+        );
+        assert_eq!(
+            rule(10_000_000, Getter::GetSizeInBytes, &size(10_485_760)),
+            Verdict::Differs {
+                adp: "10000000".to_string(),
+                agent: "10485760".to_string()
+            }
+        );
+        assert_eq!(rule(0, Getter::GetSizeInBytes, &size(0)), Verdict::Match);
+        assert_eq!(rule(u64::MAX, Getter::GetSizeInBytes, &size(u64::MAX)), Verdict::Match);
+        // A result of another shape is never read as a byte count, even when its number is equal.
+        assert_eq!(
+            rule(3, Getter::GetSizeInBytes, &GetterResult::Int(int(3))),
+            Verdict::NotCompared {
+                reason: Reason::ResultShape
+            }
+        );
+        assert_eq!(
+            rule(3, Getter::GetSizeInBytes, &GetterResult::String("3".to_string())),
+            Verdict::NotCompared {
+                reason: Reason::ResultShape
+            }
+        );
+        assert_eq!(
+            rule(10, Getter::GetString, &GetterResult::String("10".to_string())),
+            Verdict::NotCompared {
+                reason: Reason::OtherGetter {
+                    compared: Getter::GetSizeInBytes
+                }
+            }
+        );
+        assert_eq!(
+            rule(10, Getter::IsConfigured, &GetterResult::IsConfigured(true)),
+            Verdict::NotCompared {
+                reason: Reason::ExplicitOnly
+            }
+        );
     }
 
     #[test]
