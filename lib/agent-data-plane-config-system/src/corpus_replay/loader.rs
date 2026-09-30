@@ -159,8 +159,8 @@ fn json_to_prost_value(value: &JsonValue) -> Result<ProstValue, String> {
 ///
 /// A number `serde_json` stored as an integer must round-trip through `f64` unchanged; a number it
 /// stored as a float is already an `f64` by construction, so it is exact by definition. The round
-/// trip compares in `i128`, which holds every `i64`, every `u64` and every `f64` in their range
-/// exactly, so an integer near either type's bound cannot pass through a saturating cast.
+/// trip compares in `i128`, which holds every `i64`, every `u64`, and every whole `f64` in their
+/// range exactly, so an integer near either type's bound cannot pass through a saturating cast.
 fn exact_f64(n: &Number) -> Result<f64, String> {
     let integer = n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
     if let Some(i) = integer {
@@ -617,7 +617,7 @@ mod tests {
     }
 
     /// Feeding a loader-built snapshot and update through the moved conversions mirrors what
-    /// `remote_agent.rs` does with the real Agent stream (remote_agent.rs:309-317).
+    /// `remote_agent.rs` does with the real Agent stream: both events through `config_event_to_update`.
     #[test]
     fn moved_conversions_turn_loader_events_into_the_expected_config_update_shapes() {
         let lines = r#"{"case":"z-shapes","group":"behavior","inputs":{"updates":[{"key":"a","source":"remote-config","value":9}]},"origin":"datadog.yaml","type":"case","updates":[{"seq_delta":1}],"why":["w"]}
@@ -628,17 +628,18 @@ mod tests {
             panic!("case started")
         };
 
-        let snapshot = config_event_snapshot(&events[0]);
-        let settings = crate::snapshot_to_settings(snapshot);
-        let update = saluki_config::dynamic::ConfigUpdate::Snapshot(settings.clone());
-        assert!(matches!(update, saluki_config::dynamic::ConfigUpdate::Snapshot(_)));
+        let Some(saluki_config::dynamic::ConfigUpdate::Snapshot(settings)) =
+            crate::config_event_to_update(events[0].clone())
+        else {
+            panic!("the snapshot event did not convert to a snapshot update")
+        };
         assert_eq!(settings.len(), 3, "settings: {settings:?}");
 
-        let update_event = config_event_update(&events[1]);
-        let update_setting = update_event.setting.as_ref().expect("update has a setting");
-        let converted = crate::setting_to_config_setting(update_setting);
-        let wrapped = saluki_config::dynamic::ConfigUpdate::Partial(converted.clone());
-        assert!(matches!(wrapped, saluki_config::dynamic::ConfigUpdate::Partial(_)));
+        let Some(saluki_config::dynamic::ConfigUpdate::Partial(converted)) =
+            crate::config_event_to_update(events[1].clone())
+        else {
+            panic!("the update event did not convert to a partial update")
+        };
         assert_eq!(converted.key, "a");
         assert_eq!(converted.value, JsonValue::from(9));
         assert_eq!(converted.provenance, saluki_config::dynamic::Provenance::Explicit);

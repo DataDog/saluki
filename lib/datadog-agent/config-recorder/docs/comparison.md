@@ -13,9 +13,10 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
   getter that computes the same value: `GetInt` on `data_plane.stop_timeout`, and `GetSizeInBytes` on
   a byte-size key. A leaf that matches as a string can still differ as the value ADP uses.
 - Not compared: validation of the translated configuration. Validation rejects only a blank
-  `api_key`, and most cases set none. A step whose translation succeeds is therefore applied, and its
-  validation failure is recorded as a `system` line. Later steps describe the configuration
-  agent-data-plane would hold if the key were set.
+  `api_key`, and most cases set none. A step whose translation succeeds is therefore applied, and
+  later steps describe the configuration agent-data-plane would hold if the key were set. A blank
+  `api_key` failure is only counted, on the `count system validate: blank api key` line; any other
+  step failure gets its own `system` line.
 
 ## 2. Leaf kinds
 
@@ -117,7 +118,7 @@ Both belong to a provenance tier, not to this one.
 |-------------------|----------------------------------------------|---------------------------------------------------------------------|
 | `GetSizeInBytes`  | byte-size keys such as `log_file_max_size`   | the derived tier, against the byte count ADP translates             |
 | `GetFloat64Slice` | `histogram_percentiles`                      | nothing yet: the leaf is a string list that ADP parses later, and no rule emulates that parse |
-| `GetStringMap`    | map keys, after `GetStringMapString`         | nothing: `StringMap` emulates `GetStringMapString` (decision 2)     |
+| `GetStringMap`    | map keys, with `GetStringMapString`          | nothing: `StringMap` emulates `GetStringMapString` (decision 2)     |
 | `ReadConfigSection`, `IsConfigured` | section and source probes  | nothing: explicit-only (§6)                                          |
 
 A case that records only these getters has no compared verdict. Its `case` line in the known results

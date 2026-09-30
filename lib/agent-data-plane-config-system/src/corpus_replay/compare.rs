@@ -245,7 +245,8 @@ fn str_get_string(adp: &str, agent: &str) -> Verdict {
     verdict(adp == agent, || format!("{adp:?}"), || format!("{agent:?}"))
 }
 
-/// Order matters; a nil slice (`null`) matches an empty list, since Go code cannot tell them apart.
+/// Order matters; a nil slice (`null`) matches an empty list. Go code can test a slice for nil, but ADP's
+/// typed value cannot hold one (comparison.md decision 6).
 fn string_list_get_string_slice(adp: &[String], agent: Option<&[String]>) -> Verdict {
     verdict(
         agent.unwrap_or(&[]) == adp,
