@@ -1,0 +1,11 @@
+name: fips-runtime-enable-no-rewrite
+group: behavior
+why: [fips-proxy-rewrites-endpoints, derived-value-not-recomputed-after-update]
+yaml: |
+  fips:
+    local_address: 127.0.0.1
+    https: true
+    tls_verify: false
+updates:
+  - {key: fips.enabled, value: true, source: remote-config}
+keys: [fips.enabled, dd_url, skip_ssl_validation]

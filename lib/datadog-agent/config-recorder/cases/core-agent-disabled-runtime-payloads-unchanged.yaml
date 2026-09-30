@@ -1,0 +1,6 @@
+name: core-agent-disabled-runtime-payloads-unchanged
+group: behavior
+why: [core-agent-disabled-forces-payloads-off, derived-value-not-recomputed-after-update]
+updates:
+  - {key: core_agent.enabled, value: false, source: remote-config}
+keys: [core_agent.enabled, enable_payloads.series, enable_payloads.sketches]
