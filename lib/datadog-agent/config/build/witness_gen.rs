@@ -27,6 +27,8 @@ struct FieldInfo {
     type_text: String,
     /// `Some(struct_name)` when this field is a nested-section struct.
     section_struct: Option<String>,
+    /// Every `#[serde(alias = "...")]` value carried on this field.
+    aliases: Vec<String>,
 }
 
 /// `struct name -> { field name -> field info }`, built from the generated configuration file.
@@ -34,6 +36,8 @@ type StructMap = BTreeMap<String, BTreeMap<String, FieldInfo>>;
 
 /// Resolution of one supported dotted key against the generated struct tree.
 struct ResolvedKey {
+    /// The dotted key, exactly as written in the schema overlay.
+    dotted: String,
     /// The `consume_<sanitized>` method name.
     method: String,
     /// The by-value parameter type, verbatim from the generated file.
@@ -44,6 +48,8 @@ struct ResolvedKey {
     sections: Vec<String>,
     /// The field name of the leaf on its owning struct (root or the innermost section).
     leaf_field: String,
+    /// Every `#[serde(alias = "...")]` value on the leaf field.
+    aliases: Vec<String>,
 }
 
 pub fn generate(overlay: &SchemaOverlay, manifest_dir: &Path) {
@@ -63,6 +69,9 @@ pub fn generate(overlay: &SchemaOverlay, manifest_dir: &Path) {
     let body = render(&resolved);
 
     crate::generated_file::write_formatted(&manifest_dir.join("src/generated/witness.rs"), &body);
+
+    let leaves_body = render_leaves(&resolved);
+    crate::generated_file::write_formatted(&manifest_dir.join("src/generated/leaves.rs"), &leaves_body);
 }
 
 /// Collect the dotted paths of every `support: full` / `support: partial` overlay entry.
@@ -99,17 +108,47 @@ fn collect_structs(file: &syn::File) -> StructMap {
             let ident = field.ident.as_ref().expect("named field has an identifier").to_string();
             let type_text = type_to_string(&field.ty);
             let section_struct = section_inner(&field.ty, &struct_names);
+            let aliases = field_aliases(field);
             fields.insert(
                 ident,
                 FieldInfo {
                     type_text,
                     section_struct,
+                    aliases,
                 },
             );
         }
         out.insert(name, fields);
     }
     out
+}
+
+/// Collect every `#[serde(alias = "...")]` value on a field.
+///
+/// Renders each `#[serde(...)]` attribute's argument list back to source text rather than walking
+/// `syn::Meta` by hand: the attribute mixes `alias` with other keys (`default`, `deserialize_with`)
+/// that this generator has no reason to understand, and rendering-then-scanning skips having to
+/// parse all of them just to find one.
+fn field_aliases(field: &syn::Field) -> Vec<String> {
+    let mut aliases = Vec::new();
+    for attr in &field.attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let Ok(list) = attr.meta.require_list() else { continue };
+        let rendered = list.tokens.to_string();
+        for item in rendered.split(',') {
+            let item = item.trim();
+            let Some(value) = item.strip_prefix("alias") else {
+                continue;
+            };
+            let Some(value) = value.trim_start().strip_prefix('=') else {
+                continue;
+            };
+            aliases.push(value.trim().trim_matches('"').to_string());
+        }
+    }
+    aliases
 }
 
 /// If `ty` names a nested section struct (one of `struct_names`), return that struct name.
@@ -174,10 +213,12 @@ fn resolve_key(dotted: &str, structs: &StructMap) -> ResolvedKey {
                 );
             }
             return ResolvedKey {
+                dotted: dotted.to_string(),
                 method,
                 type_text: info.type_text.clone(),
                 sections,
                 leaf_field: (*segment).to_string(),
+                aliases: info.aliases.clone(),
             };
         }
 
@@ -253,6 +294,173 @@ fn render(resolved: &[ResolvedKey]) -> String {
     out.push_str("        Err(TranslateErrors::new(errors))\n");
     out.push_str("    }\n");
     out.push_str("}\n");
+
+    out
+}
+
+/// How one leaf's Rust type maps onto a `LeafValue` variant: the variant name, the payload type
+/// carried in the `LeafValue<'a>` definition, and how to turn a field access expression (for
+/// example `config.apm_config.enabled`) into that variant's accessor expression.
+struct LeafKind {
+    /// The `LeafValue` variant name, for example `Bool`.
+    variant: &'static str,
+    /// The variant's payload type as written in the `LeafValue<'a>` enum definition.
+    payload: &'static str,
+    /// Wraps a field access expression into this variant's accessor expression.
+    wrap: fn(String) -> String,
+}
+
+/// Resolves a leaf's Rust type (rendered verbatim from the generated struct) to the `LeafValue`
+/// variant that borrows it.
+///
+/// Every distinct type among the supported keys must have an arm here. A type this generator does
+/// not recognize is a build-time panic naming the offending key and type, so a schema change that
+/// introduces a new leaf shape cannot silently produce the wrong `LeafValue` variant.
+fn leaf_kind(type_text: &str, dotted: &str) -> LeafKind {
+    match type_text {
+        "bool" => LeafKind {
+            variant: "Bool",
+            payload: "bool",
+            wrap: |a| a,
+        },
+        "i64" => LeafKind {
+            variant: "I64",
+            payload: "i64",
+            wrap: |a| a,
+        },
+        "f64" => LeafKind {
+            variant: "F64",
+            payload: "f64",
+            wrap: |a| a,
+        },
+        "Option<i64>" => LeafKind {
+            variant: "OptionI64",
+            payload: "Option<i64>",
+            wrap: |a| a,
+        },
+        "std::time::Duration" => LeafKind {
+            variant: "Duration",
+            payload: "std::time::Duration",
+            wrap: |a| a,
+        },
+        "String" => LeafKind {
+            variant: "Str",
+            payload: "&'a str",
+            wrap: |a| format!("{a}.as_str()"),
+        },
+        "Option<String>" => LeafKind {
+            variant: "OptionStr",
+            payload: "Option<&'a str>",
+            wrap: |a| format!("{a}.as_deref()"),
+        },
+        "Vec<String>" => LeafKind {
+            variant: "StringList",
+            payload: "&'a [String]",
+            wrap: |a| format!("{a}.as_slice()"),
+        },
+        "Vec<::serde_json::Value>" => LeafKind {
+            variant: "JsonList",
+            payload: "&'a [::serde_json::Value]",
+            wrap: |a| format!("{a}.as_slice()"),
+        },
+        "Vec<HashMap<String, String>>" => LeafKind {
+            variant: "StringMapList",
+            payload: "&'a [HashMap<String, String>]",
+            wrap: |a| format!("{a}.as_slice()"),
+        },
+        "HashMap<String, String>" => LeafKind {
+            variant: "StringMap",
+            payload: "&'a HashMap<String, String>",
+            wrap: |a| format!("&{a}"),
+        },
+        "HashMap<String, Vec<String>>" => LeafKind {
+            variant: "StringListMap",
+            payload: "&'a HashMap<String, Vec<String>>",
+            wrap: |a| format!("&{a}"),
+        },
+        other => panic!(
+            "key {dotted} has leaf type `{other}`, which no LeafValue variant covers; add one in \
+             build/witness_gen.rs"
+        ),
+    }
+}
+
+/// Render the full `leaves.rs` module source: the `LeafValue` enum, the `Leaf` descriptor, and the
+/// sorted `LEAVES` table, one entry per supported key.
+fn render_leaves(resolved: &[ResolvedKey]) -> String {
+    // One `LeafKind` per key, keeping the dotted key alongside for the panic message and the table
+    // row. Distinct variants (deduplicated by name, so a repeated type contributes one enum arm)
+    // are collected in sorted order for a deterministic enum declaration.
+    let kinds: Vec<(&ResolvedKey, LeafKind)> = resolved
+        .iter()
+        .map(|key| (key, leaf_kind(&key.type_text, &key.dotted)))
+        .collect();
+
+    let mut variants: BTreeMap<&'static str, &'static str> = BTreeMap::new();
+    for (_, kind) in &kinds {
+        variants.insert(kind.variant, kind.payload);
+    }
+
+    let mut out = String::new();
+    out.push_str("// @generated by build.rs from core_schema.yaml + schema_overlay.yaml — DO NOT EDIT\n");
+    out.push_str("// Regenerate by running `cargo build -p datadog-agent-config`.\n\n");
+    out.push_str("use std::collections::HashMap;\n\n");
+    out.push_str("use super::datadog_configuration::DatadogConfiguration;\n\n");
+
+    // Enum.
+    out.push_str("/// A supported configuration leaf's typed value, borrowed from a `DatadogConfiguration`.\n");
+    out.push_str("///\n");
+    out.push_str("/// One variant per distinct Rust type among the `support: full` / `support: partial` overlay\n");
+    out.push_str("/// keys. Pair this with [`LEAVES`] to read any supported dotted key's typed value without\n");
+    out.push_str("/// cloning it.\n");
+    out.push_str("#[derive(Debug, Clone, Copy)]\n");
+    out.push_str("pub enum LeafValue<'a> {\n");
+    for (variant, payload) in &variants {
+        out.push_str(&format!("    /// A `{payload}` leaf.\n"));
+        out.push_str(&format!("    {variant}({payload}),\n"));
+    }
+    out.push_str("}\n\n");
+
+    // Descriptor.
+    out.push_str("/// One supported configuration leaf: its dotted key, serde aliases, and a borrowing accessor.\n");
+    out.push_str("#[derive(Debug, Clone, Copy)]\n");
+    out.push_str("pub struct Leaf {\n");
+    out.push_str("    /// The dotted key, exactly as written in the schema overlay.\n");
+    out.push_str("    pub key: &'static str,\n");
+    out.push_str("    /// Every `#[serde(alias = \"...\")]` value this leaf's field also accepts, if any.\n");
+    out.push_str("    pub aliases: &'static [&'static str],\n");
+    out.push_str("    /// Reads this leaf's typed value out of a `DatadogConfiguration`, borrowing where the type\n");
+    out.push_str("    /// allows it.\n");
+    out.push_str("    pub get: for<'a> fn(&'a DatadogConfiguration) -> LeafValue<'a>,\n");
+    out.push_str("}\n\n");
+
+    // Table.
+    out.push_str("/// Every supported configuration leaf, sorted by dotted key.\n");
+    out.push_str("///\n");
+    out.push_str("/// One entry per `DatadogConfigWitness` method (see `witness.rs`), so the two stay in lockstep:\n");
+    out.push_str("/// both are generated from the same schema overlay key set.\n");
+    out.push_str("pub static LEAVES: &[Leaf] = &[\n");
+    for (key, kind) in &kinds {
+        let mut access = "config".to_string();
+        for field in &key.sections {
+            access = format!("{access}.{field}");
+        }
+        access = format!("{access}.{}", key.leaf_field);
+        let expr = (kind.wrap)(access);
+
+        let aliases = if key.aliases.is_empty() {
+            "&[]".to_string()
+        } else {
+            let items: Vec<String> = key.aliases.iter().map(|a| format!("\"{a}\"")).collect();
+            format!("&[{}]", items.join(", "))
+        };
+
+        out.push_str(&format!(
+            "    Leaf {{ key: \"{}\", aliases: {}, get: |config| LeafValue::{}({}) }},\n",
+            key.dotted, aliases, kind.variant, expr
+        ));
+    }
+    out.push_str("];\n");
 
     out
 }

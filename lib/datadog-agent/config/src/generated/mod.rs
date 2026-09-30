@@ -13,8 +13,13 @@ pub mod datadog_configuration;
 /// strategy, driving the figment-free `env_reader`.
 pub(crate) mod env_keys;
 
+/// Table of every supported key's dotted name, serde aliases, and a borrowing accessor into
+/// `DatadogConfiguration`.
+pub mod leaves;
+
 /// Witness trait and fallible driver over the supported Datadog configuration keys.
 pub mod witness;
 
 pub use datadog_configuration::DatadogConfiguration;
+pub use leaves::{Leaf, LeafValue, LEAVES};
 pub use witness::{drive, DatadogConfigWitness};
