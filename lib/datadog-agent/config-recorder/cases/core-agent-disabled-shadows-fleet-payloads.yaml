@@ -1,0 +1,10 @@
+name: core-agent-disabled-shadows-fleet-payloads
+group: behavior
+why: [core-agent-disabled-forces-payloads-off, load-fixup-source-outranks-fleet]
+yaml: |
+  core_agent:
+    enabled: false
+fleet_policy: |
+  enable_payloads:
+    series: true
+keys: [enable_payloads.series]

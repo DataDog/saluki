@@ -1,0 +1,6 @@
+name: cli-use-dogstatsd-off-not-suppressed
+group: behavior
+why: [cli-override-skips-fixups]
+cli:
+  - {key: use_dogstatsd, value: "false"}
+keys: [use_dogstatsd, data_plane.dogstatsd.enabled]

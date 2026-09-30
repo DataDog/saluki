@@ -1,0 +1,6 @@
+name: fleet-use-dogstatsd-off-suppresses
+group: behavior
+why: [fleet-policy-merge-not-notified]
+fleet_policy: |
+  use_dogstatsd: false
+keys: [use_dogstatsd, data_plane.dogstatsd.enabled]
