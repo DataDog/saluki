@@ -1,0 +1,13 @@
+name: fips-proxy-endpoints
+group: behavior
+why: [fips-proxy-rewrites-endpoints]
+yaml: |
+  fips:
+    enabled: true
+    local_address: 127.0.0.1
+    https: true
+    tls_verify: false
+keys:
+  - fips.enabled
+  - dd_url
+  - skip_ssl_validation
