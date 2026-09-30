@@ -1,8 +1,9 @@
 //! A strict, typed reader of the config recorder's corpus (`lib/datadog-agent/config-recorder/corpus.jsonl`).
 //!
-//! The corpus format is fixed by its contract, record.md, with getter results encoded by
-//! getter-map.md §3 and typed inputs by case.md §7. This crate is written from those documents
-//! alone, never from the recorder's Go code, so that the two sides can disagree visibly.
+//! The corpus format is fixed by its contract, `lib/datadog-agent/config-recorder/docs/record.md`,
+//! with getter results encoded by `getter-map.md` §3 and typed inputs by `case.md` §7 (both in the
+//! same directory). This crate is written from those documents alone, never from the recorder's Go
+//! code, so that the two sides can disagree visibly.
 //!
 //! [`read`] is the only parser of the corpus. It checks every format rule a file alone can show, and
 //! returns a [`Corpus`] in which every member a writer may omit is filled in:
@@ -25,3 +26,6 @@ pub use reader::read;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod corpus_checks;

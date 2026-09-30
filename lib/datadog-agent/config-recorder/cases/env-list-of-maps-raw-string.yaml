@@ -1,3 +1,5 @@
+# Supplies a list-of-maps setting as a JSON-looking environment string.
+# Shows that a type without environment conversion streams that value as a raw string.
 name: env-list-of-maps-raw-string
 group: behavior
 why: [env-unhandled-default-type-raw-string]

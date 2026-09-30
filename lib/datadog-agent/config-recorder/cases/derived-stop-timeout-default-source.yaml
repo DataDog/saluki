@@ -1,3 +1,5 @@
+# Sets aggregator_stop_timeout in YAML, then updates forwarder_stop_timeout at runtime.
+# Shows that the derived timeout is labeled default and is not recomputed after the update.
 name: derived-stop-timeout-default-source
 group: behavior
 why: [derived-value-written-with-source-default, derived-value-not-recomputed-after-update]

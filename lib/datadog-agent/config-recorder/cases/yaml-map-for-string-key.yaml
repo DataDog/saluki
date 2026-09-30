@@ -1,3 +1,5 @@
+# Gives dogstatsd_socket a map and apm_config.features a list in YAML, then reads them.
+# Shows that a string getter warns and returns empty text for map or list values.
 name: yaml-map-for-string-key
 group: behavior
 why: [getter-string-on-map-returns-empty]

@@ -1,4 +1,4 @@
-//! One test per rule family, on small inline corpora.
+//! Tests for each rule family, on small inline corpora.
 
 use crate::*;
 
@@ -285,8 +285,8 @@ fn streamed_source_may_be_empty_but_others_may_not() {
     // record.md §5.1: a streamed setting's `source` is legally `""`.
     let empty_snapshot_source =
         key(r#"{"getter":"GetInt","result":2}"#).replace(r#""source":"file""#, r#""source":"""#);
-    // The read's own source must then be written, since it cannot equal `""` (below), and here it
-    // differs from the streamed source anyway.
+    // The read's source must be written: unlike the streamed source it cannot be `""`, and this
+    // read has a different source from the stream.
     let with_read_source = empty_snapshot_source.replace(r#""go_type":"int""#, r#""go_type":"int","source":"unknown""#);
     ok(&format!("{CASE}\n{with_read_source}"));
 
@@ -295,12 +295,12 @@ fn streamed_source_may_be_empty_but_others_may_not() {
         key(r#"{"getter":"GetInt","result":2}"#).replace(r#""source":"file""#, r#""source":"file","unset_source":"""#);
     assert_eq!(first(rules(&format!("{CASE}\n{empty_unset_source}"))), Rule::Shape);
 
-    // A read's own source (`GetSource(key).String()`) keeps its current rules: never `""`.
+    // A read's source (`GetSource(key).String()`) must never be `""`.
     let empty_read_source =
         key(r#"{"getter":"GetInt","result":2}"#).replace(r#""go_type":"int""#, r#""go_type":"int","source":"""#);
     assert_eq!(first(rules(&format!("{CASE}\n{empty_read_source}"))), Rule::Shape);
 
-    // An update's source keeps its current rules too: `""` is not in `Source::UPDATE`.
+    // An update's source cannot be `""`: it is not in `Source::UPDATE`.
     let empty_update_source = UPD_CASE.replace(r#""source":"remote-config""#, r#""source":"""#);
     assert_eq!(first(rules(&empty_update_source)), Rule::Shape);
 }

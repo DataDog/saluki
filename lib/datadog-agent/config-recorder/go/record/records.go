@@ -72,8 +72,8 @@ type SideEffect struct {
 }
 
 // Event is one later stream event carrying a key. Every event belongs to an update (record.md
-// §4.2, §5.2); a resync snapshot is a harness failure in format 1, so no event kind or absence
-// remains here (side_effects still uses Absent, on SideEffect).
+// §4.2, §5.2); format 1 rejects resync snapshots, so Event needs no event kind or absence
+// (side_effects still uses Absent, on SideEffect).
 type Event struct {
 	Setting
 	// Seq is the event's sequence ID minus the `before` sequence ID of its update, so an update's
@@ -421,7 +421,7 @@ func (k *KeyLine) Validate() error {
 	return nil
 }
 
-// ErrRecordEventSeq marks an event whose relative seq is not positive.
+// ErrRecordEventSeq marks an event whose sequence ID relative to its update is not positive.
 var ErrRecordEventSeq = errors.New("event seq must be at least 1")
 
 // validateRead checks every getter warning in one read.

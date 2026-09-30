@@ -327,7 +327,7 @@ func TestSameRawPrefixStillBatches(t *testing.T) {
 }
 
 // TestSectionNameCollisionFails checks that two different raw sections that sanitize alike (case.md
-// §3.2) are a harness failure, not a silent merge.
+// §3.2) make generation fail rather than silently merging the batches.
 func TestSectionNameCollisionFails(t *testing.T) {
 	_, _, err := batch([]string{"apm_config.a", "apm-config.b"})
 	if err == nil {
@@ -339,7 +339,7 @@ func TestSectionNameCollisionFails(t *testing.T) {
 }
 
 // TestSubSectionNameCollisionFails checks that a sub-section split name that equals another
-// section's own name is a harness failure, not a silent merge (case.md §3.2).
+// section's own name makes generation fail rather than silently merging them (case.md §3.2).
 func TestSubSectionNameCollisionFails(t *testing.T) {
 	var keys []string
 	for i := 0; i < 45; i++ {

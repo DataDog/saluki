@@ -1,3 +1,5 @@
+# Sets dogstatsd_port in YAML, the environment, and a fleet policy, then adds and
+# removes higher-priority values. Shows source order and loss of the fleet value.
 name: source-order-one-key
 group: behavior
 why: [fleet-policies-outranked, fleet-policy-lost-after-higher-unset]

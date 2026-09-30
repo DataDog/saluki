@@ -15,9 +15,9 @@ import (
 )
 
 // CheckSchemaKeys checks that the schema's leaves are exactly the Agent's own key set for the
-// config cfg (getter-map.md §1). Call it right after the first snapshot and before any getter
-// runs (record.md §4.1): AllKeysLowercased is not itself a getter and must not join unknown keys
-// to the key set, but a getter called first would, making a later mismatch ambiguous.
+// config cfg (getter-map.md §1). Call it immediately after the first snapshot, before any getter
+// (record.md §4.1). AllKeysLowercased is not a getter and does not add unknown keys, but a getter can;
+// calling one first would make a key-set mismatch ambiguous.
 //
 // AllKeysLowercased lowercases every key (e.g. a schema key named with an acronym like `GUI_host`
 // comes back as `gui_host`), so the schema side is lowercased the same way before comparing.
