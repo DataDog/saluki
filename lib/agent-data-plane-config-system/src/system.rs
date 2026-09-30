@@ -386,7 +386,7 @@ fn run_stages(merged: &SourceTree) -> Stages {
 ///
 /// Each setting's provenance is retained, which is what lets a later update that demotes a value to
 /// an Agent default stop shadowing the local value it had been overriding.
-fn fold(agent: &mut SourceTree, update: &ConfigUpdate) {
+pub(crate) fn fold(agent: &mut SourceTree, update: &ConfigUpdate) {
     match update {
         ConfigUpdate::Snapshot(settings) => *agent = SourceTree::from_settings(settings),
         ConfigUpdate::Partial(setting) => agent.set(setting),

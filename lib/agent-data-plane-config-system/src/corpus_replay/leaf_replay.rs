@@ -18,13 +18,13 @@ use std::rc::Rc;
 
 use datadog_agent_config::{DatadogConfiguration, Leaf, LeafValue, LEAVES};
 use datadog_agent_config_corpus::{Corpus, Getter, KeyLine, Outcome, Read};
-use saluki_config::dynamic::ConfigUpdate;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::compare::{compare_leaf, Verdict};
+use super::compare::{compare_leaf, LeafKind, Verdict};
 use super::driver::case_updates;
 use crate::source::SourceTree;
+use crate::system::fold;
 
 /// One of the two points at which the corpus records getter reads (record.md §5.3).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -60,10 +60,7 @@ pub(crate) fn fold_case(corpus: &Corpus, case_name: &str) -> Result<FoldedCase, 
     let mut agent = SourceTree::empty();
     let mut snapshot = None;
     for update in &updates {
-        match update {
-            ConfigUpdate::Snapshot(settings) => agent = SourceTree::from_settings(settings),
-            ConfigUpdate::Partial(setting) => agent.set(setting),
-        }
+        fold(&mut agent, update);
         snapshot.get_or_insert_with(|| merged(&agent));
     }
 
@@ -131,17 +128,32 @@ type Isolated = Rc<Result<DatadogConfiguration, String>>;
 /// Deserializes leaves in isolation, remembering each distinct isolated object per leaf: across the
 /// corpus most leaves hold the same streamed default, so most isolated objects repeat.
 pub(crate) struct Isolator {
-    by_key: HashMap<&'static str, usize>,
+    /// Every path a leaf can be read from (its key and each alias), to the leaf's index in `LEAVES`.
+    by_key: HashMap<String, usize>,
     kinds: Vec<&'static str>,
+    /// The configuration every field of which holds its default.
+    default: DatadogConfiguration,
     cache: HashMap<(usize, String), Isolated>,
 }
 
 impl Isolator {
     pub(crate) fn new() -> Self {
         let default = deserialize_datadog(&Value::Object(Map::new())).expect("the defaults deserialize");
+        // Keys first, so an alias spelled like another leaf's key never takes that key over.
+        let mut by_key: HashMap<String, usize> = LEAVES
+            .iter()
+            .enumerate()
+            .map(|(i, leaf)| (leaf.key.to_string(), i))
+            .collect();
+        for (i, leaf) in LEAVES.iter().enumerate() {
+            for path in leaf_paths(leaf).skip(1) {
+                by_key.entry(path).or_insert(i);
+            }
+        }
         Self {
-            by_key: LEAVES.iter().enumerate().map(|(i, leaf)| (leaf.key, i)).collect(),
+            by_key,
             kinds: LEAVES.iter().map(|leaf| kind_name(&(leaf.get)(&default))).collect(),
+            default,
             cache: HashMap::new(),
         }
     }
@@ -192,6 +204,9 @@ pub(crate) struct Row {
     pub(crate) case: String,
     pub(crate) checkpoint: Checkpoint,
     pub(crate) key: String,
+    /// The supported leaf the key line resolves to, by its key or an alias; `None` for a key that is
+    /// not modeled.
+    pub(crate) leaf: Option<&'static str>,
     /// The recorded getter; `None` for a key that is not modeled, which gets one row in all.
     pub(crate) getter: Option<Getter>,
     /// The leaf's `LeafValue` variant name; `None` for a key that is not modeled.
@@ -266,30 +281,42 @@ pub(crate) fn checkpoint_rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for &(key, read) in reads {
-        let row = |getter, kind, result| Row {
+        let row = |leaf, getter, kind, result| Row {
             case: case.to_string(),
             checkpoint,
             key: key.to_string(),
+            leaf,
             getter,
             kind,
             result,
         };
         let Some(&index) = isolator.by_key.get(key) else {
-            rows.push(row(None, None, RowResult::NotModeled));
+            rows.push(row(None, None, None, RowResult::NotModeled));
             continue;
         };
+        let leaf = &LEAVES[index];
         let kind = Some(isolator.kinds[index]);
-        match &*isolator.isolate(index, tree) {
-            Ok(config) => rows.extend(
-                compare_leaf((LEAVES[index].get)(config), &read.getters)
+        let verdicts = match &*isolator.isolate(index, tree) {
+            Ok(config) => compare_leaf((leaf.get)(config), &read.getters),
+            // Only the getter the leaf's kind stands for would have been compared with the leaf. Every
+            // other getter keeps its verdict, which depends only on the kind, so the default leaf gives it.
+            Err(error) => {
+                let default = (leaf.get)(&isolator.default);
+                let emulated = LeafKind::of(&default).emulated();
+                compare_leaf(default, &read.getters)
                     .into_iter()
-                    .map(|(getter, verdict)| row(Some(getter), kind, RowResult::Leaf(verdict))),
-            ),
-            Err(error) => rows.extend(read.getters.iter().map(|r| {
-                let verdict = Verdict::AdpRejects { error: error.clone() };
-                row(Some(r.getter), kind, RowResult::Leaf(verdict))
-            })),
-        }
+                    .map(|(getter, verdict)| match emulated.contains(&getter) {
+                        true => (getter, Verdict::AdpRejects { error: error.clone() }),
+                        false => (getter, verdict),
+                    })
+                    .collect()
+            }
+        };
+        rows.extend(
+            verdicts
+                .into_iter()
+                .map(|(getter, verdict)| row(Some(leaf.key), Some(getter), kind, RowResult::Leaf(verdict))),
+        );
     }
     rows
 }
@@ -520,18 +547,27 @@ mod tests {
 
         let rows = checkpoint_rows(&mut isolator, &case.name, Checkpoint::Snapshot, &poisoned, &reads);
         assert_eq!(rows.len(), clean.len());
-        let mut matches = 0;
+        let (mut matches, mut rejected) = (0, 0);
         for (row, before) in rows.iter().zip(&clean) {
-            if row.key == target {
+            if row.key == target && row.getter == Some(Getter::GetBool) {
                 assert!(
                     matches!(&row.result, RowResult::Leaf(Verdict::AdpRejects { error }) if !error.is_empty()),
                     "{row}"
                 );
+                rejected += 1;
+            } else if row.key == target {
+                // A getter a bool leaf does not stand for keeps the verdict it had.
+                assert!(
+                    matches!(&row.result, RowResult::Leaf(Verdict::NotCompared { .. })),
+                    "{row}"
+                );
+                assert_eq!(row, before);
             } else {
                 assert_eq!(row, before, "only {target} changes");
                 matches += usize::from(row.result == RowResult::Leaf(Verdict::Match));
             }
         }
         assert!(matches > 0, "other keys still match");
+        assert_eq!(rejected, 1, "the emulated getter of {target} is rejected");
     }
 }
