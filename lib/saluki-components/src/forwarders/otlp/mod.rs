@@ -198,7 +198,7 @@ async fn export_traces(
         Ok(response) => {
             let resp = response.into_inner();
             if let Some(partial_success) = resp.partial_success {
-                if partial_success.rejected_spans > 0 {
+                if partial_success.rejected_spans > 0 && export_throttle.allow() {
                     warn!(
                         rejected_spans = partial_success.rejected_spans,
                         error = %partial_success.error_message,
@@ -239,7 +239,7 @@ async fn export_metrics(
         Ok(response) => {
             let resp = response.into_inner();
             if let Some(partial_success) = resp.partial_success {
-                if partial_success.rejected_data_points > 0 {
+                if partial_success.rejected_data_points > 0 && export_throttle.allow() {
                     warn!(
                         rejected_data_points = partial_success.rejected_data_points,
                         error = %partial_success.error_message,
