@@ -32,7 +32,7 @@ re-deriving the rule from the streamed source and value.
 
 Besides the hand-written cases in `cases/`, `regenerate.sh` runs the recorder's `generate`
 subcommand. It reads the merged Agent schema and saluki's `schema_overlay.yaml`, and writes the
-`baseline`, `breadth`, `unsupported`, `excluded` and `unknown` cases into
+`baseline`, `breadth`, `unsupported`, `excluded`, `unknown` and `depth` cases into
 `target/config-recorder/generated-cases/` (emptied on every run, never checked in). `drive` then
 records both directories.
 
@@ -42,6 +42,14 @@ records both directories.
   path component. A case name depends only on key paths, so a new key changes only its own batch.
 - Every value comes from a fixed rule on the key's schema type, default and format, so two runs
   write the same cases.
+- `depth` records the input shapes that break readers: empty, null, wrong-shape and alternate
+  spellings. For YAML and `set` inputs, modeled keys fall into classes by default-layer Go type,
+  and each class contributes its byte-first key. For env inputs, classes are by Go type and schema
+  `env_parser`, and each contributes its byte-first env-bound key. There is one case per input
+  shape, `depth-<source>-<shape>`, holding every class the shape applies to, plus
+  `depth-env-secondary-name` for keys with more than one env name. Each key records its default
+  getters plus `Get`. The generator writes every shape; a corpus test fails when the group's lines
+  pass 80,000 bytes, and lists the bytes per shape so a person can cut shapes from case.md's table.
 
 ## Splitting batches
 
