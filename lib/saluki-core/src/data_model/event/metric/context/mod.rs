@@ -1,13 +1,22 @@
-use std::{fmt, hash, sync::Arc};
+//! Metric context and context resolving.
+
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 use metrics::Gauge;
 use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
 use stringtheory::MetaString;
 
-use crate::{
-    hash::{hash_context, hash_context_with_host_and_seen, ContextKey},
-    tags::{Tag, TagSet},
-};
+mod hash;
+use self::hash::{hash_context, hash_context_with_host_and_seen};
+pub use self::hash::{hash_context_with_host, ContextKey};
+
+mod resolver;
+pub use self::resolver::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
+use crate::data_model::tags::{Tag, TagSet};
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
 
@@ -164,7 +173,7 @@ impl Context {
         }
     }
 
-    pub(crate) fn from_inner(inner: ContextInner) -> Self {
+    pub(super) fn from_inner(inner: ContextInner) -> Self {
         Self { inner: Arc::new(inner) }
     }
 
@@ -505,8 +514,8 @@ impl PartialEq<ContextInner> for ContextInner {
 
 impl Eq for ContextInner {}
 
-impl hash::Hash for ContextInner {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+impl Hash for ContextInner {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.key.hash(state);
     }
 }
@@ -525,7 +534,7 @@ impl fmt::Debug for ContextInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tags::Tag;
+    use crate::data_model::tags::Tag;
 
     const SIZE_OF_CONTEXT_NAME: &str = "size_of_test_metric";
     const SIZE_OF_CONTEXT_CHANGED_NAME: &str = "size_of_test_metric_changed";

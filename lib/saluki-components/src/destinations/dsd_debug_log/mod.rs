@@ -4,14 +4,16 @@ use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::TagSet;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
         BuildContext,
     },
-    data_model::event::{metric::Metric, Event, EventType},
+    data_model::{
+        event::{metric::Metric, Event, EventType},
+        tags::TagSet,
+    },
 };
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
@@ -229,11 +231,13 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use agent_data_plane_config::{Live, SalukiConfiguration};
-    use saluki_context::Context;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryLimiter},
         components::{destinations::DestinationContext, ComponentContext},
-        data_model::event::{metric::Metric, Event},
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        },
         health::HealthRegistry,
         runtime::state::DataspaceRegistry,
         topology::{interconnect::Consumer, EventsBuffer, TopologyContext},

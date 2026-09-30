@@ -6,14 +6,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use regex::Regex;
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_context::tags::SharedTagSet;
-use saluki_context::tags::TagSet;
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
         BuildContext,
+    },
+    data_model::{
+        event::metric::context::{Context, ContextResolver, ContextResolverBuilder},
+        tags::{SharedTagSet, TagSet},
     },
     topology::EventsBuffer,
 };
@@ -362,10 +363,15 @@ mod tests {
     use std::collections::HashMap;
     use std::num::NonZeroUsize;
 
-    use saluki_context::{Context, ContextResolverBuilder};
     use saluki_core::{
         components::{transforms::SynchronousTransform, BuildContext},
-        data_model::event::{metric::Metric, Event},
+        data_model::event::{
+            metric::{
+                context::{Context, ContextResolverBuilder},
+                Metric,
+            },
+            Event,
+        },
         topology::EventsBuffer,
     };
     use saluki_error::GenericError;

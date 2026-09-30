@@ -2,12 +2,14 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
 use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinality as RemoteTagCardinality};
 use futures::{StreamExt as _, TryStreamExt as _};
-use saluki_context::{
-    origin::OriginTagCardinality,
-    tags::{Tag, TagSet},
+use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    data_model::{
+        origin::OriginTagCardinality,
+        tags::{Tag, TagSet},
+    },
+    health::Health,
 };
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataAction, MetadataOperation};
 use saluki_error::GenericError;
 use saluki_io::net::util::tonic::StatusError;

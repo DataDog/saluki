@@ -95,7 +95,7 @@ mod tests {
 
     use datadog_protos::agent::{Entity as ProtoEntity, TaggerState};
     use prost::Message as _;
-    use saluki_context::origin::OriginTagCardinality;
+    use saluki_core::data_model::origin::OriginTagCardinality;
 
     use super::*;
     use crate::sources::dogstatsd::replay::CapturedTaggerHandle;

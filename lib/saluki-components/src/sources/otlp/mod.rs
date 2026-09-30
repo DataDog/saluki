@@ -14,18 +14,18 @@ use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceS
 use prost::Message;
 use saluki_common::collections::FastHashSet;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_context::ContextResolver;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::runtime;
-use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         sources::{Source, SourceBuilder, SourceContext},
         BuildContext,
     },
-    data_model::event::EventType,
-    topology::{EventsBuffer, OutputDefinition},
+    data_model::{
+        event::{metric::context::ContextResolver, EventType},
+        tags::{SharedTagSet, TagSet},
+    },
+    runtime,
+    topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;

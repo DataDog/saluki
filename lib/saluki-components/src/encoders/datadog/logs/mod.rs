@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_context::tags::Tag;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{encoders::*, BuildContext},
     data_model::{
         event::{log::Log, Event, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
+        tags::Tag,
     },
     observability::ComponentMetricsExt as _,
     topology::PayloadsDispatcher,
@@ -249,8 +249,10 @@ impl EndpointEncoder for LogsEndpointEncoder {
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
-    use saluki_context::tags::{Tag, TagSet};
-    use saluki_core::data_model::event::log::{Log, LogStatus};
+    use saluki_core::data_model::{
+        event::log::{Log, LogStatus},
+        tags::{Tag, TagSet},
+    };
     use serde_json::json;
     use stringtheory::MetaString;
 

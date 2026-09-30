@@ -6,7 +6,7 @@
 //! A number of building blocks are included: generic entity identifiers, tag storage, metadata collection and
 //! aggregation.
 
-use saluki_context::{
+use saluki_core::data_model::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };

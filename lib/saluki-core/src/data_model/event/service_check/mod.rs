@@ -1,9 +1,10 @@
 //! Service checks.
 
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_context::tags::TagSet;
 use serde::{ser::SerializeMap as _, Serialize, Serializer};
 use stringtheory::MetaString;
+
+use crate::data_model::tags::TagSet;
 
 /// Service status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

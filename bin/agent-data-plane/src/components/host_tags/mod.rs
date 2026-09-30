@@ -5,10 +5,15 @@ use std::{
 
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
-use saluki_context::tags::{SharedTagSet, Tag};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::transforms::*, topology::EventsBuffer};
-use saluki_core::{components::BuildContext, data_model::event::metric::Metric};
+use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
+    components::{transforms::*, BuildContext},
+    data_model::{
+        event::metric::Metric,
+        tags::{SharedTagSet, Tag},
+    },
+    topology::EventsBuffer,
+};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
@@ -116,8 +121,7 @@ impl SynchronousTransform for HostTagsEnrichment {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use saluki_context::Context;
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_core::data_model::event::metric::{context::Context, Metric};
 
     use super::*;
 

@@ -21,8 +21,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use saluki_common::collections::FastHashMap;
-use saluki_context::{tags::TagSet, Context};
-use saluki_core::data_model::event::{metric::Metric, Event};
+use saluki_core::data_model::{
+    event::{
+        metric::{context::Context, Metric},
+        Event,
+    },
+    tags::TagSet,
+};
 use stringtheory::MetaString;
 
 /// How long a telemetry window accumulates decisions before reporting.

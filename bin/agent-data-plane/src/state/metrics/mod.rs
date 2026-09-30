@@ -3,10 +3,14 @@ pub use self::rules::{get_compat_remappings, get_datadog_agent_remappings};
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
-    use saluki_core::data_model::event::{metric::Metric, Event};
-    use saluki_core::observability::metrics::{
-        AggregatedMetricsProcessor, MetricsSnapshot, Processor as _, RemapperRule, TelemetryProcessor,
+    use saluki_core::{
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        },
+        observability::metrics::{
+            AggregatedMetricsProcessor, MetricsSnapshot, Processor as _, RemapperRule, TelemetryProcessor,
+        },
     };
 
     use super::*;

@@ -9,14 +9,17 @@ use std::{
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
-    data_model::event::{
-        trace::{AttributeValue, Trace},
-        trace_stats::{ClientStatsPayload, TraceStats},
-        Event, EventType,
+    data_model::{
+        event::{
+            trace::{AttributeValue, Trace},
+            trace_stats::{ClientStatsPayload, TraceStats},
+            Event, EventType,
+        },
+        origin::OriginTagCardinality,
+        tags::TagSet,
     },
     topology::OutputDefinition,
 };

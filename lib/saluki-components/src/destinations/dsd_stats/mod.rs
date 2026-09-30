@@ -8,14 +8,16 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use saluki_common::time::get_coarse_unix_timestamp;
-use saluki_context::tags::TagSet;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
         BuildContext,
     },
-    data_model::event::{Event, EventType},
+    data_model::{
+        event::{Event, EventType},
+        tags::TagSet,
+    },
 };
 use saluki_error::GenericError;
 use serde::{Deserialize, Serialize, Serializer};
@@ -314,7 +316,7 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
 mod tests {
     use std::collections::BTreeSet;
 
-    use saluki_context::tags::Tag;
+    use saluki_core::data_model::tags::Tag;
     use serde_json::json;
 
     use super::*;

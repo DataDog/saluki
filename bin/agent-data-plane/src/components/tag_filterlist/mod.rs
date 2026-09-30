@@ -27,16 +27,21 @@ use saluki_common::{
     cache::{Cache, CacheBuilder},
     collections::{FastHashMap, FastHashSet},
 };
-use saluki_context::{tags::Tag, Context, TagSetMutViewState};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{
-        metric::{Metric, MetricValues},
-        EventType,
+    data_model::{
+        event::{
+            metric::{
+                context::{Context, TagSetMutViewState},
+                Metric, MetricValues,
+            },
+            EventType,
+        },
+        tags::Tag,
     },
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
@@ -500,23 +505,29 @@ pub fn filter_metric_tags(
 mod tests {
     use std::sync::Arc;
 
-    use saluki_context::{
-        tags::{Tag, TagSet},
-        Context, TagSetMutViewState,
+    use saluki_core::{
+        accounting::{ComponentRegistry, MemoryLimiter},
+        components::{
+            transforms::{TransformBuilder, TransformContext},
+            BuildContext, ComponentContext,
+        },
+        data_model::{
+            event::{
+                metric::{
+                    context::{Context, TagSetMutViewState},
+                    Metric, MetricValues,
+                },
+                Event,
+            },
+            tags::{Tag, TagSet},
+        },
+        health::HealthRegistry,
+        runtime::state::{DataspaceRegistry, ResourceRegistry},
+        topology::{
+            interconnect::{Consumer, Dispatcher},
+            EventsBuffer, OutputName, TopologyContext,
+        },
     };
-    use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-    use saluki_core::components::{
-        transforms::{TransformBuilder, TransformContext},
-        BuildContext, ComponentContext,
-    };
-    use saluki_core::data_model::event::{
-        metric::{Metric, MetricValues},
-        Event,
-    };
-    use saluki_core::health::HealthRegistry;
-    use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
-    use saluki_core::topology::interconnect::{Consumer, Dispatcher};
-    use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use tokio::runtime::Handle;
     use tokio::sync::mpsc;

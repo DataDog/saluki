@@ -89,8 +89,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use otlp_protos::opentelemetry::proto::metrics::v1::number_data_point::Value as OtlpNumberDataPointValue;
-    use saluki_context::tags::{Tag, TagSet};
-    use saluki_core::data_model::event::metric::MetricValues;
+    use saluki_core::data_model::{
+        event::metric::MetricValues,
+        tags::{Tag, TagSet},
+    };
 
     use super::*;
     use crate::sources::otlp::Metrics;

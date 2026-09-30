@@ -1,7 +1,8 @@
 //! Trace stats.
 
-use saluki_context::tags::TagSet;
 use stringtheory::MetaString;
+
+use crate::data_model::tags::TagSet;
 
 /// Trace statistics output from the APM Stats transform.
 ///

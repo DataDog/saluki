@@ -1,7 +1,9 @@
 use http::HeaderValue;
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_context::tags::{SharedTagSet, Tag};
-use saluki_core::data_model::event::metric::{Metric, MetricOrigin, MetricValues};
+use saluki_core::data_model::{
+    event::metric::{Metric, MetricOrigin, MetricValues},
+    tags::{SharedTagSet, Tag},
+};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
 pub(super) const SERIES_COMPRESSED_SIZE_LIMIT: usize = 2_000_000; // ~2 MiB
@@ -128,8 +130,10 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use saluki_common::iter::ReusableDeduplicator;
-    use saluki_context::{tags::SharedTagSet, Context};
-    use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricOrigin, MetricValues};
+    use saluki_core::data_model::{
+        event::metric::{context::Context, Metric, MetricMetadata, MetricOrigin, MetricValues},
+        tags::SharedTagSet,
+    };
     use serde_json::Value as JsonValue;
     use stringtheory::MetaString;
 

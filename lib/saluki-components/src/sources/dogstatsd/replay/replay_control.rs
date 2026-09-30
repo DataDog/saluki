@@ -119,7 +119,7 @@ mod tests {
     use std::collections::HashMap;
 
     use datadog_protos::agent::{Entity as ProtoEntity, TaggerState};
-    use saluki_context::origin::OriginTagCardinality;
+    use saluki_core::data_model::origin::OriginTagCardinality;
 
     use super::*;
 

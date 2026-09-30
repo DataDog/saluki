@@ -28,7 +28,6 @@ members = [
   "lib/saluki-common",
   "lib/saluki-components",
   "lib/saluki-config",
-  "lib/saluki-context",
   "lib/saluki-core",
   "lib/saluki-env",
   "lib/saluki-error",
@@ -71,7 +70,6 @@ saluki-app = { path = "lib/saluki-app" }
 saluki-common = { path = "lib/saluki-common" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }
-saluki-context = { path = "lib/saluki-context" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }

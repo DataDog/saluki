@@ -52,7 +52,6 @@ dependencies = [
  "saluki-common",
  "saluki-components",
  "saluki-config",
- "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
@@ -5596,7 +5595,6 @@ dependencies = [
  "saluki-api",
  "saluki-common",
  "saluki-config",
- "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
@@ -5643,27 +5641,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "saluki-context"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "indexmap",
- "memchr",
- "metrics",
- "metrics-util",
- "proptest",
- "saluki-antithesis",
- "saluki-common",
- "saluki-error",
- "saluki-metrics",
- "serde",
- "smallvec",
- "stringtheory",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
@@ -5671,11 +5648,13 @@ dependencies = [
  "async-trait",
  "bitmask-enum",
  "bytesize",
+ "criterion",
  "ddsketch",
  "futures",
  "http",
  "indexmap",
  "loom",
+ "memchr",
  "metrics",
  "metrics-util",
  "ordered-float 5.5.0",
@@ -5688,7 +5667,6 @@ dependencies = [
  "saluki-antithesis",
  "saluki-api",
  "saluki-common",
- "saluki-context",
  "saluki-error",
  "saluki-metrics",
  "serde",
@@ -5720,7 +5698,6 @@ dependencies = [
  "prost",
  "regex",
  "saluki-common",
- "saluki-context",
  "saluki-core",
  "saluki-error",
  "saluki-metrics",
@@ -5777,7 +5754,6 @@ dependencies = [
  "rustls-cng-crypto",
  "saluki-antithesis",
  "saluki-common",
- "saluki-context",
  "saluki-core",
  "saluki-error",
  "saluki-metrics",

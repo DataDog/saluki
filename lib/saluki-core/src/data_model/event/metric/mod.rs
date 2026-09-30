@@ -1,9 +1,10 @@
 //! Metric types.
 
+pub mod context;
+use self::context::Context;
+
 mod metadata;
 use std::time::Duration;
-
-use saluki_context::Context;
 
 pub use self::metadata::*;
 

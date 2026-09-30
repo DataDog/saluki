@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saluki_context::{
+use saluki_core::data_model::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
 };
@@ -331,8 +331,10 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use saluki_context::tags::{RawTags, TagSet};
-    use saluki_core::data_model::event::{metric::MetricValues, service_check::CheckStatus};
+    use saluki_core::data_model::{
+        event::{metric::MetricValues, service_check::CheckStatus},
+        tags::{RawTags, TagSet},
+    };
     use saluki_env::workload::{origin::ResolvedExternalData, providers::TestWorkloadProvider, EntityId};
     use stringtheory::MetaString;
 

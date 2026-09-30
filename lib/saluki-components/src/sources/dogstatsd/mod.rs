@@ -21,16 +21,18 @@ use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes};
 use bytesize::ByteSize;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-use saluki_context::tags::{RawTags, RawTagsFilter};
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr};
-use saluki_core::data_model::event::{
-    eventd::EventD,
-    metric::{Metric, MetricMetadata, MetricOrigin},
-    service_check::ServiceCheck,
-    Event, EventType,
-};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr},
     components::{sources::*, BuildContext},
+    data_model::{
+        event::{
+            eventd::EventD,
+            metric::{Metric, MetricMetadata, MetricOrigin},
+            service_check::ServiceCheck,
+            Event, EventType,
+        },
+        tags::{RawTags, RawTagsFilter},
+    },
     pooling::{ElasticObjectPool, ObjectPool as _},
     runtime::{
         self,
@@ -2328,10 +2330,10 @@ mod tests {
     use bytesize::ByteSize;
     use metrics::{Key, Label};
     use saluki_common::sync::shutdown::ShutdownCoordinator;
-    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::{
+        accounting::{ComponentRegistry, MemoryLimiter},
         components::{sources::SourceContext, ComponentContext},
+        data_model::event::metric::context::{ContextResolverBuilder, TagsResolverBuilder},
         health::HealthRegistry,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
         runtime::state::DataspaceRegistry,
@@ -4197,20 +4199,24 @@ mod supervision {
 
     use bytes::BytesMut;
     use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::components::test_util::TestComponentSupervisor;
     #[cfg(unix)]
     use saluki_core::components::{sources::SourceBuilder as _, BuildContext};
-    use saluki_core::components::{
-        sources::{Source as _, SourceContext},
-        ComponentContext,
+    use saluki_core::{
+        components::{
+            sources::{Source as _, SourceContext},
+            ComponentContext,
+        },
+        data_model::event::metric::context::{ContextResolverBuilder, TagsResolverBuilder},
+        health::HealthRegistry,
+        runtime::{
+            state::{DataspaceRegistry, ResourceRegistry},
+            SupervisorError,
+        },
+        support::SubsystemIdentifier,
+        topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext},
     };
-    use saluki_core::health::HealthRegistry;
-    use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
-    use saluki_core::runtime::SupervisorError;
-    use saluki_core::support::SubsystemIdentifier;
-    use saluki_core::topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext};
     use saluki_io::net::listener::Listener;
     use saluki_io::net::{BoundListenAddress, ListenAddress};
     use stringtheory::MetaString;

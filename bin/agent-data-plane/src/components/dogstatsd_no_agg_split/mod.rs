@@ -313,10 +313,9 @@ impl Transform for DogStatsDNoAggSplit {
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::Context;
     use saluki_core::{
         components::ComponentContext,
-        data_model::event::metric::ScalarPoints,
+        data_model::event::metric::{context::Context, ScalarPoints},
         topology::{interconnect::Dispatcher, OutputName},
     };
     use tokio::sync::mpsc;

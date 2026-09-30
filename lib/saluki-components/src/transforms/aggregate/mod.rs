@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use saluki_common::time::get_unix_timestamp;
-use saluki_context::Context;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
+    accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr},
     components::{transforms::*, BuildContext},
-    data_model::event::{metric::*, Event, EventType},
+    data_model::event::{
+        metric::{context::Context, *},
+        Event, EventType,
+    },
     observability::ComponentMetricsExt as _,
-    topology::EventsBuffer,
-    topology::{interconnect::BufferedDispatcher, OutputDefinition},
+    topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
@@ -940,7 +941,6 @@ mod tests {
     use std::{cell::Cell, mem::size_of};
 
     use float_cmp::ApproxEqRatio as _;
-    use saluki_context::tags::{Tag, TagSet};
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryLimiter},
         components::{
@@ -948,6 +948,7 @@ mod tests {
             sources::{Source, SourceBuilder, SourceContext},
             ComponentContext,
         },
+        data_model::tags::{Tag, TagSet},
         health::HealthRegistry,
         runtime::{state::ResourceRegistry, Supervisor},
         support::SubsystemIdentifier,

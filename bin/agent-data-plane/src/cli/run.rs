@@ -48,11 +48,13 @@ use saluki_components::{
         ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
-use saluki_context::origin::OriginTagCardinality;
-use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
-use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError};
-use saluki_core::topology::TopologyBlueprint;
+use saluki_core::{
+    accounting::{ComponentBounds, ComponentRegistry},
+    data_model::origin::OriginTagCardinality,
+    health::HealthRegistry,
+    runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError},
+    topology::TopologyBlueprint,
+};
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
@@ -1195,7 +1197,6 @@ mod tests {
         AggregateContextSnapshotEntry, AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
     };
-    use saluki_context::Context;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
         components::{
@@ -1203,7 +1204,10 @@ mod tests {
             sources::{Source, SourceBuilder, SourceContext},
             BuildContext,
         },
-        data_model::event::{metric::Metric, Event, EventType},
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event, EventType,
+        },
         health::HealthRegistry,
         runtime::{state::ResourceRegistry, Supervisor},
         topology::{OutputDefinition, TopologyBlueprint},

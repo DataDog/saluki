@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use metrics::{set_default_local_recorder, Key, Label};
-use saluki_context::Context;
-use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
+use saluki_core::{
+    components::ComponentContext,
+    data_model::event::metric::{context::Context, Metric},
+};
 use saluki_metrics::test::TestRecorder;
 
 use super::dogstatsd_client_telemetry::{normalize_client_transport, DogStatsDClientTelemetry};

@@ -4,7 +4,7 @@ use serde::{ser::SerializeSeq as _, Serialize};
 use smallvec::SmallVec;
 
 use super::{frozen::FrozenTagSet, TagSet};
-use crate::tags::Tag;
+use crate::data_model::tags::Tag;
 
 /// A shared, read-only set of tags.
 ///

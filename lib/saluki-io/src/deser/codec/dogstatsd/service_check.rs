@@ -6,8 +6,7 @@ use nom::{
     sequence::{preceded, separated_pair},
     IResult, Parser as _,
 };
-use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
-use saluki_core::data_model::event::service_check::*;
+use saluki_core::data_model::{event::service_check::*, origin::OriginTagCardinality, tags::RawTags};
 use stringtheory::MetaString;
 
 use super::{helpers::*, DogStatsDCodecConfiguration};
@@ -122,11 +121,11 @@ pub fn parse_dogstatsd_service_check<'a>(
 #[cfg(test)]
 mod tests {
     use nom::IResult;
-    use saluki_context::{
+    use saluki_core::data_model::{
+        event::service_check::{CheckStatus, ServiceCheck},
         origin::OriginTagCardinality,
         tags::{SharedTagSet, TagSet},
     };
-    use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
     use stringtheory::MetaString;
 
     use super::{parse_dogstatsd_service_check, DogStatsDCodecConfiguration};
