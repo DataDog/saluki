@@ -123,15 +123,13 @@ impl ConfigurationSystem {
         };
         saluki_antithesis::sometimes!(true, "config readiness signal received");
 
-        let mut agent = SourceTree::empty();
-        fold(&mut agent, &first);
-
-        // Startup is the strict gate: this is the first, authoritative Agent snapshot, so any error
-        // fails the boot and we never run on bad config. At runtime (see `ConfigurationUpdates`) the
-        // same check instead rejects the offending update and keeps the last-known-good
-        // configuration, because a runtime update must never take the system down.
-        let merged = base.overlay(&agent);
-        let config = translate_authoritative(&merged)?;
+        // Startup rejects any failure; later updates retain the last accepted configuration.
+        let Evaluation {
+            tentative: agent,
+            merged,
+            stages,
+        } = evaluate(&base, &SourceTree::empty(), &first);
+        let config = stages.into_authoritative()?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
         let sources = Arc::new(RwLock::new(Arc::new(merged)));
@@ -262,10 +260,8 @@ impl UpdateState {
             // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
             // model from it. Only a fully successful update advances the committed layer, so a rejected
             // value never lingers to re-poison a later merge.
-            let mut tentative = self.agent.clone();
-            fold(&mut tentative, &update);
-            let merged = self.base.overlay(&tentative);
-            match translate_authoritative(&merged) {
+            let Evaluation { tentative, merged, stages } = evaluate(&self.base, &self.agent, &update);
+            match stages.into_authoritative() {
                 Ok(config) => {
                     self.agent = tentative;
                     {
@@ -284,6 +280,103 @@ impl UpdateState {
         }
 
         Err(Error::UpdateStreamClosed)
+    }
+}
+
+/// What folding one update onto the Agent layer produced, before a caller decides whether to commit it.
+pub(crate) struct Evaluation {
+    /// The Agent layer with the update folded in. The caller adopts it as the new Agent layer only if
+    /// it accepts the update, so a rejected value never lingers to affect a later merge.
+    pub(crate) tentative: SourceTree,
+
+    /// The local base overlaid with `tentative`: the sources every later stage reads.
+    pub(crate) merged: SourceTree,
+
+    /// How far `merged` got through deserialization, translation, and validation.
+    pub(crate) stages: Stages,
+}
+
+/// The result of each stage that turns merged sources into a runnable configuration.
+///
+/// The stages run in order and each runs only if the previous one succeeded, so at most one of them
+/// failed.
+pub(crate) enum Stages {
+    /// The merged value could not be deserialized into the source models, so nothing was translated.
+    Undeserializable(Error),
+
+    /// The sources deserialized, but translation recorded an error on one or more keys.
+    Untranslatable {
+        /// The deserialized sources.
+        // Read only by the corpus replay tests.
+        #[cfg_attr(not(test), allow(dead_code))]
+        sources: Box<Sources>,
+        /// Every translation error recorded.
+        errors: TranslateErrors,
+    },
+
+    /// The sources deserialized and translated; `validation` says whether the process can run on the
+    /// result.
+    Translated {
+        /// The deserialized sources.
+        // Read only by the corpus replay tests.
+        #[cfg_attr(not(test), allow(dead_code))]
+        sources: Box<Sources>,
+        /// The translated configuration.
+        config: Box<SalukiConfiguration>,
+        /// The result of [`validate`] on `config`.
+        validation: Result<()>,
+    },
+}
+
+impl Stages {
+    /// Returns the configuration if every stage succeeded, or the error of the stage that failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the deserialization error, [`Error::Translate`], or the validation error.
+    pub(crate) fn into_authoritative(self) -> Result<SalukiConfiguration> {
+        match self {
+            Self::Undeserializable(error) => Err(error),
+            Self::Untranslatable { errors, .. } => Err(Error::Translate { source: errors }),
+            Self::Translated { config, validation, .. } => validation.map(|()| *config),
+        }
+    }
+}
+
+/// Folds `update` onto a tentative copy of the Agent layer `agent`, overlays the result on `base`,
+/// and runs each stage on the merged sources.
+///
+/// Leaves `agent` untouched: committing the tentative layer is the caller's decision.
+pub(crate) fn evaluate(base: &SourceTree, agent: &SourceTree, update: &ConfigUpdate) -> Evaluation {
+    let mut tentative = agent.clone();
+    fold(&mut tentative, update);
+    let merged = base.overlay(&tentative);
+    let stages = run_stages(&merged);
+    Evaluation {
+        tentative,
+        merged,
+        stages,
+    }
+}
+
+/// Deserializes, translates, and validates merged sources, stopping at the first stage that fails.
+fn run_stages(merged: &SourceTree) -> Stages {
+    match deserialize_sources(&merged.to_value()) {
+        Err(error) => Stages::Undeserializable(error),
+        Ok(sources) => match translate(&sources.datadog, &sources.saluki, merged) {
+            (_, Some(errors)) => Stages::Untranslatable {
+                sources: Box::new(sources),
+                errors,
+            },
+            (config, None) => {
+                let validation = validate(&config);
+                Stages::Translated {
+                    sources: Box::new(sources),
+                    config: Box::new(config),
+                    validation,
+                }
+            }
+        },
     }
 }
 
@@ -317,16 +410,14 @@ pub(crate) fn translate_strict(merged: &SourceTree) -> Result<SalukiConfiguratio
 /// Translates merged sources that are authoritative for the running process, rejecting a
 /// configuration ADP cannot run on.
 ///
-/// This is [`translate_strict`] plus [`validate`]. Use it where the merged sources are complete: the
-/// Datadog Agent's snapshot layered over the local base, or the local base alone in standalone mode.
+/// This is the verdict [`evaluate`] gives the update loop, applied to already merged sources.
 ///
 /// # Errors
 ///
 /// Returns an error if translation fails, or if the translated configuration fails validation.
+#[cfg(test)]
 pub(crate) fn translate_authoritative(merged: &SourceTree) -> Result<SalukiConfiguration> {
-    let config = translate_strict(merged)?;
-    validate(&config)?;
-    Ok(config)
+    run_stages(merged).into_authoritative()
 }
 
 /// Checks the invariants a configuration must satisfy for this process to do useful work.
@@ -363,9 +454,11 @@ pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
 // a map-shaped setting may not have been defined yet.
 
 /// The sources deserialized from the merged configuration value, separated by source authority.
-struct Sources {
-    datadog: DatadogConfiguration,
-    saluki: SalukiOnly,
+pub(crate) struct Sources {
+    /// The Datadog schema source.
+    pub(crate) datadog: DatadogConfiguration,
+    /// The Saluki-only source.
+    pub(crate) saluki: SalukiOnly,
 }
 
 /// Deserializes both source models from the merged configuration value.
