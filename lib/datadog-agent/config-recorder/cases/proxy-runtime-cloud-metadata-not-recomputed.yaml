@@ -1,0 +1,6 @@
+name: proxy-runtime-cloud-metadata-not-recomputed
+group: behavior
+why: [derived-value-not-recomputed-after-update]
+updates:
+  - {key: use_proxy_for_cloud_metadata, value: true, source: remote-config}
+keys: [use_proxy_for_cloud_metadata, proxy.no_proxy]

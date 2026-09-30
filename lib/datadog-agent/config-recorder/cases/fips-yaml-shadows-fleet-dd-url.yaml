@@ -1,0 +1,10 @@
+name: fips-yaml-shadows-fleet-dd-url
+group: behavior
+why: [fips-proxy-rewrites-endpoints, load-fixup-source-outranks-fleet]
+yaml: |
+  fips:
+    enabled: true
+    local_address: 127.0.0.1
+fleet_policy: |
+  dd_url: https://fleet.test
+keys: [dd_url]
