@@ -43,6 +43,10 @@ pub(crate) struct FoldedCase {
     pub(crate) last: Value,
     /// How many events follow the first snapshot.
     pub(crate) updates: usize,
+    /// The merged sources after the first snapshot, provenance included, as translation reads them.
+    pub(crate) snapshot_sources: SourceTree,
+    /// The merged sources after every event of the stream, provenance included.
+    pub(crate) last_sources: SourceTree,
 }
 
 /// Folds every event of the started case `case_name` onto an empty local base, rejected or not.
@@ -55,7 +59,7 @@ pub(crate) struct FoldedCase {
 /// Returns an error if the case's stream cannot be built (see [`case_updates`]).
 pub(crate) fn fold_case(corpus: &Corpus, case_name: &str) -> Result<FoldedCase, String> {
     let updates = case_updates(corpus, case_name)?;
-    let merged = |agent: &SourceTree| SourceTree::empty().overlay(agent).to_value();
+    let merged = |agent: &SourceTree| SourceTree::empty().overlay(agent);
 
     let mut agent = SourceTree::empty();
     let mut snapshot = None;
@@ -64,10 +68,14 @@ pub(crate) fn fold_case(corpus: &Corpus, case_name: &str) -> Result<FoldedCase, 
         snapshot.get_or_insert_with(|| merged(&agent));
     }
 
+    let snapshot_sources = snapshot.expect("case_updates returns a non-empty stream");
+    let last_sources = merged(&agent);
     Ok(FoldedCase {
-        snapshot: snapshot.expect("case_updates returns a non-empty stream"),
-        last: merged(&agent),
+        snapshot: snapshot_sources.to_value(),
+        last: last_sources.to_value(),
         updates: updates.len() - 1,
+        snapshot_sources,
+        last_sources,
     })
 }
 
@@ -77,7 +85,7 @@ pub(crate) fn deserialize_datadog(value: &Value) -> Result<DatadogConfiguration,
 }
 
 /// Returns the value at the dotted `path` of `value`, following one object member per segment.
-fn lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+pub(crate) fn lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.')
         .try_fold(value, |node, segment| node.as_object()?.get(segment))
 }
@@ -171,7 +179,7 @@ impl Isolator {
 }
 
 /// The name of a leaf's `LeafValue` variant, which groups the rows a report prints.
-fn kind_name(leaf: &LeafValue<'_>) -> &'static str {
+pub(crate) fn kind_name(leaf: &LeafValue<'_>) -> &'static str {
     match leaf {
         LeafValue::Bool(_) => "Bool",
         LeafValue::Duration(_) => "Duration",
@@ -224,7 +232,7 @@ impl Row {
 }
 
 /// Escapes line breaks so a rendered value never splits a row across lines.
-fn one_line(s: &str) -> String {
+pub(crate) fn one_line(s: &str) -> String {
     s.replace('\r', "\\r").replace('\n', "\\n")
 }
 
@@ -258,7 +266,7 @@ impl fmt::Display for Row {
 /// # Errors
 ///
 /// Returns an error if a key line's final read is not present exactly when the case has updates.
-fn reads_at<'a>(
+pub(crate) fn reads_at<'a>(
     case: &str, keys: &'a [KeyLine], checkpoint: Checkpoint, has_updates: bool,
 ) -> Result<Vec<(&'a str, &'a Read)>, String> {
     keys.iter()
