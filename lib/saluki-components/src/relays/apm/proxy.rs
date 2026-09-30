@@ -3,6 +3,7 @@
 //! Every request the APM relay does not handle itself is forwarded, unchanged apart from hop-by-hop headers, to the
 //! trace-agent at the configured destination, and the trace-agent's response is streamed back to the client.
 
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};

@@ -291,6 +291,7 @@ mod tests {
     use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::runtime::state::{DataspaceUpdate, IdentifierFilter};
     use saluki_io::net::BoundListenAddress;
+    #[cfg(unix)]
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -647,6 +648,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn uds_listen_address_parses_path() {
         let config = ApmRelayConfiguration {
