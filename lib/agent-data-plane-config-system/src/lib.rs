@@ -22,6 +22,7 @@
 // expansion limit. Only test builds need the higher limit.
 #![cfg_attr(test, recursion_limit = "256")]
 
+mod agent_stream;
 mod compatibility;
 mod loaded;
 mod saluki_env_overlay;
@@ -30,5 +31,12 @@ mod source;
 mod system;
 mod translators;
 
+pub use agent_stream::{
+    proto_value_to_serde_value, setting_to_config_setting, snapshot_to_settings, AGENT_DECLARED_ONLY_SOURCE,
+    AGENT_DEFAULT_SOURCE, AGENT_UNSET_SOURCES,
+};
 pub use loaded::{EnvPrecedence, LoadedConfiguration};
 pub use system::{ConfigurationSystem, ConfigurationUpdates, Error};
+
+#[cfg(test)]
+mod corpus_replay;
