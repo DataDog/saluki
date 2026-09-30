@@ -369,12 +369,26 @@ derived	size-in-bytes-kb	snapshot	log_file_max_size	GetSizeInBytes	ByteCount	"10
 derived	size-in-bytes-units	snapshot	dogstatsd_log_file_max_size	GetSizeInBytes	ByteCount	"10Mb"	differs	10000000	10485760	# size-unit-base
 derived	size-in-bytes-units	snapshot	log_file_max_size	GetSizeInBytes	ByteCount	"10MB"	differs	10000000	10485760	# size-unit-base
 derived-n/a	api-key-trim	ADP trims `api_key` on every update; comparing it needs the protocol tier (what is sent), not a getter
+derived-n/a	blank-string-unset	an empty string (or, for some keys, a whitespace-only one) becomes unset and others are trimmed; the getter returns the raw string, which the leaf tier compares
 derived-n/a	container-roots	depends on the process environment and filesystem, not only settings
 derived-n/a	cri-socket	depends on the process environment and filesystem, not only settings
+derived-n/a	dogstatsd-log-file-default	an unset or default `dogstatsd_log_file` leaves the path unset, and ADP picks the platform path at startup, outside the translated configuration; the getter ret...[252 chars, fnv1a64 70971d535babe94b]
+derived-n/a	extra-sample-rate-default	an unset `apm_config.extra_sample_rate` becomes 1.0; the Agent's trace config also starts at 1.0 (pkg/trace/config/config.go) and reads the getter only when the...[250 chars, fnv1a64 9b13e0b1d3709405]
+derived-n/a	forwarder-backoff-fallback	a non-positive backoff base or max, or a factor below 2, falls back to the default; the Agent does the same after the getters, in comp/forwarder/defaultforwarder/impl/blocked_endpoints.go
+derived-n/a	forwarder-storage-path-default	an empty or default `forwarder_storage_path` keeps ADP's default, which the retry queue resolves from `run_path` at startup (saluki-components retry.rs), outside the translated configuration
 derived-n/a	main-endpoint	the Agent derives it in a consumer; no recorded getter returns the derived URL
+derived-n/a	max-tps-alias	`apm_config.max_traces_per_second` supplies the target rate unless `target_traces_per_second` is set; the Agent chooses in comp/trace/config/impl/setup.go, and each getter returns only its own key
+derived-n/a	metric-filter-precedence	a non-empty `metric_filterlist` replaces `statsd_metric_blocklist`; the Agent chooses in comp/filterlist/impl/filterlist.go, and each getter returns only its own key
 derived-n/a	mrf-endpoint	the Agent derives it in a consumer; no recorded getter returns the derived URL
+derived-n/a	negative-clamp	a negative count or interval (such as `forwarder_timeout`) becomes 0; the getter returns the negative number, which the leaf tier compares, and each Agent consumer handles it separately
 derived-n/a	no-proxy-cloud-metadata	effective no-proxy list appends cloud metadata IPs; the Agent's streamed list already has them; needs a proxy-list derivation in the table (follow-up)
+derived-n/a	otlp-grpc-receiver-defaults	a zero gRPC max receive size and zero or sub-second keepalive values take grpc-go's defaults; the Agent's OTLP receiver applies them in grpc-go, so the getters return the configured value
 derived-n/a	otlp-receiver-endpoint-override	ADP-only keys overwrite the Agent's endpoint by design; never equal
+derived-n/a	requires-datadog-forwarder	combines ADP-only pipeline switches; no Agent key or getter computes it
+derived-n/a	retry-queue-max-size	the byte budget prefers `forwarder_retry_queue_payloads_max_size` and scales the deprecated count key; the Agent combines them in comp/forwarder/defaultforwarde...[229 chars, fnv1a64 2e5373d0ef351be7]
+derived-n/a	run-path-unset	an empty or placeholder `run_path` becomes unset; the getter returns the string, which the leaf tier compares
+derived-n/a	v3-series-mode-fallback	an unrecognized `use_v3_api.series` mode disables V3; the Agent recovers in pkg/serializer/metrics.go (`evalSeriesV3`), so the getter returns the raw string
+derived-n/a	zstd-level-precedence	the effective zstd level prefers the ADP-only level, then an explicit Agent level, then ADP's default of 3; the getter returns the Agent's level, default 1, so the defaults differ by design
 leaf	breadth-env-top-m	snapshot	metric_tag_filterlist	Get	JsonList	"cr-a cr-b"	adp-rejects	expected value at line 1 column 1	# malformed-json-string
 leaf	depth-env-bool-words	snapshot	allow_arbitrary_tags	GetBool	Bool	"on"	adp-rejects	invalid value: string "on", expected a boolean, a boolean string, or a number	# unparseable-scalar-string
 leaf	depth-env-float	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	"1.342177295e+08"	adp-rejects	invalid value: string "1.342177295e+08", expected an integer, a numeric string, or a boolean	# unparseable-scalar-string

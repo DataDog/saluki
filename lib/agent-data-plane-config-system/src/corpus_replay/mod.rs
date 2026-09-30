@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 use datadog_agent_config_corpus::{read, Corpus};
 
 mod bootstrap;
+mod classification;
 mod compare;
 mod derived;
 mod driver;
