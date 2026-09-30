@@ -6,7 +6,7 @@
 //! from an empty local base: only the Agent's stream contributes.
 
 use agent_data_plane_config::SalukiConfiguration;
-use datadog_agent_config::DatadogConfiguration;
+use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
 use datadog_agent_config_corpus::Corpus;
 use saluki_config::dynamic::ConfigUpdate;
 
@@ -31,6 +31,8 @@ pub(crate) enum Stage {
 pub(crate) struct Failure {
     pub(crate) stage: Stage,
     pub(crate) error: String,
+    /// For a translation failure, each error's key and message, in the order translation recorded them.
+    pub(crate) translate_errors: Vec<(String, String)>,
 }
 
 /// What the typed configuration made of the merged sources at one point in the stream.
@@ -99,6 +101,7 @@ impl Replay {
                 Some(Failure {
                     stage: Stage::Deserialize,
                     error: error.to_string(),
+                    translate_errors: Vec::new(),
                 }),
             ),
             Stages::Untranslatable { sources, errors } => (
@@ -109,6 +112,7 @@ impl Replay {
                 Some(Failure {
                     stage: Stage::Translate,
                     error: errors.to_string(),
+                    translate_errors: keyed_errors(&errors),
                 }),
             ),
             Stages::Translated {
@@ -123,6 +127,7 @@ impl Replay {
                 validation.err().map(|error| Failure {
                     stage: Stage::Validate,
                     error: error.to_string(),
+                    translate_errors: Vec::new(),
                 }),
             ),
         };
@@ -148,6 +153,14 @@ impl Replay {
         };
         (record, state)
     }
+}
+
+/// Returns each error of `errors` as its key and its message.
+fn keyed_errors(errors: &TranslateErrors) -> Vec<(String, String)> {
+    errors
+        .into_iter()
+        .map(|error| (error.key().to_string(), error.to_string()))
+        .collect()
 }
 
 /// Replays the started case `case_name` of `corpus`.
