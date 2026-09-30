@@ -1,6 +1,6 @@
 name: fleet-policy-fips
 group: behavior
-why: [fleet-policy-fips-skips-rewrite]
+why: [fleet-policy-fips-skips-rewrite, load-fixup-skips-fleet-policy]
 fleet_policy: |
   fips:
     enabled: true
