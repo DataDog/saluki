@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use datadog_agent_config::env_reader::apply_env_at_path_vars;
 use datadog_agent_config::{apply_env_at_path, EnvDecode};
 use serde::de::value::{Error as ValueError, SeqDeserializer, StrDeserializer, UnitDeserializer};
 use serde::de::{
@@ -45,10 +46,30 @@ use crate::saluki_only::{SalukiOnly, JSON_SEQUENCE_MARKER};
 ///
 /// Returns a message when an environment value is malformed for its leaf's decode strategy.
 pub(crate) fn apply_env(base: &mut Value, overwrite: bool) -> Result<(), String> {
+    apply_each_leaf(|name, segments, decode| apply_env_at_path(base, &[name], segments, decode, overwrite))
+}
+
+/// Reads every Saluki-only key from explicitly provided environment variable name/value pairs.
+///
+/// Identical to [`apply_env`] except for where the variables come from, so a caller can build the
+/// base without depending on the ambient process environment.
+///
+/// # Errors
+///
+/// Returns a message when an environment value is malformed for its leaf's decode strategy.
+pub(crate) fn apply_env_vars(base: &mut Value, vars: &[(String, String)], overwrite: bool) -> Result<(), String> {
+    apply_each_leaf(|name, segments, decode| {
+        apply_env_at_path_vars(base, vars.iter().cloned(), &[name], segments, decode, overwrite)
+    })
+}
+
+/// Calls `apply` with the environment variable name, the nested path and the decode strategy of
+/// every Saluki-only leaf, stopping at the first error.
+fn apply_each_leaf(mut apply: impl FnMut(&str, &[&str], EnvDecode) -> Result<(), String>) -> Result<(), String> {
     for (path, decode) in leaf_specs() {
         let name = format!("DD_{}", path.join("_").to_uppercase());
         let segments: Vec<&str> = path.iter().map(String::as_str).collect();
-        apply_env_at_path(base, &[name.as_str()], &segments, *decode, overwrite)?;
+        apply(&name, &segments, *decode)?;
     }
     Ok(())
 }
