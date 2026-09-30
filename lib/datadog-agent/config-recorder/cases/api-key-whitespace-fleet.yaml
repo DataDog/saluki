@@ -1,3 +1,5 @@
+# Sets a space-padded api_key in a fleet policy.
+# Shows that the load-time trim runs before the policy merge and misses this key.
 name: api-key-whitespace-fleet
 group: behavior
 why: [api-key-trimmed-at-load-not-fleet, load-fixup-skips-fleet-policy]

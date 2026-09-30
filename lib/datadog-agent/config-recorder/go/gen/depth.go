@@ -126,8 +126,8 @@ func numberOf(s *schema.Key, v interface{}) (float64, error) {
 	return 0, fmt.Errorf("key %q: breadth value %v is not a number", strings.ToLower(s.Path), v)
 }
 
-// depthVariants is every depth variant but the secondary-name one, in the priority order of the
-// case.md §3.2.1 table: a person over the depth budget cuts from the bottom.
+// depthVariants lists every depth variant except the secondary-name variant, in the priority order
+// of the case.md §3.2.1 table. To meet the depth budget, remove variants from the bottom.
 var depthVariants = []depthVariant{
 	yamlVariant("yaml-empty-list", allKinds, fixed([]interface{}{})),
 	yamlVariant("yaml-empty-map", allKinds, fixed(map[string]interface{}{})),

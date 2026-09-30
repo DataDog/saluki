@@ -37,10 +37,10 @@ HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 # Pass the host's Go module proxy through, the same way AGENT_REPO_URL already is.
-# Empty-array expansions use ${a[@]+...}: macOS /bin/bash 3.2 treats "${a[@]}" of an empty array as unbound under set -u.
+# Use ${a[@]+...} for empty arrays: macOS bash 3.2 treats "${a[@]}" as unbound under set -u.
 GOPROXY_ARGS=()
-# Every `docker run` gets --platform linux/arm64 unless CONFIG_RECORDER_PLATFORM overrides it, so the
-# corpus is the same whatever the host until an amd64 run proves the records byte-identical.
+# Use --platform linux/arm64 for every `docker run` unless CONFIG_RECORDER_PLATFORM overrides it.
+# This keeps the corpus host-independent until an amd64 run proves the records byte-identical.
 PLATFORM_ARGS=(--platform "${CONFIG_RECORDER_PLATFORM:-linux/arm64}")
 if [ -n "${GOPROXY:-}" ]; then
     GOPROXY_ARGS=(-e GOPROXY="$GOPROXY")
@@ -233,11 +233,11 @@ run_go_step() {
                 echo "$unformatted" >&2
                 exit 1
             fi
-            # The otlp tag gives the recorder the Agent'"'"'s OTLP section read (configcheck.ReadConfigSection).
-            # It selects no file under pkg/config, comp/core/config or comp/core/configstream, so it does
-            # not change how the config is built or streamed. Check that stays true: compare the recorder'"'"'s
-            # dependency graph with and without the tag, and fail if any Agent package other than
-            # comp/otelcol/otlp/configcheck differs in file set or appears only with the tag.
+            # The otlp tag enables the Agent'"'"'s OTLP read (configcheck.ReadConfigSection).
+            # It selects no file under pkg/config, comp/core/config or comp/core/configstream,
+            # leaving config construction and streaming unchanged. Compare the recorder'"'"'s
+            # dependency graph with and without the tag; fail if any Agent package other than
+            # comp/otelcol/otlp/configcheck changes its file set or appears only with the tag.
             echo "[*] checking the otlp build tag against the rest of the dependency graph"
             go list -e -deps -f "{{.ImportPath}} {{.GoFiles}}" ./cmd/config-recorder | sort > /tmp/deps-no-tag.txt
             go list -e -deps -tags otlp -f "{{.ImportPath}} {{.GoFiles}}" ./cmd/config-recorder | sort > /tmp/deps-otlp.txt

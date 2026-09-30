@@ -1,3 +1,5 @@
+# Sets a known string key to unquoted "yes" and an unknown key to unquoted "Off" in YAML.
+# Shows that YAML reads both as booleans before the known string key is converted to text.
 name: yaml-bool-word-string-key
 group: behavior
 why: [yaml-bool-word-coercion]

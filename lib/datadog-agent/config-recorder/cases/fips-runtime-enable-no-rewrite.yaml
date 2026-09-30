@@ -1,3 +1,5 @@
+# Configures the FIPS proxy in YAML but enables it only in a runtime update.
+# Shows that the load-time URL and TLS adjustments are not recomputed after that update.
 name: fips-runtime-enable-no-rewrite
 group: behavior
 why: [fips-proxy-rewrites-endpoints, derived-value-not-recomputed-after-update]

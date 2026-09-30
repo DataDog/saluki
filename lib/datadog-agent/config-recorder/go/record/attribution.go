@@ -40,8 +40,8 @@ func (r UpdateRange) SeqDelta() uint64 { return r.After - r.Before }
 // Contains reports whether seq is in the update's range.
 func (r UpdateRange) Contains(seq uint64) bool { return r.Before < seq && seq <= r.After }
 
-// WaitsFor reports whether, after the update, the harness waits for an event. An update that
-// issued no notification is not waited on.
+// WaitsFor reports whether the recorder waits for an event after the update. It does not wait
+// when the update issued no notification.
 func (r UpdateRange) WaitsFor() bool { return r.After != r.Before }
 
 // EndsWait reports whether an event with relative sequence seq ends the update's wait.
@@ -88,7 +88,7 @@ type Attribution struct {
 
 // Attribute attributes each event, in arrival order, to the update whose range holds its
 // sequence ID. An event whose sequence ID is in no update's range is ErrAttribution; an event
-// whose key is not one of keys is ErrOrphanEvent (record.md §4.2). Both are harness failures.
+// whose key is not one of keys is ErrOrphanEvent (record.md §4.2). Both fail the case run.
 func Attribute(keys []string, ranges []UpdateRange, events []StreamEvent) (*Attribution, error) {
 	a := &Attribution{KeyEvents: make([][]Event, len(keys))}
 	for n, ev := range events {

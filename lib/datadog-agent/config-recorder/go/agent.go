@@ -131,7 +131,7 @@ type session struct {
 //
 // Before building the app it runs fx.ValidateApp on the same fx options, the way the Agent's own
 // fxutil.TestOneShot does (pkg/util/fxutil/test.go): a wiring error there (a missing or ambiguous
-// dependency in the fx graph) is returned as a plain error, a harness failure. Only an error from
+// dependency in the fx graph) returns a plain error and fails the recorder. Only an error from
 // running the validated graph before fn is entered -- from the config's own construction -- is
 // returned as errConstruction, a startup error (record.md §4.1).
 func withFirstSnapshot(params config.Params, fn func(*session) error) error {

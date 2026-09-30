@@ -73,7 +73,8 @@ type Options struct {
 	// Jobs is how many case processes run at once; 0 means the number of CPUs.
 	Jobs int
 	// SnapshotDir, when set, receives the first-snapshot dumps: `<name>.jsonl` for each recorded
-	// case and for the baseline, and `discarded/<root>/<i>-<name>.jsonl` for every other run.
+	// case and for the baseline, and `discarded/<root>/<i>-<name>.jsonl` for every other run that
+	// reached a first snapshot.
 	SnapshotDir string
 }
 
