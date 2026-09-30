@@ -35,8 +35,9 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 /// Metric name for panic counts.
 const PANIC_METRIC_NAME: &str = "datadog.trace_agent.panic";
 
-/// How many characters of the panic message become the metric tag, keeping the series count
-/// bounded.
+/// How many characters of the panic message become the metric tag. Only the tag length is
+/// bounded: distinct messages still create distinct series, matching the reference, which also
+/// truncates without capping the series count.
 const MESSAGE_TAG_CHARS: usize = 17;
 
 /// How many bytes of the stack are kept for the log line.
@@ -72,13 +73,14 @@ pub fn install_panic_reporter() {
     std::panic::set_hook(Box::new(move |info| {
         let message = panic_message(info);
         let tag = truncate_chars(&message, MESSAGE_TAG_CHARS);
-        lock_counts().record(tag.clone());
+        lock_counts().record(tag);
 
         // Forced capture ignores the backtrace environment, so the stack is available in every
-        // build configuration.
+        // build configuration. The log carries the full message; only the metric tag is
+        // truncated.
         let backtrace = Backtrace::force_capture().to_string();
         let stack = truncate_bytes(&backtrace, STACK_LOG_BYTES);
-        error!(panic = %tag, stack, "A task panicked.");
+        error!(panic = %message, stack, "A task panicked.");
 
         previous_hook(info);
     }));
@@ -162,7 +164,15 @@ impl Source for PanicReporter {
         loop {
             select! {
                 _ = &mut global_shutdown => {
+                    // A panic near shutdown is the one most worth reporting, and the window
+                    // never ticks again; drain the final counts before stopping.
                     debug!("Received shutdown signal.");
+                    for (tag, count) in drain_panic_counts() {
+                        let event = panic_metric_event(&tag, count);
+                        if let Err(error) = context.dispatcher().dispatch_one_named("metrics", event).await {
+                            warn!(error = %error, "Failed to dispatch panic metric during shutdown.");
+                        }
+                    }
                     break;
                 },
                 _ = health.live() => continue,
