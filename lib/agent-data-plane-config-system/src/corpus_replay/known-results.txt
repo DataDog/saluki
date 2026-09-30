@@ -6,6 +6,79 @@
 # Columns are tab-separated; see `known_results.rs` for each tier's columns. `system` and
 # `translator` lines are identified by step position, so inserting an update into a recorded
 # case renumbers its later steps and drops their annotations.
+bootstrap	api-key-whitespace-yaml	snapshot	api_key	GetString	Str	" cr-key "	differs	" cr-key "	"cr-key"
+bootstrap	baseline-default	snapshot	container_cgroup_root	GetString	Str	-	differs	"/host/sys/fs/cgroup/"	"/sys/fs/cgroup/"
+bootstrap	baseline-default	snapshot	container_proc_root	GetString	Str	-	differs	"/host/proc"	"/proc"
+bootstrap	baseline-default	snapshot	data_plane.log_file	GetString	Str	-	differs	"${log_path}/agent-data-plane.log"	"/var/log/datadog/agent-data-plane.log"
+bootstrap	baseline-default	snapshot	dogstatsd_log_file	GetString	Str	-	differs	"${log_path}/dogstatsd_info/dogstatsd-stats.log"	"/var/log/datadog/dogstatsd_info/dogstatsd-stats.log"
+bootstrap	baseline-default	snapshot	dogstatsd_socket	GetString	OptionStr	-	differs	None	"/var/run/datadog/dsd.socket"
+bootstrap	baseline-default	snapshot	forwarder_storage_path	GetString	Str	-	differs	"${run_path}/transactions_to_retry"	"/opt/datadog-agent/run/transactions_to_retry"
+bootstrap	baseline-default	snapshot	proxy.no_proxy	GetStringSlice	StringList	-	differs	[]	["169.254.169.254", "100.100.100.200"]
+bootstrap	baseline-default	snapshot	run_path	GetString	Str	-	differs	"${run_path}"	"/opt/datadog-agent/run"
+bootstrap	breadth-yaml-proxy--proxy-no-proxy	snapshot	proxy.no_proxy	GetStringSlice	StringList	["cr-a","cr-b"]	differs	["cr-a", "cr-b"]	["cr-a", "cr-b", "169.254.169.254", "100.100.100.200"]
+bootstrap	core-agent-disabled-payloads	snapshot	enable_payloads.events	GetBool	Bool	-	differs	true	false
+bootstrap	core-agent-disabled-payloads	snapshot	enable_payloads.series	GetBool	Bool	-	differs	true	false
+bootstrap	core-agent-disabled-payloads	snapshot	enable_payloads.service_checks	GetBool	Bool	-	differs	true	false
+bootstrap	core-agent-disabled-payloads	snapshot	enable_payloads.sketches	GetBool	Bool	-	differs	true	false
+bootstrap	depth-env-json-list	snapshot	apm_config.obfuscation.elasticsearch.keep_values	GetStringSlice	StringList	["[\\"cr-a\\",\\"cr-b\\"]"]	differs	["[\\"cr-a\\",\\"cr-b\\"]"]	["cr-a", "cr-b"]
+bootstrap	depth-env-json-list	snapshot	apm_config.replace_tags	Get	StringMapList	["cr-a","cr-b"]	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+bootstrap	depth-env-json-list	snapshot	metric_tag_filterlist	Get	JsonList	["cr-a","cr-b"]	differs	["cr-a","cr-b"]	"[\\"cr-a\\",\\"cr-b\\"]"
+bootstrap	depth-yaml-empty-list	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	[]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+bootstrap	depth-yaml-empty-list	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	[]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+bootstrap	depth-yaml-empty-list	snapshot	allow_arbitrary_tags	GetBool	Bool	[]	adp-rejects	invalid type: sequence, expected a boolean, a boolean string, or a number
+bootstrap	depth-yaml-empty-list	snapshot	api_key	GetString	Str	[]	adp-rejects	invalid type: sequence, expected a string, a boolean, or a number
+bootstrap	depth-yaml-empty-list	snapshot	apm_config.errors_per_second	GetFloat64	F64	[]	adp-rejects	invalid type: sequence, expected a number, a numeric string, or a boolean
+bootstrap	depth-yaml-empty-list	snapshot	cri_connection_timeout	GetInt64	I64	[]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+bootstrap	depth-yaml-empty-list	snapshot	expected_tags_duration	GetDuration	Duration	[]	adp-rejects	invalid type: sequence, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
+bootstrap	depth-yaml-empty-list	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	[]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+bootstrap	depth-yaml-empty-map	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	{}	adp-rejects	invalid type: map, expected an integer, a numeric string, or a boolean
+bootstrap	depth-yaml-empty-map	snapshot	allow_arbitrary_tags	GetBool	Bool	{}	adp-rejects	invalid type: map, expected a boolean, a boolean string, or a number
+bootstrap	depth-yaml-empty-map	snapshot	api_key	GetString	Str	{}	adp-rejects	invalid type: map, expected a string, a boolean, or a number
+bootstrap	depth-yaml-empty-map	snapshot	apm_config.errors_per_second	GetFloat64	F64	{}	adp-rejects	invalid type: map, expected a number, a numeric string, or a boolean
+bootstrap	depth-yaml-empty-map	snapshot	apm_config.features	GetStringSlice	StringList	{}	adp-rejects	invalid type: map, expected a sequence or a space-separated string
+bootstrap	depth-yaml-empty-map	snapshot	apm_config.replace_tags	Get	StringMapList	{}	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+bootstrap	depth-yaml-empty-map	snapshot	cri_connection_timeout	GetInt64	I64	{}	adp-rejects	invalid type: map, expected an integer, a numeric string, or a boolean
+bootstrap	depth-yaml-empty-map	snapshot	dogstatsd_mapper_profiles	Get	JsonList	{}	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+bootstrap	depth-yaml-empty-map	snapshot	expected_tags_duration	GetDuration	Duration	{}	adp-rejects	invalid type: map, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
+bootstrap	depth-yaml-map-int-values	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	{"cr_a":1}	adp-rejects	data did not match any variant of untagged enum ScalarOrSeq
+bootstrap	depth-yaml-mixed-string	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	"cr-a cr-b,cr-c"	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
+bootstrap	depth-yaml-mixed-string	snapshot	apm_config.replace_tags	Get	StringMapList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+bootstrap	depth-yaml-mixed-string	snapshot	dogstatsd_mapper_profiles	Get	JsonList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+bootstrap	depth-yaml-mixed-string	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	"cr-a cr-b,cr-c"	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
+bootstrap	depth-yaml-one-item-list	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	["cr-a"]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+bootstrap	depth-yaml-one-item-list	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	[134217729]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+bootstrap	depth-yaml-one-item-list	snapshot	allow_arbitrary_tags	GetBool	Bool	[true]	adp-rejects	invalid type: sequence, expected a boolean, a boolean string, or a number
+bootstrap	depth-yaml-one-item-list	snapshot	api_key	GetString	Str	["cr-a"]	adp-rejects	invalid type: sequence, expected a string, a boolean, or a number
+bootstrap	depth-yaml-one-item-list	snapshot	apm_config.errors_per_second	GetFloat64	F64	[11.5]	adp-rejects	invalid type: sequence, expected a number, a numeric string, or a boolean
+bootstrap	depth-yaml-one-item-list	snapshot	cri_connection_timeout	GetInt64	I64	[2]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+bootstrap	depth-yaml-one-item-list	snapshot	expected_tags_duration	GetDuration	Duration	["61s"]	adp-rejects	invalid type: sequence, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
+bootstrap	depth-yaml-one-item-list	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	["cr-a"]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+bootstrap	derived-stop-timeout-default-source	snapshot	data_plane.stop_timeout	GetInt	I64	-	differs	4	9
+bootstrap	docker-dd-agent-env-only	snapshot	container_cgroup_root	GetString	Str	-	differs	"/host/sys/fs/cgroup/"	"/sys/fs/cgroup/"
+bootstrap	docker-dd-agent-env-only	snapshot	container_proc_root	GetString	Str	-	differs	"/host/proc"	"/proc"
+bootstrap	env-list-of-maps-raw-string	snapshot	metric_tag_filterlist	Get	JsonList	[{"metric_name":"m","tags":["t"]}]	differs	[{"metric_name":"m","tags":["t"]}]	"[{\\"metric_name\\":\\"m\\",\\"tags\\":[\\"t\\"]}]"
+bootstrap	fips-proxy-endpoints	snapshot	dd_url	GetString	Str	-	differs	"https://app.datadoghq.com"	"https://127.0.0.1:9804"
+bootstrap	fips-proxy-endpoints	snapshot	skip_ssl_validation	GetBool	Bool	-	differs	false	true
+bootstrap	proxy-env-bare-lowercase	snapshot	proxy.no_proxy	GetStringSlice	StringList	-	differs	[]	["a.test", "b.test c.test", "169.254.169.254", "100.100.100.200"]
+bootstrap	proxy-env-empty-dd-var-overrides	snapshot	proxy.http	GetString	Str	"http://bare.test:3128"	differs	"http://bare.test:3128"	""
+bootstrap	proxy-env-empty-dd-var-overrides	snapshot	proxy.no_proxy	GetStringSlice	StringList	["a.test","b.test,c.test"]	differs	["a.test", "b.test,c.test"]	["a.test", "b.test", "c.test", "169.254.169.254", "100.100.100.200"]
+bootstrap	proxy-runtime-cloud-metadata-not-recomputed	snapshot	proxy.no_proxy	GetStringSlice	StringList	-	differs	[]	["169.254.169.254", "100.100.100.200"]
+bootstrap	yaml-bool-word-string-key	snapshot	env	GetString	Str	"yes"	differs	"yes"	"true"
+bootstrap	yaml-dotted-keys	snapshot	data_plane.api_listen_address	GetString	Str	-	differs	"tcp://0.0.0.0:5100"	"tcp://127.0.0.1:5199"
+bootstrap	yaml-float-nan	snapshot	forwarder_backoff_factor	GetFloat64	F64	-	differs	2.0	NaN
+bootstrap	yaml-map-for-string-key	snapshot	dogstatsd_socket	GetString	OptionStr	{"a":"b"}	adp-rejects	invalid type: map, expected a string, a boolean, or a number
+bootstrap	yaml-noncanonical-map-keys	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	{"010":["j"],"true":["k"]}	differs	{"010": ["j"], "true": ["k"]}	{"8": "[\\"j\\"]", "true": "[\\"k\\"]"}
+bootstrap	yaml-plain-octal	snapshot	dogstatsd_buffer_size	GetInt	I64	"010"	differs	10	8
+bootstrap	yaml-plain-octal	snapshot	env	GetString	Str	"0755"	differs	"0755"	"493"
+bootstrap-aborts	breadth-env-top-m	failed to build the configuration base: environment variable `DD_METRIC_TAG_FILTERLIST` (metric_tag_filterlist): invalid JSON: expected value at line 1 column 1
+bootstrap-aborts	depth-env-bool-words	failed to build the configuration base: environment variable `DD_ALLOW_ARBITRARY_TAGS` (allow_arbitrary_tags): invalid boolean `on`
+bootstrap-aborts	depth-env-float	failed to build the configuration base: environment variable `DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE` (agent_ipc.grpc_max_message_size): invalid integer `1.342177295e+08`
+bootstrap-aborts	depth-env-hex	failed to build the configuration base: environment variable `DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE` (agent_ipc.grpc_max_message_size): invalid integer `0x10`
+bootstrap-aborts	depth-env-mixed-string	failed to build the configuration base: environment variable `DD_APM_PEER_TAGS` (apm_config.peer_tags): invalid JSON: expected value at line 1 column 1
+bootstrap-aborts	depth-env-not-json	failed to build the configuration base: environment variable `DD_ADDITIONAL_ENDPOINTS` (additional_endpoints): invalid JSON: expected value at line 1 column 1
+bootstrap-aborts	env-bool-unparseable-kept-raw	failed to build the configuration base: environment variable `DD_DOGSTATSD_ORIGIN_DETECTION` (dogstatsd_origin_detection): invalid boolean `yes`
+bootstrap-aborts	env-map-bad-json	failed to build the configuration base: environment variable `DD_ADDITIONAL_ENDPOINTS` (additional_endpoints): invalid JSON: key must be a string at line 1 column 2
+bootstrap-aborts	int-string-base-prefix	failed to build the configuration base: environment variable `DD_DOGSTATSD_PORT` (dogstatsd_port): invalid integer `0x10`
 case	additional-endpoints-env	1	0	0	0	0
 case	api-key-whitespace-fleet	1	0	0	0	0
 case	api-key-whitespace-runtime	2	0	0	0	0
@@ -230,6 +303,22 @@ case	yaml-scalar-for-section	1	0	0	1	0
 case	yaml-then-runtime-set	4	0	0	2	0
 case	yaml-unknown-keys	0	0	0	2	0
 case	yaml-unknown-section	0	0	0	2	0
+count	bootstrap	adp-rejects	32
+count	bootstrap	cases-aborted	9
+count	bootstrap	cases-in-scope	209
+count	bootstrap	cases-out-of-scope	15
+count	bootstrap	differs	32
+count	bootstrap	explicit-only	2
+count	bootstrap	match	763
+count	bootstrap	not-emulated:Bool	8
+count	bootstrap	not-emulated:Duration	6
+count	bootstrap	not-emulated:F64	9
+count	bootstrap	not-emulated:I64	14
+count	bootstrap	not-emulated:Str	7
+count	bootstrap	not-emulated:StringList	16
+count	bootstrap	not-emulated:StringListMap	11
+count	bootstrap	not-emulated:StringMap	10
+count	bootstrap	not-modeled	208
 count	cases	started	224
 count	cases	startup-failed	1
 count	derived	adp-rejects	0
