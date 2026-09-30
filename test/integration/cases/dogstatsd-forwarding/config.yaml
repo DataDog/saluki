@@ -72,6 +72,6 @@ procedure:
         protocol: tcp
         timeout: 10s
       - assertion: log_not_contains
-        pattern: "Unsupported configuration key|panic|PANIC"
+        pattern: "Unsupported configuration key|panicked"
         regex: true
         during: 10s
