@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, ops::Range, sync::Arc, time::Duration};
 
 use saluki_context::{
     origin::RawOrigin, tags::SharedTagSet, ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder,
@@ -10,12 +10,26 @@ use stringtheory::interning::GenericMapInterner;
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver, ProcessOrigin};
 
 /// Context resolvers for the DogStatsD source.
-#[derive(Clone)]
 pub struct ContextResolvers {
     primary: ContextResolver,
     no_agg: ContextResolver,
     tags: TagsResolver,
     origin_tags: Option<DogStatsDOriginTagResolver>,
+    // Scratch storage is reused across packets; entries refer only to the current packet.
+    tag_ranges: Vec<Range<usize>>,
+}
+
+impl Clone for ContextResolvers {
+    fn clone(&self) -> Self {
+        Self {
+            primary: self.primary.clone(),
+            no_agg: self.no_agg.clone(),
+            tags: self.tags.clone(),
+            origin_tags: self.origin_tags.clone(),
+            // Each decoder starts with its own reserved buffer, without copying stale offsets.
+            tag_ranges: Vec::with_capacity(64),
+        }
+    }
 }
 
 impl ContextResolvers {
@@ -75,6 +89,7 @@ impl ContextResolvers {
             no_agg: no_agg_resolver,
             tags: tags_resolver,
             origin_tags,
+            tag_ranges: Vec::with_capacity(64),
         })
     }
 
@@ -85,6 +100,7 @@ impl ContextResolvers {
             no_agg,
             tags,
             origin_tags: None,
+            tag_ranges: Vec::with_capacity(64),
         }
     }
 
@@ -97,12 +113,24 @@ impl ContextResolvers {
             no_agg,
             tags,
             origin_tags: Some(origin_tags),
+            tag_ranges: Vec::with_capacity(64),
         }
+    }
+
+    /// Returns the appropriate metric resolver and reusable ordinary-tag offsets.
+    pub(super) fn for_metric(&mut self, timestamped: bool) -> (&mut ContextResolver, &mut Vec<Range<usize>>) {
+        let resolver = if timestamped {
+            &mut self.no_agg
+        } else {
+            &mut self.primary
+        };
+        (resolver, &mut self.tag_ranges)
     }
 
     /// Returns a mutable reference to the primary context resolver.
     ///
     /// This context resolver should be used for "regular" metrics that require aggregation.
+    #[cfg(test)]
     pub fn primary(&mut self) -> &mut ContextResolver {
         &mut self.primary
     }
@@ -111,6 +139,7 @@ impl ContextResolvers {
     ///
     /// This context resolver should be used for metrics that don't require aggregation, which implies the metrics had
     /// a timestamp specified in the payload.
+    #[cfg(test)]
     pub fn no_agg(&mut self) -> &mut ContextResolver {
         &mut self.no_agg
     }

@@ -532,6 +532,54 @@ impl ContextResolver {
         let (context_key, tagset_key) =
             self.create_context_key_with_host(&name, host.as_ref(), tags.clone(), &origin_tags);
 
+        self.resolve_with_keys(name, host, tags, origin_tags, context_key, tagset_key)
+    }
+
+    /// Prepares a deduplicated tag fingerprint before the host or origin tags are known.
+    pub fn prepare_tagset<I, T>(&mut self, tags: I) -> TagSetKey
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        crate::hash::prepare_tagset(tags, &mut self.hash_seen_buffer)
+    }
+
+    /// Resolves a context using an already prepared tag fingerprint.
+    ///
+    /// `tags` must contain exactly the same distinct strings used in [`Self::prepare_tagset`] to
+    /// produce `tagset_key`. Supplying different strings can return or cache an incorrect context.
+    /// The iterator is consumed only on a tag-set cache miss, or when context caching is disabled.
+    ///
+    /// Returns `None` if the context cannot be created with the configured interner capacity.
+    pub fn resolve_with_prepared_tags<N, H, I, T>(
+        &mut self, name: N, host: H, tags: I, origin_tags: SharedTagSet, tagset_key: TagSetKey,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
+    {
+        let context_key = crate::hash::finish_prepared_context(
+            name.as_ref(),
+            Some(host.as_ref()),
+            tagset_key,
+            &origin_tags,
+            &mut self.hash_seen_buffer,
+        );
+        self.resolve_with_keys(name, Some(host), tags, origin_tags, context_key, tagset_key)
+    }
+
+    fn resolve_with_keys<N, H, I, T>(
+        &mut self, name: N, host: Option<H>, tags: I, origin_tags: SharedTagSet, context_key: ContextKey,
+        tagset_key: TagSetKey,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
+    {
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
             let tag_set = self.tags_resolver.create_tag_set(tags).unwrap_or_default();

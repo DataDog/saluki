@@ -2108,25 +2108,35 @@ fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String], default_hostname: &MetaString,
 ) -> Option<Metric> {
-    let well_known_tags = WellKnownTags::from_raw_tags(&packet.tags);
+    let mut well_known_tags = WellKnownTags::default();
+    let raw_tags = packet.tags.as_str();
+    let (context_resolver, tag_ranges) = context_resolvers.for_metric(packet.timestamp.is_some());
+    tag_ranges.clear();
 
+    // Classify and hash in one pass. Retain offsets so a cache miss can intern tags without
+    // splitting/filtering again. Offsets also work when RawTags owns normalized UTF-8 input.
+    let tags = packet.tags.iter().filter(|tag| {
+        if well_known_tags.extract(tag) {
+            false
+        } else {
+            let start = tag.as_ptr() as usize - raw_tags.as_ptr() as usize;
+            tag_ranges.push(start..start + tag.len());
+            true
+        }
+    });
+    let tagset_key = context_resolver.prepare_tagset(tags.chain(additional_tags.iter().map(String::as_str)));
+
+    // Host and origin information are known only after consuming all special tags.
     let origin = origin_from_metric_packet(&packet, &well_known_tags);
     let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
-
-    // Choose the right context resolver based on whether or not this metric is pre-aggregated.
-    let context_resolver = if packet.timestamp.is_some() {
-        context_resolvers.no_agg()
-    } else {
-        context_resolvers.primary()
-    };
-
-    let tags = get_filtered_tags_iterator(&packet.tags, additional_tags);
-
     let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
-
-    // Try to resolve the context for this metric.
+    let (context_resolver, tag_ranges) = context_resolvers.for_metric(packet.timestamp.is_some());
+    let tags = tag_ranges
+        .iter()
+        .map(|range| &raw_tags[range.clone()])
+        .chain(additional_tags.iter().map(String::as_str));
     let maybe_context =
-        context_resolver.resolve_with_host_and_origin_tags(packet.metric_name, hostname, tags, origin_tags);
+        context_resolver.resolve_with_prepared_tags(packet.metric_name, hostname, tags, origin_tags, tagset_key);
 
     match maybe_context {
         Some(context) => {
