@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["MetricOrigin","MetricValues"],"struct":["Histogram","HistogramPoints","HistogramSummary","Metric","MetricMetadata","SampleRate","ScalarPoints","SetPoints","SketchPoints"]};
+window.SIDEBAR_ITEMS = {"enum":["MetricOrigin","MetricValues"],"mod":["context"],"struct":["Histogram","HistogramPoints","HistogramSummary","Metric","MetricMetadata","SampleRate","ScalarPoints","SetPoints","SketchPoints"]};

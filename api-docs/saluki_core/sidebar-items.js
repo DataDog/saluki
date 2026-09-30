@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"macro":["pooled","pooled_newtype"],"mod":["accounting","components","constants","data_model","diagnostic","health","observability","pooling","runtime","support","topology"]};
+window.SIDEBAR_ITEMS = {"macro":["pooled","pooled_newtype"],"mod":["accounting","cache","components","constants","data_model","diagnostic","health","observability","pooling","runtime","support","topology"]};

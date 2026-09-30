@@ -14,18 +14,18 @@
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>prost::Message;
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>saluki_common::collections::FastHashSet;
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>saluki_context::tags::{SharedTagSet, TagSet};
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_context::ContextResolver;
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_core::runtime;
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::topology::interconnect::BufferedDispatcher;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_core::{
-<a href=#23 id=23 data-nosnippet>23</a>    components::{
-<a href=#24 id=24 data-nosnippet>24</a>        sources::{Source, SourceBuilder, SourceContext},
-<a href=#25 id=25 data-nosnippet>25</a>        BuildContext,
+<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>saluki_core::{
+<a href=#18 id=18 data-nosnippet>18</a>    accounting::{MemoryBounds, MemoryBoundsBuilder},
+<a href=#19 id=19 data-nosnippet>19</a>    components::{
+<a href=#20 id=20 data-nosnippet>20</a>        sources::{Source, SourceBuilder, SourceContext},
+<a href=#21 id=21 data-nosnippet>21</a>        BuildContext,
+<a href=#22 id=22 data-nosnippet>22</a>    },
+<a href=#23 id=23 data-nosnippet>23</a>    data_model::{
+<a href=#24 id=24 data-nosnippet>24</a>        event::{metric::context::ContextResolver, EventType},
+<a href=#25 id=25 data-nosnippet>25</a>        tags::{SharedTagSet, TagSet},
 <a href=#26 id=26 data-nosnippet>26</a>    },
-<a href=#27 id=27 data-nosnippet>27</a>    data_model::event::EventType,
-<a href=#28 id=28 data-nosnippet>28</a>    topology::{EventsBuffer, OutputDefinition},
+<a href=#27 id=27 data-nosnippet>27</a>    runtime,
+<a href=#28 id=28 data-nosnippet>28</a>    topology::{interconnect::BufferedDispatcher, EventsBuffer, OutputDefinition},
 <a href=#29 id=29 data-nosnippet>29</a>};
 <a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>saluki_env::WorkloadProvider;
 <a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span>saluki_error::ErrorContext <span class="kw">as _</span>;

@@ -131,7 +131,7 @@
 <a href=#131 id=131 data-nosnippet>131</a>    file_values: serde_json::Value, scanned_env_vars: <span class="kw-2">&amp;</span>[(String, String)], modeled_env_vars: Vec&lt;(String, String)&gt;,
 <a href=#132 id=132 data-nosnippet>132</a>) -&gt; GenericConfiguration {
 <a href=#133 id=133 data-nosnippet>133</a>    <span class="kw">let </span>(cfg, <span class="kw">_</span>) =
-<a href=#134 id=134 data-nosnippet>134</a>        ConfigurationLoader::for_tests_with_provider_factory(<span class="prelude-val">Some</span>(file_values), <span class="prelude-val">Some</span>(scanned_env_vars), <span class="bool-val">false</span>, |<span class="kw">_</span>| {
+<a href=#134 id=134 data-nosnippet>134</a>        ConfigurationLoader::for_tests_with_provider_factory(<span class="prelude-val">Some</span>(file_values), <span class="prelude-val">Some</span>(scanned_env_vars), <span class="prelude-val">None</span>, |<span class="kw">_</span>| {
 <a href=#135 id=135 data-nosnippet>135</a>            DatadogEnvProvider::from_env_vars(modeled_env_vars)
 <a href=#136 id=136 data-nosnippet>136</a>                .expect(<span class="string">"test environment values should decode into their declared shapes"</span>)
 <a href=#137 id=137 data-nosnippet>137</a>        })

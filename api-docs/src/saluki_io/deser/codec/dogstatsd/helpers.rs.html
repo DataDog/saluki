@@ -6,7 +6,7 @@
 <a href=#6 id=6 data-nosnippet>6</a>    sequence::preceded,
 <a href=#7 id=7 data-nosnippet>7</a>    IResult, Parser <span class="kw">as _</span>,
 <a href=#8 id=8 data-nosnippet>8</a>};
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_context::{origin::OriginTagCardinality, tags::RawTags};
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_core::data_model::{origin::OriginTagCardinality, tags::RawTags};
 <a href=#10 id=10 data-nosnippet>10</a>
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span><span class="kw">super</span>::DogStatsDCodecConfiguration;
 <a href=#12 id=12 data-nosnippet>12</a>
@@ -219,7 +219,7 @@
 <a href=#219 id=219 data-nosnippet>219</a>
 <a href=#220 id=220 data-nosnippet>220</a><span class="attr">#[cfg(test)]
 <a href=#221 id=221 data-nosnippet>221</a></span><span class="kw">mod </span>tests {
-<a href=#222 id=222 data-nosnippet>222</a>    <span class="kw">use </span>saluki_context::origin::OriginTagCardinality;
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="kw">use </span>saluki_core::data_model::origin::OriginTagCardinality;
 <a href=#223 id=223 data-nosnippet>223</a>
 <a href=#224 id=224 data-nosnippet>224</a>    <span class="kw">use </span>super::{cardinality, to_valid_utf8, CARDINALITY_PREFIX};
 <a href=#225 id=225 data-nosnippet>225</a>

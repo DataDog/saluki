@@ -15,7 +15,7 @@
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>datadog_protos::agent::{Entity, EntityId <span class="kw">as </span>RemoteEntityId, TaggerState, UnixDogstatsdMsg};
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>prost::Message;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>saluki_common::{collections::FastHashMap, time::get_unix_timestamp};
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_core::data_model::{origin::OriginTagCardinality, tags::SharedTagSet};
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_env::{workload::EntityId, WorkloadProvider};
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_error::{generic_error, GenericError};
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>tracing::{debug, error, warn};

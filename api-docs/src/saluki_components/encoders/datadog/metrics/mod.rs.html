@@ -9,19 +9,19 @@
 <a href=#9 id=9 data-nosnippet>9</a>    buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
 <a href=#10 id=10 data-nosnippet>10</a>    iter::ReusableDeduplicator,
 <a href=#11 id=11 data-nosnippet>11</a>};
-<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_context::tags::{SharedTagSet, Tag};
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>saluki_core::runtime;
-<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>saluki_core::{
-<a href=#16 id=16 data-nosnippet>16</a>    components::{encoders::<span class="kw-2">*</span>, BuildContext},
-<a href=#17 id=17 data-nosnippet>17</a>    data_model::{
-<a href=#18 id=18 data-nosnippet>18</a>        event::{
-<a href=#19 id=19 data-nosnippet>19</a>            metric::{Metric, MetricOrigin, MetricValues},
-<a href=#20 id=20 data-nosnippet>20</a>            EventType,
-<a href=#21 id=21 data-nosnippet>21</a>        },
-<a href=#22 id=22 data-nosnippet>22</a>        payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
-<a href=#23 id=23 data-nosnippet>23</a>    },
-<a href=#24 id=24 data-nosnippet>24</a>    observability::ComponentMetricsExt <span class="kw">as _</span>,
+<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_core::{
+<a href=#13 id=13 data-nosnippet>13</a>    accounting::{MemoryBounds, MemoryBoundsBuilder},
+<a href=#14 id=14 data-nosnippet>14</a>    components::{encoders::<span class="kw-2">*</span>, BuildContext},
+<a href=#15 id=15 data-nosnippet>15</a>    data_model::{
+<a href=#16 id=16 data-nosnippet>16</a>        event::{
+<a href=#17 id=17 data-nosnippet>17</a>            metric::{Metric, MetricOrigin, MetricValues},
+<a href=#18 id=18 data-nosnippet>18</a>            EventType,
+<a href=#19 id=19 data-nosnippet>19</a>        },
+<a href=#20 id=20 data-nosnippet>20</a>        payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
+<a href=#21 id=21 data-nosnippet>21</a>        tags::{SharedTagSet, Tag},
+<a href=#22 id=22 data-nosnippet>22</a>    },
+<a href=#23 id=23 data-nosnippet>23</a>    observability::ComponentMetricsExt <span class="kw">as _</span>,
+<a href=#24 id=24 data-nosnippet>24</a>    runtime,
 <a href=#25 id=25 data-nosnippet>25</a>    topology::{EventsBuffer, PayloadsBuffer},
 <a href=#26 id=26 data-nosnippet>26</a>};
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>saluki_error::{generic_error, ErrorContext <span class="kw">as _</span>, GenericError};
@@ -1813,13 +1813,13 @@
 <a href=#1813 id=1813 data-nosnippet>1813</a>    <span class="kw">use </span>bytes::Bytes;
 <a href=#1814 id=1814 data-nosnippet>1814</a>    <span class="kw">use </span>datadog_protos::metrics::v3::MetricData <span class="kw">as </span>V3MetricData;
 <a href=#1815 id=1815 data-nosnippet>1815</a>    <span class="kw">use </span>protobuf::Message <span class="kw">as _</span>;
-<a href=#1816 id=1816 data-nosnippet>1816</a>    <span class="kw">use </span>saluki_context::{
-<a href=#1817 id=1817 data-nosnippet>1817</a>        tags::{Tag, TagSet},
-<a href=#1818 id=1818 data-nosnippet>1818</a>        Context,
-<a href=#1819 id=1819 data-nosnippet>1819</a>    };
-<a href=#1820 id=1820 data-nosnippet>1820</a>    <span class="kw">use </span>saluki_core::data_model::{
-<a href=#1821 id=1821 data-nosnippet>1821</a>        event::{metric::MetricMetadata, Event},
-<a href=#1822 id=1822 data-nosnippet>1822</a>        payload::Payload,
+<a href=#1816 id=1816 data-nosnippet>1816</a>    <span class="kw">use </span>saluki_core::data_model::{
+<a href=#1817 id=1817 data-nosnippet>1817</a>        event::{
+<a href=#1818 id=1818 data-nosnippet>1818</a>            metric::{context::Context, MetricMetadata},
+<a href=#1819 id=1819 data-nosnippet>1819</a>            Event,
+<a href=#1820 id=1820 data-nosnippet>1820</a>        },
+<a href=#1821 id=1821 data-nosnippet>1821</a>        payload::Payload,
+<a href=#1822 id=1822 data-nosnippet>1822</a>        tags::{Tag, TagSet},
 <a href=#1823 id=1823 data-nosnippet>1823</a>    };
 <a href=#1824 id=1824 data-nosnippet>1824</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
 <a href=#1825 id=1825 data-nosnippet>1825</a>    <span class="kw">use </span>stringtheory::MetaString;

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["event","payload"]};
+window.SIDEBAR_ITEMS = {"mod":["event","origin","payload","tags"]};
