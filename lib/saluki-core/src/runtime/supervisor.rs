@@ -8,10 +8,7 @@ use std::{
     time::Duration,
 };
 
-use saluki_common::{
-    supervision::{InitializationError, ShutdownStrategy, Supervisable},
-    sync::shutdown::ShutdownHandle,
-};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::GenericError;
 use serde::{Deserialize, Serialize};
 use snafu::{OptionExt as _, Snafu};
@@ -21,6 +18,7 @@ use tracing::{debug, error, warn};
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
+    supervisable::{InitializationError, ShutdownStrategy, Supervisable},
     tree::{ChildFacts, ChildKey, NodeConfig, Roster, SupervisionTreeHandle, SupervisorNode},
     worker_state::WorkerState,
 };

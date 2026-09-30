@@ -1,10 +1,6 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_common::{
-    cache::{weight::ItemCountWeighter, Cache, CacheBuilder},
-    collections::PrehashedHashSet,
-    hash::NoopU64BuildHasher,
-};
+use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Gauge};
 use stringtheory::{
@@ -18,9 +14,12 @@ use super::{
     hash::{hash_context_with_host_and_seen, ContextKey, TagSetKey},
     Context, ContextInner,
 };
-use crate::data_model::{
-    origin::{OriginTagsResolver, RawOrigin},
-    tags::{SharedTagSet, TagSet},
+use crate::{
+    cache::{weight::ItemCountWeighter, Cache, CacheBuilder},
+    data_model::{
+        origin::{OriginTagsResolver, RawOrigin},
+        tags::{SharedTagSet, TagSet},
+    },
 };
 
 // SAFETY: We know, unquestionably, that this value is not zero.

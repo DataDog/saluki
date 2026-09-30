@@ -2,9 +2,10 @@
 use std::{future::Future, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
-use saluki_common::supervision::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, GenericError};
+
+use super::supervisable::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 
 /// Fallback graceful shutdown period for a function-based worker.
 ///

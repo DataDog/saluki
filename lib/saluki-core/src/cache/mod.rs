@@ -1,12 +1,13 @@
+//! A concurrent cache with optional expiration and telemetry.
+
 use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
+use saluki_common::{hash::FastBuildHasher, task::spawn_traced};
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Counter, Gauge, Histogram};
 use tokio::time::sleep;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
-
-use crate::{hash::FastBuildHasher, task::spawn_traced};
 
 mod expiry;
 use self::expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle};

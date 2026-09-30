@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use saluki_common::collections::FastIndexMap;
-use saluki_common::supervision::ShutdownStrategy;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::TaskInstrument as _;
 use tokio::{
@@ -21,6 +20,7 @@ use tracing::{debug, warn};
 
 use super::process::{Process, ProcessExt as _};
 use super::spawn::CURRENT_SUPERVISOR;
+use super::supervisable::ShutdownStrategy;
 use super::supervisor::{
     ChildConfig, ChildShutdown, ProcessError, SupervisedChild, SupervisorError, SupervisorHandle, WorkerError,
 };

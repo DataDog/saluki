@@ -5513,9 +5513,7 @@ dependencies = [
 name = "saluki-common"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "bytes",
- "crossbeam-queue",
  "foldhash 0.2.0",
  "http-body",
  "http-body-util",
@@ -5526,7 +5524,6 @@ dependencies = [
  "papaya",
  "pin-project",
  "proptest",
- "quick_cache",
  "regex",
  "saluki-antithesis",
  "saluki-error",
@@ -5536,11 +5533,9 @@ dependencies = [
  "serde_with",
  "shake",
  "smallvec",
- "snafu",
  "stringtheory",
  "tokio",
  "tokio-test",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -5649,6 +5644,7 @@ dependencies = [
  "bitmask-enum",
  "bytesize",
  "criterion",
+ "crossbeam-queue",
  "ddsketch",
  "futures",
  "http",
@@ -5664,6 +5660,7 @@ dependencies = [
  "process-memory",
  "prometheus-exposition",
  "proptest",
+ "quick_cache",
  "saluki-antithesis",
  "saluki-api",
  "saluki-common",

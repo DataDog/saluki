@@ -1,6 +1,6 @@
 use std::{num::NonZeroUsize, time::Duration};
 
-use saluki_common::cache::{Cache, CacheBuilder};
+use saluki_core::cache::{Cache, CacheBuilder};
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Gauge};
 use stringtheory::interning::{GenericMapInterner, Interner as _};

@@ -1,20 +1,14 @@
-//! Contract for supervised processes.
+//! The contract that a supervised process implements.
 //!
-//! This module holds the *contract* a supervised process implements -- [`Supervisable`] and the types in its
-//! signature -- while the machinery that drives it (supervisors, restart strategies, the supervision tree) lives in
-//! `saluki-core`. The split mirrors `http`/`hyper`: the contract is a leaf that anything can implement, so it sits low
-//! enough for crates beneath `saluki-core` to describe background work without depending on the engine that runs it.
-//!
-//! Most code should reach for these through `saluki_core::runtime`, which re-exports them alongside the supervisor
-//! itself.
+//! A supervisor drives a [`Supervisable`]. The [`Supervisable`] names the process, tells how to shut it down, and
+//! builds the future of the process each time the process starts. This module also contains the types in its signature.
 
 use std::{future::Future, pin::Pin, time::Duration};
 
 use async_trait::async_trait;
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::GenericError;
 use snafu::Snafu;
-
-use crate::sync::shutdown::ShutdownHandle;
 
 /// A `Future` that represents the execution of a supervised process.
 pub type SupervisorFuture = Pin<Box<dyn Future<Output = Result<(), GenericError>> + Send>>;

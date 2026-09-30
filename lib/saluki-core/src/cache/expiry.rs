@@ -6,12 +6,11 @@ use std::{
 
 use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
-use saluki_metrics::reexport::metrics::Counter;
-
-use crate::{
+use saluki_common::{
     collections::FastHashMap,
     time::{get_coarse_unix_timestamp, get_unix_timestamp},
 };
+use saluki_metrics::reexport::metrics::Counter;
 
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
