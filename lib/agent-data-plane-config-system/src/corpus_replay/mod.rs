@@ -12,6 +12,7 @@ use datadog_agent_config_corpus::{read, Corpus};
 
 mod compare;
 mod driver;
+mod leaf_replay;
 mod loader;
 
 /// The checked-in corpus, parsed once and shared by every test that reads it.
