@@ -211,6 +211,9 @@ pub(crate) struct Row {
     pub(crate) getter: Option<Getter>,
     /// The leaf's `LeafValue` variant name; `None` for a key that is not modeled.
     pub(crate) kind: Option<&'static str>,
+    /// The value at `key`'s path in the folded tree at this checkpoint, or `None` if the tree does
+    /// not hold it.
+    pub(crate) streamed: Option<Value>,
     pub(crate) result: RowResult,
 }
 
@@ -281,6 +284,7 @@ pub(crate) fn checkpoint_rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for &(key, read) in reads {
+        let streamed = lookup(tree, key).cloned();
         let row = |leaf, getter, kind, result| Row {
             case: case.to_string(),
             checkpoint,
@@ -288,6 +292,7 @@ pub(crate) fn checkpoint_rows(
             leaf,
             getter,
             kind,
+            streamed: streamed.clone(),
             result,
         };
         let Some(&index) = isolator.by_key.get(key) else {
