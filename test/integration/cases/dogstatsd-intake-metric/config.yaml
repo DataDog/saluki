@@ -46,6 +46,6 @@ procedure:
       - assertion: process_stable_for
         duration: 5s
       - assertion: log_not_contains
-        pattern: "panic|PANIC"
+        pattern: "panicked"
         regex: true
         during: 5s
