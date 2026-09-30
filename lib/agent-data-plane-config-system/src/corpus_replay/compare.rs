@@ -20,7 +20,6 @@ pub(crate) enum Verdict {
     /// The values disagree; both sides are rendered exactly.
     Differs { adp: String, agent: String },
     /// The typed configuration could not be deserialized, so there is no leaf to compare.
-    #[allow(dead_code)] // Produced by the corpus replay, not by the rules in this module.
     AdpRejects { error: String },
     /// No rule compares this pair; counted, never silent.
     NotCompared { reason: Reason },
@@ -82,7 +81,7 @@ impl LeafKind {
         LeafKind::StringMapList,
     ];
 
-    fn of(leaf: &LeafValue<'_>) -> LeafKind {
+    pub(crate) fn of(leaf: &LeafValue<'_>) -> LeafKind {
         match leaf {
             LeafValue::Bool(_) => LeafKind::Bool,
             LeafValue::Duration(_) => LeafKind::Duration,
