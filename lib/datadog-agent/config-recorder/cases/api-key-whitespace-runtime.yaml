@@ -1,0 +1,6 @@
+name: api-key-whitespace-runtime
+group: behavior
+why: [api-key-trimmed-at-load-not-fleet, derived-value-not-recomputed-after-update]
+updates:
+  - {key: api_key, value: " cr-key ", source: remote-config}
+keys: [api_key]

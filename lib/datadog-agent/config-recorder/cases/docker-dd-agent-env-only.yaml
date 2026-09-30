@@ -3,4 +3,4 @@ group: behavior
 why: [env-detection-outside-config]
 env:
   DOCKER_DD_AGENT: "true"
-keys: [procfs_path]
+keys: [procfs_path, container_proc_root, container_cgroup_root]
