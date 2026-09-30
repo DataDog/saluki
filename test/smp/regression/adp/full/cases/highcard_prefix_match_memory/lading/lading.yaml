@@ -51,4 +51,4 @@ generator:
         timestamp:
           probability: 0.0
     maximum_prebuild_cache_size_bytes: 512 MiB
-    bytes_per_second: 500 MiB
+    bytes_per_second: 300 MiB

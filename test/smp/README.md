@@ -403,7 +403,9 @@ not assertions on received payload contents.
 
 `highcard_control`, `highcard_exact_match`, and `highcard_prefix_match` each add CPU,
 memory, and ingress-throughput cases. They share a 10,000-name input pool, approximately
-100,000 generated contexts, and the existing 500 MiB/s offered traffic and metric-type mix.
+100,000 generated contexts, and 300 MiB/s offered traffic with the existing metric-type mix.
+The lower rate provides headroom for an equal-input CPU/RSS comparison: the initial 500 MiB/s
+run achieved less ingress throughput in the filtered cases than in the control.
 The aggregator limit is 101,000, the string interner is 32 MiB, and the generator's fixed
 prebuilt cache is 512 MiB in all three cases. Timestamped traffic is disabled.
 
@@ -421,7 +423,7 @@ For the notebook, predeclare the same steady-state interval for each replicate: 
 after its first valid sample and exclude the final partial bucket. Keep startup/peak RSS separate.
 Report per-replicate CPU/RSS means and their spread across all ten replicates, and verify comparable
 accepted throughput, post-aggregation event rates, and successful output to both destinations.
-Check for context-limit drops and saturation; if any case cannot sustain 500 MiB/s, compare capacity
+Check for context-limit drops and saturation; if any case cannot sustain 300 MiB/s, compare capacity
 or rerun all three at the same lower rate instead of interpreting lower CPU as better efficiency.
 These are bounded high-cardinality stress cases, not a universal worst-case guarantee or a test of
 timestamped traffic that bypasses aggregation.
