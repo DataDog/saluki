@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,33 +30,8 @@ func TestDriveOnTestdata(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "config-recorder")
-	// The recorder calls the Agent's OTLP section read, which exists only under the otlp tag.
-	build := exec.Command("go", "build", "-tags", "otlp", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
-
-	out := filepath.Join(dir, "corpus.jsonl")
 	work := filepath.Join(dir, "work")
-	cmd := exec.Command(bin, "drive",
-		"--cases", "testdata",
-		"--workdir", work,
-		"--out", out,
-		"--schema", schema,
-		"--agent-commit", strings.Repeat("a", 40),
-		"--container-image", "test@sha256:"+strings.Repeat("0", 64),
-		"--inputs-digest", "sha256:"+strings.Repeat("1", 64),
-		"--jobs", "2",
-	)
-	if o, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("drive: %v\n%s", err, o)
-	}
-
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := drive(t, schema, "testdata", dir)
 	// keysByCase and sourceByKey read the key lines' case, key and snapshot source.
 	keysByCase := map[string][]string{}
 	sourceByKey := map[string]string{}
@@ -144,6 +120,117 @@ func TestDriveOnTestdata(t *testing.T) {
 			t.Errorf("source of %s: got %q, want %q", k, got, want)
 		}
 	}
+}
+
+// TestDriveKeepsInitTimeWarnings runs a case whose env value the Agent cannot parse. The Agent
+// logs that while its config package initializes, before the recorder installs its logger, and
+// delivers the buffered record when the logger is set up. The case must still start, and the
+// record must appear among its construction warnings without the caller position the Agent's
+// logger prefixed to it, identical to the copy the Agent logs again during construction.
+func TestDriveKeepsInitTimeWarnings(t *testing.T) {
+	schema := os.Getenv("CONFIG_RECORDER_TEST_SCHEMA")
+	if schema == "" {
+		t.Skip("CONFIG_RECORDER_TEST_SCHEMA not set; run under regenerate.sh")
+	}
+
+	dir := t.TempDir()
+	cases := filepath.Join(dir, "cases")
+	if err := os.MkdirAll(cases, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const name = "env-json-not-json"
+	caseText := "name: " + name + "\n" +
+		"group: behavior\n" +
+		"why: [env-json-parse-error-logged-at-init]\n" +
+		"env:\n" +
+		"  DD_APM_PEER_TAGS: not-json\n" +
+		"keys: [apm_config.peer_tags]\n"
+	if err := os.WriteFile(filepath.Join(cases, name+".yaml"), []byte(caseText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	data := drive(t, schema, cases, dir)
+	var caseLine string
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if strings.Contains(line, `"type":"case"`) && between(line, `"case":"`, `"`) == name {
+			caseLine = line
+		}
+	}
+	if caseLine == "" {
+		t.Fatalf("no case line for %s in:\n%s", name, data)
+	}
+	if strings.Contains(caseLine, `"startup_error"`) {
+		t.Fatalf("case did not start: %s", caseLine)
+	}
+	var parsed struct {
+		ConstructionWarnings []record.Warning `json:"construction_warnings"`
+	}
+	if err := json.Unmarshal([]byte(caseLine), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	var parseErrors []record.Warning
+	for _, w := range parsed.ConstructionWarnings {
+		if strings.HasPrefix(w.Message, "/") {
+			t.Errorf("construction warning starts with a caller position: %q", w.Message)
+		}
+		if strings.Contains(w.Message, `"apm_config.peer_tags" can not be parsed`) {
+			parseErrors = append(parseErrors, w)
+		}
+	}
+	if len(parseErrors) != 2 || parseErrors[0] != parseErrors[1] {
+		t.Errorf("want the init-time and construction copies of the parse error, identical; got %+v in %s",
+			parseErrors, caseLine)
+	}
+}
+
+func TestStripCallerPrefix(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`/state/datadog-agent/pkg/config/nodetreemodel/config.go:853 "a" can not be parsed`, `"a" can not be parsed`},
+		{"pkg/x.go:1 msg", "msg"},
+		{"x.go:12 ", ""},
+		{"msg without a position", "msg without a position"},
+		{"failed to read /etc/x.go:12 now", "failed to read /etc/x.go:12 now"},
+		{"/etc/datadog.yaml: no such file", "/etc/datadog.yaml: no such file"},
+		{"/a/b.go:12x msg", "/a/b.go:12x msg"},
+		{"/a/b.go: 12 msg", "/a/b.go: 12 msg"},
+		{"", ""},
+	} {
+		if got := stripCallerPrefix(c.in); got != c.want {
+			t.Errorf("stripCallerPrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// drive builds the recorder binary under dir, runs its `drive` subcommand over the cases
+// directory and returns the corpus it wrote.
+func drive(t *testing.T, schema, cases, dir string) []byte {
+	t.Helper()
+	bin := filepath.Join(dir, "config-recorder")
+	// The recorder calls the Agent's OTLP section read, which exists only under the otlp tag.
+	build := exec.Command("go", "build", "-tags", "otlp", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	out := filepath.Join(dir, "corpus.jsonl")
+	cmd := exec.Command(bin, "drive",
+		"--cases", cases,
+		"--workdir", filepath.Join(dir, "work"),
+		"--out", out,
+		"--schema", schema,
+		"--agent-commit", strings.Repeat("a", 40),
+		"--container-image", "test@sha256:"+strings.Repeat("0", 64),
+		"--inputs-digest", "sha256:"+strings.Repeat("1", 64),
+		"--jobs", "2",
+	)
+	if o, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("drive: %v\n%s", err, o)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // readDump reads a first-snapshot dump into each key's streamed source.

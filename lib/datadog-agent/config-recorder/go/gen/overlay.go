@@ -5,8 +5,8 @@
 
 // Package gen writes the config recorder's generated cases: it reads the Agent's merged schema
 // (package schema) and saluki's overlay, chooses the keys of each generated group, and gives them values by rule. It writes each case as a record.Case.
-// It needs no Agent config: the facts only a built config knows (default-layer Go types and the
-// bound env var names) come in as AgentFacts.
+// It needs no Agent config: the facts only a built config knows (default-layer Go types, default
+// getter lists and the bound env var names) come in as AgentFacts.
 package gen
 
 import (
@@ -55,4 +55,7 @@ type AgentFacts struct {
 	DefaultType map[string]string
 	// EnvVars is the Agent's GetEnvVars().
 	EnvVars map[string]bool
+	// Getters is each schema key's default getter list (getter-map.md §1), as the recorder selects
+	// it from the key's default-layer value.
+	Getters map[string][]string
 }

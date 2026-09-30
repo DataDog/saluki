@@ -313,7 +313,7 @@ func (g *generator) envAndYAML(group string, keys []string, withSet bool) error 
 }
 
 // Generate writes the generated groups `baseline`, `breadth`, `unsupported`, `excluded` and
-// `unknown`, batched by section (case.md §3.2). Overlay keys that are not schema keys are in no
+// `unknown`, batched by section (case.md §3.2), and `depth`, one case per variant (§3.2.1). Overlay keys that are not schema keys are in no
 // generated group; a key the overlay both inventories and excludes is an error.
 func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, error) {
 	leaves, err := s.LowercasedLeaves()
@@ -382,6 +382,9 @@ func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, er
 	}
 
 	if err := g.unknownGroup(modeled); err != nil {
+		return nil, err
+	}
+	if err := g.depthGroup(modeled); err != nil {
 		return nil, err
 	}
 	sort.Slice(g.res.Cases, func(i, j int) bool { return g.res.Cases[i].Name < g.res.Cases[j].Name })
