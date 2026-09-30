@@ -245,6 +245,11 @@ For any configuration change, check the risks:
 - **Dynamic behavior:** startup and update paths construct the same reactive state from typed input.
 - **Test preservation:** deleting legacy deserialization coverage did not delete behavioral
   coverage.
+- **Replay coverage:** a change to a deserializer, the environment reader, or translation runs
+  the replay tests, `cargo nextest run --lib --bins -p agent-data-plane-config-system`. Bless with
+  `ADP_CORPUS_REPLAY_BLESS=1 cargo nextest run --lib -p agent-data-plane-config-system
+  corpus_replay_results_equal_the_known_results_file`. A change to `known-results.txt` is part of
+  the review.
 
 ## Check your work
 
