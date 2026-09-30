@@ -1,3 +1,5 @@
+# Sets site to datadoghq.eu without specifying dd_url.
+# Shows that an intake URL derived from site exists only in endpoint getters, not as a key.
 name: site-without-dd-url
 group: behavior
 why: [site-derived-url-getter-only]

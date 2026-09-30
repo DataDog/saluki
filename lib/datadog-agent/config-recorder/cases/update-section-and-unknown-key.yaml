@@ -1,3 +1,5 @@
+# Attempts CLI writes to the apm_config section and to an unknown key.
+# Shows that both writes are rejected without storing or notifying a value.
 name: update-section-and-unknown-key
 group: behavior
 why: [set-on-inner-node-or-unknown-key-dropped]

@@ -1,8 +1,9 @@
 //! A JSON scanner that keeps the facts a canonical-form check needs.
 //!
 //! `serde_json` normalizes escapes, member order and number text away, so the strict corpus reader
-//! parses each line itself, from a `&str` that the caller has already checked is UTF-8. The scanner accepts no whitespace between tokens (canonical lines have
-//! none), rejects unsorted or duplicate object members at every depth, and records for every string
+//! parses each line itself from a `&str` the caller has checked as UTF-8. The scanner accepts no
+//! whitespace between tokens (canonical lines have none), rejects unsorted or duplicate object members
+//! at every depth, and records for every string
 //! whether its escaping is exactly what Go's `encoding/json` writes with `SetEscapeHTML(false)`.
 //! Whether that matters depends on where the string sits, which only the line reader knows.
 

@@ -1,3 +1,5 @@
+# Enables the FIPS proxy in YAML and supplies dd_url through a fleet policy.
+# Shows that the Agent's load-time URL rewrite takes priority over the fleet value.
 name: fips-yaml-shadows-fleet-dd-url
 group: behavior
 why: [fips-proxy-rewrites-endpoints, load-fixup-source-outranks-fleet]

@@ -1334,7 +1334,6 @@ dependencies = [
 name = "datadog-agent-config"
 version = "0.1.0"
 dependencies = [
- "datadog-agent-config-corpus",
  "datadog-agent-config-overlay-model",
  "figment",
  "go-duration",
@@ -1344,7 +1343,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
  "syn 3.0.6",
  "typify",
 ]
@@ -1353,7 +1351,9 @@ dependencies = [
 name = "datadog-agent-config-corpus"
 version = "0.1.0"
 dependencies = [
+ "datadog-agent-config-overlay-model",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

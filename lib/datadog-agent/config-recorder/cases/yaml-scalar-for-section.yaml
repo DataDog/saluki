@@ -1,3 +1,5 @@
+# Supplies a scalar instead of a map for the use_v2_api YAML section.
+# Shows that the Agent warns and drops the scalar, leaving section defaults intact.
 name: yaml-scalar-for-section
 group: behavior
 why: [yaml-scalar-into-structured-node-becomes-leaf]

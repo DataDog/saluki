@@ -1,3 +1,6 @@
+# Sets proxy.http in YAML and HTTP_PROXY, then sets DD_PROXY_HTTP to empty.
+# Shows that empty DD_PROXY_HTTP overrides both; proxy values get a load-time source,
+# and DD_PROXY_NO_PROXY splits on commas or spaces.
 name: proxy-env-empty-dd-var-overrides
 group: behavior
 why: [env-proxy-custom-pipeline, proxy-source-config-post-init]

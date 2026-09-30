@@ -1,3 +1,5 @@
+# Sets a DD_ environment variable with no bound configuration key.
+# Shows that the Agent warns about it rather than adding it to the config stream.
 name: env-unbound-dd-var
 group: behavior
 why: [env-unbound-dd-vars-warned-not-applied]

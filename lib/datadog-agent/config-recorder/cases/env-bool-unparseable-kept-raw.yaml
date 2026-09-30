@@ -1,3 +1,5 @@
+# Sets a boolean setting to the unparseable environment value "yes".
+# Shows that failed environment conversion retains the raw string in the stream.
 name: env-bool-unparseable-kept-raw
 group: behavior
 why: [env-conversion-error-keeps-raw-string]

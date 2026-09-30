@@ -1,3 +1,5 @@
+# Overrides forwarder_stop_timeout through the CLI after load.
+# Shows that data_plane.stop_timeout keeps its load-time value and default source.
 name: cli-stop-timeout-not-recomputed
 group: behavior
 why: [derived-value-written-with-source-default, cli-override-skips-fixups]
