@@ -131,7 +131,7 @@ async fn make_config(
     file_values: serde_json::Value, scanned_env_vars: &[(String, String)], modeled_env_vars: Vec<(String, String)>,
 ) -> GenericConfiguration {
     let (cfg, _) =
-        ConfigurationLoader::for_tests_with_provider_factory(Some(file_values), Some(scanned_env_vars), false, |_| {
+        ConfigurationLoader::for_tests_with_provider_factory(Some(file_values), Some(scanned_env_vars), None, |_| {
             DatadogEnvProvider::from_env_vars(modeled_env_vars)
                 .expect("test environment values should decode into their declared shapes")
         })

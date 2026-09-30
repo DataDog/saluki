@@ -11,6 +11,9 @@ use saluki_error::GenericError;
 
 mod config_runtime;
 
+mod config_updates;
+pub use self::config_updates::ConfigUpdatesWorker;
+
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
 

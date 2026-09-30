@@ -1,7 +1,9 @@
 //! [`ConfigurationSystem`]: the runtime configuration, translated from the raw sources and kept
 //! current as the Datadog Agent streams updates.
 
+use std::future::Future;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
@@ -10,12 +12,20 @@ use saluki_config::dynamic::ConfigUpdate;
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::Snafu;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Mutex};
+use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::saluki_only::SalukiOnly;
 use crate::source::SourceTree;
 use crate::translators::DatadogTranslator;
+
+// Timeout for waiting for the initial configuration snapshot from the Datadog Agent.
+//
+// This is separately from any timeout related to _connected_ to the Datadog Agent and establishing the configuration
+// update stream in the first place.
+const INITIAL_CONFIG_SNAPSHOT_TIMEOUT_SECS: u64 = 15;
+const INITIAL_CONFIG_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(INITIAL_CONFIG_SNAPSHOT_TIMEOUT_SECS);
 
 /// An error building the translated configuration from the merged sources.
 #[derive(Debug, Snafu)]
@@ -30,6 +40,15 @@ pub enum Error {
     /// The Datadog Agent closed the configuration stream before sending the initial snapshot.
     #[snafu(display("configuration stream closed before the initial snapshot"))]
     StreamClosed,
+
+    /// The Datadog Agent configuration stream closed after the initial snapshot, so no further
+    /// configuration updates can be applied.
+    #[snafu(display("configuration stream closed; no further configuration updates can be applied"))]
+    UpdateStreamClosed,
+
+    /// Timed out waiting for the initial snapshot from the Datadog Agent configuration stream.
+    #[snafu(display("timed out waiting for the initial snapshot ({INITIAL_CONFIG_SNAPSHOT_TIMEOUT_SECS} seconds)"))]
+    SnapshotTimeOut,
 
     /// The typed base could not be built from the file and environment.
     #[snafu(display("failed to build the configuration base: {message}"))]
@@ -79,24 +98,38 @@ impl ConfigurationSystem {
     /// model from the stream folded onto the local `base` (file + environment).
     ///
     /// Blocks for the first authoritative snapshot and is the strict startup gate: a snapshot that
-    /// never arrives, cannot be deserialized, or fails translation aborts the boot. `async` because
-    /// the update task requires a Tokio runtime; keeping that requirement visible here avoids a
-    /// panic deep inside `tokio::spawn`.
+    /// never arrives, cannot be deserialized, or fails translation aborts the boot.
+    ///
+    /// Returns the system together with the [`ConfigurationUpdates`] that apply each later update.
+    /// No update after the first snapshot is applied until the caller runs them.
     ///
     /// # Errors
     ///
     /// Returns an error if the stream closes before the first snapshot, or the initial configuration
     /// cannot be deserialized or translated.
-    pub(crate) async fn connected(mut agent_rx: mpsc::Receiver<ConfigUpdate>, base: SourceTree) -> Result<Self> {
-        // The first stream message is the authoritative initial snapshot.
-        let first = agent_rx.recv().await.ok_or(Error::StreamClosed)?;
+    pub(crate) async fn connected(
+        mut agent_rx: mpsc::Receiver<ConfigUpdate>, base: SourceTree,
+    ) -> Result<(Self, ConfigurationUpdates)> {
+        // The first stream message is the authoritative initial snapshot. There is no timeout on this
+        // wait by design: if the Datadog Agent never sends the snapshot, startup blocks here forever.
+        saluki_antithesis::reachable!("config readiness wait entered");
+        let first = match timeout(INITIAL_CONFIG_SNAPSHOT_TIMEOUT, agent_rx.recv()).await {
+            Ok(None) => {
+                saluki_antithesis::unreachable!("config stream closed before the initial snapshot");
+                return Err(Error::StreamClosed);
+            }
+            Ok(Some(first)) => first,
+            Err(_) => return Err(Error::SnapshotTimeOut),
+        };
+        saluki_antithesis::sometimes!(true, "config readiness signal received");
+
         let mut agent = SourceTree::empty();
         fold(&mut agent, &first);
 
         // Startup is the strict gate: this is the first, authoritative Agent snapshot, so any error
-        // fails the boot and we never run on bad config. At runtime (see `agent_loop`) the same
-        // check instead rejects the offending update and keeps the last-known-good configuration,
-        // because a runtime update must never take the system down.
+        // fails the boot and we never run on bad config. At runtime (see `ConfigurationUpdates`) the
+        // same check instead rejects the offending update and keeps the last-known-good
+        // configuration, because a runtime update must never take the system down.
         let merged = base.overlay(&agent);
         let config = translate_authoritative(&merged)?;
 
@@ -107,16 +140,18 @@ impl ConfigurationSystem {
         let (tick, _) = watch::channel(());
         let tick = Arc::new(tick);
 
-        tokio::spawn(agent_loop(
-            agent_rx,
-            base,
-            agent,
-            Arc::clone(&current),
-            Arc::clone(&sources),
-            Arc::clone(&tick),
-        ));
+        let updates = ConfigurationUpdates {
+            state: Arc::new(Mutex::new(UpdateState {
+                agent_rx,
+                base,
+                agent,
+                current: Arc::clone(&current),
+                sources: Arc::clone(&sources),
+                tick: Arc::clone(&tick),
+            })),
+        };
 
-        Ok(Self { current, sources, tick })
+        Ok((Self { current, sources, tick }, updates))
     }
 
     /// Installs a static configuration without an update task.
@@ -174,38 +209,81 @@ fn load_sources(sources: &RwLock<Arc<SourceTree>>) -> Arc<SourceTree> {
     Arc::clone(&sources.read().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// Owns the Datadog Agent config stream for the life of the process: validates each update against
-/// the typed model and commits it on success. Ends when the stream closes.
+/// Applies each configuration update from the Datadog Agent after the initial snapshot.
 ///
-/// Each update is processed individually (no burst collapse) so a rejection can be attributed to the
-/// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
-async fn agent_loop(
-    mut agent_rx: mpsc::Receiver<ConfigUpdate>, base: SourceTree, mut agent: SourceTree,
-    current: Arc<ArcSwap<SalukiConfiguration>>, sources: Arc<RwLock<Arc<SourceTree>>>, tick: Arc<watch::Sender<()>>,
-) {
-    while let Some(update) = agent_rx.recv().await {
-        // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
-        // model from it. Only a fully successful update advances the committed layer, so a rejected
-        // value never lingers to re-poison a later merge.
-        let mut tentative = agent.clone();
-        fold(&mut tentative, &update);
-        let merged = base.overlay(&tentative);
-        match translate_authoritative(&merged) {
-            Ok(config) => {
-                agent = tentative;
-                {
-                    let mut sources = sources.write().unwrap_or_else(PoisonError::into_inner);
-                    *sources = Arc::new(merged);
-                    current.store(Arc::new(config));
-                }
-                tick.send_replace(());
-                debug!("Applied configuration update.");
-            }
-            Err(e) => warn!(
-                error = %e,
-                "Rejected configuration update; keeping the last-known-good typed configuration."
-            ),
+/// [`LoadedConfiguration::run`][crate::LoadedConfiguration::run] returns this once the system holds
+/// the initial snapshot. No later update is applied until the caller calls [`run`][Self::run].
+/// Until then, updates stay queued in the Agent configuration stream.
+#[must_use = "configuration updates from the Datadog Agent are never applied unless the updates are run"]
+pub struct ConfigurationUpdates {
+    state: Arc<Mutex<UpdateState>>,
+}
+
+impl ConfigurationUpdates {
+    /// Applies each update from the Datadog Agent until the configuration stream closes.
+    ///
+    /// Each call continues from where the previous call stopped, because the stream and the
+    /// accepted configuration persist between calls. Thus, a caller can run this again after a call
+    /// fails or panics. If a call panicked while it applied an update, that update is lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UpdateStreamClosed`] when the configuration stream closes. The stream does
+    /// not reopen, so each later call fails in the same way at once.
+    pub fn run(&self) -> impl Future<Output = std::result::Result<(), Error>> + Send + 'static {
+        let state = Arc::clone(&self.state);
+        async move {
+            // A panic does not poison this lock, so a later call takes over the state as the panic left it.
+            let mut state = state.lock_owned().await;
+            state.apply_updates().await
         }
+    }
+}
+
+/// The state that [`ConfigurationUpdates`] keeps between runs.
+struct UpdateState {
+    agent_rx: mpsc::Receiver<ConfigUpdate>,
+    base: SourceTree,
+    // The accumulated Agent layer of the last accepted update.
+    agent: SourceTree,
+    current: Arc<ArcSwap<SalukiConfiguration>>,
+    sources: Arc<RwLock<Arc<SourceTree>>>,
+    tick: Arc<watch::Sender<()>>,
+}
+
+impl UpdateState {
+    /// Validates each update from the Datadog Agent config stream against the typed model and commits
+    /// it on success. Ends when the stream closes.
+    ///
+    /// Each update is processed individually (no burst collapse) so a rejection can be attributed to
+    /// the exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
+    async fn apply_updates(&mut self) -> Result<()> {
+        while let Some(update) = self.agent_rx.recv().await {
+            // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
+            // model from it. Only a fully successful update advances the committed layer, so a rejected
+            // value never lingers to re-poison a later merge.
+            let mut tentative = self.agent.clone();
+            fold(&mut tentative, &update);
+            let merged = self.base.overlay(&tentative);
+            match translate_authoritative(&merged) {
+                Ok(config) => {
+                    self.agent = tentative;
+                    {
+                        let mut sources = self.sources.write().unwrap_or_else(PoisonError::into_inner);
+                        *sources = Arc::new(merged);
+                        self.current.store(Arc::new(config));
+                    }
+                    self.tick.send_replace(());
+                    debug!("Applied configuration update.");
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "Rejected configuration update; keeping the last-known-good typed configuration."
+                ),
+            }
+        }
+
+        Err(Error::UpdateStreamClosed)
     }
 }
 
@@ -370,9 +448,10 @@ mod tests {
             base.entry("api_key").or_insert(json!(TEST_API_KEY));
         }
         let base = SourceTree::all_explicit(base);
-        let system = ConfigurationSystem::connected(agent_rx, base)
+        let (system, updates) = ConfigurationSystem::connected(agent_rx, base)
             .await
             .expect("system builds");
+        tokio::spawn(updates.run());
         (system, agent_tx)
     }
 
@@ -492,7 +571,8 @@ mod tests {
             .unwrap();
         let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
 
-        let system = ConfigurationSystem::connected(agent_rx, base)
+        // The updates only include later updates. This test does not need them, so it never runs them.
+        let (system, _updates) = ConfigurationSystem::connected(agent_rx, base)
             .await
             .expect("startup accepts the streamed JSON strings");
 
