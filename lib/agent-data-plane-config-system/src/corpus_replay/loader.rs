@@ -269,12 +269,7 @@ mod tests {
     /// back with the test-only inverse, must equal what the corpus itself records.
     #[test]
     fn round_trip_over_every_corpus_case() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../datadog-agent/config-recorder/corpus.jsonl"
-        );
-        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
-        let corpus = read(&bytes).unwrap_or_else(|v| panic!("corpus.jsonl should be well-formed: {v:#?}"));
+        let corpus = crate::corpus_replay::corpus();
 
         const BASE: i32 = 1_000_000;
         // One entry per (case, key) that had at least one `unset_source` in the corpus, counted
@@ -283,7 +278,7 @@ mod tests {
 
         for case in &corpus.cases {
             let outcome =
-                build_events(&corpus, &case.name, BASE).unwrap_or_else(|e| panic!("case {:?}: {e}", case.name));
+                build_events(corpus, &case.name, BASE).unwrap_or_else(|e| panic!("case {:?}: {e}", case.name));
 
             let started = match &case.outcome {
                 Outcome::StartupError(_) => {
@@ -410,12 +405,7 @@ mod tests {
     /// earlier update.
     #[test]
     fn every_corpus_case_matches_independent_stream_invariants() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../datadog-agent/config-recorder/corpus.jsonl"
-        );
-        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
-        let corpus = read(&bytes).unwrap_or_else(|v| panic!("corpus.jsonl should be well-formed: {v:#?}"));
+        let corpus = crate::corpus_replay::corpus();
         let Outcome::Started(baseline) = &corpus
             .case(datadog_agent_config_corpus::BASELINE_CASE)
             .expect("baseline case")
@@ -429,7 +419,7 @@ mod tests {
             let Outcome::Started(started) = &case.outcome else {
                 continue;
             };
-            let CaseEvents::Started(events) = build_events(&corpus, &case.name, BASE).expect("builds") else {
+            let CaseEvents::Started(events) = build_events(corpus, &case.name, BASE).expect("builds") else {
                 panic!("case {:?} started", case.name)
             };
 
