@@ -8,9 +8,14 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
 
 - Compared: one `LeafValue` read from `DatadogConfiguration` through `LEAVES` against one recorded
   `GetterRead` of the same key, at one checkpoint (`reads.snapshot` or `reads.final`).
-- Not compared: translation into `SalukiConfiguration`, which is a separate tier.
-- Not compared: validation of the translated configuration, which is a separate tier.
-- Not compared: values derived from several keys, which is a separate tier.
+- Not compared here: values agent-data-plane computes from settings, such as its stop timeout or a
+  byte size parsed from a string. The derived tier (`derived.rs`) compares each one against the Agent
+  getter that computes the same value: `GetInt` on `data_plane.stop_timeout`, and `GetSizeInBytes` on
+  a byte-size key. A leaf that matches as a string can still differ as the value ADP uses.
+- Not compared: validation of the translated configuration. Validation rejects only a blank
+  `api_key`, and most cases set none. A step whose translation succeeds is therefore applied, and its
+  validation failure is recorded as a `system` line. Later steps describe the configuration
+  agent-data-plane would hold if the key were set.
 
 ## 2. Leaf kinds
 
@@ -106,6 +111,18 @@ never be dropped or treated as `Match`. A pair with no rule must give `NotCompar
 
 Both belong to a provenance tier, not to this one.
 
+### 6.1 Recorded getters with no leaf rule
+
+| Getter            | Where it is recorded                         | What compares it                                                    |
+|-------------------|----------------------------------------------|---------------------------------------------------------------------|
+| `GetSizeInBytes`  | byte-size keys such as `log_file_max_size`   | the derived tier, against the byte count ADP translates             |
+| `GetFloat64Slice` | `histogram_percentiles`                      | nothing yet: the leaf is a string list that ADP parses later, and no rule emulates that parse |
+| `GetStringMap`    | map keys, after `GetStringMapString`         | nothing: `StringMap` emulates `GetStringMapString` (decision 2)     |
+| `ReadConfigSection`, `IsConfigured` | section and source probes  | nothing: explicit-only (§6)                                          |
+
+A case that records only these getters has no compared verdict. Its `case` line in the known results
+shows zero matches and zero differences, so a reviewer can see the gap.
+
 ## 7. Not observable from the stream
 
 A section set to `null` in YAML, for example `otlp_config.receiver.protocols.grpc: null`, streams
@@ -123,7 +140,7 @@ can't show this difference, so these rules can't catch it.
 | 3 | `I64` getters              | `GetInt` only; `GetInt` and `GetInt64`                   | both                            | Same Go integer and encoding; otherwise row 3 keys are never compared. |
 | 4 | Option kinds               | emulate `Get`; emulate the typed getter                  | typed getter                    | `Get` holds the stored value, which may be a string from an environment variable; the typed getter is what consumers read. |
 | 5 | `None` against `0` or `""` | match; differ                                            | match                           | The typed getter cannot say "unset": Agent code sees `0` or `""` whether the key is unset or set to it, so no difference Agent code can observe is hidden. Whether ADP code treats `None` as the Agent treats the zero value is a question for the translation tier, not the leaf. |
-| 6 | nil against empty list or map, at the top level of a result or of a map value | match; differ | match | Go code cannot tell a nil slice or map from an empty one through `len`, `range` or indexing, and ADP's `Vec` and `HashMap` cannot hold nil. When ADP rejects a streamed `null`, the verdict is `AdpRejects`, so that failure stays visible. A `null` element inside a generic value stays strict. getter-map.md §3 keeps nil and empty distinct in the record so this rule is a choice made here, not in the corpus. |
+| 6 | nil against empty list or map, at the top level of a result or of a map value | match; differ | match | Go code sees no difference through `len`, `range` or indexing. It can test `== nil`, but ADP's `Vec` and `HashMap` cannot hold nil, so no ADP value could match a nil result; whether a consumer branches on nil is a question for that consumer, not for the leaf. When ADP rejects a streamed `null`, the verdict is `AdpRejects`, so that failure stays visible. A `null` element inside a generic value stays strict. getter-map.md §3 keeps nil and empty distinct in the record so this rule is a choice made here, not in the corpus. |
 | 7 | Float equality             | numeric `==`; bit equality                               | bit equality                    | Exact, and `-0.0` against `0.0` is a real difference. |
 | 8 | NaN and infinities         | never match; match by name                               | match by name                   | The corpus encodes them without a payload. |
 | 9 | Durations                  | seconds; nanoseconds                                     | whole nanoseconds               | `GetDuration` is nanoseconds; 1 ns off must differ. |
@@ -132,4 +149,18 @@ can't show this difference, so these rules can't catch it.
 | 12 | List order                | significant; ignored                                     | significant                     | Slices are ordered in Go and in Rust. |
 | 13 | Explicit-only reads       | compare against a leaf; `NotCompared`                    | `NotCompared`                   | Their results describe sources, not a leaf's value (§6). |
 
+| 14 | Byte sizes                | compare the string leaf only; also compare the parsed size | both: the leaf here, the size in the derived tier | ADP parses the string itself, so equal strings can give different byte counts. |
+
 No normalization is allowed beyond decisions 5, 6, 8 and 11.
+
+## 9. Adding a leaf kind or a getter
+
+1. A new leaf kind: add it to the generator (`lib/datadog-agent/config/build/witness_gen.rs`), which
+   writes `LEAVES` and `LeafValue`, and to the tables in §2, §3 and §4.
+2. A new rule: implement it in `compare.rs` for the (kind, getter) pair, with unit tests that
+   cover a match, a difference, and a result shape the getter cannot return.
+3. A new derived value: add a row to `DERIVATIONS` in `derived.rs`, or give the reason it is not
+   replayed in `NOT_REPLAYED`.
+4. Record the getter: add a case that names it (case.md), and regenerate the corpus.
+5. Regenerate the known results (the command is in the file's header). Give each new divergence
+   line a divergence type: an existing one, or a new `type` line.
