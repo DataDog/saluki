@@ -115,6 +115,15 @@ func Parse(data []byte) (Schema, error) {
 	if len(s) == 0 {
 		return nil, fmt.Errorf("schema has no keys")
 	}
+	// Key matches paths ignoring case, so two paths that differ only in case would be ambiguous.
+	folded := map[string]string{}
+	for p := range s {
+		lower := strings.ToLower(p)
+		if other, dup := folded[lower]; dup {
+			return nil, fmt.Errorf("schema: %q and %q differ only in case", other, p)
+		}
+		folded[lower] = p
+	}
 	return s, nil
 }
 
@@ -170,9 +179,18 @@ func leaf(path string, c *rawNode) *Key {
 }
 
 // Key returns the schema key at path; a path not in the schema is a Key of Kind Unknown.
+//
+// The Agent lowercases every key, so case files spell keys in lowercase, but a few schema paths
+// are not lowercase (GUI_host). A path that matches no schema path exactly is therefore matched
+// ignoring case; Parse rejects a schema where that could match two paths.
 func (s Schema) Key(path string) *Key {
 	if k, ok := s[path]; ok {
 		return k
+	}
+	for p, k := range s {
+		if strings.EqualFold(p, path) {
+			return k
+		}
 	}
 	return &Key{Path: path, Kind: Unknown}
 }
