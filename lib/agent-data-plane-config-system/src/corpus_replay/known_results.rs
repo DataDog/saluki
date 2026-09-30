@@ -3,14 +3,22 @@
 //! The file lists every result that is not a plain match, one fact per tab-separated line, sorted, so
 //! that any change to what the replay computes shows up as a line added or removed. Its columns:
 //!
-//! - `count <group> <label> <n>`: rows by leaf verdict (`NotCompared` by reason), cases by outcome, and
-//!   system steps by outcome.
-//! - `leaf <case> <checkpoint> <key> <getter> differs <adp value> <agent value>`, or
-//!   `... adp-rejects <error>`: every leaf row that is neither a match nor not compared.
+//! - `count <group> <label> <n>`: rows by leaf verdict (`NotCompared` by a stable reason code, for
+//!   example `not-emulated:Bool` or `explicit-only`), cases by outcome, and system steps by outcome.
+//! - `case <name> <match> <differs> <adp-rejects> <not-modeled> <not-compared> `: one line per started
+//!   case, the counts of that case's leaf rows at both checkpoints, by the same five verdicts.
+//! - `startup-failed <name>`: one line per case whose Agent startup failed (its count is on the
+//!   `count cases startup-failed` line).
+//! - `leaf <case> <checkpoint> <key> <getter> <kind> <streamed> differs <adp value> <agent value>`, or
+//!   `... adp-rejects <error>`: every leaf row that is neither a match nor not compared. `<kind>` is
+//!   the key's `LeafValue` variant name (for example `Bool`); `<streamed>` is the value at the key's
+//!   path in the folded tree at that checkpoint (JSON), or `-` when the tree does not hold it.
 //! - `translator <case> <step> <key> <error>`: every key whose translation failed at a step.
 //! - `system <case> <step> <stage> <error>`: every rejected step except the blank API key, which the
 //!   corpus baseline makes every case hit and is counted instead. A translation failure gives its
-//!   number of keys here; its errors are on the `translator` lines.
+//!   number of keys here; its errors are on the `translator` lines. `system` and `translator` lines
+//!   are identified by step position, so inserting an update into a recorded case renumbers every
+//!   later step and drops that case's `system`/`translator` annotations.
 //! - `not-modeled <key>`: every distinct key the corpus records that is not a supported leaf.
 //! - `uncovered <key>`: every supported leaf no started case compares, by a match or a difference.
 //!
@@ -26,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use datadog_agent_config::LEAVES;
 use datadog_agent_config_corpus::{Corpus, Getter, Outcome};
 
-use super::compare::Verdict;
+use super::compare::{Reason, Verdict};
 use super::driver::{replay_case, Stage};
 use super::leaf_replay::{corpus_rows, Checkpoint, RowResult};
 use crate::system::Error;
@@ -52,6 +60,9 @@ const MAX_LISTED: usize = 50;
 
 /// What separates an annotation from the line it annotates.
 const ANNOTATION: &str = "\t# ";
+
+/// The five leaf verdicts a `case` line counts, in column order.
+const CASE_VERDICTS: [&str; 5] = ["match", "differs", "adp-rejects", "not-modeled", "not-compared"];
 
 /// Returns the 64-bit FNV-1a hash of `bytes`: fixed by its definition, unlike the standard hasher.
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -104,8 +115,18 @@ fn identity_columns(tier: &str) -> usize {
         "leaf" => 5,
         "translator" => 4,
         "system" => 4,
-        "not-modeled" | "uncovered" => 2,
+        "case" | "startup-failed" | "not-modeled" | "uncovered" => 2,
         _ => usize::MAX,
+    }
+}
+
+/// Returns a stable code for a `NotCompared` reason, unlike its `Display` text: rewording the
+/// message must not rewrite lines.
+fn reason_code(reason: &Reason) -> String {
+    match reason {
+        Reason::NotEmulated { kind, .. } => format!("not-emulated:{kind:?}"),
+        Reason::ExplicitOnly => "explicit-only".to_string(),
+        Reason::ResultShape => "result-shape".to_string(),
     }
 }
 
@@ -135,51 +156,65 @@ fn known_results(corpus: &Corpus) -> String {
     let mut counts: BTreeMap<(&str, String), usize> = BTreeMap::new();
     let mut not_modeled = BTreeSet::new();
     let mut compared = BTreeSet::new();
+    // Per case, the counts of its leaf rows, in `CASE_VERDICTS` order.
+    let mut case_counts: BTreeMap<&str, [usize; CASE_VERDICTS.len()]> = BTreeMap::new();
 
     for row in &rows {
         let getter = row.getter.map_or("-", Getter::as_str);
+        let streamed = row.streamed.as_ref().map_or("-".to_string(), |v| field(&v.to_string()));
         let leaf_line = |verdict: &str, detail: &[String]| {
             let mut columns = vec![
                 "leaf".to_string(),
-                row.case.clone(),
+                field(&row.case),
                 checkpoint_name(row.checkpoint).to_string(),
                 field(&row.key),
                 getter.to_string(),
+                row.kind.unwrap_or("-").to_string(),
+                streamed.clone(),
                 verdict.to_string(),
             ];
             columns.extend_from_slice(detail);
             columns.join("\t")
         };
-        let label = match &row.result {
-            RowResult::Leaf(Verdict::Match) => "match".to_string(),
+        let (label, verdict_index) = match &row.result {
+            RowResult::Leaf(Verdict::Match) => ("match".to_string(), 0),
             RowResult::Leaf(Verdict::Differs { adp, agent }) => {
                 lines.insert(leaf_line("differs", &[field(adp), field(agent)]));
-                "differs".to_string()
+                ("differs".to_string(), 1)
             }
             RowResult::Leaf(Verdict::AdpRejects { error }) => {
                 lines.insert(leaf_line("adp-rejects", &[field(error)]));
-                "adp-rejects".to_string()
+                ("adp-rejects".to_string(), 2)
             }
-            RowResult::Leaf(Verdict::NotCompared { reason }) => format!("not-compared: {reason}"),
+            RowResult::Leaf(Verdict::NotCompared { reason }) => (reason_code(reason), 4),
             RowResult::NotModeled => {
                 not_modeled.insert(row.key.as_str());
-                "not-modeled".to_string()
+                ("not-modeled".to_string(), 3)
             }
         };
         if let (RowResult::Leaf(Verdict::Match | Verdict::Differs { .. }), Some(leaf)) = (&row.result, row.leaf) {
             compared.insert(leaf);
         }
         *counts.entry(("leaf", label)).or_default() += 1;
+        case_counts.entry(row.case.as_str()).or_insert([0; CASE_VERDICTS.len()])[verdict_index] += 1;
     }
 
     let blank_api_key = Error::MissingApiKey.to_string();
     for case in &corpus.cases {
         if !matches!(case.outcome, Outcome::Started(_)) {
             *counts.entry(("cases", "startup-failed".to_string())).or_default() += 1;
+            lines.insert(format!("startup-failed\t{}", field(&case.name)));
             continue;
         }
         *counts.entry(("cases", "started".to_string())).or_default() += 1;
+        let verdicts = case_counts
+            .get(case.name.as_str())
+            .copied()
+            .unwrap_or([0; CASE_VERDICTS.len()]);
+        let counted: Vec<String> = verdicts.iter().map(ToString::to_string).collect();
+        lines.insert(format!("case\t{}\t{}", field(&case.name), counted.join("\t")));
         let replayed = replay_case(corpus, &case.name).unwrap_or_else(|error| panic!("harness error: {error}"));
+        let case_name = field(&case.name);
         for (position, step) in replayed.steps.iter().enumerate() {
             let outcome = match &step.failure {
                 None => "accepted".to_string(),
@@ -196,7 +231,7 @@ fn known_results(corpus: &Corpus) -> String {
                     };
                     let columns = [
                         "system",
-                        &case.name,
+                        case_name.as_str(),
                         &step_name(position),
                         stage_name(failure.stage),
                         &error,
@@ -205,7 +240,7 @@ fn known_results(corpus: &Corpus) -> String {
                     for (key, error) in &failure.translate_errors {
                         let columns = [
                             "translator",
-                            &case.name,
+                            case_name.as_str(),
                             &step_name(position),
                             &field(key),
                             &field(error),
@@ -235,7 +270,9 @@ fn known_results(corpus: &Corpus) -> String {
          # `corpus_replay_results_equal_the_known_results_file`; do not edit, except to annotate a line by\n\
          # ending it with a tab and `# <text>`. To regenerate it, run:\n\
          #   {BLESS_COMMAND}\n\
-         # Columns are tab-separated; see `known_results.rs` for each tier's columns.\n"
+         # Columns are tab-separated; see `known_results.rs` for each tier's columns. `system` and\n\
+         # `translator` lines are identified by step position, so inserting an update into a recorded\n\
+         # case renumbers its later steps and drops their annotations.\n"
     );
     for line in lines {
         out.push_str(&line);

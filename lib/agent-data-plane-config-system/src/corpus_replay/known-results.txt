@@ -3,87 +3,313 @@
 # `corpus_replay_results_equal_the_known_results_file`; do not edit, except to annotate a line by
 # ending it with a tab and `# <text>`. To regenerate it, run:
 #   ADP_CORPUS_REPLAY_BLESS=1 cargo nextest run --lib -p agent-data-plane-config-system corpus_replay_results_equal_the_known_results_file
-# Columns are tab-separated; see `known_results.rs` for each tier's columns.
+# Columns are tab-separated; see `known_results.rs` for each tier's columns. `system` and
+# `translator` lines are identified by step position, so inserting an update into a recorded
+# case renumbers its later steps and drops their annotations.
+case	additional-endpoints-env	1	0	0	0	0
+case	api-key-whitespace-fleet	1	0	0	0	0
+case	api-key-whitespace-runtime	2	0	0	0	0
+case	api-key-whitespace-yaml	1	0	0	0	0
+case	baseline-default	226	0	0	0	0
+case	breadth-env-agent-ipc	1	0	0	0	0
+case	breadth-env-apm-config	35	0	0	0	0
+case	breadth-env-autoscaling	2	0	0	0	0
+case	breadth-env-cluster-agent	4	0	0	0	0
+case	breadth-env-data-plane	16	0	0	0	0
+case	breadth-env-enable-payloads	4	0	0	0	0
+case	breadth-env-multi-region-failover	6	0	0	0	0
+case	breadth-env-observability-pipelines-worker	3	0	0	0	0
+case	breadth-env-otlp-config	23	0	0	0	0
+case	breadth-env-serializer-experimental-use-v3-api	2	0	0	0	0
+case	breadth-env-telemetry	1	0	0	0	0
+case	breadth-env-top-a	5	0	0	0	0
+case	breadth-env-top-b	2	0	0	0	0
+case	breadth-env-top-c	7	0	0	0	0
+case	breadth-env-top-d	34	0	0	0	0
+case	breadth-env-top-e	4	0	0	0	0
+case	breadth-env-top-f	21	0	0	0	0
+case	breadth-env-top-h	5	0	0	0	0
+case	breadth-env-top-i	1	0	0	0	0
+case	breadth-env-top-k	1	0	0	0	0
+case	breadth-env-top-l	8	0	0	0	0
+case	breadth-env-top-m	3	0	1	0	0
+case	breadth-env-top-n	1	0	0	0	0
+case	breadth-env-top-o	1	0	0	0	0
+case	breadth-env-top-p	1	0	0	0	0
+case	breadth-env-top-r	1	0	0	0	0
+case	breadth-env-top-s	20	0	0	0	0
+case	breadth-env-top-t	2	0	0	0	0
+case	breadth-env-top-u	1	0	0	0	0
+case	breadth-env-top-v	1	0	0	0	0
+case	breadth-env-use-v2-api	1	0	0	0	0
+case	breadth-env-use-v3-api	2	0	0	0	0
+case	breadth-env-vector	3	0	0	0	0
+case	breadth-yaml-agent-ipc	2	0	0	0	0
+case	breadth-yaml-apm-config	70	0	0	0	0
+case	breadth-yaml-autoscaling	4	0	0	0	0
+case	breadth-yaml-cluster-agent	8	0	0	0	0
+case	breadth-yaml-data-plane	32	0	0	0	0
+case	breadth-yaml-enable-payloads	8	0	0	0	0
+case	breadth-yaml-multi-region-failover	12	0	0	0	0
+case	breadth-yaml-observability-pipelines-worker	6	0	0	0	0
+case	breadth-yaml-otlp-config	46	0	0	0	0
+case	breadth-yaml-proxy--proxy-http	2	0	0	0	0
+case	breadth-yaml-proxy--proxy-https	2	0	0	0	0
+case	breadth-yaml-proxy--proxy-no-proxy	2	0	0	0	0
+case	breadth-yaml-serializer-experimental-use-v3-api	4	0	0	0	0
+case	breadth-yaml-telemetry	2	0	0	0	0
+case	breadth-yaml-top-a	10	0	0	0	0
+case	breadth-yaml-top-b	4	0	0	0	0
+case	breadth-yaml-top-c	14	0	0	0	0
+case	breadth-yaml-top-d	68	0	0	0	0
+case	breadth-yaml-top-e	8	0	0	0	0
+case	breadth-yaml-top-f	42	0	0	0	0
+case	breadth-yaml-top-h	10	0	0	0	0
+case	breadth-yaml-top-i	2	0	0	0	0
+case	breadth-yaml-top-k	2	0	0	0	0
+case	breadth-yaml-top-l	16	0	0	0	0
+case	breadth-yaml-top-m	8	0	0	0	0
+case	breadth-yaml-top-n	2	0	0	0	0
+case	breadth-yaml-top-o	2	0	0	0	0
+case	breadth-yaml-top-p	2	0	0	0	0
+case	breadth-yaml-top-r	2	0	0	0	0
+case	breadth-yaml-top-s	40	0	0	0	0
+case	breadth-yaml-top-t	4	0	0	0	0
+case	breadth-yaml-top-u	2	0	0	0	0
+case	breadth-yaml-top-v	2	0	0	0	0
+case	breadth-yaml-use-v2-api	2	0	0	0	0
+case	breadth-yaml-use-v3-api	4	0	0	0	0
+case	breadth-yaml-vector	6	0	0	0	0
+case	cli-stop-timeout-not-recomputed	2	0	0	0	0
+case	cli-use-dogstatsd-off-not-suppressed	1	0	0	1	0
+case	core-agent-disabled-fleet-payloads-unchanged	4	0	0	1	0
+case	core-agent-disabled-payloads	4	0	0	1	0
+case	core-agent-disabled-runtime-payloads-unchanged	4	0	0	2	0
+case	core-agent-disabled-shadows-fleet-payloads	1	0	0	0	0
+case	depth-env-bool-digit	1	0	0	0	1
+case	depth-env-bool-words	0	0	1	0	1
+case	depth-env-empty--additional-endpoints	1	0	0	0	1
+case	depth-env-empty--apm-config-features	1	0	0	0	1
+case	depth-env-empty--apm-config-obfuscation-credit-cards-keep-values	1	0	0	0	1
+case	depth-env-empty--apm-config-obfuscation-elasticsearch-keep-values	1	0	0	0	1
+case	depth-env-empty--apm-config-peer-tags	1	0	0	0	1
+case	depth-env-empty--apm-config-replace-tags	1	0	0	0	0
+case	depth-env-empty--dogstatsd-mapper-profiles	1	0	0	0	0
+case	depth-env-empty--metric-tag-filterlist	1	0	0	0	0
+case	depth-env-empty--use-v3-api-series-endpoints	1	0	0	0	1
+case	depth-env-exponent	1	0	0	0	1
+case	depth-env-float	0	0	2	0	2
+case	depth-env-hex	2	0	0	0	2
+case	depth-env-json-list	5	1	1	0	4
+case	depth-env-mixed-string	4	0	3	0	4
+case	depth-env-not-json	0	0	2	0	2
+case	depth-env-secondary-name	3	0	0	0	3
+case	depth-set-bool-words	1	0	1	0	2
+case	depth-set-empty-list	7	0	3	0	6
+case	depth-set-empty-string	3	0	3	0	6
+case	depth-set-json-string	4	0	0	0	4
+case	depth-set-mixed-string	4	0	2	0	2
+case	depth-set-string	12	0	0	0	12
+case	depth-yaml-empty-list	2	0	9	0	9
+case	depth-yaml-empty-map	2	0	9	0	9
+case	depth-yaml-float	2	0	0	0	2
+case	depth-yaml-int	2	0	0	0	2
+case	depth-yaml-map-int-values	1	0	1	0	2
+case	depth-yaml-mixed-string	1	0	4	0	3
+case	depth-yaml-null--additional-endpoints	1	0	0	0	1
+case	depth-yaml-null--apm-config-features	1	0	0	0	1
+case	depth-yaml-null--apm-config-replace-tags	1	0	0	0	0
+case	depth-yaml-null--dogstatsd-mapper-profiles	1	0	0	0	0
+case	depth-yaml-null--use-v3-api-series-endpoints	1	0	0	0	1
+case	depth-yaml-one-item-list	0	0	8	0	8
+case	depth-yaml-quoted	6	0	0	0	6
+case	derived-stop-timeout-default-source	6	0	0	0	0
+case	docker-dd-agent-env-only	2	0	0	1	0
+case	dogstatsd-port-layers	4	0	0	0	2
+case	duration-spellings	2	0	0	0	0
+case	ecs-fargate-env-only	1	0	0	0	0
+case	empty-list-yaml-and-env	0	0	1	0	0
+case	env-bool-unparseable-kept-raw	0	0	1	0	0
+case	env-empty-value-yaml-wins	1	0	0	0	0
+case	env-list-of-maps-raw-string	0	1	0	0	0
+case	env-list-separator-per-key	3	0	0	4	0
+case	env-map-bad-json	0	0	1	0	2
+case	env-slice-comma-not-split	1	0	0	0	0
+case	env-two-names-first-bound-wins	1	0	0	0	0
+case	env-unbound-dd-var	0	0	0	1	0
+case	excluded-env-agent-telemetry	0	0	0	2	0
+case	excluded-env-anomaly-detection	0	0	0	1	0
+case	excluded-env-apm-config	0	0	0	5	0
+case	excluded-env-network-devices	0	0	0	1	0
+case	excluded-env-top-a	0	0	0	5	0
+case	excluded-yaml-agent-telemetry	0	0	0	2	0
+case	excluded-yaml-anomaly-detection	0	0	0	1	0
+case	excluded-yaml-apm-config	0	0	0	5	0
+case	excluded-yaml-network-devices	0	0	0	1	0
+case	excluded-yaml-top-a	0	0	0	5	0
+case	fips-proxy-endpoints	2	0	0	1	0
+case	fips-runtime-enable-no-rewrite	4	0	0	2	0
+case	fips-yaml-shadows-fleet-dd-url	1	0	0	0	0
+case	flare-scrubber-keys-yaml	0	0	0	2	0
+case	fleet-policy-fips	2	0	0	1	0
+case	fleet-policy-recomputes-derived	2	0	0	0	0
+case	fleet-use-dogstatsd-off-suppresses	1	0	0	1	0
+case	float64-slice-bad-element	0	0	0	0	1
+case	getter-missing-key-zero-values	0	0	0	1	0
+case	getter-parses-raw-strings	0	0	0	3	0
+case	infra-mode-legacy-checks-update	0	0	0	4	0
+case	int-string-base-prefix	3	0	0	0	1
+case	is-configured-default-null-section	2	0	0	1	2
+case	k8s-env-container-defaults	0	0	0	2	0
+case	layers-no-updates	2	0	0	0	1
+case	logs-enabled-yes-yaml	0	0	0	1	0
+case	mapper-profiles-wrong-field-type	1	0	0	0	0
+case	otlp-receiver-nil-grpc	0	0	0	1	0
+case	otlp-receiver-section	0	0	0	1	0
+case	proxy-env-bare-lowercase	2	0	0	0	0
+case	proxy-env-empty-dd-var-overrides	2	0	0	0	0
+case	proxy-fleet-cloud-metadata-not-recomputed	2	0	0	0	0
+case	proxy-fleet-policy-shadowed	3	0	0	0	0
+case	proxy-runtime-cloud-metadata-not-recomputed	4	0	0	0	0
+case	proxy-yaml-source-post-init	1	0	1	0	0
+case	runtime-use-dogstatsd-off	2	0	0	2	0
+case	set-nil-map-key	1	0	1	0	2
+case	site-without-dd-url	2	0	0	0	0
+case	source-order-one-key	2	0	0	0	0
+case	string-slice-from-string	0	0	0	3	0
+case	unknown-env-top-c	0	0	0	1	0
+case	unknown-key-getter-then-set	0	0	0	2	0
+case	unknown-yaml-agent-ipc	0	0	0	1	0
+case	unknown-yaml-top-c	0	0	0	1	0
+case	unsupported-env-data-plane	0	0	0	2	0
+case	unsupported-env-dogstatsd-experimental-http	0	0	0	3	0
+case	unsupported-env-dogstatsd-mem-based-rate-limiter	0	0	0	11	0
+case	unsupported-env-metric-lookback	0	0	0	11	0
+case	unsupported-env-otlp-config	0	0	0	10	0
+case	unsupported-env-serializer-experimental-use-v3-api	0	0	0	3	0
+case	unsupported-env-telemetry	0	0	0	3	0
+case	unsupported-env-top-a	0	0	0	4	0
+case	unsupported-env-top-c	0	0	0	1	0
+case	unsupported-env-top-d	0	0	0	13	0
+case	unsupported-env-top-e	0	0	0	1	0
+case	unsupported-env-top-f	0	0	0	3	0
+case	unsupported-env-top-h	0	0	0	1	0
+case	unsupported-env-top-l	0	0	0	1	0
+case	unsupported-env-top-u	0	0	0	1	0
+case	unsupported-yaml-data-plane	0	0	0	2	0
+case	unsupported-yaml-dogstatsd-experimental-http	0	0	0	3	0
+case	unsupported-yaml-dogstatsd-mem-based-rate-limiter	0	0	0	11	0
+case	unsupported-yaml-metric-lookback	0	0	0	11	0
+case	unsupported-yaml-otlp-config	0	0	0	10	0
+case	unsupported-yaml-serializer-experimental-use-v3-api	0	0	0	3	0
+case	unsupported-yaml-telemetry	0	0	0	3	0
+case	unsupported-yaml-top-a	0	0	0	4	0
+case	unsupported-yaml-top-c	0	0	0	1	0
+case	unsupported-yaml-top-d	0	0	0	13	0
+case	unsupported-yaml-top-e	0	0	0	2	0
+case	unsupported-yaml-top-f	0	0	0	3	0
+case	unsupported-yaml-top-h	0	0	0	1	0
+case	unsupported-yaml-top-l	0	0	0	1	0
+case	unsupported-yaml-top-u	0	0	0	1	0
+case	update-env-source	2	0	0	0	0
+case	update-section-and-unknown-key	0	0	0	4	0
+case	update-shadowed-set	2	0	0	0	0
+case	update-string-for-int	2	0	0	0	2
+case	update-string-for-map-key	2	0	0	0	2
+case	update-unset-unchanged	2	0	0	0	0
+case	yaml-bool-word-string-key	1	0	0	1	0
+case	yaml-dotted-keys	2	0	0	1	0
+case	yaml-duplicate-key	1	0	0	0	0
+case	yaml-float-nan	0	1	0	0	0
+case	yaml-int-above-2-53	0	2	0	0	1
+case	yaml-map-for-string-key	1	0	1	0	1
+case	yaml-noncanonical-map-keys	1	0	0	0	0
+case	yaml-null-values	1	0	0	1	0
+case	yaml-plain-octal	2	0	0	0	0
+case	yaml-scalar-for-section	1	0	0	1	0
+case	yaml-then-runtime-set	4	0	0	2	0
+case	yaml-unknown-keys	0	0	0	2	0
+case	yaml-unknown-section	0	0	0	2	0
 count	cases	started	224
 count	cases	startup-failed	1
 count	leaf	adp-rejects	56
 count	leaf	differs	5
+count	leaf	explicit-only	2
 count	leaf	match	1084
-count	leaf	not-compared: a Bool leaf stands for GetBool	12
-count	leaf	not-compared: a Duration leaf stands for GetDuration	7
-count	leaf	not-compared: a F64 leaf stands for GetFloat64	11
-count	leaf	not-compared: a I64 leaf stands for GetInt	25
-count	leaf	not-compared: a Str leaf stands for GetString	9
-count	leaf	not-compared: a StringList leaf stands for GetStringSlice	22
-count	leaf	not-compared: a StringListMap leaf stands for GetStringMapStringSlice	18
-count	leaf	not-compared: a StringMap leaf stands for GetStringMapString	13
-count	leaf	not-compared: explicit-only reads are not compared with a leaf	2
+count	leaf	not-emulated:Bool	12
+count	leaf	not-emulated:Duration	7
+count	leaf	not-emulated:F64	11
+count	leaf	not-emulated:I64	25
+count	leaf	not-emulated:Str	9
+count	leaf	not-emulated:StringList	22
+count	leaf	not-emulated:StringListMap	18
+count	leaf	not-emulated:StringMap	13
 count	leaf	not-modeled	221
 count	system	accepted	15
 count	system	deserialize	26
 count	system	translate	21
 count	system	validate: blank api key	438
-leaf	breadth-env-top-m	snapshot	metric_tag_filterlist	Get	adp-rejects	expected value at line 1 column 1
-leaf	depth-env-bool-words	snapshot	allow_arbitrary_tags	GetBool	adp-rejects	invalid value: string "on", expected a boolean, a boolean string, or a number
-leaf	depth-env-float	snapshot	agent_ipc.grpc_max_message_size	GetInt	adp-rejects	invalid value: string "1.342177295e+08", expected an integer, a numeric string, or a boolean
-leaf	depth-env-float	snapshot	cri_connection_timeout	GetInt64	adp-rejects	invalid value: string "2.5", expected an integer, a numeric string, or a boolean
-leaf	depth-env-json-list	snapshot	apm_config.replace_tags	Get	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
-leaf	depth-env-json-list	snapshot	metric_tag_filterlist	Get	differs	["cr-a","cr-b"]	"[\\"cr-a\\",\\"cr-b\\"]"
-leaf	depth-env-mixed-string	snapshot	apm_config.peer_tags	GetStringSlice	adp-rejects	invalid type: null, expected a sequence or a space-separated string
-leaf	depth-env-mixed-string	snapshot	apm_config.replace_tags	Get	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
-leaf	depth-env-mixed-string	snapshot	metric_tag_filterlist	Get	adp-rejects	expected value at line 1 column 1
-leaf	depth-env-not-json	snapshot	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
-leaf	depth-env-not-json	snapshot	use_v3_api.series.endpoints	GetStringMapString	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
-leaf	depth-set-bool-words	final	allow_arbitrary_tags	GetBool	adp-rejects	invalid value: string "on", expected a boolean, a boolean string, or a number
-leaf	depth-set-empty-list	final	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
-leaf	depth-set-empty-list	final	apm_config.features	GetStringSlice	adp-rejects	invalid type: null, expected a sequence or a space-separated string
-leaf	depth-set-empty-list	final	use_v3_api.series.endpoints	GetStringMapString	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
-leaf	depth-set-empty-string	final	agent_ipc.grpc_max_message_size	GetInt	adp-rejects	invalid value: string "", expected an integer, a numeric string, or a boolean
-leaf	depth-set-empty-string	final	allow_arbitrary_tags	GetBool	adp-rejects	invalid value: string "", expected a boolean, a boolean string, or a number
-leaf	depth-set-empty-string	final	apm_config.errors_per_second	GetFloat64	adp-rejects	invalid value: string "", expected a number, a numeric string, or a boolean
-leaf	depth-set-mixed-string	final	apm_config.replace_tags	Get	adp-rejects	expected value at line 1 column 1
-leaf	depth-set-mixed-string	final	dogstatsd_mapper_profiles	Get	adp-rejects	expected value at line 1 column 1
-leaf	depth-yaml-empty-list	snapshot	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
-leaf	depth-yaml-empty-list	snapshot	agent_ipc.grpc_max_message_size	GetInt	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
-leaf	depth-yaml-empty-list	snapshot	allow_arbitrary_tags	GetBool	adp-rejects	invalid type: sequence, expected a boolean, a boolean string, or a number
-leaf	depth-yaml-empty-list	snapshot	api_key	GetString	adp-rejects	invalid type: sequence, expected a string, a boolean, or a number
-leaf	depth-yaml-empty-list	snapshot	apm_config.errors_per_second	GetFloat64	adp-rejects	invalid type: sequence, expected a number, a numeric string, or a boolean
-leaf	depth-yaml-empty-list	snapshot	apm_config.features	GetStringSlice	adp-rejects	invalid type: null, expected a sequence or a space-separated string
-leaf	depth-yaml-empty-list	snapshot	cri_connection_timeout	GetInt64	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
-leaf	depth-yaml-empty-list	snapshot	expected_tags_duration	GetDuration	adp-rejects	invalid type: sequence, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
-leaf	depth-yaml-empty-list	snapshot	use_v3_api.series.endpoints	GetStringMapString	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
-leaf	depth-yaml-empty-map	snapshot	agent_ipc.grpc_max_message_size	GetInt	adp-rejects	invalid type: map, expected an integer, a numeric string, or a boolean
-leaf	depth-yaml-empty-map	snapshot	allow_arbitrary_tags	GetBool	adp-rejects	invalid type: map, expected a boolean, a boolean string, or a number
-leaf	depth-yaml-empty-map	snapshot	api_key	GetString	adp-rejects	invalid type: map, expected a string, a boolean, or a number
-leaf	depth-yaml-empty-map	snapshot	apm_config.errors_per_second	GetFloat64	adp-rejects	invalid type: map, expected a number, a numeric string, or a boolean
-leaf	depth-yaml-empty-map	snapshot	apm_config.features	GetStringSlice	adp-rejects	invalid type: map, expected a sequence or a space-separated string
-leaf	depth-yaml-empty-map	snapshot	apm_config.replace_tags	Get	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
-leaf	depth-yaml-empty-map	snapshot	cri_connection_timeout	GetInt64	adp-rejects	invalid type: map, expected an integer, a numeric string, or a boolean
-leaf	depth-yaml-empty-map	snapshot	dogstatsd_mapper_profiles	Get	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
-leaf	depth-yaml-empty-map	snapshot	expected_tags_duration	GetDuration	adp-rejects	invalid type: map, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
-leaf	depth-yaml-map-int-values	snapshot	additional_endpoints	GetStringMapStringSlice	adp-rejects	data did not match any variant of untagged enum ScalarOrSeq
-leaf	depth-yaml-mixed-string	snapshot	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
-leaf	depth-yaml-mixed-string	snapshot	apm_config.replace_tags	Get	adp-rejects	expected value at line 1 column 1
-leaf	depth-yaml-mixed-string	snapshot	dogstatsd_mapper_profiles	Get	adp-rejects	expected value at line 1 column 1
-leaf	depth-yaml-mixed-string	snapshot	use_v3_api.series.endpoints	GetStringMapString	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
-leaf	depth-yaml-one-item-list	snapshot	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
-leaf	depth-yaml-one-item-list	snapshot	agent_ipc.grpc_max_message_size	GetInt	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
-leaf	depth-yaml-one-item-list	snapshot	allow_arbitrary_tags	GetBool	adp-rejects	invalid type: sequence, expected a boolean, a boolean string, or a number
-leaf	depth-yaml-one-item-list	snapshot	api_key	GetString	adp-rejects	invalid type: sequence, expected a string, a boolean, or a number
-leaf	depth-yaml-one-item-list	snapshot	apm_config.errors_per_second	GetFloat64	adp-rejects	invalid type: sequence, expected a number, a numeric string, or a boolean
-leaf	depth-yaml-one-item-list	snapshot	cri_connection_timeout	GetInt64	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
-leaf	depth-yaml-one-item-list	snapshot	expected_tags_duration	GetDuration	adp-rejects	invalid type: sequence, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
-leaf	depth-yaml-one-item-list	snapshot	use_v3_api.series.endpoints	GetStringMapString	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
-leaf	empty-list-yaml-and-env	snapshot	histogram_aggregates	GetStringSlice	adp-rejects	invalid type: null, expected a sequence or a space-separated string
-leaf	env-bool-unparseable-kept-raw	snapshot	dogstatsd_origin_detection	GetBool	adp-rejects	invalid value: string "yes", expected a boolean, a boolean string, or a number
-leaf	env-list-of-maps-raw-string	snapshot	metric_tag_filterlist	Get	differs	[{"metric_name":"m","tags":["t"]}]	"[{\\"metric_name\\":\\"m\\",\\"tags\\":[\\"t\\"]}]"
-leaf	env-map-bad-json	snapshot	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid JSON-encoded map: key must be a string at line 1 column 2
-leaf	proxy-yaml-source-post-init	snapshot	proxy.no_proxy	GetStringSlice	adp-rejects	invalid type: null, expected a sequence or a space-separated string
-leaf	set-nil-map-key	final	additional_endpoints	GetStringMapStringSlice	adp-rejects	invalid type: null, expected a map or a JSON-encoded map string
-leaf	yaml-float-nan	snapshot	forwarder_backoff_factor	GetFloat64	differs	2.0	NaN
-leaf	yaml-int-above-2-53	snapshot	cri_connection_timeout	GetInt64	differs	9007199254740992	9007199254740993
-leaf	yaml-int-above-2-53	snapshot	use_v3_api.series.endpoints	GetStringMapString	differs	{"cr_a": "9007199254740992"}	{"cr_a": "9007199254740993"}
-leaf	yaml-map-for-string-key	snapshot	dogstatsd_socket	GetString	adp-rejects	invalid type: map, expected a string, a boolean, or a number
+leaf	breadth-env-top-m	snapshot	metric_tag_filterlist	Get	JsonList	"cr-a cr-b"	adp-rejects	expected value at line 1 column 1
+leaf	depth-env-bool-words	snapshot	allow_arbitrary_tags	GetBool	Bool	"on"	adp-rejects	invalid value: string "on", expected a boolean, a boolean string, or a number
+leaf	depth-env-float	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	"1.342177295e+08"	adp-rejects	invalid value: string "1.342177295e+08", expected an integer, a numeric string, or a boolean
+leaf	depth-env-float	snapshot	cri_connection_timeout	GetInt64	I64	"2.5"	adp-rejects	invalid value: string "2.5", expected an integer, a numeric string, or a boolean
+leaf	depth-env-json-list	snapshot	apm_config.replace_tags	Get	StringMapList	[null,null]	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+leaf	depth-env-json-list	snapshot	metric_tag_filterlist	Get	JsonList	"[\\"cr-a\\",\\"cr-b\\"]"	differs	["cr-a","cr-b"]	"[\\"cr-a\\",\\"cr-b\\"]"
+leaf	depth-env-mixed-string	snapshot	apm_config.peer_tags	GetStringSlice	StringList	null	adp-rejects	invalid type: null, expected a sequence or a space-separated string
+leaf	depth-env-mixed-string	snapshot	apm_config.replace_tags	Get	StringMapList	null	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+leaf	depth-env-mixed-string	snapshot	metric_tag_filterlist	Get	JsonList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+leaf	depth-env-not-json	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	"cr_a:cr-a"	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
+leaf	depth-env-not-json	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	"cr_a:cr-a"	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
+leaf	depth-set-bool-words	final	allow_arbitrary_tags	GetBool	Bool	"on"	adp-rejects	invalid value: string "on", expected a boolean, a boolean string, or a number
+leaf	depth-set-empty-list	final	additional_endpoints	GetStringMapStringSlice	StringListMap	[]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+leaf	depth-set-empty-list	final	apm_config.features	GetStringSlice	StringList	null	adp-rejects	invalid type: null, expected a sequence or a space-separated string
+leaf	depth-set-empty-list	final	use_v3_api.series.endpoints	GetStringMapString	StringMap	[]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+leaf	depth-set-empty-string	final	agent_ipc.grpc_max_message_size	GetInt	I64	""	adp-rejects	invalid value: string "", expected an integer, a numeric string, or a boolean
+leaf	depth-set-empty-string	final	allow_arbitrary_tags	GetBool	Bool	""	adp-rejects	invalid value: string "", expected a boolean, a boolean string, or a number
+leaf	depth-set-empty-string	final	apm_config.errors_per_second	GetFloat64	F64	""	adp-rejects	invalid value: string "", expected a number, a numeric string, or a boolean
+leaf	depth-set-mixed-string	final	apm_config.replace_tags	Get	StringMapList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+leaf	depth-set-mixed-string	final	dogstatsd_mapper_profiles	Get	JsonList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+leaf	depth-yaml-empty-list	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	[]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+leaf	depth-yaml-empty-list	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	[]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+leaf	depth-yaml-empty-list	snapshot	allow_arbitrary_tags	GetBool	Bool	[]	adp-rejects	invalid type: sequence, expected a boolean, a boolean string, or a number
+leaf	depth-yaml-empty-list	snapshot	api_key	GetString	Str	[]	adp-rejects	invalid type: sequence, expected a string, a boolean, or a number
+leaf	depth-yaml-empty-list	snapshot	apm_config.errors_per_second	GetFloat64	F64	[]	adp-rejects	invalid type: sequence, expected a number, a numeric string, or a boolean
+leaf	depth-yaml-empty-list	snapshot	apm_config.features	GetStringSlice	StringList	null	adp-rejects	invalid type: null, expected a sequence or a space-separated string
+leaf	depth-yaml-empty-list	snapshot	cri_connection_timeout	GetInt64	I64	[]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+leaf	depth-yaml-empty-list	snapshot	expected_tags_duration	GetDuration	Duration	[]	adp-rejects	invalid type: sequence, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
+leaf	depth-yaml-empty-list	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	[]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+leaf	depth-yaml-empty-map	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	{}	adp-rejects	invalid type: map, expected an integer, a numeric string, or a boolean
+leaf	depth-yaml-empty-map	snapshot	allow_arbitrary_tags	GetBool	Bool	{}	adp-rejects	invalid type: map, expected a boolean, a boolean string, or a number
+leaf	depth-yaml-empty-map	snapshot	api_key	GetString	Str	{}	adp-rejects	invalid type: map, expected a string, a boolean, or a number
+leaf	depth-yaml-empty-map	snapshot	apm_config.errors_per_second	GetFloat64	F64	{}	adp-rejects	invalid type: map, expected a number, a numeric string, or a boolean
+leaf	depth-yaml-empty-map	snapshot	apm_config.features	GetStringSlice	StringList	{}	adp-rejects	invalid type: map, expected a sequence or a space-separated string
+leaf	depth-yaml-empty-map	snapshot	apm_config.replace_tags	Get	StringMapList	{}	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+leaf	depth-yaml-empty-map	snapshot	cri_connection_timeout	GetInt64	I64	{}	adp-rejects	invalid type: map, expected an integer, a numeric string, or a boolean
+leaf	depth-yaml-empty-map	snapshot	dogstatsd_mapper_profiles	Get	JsonList	{}	adp-rejects	data did not match any variant of untagged enum JsonArrayOrString
+leaf	depth-yaml-empty-map	snapshot	expected_tags_duration	GetDuration	Duration	{}	adp-rejects	invalid type: map, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
+leaf	depth-yaml-map-int-values	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	{"cr_a":1}	adp-rejects	data did not match any variant of untagged enum ScalarOrSeq
+leaf	depth-yaml-mixed-string	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	"cr-a cr-b,cr-c"	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
+leaf	depth-yaml-mixed-string	snapshot	apm_config.replace_tags	Get	StringMapList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+leaf	depth-yaml-mixed-string	snapshot	dogstatsd_mapper_profiles	Get	JsonList	"cr-a cr-b,cr-c"	adp-rejects	expected value at line 1 column 1
+leaf	depth-yaml-mixed-string	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	"cr-a cr-b,cr-c"	adp-rejects	invalid JSON-encoded map: expected value at line 1 column 1
+leaf	depth-yaml-one-item-list	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	["cr-a"]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+leaf	depth-yaml-one-item-list	snapshot	agent_ipc.grpc_max_message_size	GetInt	I64	[134217729]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+leaf	depth-yaml-one-item-list	snapshot	allow_arbitrary_tags	GetBool	Bool	[true]	adp-rejects	invalid type: sequence, expected a boolean, a boolean string, or a number
+leaf	depth-yaml-one-item-list	snapshot	api_key	GetString	Str	["cr-a"]	adp-rejects	invalid type: sequence, expected a string, a boolean, or a number
+leaf	depth-yaml-one-item-list	snapshot	apm_config.errors_per_second	GetFloat64	F64	[11.5]	adp-rejects	invalid type: sequence, expected a number, a numeric string, or a boolean
+leaf	depth-yaml-one-item-list	snapshot	cri_connection_timeout	GetInt64	I64	[2]	adp-rejects	invalid type: sequence, expected an integer, a numeric string, or a boolean
+leaf	depth-yaml-one-item-list	snapshot	expected_tags_duration	GetDuration	Duration	["61s"]	adp-rejects	invalid type: sequence, expected a duration as integer nanoseconds, a Go duration string (for example "10s"), or a bare number of nanoseconds as a string
+leaf	depth-yaml-one-item-list	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	["cr-a"]	adp-rejects	invalid type: sequence, expected a map or a JSON-encoded map string
+leaf	empty-list-yaml-and-env	snapshot	histogram_aggregates	GetStringSlice	StringList	null	adp-rejects	invalid type: null, expected a sequence or a space-separated string
+leaf	env-bool-unparseable-kept-raw	snapshot	dogstatsd_origin_detection	GetBool	Bool	"yes"	adp-rejects	invalid value: string "yes", expected a boolean, a boolean string, or a number
+leaf	env-list-of-maps-raw-string	snapshot	metric_tag_filterlist	Get	JsonList	"[{\\"metric_name\\":\\"m\\",\\"tags\\":[\\"t\\"]}]"	differs	[{"metric_name":"m","tags":["t"]}]	"[{\\"metric_name\\":\\"m\\",\\"tags\\":[\\"t\\"]}]"
+leaf	env-map-bad-json	snapshot	additional_endpoints	GetStringMapStringSlice	StringListMap	"{bad"	adp-rejects	invalid JSON-encoded map: key must be a string at line 1 column 2
+leaf	proxy-yaml-source-post-init	snapshot	proxy.no_proxy	GetStringSlice	StringList	null	adp-rejects	invalid type: null, expected a sequence or a space-separated string
+leaf	set-nil-map-key	final	additional_endpoints	GetStringMapStringSlice	StringListMap	null	adp-rejects	invalid type: null, expected a map or a JSON-encoded map string
+leaf	yaml-float-nan	snapshot	forwarder_backoff_factor	GetFloat64	F64	-	differs	2.0	NaN
+leaf	yaml-int-above-2-53	snapshot	cri_connection_timeout	GetInt64	I64	9007199254740992	differs	9007199254740992	9007199254740993
+leaf	yaml-int-above-2-53	snapshot	use_v3_api.series.endpoints	GetStringMapString	StringMap	{"cr_a":9007199254740992}	differs	{"cr_a": "9007199254740992"}	{"cr_a": "9007199254740993"}
+leaf	yaml-map-for-string-key	snapshot	dogstatsd_socket	GetString	OptionStr	{"a":"b"}	adp-rejects	invalid type: map, expected a string, a boolean, or a number
 not-modeled	ac_exclude
 not-modeled	ad_config_poll_interval
 not-modeled	ad_disable_env_var_resolution
@@ -204,6 +430,7 @@ not-modeled	unknown_unit_duration_xyz
 not-modeled	unknown_word_xyz
 not-modeled	use_dogstatsd
 not-modeled	use_v2_api
+startup-failed	startup-error
 system	breadth-env-otlp-config	0000	translate	6 key(s), see the translator lines
 system	breadth-env-top-d	0000	translate	3 key(s), see the translator lines
 system	breadth-env-top-l	0000	translate	1 key(s), see the translator lines
