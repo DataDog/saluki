@@ -79,16 +79,10 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns the topology shutdown timeout.
     ///
     /// Uses `data_plane.stop_timeout` when configured. Otherwise, it sums `aggregator_stop_timeout`
-    /// and `forwarder_stop_timeout`, returning `Duration::MAX` if the sum overflows.
+    /// and `forwarder_stop_timeout`, returning `Duration::MAX` if the sum overflows. See
+    /// [`SalukiConfiguration::stop_timeout`].
     pub fn stop_timeout(&self) -> Duration {
-        match self.config.control.stop_timeout {
-            Some(timeout) => timeout,
-            None => self
-                .config
-                .control
-                .aggregator_stop_timeout
-                .saturating_add(self.config.shared.endpoints.forwarder.stop_timeout),
-        }
+        self.config.stop_timeout()
     }
 
     /// Resolves the API listen address.
@@ -420,33 +414,12 @@ mod tests {
     }
 
     #[test]
-    fn stop_timeout_uses_saluki_override() {
-        let mut config = SalukiConfiguration::default();
-        config.control.stop_timeout = Some(Duration::from_secs(11));
-        config.control.aggregator_stop_timeout = Duration::from_secs(3);
-        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
-        let dp = DataPlaneConfiguration::from_configuration(&config);
-
-        assert_eq!(dp.stop_timeout(), Duration::from_secs(11));
-    }
-
-    #[test]
-    fn stop_timeout_sums_component_timeouts() {
+    fn stop_timeout_is_the_configuration_stop_timeout() {
         let mut config = SalukiConfiguration::default();
         config.control.aggregator_stop_timeout = Duration::from_secs(3);
         config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert_eq!(dp.stop_timeout(), Duration::from_secs(10));
-    }
-
-    #[test]
-    fn stop_timeout_saturates_when_sum_overflows() {
-        let mut config = SalukiConfiguration::default();
-        config.control.aggregator_stop_timeout = Duration::MAX;
-        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(1);
-        let dp = DataPlaneConfiguration::from_configuration(&config);
-
-        assert_eq!(dp.stop_timeout(), Duration::MAX);
     }
 }
