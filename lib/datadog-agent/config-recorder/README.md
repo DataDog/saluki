@@ -17,10 +17,17 @@ The saved collection of cases is the **corpus**, [`corpus.jsonl`](corpus.jsonl).
 header line, then a case line and per-setting lines for each case. It is generated; do not edit
 it by hand.
 
-The [Rust reader](../config-corpus/README.md), `datadog-agent-config-corpus`, loads these records
-for compatibility tests. Its unit tests validate the recordings' format, size, coverage, and
-consistency with the current schema and recorder inputs. These checks run in CI without Go or
-Docker; they do not compare ADP's behavior with the Agent's.
+Two sets of Rust unit tests read the corpus, and `make test` runs both. Neither needs Go or
+Docker.
+
+- The checks in `datadog-agent-config-corpus` validate the corpus itself: its format, its size
+  cap, that its Agent-commit pin matches the vendored schema, that its `inputs_digest` is current,
+  that its generated case groups match the overlay and vendored schema, that env-only cases stream
+  an environment-variable source, and that its depth group stays within its byte budget.
+- The replay tests in `agent-data-plane-config-system` (`src/corpus_replay/`) run every recorded
+  case through agent-data-plane's own config system and compare the result with the Agent's
+  recorded getter results. Every result that does not match is listed, with its divergence type,
+  in `src/corpus_replay/known-results.txt`, and the tests fail when the list changes.
 
 [`docs/comparison.md`](docs/comparison.md) fixes how agent-data-plane's typed values are compared with recorded getter results.
 

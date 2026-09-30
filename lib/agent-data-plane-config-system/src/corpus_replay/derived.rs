@@ -101,6 +101,78 @@ pub(crate) const NOT_REPLAYED: &[(&str, &str)] = &[
         "otlp-receiver-endpoint-override",
         "ADP-only keys overwrite the Agent's endpoint by design; never equal",
     ),
+    (
+        "extra-sample-rate-default",
+        "an unset `apm_config.extra_sample_rate` becomes 1.0; the Agent's trace config also starts at 1.0 \
+         (pkg/trace/config/config.go) and reads the getter only when the key is configured \
+         (comp/trace/config/impl/setup.go), so the getter returns the schema's 0",
+    ),
+    (
+        "max-tps-alias",
+        "`apm_config.max_traces_per_second` supplies the target rate unless `target_traces_per_second` is set; the \
+         Agent chooses in comp/trace/config/impl/setup.go, and each getter returns only its own key",
+    ),
+    (
+        "dogstatsd-log-file-default",
+        "an unset or default `dogstatsd_log_file` leaves the path unset, and ADP picks the platform path at \
+         startup, outside the translated configuration; the getter returns the recording host's resolved path, \
+         which depends on the platform, not only on settings",
+    ),
+    (
+        "forwarder-storage-path-default",
+        "an empty or default `forwarder_storage_path` keeps ADP's default, which the retry queue resolves from \
+         `run_path` at startup (saluki-components retry.rs), outside the translated configuration",
+    ),
+    (
+        "run-path-unset",
+        "an empty or placeholder `run_path` becomes unset; the getter returns the string, which the leaf tier \
+         compares",
+    ),
+    (
+        "metric-filter-precedence",
+        "a non-empty `metric_filterlist` replaces `statsd_metric_blocklist`; the Agent chooses in \
+         comp/filterlist/impl/filterlist.go, and each getter returns only its own key",
+    ),
+    (
+        "forwarder-backoff-fallback",
+        "a non-positive backoff base or max, or a factor below 2, falls back to the default; the Agent does the \
+         same after the getters, in comp/forwarder/defaultforwarder/impl/blocked_endpoints.go",
+    ),
+    (
+        "retry-queue-max-size",
+        "the byte budget prefers `forwarder_retry_queue_payloads_max_size` and scales the deprecated count key; the \
+         Agent combines them in comp/forwarder/defaultforwarder/impl/default_forwarder.go, and each getter returns \
+         only its own key",
+    ),
+    (
+        "zstd-level-precedence",
+        "the effective zstd level prefers the ADP-only level, then an explicit Agent level, then ADP's default of 3; \
+         the getter returns the Agent's level, default 1, so the defaults differ by design",
+    ),
+    (
+        "otlp-grpc-receiver-defaults",
+        "a zero gRPC max receive size and zero or sub-second keepalive values take grpc-go's defaults; the \
+         Agent's OTLP receiver applies them in grpc-go, so the getters return the configured value",
+    ),
+    (
+        "v3-series-mode-fallback",
+        "an unrecognized `use_v3_api.series` mode disables V3; the Agent recovers in pkg/serializer/metrics.go \
+         (`evalSeriesV3`), so the getter returns the raw string",
+    ),
+    (
+        "negative-clamp",
+        "a negative count or interval (such as `forwarder_timeout`) becomes 0; the getter returns the negative \
+         number, which the leaf tier compares, and each Agent consumer handles it separately",
+    ),
+    (
+        "blank-string-unset",
+        "an empty string (or, for some keys, a whitespace-only one) becomes unset and others are trimmed; the \
+         getter returns the raw string, which the leaf tier compares",
+    ),
+    (
+        "requires-datadog-forwarder",
+        "combines ADP-only pipeline switches; no Agent key or getter computes it",
+    ),
 ];
 
 /// The topology shutdown timeout, which `GetInt` returns in whole seconds.

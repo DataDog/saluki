@@ -99,8 +99,9 @@ pub fn apply_env_at_path(
 /// Reads one key from explicitly provided environment variable name/value pairs and writes it into
 /// `root`.
 ///
-/// Identical to [`apply_env_at_path`] except for where the variables come from. Tests use this to
-/// avoid depending on the ambient process environment.
+/// Identical to [`apply_env_at_path`] except for where the variables come from. Callers that read
+/// the process environment once and reuse it pass it here, and tests pass their own variables so
+/// that they do not depend on the ambient process environment.
 ///
 /// # Errors
 ///
