@@ -1,0 +1,7 @@
+name: set-nil-map-key
+group: behavior
+why: [stream-snapshot-skips-nil]
+updates:
+  - {key: additional_endpoints, value: null, source: remote-config}
+keys:
+  - {key: additional_endpoints, getters: [Get, GetStringMapStringSlice]}

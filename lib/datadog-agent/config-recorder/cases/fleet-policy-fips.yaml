@@ -1,0 +1,13 @@
+name: fleet-policy-fips
+group: behavior
+why: [fleet-policy-fips-skips-rewrite]
+fleet_policy: |
+  fips:
+    enabled: true
+    local_address: 127.0.0.1
+    https: true
+    tls_verify: false
+keys:
+  - fips.enabled
+  - dd_url
+  - skip_ssl_validation
