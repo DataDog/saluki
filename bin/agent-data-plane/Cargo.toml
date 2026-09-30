@@ -35,7 +35,6 @@ metrics = { workspace = true }
 ottl = { workspace = true }
 process-memory = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
