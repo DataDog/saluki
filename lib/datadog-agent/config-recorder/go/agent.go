@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	stdslog "log/slog"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,18 +66,43 @@ func (c *logCapture) take() []record.Warning {
 	return out
 }
 
+// callerPrefix is the `<file>:<line> ` the Agent's logger puts before the message of a record it
+// buffered before it was set up (pkg/util/log/log.go, addLogToBuffer).
+var callerPrefix = regexp.MustCompile(`^\S+:[0-9]+ `)
+
+// stripCallerPrefix removes the caller position the Agent's logger adds to a buffered record's
+// message. The position names the Agent's build path, not its behavior, so without it the record
+// reads as the same warning logged after setup does. Only the start of the message is examined.
+func stripCallerPrefix(msg string) string {
+	return strings.TrimPrefix(msg, callerPrefix.FindString(msg))
+}
+
 // installLogCapture routes the Agent's global logger into a new capture, then checks that a
 // record is delivered before the logging call returns, without a flush. Per-call warning
 // attribution relies on that.
+//
+// Records the Agent logged before this call (during package initialization, for example an env
+// value its transform cannot parse) are buffered by the Agent's logger and delivered by
+// SetupLogger itself, in the order they were logged, each with the caller position prefixed to
+// its message. They stay in the capture, with that prefix removed, so the first take returns
+// them with the construction warnings. The check counts only the records that arrive after its
+// probe call, which must be exactly the probe, and removes only the probe.
 func installLogCapture() (*logCapture, error) {
 	c := &logCapture{}
 	pkglog.SetupLogger(ddslog.NewWrapper(c), "debug")
+	c.mu.Lock()
+	start := len(c.records)
+	for i := range c.records {
+		c.records[i].Message = stripCallerPrefix(c.records[i].Message)
+	}
+	c.mu.Unlock()
 	const probe = "config recorder: synchronous logging check"
 	pkglog.Warn(probe)
 	c.mu.Lock()
-	n := len(c.records)
-	got := n == 1 && c.records[0].Message == probe
-	c.records = nil
+	after := c.records[start:]
+	n := len(after)
+	got := n == 1 && after[0].Message == probe
+	c.records = c.records[:start]
 	c.mu.Unlock()
 	if !got {
 		return nil, fmt.Errorf("the Agent logger did not deliver a record synchronously (%d records after one Warn); per-call warning attribution is not possible", n)
