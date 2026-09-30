@@ -103,9 +103,9 @@ func started(r *record.RunResult) bool {
 	return r.StartupError == nil && r.Run != nil
 }
 
-// splitter projects a case onto subsets of its keys (case.md §3.1). newSplitter checks, once,
-// that every input of the case can be given to a key: it is built only when the case must be
-// split, since only then are these harness failures.
+// splitter projects a case onto subsets of its keys (case.md §3.1). newSplitter checks once that
+// every input can be assigned to a key. It runs only when the case needs splitting, since those
+// unassignable inputs are an error only when the case is split.
 type splitter struct {
 	c         *record.Case
 	envKeys   map[string][]string

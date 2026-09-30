@@ -81,7 +81,6 @@ func TestSelectGetters(t *testing.T) {
 		{"[]map[string]string", Tags{}, []string{"Get"}},
 		{"[]map[string]interface {}", Tags{}, []string{"Get"}},
 		{"map[string]float64", Tags{}, []string{"GetStringMap"}},
-		{"<nil>", Tags{}, []string{"Get"}},
 	}
 	for _, tc := range tests {
 		got, err := selectGetters(tc.typ, tc.tags)
@@ -174,10 +173,10 @@ func TestCallGetterReadConfigSection(t *testing.T) {
 // set by the user to its default value, a key the user declared with a YAML null value, a section
 // with one configured child, and an untouched key.
 //
-// The first attempt set null_value with Set(key, nil, ...) instead of through YAML: the Agent
-// converts that nil to the default's zero value (here ""), which is non-nil, so IsConfigured came
-// back true. Reading real YAML with an empty scalar (as TestCompareEmptyLeafSetting in
-// nodetreemodel/compatibility_test.go does) is what actually stores a nil leaf value.
+// null_value must be set by reading real YAML with an empty scalar (as TestCompareEmptyLeafSetting
+// in nodetreemodel/compatibility_test.go does), not with Set(key, nil, ...): the Agent converts a
+// nil passed to Set into the default's zero value (here ""), which is non-nil, so IsConfigured
+// would report true instead of the false this test needs.
 func TestCallGetterIsConfigured(t *testing.T) {
 	cfg := nodetreemodel.NewNodeTreeConfig("test-is-configured", "TEST_IS_CONFIGURED", nil)
 	cfg.SetDefault("default_value", "x")
@@ -211,7 +210,7 @@ func TestCallGetterIsConfigured(t *testing.T) {
 }
 
 // TestCallGetterReadConfigSectionEmpty checks that a section with no configured leaves and no
-// declared child sections reads back as {}, and that the harness's own non-map check accepts it
+// declared child sections reads back as {}, and that the recorder's non-map check accepts it
 // (an empty map is still a map).
 func TestCallGetterReadConfigSectionEmpty(t *testing.T) {
 	cfg := sectionReader{

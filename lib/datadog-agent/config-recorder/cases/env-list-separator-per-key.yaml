@@ -1,3 +1,5 @@
+# Sets several list-valued environment variables to the same comma-and-space text.
+# Shows that each key's parser, rather than one universal separator, determines its list.
 name: env-list-separator-per-key
 group: behavior
 why: [env-list-separator-is-per-key]

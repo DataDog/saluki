@@ -1,3 +1,5 @@
+# Updates api_key with surrounding spaces after startup.
+# Checks whether the load-time whitespace trim also applies to a later update.
 name: api-key-whitespace-runtime
 group: behavior
 why: [api-key-trimmed-at-load-not-fleet, derived-value-not-recomputed-after-update]

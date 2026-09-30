@@ -1,3 +1,6 @@
+# Reads an unknown key and attempts to set it at runtime.
+# Shows that reading adds it to the known key list, but a key without a value is
+# omitted from the stream snapshot.
 name: unknown-key-getter-then-set
 group: behavior
 why: [getter-unknown-key-joins-keyset, stream-snapshot-skips-nil]

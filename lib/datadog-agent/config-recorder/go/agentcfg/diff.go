@@ -29,7 +29,7 @@ func (d KeyDiff) Empty() bool {
 	return len(d.OnlySchema) == 0 && len(d.OnlyAgent) == 0
 }
 
-// Error formats the diff as a harness failure: the count on each side, then up to
+// Error formats the key-set mismatch as a recorder error: the count on each side, then up to
 // maxKeyDiffSample keys from each side.
 func (d KeyDiff) Error() string {
 	var b strings.Builder

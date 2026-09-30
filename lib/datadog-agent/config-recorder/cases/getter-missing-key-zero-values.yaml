@@ -1,3 +1,5 @@
+# Reads a missing key through string, bool, int, float, and duration getters.
+# Shows that they return zero values; only duration adds a cast warning; unknown reads log once.
 name: getter-missing-key-zero-values
 group: behavior
 why: [getter-cast-nil-warns-except-duration]

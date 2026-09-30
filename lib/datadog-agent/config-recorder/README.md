@@ -6,13 +6,20 @@ The config recorder is a small Go program built inside a Datadog Agent checkout.
 and what its getters returned.
 
 The output is [`corpus.jsonl`](corpus.jsonl): one header line, then a case line and key lines per
-case. The Rust tests replay it to check that Saluki reads configuration the way the Agent does. It
-is generated; do not edit it by hand.
+case. It is generated; do not edit it by hand.
+
+Today, the Rust checks (`datadog-agent-config-corpus`, run by `make test`) only validate the
+corpus itself: its format, its size cap, that its Agent-commit pin matches the vendored schema,
+that its `inputs_digest` is current, that its generated case groups match the overlay and vendored
+schema, that env-only cases stream an environment-variable source, and that its depth group stays
+within its byte budget. Replaying the corpus's records through agent-data-plane's own config
+reader to check that it agrees with the Agent is the corpus's purpose, but that replay does not
+exist yet.
 
 ## Section reads
 
 Some Agent code reads a setting through something other than a typed getter. A case names one of
-these explicit-only reads (getter-map.md §2.1) in a key's `getters` list; default getter selection
+these explicit-only reads (`docs/getter-map.md` §2.1) in a key's `getters` list; default getter selection
 never picks them.
 
 The Agent's OTLP pipeline does not read its receiver settings with getters. It reads the whole
@@ -39,7 +46,9 @@ records both directories.
 - `baseline` is one case with no inputs, holding every modeled key.
 - Other groups batch keys by top-level schema section. Top-level leaves (no dot) are batched by
   first character, as section `top-<c>`. A section with more than 40 keys is split by its second
-  path component. A case name depends only on key paths, so a new key changes only its own batch.
+  path component. A case name depends only on key paths, so an added or removed key usually
+  changes only its own batch, except when it moves a section across the 40-key split threshold,
+  which redistributes that section's other keys into new batch names too.
 - Every value comes from a fixed rule on the key's schema type, default and format, so two runs
   write the same cases.
 - `depth` records the input shapes that break readers: empty, null, wrong-shape and alternate
@@ -82,6 +91,39 @@ Regenerate after you bump `lib/datadog-agent/config/schema/core/_version.txt`, o
 the recorder (`go/`) or the cases. The run is deterministic: a second run gives a byte-identical
 corpus.
 
+Bumping the schema pin (`_version.txt`) also requires:
+
+1. Re-checking the corpus reader's lists of sources, getters and groups
+   (`lib/datadog-agent/config-corpus/src/lists.rs`) against `pkg/config/model/types.go` at the new
+   pin.
+2. Bumping `REVIEWED_AT_AGENT_COMMIT`, the constant at the top of that same file, to the new pin.
+3. Regenerating the corpus and running the checks below; `corpus_pin_matches_vendored_schema`
+   fails separately on a stale corpus and on a `REVIEWED_AT_AGENT_COMMIT` that still names the old
+   pin, so a schema bump that forgets step 2 is caught even after regeneration.
+
+## Adding a case
+
+A hand-written case (group `behavior`) lives in [`cases/`](cases/) as `<name>.yaml`. Its required
+fields, fixed by `docs/case.md` and enforced by `go/record/case.go:192-255,310-325`, are `name`
+(matching the file stem), `group`, `why` (non-empty for `behavior`) and `keys` (non-empty). A
+minimal example:
+
+```yaml
+# Shows: an env var whose value is a raw JSON-encoded map, read as a typed getter.
+name: additional-endpoints-env
+group: behavior
+why: [env-map-raw-string]
+env:
+  DD_ADDITIONAL_ENDPOINTS: '{"https://x.test": ["k"]}'
+keys: [additional_endpoints]
+```
+
+- Name the file `<name>.yaml`; `ParseCaseFile` rejects a file whose stem does not equal `name`.
+- Give the file a top-of-file comment (as above) saying what the case shows, since the ids in
+  `why` name entries in a catalog kept outside this repository.
+- After adding or editing a case, run `make build-agent-config-corpus` to regenerate the corpus,
+  then run the checks below.
+
 The target runs [`regenerate.sh`](regenerate.sh), which:
 
 1. reads the Agent commit from `_version.txt`;
@@ -106,9 +148,10 @@ The target runs [`regenerate.sh`](regenerate.sh), which:
   ```
 
 - Network access for a cold run:
-  - `github.com`, to fetch the Agent commit (`AGENT_REPO_URL` can override it);
-  - the Go module proxy (`GOPROXY`; when set on the host, the script passes it through to the Go
-    container, the same way it already does `AGENT_REPO_URL`);
+  - `github.com`, to fetch the Agent commit on the host, outside any container
+    (`AGENT_REPO_URL` can override it; `regenerate.sh` never passes it into a container);
+  - the Go module proxy (`GOPROXY`; when set on the host, the script passes it into the Go
+    container with `-e GOPROXY`);
   - PyPI, for the Python packages `uv` installs;
   - the image registries: Docker Hub (the Go image) and `ghcr.io` (the Python image).
 
@@ -129,24 +172,30 @@ docker volume rm saluki-config-recorder-gomod saluki-config-recorder-gobuild sal
 
 ## Checks
 
-The `datadog-agent-config` crate checks the committed corpus in ordinary Rust CI, with no Go and no
-Docker. When a check fails because the corpus is stale, regenerate it with
-`make build-agent-config-corpus`.
+The `datadog-agent-config-corpus` crate checks the committed corpus with no Go and no Docker, as
+unit tests of that crate; CI runs them, along with every other Rust unit test, through `make test`.
+When a check fails because the corpus is stale, regenerate it with `make build-agent-config-corpus`.
 
 - `corpus_lines_read_strictly`: an independent strict reader of the whole file. It catches a corpus
   that breaks the record format: encoding, line order, canonical JSON, unknown or `null` members,
   bad values, and the consistency rules between lines.
 - `corpus_within_size_cap`: the file is over 512,000 bytes.
-- `corpus_pin_matches_vendored_schema`: the header's `agent_commit` is not `_version.txt`.
+- `depth_group_within_budget`: the `depth` group's corpus lines are over their 80,000-byte budget;
+  see `docs/case.md` §3.2.1 for which variants to cut.
+- `corpus_pin_matches_vendored_schema`: the header's `agent_commit` is not `_version.txt`, or
+  `REVIEWED_AT_AGENT_COMMIT` (`lib/datadog-agent/config-corpus/src/lists.rs`) is not `_version.txt`.
 - `corpus_inputs_digest_is_current`: `go/`, `cases/`, `agent_codegen.py` or `regenerate.sh` changed
   since the corpus was recorded.
 - `corpus_groups_match_overlay`: the keys of the generated case groups no longer match the vendored
   schema and `schema_overlay.yaml`, for example after a key's `support` changed.
 - `corpus_env_cases_stream_env_source`: a key in an env-only `breadth` or `unsupported` case did
   not stream the source `environment-variable`, so its env name is not the Agent's.
+- `vendored_schema_has_no_unrecorded_shapes`: the vendored schema grew a shape (a deprecated key
+  name, a duration-tagged integer or number) that no case covers yet; add the case the failure
+  names, in `cases/`, before regenerating.
 
 ```sh
-cargo nextest run -p datadog-agent-config --test config_recorder_corpus
+cargo nextest run --lib --bins -p datadog-agent-config-corpus
 ```
 
 `regenerate.sh` also stops when `lib/datadog-agent/config/schema/core/` (without `_version.txt`)

@@ -1,3 +1,6 @@
+# Configures OTLP gRPC and HTTP receiver settings, including ones absent from the schema.
+# Shows that reading the receiver as a section includes those settings and configured
+# leaves, while omitting unconfigured defaults.
 name: otlp-receiver-section
 group: behavior
 why: [otlp-receiver-read-as-section]

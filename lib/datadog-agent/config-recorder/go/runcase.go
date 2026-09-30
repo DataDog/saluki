@@ -123,15 +123,15 @@ func writeInputs(c *record.Case, workdir string) (config.Params, error) {
 	return config.NewAgentParams(cfgPath, opts...), nil
 }
 
-// updateWait is how long the harness waits for an update's events (record.md §4.2).
+// updateWait is how long the recorder waits for an update's events (record.md §4.2).
 const updateWait = 5 * time.Second
 
 // runCase runs one case (or, when baseline is true, the baseline: a config built with no
 // inputs): it reads the first snapshot and the case's keys, applies the case's updates, and reads
 // the keys again. When baseline is true it also checks that the schema's leaves match the Agent's
-// own key set (getter-map.md §1), and a construction error is a harness failure rather than a
-// startup_error (record.md §4.1): the baseline has no inputs to get wrong, so a construction
-// failure there means the harness itself is broken.
+// own key set (getter-map.md §1). A construction error in the baseline fails the recorder rather
+// than producing a startup_error (record.md §4.1): the baseline has no inputs to get wrong, so
+// its construction failure means the recorder itself is broken.
 func runCase(c *record.Case, params config.Params, capture *logCapture, sch schema.Schema, baseline bool) (*record.RunResult, error) {
 	run := &record.CaseRun{}
 	err := withFirstSnapshot(params, func(sess *session) error {
@@ -215,7 +215,7 @@ func runCase(c *record.Case, params config.Params, capture *logCapture, sch sche
 	var ce errConstruction
 	if errors.As(err, &ce) {
 		if baseline {
-			// record.md §4.1: a startup_error in the baseline process is a harness failure.
+			// record.md §4.1: a startup_error in the baseline process fails the recorder.
 			return nil, fmt.Errorf("baseline: config construction failed: %w", ce)
 		}
 		msg := ce.Error()
@@ -321,8 +321,8 @@ func eventSeq(sess *session, id int32) (uint64, error) {
 }
 
 // streamEvent converts one stream event received during a wait. A resync ConfigSnapshot after
-// the first snapshot is a harness failure in format 1 (record.md §4.2, §5.2); it needs a sequence
-// gap this harness never produces (one update at a time, values that always encode).
+// the first snapshot fails the recorder in format 1 (record.md §4.2, §5.2); it needs a sequence
+// gap this recorder never produces (one update at a time, values that always encode).
 func streamEvent(sess *session, ev *pb.ConfigEvent) (record.StreamEvent, error) {
 	u := ev.GetUpdate()
 	if u == nil {

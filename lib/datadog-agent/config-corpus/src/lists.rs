@@ -1,7 +1,7 @@
 //! The closed lists of names the corpus may use, each tied to where it is defined.
 //!
-//! These lists were reviewed against the Agent at [`REVIEWED_AT_AGENT_COMMIT`]. When the pin moves,
-//! re-check every list here against the new pin before bumping that constant.
+//! These lists were reviewed against the Agent at [`REVIEWED_AT_AGENT_COMMIT`]. When the pinned
+//! commit changes, re-check every list against it before bumping that constant.
 
 use std::fmt;
 
@@ -154,7 +154,7 @@ string_enum! {
         Excluded => "excluded",
         /// Keys that are not in the schema.
         Unknown => "unknown",
-        /// Hand-written cases, each naming behavior catalog entries.
+        /// Hand-written cases, each naming behavior catalog entries in its `why` list.
         Behavior => "behavior",
     }
 }

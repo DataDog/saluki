@@ -1,3 +1,5 @@
+# Sets a fleet dogstatsd_port and a CLI cmd_port without runtime changes.
+# Shows where fleet values rank among sources and how the CLI value reads.
 name: layers-no-updates
 group: behavior
 why: [fleet-policies-outranked]

@@ -1,3 +1,5 @@
+# Enables use_proxy_for_cloud_metadata at runtime and reads proxy.no_proxy.
+# Shows that the load-time proxy value is not recomputed after this update.
 name: proxy-runtime-cloud-metadata-not-recomputed
 group: behavior
 why: [derived-value-not-recomputed-after-update]

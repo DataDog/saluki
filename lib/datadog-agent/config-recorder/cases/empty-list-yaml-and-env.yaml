@@ -1,3 +1,5 @@
+# Sets an empty histogram_aggregates list in YAML and an empty bound environment value.
+# Shows that an empty YAML list can stream as null rather than an empty array.
 name: empty-list-yaml-and-env
 group: behavior
 why: [empty-list-streams-null-or-empty]

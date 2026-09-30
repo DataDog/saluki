@@ -1,3 +1,5 @@
+# Reads unknown YAML strings as integer and duration values.
+# Shows that integer getters accept base prefixes and a unitless duration is nanoseconds.
 name: getter-parses-raw-strings
 group: behavior
 why: [cast-int-string-base-prefix, getter-duration-bare-number-is-nanoseconds]
