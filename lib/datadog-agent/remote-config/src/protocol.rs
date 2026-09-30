@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use aws_lc_rs::digest;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+// Hashing through the TLS crypto provider keeps FIPS builds on the same validated module as TLS.
+pub(crate) use saluki_tls::sha256;
 use serde::Deserialize;
 
 use crate::ConfigId;
@@ -205,16 +206,6 @@ pub(crate) fn root_version(raw: &[u8]) -> Result<u64, GenericError> {
 
     let Signed { signed } = serde_json::from_slice(raw).error_context("TUF root is malformed.")?;
     Ok(signed.version)
-}
-
-/// Hashes `payload` with SHA-256.
-///
-/// This uses `aws-lc-rs` so that, in a FIPS build, the hash is computed by the same validated module as TLS.
-pub(crate) fn sha256(payload: &[u8]) -> [u8; 32] {
-    let digest = digest::digest(&digest::SHA256, payload);
-    let mut hash = [0; 32];
-    hash.copy_from_slice(digest.as_ref());
-    hash
 }
 
 #[cfg(test)]
