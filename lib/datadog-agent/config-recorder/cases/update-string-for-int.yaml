@@ -1,3 +1,5 @@
+# Updates dogstatsd_port with a string through the CLI source and reads it as int and string.
+# Shows that a string update to a scalar setting is cast and stored at highest priority.
 name: update-string-for-int
 group: behavior
 why: [config-set-api-string-under-cli]

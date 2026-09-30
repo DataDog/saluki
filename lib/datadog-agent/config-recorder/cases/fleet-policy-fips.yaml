@@ -1,3 +1,5 @@
+# Enables the FIPS proxy through a fleet policy and reads dd_url and TLS validation.
+# Shows that the load-time URL rewrite runs before the policy merge and is not rerun.
 name: fleet-policy-fips
 group: behavior
 why: [fleet-policy-fips-skips-rewrite, load-fixup-skips-fleet-policy]

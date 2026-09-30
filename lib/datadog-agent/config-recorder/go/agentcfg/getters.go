@@ -43,7 +43,6 @@ var primaryGetters = map[string][]string{
 	"map[string][]string":     {"GetStringMapStringSlice"},
 	"map[string]float64":      {"GetStringMap"},
 	"map[string]int":          {"GetStringMap"},
-	"<nil>":                   {"Get"},
 }
 
 // Tags are the schema annotations that may add secondary getters to a key.
@@ -77,8 +76,8 @@ func selectGetters(defaultType string, tags Tags) ([]string, error) {
 // selectGettersNoDefault returns the getter list for a schema leaf with no default (getter-map.md
 // §1.1), whose declaredType is the schema's `type` and elementType is its `items` type (for
 // `array`) or `additionalProperties` type (for `object`), or "" when the schema has none. A missing
-// or nil default is not a harness failure, so this never errors: an unmatched declared type or
-// element type falls back to `Get` alone, exactly as the table's "any other or no ..." rows do.
+// or nil default is valid, so this never errors: an unmatched declared type or element type falls
+// back to `Get` alone, exactly as the table's "any other or no ..." rows do.
 func selectGettersNoDefault(declaredType, elementType string, tags Tags) []string {
 	var primary []string
 	switch declaredType {
@@ -142,9 +141,9 @@ func GettersForKey(entry record.KeyEntry, sk *schema.Key, hasDefault bool, defau
 
 // DefaultLayerType returns the `%T` of a schema leaf's default-layer value, and whether it has
 // one. The key has no default (getter-map.md §1.1) when GetAllSources' first element is missing,
-// is not the default layer, or holds nil; that is not a harness failure, so the caller falls back
-// to the key's declared schema type. Only call it on schema keys and after the first snapshot: on
-// an unknown key a read joins the key to the key set.
+// is not the default layer, or holds nil; that is valid, so the caller falls back
+// to the key's declared schema type. Only call it on schema keys after the first snapshot:
+// reading an unknown key adds it to the key set.
 func DefaultLayerType(r model.Reader, key string) (typ string, hasDefault bool) {
 	sources := r.GetAllSources(key)
 	if len(sources) == 0 || sources[0].Source != model.SourceDefault || sources[0].Value == nil {
@@ -211,7 +210,7 @@ func SelectGetters(r model.Reader, entry record.KeyEntry, s schema.Schema) (list
 }
 
 // readConfigSection reads a section the way the Agent's OTLP pipeline does, in the nested form
-// of confmap's ToStringMap. A result that is not a map is a harness failure.
+// of confmap's ToStringMap. A non-map result is an error from the recorder, not a getter result.
 func readConfigSection(r model.Reader, key string) (interface{}, error) {
 	var v interface{} = configcheck.ReadConfigSection(r, key).ToStringMap()
 	m, ok := v.(map[string]interface{})

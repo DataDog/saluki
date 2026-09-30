@@ -32,8 +32,8 @@ type driveFlags struct {
 	jobs           int
 }
 
-// parseDriveFlags parses and validates the drive subcommand's flags. Every flag is required. A
-// missing or malformed flag is a usage error.
+// parseDriveFlags parses and validates the drive subcommand's flags. Every flag except --jobs is
+// required. A missing or malformed flag is a usage error.
 func parseDriveFlags(args []string) (*driveFlags, error) {
 	var f driveFlags
 	fs := flag.NewFlagSet("drive", flag.ContinueOnError)

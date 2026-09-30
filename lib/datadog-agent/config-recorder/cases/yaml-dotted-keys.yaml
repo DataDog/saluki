@@ -1,3 +1,5 @@
+# Uses dotted YAML keys at the top level and inside an unknown map, plus a URL map key.
+# Shows that dotted paths are split before schema lookup, but keys inside a leaf map stay intact.
 name: yaml-dotted-keys
 group: behavior
 why: [yaml-dotted-key-split-before-schema]

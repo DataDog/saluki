@@ -1,3 +1,5 @@
+# Disables core_agent in YAML and reads all four payload switches.
+# Shows that the Agent turns them off at load time and reports Agent-written values.
 name: core-agent-disabled-payloads
 group: behavior
 why: [core-agent-disabled-forces-payloads-off]

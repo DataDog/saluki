@@ -1,3 +1,5 @@
+# Sets ECS_FARGATE outside the DD_ variables and reads hostname.
+# Shows that Fargate detection reads the raw environment, not a streamed Fargate key.
 name: ecs-fargate-env-only
 group: behavior
 why: [ecs-fargate-raw-env-bypass]

@@ -1,3 +1,5 @@
+# Sets three keys in YAML and changes each through an Agent runtime update.
+# Shows that updates notify when their resolved values change.
 name: yaml-then-runtime-set
 group: behavior
 why: [set-notifies-only-on-resolved-change]

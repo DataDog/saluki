@@ -101,10 +101,11 @@ func TestDriveOnTestdata(t *testing.T) {
 		t.Errorf("processes %v, want %v", procs, want)
 	}
 
-	// Each key's snapshot source. Pin-bump canary: proxy.http and proxy.https, set by YAML, stream
-	// config-post-init because the Agent's proxy fixup rewrites them after loading, which is what
-	// makes them misbehave in the batch. If a new Agent pin changes that fixup, this expectation,
-	// and the peeled parts above, change with it, and the split rules must be checked again.
+	// Each key's snapshot source. This checks behavior at the pinned Agent commit: proxy.http and
+	// proxy.https, set by YAML, stream config-post-init because the Agent's proxy fixup rewrites
+	// them after loading, so they differ from the batch's expected source. If the pinned Agent
+	// changes that fixup, these sources and the peeled parts above change with it, and the split rules
+	// must be checked again.
 	// log_level and cmd_port stream the YAML source they were set from. The env case's keys stream
 	// environment-variable and are never split.
 	wantSources := map[string]string{

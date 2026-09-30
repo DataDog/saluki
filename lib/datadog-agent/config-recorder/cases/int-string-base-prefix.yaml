@@ -1,3 +1,5 @@
+# Sets numeric strings with octal and hex prefixes in YAML and the environment.
+# Shows that integer conversion uses base prefixes, including size-in-bytes reads.
 name: int-string-base-prefix
 group: behavior
 why: [cast-int-string-base-prefix]

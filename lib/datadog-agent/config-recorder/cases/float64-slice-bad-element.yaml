@@ -1,3 +1,5 @@
+# Sets histogram_percentiles to a list with one nonnumeric element.
+# Shows that its float-list getter discards the whole list if any element fails to parse.
 name: float64-slice-bad-element
 group: behavior
 why: [getter-float64slice-drops-all]

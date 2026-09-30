@@ -1,3 +1,5 @@
+# Disables use_dogstatsd at runtime and reads data_plane.dogstatsd.enabled.
+# Shows that the related load-time setting is not recomputed after the update.
 name: runtime-use-dogstatsd-off
 group: behavior
 why: [derived-value-not-recomputed-after-update]

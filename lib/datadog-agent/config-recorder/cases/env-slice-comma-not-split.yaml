@@ -1,3 +1,5 @@
+# Sets histogram_aggregates to "max,min avg" through the environment.
+# Shows that generic list conversion splits on whitespace, not on commas.
 name: env-slice-comma-not-split
 group: behavior
 why: [convert-scalar-to-slice-splits-whitespace]

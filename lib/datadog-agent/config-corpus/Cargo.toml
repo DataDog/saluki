@@ -11,5 +11,12 @@ publish = false
 [dependencies]
 serde_json = { workspace = true }
 
+# Dev-only: the corpus_checks module also loads the vendored schema and overlay to check the
+# corpus's case groups against them, and hashes the recorder's inputs to check staleness. Neither
+# use makes this crate depend on datadog-agent-config.
+[dev-dependencies]
+datadog-agent-config-overlay-model = { workspace = true }
+sha2 = { workspace = true }
+
 [lints]
 workspace = true

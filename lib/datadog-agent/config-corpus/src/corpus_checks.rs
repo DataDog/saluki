@@ -2,15 +2,21 @@
 //! need neither Go nor Docker: its format, its size, and that it is current with the vendored
 //! schema, the overlay and the recorder's own inputs.
 //!
-//! Every check reads the corpus through `datadog_agent_config_corpus::read`, the only parser of it.
+//! Every check reads the corpus through [`crate::read`], the only parser of it. This module lives
+//! inside `datadog-agent-config-corpus` (rather than `datadog-agent-config`) because none of its
+//! checks need a `datadog-agent-config` type; they read the corpus and the vendored schema/overlay
+//! files straight off disk.
+
+#![allow(missing_docs)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use datadog_agent_config_corpus::{Case, Corpus, Group, Inputs, Outcome, Source, REVIEWED_AT_AGENT_COMMIT};
 use datadog_agent_config_overlay_model::schema_gen::{load_schema_from_value, EnvBinding};
 use datadog_agent_config_overlay_model::{load_resolved_schema, Files, KnownEntry, SchemaOverlay};
 use sha2::{Digest, Sha256};
+
+use crate::{Case, Corpus, Group, Inputs, KeyLine, Outcome, Source, REVIEWED_AT_AGENT_COMMIT};
 
 const SIZE_CAP: usize = 512_000;
 
@@ -28,7 +34,7 @@ const DISAGREE: &str = "if it still fails after regenerating, the reader's lists
 /// `environment-variable`, each with the reason.
 const ENV_SOURCE_EXCEPTIONS: &[(&str, &str)] = &[];
 
-/// `lib/datadog-agent/config/`, where this crate lives.
+/// `lib/datadog-agent/config-corpus/`, where this crate lives.
 fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -36,6 +42,11 @@ fn crate_dir() -> PathBuf {
 /// `lib/datadog-agent/config-recorder/`.
 fn recorder_dir() -> PathBuf {
     crate_dir().join("..").join("config-recorder")
+}
+
+/// `lib/datadog-agent/config/`, which holds the vendored schema pin. This crate cannot depend on it directly.
+fn config_dir() -> PathBuf {
+    crate_dir().join("..").join("config")
 }
 
 fn corpus_bytes() -> Vec<u8> {
@@ -46,7 +57,7 @@ fn corpus_bytes() -> Vec<u8> {
 /// The corpus model, or `None` when it breaks the format. `corpus_lines_read_strictly` reports
 /// that case, so the other checks step aside and each break fails exactly one test.
 fn corpus() -> Option<Corpus> {
-    match datadog_agent_config_corpus::read(&corpus_bytes()) {
+    match crate::read(&corpus_bytes()) {
         Ok(c) => Some(c),
         Err(v) => {
             eprintln!(
@@ -60,7 +71,7 @@ fn corpus() -> Option<Corpus> {
 
 #[test]
 fn corpus_lines_read_strictly() {
-    let Err(violations) = datadog_agent_config_corpus::read(&corpus_bytes()) else {
+    let Err(violations) = crate::read(&corpus_bytes()) else {
         return;
     };
     let shown: Vec<String> = violations.iter().map(ToString::to_string).collect();
@@ -80,8 +91,8 @@ fn corpus_within_size_cap() {
     );
 }
 
-/// The `depth` group's lines must fit its budget. A variant's bytes are those of every line whose case is the variant's
-/// case or one of its single-key parts (`<variant>--<key>`), newlines included.
+/// The `depth` group's lines must fit its budget. Count every line for the variant's case or one
+/// of its single-key parts (`<variant>--<key>`), including newlines.
 #[test]
 fn depth_group_within_budget() {
     let Some(corpus) = corpus() else {
@@ -116,14 +127,16 @@ fn depth_group_within_budget() {
     let shown: Vec<String> = listed.iter().map(|(v, n)| format!("{v}: {n}")).collect();
     panic!(
         "the depth group's corpus lines are {total} bytes, over the {DEPTH_BUDGET}-byte budget; cut variants from \
-         the bottom of the depth variant table in case.md §3.2.1 and run `{REGENERATE}`. Bytes per variant:\n{}",
+         the bottom of the depth variant table in lib/datadog-agent/config-recorder/docs/case.md §3.2.1 and run \
+         `{REGENERATE}`. Bytes per variant:\n{}",
         shown.join("\n")
     );
 }
 
-/// Both pin facts, checked independently so a schema bump reports both at once instead of hiding
-/// the reviewed-lists check behind the staleness one. `recorded` is `None` when the corpus itself
-/// broke the format (`corpus_lines_read_strictly` already reports that).
+/// Checks the corpus commit and reviewed-lists commit independently against the schema pin, so a
+/// schema bump reports both mismatches rather than hiding the reviewed-lists check behind the
+/// staleness one. `recorded` is `None` when the corpus breaks the format;
+/// `corpus_lines_read_strictly` reports that error.
 fn pin_problems(recorded: Option<&str>, reviewed: &str, pin: &str) -> Vec<String> {
     let mut problems = Vec::new();
     if let Some(recorded) = recorded {
@@ -146,7 +159,7 @@ fn pin_problems(recorded: Option<&str>, reviewed: &str, pin: &str) -> Vec<String
 
 #[test]
 fn corpus_pin_matches_vendored_schema() {
-    let path = crate_dir().join("schema").join("core").join("_version.txt");
+    let path = config_dir().join("schema").join("core").join("_version.txt");
     let pin = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     let pin = pin.trim();
     let recorded = corpus().map(|c| c.header.agent_commit);
@@ -244,7 +257,7 @@ fn input_source(inputs: &Inputs) -> &'static str {
 }
 
 /// The key lines of a case that started; a startup error records none.
-fn key_lines(case: &Case) -> impl Iterator<Item = &datadog_agent_config_corpus::KeyLine> {
+fn key_lines(case: &Case) -> impl Iterator<Item = &KeyLine> {
     let keys = match &case.outcome {
         Outcome::Started(s) => s.keys.as_slice(),
         Outcome::StartupError(_) => &[],

@@ -188,7 +188,7 @@ func (g *generator) add(c *record.Case) error {
 
 // envName is the key's env var, or none for a `no-env` key: the first schema `env_vars` entry,
 // else the derived name (schema.DerivedEnvName). The name must be one the Agent bound; if not, the
-// generator's reading of the schema disagrees with the Agent, a harness failure.
+// generator's reading of the schema disagrees with the Agent, so generation fails.
 func (g *generator) envName(s *schema.Key) (string, bool, error) {
 	if s.NoEnv {
 		return "", false, nil
@@ -313,8 +313,9 @@ func (g *generator) envAndYAML(group string, keys []string, withSet bool) error 
 }
 
 // Generate writes the generated groups `baseline`, `breadth`, `unsupported`, `excluded` and
-// `unknown`, batched by section (case.md §3.2), and `depth`, one case per variant (§3.2.1). Overlay keys that are not schema keys are in no
-// generated group; a key the overlay both inventories and excludes is an error.
+// `unknown`, batched by section (case.md §3.2), and `depth`, one case per variant (§3.2.1).
+// Overlay keys that are not schema keys are in no generated group; a key the overlay both
+// inventories and excludes is an error.
 func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, error) {
 	leaves, err := s.LowercasedLeaves()
 	if err != nil {
@@ -391,9 +392,10 @@ func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, er
 	return &g.res, nil
 }
 
-// unknownGroup adds the `unknown` cases (case.md §3.3): in YAML, an unknown top-level key, an unknown key under the byte-first modeled section, and the byte-first
-// deprecated name of a modeled key; by env, an unknown DD_* variable and that deprecated name.
-// Unknown keys take the string rule's value, since the schema gives them no type.
+// unknownGroup adds the `unknown` cases (case.md §3.3): in YAML, an unknown top-level key, an
+// unknown key under the byte-first modeled section, and the byte-first deprecated name of a modeled
+// key; by env, an unknown DD_* variable and that deprecated name. Unknown keys take the string
+// rule's value, since the schema gives them no type.
 func (g *generator) unknownGroup(modeled []string) error {
 	yamlValues := map[string]interface{}{}
 	yamlValues[unknownName] = "cr-a"

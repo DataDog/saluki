@@ -3,10 +3,10 @@
 // This product includes software developed at Datadog (https://www.datadoghq.com/).
 // Copyright 2026-present Datadog, Inc.
 
-// Package gen writes the config recorder's generated cases: it reads the Agent's merged schema
-// (package schema) and saluki's overlay, chooses the keys of each generated group, and gives them values by rule. It writes each case as a record.Case.
-// It needs no Agent config: the facts only a built config knows (default-layer Go types, default
-// getter lists and the bound env var names) come in as AgentFacts.
+// Package gen writes the config recorder's generated cases. It reads the Agent's merged schema
+// (package schema) and Saluki's overlay, chooses each group's keys, and assigns values by rule.
+// It writes each case as a record.Case. It needs no Agent config: AgentFacts supplies the facts
+// only a built config knows (default-layer Go types, default getter lists and bound env var names).
 package gen
 
 import (

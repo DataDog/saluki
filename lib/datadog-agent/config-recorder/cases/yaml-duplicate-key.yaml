@@ -1,3 +1,5 @@
+# Sets log_level twice in YAML, first to warn and then to error.
+# Shows that the last value wins after strict parsing fails, without a config warning.
 name: yaml-duplicate-key
 group: behavior
 why: [yaml-duplicate-key-last-wins]

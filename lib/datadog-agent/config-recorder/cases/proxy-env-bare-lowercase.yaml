@@ -1,3 +1,5 @@
+# Sets lowercase https_proxy and uppercase NO_PROXY with commas and spaces.
+# Shows that proxy loading reads bare environment names with lowercase fallback and parses NO_PROXY.
 name: proxy-env-bare-lowercase
 group: behavior
 why: [env-proxy-custom-pipeline]

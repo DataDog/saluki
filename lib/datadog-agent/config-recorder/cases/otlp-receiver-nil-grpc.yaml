@@ -1,3 +1,5 @@
+# Leaves the OTLP gRPC receiver null in YAML and reads the receiver as a section.
+# Shows that section reads include configured or explicitly null leaves, not other defaults.
 name: otlp-receiver-nil-grpc
 group: behavior
 why: [otlp-receiver-read-as-section]
