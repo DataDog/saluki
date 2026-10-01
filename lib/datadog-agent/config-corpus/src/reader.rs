@@ -336,11 +336,13 @@ impl Pending {
     fn finish(self) -> R<Case> {
         let Pending {
             mut case,
+            line,
             written_keys,
             started,
             key_lines,
             ..
         } = self;
+        case.input_line = line;
         let Some(started) = started else {
             if !key_lines.is_empty() {
                 return fail(Rule::Consistency, "a case with a startup_error must have no key lines");
@@ -591,6 +593,7 @@ fn case_line(v: &Json, header: &Header) -> R<Pending> {
             why,
             inputs,
             construction_warnings,
+            input_line: 0,
             outcome: Outcome::StartupError(String::new()),
         },
         line: 0,
