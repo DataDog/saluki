@@ -1,11 +1,16 @@
 use std::mem::{self, MaybeUninit};
 
-const SOCKET_CREDENTIALS_LEN: usize = get_ucred_struct_size();
+// Leave room for credentials alongside timestamps, security labels, or file descriptors. Larger ancillary
+// payloads are reported via MSG_CTRUNC rather than silently treated as missing credentials.
+const SOCKET_CREDENTIALS_LEN: usize = 512;
 
 pub type SocketCredentialsAncillaryData = AncillaryData<SOCKET_CREDENTIALS_LEN>;
 
 /// Stack allocated structure for ancillary (out-of-band) data.
+#[repr(C)]
 pub struct AncillaryData<const N: usize> {
+    // Align the buffer as a cmsghdr without increasing its size.
+    _alignment: [libc::cmsghdr; 0],
     buf: [MaybeUninit<u8>; N],
     len: usize,
 }
@@ -14,9 +19,15 @@ impl<const N: usize> AncillaryData<N> {
     /// Creates a new `AncillaryData` structure of the given size.
     pub fn new() -> Self {
         Self {
+            _alignment: [],
             buf: [MaybeUninit::uninit(); N],
             len: 0,
         }
+    }
+
+    /// Returns the initialized length of the control buffer.
+    pub fn len(&self) -> usize {
+        self.len
     }
 
     /// Gets a mutable reference to the underlying buffer as a slice of uninitialized bytes.
@@ -41,22 +52,26 @@ impl<const N: usize> AncillaryData<N> {
         self.len = new_len;
     }
 
-    /// Gets an iterator over any control messages in the buffer.
+    /// Gets an iterator over recognized control messages in the buffer.
+    ///
+    /// # Safety
+    ///
+    /// The first `len` bytes must be initialized, as required by `set_len`.
     pub unsafe fn messages(&self) -> ControlMessages<'_> {
-        let buf = std::slice::from_raw_parts(self.buf.as_ptr() as *const _, self.len);
+        // SAFETY: set_len requires that the first len bytes are initialized.
+        let buf = unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast(), self.len) };
         ControlMessages::new(buf)
     }
 }
 
-/// An iterator over control messages in an ancillary data buffer.
+/// An iterator over recognized control messages in an ancillary data buffer.
 pub struct ControlMessages<'a> {
     buf: &'a [u8],
-    current: Option<&'a libc::cmsghdr>,
 }
 
 impl<'a> ControlMessages<'a> {
     fn new(buf: &'a [u8]) -> Self {
-        Self { buf, current: None }
+        Self { buf }
     }
 }
 
@@ -64,91 +79,62 @@ impl<'a> Iterator for ControlMessages<'a> {
     type Item = ControlMessage<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            // Create a temporary message header that we can use to pull out control message headers from.
-            let mut msg: libc::msghdr = mem::zeroed();
-            msg.msg_control = self.buf.as_ptr() as *mut _;
-            msg.msg_controllen = self.buf.len() as _;
-
-            let cmsg = if let Some(current_cmsg) = self.current {
-                // Get the next control message header after the current one.
-                libc::CMSG_NXTHDR(&msg, current_cmsg)
-            } else {
-                // We haven't read a control message header yet, so take the first one.
-                libc::CMSG_FIRSTHDR(&msg)
-            };
-
-            let cmsg = cmsg.as_ref()?;
-            self.current = Some(cmsg);
-
-            ControlMessage::try_from_cmsghdr(cmsg)
-        }
-    }
-}
-
-/// Control message.
-pub enum ControlMessage<'a> {
-    /// UNIX socket credentials.
-    ///
-    /// This captures the process ID, user ID, and group ID of the peer process on the other end of a Unix domain
-    /// socket.
-    Credentials(&'a libc::ucred),
-}
-
-impl<'a> ControlMessage<'a> {
-    fn try_from_cmsghdr(cmsg: &'a libc::cmsghdr) -> Option<Self> {
-        unsafe {
-            // Calculate the size of the control message header, so we can figure out the byte offset to actually get at
-            // the raw message data, and then create a slice to that data.
-
-            // The type of `cmsg_len` varies between MUSL and glibc, so we need to handle both cases, hence the
-            // unnecessary cast in some cases which is cleaner than target-specific code.
+        while self.buf.len() >= mem::size_of::<libc::cmsghdr>() {
+            // SAFETY: the buffer contains a complete header. Read by value to support unaligned input.
+            let cmsg = unsafe { self.buf.as_ptr().cast::<libc::cmsghdr>().read_unaligned() };
+            // cmsg_len has different types on glibc and musl.
             #[allow(clippy::unnecessary_cast)]
             let cmsg_len = cmsg.cmsg_len as usize;
-            let cmsg_len_offset = libc::CMSG_LEN(0) as usize;
-            let data_len = cmsg_len.saturating_sub(cmsg_len_offset) as usize;
-            let data_ptr = libc::CMSG_DATA(cmsg).cast();
-            let data = std::slice::from_raw_parts(data_ptr, data_len);
+            let header_len = unsafe { libc::CMSG_LEN(0) as usize };
+            if cmsg_len < header_len || cmsg_len > self.buf.len() {
+                self.buf = &[];
+                return None;
+            }
 
-            // Currently, all we handle is socket credentials.
-            match cmsg.cmsg_level {
-                libc::SOL_SOCKET => match cmsg.cmsg_type {
-                    libc::SCM_CREDENTIALS => ControlMessage::as_credentials(data),
-                    _ => None,
-                },
-                _ => None,
+            let data = &self.buf[header_len..cmsg_len];
+            // CMSG_SPACE accounts for platform-specific padding between messages. Reject lengths that cannot be
+            // represented by this libc interface; received control data is bounded by the stack buffer in practice.
+            let Ok(data_len) = u32::try_from(data.len()) else {
+                self.buf = &[];
+                return None;
+            };
+            let space = unsafe { libc::CMSG_SPACE(data_len) as usize };
+            self.buf = self.buf.get(space..).unwrap_or_default();
+
+            match (cmsg.cmsg_level, cmsg.cmsg_type) {
+                (libc::SOL_SOCKET, libc::SCM_CREDENTIALS) => {
+                    if let Some(credentials) = ControlMessage::as_credentials(data) {
+                        return Some(credentials);
+                    }
+                }
+                (libc::SOL_SOCKET, libc::SCM_RIGHTS) => return Some(ControlMessage::FileDescriptors(data)),
+                _ => {}
             }
         }
-    }
-
-    fn as_credentials(buf: &'a [u8]) -> Option<Self> {
-        if buf.len() == mem::size_of::<libc::ucred>() {
-            // SAFETY: We've already checked that the buffer is long enough to be mapped to `ucred`, and we're only here
-            // if `cmsg_type` was SCM_CREDENTIALS, and our reference is safe to take because it's tied to the lifetime
-            // of the buffer we're taking a pointer to.
-            unsafe {
-                let ucred_ptr: *const libc::ucred = buf.as_ptr().cast();
-                ucred_ptr.as_ref().map(Self::Credentials)
-            }
-        } else {
-            None
-        }
+        None
     }
 }
 
-const fn get_ucred_struct_size() -> usize {
-    let ucred_raw_size = mem::size_of::<libc::ucred>();
-    let ucred_raw_size = if ucred_raw_size.wrapping_shr(u32::BITS) != 0 {
-        // We do a const shift of the raw size to see if it has any additional bits past what we can fit in u32, and
-        // this way we know that it's safe to directly cast the value to u32 without having truncated any bits.
-        panic!("size of `ucred` struct greater than u32::MAX");
-    } else {
-        ucred_raw_size as u32
-    };
+/// A recognized control message.
+pub enum ControlMessage<'a> {
+    /// Process ID, user ID, and group ID of the remote peer.
+    Credentials(libc::ucred),
 
-    // SAFETY: This is part of a blanket "unsafe" wrapper around libc functions, but it's safe to call since it boils
-    // down to a bunch of `size_of` calls and arithmetic for ensuring the values take alignment into consideration, etc.
-    unsafe { libc::CMSG_SPACE(ucred_raw_size) as usize }
+    /// Raw file descriptors received via SCM_RIGHTS, which the receiver must close if unused.
+    FileDescriptors(&'a [u8]),
+}
+
+impl ControlMessage<'_> {
+    fn as_credentials(buf: &[u8]) -> Option<Self> {
+        if buf.len() != mem::size_of::<libc::ucred>() {
+            return None;
+        }
+        // SAFETY: the payload has exactly the size of ucred. All its integer fields accept any bit pattern.
+        // Reading by value avoids requiring an aligned input buffer or creating a reference into it.
+        Some(Self::Credentials(unsafe {
+            buf.as_ptr().cast::<libc::ucred>().read_unaligned()
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -175,7 +161,7 @@ mod tests {
     #[test]
     fn credentials_parsed_from_exact_ucred_payload() {
         // A control-message payload that's exactly `ucred`-sized is decoded field-for-field. The bytes point at a
-        // real `ucred`, so the reinterpretation in `as_credentials` reads correctly-aligned memory.
+        // real `ucred`; parsing copies its integer fields into the returned value.
         let creds = libc::ucred {
             pid: 4242,
             uid: 1000,
@@ -194,7 +180,7 @@ mod tests {
                 assert_eq!(parsed.uid, 1000);
                 assert_eq!(parsed.gid, 2000);
             }
-            None => panic!("a correctly-sized ucred payload should parse into credentials"),
+            _ => panic!("a correctly-sized ucred payload should parse into credentials"),
         }
     }
 
@@ -227,5 +213,90 @@ mod tests {
                 "a {len}-byte control buffer should yield no control messages"
             );
         }
+    }
+    fn append_control_message(buf: &mut Vec<u8>, level: i32, kind: i32, payload: &[u8]) {
+        let start = buf.len();
+        let space = unsafe { libc::CMSG_SPACE(payload.len() as u32) as usize };
+        let header_len = unsafe { libc::CMSG_LEN(0) as usize };
+        buf.resize(start + space, 0);
+        let mut header: libc::cmsghdr = unsafe { mem::zeroed() };
+        header.cmsg_level = level;
+        header.cmsg_type = kind;
+        header.cmsg_len = unsafe { libc::CMSG_LEN(payload.len() as u32) as _ };
+        // SAFETY: the resized buffer contains the complete header and payload, even when unaligned.
+        unsafe {
+            buf.as_mut_ptr()
+                .add(start)
+                .cast::<libc::cmsghdr>()
+                .write_unaligned(header)
+        };
+        buf[start + header_len..start + header_len + payload.len()].copy_from_slice(payload);
+    }
+
+    fn credential_payload() -> Vec<u8> {
+        let creds = libc::ucred {
+            pid: 4242,
+            uid: 1000,
+            gid: 2000,
+        };
+        // SAFETY: ucred contains three initialized integer fields and no padding on Linux.
+        unsafe {
+            std::slice::from_raw_parts(
+                (&creds as *const libc::ucred).cast::<u8>(),
+                mem::size_of::<libc::ucred>(),
+            )
+            .to_vec()
+        }
+    }
+
+    #[test]
+    fn credentials_after_unrecognized_control_messages_are_parsed() {
+        let mut buf = Vec::new();
+        append_control_message(&mut buf, libc::SOL_SOCKET, libc::SCM_TIMESTAMP, &[0; 16]);
+        append_control_message(&mut buf, libc::SOL_IP, 0, &[0; 4]);
+        append_control_message(&mut buf, libc::SOL_SOCKET, libc::SCM_CREDENTIALS, &credential_payload());
+        let mut messages = ControlMessages::new(&buf);
+        assert!(matches!(messages.next(), Some(ControlMessage::Credentials(creds)) if creds.pid == 4242));
+        assert!(messages.next().is_none());
+        assert!(messages.next().is_none());
+    }
+
+    #[test]
+    fn malformed_credential_payload_does_not_hide_later_credentials() {
+        let mut buf = Vec::new();
+        append_control_message(&mut buf, libc::SOL_SOCKET, libc::SCM_CREDENTIALS, &[0; 1]);
+        append_control_message(&mut buf, libc::SOL_SOCKET, libc::SCM_CREDENTIALS, &credential_payload());
+        assert!(
+            matches!(ControlMessages::new(&buf).next(), Some(ControlMessage::Credentials(creds)) if creds.pid == 4242)
+        );
+    }
+
+    #[test]
+    fn invalid_control_message_lengths_are_rejected() {
+        for len in [0, mem::size_of::<libc::cmsghdr>() - 1, 512, usize::MAX] {
+            let mut buf = Vec::new();
+            append_control_message(&mut buf, libc::SOL_SOCKET, libc::SCM_CREDENTIALS, &credential_payload());
+            // SAFETY: the buffer has room for a cmsghdr; only its advertised length is invalid.
+            unsafe {
+                let ptr = buf.as_mut_ptr().cast::<libc::cmsghdr>();
+                let mut header = ptr.read_unaligned();
+                header.cmsg_len = len as _;
+                ptr.write_unaligned(header);
+            };
+            let mut messages = ControlMessages::new(&buf);
+            assert!(messages.next().is_none());
+            assert!(messages.next().is_none());
+        }
+    }
+
+    #[test]
+    fn unaligned_control_buffer_is_parsed() {
+        let mut buf = Vec::new();
+        append_control_message(&mut buf, libc::SOL_SOCKET, libc::SCM_CREDENTIALS, &credential_payload());
+        let mut unaligned = vec![0];
+        unaligned.extend_from_slice(&buf);
+        assert!(
+            matches!(ControlMessages::new(&unaligned[1..]).next(), Some(ControlMessage::Credentials(creds)) if creds.pid == 4242)
+        );
     }
 }

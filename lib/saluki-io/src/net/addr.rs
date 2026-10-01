@@ -315,7 +315,7 @@ pub struct ProcessCredentials {
 }
 
 /// Reason UDS process credential detection failed.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessCredentialsError {
     /// Ancillary data was present but didn't contain usable process credentials.
     InvalidCredentials,
@@ -323,16 +323,32 @@ pub enum ProcessCredentialsError {
     /// Process credentials were present, but the PID was zero.
     ZeroPid,
 
+    /// Ancillary data was truncated by the receive buffer.
+    TruncatedControlData,
+
     /// UDS process credential detection isn't supported on this platform.
     UnsupportedPlatform,
 }
 
 impl ProcessCredentialsError {
+    /// Returns a bounded telemetry label for per-message failures.
+    ///
+    /// Unsupported platforms return `None` because that is a static limitation, not a per-message failure.
+    pub const fn telemetry_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::InvalidCredentials => Some("invalid_credentials"),
+            Self::ZeroPid => Some("zero_pid"),
+            Self::TruncatedControlData => Some("truncated_control_data"),
+            Self::UnsupportedPlatform => None,
+        }
+    }
+
     /// Returns a concise identifier for the failure reason.
     pub const fn identifier(&self) -> &'static str {
         match self {
             Self::InvalidCredentials => "invalid-credentials",
             Self::ZeroPid => "zero-pid",
+            Self::TruncatedControlData => "truncated-control-data",
             Self::UnsupportedPlatform => "unsupported-platform",
         }
     }
@@ -343,6 +359,7 @@ impl fmt::Display for ProcessCredentialsError {
         match self {
             Self::InvalidCredentials => write!(f, "invalid process credentials"),
             Self::ZeroPid => write!(f, "process credential PID is zero"),
+            Self::TruncatedControlData => write!(f, "process credential control data was truncated"),
             Self::UnsupportedPlatform => write!(f, "process credentials are unsupported on this platform"),
         }
     }
@@ -377,10 +394,10 @@ impl ProcessIdentity {
 
     /// Returns `true` if process credential detection failed for a per-message reason.
     pub const fn is_telemetry_error(&self) -> bool {
-        matches!(
-            self,
-            Self::Error(ProcessCredentialsError::InvalidCredentials | ProcessCredentialsError::ZeroPid)
-        )
+        match self {
+            Self::Error(error) => error.telemetry_reason().is_some(),
+            Self::Credentials(_) | Self::Unavailable => false,
+        }
     }
 }
 

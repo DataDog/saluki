@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     pin::Pin,
     sync::{Arc, LazyLock, Mutex as StdMutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -49,7 +49,10 @@ use saluki_io::{
         codec::dogstatsd::*,
         framing::{Framer as _, FramingError, LengthDelimitedFramer},
     },
-    net::{listener::Listener, ConnectionAddress, ListenAddress, ProcessIdentity, SocketSpecification, Stream},
+    net::{
+        listener::Listener, ConnectionAddress, ListenAddress, ProcessCredentialsError, ProcessIdentity,
+        SocketSpecification, Stream,
+    },
 };
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
@@ -1250,10 +1253,79 @@ async fn process_stream(
     }
 }
 
-fn origin_detection_failed_for_telemetry(
+fn origin_detection_error_for_telemetry(
     origin_detection_enabled: bool, bytes_read: usize, peer_addr: &ConnectionAddress,
-) -> bool {
-    origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_telemetry_error()
+) -> Option<ProcessCredentialsError> {
+    if !origin_detection_enabled || bytes_read == 0 {
+        return None;
+    }
+    match peer_addr {
+        ConnectionAddress::ProcessLike(ProcessIdentity::Error(error)) if error.telemetry_reason().is_some() => {
+            Some(*error)
+        }
+        _ => None,
+    }
+}
+
+// At most one sample per reason every 30 seconds, shared across all decoder workers and listeners.
+const ORIGIN_DETECTION_LOG_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct OriginDetectionLogLimiter {
+    invalid_credentials: Option<Instant>,
+    zero_pid: Option<Instant>,
+    truncated_control_data: Option<Instant>,
+}
+
+impl OriginDetectionLogLimiter {
+    fn should_log(&mut self, error: ProcessCredentialsError, now: Instant) -> bool {
+        let last_log = match error {
+            ProcessCredentialsError::InvalidCredentials => &mut self.invalid_credentials,
+            ProcessCredentialsError::ZeroPid => &mut self.zero_pid,
+            ProcessCredentialsError::TruncatedControlData => &mut self.truncated_control_data,
+            ProcessCredentialsError::UnsupportedPlatform => return false,
+        };
+        if last_log.is_some_and(|last| now.saturating_duration_since(last) < ORIGIN_DETECTION_LOG_INTERVAL) {
+            return false;
+        }
+        *last_log = Some(now);
+        true
+    }
+}
+
+fn sample_metric_name(payload: &[u8]) -> Option<&str> {
+    payload.split(|b| *b == b'\n').find_map(|line| {
+        if line.starts_with(b"_e{") || line.starts_with(b"_sc|") {
+            return None;
+        }
+        let name_len = line.iter().position(|b| *b == b':')?;
+        if name_len == 0 {
+            return None;
+        }
+        // Bound the diagnostic field and omit metric values and tags.
+        simdutf8::basic::from_utf8(&line[..name_len.min(128)]).ok()
+    })
+}
+
+fn log_origin_detection_failure(error: ProcessCredentialsError, listen_addr: &ListenAddress, payload: &[u8]) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
+    let Some(reason) = error.telemetry_reason() else {
+        return;
+    };
+    static LIMITER: LazyLock<StdMutex<OriginDetectionLogLimiter>> = LazyLock::new(StdMutex::default);
+    if !LIMITER.lock().unwrap().should_log(error, Instant::now()) {
+        return;
+    }
+    debug!(
+        reason,
+        %error,
+        %listen_addr,
+        packet_bytes = payload.len(),
+        sample_metric_name = sample_metric_name(payload).unwrap_or("<unavailable>"),
+        "DogStatsD UDS origin detection failed. Continuing to decode the packet."
+    );
 }
 
 struct ReceivedBuffer {
@@ -1563,13 +1635,16 @@ impl DogStatsDDecoder {
 
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
-        let origin_detection_failed =
-            origin_detection_failed_for_telemetry(self.origin_detection_enabled, bytes_read, peer_addr);
+        let origin_detection_error =
+            origin_detection_error_for_telemetry(self.origin_detection_enabled, bytes_read, peer_addr);
+        if let Some(error) = origin_detection_error {
+            log_origin_detection_failure(error, listen_addr, payload);
+        }
 
         if matches!(mode, BufferDecodeMode::Connectionless) {
             metrics.packet_receive_success().increment(1);
-            if origin_detection_failed {
-                metrics.origin_detection_errors().increment(1);
+            if let Some(error) = origin_detection_error {
+                metrics.record_origin_detection_error(error, 1);
             }
         }
 
@@ -1598,11 +1673,9 @@ impl DogStatsDDecoder {
                 metrics
                     .packet_receive_success()
                     .increment(completed_outer_frames as u64);
-            }
-            if origin_detection_failed && completed_outer_frames > 0 {
-                metrics
-                    .origin_detection_errors()
-                    .increment(completed_outer_frames as u64);
+                if let Some(error) = origin_detection_error {
+                    metrics.record_origin_detection_error(error, completed_outer_frames as u64);
+                }
             }
 
             match frame_result {
@@ -2348,7 +2421,7 @@ mod tests {
     use saluki_io::{
         buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
+        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -2366,11 +2439,12 @@ mod tests {
 
     use super::{
         build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
-        handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_failed_for_telemetry,
-        resolve_process_origin, resolve_process_origin_if_needed, shutdown_listeners_and_drain_datagram_decoders,
-        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
-        DogStatsDConfiguration, DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram,
-        ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
+        handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry,
+        resolve_process_origin, resolve_process_origin_if_needed, sample_metric_name,
+        shutdown_listeners_and_drain_datagram_decoders, BufferDecodeContext, BufferDecodeMode, ContextResolvers,
+        DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder,
+        OriginDetectionLogLimiter, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram, ReceivedBuffer,
+        TrafficCapture, TrafficCaptureReader, ORIGIN_DETECTION_LOG_INTERVAL,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
@@ -2685,6 +2759,7 @@ mod tests {
                     ("component_id", "dogstatsd_test"),
                     ("component_type", "source"),
                     ("error_type", "origin_detection"),
+                    ("reason", "invalid_credentials"),
                 ],
             )),
             Some(0)
@@ -2751,6 +2826,7 @@ mod tests {
                     ("component_id", "dogstatsd_test"),
                     ("component_type", "source"),
                     ("error_type", "origin_detection"),
+                    ("reason", "invalid_credentials"),
                 ],
             )),
             Some(1)
@@ -3156,12 +3232,113 @@ mod tests {
     }
 
     #[test]
+    fn origin_detection_logs_are_rate_limited_independently_by_reason() {
+        let mut limiter = OriginDetectionLogLimiter::default();
+        let now = Instant::now();
+        for error in [
+            ProcessCredentialsError::ZeroPid,
+            ProcessCredentialsError::InvalidCredentials,
+            ProcessCredentialsError::TruncatedControlData,
+        ] {
+            assert!(limiter.should_log(error, now));
+            assert!(!limiter.should_log(error, now));
+            assert!(!limiter.should_log(error, now + ORIGIN_DETECTION_LOG_INTERVAL - Duration::from_nanos(1)));
+            assert!(limiter.should_log(error, now + ORIGIN_DETECTION_LOG_INTERVAL));
+        }
+        assert!(!limiter.should_log(ProcessCredentialsError::UnsupportedPlatform, now));
+    }
+
+    #[test]
+    fn origin_detection_log_samples_only_a_bounded_metric_name() {
+        assert_eq!(
+            sample_metric_name(b"workload.requests:42|c|#sensitive:tag\nother:1|g"),
+            Some("workload.requests")
+        );
+        assert_eq!(
+            sample_metric_name(b"_e{1,1}:a|b\n_sc|service:status|0\nworkload.requests:1|c"),
+            Some("workload.requests")
+        );
+        for payload in [
+            b"".as_slice(),
+            b"no_separator",
+            b":1|c",
+            b"_e{1,1}:a|b",
+            b"_sc|service:status|0",
+        ] {
+            assert_eq!(sample_metric_name(payload), None);
+        }
+        let payload = format!("{}:1|c", "a".repeat(256));
+        assert_eq!(sample_metric_name(payload.as_bytes()).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn origin_detection_telemetry_requires_enabled_detection_and_a_nonempty_packet() {
+        for error in [
+            ProcessCredentialsError::ZeroPid,
+            ProcessCredentialsError::InvalidCredentials,
+            ProcessCredentialsError::TruncatedControlData,
+        ] {
+            let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(error));
+            assert_eq!(origin_detection_error_for_telemetry(true, 1, &peer_addr), Some(error));
+            assert_eq!(origin_detection_error_for_telemetry(false, 1, &peer_addr), None);
+            assert_eq!(origin_detection_error_for_telemetry(true, 0, &peer_addr), None);
+        }
+        let unavailable = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+        assert_eq!(origin_detection_error_for_telemetry(true, 1, &unavailable), None);
+    }
+
+    #[tokio::test]
+    async fn origin_detection_errors_are_counted_by_reason_once_per_datagram_and_still_decode() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(true));
+        let mut context =
+            BufferDecodeContext::new(&listen_addr, false, &metrics, None, BufferDecodeMode::Connectionless);
+        let payload = b"failed.one:1|c\nfailed.two:1|g";
+        for error in [
+            ProcessCredentialsError::ZeroPid,
+            ProcessCredentialsError::InvalidCredentials,
+            ProcessCredentialsError::TruncatedControlData,
+        ] {
+            let buffer = test_io_buffer(payload, payload.len());
+            let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(error));
+            let (received, returned_buffer) = ReceivedBuffer::with_return(buffer, payload.len(), peer_addr, None);
+            assert_eq!(
+                decoder.decode_buffer(&mut context, received).await,
+                DecodeOutcome::Continue
+            );
+            assert!(!returned_buffer.await.unwrap().has_remaining());
+            assert_eq!(
+                recorder.counter((
+                    "component_errors_total",
+                    &[
+                        ("component_id", "dogstatsd_test"),
+                        ("component_type", "source"),
+                        ("error_type", "origin_detection"),
+                        ("reason", error.telemetry_reason().unwrap()),
+                    ],
+                )),
+                Some(1),
+            );
+        }
+        decoder.flush_events().await;
+        let events = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(events.len(), 6, "origin failures must not drop decoded metrics");
+    }
+
+    #[test]
     fn unsupported_platform_process_credentials_do_not_count_as_origin_detection_telemetry_errors() {
         let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
             saluki_io::net::ProcessCredentialsError::UnsupportedPlatform,
         ));
 
-        assert!(!origin_detection_failed_for_telemetry(true, 1, &peer_addr));
+        assert_eq!(origin_detection_error_for_telemetry(true, 1, &peer_addr), None);
     }
 
     #[test]
@@ -3170,7 +3347,10 @@ mod tests {
             saluki_io::net::ProcessCredentialsError::InvalidCredentials,
         ));
 
-        assert!(origin_detection_failed_for_telemetry(true, 1, &peer_addr));
+        assert_eq!(
+            origin_detection_error_for_telemetry(true, 1, &peer_addr),
+            Some(ProcessCredentialsError::InvalidCredentials)
+        );
     }
 
     #[test]

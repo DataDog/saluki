@@ -312,6 +312,45 @@ mod tests {
     }
 
     #[test]
+    fn origin_detection_reasons_survive_native_remapping_and_aggregate_in_compat_telemetry() {
+        let metrics: Vec<_> = [
+            ("reason:zero_pid", 2.0),
+            ("reason:invalid_credentials", 3.0),
+            ("reason:truncated_control_data", 4.0),
+        ]
+        .into_iter()
+        .map(|(reason, count)| {
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "error_type:origin_detection", reason],
+                ),
+                count,
+            ))
+        })
+        .collect();
+        let native_output = render_with(get_datadog_agent_remappings(), metrics.clone());
+        for (reason, count) in [
+            ("zero_pid", 2),
+            ("invalid_credentials", 3),
+            ("truncated_control_data", 4),
+        ] {
+            assert!(
+                native_output.contains(&format!(
+                    "dogstatsd__uds_origin_detection_error{{reason=\"{reason}\"}} {count}"
+                )),
+                "{native_output}",
+            );
+        }
+        let output = render_with(get_compat_remappings(), metrics);
+        assert!(output.contains("dogstatsd_uds_origin_detection_errors 9"), "{output}");
+        assert!(
+            !output.contains("reason="),
+            "the compatibility endpoint must preserve the aggregate"
+        );
+    }
+
+    #[test]
     fn compat_remappings_cover_expected_names() {
         let rules = get_compat_remappings();
         let expected_names = [

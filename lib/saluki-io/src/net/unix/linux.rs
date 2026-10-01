@@ -1,4 +1,7 @@
-use std::{io, mem, os::fd::AsRawFd};
+use std::{
+    io, mem,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+};
 
 use bytes::BufMut;
 use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
@@ -47,31 +50,13 @@ where
 
     let n = sock_ref.recvmsg(&mut msg_hdr, libc::MSG_CMSG_CLOEXEC)?;
 
-    // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();
-
-    let process_identity = if control_len > 0 {
-        unsafe {
-            ancillary_data.set_len(control_len);
-
-            match ancillary_data
-                .messages()
-                .map(|m| match m {
-                    ControlMessage::Credentials(creds) => creds,
-                })
-                .next()
-            {
-                Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
-                Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
-                    pid: creds.pid,
-                    uid: creds.uid,
-                    gid: creds.gid,
-                }),
-                None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
-            }
-        }
-    } else {
-        ProcessIdentity::Unavailable
+    let control_truncated = msg_hdr.flags().is_control_truncated();
+    // SAFETY: recvmsg initialized control_len bytes in this buffer. Descriptor control messages contain newly
+    // received descriptors, owned by this call and closed by process_identity_from_ancillary.
+    let process_identity = unsafe {
+        ancillary_data.set_len(control_len);
+        process_identity_from_ancillary(&ancillary_data, control_truncated)
     };
 
     let conn_addr = ConnectionAddress::ProcessLike(process_identity);
@@ -82,6 +67,45 @@ where
     }
 
     Ok((n, conn_addr))
+}
+
+// SAFETY: the buffer must contain initialized control data from recvmsg. Any SCM_RIGHTS descriptors must be
+// valid, newly received, and owned by this call. This function consumes them, including when MSG_CTRUNC is set.
+unsafe fn process_identity_from_ancillary(
+    ancillary_data: &SocketCredentialsAncillaryData, control_truncated: bool,
+) -> ProcessIdentity {
+    let mut credentials = None;
+    for message in unsafe { ancillary_data.messages() } {
+        match message {
+            ControlMessage::Credentials(creds) => {
+                credentials.get_or_insert(creds);
+            }
+            ControlMessage::FileDescriptors(data) => {
+                for fd in data.as_chunks::<{ mem::size_of::<libc::c_int>() }>().0 {
+                    // SAFETY: recvmsg installed these descriptors in this process. Read without requiring alignment,
+                    // then close each unused descriptor exactly once. MSG_CMSG_CLOEXEC also prevents exec leaks.
+                    let fd = libc::c_int::from_ne_bytes(*fd);
+                    drop(unsafe { OwnedFd::from_raw_fd(fd) });
+                }
+            }
+        }
+    }
+
+    // Truncation invalidates the control data even if a complete credential happened to fit. Packet data remains usable.
+    if control_truncated {
+        ProcessIdentity::Error(ProcessCredentialsError::TruncatedControlData)
+    } else {
+        match credentials {
+            Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+            Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
+                pid: creds.pid,
+                uid: creds.uid,
+                gid: creds.gid,
+            }),
+            None if ancillary_data.len() > 0 => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
+            None => ProcessIdentity::Unavailable,
+        }
+    }
 }
 
 /// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.
@@ -181,7 +205,7 @@ fn sendmsg_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> i
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd};
 
     use bytes::BytesMut;
 
@@ -240,6 +264,151 @@ mod tests {
             ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable)
         ));
         assert!(addr.process_credentials().is_none());
+    }
+
+    #[test]
+    fn ancillary_identity_reports_zero_pid_invalid_credentials_and_truncation() {
+        let mut ancillary = SocketCredentialsAncillaryData::new();
+        for byte in ancillary.as_mut_uninit() {
+            byte.write(0);
+        }
+        let len = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::ucred>() as u32) as usize };
+        // SAFETY: all buffer bytes are initialized. The synthetic message contains no file descriptors.
+        unsafe {
+            ancillary.set_len(len);
+            let mut msg: libc::msghdr = mem::zeroed();
+            msg.msg_control = ancillary.as_mut_uninit().as_mut_ptr().cast();
+            msg.msg_controllen = len as _;
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            (*cmsg).cmsg_level = libc::SOL_SOCKET;
+            (*cmsg).cmsg_type = libc::SCM_CREDENTIALS;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(mem::size_of::<libc::ucred>() as u32) as _;
+            libc::CMSG_DATA(cmsg)
+                .cast::<libc::ucred>()
+                .write_unaligned(libc::ucred {
+                    pid: 0,
+                    uid: 1000,
+                    gid: 1000,
+                });
+            assert!(matches!(
+                process_identity_from_ancillary(&ancillary, false),
+                ProcessIdentity::Error(ProcessCredentialsError::ZeroPid)
+            ));
+            assert!(matches!(
+                process_identity_from_ancillary(&ancillary, true),
+                ProcessIdentity::Error(ProcessCredentialsError::TruncatedControlData)
+            ));
+            (*cmsg).cmsg_type = libc::SCM_TIMESTAMP;
+            assert!(matches!(
+                process_identity_from_ancillary(&ancillary, false),
+                ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials)
+            ));
+            ancillary.set_len(0);
+            assert!(matches!(
+                process_identity_from_ancillary(&ancillary, true),
+                ProcessIdentity::Error(ProcessCredentialsError::TruncatedControlData)
+            ));
+        }
+    }
+
+    #[test]
+    fn uds_recvmsg_reads_credentials_after_timestamp() {
+        let (sender, receiver) = unix_dgram_socketpair();
+        enable_uds_socket_credentials(&receiver).unwrap();
+        let enabled: libc::c_int = 1;
+        // SAFETY: the option points to an initialized integer of the advertised size.
+        let result = unsafe {
+            libc::setsockopt(
+                receiver.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_TIMESTAMPNS,
+                (&enabled as *const libc::c_int).cast(),
+                mem::size_of_val(&enabled) as _,
+            )
+        };
+        assert_eq!(result, 0, "setsockopt failed: {}", io::Error::last_os_error());
+        let payload = b"timestamp.metric:1|c";
+        sender.send(payload).unwrap();
+        let mut buf = BytesMut::with_capacity(128);
+        let (_, addr) = uds_recvmsg(&receiver, &mut buf).unwrap();
+        assert_eq!(&buf[..], payload);
+        assert_eq!(addr.process_credentials().unwrap().pid, std::process::id() as i32);
+    }
+
+    fn sendmsg_with_rights(fd: libc::c_int, payload: &[u8], descriptors: &[libc::c_int]) {
+        let data_len = mem::size_of_val(descriptors);
+        let control_len = unsafe { libc::CMSG_SPACE(data_len as u32) as usize };
+        let mut control = vec![0usize; control_len.div_ceil(mem::size_of::<usize>())];
+        // SAFETY: all pointers reference live payload/control buffers of the advertised lengths. The descriptors
+        // are valid and stay owned by the caller; sendmsg duplicates them into the receiving process.
+        let sent = unsafe {
+            let mut iov = libc::iovec {
+                iov_base: payload.as_ptr() as *mut _,
+                iov_len: payload.len(),
+            };
+            let mut msg: libc::msghdr = mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = control_len as _;
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            (*cmsg).cmsg_level = libc::SOL_SOCKET;
+            (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(data_len as u32) as _;
+            std::ptr::copy_nonoverlapping(descriptors.as_ptr().cast::<u8>(), libc::CMSG_DATA(cmsg), data_len);
+            libc::sendmsg(fd, &msg, 0)
+        };
+        assert_eq!(
+            sent,
+            payload.len() as isize,
+            "sendmsg failed: {}",
+            io::Error::last_os_error()
+        );
+    }
+
+    fn receive_with_rights(descriptor_count: usize) -> ConnectionAddress {
+        let (sender, receiver) = unix_dgram_socketpair();
+        enable_uds_socket_credentials(&receiver).unwrap();
+        let mut pipe_fds = [-1; 2];
+        let result = unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+        assert_eq!(result, 0, "pipe2 failed: {}", io::Error::last_os_error());
+        // SAFETY: pipe2 created two valid, owned descriptors.
+        let (reader, writer) = unsafe { (OwnedFd::from_raw_fd(pipe_fds[0]), OwnedFd::from_raw_fd(pipe_fds[1])) };
+        let payload = b"rights.metric:1|c";
+        sendmsg_with_rights(sender.as_raw_fd(), payload, &vec![writer.as_raw_fd(); descriptor_count]);
+        drop(writer);
+        let mut buf = BytesMut::with_capacity(128);
+        let (n, addr) = uds_recvmsg(&receiver, &mut buf).unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..], payload);
+        let mut byte = 0u8;
+        // EOF proves that the received copies of the pipe writer were all closed. If any leaked, this nonblocking
+        // read would return EAGAIN instead, so the test cannot hang.
+        let read = unsafe { libc::read(reader.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
+        assert_eq!(
+            read,
+            0,
+            "received file descriptors leaked: {}",
+            io::Error::last_os_error()
+        );
+        addr
+    }
+
+    #[test]
+    fn uds_recvmsg_closes_unused_file_descriptors_after_credentials() {
+        let addr = receive_with_rights(1);
+        assert_eq!(addr.process_credentials().unwrap().pid, std::process::id() as i32);
+    }
+
+    #[test]
+    fn uds_recvmsg_reports_truncation_and_closes_received_file_descriptors() {
+        // 150 descriptors require over 600 bytes, exceeding the 512-byte control buffer even without credentials.
+        let addr = receive_with_rights(150);
+        assert!(matches!(
+            addr,
+            ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::TruncatedControlData))
+        ));
+        assert!(addr.has_process_credential_telemetry_error());
     }
 
     #[test]

@@ -79,6 +79,29 @@ scrape_configs:
 If you change `data_plane.api_listen_address`, update the scrape target to match the configured
 host and port.
 
+## DogStatsD UDS origin detection failures
+
+When origin detection is enabled, ADP counts failures for nonempty Unix datagrams in
+`adp.component_errors_total` with `component_id:dsd_in` and `error_type:origin_detection`.
+Each failed datagram increments the counter once, even when it contains multiple DogStatsD messages.
+The `reason` tag distinguishes these failures:
+
+| Reason | Meaning |
+| ------ | ------- |
+| `zero_pid` | The kernel credentials contain PID `0`. |
+| `invalid_credentials` | Ancillary data contains no usable process credentials. |
+| `truncated_control_data` | The kernel reports truncated ancillary data. |
+
+ADP continues decoding the packet after a failure. It can still use client-supplied origin information
+when that information is available. Telemetry sent through the Agent retains the `reason` tag on
+`dogstatsd.uds_origin_detection_error`. The `/compat/metrics` endpoint sums all reasons into the
+existing `dogstatsd_uds_origin_detection_errors` counter.
+
+At debug log level, ADP records the reason, listener address, packet size, and a sample metric name to
+help identify the sending workload. It logs at most one sample per reason every 30 seconds across all
+listeners and decoder workers. The metric-name sample is limited to 128 bytes. Packets containing only
+events or service checks have no metric-name sample.
+
 ## Troubleshooting
 
 If scraping fails, verify that ADP is listening on the unprivileged API address:
