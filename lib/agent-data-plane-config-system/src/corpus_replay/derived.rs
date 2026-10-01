@@ -19,6 +19,7 @@ use datadog_agent_config_corpus::{Corpus, Getter, GetterRead, GetterResult, Outc
 use serde_json::Value;
 
 use super::compare::{compare_byte_count, compare_result, Reason, Verdict};
+use super::guard;
 use super::leaf_replay::{fold_case, kind_name, lookup, one_line, reads_at, Checkpoint};
 use crate::system::translate_strict;
 
@@ -268,6 +269,7 @@ impl fmt::Display for DerivedRow {
             Verdict::Match => f.write_str("match"),
             Verdict::Differs { adp, agent } => write!(f, "differs: adp {} agent {}", one_line(adp), one_line(agent)),
             Verdict::AdpRejects { error } => write!(f, "adp rejects: {}", one_line(error)),
+            Verdict::Panicked { operation, message } => write!(f, "{operation} panicked: {}", one_line(message)),
             Verdict::NotCompared { reason } => write!(f, "not compared: {reason}"),
         }
     }
@@ -275,14 +277,11 @@ impl fmt::Display for DerivedRow {
 
 /// Produces every derived row of the corpus's started cases, sorted by case, checkpoint, key and getter.
 ///
-/// # Errors
-///
-/// Returns every harness error: a case whose stream cannot be built, or a key line whose final read is
-/// not present exactly when the case has updates.
-pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> Result<Vec<DerivedRow>, Vec<String>> {
+/// Also returns every case-level fault, as [`corpus_rows`](super::leaf_replay::corpus_rows) does.
+pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> (Vec<DerivedRow>, Vec<String>) {
     let mut rows = Vec::new();
     let mut errors = Vec::new();
-    for case in &corpus.cases {
+    'cases: for case in &corpus.cases {
         let Outcome::Started(started) = &case.outcome else {
             continue;
         };
@@ -316,13 +315,25 @@ pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> Result<Vec<DerivedRow>, Ve
             let mut translated = None;
             for derivation in DERIVATIONS {
                 for &(_, read) in reads.iter().filter(|(key, _)| *key == derivation.key) {
-                    let config = translated.get_or_insert_with(|| translate_strict(sources).map_err(|e| e.to_string()));
+                    let config = translated.get_or_insert_with(|| {
+                        guard("translate", || translate_strict(sources).map_err(|e| e.to_string()))
+                    });
+                    let panicked = |operation, message: &str| -> Vec<(Getter, Verdict)> {
+                        read.getters
+                            .iter()
+                            .map(|r| {
+                                let message = message.to_string();
+                                (r.getter, Verdict::Panicked { operation, message })
+                            })
+                            .collect()
+                    };
                     let (kind, verdicts) = match config {
-                        Ok(config) => {
-                            let value = (derivation.derive)(config);
-                            (value.kind(), compare_derived(&value, &read.getters))
-                        }
-                        Err(error) => {
+                        Err(p) => ("-", panicked(p.operation, &p.message)),
+                        Ok(Ok(config)) => match guard("derive", || (derivation.derive)(config)) {
+                            Ok(value) => (value.kind(), compare_derived(&value, &read.getters)),
+                            Err(p) => ("-", panicked(p.operation, &p.message)),
+                        },
+                        Ok(Err(error)) => {
                             // A failed translation has no value, so only the derivation's own getter is
                             // rejected; any other recorded getter is not compared, whatever the value.
                             let rejected = read
@@ -345,6 +356,7 @@ pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> Result<Vec<DerivedRow>, Ve
                             ((derivation.derive)(&SalukiConfiguration::default()).kind(), rejected)
                         }
                     };
+                    let did_panic = verdicts.iter().any(|(_, v)| matches!(v, Verdict::Panicked { .. }));
                     rows.extend(verdicts.into_iter().map(|(getter, verdict)| DerivedRow {
                         case: case.name.clone(),
                         checkpoint,
@@ -354,6 +366,9 @@ pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> Result<Vec<DerivedRow>, Ve
                         streamed: lookup(tree, derivation.key).cloned(),
                         verdict,
                     }));
+                    if did_panic {
+                        continue 'cases;
+                    }
                 }
             }
         }
@@ -361,11 +376,7 @@ pub(crate) fn corpus_derived_rows(corpus: &Corpus) -> Result<Vec<DerivedRow>, Ve
     rows.sort_by(|a, b| {
         (&a.case, a.checkpoint, a.key, a.getter.as_str()).cmp(&(&b.case, b.checkpoint, b.key, b.getter.as_str()))
     });
-    if errors.is_empty() {
-        Ok(rows)
-    } else {
-        Err(errors)
-    }
+    (rows, errors)
 }
 
 #[cfg(test)]
@@ -536,5 +547,20 @@ mod tests {
             whole_seconds(Duration::from_secs(u64::MAX)),
             Derived::NotWhole { nearest: i64::MAX, exact: e } if e == exact
         ));
+    }
+}
+
+#[cfg(test)]
+mod not_replayed_tests {
+    use super::NOT_REPLAYED;
+
+    /// Derivations with no Agent getter to compare are documented limitations, each named once with a reason.
+    #[test]
+    fn derivations_without_an_agent_getter_are_documented_once_each() {
+        let mut names: Vec<&str> = NOT_REPLAYED.iter().map(|(name, _)| *name).collect();
+        assert!(NOT_REPLAYED.iter().all(|(_, reason)| !reason.is_empty()));
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), NOT_REPLAYED.len());
     }
 }
