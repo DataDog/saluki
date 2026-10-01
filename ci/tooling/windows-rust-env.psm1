@@ -141,6 +141,8 @@ function Initialize-RustEnvironment {
     }
     $Toolchain = $ToolchainMatch.Matches[0].Groups[1].Value
 
+    # The build image already installs the Rust tools; replacing rustup here can conflict with them.
+    Invoke-Native rustup set auto-self-update disable
     Write-Host "[*] Ensuring Rust toolchain ${Toolchain} is installed..."
     Invoke-Native rustup toolchain install --no-self-update --profile minimal $Toolchain
     Invoke-Native rustup default $Toolchain
