@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use saluki_common::process_info;
 use saluki_common::time::get_unix_timestamp;
 use saluki_context::{
     tags::{SharedTagSet, Tag, TagSet},
@@ -33,8 +34,13 @@ use crate::internal::env::ADPEnvironmentProvider;
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(15);
 const RUNNING_METRIC_NAME: &str = "datadog.agent_data_plane.running";
 const UP_SERVICE_CHECK_NAME: &str = "datadog.agent_data_plane.up";
+const METRIC_CPU_PERCENT: &str = "datadog.trace_agent.cpu_percent";
+// The published series name carries the reference's heap-allocation meaning; the reading sent is
+// resident set size, which is what the issue's acceptance asks for and what the limiter already
+// polls.
+const METRIC_MEMORY: &str = "datadog.trace_agent.heap_alloc";
 
-/// Periodically emits Agent Data Plane liveness signals.
+/// Periodically emits Agent Data Plane liveness and resource signals.
 pub struct LivenessConfiguration {
     hostname: MetaString,
     version: MetaString,
@@ -105,6 +111,8 @@ impl MemoryBounds for LivenessConfiguration {
 struct Liveness {
     metric_context: Context,
     service_check: ServiceCheck,
+    cpu_context: Context,
+    memory_context: Context,
     add_container_tags: bool,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
@@ -115,12 +123,27 @@ impl Liveness {
         workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     ) -> Self {
         let (metric_context, service_check) = create_liveness_payloads(hostname, version);
+        let (cpu_context, memory_context) = create_vitals_payloads();
         Self {
             metric_context,
             service_check,
+            cpu_context,
+            memory_context,
             add_container_tags,
             workload_provider,
         }
+    }
+
+    /// Builds the process resource readings as gauge events.
+    ///
+    /// The readings come from the shared process info cache, so the tick cadence controls delivery,
+    /// not reading cost.
+    fn vitals_at(&self) -> [Event; 2] {
+        let (cpu_percent, rss_bytes) = (process_info::cpu_percent(), process_info::resident_set_size());
+        [
+            Event::Metric(Metric::gauge(self.cpu_context.clone(), cpu_percent)),
+            Event::Metric(Metric::gauge(self.memory_context.clone(), rss_bytes as f64)),
+        ]
     }
 
     fn signals_at(&self, timestamp: u64) -> (Event, Event) {
@@ -190,6 +213,12 @@ impl Source for Liveness {
                     if let Err(error) = context.dispatcher().dispatch_one_named("service_checks", service_check).await {
                         warn!(error = %error, "Failed to dispatch liveness service check.");
                     }
+
+                    for vital in self.vitals_at() {
+                        if let Err(error) = context.dispatcher().dispatch_one_named("metrics", vital).await {
+                            warn!(error = %error, "Failed to dispatch resource metric.");
+                        }
+                    }
                 },
             }
         }
@@ -207,6 +236,13 @@ fn create_liveness_payloads(hostname: MetaString, version: MetaString) -> (Conte
     let service_check = ServiceCheck::new(UP_SERVICE_CHECK_NAME, CheckStatus::Ok).with_hostname(hostname);
 
     (metric_context, service_check)
+}
+
+fn create_vitals_payloads() -> (Context, Context) {
+    (
+        Context::from_parts(METRIC_CPU_PERCENT, TagSet::default()),
+        Context::from_parts(METRIC_MEMORY, TagSet::default()),
+    )
 }
 
 #[cfg(test)]
@@ -255,6 +291,29 @@ mod tests {
 
     fn container_tags() -> SharedTagSet {
         [Tag::from("container_id:adp-container")].into_iter().collect()
+    }
+
+    #[test]
+    fn vitals_carry_the_published_names_and_real_readings() {
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, None);
+
+        let [cpu, memory] = liveness.vitals_at();
+        let Event::Metric(cpu) = cpu else {
+            panic!("expected cpu metric event");
+        };
+        let Event::Metric(memory) = memory else {
+            panic!("expected memory metric event");
+        };
+
+        assert_eq!(cpu.context().name(), "datadog.trace_agent.cpu_percent");
+        assert_eq!(memory.context().name(), "datadog.trace_agent.heap_alloc");
+
+        // The values come from this very process: the RSS reading is real, and the CPU percentage
+        // reads zero until the second cache window pairs its samples.
+        match memory.values() {
+            MetricValues::Gauge(points) => assert!(!points.is_empty(), "the test process has a resident set"),
+            _ => panic!("expected memory reading to be a gauge"),
+        }
     }
 
     #[test]

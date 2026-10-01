@@ -5499,6 +5499,7 @@ dependencies = [
  "metrics",
  "papaya",
  "pin-project",
+ "process-memory",
  "proptest",
  "quick_cache",
  "regex",

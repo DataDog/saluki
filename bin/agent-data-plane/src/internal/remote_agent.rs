@@ -21,7 +21,6 @@ use datadog_protos::agent::{
     ConfigSetting as AgentConfigSetting, ConfigSnapshot,
 };
 use futures::StreamExt;
-use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
@@ -649,10 +648,12 @@ impl FlareProvider for RemoteAgentImpl {
                 let pid = std::process::id();
                 let uptime = Utc::now().signed_duration_since(self.started);
                 let args: Vec<String> = std::env::args().collect();
-                let rss_display = MemoryQuerier::default()
-                    .resident_set_size()
-                    .map(|b| b.to_string())
-                    .unwrap_or_else(|| "unavailable".to_string());
+                let rss_bytes = saluki_common::process_info::resident_set_size();
+                let rss_display = if rss_bytes > 0 {
+                    rss_bytes.to_string()
+                } else {
+                    "unavailable".to_string()
+                };
                 let process_info = format!(
                     "pid: {pid}\nuptime_seconds: {uptime}\nrss_bytes: {rss_display}\nargs: {args:?}\nfd_count: {fd_count}\nthread_count: {thread_count}\n",
                     uptime = uptime.num_seconds(),
