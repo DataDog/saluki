@@ -103,7 +103,7 @@ documentation](../../../agent-data-plane/configuration/pipeline-config.md) for t
 
 - How would we graduate this out of experimental status?
 - Is there enough value in this to expose it as a first-class citizen on the Datadog UI?
-- Would / could this cannabalize Observability Pipelines?
+- Would / could this cannibalize Observability Pipelines?
 - Are there any gotchas around API key updates that we can't handle with our existing approach in the current
   encoder/forwarder code?
 - Is the configuration shape as defined _actually_ sufficient enough to eventually support logs and traces (and other
