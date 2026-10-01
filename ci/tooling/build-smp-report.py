@@ -11,7 +11,7 @@ something useful to the PR.
 Usage:
     python3 build-smp-report.py \\
         --smp-binary ./smp \\
-        --report-v1-json outputs/report.v1.json \\
+        --report-json outputs/report.v1.json \\
         --output-report outputs/condensed-report.md
 """
 
@@ -34,7 +34,7 @@ def main() -> int:
         help="Path to SMP binary",
     )
     parser.add_argument(
-        "--report-v1-json",
+        "--report-json",
         type=Path,
         required=True,
         help="Path to the report.v1.json produced by `smp job sync`.",
@@ -52,13 +52,13 @@ def main() -> int:
     # caller hasn't created it.
     args.output_report.parent.mkdir(parents=True, exist_ok=True)
 
-    if not args.report_v1_json.is_file():
+    if not args.report_json.is_file():
         args.output_report.write_text(
-            "## Optimization Goals: ⚠️ Report unavailable\n\n"
-            f"The benchmark run did not produce a usable report: `{args.report_v1_json}` is missing\n\n"
+            "## ⚠️ Report unavailable\n\n"
+            f"The benchmark run did not produce a usable report: `{args.report_json}` is missing\n\n"
             "Check the benchmark job logs for details.\n"
         )
-        logging.error("Report %s is missing", args.report_v1_json)
+        logging.error("Report %s is missing", args.report_json)
         return 0
 
     smp_binary = args.smp_binary.resolve()
@@ -68,7 +68,7 @@ def main() -> int:
         "report",
         "render",
         "--report",
-        args.report_v1_json.resolve().as_posix(),
+        args.report_json.resolve().as_posix(),
         "--template-file",
         "ci/tooling/smp_condensed_report.md.j2",
     )
@@ -84,7 +84,7 @@ def main() -> int:
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr or ""
         failure_report = (
-            "## Optimization Goals: ⚠️ Report unavailable\n\n"
+            "## ⚠️ Report unavailable\n\n"
             "The benchmark run did not produce a usable report:\n"
             f"Stderr: \n{stderr}\n\n"
             "Check the benchmark job logs for details.\n"
