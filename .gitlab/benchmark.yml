@@ -57,9 +57,10 @@ build-adp-baseline-image:
     # we benchmark against the base of the stack, not a mid-stack PR — an acceptable tradeoff).
     # On the nightly schedule it is the date-anchored "previous nightly". See
     # ci/tooling/compute-smp-sha.sh.
-    - export BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
+    - BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
+    - export BASELINE_ADP_SHA
     - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
-    - git switch --detach ${BASELINE_ADP_SHA}
+    - git switch --detach "${BASELINE_ADP_SHA:?baseline SHA is empty}"
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
@@ -114,9 +115,10 @@ build-adp-comparison-image:
     # Resolve the comparison commit and define the relevant variables: the current commit on
     # PRs, or the date-anchored "current nightly" on the schedule. See
     # ci/tooling/compute-smp-sha.sh.
-    - export COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
+    - COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
+    - export COMPARISON_ADP_SHA
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
-    - git switch --detach ${COMPARISON_ADP_SHA}
+    - git switch --detach "${COMPARISON_ADP_SHA:?comparison SHA is empty}"
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx create --name adp-builder --driver docker-container --use
