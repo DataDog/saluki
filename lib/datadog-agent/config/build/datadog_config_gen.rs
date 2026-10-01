@@ -405,7 +405,8 @@ fn duration_defaults_module(durations: &BTreeMap<String, u64>) -> String {
 /// String lists arrive as a real sequence from a file or the remote Agent stream, but as a single
 /// space-separated string from an environment variable (`DD_DOGSTATSD_TAGS="a b"`), so each field
 /// must accept both. Map values containing string lists may likewise arrive as either one scalar or
-/// a sequence and are normalized into vectors.
+/// a sequence and are normalized into vectors. Both string-list maps and free-form objects also accept
+/// a JSON-encoded string.
 ///
 /// We push an extra `#[serde(deserialize_with = ...)]` attribute rather than replacing the field's
 /// existing serde attributes: serde merges multiple `#[serde(...)]`, so the field keeps its
@@ -429,6 +430,10 @@ fn stringlistize(file: &mut syn::File) {
                 field.attrs.push(parse_quote!(
                     #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
                 ));
+            } else if is_json_map(&field.ty) {
+                field.attrs.push(parse_quote!(
+                    #[serde(deserialize_with = "crate::list_de::deserialize_json_object_or_string")]
+                ));
             }
         }
     }
@@ -451,6 +456,13 @@ fn is_vec_string(ty: &syn::Type) -> bool {
         return false;
     };
     inner.path.segments.last().is_some_and(|seg| seg.ident == "String")
+}
+
+/// Returns whether `ty` is `serde_json::Map` (the shape typify emits for a free-form object leaf).
+fn is_json_map(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    tp.path.segments.iter().any(|segment| segment.ident == "serde_json")
+        && tp.path.segments.last().is_some_and(|segment| segment.ident == "Map")
 }
 
 /// Returns whether `ty` is exactly `HashMap<String, Vec<String>>`.

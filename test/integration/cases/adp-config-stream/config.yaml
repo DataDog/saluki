@@ -11,15 +11,27 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  # The Agent streams this map-typed setting as the raw JSON string from the environment.
+  DD_ADDITIONAL_ENDPOINTS: '{"https://additional-endpoint.test": ["11111111111111111111111111111111"]}'
 
 container:
   exposed_ports:
     - "58125/udp"
+    - "55101/tcp"
 
 procedure:
   # Make sure we initially see ADP try to reach out to the Core Agent for its configuration.
   - assertion: log_contains
     pattern: "Waiting for initial configuration from Datadog Agent"
+    timeout: 60s
+  # The streamed JSON string was decoded into the translated runtime configuration that components
+  # are built from. Its URL appears nowhere else, so no default can satisfy this. The CLI that reads
+  # the view scrubs API keys down to their last five characters.
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/runtime"
+    key: shared.endpoints.additional_endpoints
+    value:
+      "https://additional-endpoint.test": ["***************************11111"]
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
