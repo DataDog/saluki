@@ -639,8 +639,8 @@ where
 ///
 /// `integration_runtime` scopes integration-test discovery to a single runtime: an integration
 /// test is included if and only if its `runtimes:` list contains this value. Correctness tests
-/// are unaffected; they always discover. Image overrides apply across this entire scope, before
-/// the caller selects tests by name.
+/// are unaffected by runtime scoping, but cases marked `disabled: true` are omitted. Image
+/// overrides apply across this entire scope, before the caller selects tests by name.
 ///
 /// # Errors
 ///
@@ -692,8 +692,8 @@ pub fn discover_tests(
 ///
 /// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
 /// cases—one per variant. `integration` configs produce zero or one test case depending on
-/// whether the active `integration_runtime` is in the test's `runtimes:` list. `correctness`
-/// configs produce exactly one test case.
+/// whether the active `integration_runtime` is in the test's `runtimes:` list. Disabled
+/// correctness configs produce no test cases.
 fn try_load_test(
     config_path: &Path, dir_path: &Path, integration_runtime: &str, settings: &IntegrationSettings,
     overrides: &ImageOverrides<'_>,
@@ -741,6 +741,9 @@ fn try_load_test(
         }
         "correctness" => {
             let mut config: CorrectnessConfig = load_case(config_path)?;
+            if config.disabled {
+                return Ok(Vec::new());
+            }
             let name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -764,6 +767,9 @@ fn try_load_test(
                     "correctness_matrix '{}' has no variants defined",
                     base_name
                 ));
+            }
+            if base.disabled {
+                return Ok(Vec::new());
             }
             Ok(matrix
                 .expand(&base, &base_name)
@@ -1795,6 +1801,40 @@ comparison: {image: comp}
             .err()
             .expect("invalid declared runtime");
             assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn correctness_cases_are_discovered_unless_disabled() {
+        for (kind, variants, enabled_count) in [
+            ("correctness", "", 1),
+            ("correctness_matrix", "variants: [{name: first}, {name: second}]", 2),
+        ] {
+            for (setting, disabled) in [("", false), ("disabled: false", false), ("disabled: true", true)] {
+                let dir = create_test_case_dir(
+                    "case",
+                    &format!(
+                        r#"
+type: {kind}
+{setting}
+runtime: docker
+analysis_mode: metrics
+baseline: {{image: base}}
+comparison: {{image: comp}}
+{variants}
+"#
+                    ),
+                );
+                let config: CorrectnessConfig = load_case(dir.path().join("case/config.yaml")).unwrap();
+                assert_eq!(config.disabled, disabled, "{kind} with {setting}");
+
+                let cases = discover_tests(&[dir.path().to_path_buf()], LINUX_RUNTIME, &[]).unwrap();
+                assert_eq!(
+                    cases.len(),
+                    if disabled { 0 } else { enabled_count },
+                    "{kind} with {setting}"
+                );
+            }
         }
     }
 

@@ -1,4 +1,7 @@
 type: correctness
+# TODO(#2723): Re-enable once Saluki main pins an Agent with datadog-agent#56608 (7.85+)
+# and ADP's span concentrator clamps future span buckets the same way.
+disabled: true
 runtime: docker
 analysis_mode: traces
 # ADP emits http.status_code as a numeric (float) metric, matching the DD agent. For
