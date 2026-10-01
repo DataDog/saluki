@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     pin::Pin,
     sync::{Arc, LazyLock, Mutex as StdMutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -1267,63 +1267,15 @@ fn origin_detection_error_for_telemetry(
     }
 }
 
-// At most one sample per reason every 30 seconds, shared across all decoder workers and listeners.
-const ORIGIN_DETECTION_LOG_INTERVAL: Duration = Duration::from_secs(30);
-
-#[derive(Default)]
-struct OriginDetectionLogLimiter {
-    invalid_credentials: Option<Instant>,
-    zero_pid: Option<Instant>,
-    truncated_control_data: Option<Instant>,
-}
-
-impl OriginDetectionLogLimiter {
-    fn should_log(&mut self, error: ProcessCredentialsError, now: Instant) -> bool {
-        let last_log = match error {
-            ProcessCredentialsError::InvalidCredentials => &mut self.invalid_credentials,
-            ProcessCredentialsError::ZeroPid => &mut self.zero_pid,
-            ProcessCredentialsError::TruncatedControlData => &mut self.truncated_control_data,
-            ProcessCredentialsError::UnsupportedPlatform => return false,
-        };
-        if last_log.is_some_and(|last| now.saturating_duration_since(last) < ORIGIN_DETECTION_LOG_INTERVAL) {
-            return false;
-        }
-        *last_log = Some(now);
-        true
-    }
-}
-
-fn sample_metric_name(payload: &[u8]) -> Option<&str> {
-    payload.split(|b| *b == b'\n').find_map(|line| {
-        if line.starts_with(b"_e{") || line.starts_with(b"_sc|") {
-            return None;
-        }
-        let name_len = line.iter().position(|b| *b == b':')?;
-        if name_len == 0 {
-            return None;
-        }
-        // Bound the diagnostic field and omit metric values and tags.
-        simdutf8::basic::from_utf8(&line[..name_len.min(128)]).ok()
-    })
-}
-
-fn log_origin_detection_failure(error: ProcessCredentialsError, listen_addr: &ListenAddress, payload: &[u8]) {
-    if !tracing::enabled!(tracing::Level::DEBUG) {
-        return;
-    }
+fn log_origin_detection_failure(error: ProcessCredentialsError, listen_addr: &ListenAddress, packet_bytes: usize) {
     let Some(reason) = error.telemetry_reason() else {
         return;
     };
-    static LIMITER: LazyLock<StdMutex<OriginDetectionLogLimiter>> = LazyLock::new(StdMutex::default);
-    if !LIMITER.lock().unwrap().should_log(error, Instant::now()) {
-        return;
-    }
     debug!(
         reason,
         %error,
         %listen_addr,
-        packet_bytes = payload.len(),
-        sample_metric_name = sample_metric_name(payload).unwrap_or("<unavailable>"),
+        packet_bytes,
         "DogStatsD UDS origin detection failed. Continuing to decode the packet."
     );
 }
@@ -1638,7 +1590,7 @@ impl DogStatsDDecoder {
         let origin_detection_error =
             origin_detection_error_for_telemetry(self.origin_detection_enabled, bytes_read, peer_addr);
         if let Some(error) = origin_detection_error {
-            log_origin_detection_failure(error, listen_addr, payload);
+            log_origin_detection_failure(error, listen_addr, bytes_read);
         }
 
         if matches!(mode, BufferDecodeMode::Connectionless) {
@@ -2440,11 +2392,10 @@ mod tests {
     use super::{
         build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
         handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_error_for_telemetry,
-        resolve_process_origin, resolve_process_origin_if_needed, sample_metric_name,
-        shutdown_listeners_and_drain_datagram_decoders, BufferDecodeContext, BufferDecodeMode, ContextResolvers,
-        DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder,
-        OriginDetectionLogLimiter, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram, ReceivedBuffer,
-        TrafficCapture, TrafficCaptureReader, ORIGIN_DETECTION_LOG_INTERVAL,
+        resolve_process_origin, resolve_process_origin_if_needed, shutdown_listeners_and_drain_datagram_decoders,
+        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
+        DogStatsDConfiguration, DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram,
+        ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
@@ -3229,46 +3180,6 @@ mod tests {
             ..DogStatsDConfiguration::for_test()
         };
         assert!(config.packet_forwarder_target().is_some());
-    }
-
-    #[test]
-    fn origin_detection_logs_are_rate_limited_independently_by_reason() {
-        let mut limiter = OriginDetectionLogLimiter::default();
-        let now = Instant::now();
-        for error in [
-            ProcessCredentialsError::ZeroPid,
-            ProcessCredentialsError::InvalidCredentials,
-            ProcessCredentialsError::TruncatedControlData,
-        ] {
-            assert!(limiter.should_log(error, now));
-            assert!(!limiter.should_log(error, now));
-            assert!(!limiter.should_log(error, now + ORIGIN_DETECTION_LOG_INTERVAL - Duration::from_nanos(1)));
-            assert!(limiter.should_log(error, now + ORIGIN_DETECTION_LOG_INTERVAL));
-        }
-        assert!(!limiter.should_log(ProcessCredentialsError::UnsupportedPlatform, now));
-    }
-
-    #[test]
-    fn origin_detection_log_samples_only_a_bounded_metric_name() {
-        assert_eq!(
-            sample_metric_name(b"workload.requests:42|c|#sensitive:tag\nother:1|g"),
-            Some("workload.requests")
-        );
-        assert_eq!(
-            sample_metric_name(b"_e{1,1}:a|b\n_sc|service:status|0\nworkload.requests:1|c"),
-            Some("workload.requests")
-        );
-        for payload in [
-            b"".as_slice(),
-            b"no_separator",
-            b":1|c",
-            b"_e{1,1}:a|b",
-            b"_sc|service:status|0",
-        ] {
-            assert_eq!(sample_metric_name(payload), None);
-        }
-        let payload = format!("{}:1|c", "a".repeat(256));
-        assert_eq!(sample_metric_name(payload.as_bytes()).unwrap().len(), 128);
     }
 
     #[test]
