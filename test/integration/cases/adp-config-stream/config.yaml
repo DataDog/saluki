@@ -25,12 +25,13 @@ procedure:
     pattern: "Waiting for initial configuration from Datadog Agent"
     timeout: 60s
   # The streamed JSON string was decoded into the translated runtime configuration that components
-  # are built from. Its URL appears nowhere else, so no default can satisfy this.
+  # are built from. Its URL appears nowhere else, so no default can satisfy this. The CLI that reads
+  # the view scrubs API keys down to their last five characters.
   - assertion: adp_config_key_equals
     endpoint: "https://localhost:55101/config/runtime"
     key: shared.endpoints.additional_endpoints
     value:
-      "https://additional-endpoint.test": ["11111111111111111111111111111111"]
+      "https://additional-endpoint.test": ["***************************11111"]
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
