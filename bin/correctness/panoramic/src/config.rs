@@ -693,7 +693,7 @@ pub fn discover_tests(
 /// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
 /// cases—one per variant. `integration` configs produce zero or one test case depending on
 /// whether the active `integration_runtime` is in the test's `runtimes:` list. Disabled
-/// correctness configs produce no test cases.
+/// correctness configs do not produce test cases.
 fn try_load_test(
     config_path: &Path, dir_path: &Path, integration_runtime: &str, settings: &IntegrationSettings,
     overrides: &ImageOverrides<'_>,
