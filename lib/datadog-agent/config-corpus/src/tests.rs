@@ -323,6 +323,70 @@ fn getters_override_rejects_a_repeated_getter() {
     ok(&format!("{ok_override}\n{line}"));
 }
 
+/// A `Case` for origin and line tests, with only the members those tests vary.
+fn case(name: &str, group: Group) -> Case {
+    Case {
+        name: name.to_string(),
+        group,
+        why: vec![],
+        inputs: Inputs {
+            env: None,
+            yaml: None,
+            fleet_policy: None,
+            cli: vec![],
+            updates: vec![],
+            keys: vec![],
+        },
+        input_line: 0,
+        construction_warnings: vec![],
+        outcome: Outcome::StartupError(String::new()),
+    }
+}
+
+#[test]
+fn check_origin_strips_batch_and_part_suffixes() {
+    // The groups whose checks keep the case name.
+    for (name, group) in [
+        ("baseline-default", Group::Baseline),
+        ("update-shadowed-set", Group::Behavior),
+        ("unknown-yaml-top-c", Group::Unknown),
+        ("unknown-env-top-c--config_recorder_unknown", Group::Unknown),
+    ] {
+        assert_eq!(case(name, group).check_origin(), name);
+    }
+    // Depth keeps the variant, drops the bisection part's `--<key>` suffix (case.md §3.2.1).
+    for name in ["depth-yaml-empty-list", "depth-yaml-empty-list--api_key"] {
+        assert_eq!(
+            case(name, Group::Depth).check_origin(),
+            "depth-yaml-empty-list",
+            "{name}"
+        );
+    }
+    // The batched groups keep `<group>-<source>`, dropping the section batch (case.md §3.2) and
+    // any `--<key>` suffix: the read's own `key` names the exact setting.
+    for (name, group, want) in [
+        ("breadth-yaml-apm-config", Group::Breadth, "breadth-yaml"),
+        ("breadth-env-top-e--ends", Group::Breadth, "breadth-env"),
+        ("unsupported-env-top-g", Group::Unsupported, "unsupported-env"),
+        ("excluded-yaml-top-o", Group::Excluded, "excluded-yaml"),
+    ] {
+        assert_eq!(case(name, group).check_origin(), want, "{name}");
+    }
+}
+
+#[test]
+fn case_input_line_is_the_corpus_line_of_the_inputs() {
+    // `corpus()` is the header (line 1) and the baseline's case and key lines (lines 2-5), so
+    // CASE's case line — the line holding `inputs` — is line 6 and its key line is 7.
+    let c = ok(&format!("{CASE}\n{}", key(r#"{"getter":"GetInt","result":2}"#)));
+    assert_eq!(c.case("z").unwrap().input_line, 6);
+
+    // A case that failed to start has no key lines; its inputs are still on its case line.
+    let failed = r#"{"case":"z","group":"behavior","inputs":{"keys":[{"key":"a"}]},"startup_error":"bad","type":"case","why":["w"]}"#;
+    let c = ok(failed);
+    assert_eq!(c.case("z").unwrap().input_line, 6);
+}
+
 #[test]
 fn first_snapshot_layers() {
     // Side effects: `b` changes, `c` is absent. Key line: `a` is null.
