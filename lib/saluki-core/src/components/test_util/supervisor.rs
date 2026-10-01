@@ -16,14 +16,16 @@ use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use tokio::task::futures::TaskLocalFuture;
 use tokio::task::JoinHandle;
 
-use crate::runtime::{state::DataspaceRegistry, AutoShutdown, Supervisor, SupervisorError, SupervisorHandle};
+use crate::runtime::{
+    state::DataspaceRegistry, AutoShutdown, ChildSpecification, Supervisor, SupervisorError, SupervisorHandle,
+};
 
 /// Shutdown budget for the test supervisor.
 ///
 /// Mirrors production, where a component supervisor -- not its children -- owns the deadline. Short enough that a test
 /// asserting on forced-abort behavior doesn't stall, long enough that well-behaved children have ample time to drain
 /// on a loaded CI machine.
-const TEST_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+pub(super) const TEST_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 
 /// Interval between readiness polls.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -34,8 +36,9 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// A running per-component supervisor for tests.
 ///
 /// Configured like the supervisor the topology builds for each component ([`AutoShutdown::AnySignificant`],
-/// and a shutdown budget), minus the component worker itself -- the test drives the
-/// component directly.
+/// and a shutdown budget). Started on its own, it has no component worker -- the test drives the component directly.
+/// [`TestComponentDriver`][super::TestComponentDriver] starts one with the component's worker as its significant
+/// child, the way the topology does.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
     dataspace: DataspaceRegistry,
@@ -63,11 +66,33 @@ impl TestComponentSupervisor {
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub async fn start_with_budget(id: &str, budget: Duration) -> Self {
-        let dataspace = DataspaceRegistry::default();
+        Self::start_inner(id, budget, DataspaceRegistry::default(), None).await
+    }
+
+    /// Starts a supervisor named `id` with `worker` as its one static child, sharing `dataspace` with it.
+    ///
+    /// The worker is added before the supervisor runs, the way the topology adds a component's worker, so it isn't
+    /// counted by [`active_children`][Self::active_children].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
+    pub(super) async fn start_with_worker(
+        id: &str, budget: Duration, dataspace: DataspaceRegistry, worker: ChildSpecification,
+    ) -> Self {
+        Self::start_inner(id, budget, dataspace, Some(worker)).await
+    }
+
+    async fn start_inner(
+        id: &str, budget: Duration, dataspace: DataspaceRegistry, worker: Option<ChildSpecification>,
+    ) -> Self {
         let mut supervisor = Supervisor::new(id)
             .expect("test supervisor name should be valid")
             .with_auto_shutdown(AutoShutdown::AnySignificant)
             .with_shutdown_budget(budget);
+        if let Some(worker) = worker {
+            supervisor.add_worker(worker);
+        }
 
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
         // is how we observe that it has.
@@ -87,9 +112,13 @@ impl TestComponentSupervisor {
             shutdown_coordinator: Some(shutdown_coordinator),
             task,
         };
-        supervisor
-            .poll_until("the test supervisor is running", || supervisor.handle.is_running())
-            .await;
+        // A supervisor whose worker stops straight away stops with it, possibly before it's ever seen running.
+        poll_until(
+            POLL_TIMEOUT,
+            || supervisor.handle.is_running() || supervisor.task.is_finished(),
+            || "the test supervisor is running".to_string(),
+        )
+        .await;
 
         supervisor
     }
@@ -127,9 +156,11 @@ impl TestComponentSupervisor {
     ///
     /// Panics if the count doesn't reach `count` within a few seconds.
     pub async fn wait_for_children(&self, count: usize) {
-        self.poll_until(&format!("the supervisor has {count} running children"), || {
-            self.handle.active_children() == count
-        })
+        poll_until(
+            POLL_TIMEOUT,
+            || self.handle.active_children() == count,
+            || format!("the supervisor has {count} running children"),
+        )
         .await;
     }
 
@@ -190,20 +221,29 @@ impl TestComponentSupervisor {
         self.signal_shutdown();
         self.wait().await
     }
+}
 
-    async fn poll_until(&self, description: &str, mut condition: impl FnMut() -> bool) {
-        let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
-        loop {
-            if condition() {
-                return;
-            }
-
-            if tokio::time::Instant::now() >= deadline {
-                panic!("timed out after {POLL_TIMEOUT:?} waiting until {description}");
-            }
-
+/// Polls `condition` until it holds.
+///
+/// `describe` says what is being waited for. It's only called if `timeout` elapses, so it can report the state at that
+/// point.
+///
+/// # Panics
+///
+/// Panics if `condition` doesn't hold within `timeout`.
+pub(super) async fn poll_until(
+    timeout: Duration, mut condition: impl FnMut() -> bool, describe: impl FnOnce() -> String,
+) {
+    let poll = async {
+        while !condition() {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
+    };
+
+    // `tokio::time::timeout` treats a timeout too large to add to the current time as no deadline, rather than
+    // overflowing.
+    if tokio::time::timeout(timeout, poll).await.is_err() {
+        panic!("timed out after {timeout:?} waiting until {}", describe());
     }
 }
 
