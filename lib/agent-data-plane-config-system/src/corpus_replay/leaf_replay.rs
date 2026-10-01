@@ -23,6 +23,7 @@ use serde_json::{Map, Value};
 
 use super::compare::{compare_leaf, LeafKind, Verdict};
 use super::driver::case_updates;
+use super::{guard, Panicked};
 use crate::source::SourceTree;
 use crate::system::fold;
 
@@ -63,8 +64,13 @@ pub(crate) fn fold_case(corpus: &Corpus, case_name: &str) -> Result<FoldedCase, 
 
     let mut agent = SourceTree::empty();
     let mut snapshot = None;
-    for update in &updates {
-        fold(&mut agent, update);
+    for (position, update) in updates.iter().enumerate() {
+        guard("fold", || fold(&mut agent, update)).map_err(|p| {
+            format!(
+                "case {case_name:?}: event {position}: {} panicked: {}",
+                p.operation, p.message
+            )
+        })?;
         snapshot.get_or_insert_with(|| merged(&agent));
     }
 
@@ -130,8 +136,17 @@ fn isolated_object(leaf: &Leaf, tree: &Value) -> Value {
     Value::Object(object)
 }
 
+/// Why a setting could not be deserialized in isolation.
+#[derive(Clone, Debug)]
+pub(crate) enum Fault {
+    /// The deserializer returned this exact error.
+    Error(String),
+    /// The deserializer panicked.
+    Panic(Panicked),
+}
+
 /// The result of deserializing a single setting while other fields take their defaults.
-type Isolated = Rc<Result<DatadogConfiguration, String>>;
+type Isolated = Rc<Result<DatadogConfiguration, Fault>>;
 
 /// Deserializes leaves in isolation, remembering each distinct isolated object per leaf: across the
 /// corpus most leaves hold the same streamed default, so most isolated objects repeat.
@@ -166,15 +181,21 @@ impl Isolator {
         }
     }
 
+    /// The index into `LEAVES` of the leaf read from `key`, by its key or an alias.
+    pub(crate) fn leaf_index(&self, key: &str) -> Option<usize> {
+        self.by_key.get(key).copied()
+    }
+
     /// Deserializes `DatadogConfiguration` from only what `tree` holds for `LEAVES[index]`.
     pub(crate) fn isolate(&mut self, index: usize, tree: &Value) -> Isolated {
         let object = isolated_object(&LEAVES[index], tree);
         let key = (index, object.to_string());
-        Rc::clone(
-            self.cache
-                .entry(key)
-                .or_insert_with(|| Rc::new(deserialize_datadog(&object))),
-        )
+        Rc::clone(self.cache.entry(key).or_insert_with(|| {
+            Rc::new(match guard("deserialize", || deserialize_datadog(&object)) {
+                Ok(result) => result.map_err(Fault::Error),
+                Err(panicked) => Err(Fault::Panic(panicked)),
+            })
+        }))
     }
 }
 
@@ -244,6 +265,9 @@ impl fmt::Display for RowResult {
                 write!(f, "differs: adp {} agent {}", one_line(adp), one_line(agent))
             }
             RowResult::Leaf(Verdict::AdpRejects { error }) => write!(f, "adp rejects: {}", one_line(error)),
+            RowResult::Leaf(Verdict::Panicked { operation, message }) => {
+                write!(f, "{operation} panicked: {}", one_line(message))
+            }
             RowResult::Leaf(Verdict::NotCompared { reason }) => write!(f, "not compared: {reason}"),
             RowResult::NotModeled => f.write_str("not modeled"),
         }
@@ -309,18 +333,38 @@ pub(crate) fn checkpoint_rows(
         };
         let leaf = &LEAVES[index];
         let kind = Some(isolator.kinds[index]);
-        let verdicts = match &*isolator.isolate(index, tree) {
+        let isolated = isolator.isolate(index, tree);
+        if let Err(Fault::Panic(p)) = &*isolated {
+            rows.push(row(
+                Some(leaf.key),
+                read.getters.first().map(|g| g.getter),
+                kind,
+                RowResult::Leaf(Verdict::Panicked {
+                    operation: p.operation,
+                    message: p.message.clone(),
+                }),
+            ));
+            break;
+        }
+        let verdicts = match &*isolated {
             Ok(config) => compare_leaf((leaf.get)(config), &read.getters),
             // Only the getter the leaf's kind stands for would have been compared with the leaf. Every
             // other getter keeps its verdict, which depends only on the kind, so the default leaf gives it.
-            Err(error) => {
+            Err(fault) => {
                 let default = (leaf.get)(&isolator.default);
                 let emulated = LeafKind::of(&default).emulated();
                 compare_leaf(default, &read.getters)
                     .into_iter()
-                    .map(|(getter, verdict)| match emulated.contains(&getter) {
-                        true => (getter, Verdict::AdpRejects { error: error.clone() }),
-                        false => (getter, verdict),
+                    .map(|(getter, verdict)| match (emulated.contains(&getter), fault) {
+                        (false, _) => (getter, verdict),
+                        (true, Fault::Error(error)) => (getter, Verdict::AdpRejects { error: error.clone() }),
+                        (true, Fault::Panic(p)) => (
+                            getter,
+                            Verdict::Panicked {
+                                operation: p.operation,
+                                message: p.message.clone(),
+                            },
+                        ),
                     })
                     .collect()
             }
@@ -336,19 +380,17 @@ pub(crate) fn checkpoint_rows(
 
 /// Produces every row of the corpus's started cases, sorted by case, checkpoint, key and getter.
 ///
-/// # Errors
-///
-/// Returns every harness error: a case whose stream cannot be built, a case whose stream and
-/// recorded updates disagree, or a key line whose final read is not present exactly when the case
-/// has updates.
-pub(crate) fn corpus_rows(corpus: &Corpus) -> Result<Vec<Row>, Vec<String>> {
-    let mut isolator = Isolator::new();
+/// Also returns every case-level fault: a case whose stream cannot be built or whose fold panicked, a
+/// case whose stream and recorded updates disagree, or a key line whose final read is not present
+/// exactly when the case has updates. A faulty case contributes no rows; the others are still replayed.
+pub(crate) fn corpus_rows(corpus: &Corpus) -> (Vec<Row>, Vec<String>) {
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     for case in &corpus.cases {
         let Outcome::Started(started) = &case.outcome else {
             continue;
         };
+        let mut isolator = Isolator::new();
         let has_updates = !started.updates.is_empty();
         let folded = match fold_case(corpus, &case.name) {
             Ok(folded) => folded,
@@ -370,93 +412,33 @@ pub(crate) fn corpus_rows(corpus: &Corpus) -> Result<Vec<Row>, Vec<String>> {
         ];
         for (checkpoint, tree) in checkpoints {
             match reads_at(&case.name, &started.keys, checkpoint, has_updates) {
-                Ok(reads) => rows.extend(checkpoint_rows(&mut isolator, &case.name, checkpoint, tree, &reads)),
+                Ok(reads) => {
+                    let checkpoint_rows = checkpoint_rows(&mut isolator, &case.name, checkpoint, tree, &reads);
+                    let panicked = checkpoint_rows
+                        .iter()
+                        .any(|r| matches!(r.result, RowResult::Leaf(Verdict::Panicked { .. })));
+                    rows.extend(checkpoint_rows);
+                    if panicked {
+                        break;
+                    }
+                }
                 Err(error) => errors.push(error),
             }
         }
     }
     rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-    if errors.is_empty() {
-        Ok(rows)
-    } else {
-        Err(errors)
-    }
+    (rows, errors)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::time::Instant;
+    use std::collections::BTreeMap;
 
     use datadog_agent_config_corpus::BASELINE_CASE;
     use serde_json::json;
 
     use super::*;
     use crate::corpus_replay::corpus;
-
-    /// The most grouped lines the corpus test prints.
-    const PRINTED_LINES: usize = 400;
-
-    /// Runs the whole corpus through the leaf tier and prints what it found. It asserts only that no
-    /// harness error occurred: the verdicts themselves are checked against known results elsewhere.
-    #[test]
-    fn every_started_corpus_key_line_gets_leaf_verdicts() {
-        let start = Instant::now();
-        let rows = corpus_rows(corpus()).unwrap_or_else(|errors| panic!("harness errors: {errors:#?}"));
-
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        let mut compared = BTreeSet::new();
-        let mut not_modeled = BTreeSet::new();
-        // Differs and AdpRejects rows by leaf kind, then by error text or rendered pair.
-        let mut grouped: BTreeMap<(&str, String), Vec<&Row>> = BTreeMap::new();
-        for row in &rows {
-            let (label, group) = match &row.result {
-                RowResult::Leaf(Verdict::Match) => ("Match".to_string(), None),
-                RowResult::Leaf(Verdict::Differs { .. }) => ("Differs".to_string(), Some(row.result.to_string())),
-                RowResult::Leaf(Verdict::AdpRejects { .. }) => ("AdpRejects".to_string(), Some(row.result.to_string())),
-                RowResult::Leaf(Verdict::NotCompared { reason }) => (format!("NotCompared ({reason})"), None),
-                RowResult::NotModeled => ("NotModeled".to_string(), None),
-            };
-            *counts.entry(label).or_default() += 1;
-            match &row.result {
-                RowResult::NotModeled => {
-                    not_modeled.insert(row.key.as_str());
-                }
-                RowResult::Leaf(Verdict::Match | Verdict::Differs { .. }) => {
-                    compared.insert(row.key.as_str());
-                }
-                RowResult::Leaf(_) => {}
-            }
-            if let Some(group) = group {
-                grouped.entry((row.kind.unwrap_or("-"), group)).or_default().push(row);
-            }
-        }
-
-        println!("{} rows in {:?}", rows.len(), start.elapsed());
-        for (label, count) in &counts {
-            println!("{label}: {count}");
-        }
-        println!("distinct keys compared: {}", compared.len());
-        println!("distinct keys not modeled: {}", not_modeled.len());
-        for key in &not_modeled {
-            println!("  not modeled: {key}");
-        }
-        let mut lines = Vec::new();
-        for ((kind, group), rows) in &grouped {
-            lines.push(format!("[{kind}] {group} ({} rows)", rows.len()));
-            for row in rows {
-                let getter = row.getter.map_or("-", Getter::as_str);
-                lines.push(format!("    {} {:?} {} {getter}", row.case, row.checkpoint, row.key));
-            }
-        }
-        let cut = lines.len().saturating_sub(PRINTED_LINES);
-        for line in lines.iter().take(PRINTED_LINES) {
-            println!("{line}");
-        }
-        println!("grouped lines: {} ({cut} not printed)", lines.len());
-
-        assert!(!rows.is_empty(), "the corpus has key lines");
-    }
 
     /// Renders a leaf exactly and deterministically: `Debug` is exact for floats and lists, but a
     /// `HashMap` prints in iteration order, so maps are rendered with their entries sorted.

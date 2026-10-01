@@ -260,7 +260,11 @@ impl UpdateState {
             // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
             // model from it. Only a fully successful update advances the committed layer, so a rejected
             // value never lingers to re-poison a later merge.
-            let Evaluation { tentative, merged, stages } = evaluate(&self.base, &self.agent, &update);
+            let Evaluation {
+                tentative,
+                merged,
+                stages,
+            } = evaluate(&self.base, &self.agent, &update);
             match stages.into_authoritative() {
                 Ok(config) => {
                     self.agent = tentative;
@@ -306,10 +310,6 @@ pub(crate) enum Stages {
 
     /// The sources deserialized, but translation recorded an error on one or more keys.
     Untranslatable {
-        /// The deserialized sources.
-        // Read only by the corpus replay tests.
-        #[cfg_attr(not(test), allow(dead_code))]
-        sources: Box<Sources>,
         /// Every translation error recorded.
         errors: TranslateErrors,
     },
@@ -317,10 +317,6 @@ pub(crate) enum Stages {
     /// The sources deserialized and translated; `validation` says whether the process can run on the
     /// result.
     Translated {
-        /// The deserialized sources.
-        // Read only by the corpus replay tests.
-        #[cfg_attr(not(test), allow(dead_code))]
-        sources: Box<Sources>,
         /// The translated configuration.
         config: Box<SalukiConfiguration>,
         /// The result of [`validate`] on `config`.
@@ -364,14 +360,10 @@ fn run_stages(merged: &SourceTree) -> Stages {
     match deserialize_sources(&merged.to_value()) {
         Err(error) => Stages::Undeserializable(error),
         Ok(sources) => match translate(&sources.datadog, &sources.saluki, merged) {
-            (_, Some(errors)) => Stages::Untranslatable {
-                sources: Box::new(sources),
-                errors,
-            },
+            (_, Some(errors)) => Stages::Untranslatable { errors },
             (config, None) => {
                 let validation = validate(&config);
                 Stages::Translated {
-                    sources: Box::new(sources),
                     config: Box::new(config),
                     validation,
                 }
