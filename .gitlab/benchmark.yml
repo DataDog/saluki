@@ -242,7 +242,7 @@ report-benchmarks-adp:
     # this is a vibe-coded generation script, so best effort
     - python3 ./ci/tooling/temp_upgrade_smp_report_to_v1.py outputs/report.json
     - python3 ./ci/tooling/build-smp-report.py
-      --report-v1-json outputs/report.v1.json
+      --report-json outputs/report.v1.json
       --output-report outputs/condensed-report.md
       --smp-binary ./smp
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
