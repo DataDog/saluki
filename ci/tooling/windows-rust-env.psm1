@@ -142,7 +142,9 @@ function Initialize-RustEnvironment {
     $Toolchain = $ToolchainMatch.Matches[0].Groups[1].Value
 
     Write-Host "[*] Ensuring Rust toolchain ${Toolchain} is installed..."
-    Invoke-Native rustup toolchain install --profile minimal $Toolchain
+    # rustup comes from the build image, so never let it replace itself mid-job: a self-update here
+    # has left the next rustup invocation unable to run (`rustup.exe` is not a valid subcommand).
+    Invoke-Native rustup toolchain install --no-self-update --profile minimal $Toolchain
     Invoke-Native rustup default $Toolchain
     Invoke-Native rustup show
     Invoke-Native cargo --version
