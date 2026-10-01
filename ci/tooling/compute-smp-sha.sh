@@ -43,16 +43,7 @@ if [[ "${CI_PIPELINE_SOURCE:-}" == "schedule" ]]; then
 else
     case "${role}" in
         comparison) echo "${CI_COMMIT_SHA}" ;;
-        baseline)
-            # A shallow PR checkout can end before the stack's fork point.
-            baseline=$(git -C "$PWD" merge-base origin/main "origin/${CI_COMMIT_BRANCH}" || true)
-            if [[ -z "$baseline" && "$(git -C "$PWD" rev-parse --is-shallow-repository)" == true ]]; then
-                git -C "$PWD" fetch --deepen=999 origin "${CI_COMMIT_BRANCH}" main >&2
-                baseline=$(git -C "$PWD" merge-base origin/main "origin/${CI_COMMIT_BRANCH}" || true)
-            fi
-            [[ -n "$baseline" ]] || { echo "no merge base between main and ${CI_COMMIT_BRANCH}" >&2; exit 1; }
-            echo "$baseline"
-            ;;
+        baseline)   git merge-base origin/main "origin/${CI_COMMIT_BRANCH}" ;;
         *) echo "unknown role: ${role}" >&2; exit 1 ;;
     esac
 fi
