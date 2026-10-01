@@ -35,6 +35,8 @@
 build-adp-baseline-image:
   extends: .build-common-variables
   stage: benchmark
+  variables:
+    GIT_DEPTH: "0"
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
   rules:
@@ -96,6 +98,8 @@ build-adp-baseline-image:
 build-adp-comparison-image:
   extends: .build-common-variables
   stage: benchmark
+  variables:
+    GIT_DEPTH: "0"
   tags: ["docker-in-docker:amd64"]
   # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
   rules:
