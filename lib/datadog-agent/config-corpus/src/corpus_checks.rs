@@ -456,6 +456,48 @@ fn corpus_env_cases_stream_env_source() {
     );
 }
 
+/// Batch splitting must not give two reads the same expectation identity.
+#[test]
+fn check_origins_uniquely_identify_reads() {
+    let Some(corpus) = corpus() else { return };
+    // (origin, key, checkpoint, getter) -> the case that recorded the read.
+    let mut seen: BTreeMap<(String, &str, &'static str, String), &str> = BTreeMap::new();
+    let mut duplicates = Vec::new();
+    for case in &corpus.cases {
+        let origin = case.check_origin();
+        assert!(!origin.is_empty(), "case {}: empty check origin", case.name);
+        for line in key_lines(case) {
+            let mut checkpoints: Vec<(&str, &crate::Read)> = vec![("snapshot", &line.reads.snapshot)];
+            if let Some(final_) = &line.reads.final_ {
+                checkpoints.push(("final", final_));
+            }
+            for (checkpoint, read) in checkpoints {
+                for getter in &read.getters {
+                    let id = (
+                        origin.to_string(),
+                        line.key.as_str(),
+                        checkpoint,
+                        getter.getter.to_string(),
+                    );
+                    if let Some(first) = seen.insert(id, case.name.as_str()) {
+                        duplicates.push(format!(
+                            "  ({origin}, {}, {checkpoint}, {}): cases {first} and {}",
+                            line.key, getter.getter, case.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(!seen.is_empty(), "the corpus has no recorded getter reads");
+    assert!(
+        duplicates.is_empty(),
+        "{} read(s) share a (check origin, key, checkpoint, getter) identity:\n{}",
+        duplicates.len(),
+        duplicates.join("\n")
+    );
+}
+
 /// A schema shape that no config recorder case covers because the schema at the pin has no setting of that shape.
 struct UnrecordedShape {
     /// Whether a setting node has the shape.
