@@ -15,7 +15,8 @@ use std::path::Path;
 
 use datadog_agent_config_corpus::{Corpus, Inputs, Outcome};
 
-use super::leaf_replay::{checkpoint_rows, reads_at, Checkpoint, Isolator, Row};
+use super::guard;
+use super::leaf_replay::{checkpoint_rows, reads_at, Checkpoint, Fault, Isolator, Row};
 use crate::loaded::{build_base_from, EnvPrecedence};
 
 /// The path a YAML parse error names: the file the Agent would have read.
@@ -27,7 +28,7 @@ pub(crate) struct BootstrapResults {
     /// snapshot checkpoint. A row's `streamed` value is the one the base holds at the key's path.
     pub(crate) rows: Vec<Row>,
     /// Every case in scope whose base did not build, with the error ADP aborts its boot on.
-    pub(crate) aborts: Vec<(String, String)>,
+    pub(crate) aborts: Vec<(String, Fault)>,
     /// How many started cases are in scope.
     pub(crate) in_scope: usize,
     /// How many started cases are out of scope because of a fleet policy or a CLI override.
@@ -43,7 +44,7 @@ fn in_scope(inputs: &Inputs) -> bool {
 /// Builds the bootstrap base from a case's YAML and environment, applying the environment after the file.
 ///
 /// Missing YAML becomes an empty object; missing environment variables contribute nothing.
-fn case_base(inputs: &Inputs) -> Result<serde_json::Value, String> {
+fn case_base(inputs: &Inputs) -> Result<serde_json::Value, Fault> {
     let yaml = inputs.yaml.as_deref().unwrap_or("{}");
     let vars: Vec<(String, String)> = inputs
         .env
@@ -51,14 +52,18 @@ fn case_base(inputs: &Inputs) -> Result<serde_json::Value, String> {
         .flatten()
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    build_base_from(yaml, Path::new(YAML_ORIGIN), &vars, EnvPrecedence::AfterFile).map_err(|e| e.to_string())
+    match guard("build bootstrap base", || {
+        build_base_from(yaml, Path::new(YAML_ORIGIN), &vars, EnvPrecedence::AfterFile)
+    }) {
+        Ok(result) => result.map_err(|e| Fault::Error(e.to_string())),
+        Err(panicked) => Err(Fault::Panic(panicked)),
+    }
 }
 
 /// Replays every started case in scope through the bootstrap reader.
 ///
 /// Rows are sorted by case, key and getter; aborts by case.
 pub(crate) fn corpus_bootstrap(corpus: &Corpus) -> BootstrapResults {
-    let mut isolator = Isolator::new();
     let mut results = BootstrapResults {
         rows: Vec::new(),
         aborts: Vec::new(),
@@ -85,7 +90,7 @@ pub(crate) fn corpus_bootstrap(corpus: &Corpus) -> BootstrapResults {
         let reads = reads_at(&case.name, &started.keys, Checkpoint::Snapshot, false)
             .expect("the snapshot checkpoint pairs every key line with its snapshot read");
         results.rows.extend(checkpoint_rows(
-            &mut isolator,
+            &mut Isolator::new(),
             &case.name,
             Checkpoint::Snapshot,
             &base,
@@ -95,6 +100,6 @@ pub(crate) fn corpus_bootstrap(corpus: &Corpus) -> BootstrapResults {
     results.rows.sort_by(|a, b| {
         (&a.case, &a.key, a.getter.map(|g| g.as_str())).cmp(&(&b.case, &b.key, b.getter.map(|g| g.as_str())))
     });
-    results.aborts.sort();
+    results.aborts.sort_by(|a, b| a.0.cmp(&b.0));
     results
 }

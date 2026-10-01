@@ -12,11 +12,13 @@ per key. The implementation is `lib/agent-data-plane-config-system/src/corpus_re
   byte size parsed from a string. The derived tier (`derived.rs`) compares each one against the Agent
   getter that computes the same value: `GetInt` on `data_plane.stop_timeout`, and `GetSizeInBytes` on
   a byte-size key. A leaf that matches as a string can still differ as the value ADP uses.
-- Not compared: validation of the translated configuration. Validation rejects only a blank
-  `api_key`, and most cases set none. A step whose translation succeeds is therefore applied, and
-  later steps describe the configuration agent-data-plane would hold if the key were set. A blank
-  `api_key` failure is only counted, on the `count system validate: blank api key` line; any other
-  step failure gets its own `system` line.
+- Not compared: validation of the translated configuration. A validation failure is an observed
+  step result the replay checks like any other, not an early return. The shape comparisons fold
+  every event into the typed configuration independently of whether validation accepts it, while
+  a connected stream adopts an update only when every stage, validation included, succeeds. The
+  corpus baseline streams `api_key` as `""`, so its startup is rejected under the connected rule;
+  the `valid-stream-updates` case loads a real-shaped `api_key` from YAML so its runtime updates
+  reach validated state.
 
 ## 2. Leaf kinds
 
@@ -96,8 +98,9 @@ The generic rule, for a `serde_json::Value` against a `Get` value:
 | `AdpRejects`  | `DatadogConfiguration` failed to deserialize, so there is no leaf. The replay produces it, not a rule. |
 | `NotCompared` | No rule applies: the getter is not the emulated one, the getter is explicit-only (§6), or the result shape is not the getter's. |
 
-`NotCompared` must carry its reason, and a replay must count every `NotCompared` by reason. It must
-never be dropped or treated as `Match`. A pair with no rule must give `NotCompared`, never a guess.
+`NotCompared` carries its reason. A getter with no corresponding ADP value produces no assertion;
+coverage tests check the recorded getter pairs against the emulation table. It is not a match.
+A result whose shape disagrees with its getter is a failing corpus check.
 
 ## 6. Explicit-only reads
 
@@ -121,8 +124,8 @@ Both belong to a provenance tier, not to this one.
 | `GetStringMap`    | map keys, with `GetStringMapString`          | nothing: `StringMap` emulates `GetStringMapString` (decision 2)     |
 | `ReadConfigSection`, `IsConfigured` | section and source probes  | nothing: explicit-only (§6)                                          |
 
-A case that records only these getters has no compared verdict. Its `case` line in the known results
-shows zero matches and zero differences, so a reviewer can see the gap.
+A case that records only these getters has no leaf comparison. These are coverage limitations,
+not evidence that ADP matches those getters. The corpus retains the reads for future comparisons.
 
 ## 7. Not observable from the stream
 
@@ -163,5 +166,8 @@ No normalization is allowed beyond decisions 5, 6, 8 and 11.
 3. A new derived value: add a row to `DERIVATIONS` in `derived.rs`, or give the reason it is not
    replayed in `NOT_REPLAYED`.
 4. Record the getter: add a case that names it (case.md), and regenerate the corpus.
-5. Regenerate the known results (the command is in the file's header). Give each new divergence
-   line a divergence type: an existing one, or a new `type` line.
+5. Run the replay tests, `cargo nextest run --lib -p agent-data-plane-config-system
+   corpus_replay`. A new difference fails its check. Decide whether it is intentional
+   agent-data-plane behavior or a known bug, and record the exact expected value, the desired
+   value, and the reason in the typed expectation beside the replay code. A fix changes production
+   code and that expectation together, never the recorded corpus.

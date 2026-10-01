@@ -47,51 +47,19 @@ Use your judgement to get the build and relevant tests passing. Use valid overla
 placeholder classification. Mark provisional choices with `TODO: review` comments in hand-edited
 sources and record them for user review. Do not weaken validation or tests.
 
-## Update the Agent config corpus
-
-Regenerating the corpus is part of a schema update, not a separate task. See
-`lib/datadog-agent/config-recorder/README.md` for the recorder, cases, and checks in full; this
-gives only the steps and what to look for.
-
-1. Follow the README's pin-bump steps: update the reader's lists, bump
-   `REVIEWED_AT_AGENT_COMMIT`, then run `make build-agent-config-corpus`.
-   `corpus_pin_matches_vendored_schema` fails until this is done. A new pin downloads Go modules
-   the cache lacks; if the host's `GOPROXY` is unreachable, set a reachable one for the run (for
-   example `GOPROXY=https://proxy.golang.org,direct`).
-2. Review the corpus diff. A changed record usually means changed Agent behavior; summarize
-   changes for the user by key and by behavior. Two diffs are expected and are not behavior
-   changes:
-   - Depth representatives move: each depth class records its byte-first key, so a new key that
-     sorts first in its class moves that class's depth rows to the new key.
-   - Batches are renamed: a section that crosses the 40-key split renames its batches.
-3. Check coverage. A new modeled or unsupported key needs a breadth record; a new behavior needs
-   a case (the README's "Adding a case"). A changed `startup-failed` case line, or a changed
-   startup error message, means the Agent now fails differently at startup; report it.
-4. Check the Agent's load-time writes. Diff `pkg/config/setup/` and `comp/core/config/setup.go`
-   between the old pin and the new one. A new or changed write to a setting changes no record
-   unless some case triggers it, so add one. Splitting a batch checks sources, not values: a
-   generated batch that sets both a write's trigger and its target from the same source can
-   record the derived value as the target's own, so give that target its own case.
-5. Run the replay tests: `cargo nextest run --lib --bins -p agent-data-plane-config-system`. For
-   each change in `known-results.txt`:
-   - A new divergence: fix it in ADP's type or translation layer, or bless it into the file. Give
-     it a divergence type, an existing one where it fits or a new `type` line. Get the user's
-     approval before adding a divergence.
-   - A fixed divergence: the check reports the line; bless removes it.
-   - A new derived value in ADP or the Agent: add a row to `DERIVATIONS` in `derived.rs`, or a
-     reason to `NOT_REPLAYED`.
-
-   Bless with:
-
-   ```sh
-   ADP_CORPUS_REPLAY_BLESS=1 cargo nextest run --lib -p agent-data-plane-config-system \
-     corpus_replay_results_equal_the_known_results_file
-   ```
-
 ## Review support with the user
 
 Group related settings; split them when support differs by pipeline or signal. Compare pinned
 upstream code with ADP consumers and tests. Check existing issues and pull requests.
+
+Review the Agent's configuration loading and reading code in the same pass: diff
+`pkg/config/setup/`, `comp/core/config/setup.go`, and the model, getter and environment code the
+corpus lists name, between the old pin and the new one. A new or changed load-time write, getter
+result, or environment binding is an upstream behavior change that no re-recording can reveal
+unless a case triggers it, so bring it into the same discussion and name the case that will
+trigger it. Splitting a batch checks sources, not values: a generated batch that sets both a
+write's trigger and its target from the same source can record the derived value as the target's
+own, so give that target its own case.
 
 Present the keys, changes, effect on users, evidence, and proposal. Ask one question per group.
 Wait for approval before finalizing the classification.
@@ -116,7 +84,9 @@ Avoid generic reasons such as "Core Agent-only" or claims that support can never
 ## Apply the decisions
 
 Apply one approved decision at a time. Replace its provisional choices and remove its review
-markers. Regenerate and check the build and relevant tests before reviewing the next group.
+markers. Run `make build-schema-overlay` and check the build and relevant tests before reviewing
+the next group. An optional diagnostic corpus recording can investigate a suspected behavior
+change mid-review; the recorded corpus is refreshed once, below, after the groups are applied.
 
 - Update `schema_overlay.yaml` and hand-maintained registry entries together.
   Follow the config-system workflows for model and translation changes.
@@ -124,12 +94,52 @@ markers. Regenerate and check the build and relevant tests before reviewing the 
   schema to make old code compile.
 - Check that new schema defaults do not replace runtime-derived values with placeholders.
 
+## Record the corpus
+
+Record once, after the decisions are applied and the generated code has settled. Recording between
+classification steps goes stale when a key moves between modeled, unsupported, and excluded. See
+`lib/datadog-agent/config-recorder/README.md` for the recorder, cases, and checks in full; these
+are the steps and what to look for.
+
+1. Follow the README's pin-bump steps: update the reader's lists of sources, getters and groups
+   against `pkg/config/model/types.go` at the new pin, and bump `REVIEWED_AT_AGENT_COMMIT`, once
+   per pin. A new pin downloads Go modules the cache lacks; if the host's `GOPROXY` is unreachable,
+   set a reachable one for the run (for example `GOPROXY=https://proxy.golang.org,direct`).
+2. Run `make build-agent-config-corpus`. A pin bump can break the recorder's compilation or a
+   getter API it calls; repair it and show the repair in the summary. Do not add compatibility
+   layers for breakage that has not happened.
+3. Review the corpus diff. A changed record usually means changed Agent behavior; summarize the
+   changes for the user by key and by behavior. Not behavior changes:
+   - A section crossing the 40-key split renames its batches and redistributes its keys; every
+     check's origin is stable across those renames and splits.
+   - A depth row changes only when the pinned representative's class is actually affected by the
+     schema change, not because a new key sorts earlier. A pin that no longer matches the schema
+     fails generation with what to update.
+4. Check coverage. A new modeled or unsupported key needs a breadth record; new upstream behavior
+   found in the support review needs the triggering case named there (the README's "Adding a
+   case"). A changed `startup-failed` case line, or a changed startup error message, means the
+   Agent now fails differently at startup; report it. The pin-match and inputs-digest checks must
+   pass.
+5. Run the replay tests: `cargo nextest run --lib -p agent-data-plane-config-system
+   corpus_replay`. A failing check is a difference between ADP and the recorded Agent result.
+   Expectations name checks by their stable origin, not by batch name or update position, so
+   inserting an update of another key leaves existing identities unchanged. Updates of the same
+   key are distinguished by their occurrence. Decide each difference:
+   - Intentional ADP behavior: state the exact expected value and the reason in the typed
+     expectation beside the replay code.
+   - Known bug: record the precise current result, the desired result (normally the recorded
+     Agent result), and the reason. A fix changes the current result, so the expectation is
+     edited in the same change that fixes the production code.
+
+   Classifying a difference does not need a second approval round; open support questions still go
+   through the review above. Never regenerate the corpus to make an ADP-only fix pass.
+
 ## Verify the update
 
 - Check that the generated model, classifier, registry, and documentation agree.
 - Account for every changed setting and local edit. Confirm removals were deliberate and no review
   markers or unapproved decisions remain.
-- Confirm the corpus pin matches `_version.txt`, the corpus and replay tests pass, and every
-  change to `known-results.txt` is in the summary for the user.
+- Confirm the corpus pin matches `_version.txt`, the corpus checks and replay tests pass, and
+  every expectation edit and behavior difference is in the summary for the user.
 - Summarize the revision, approved changes, issues, and validation for human review before
   committing.

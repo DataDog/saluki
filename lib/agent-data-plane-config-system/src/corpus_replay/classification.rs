@@ -13,8 +13,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::corpus_replay::corpus;
-    use crate::corpus_replay::driver::{replay_case, Stage};
-    use crate::system::Error;
+    use crate::corpus_replay::driver::{replay_case, Commit, Stage};
 
     /// The groups whose keys the typed model leaves out.
     const UNMODELED_GROUPS: [Group; 3] = [Group::Unsupported, Group::Excluded, Group::Unknown];
@@ -185,7 +184,6 @@ mod tests {
     #[test]
     fn unmodeled_corpus_keys_cause_no_replay_failure() {
         let corpus = corpus();
-        let blank_api_key = Error::MissingApiKey.to_string();
         let mut failures = Vec::new();
         for group in UNMODELED_GROUPS {
             let (cases, not_started) = cases_of(group);
@@ -199,10 +197,11 @@ mod tests {
                     .into_iter()
                     .map(|(key, _)| key)
                     .collect::<Vec<_>>();
-                let replayed = replay_case(corpus, &case.name).unwrap_or_else(|e| panic!("case {}: {e}", case.name));
-                for (position, step) in replayed.steps.iter().enumerate() {
+                let replayed = replay_case(corpus, &case.name, Commit::Translated)
+                    .unwrap_or_else(|e| panic!("case {}: {e}", case.name));
+                for (position, step) in replayed.iter().enumerate() {
                     let Some(failure) = &step.failure else { continue };
-                    if failure.stage == Stage::Validate && failure.error == blank_api_key {
+                    if failure.stage == Stage::Validate && failure.missing_api_key {
                         continue;
                     }
                     failures.push(format!(

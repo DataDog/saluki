@@ -22,6 +22,8 @@ pub(crate) enum Verdict {
     Differs { adp: String, agent: String },
     /// The typed configuration could not be deserialized, so there is no leaf to compare.
     AdpRejects { error: String },
+    /// A production call panicked while producing ADP's side of the comparison. Cannot be an expected result.
+    Panicked { operation: &'static str, message: String },
     /// No rule compares this pair; counted, never silent.
     NotCompared { reason: Reason },
 }

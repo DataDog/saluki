@@ -246,10 +246,10 @@ For any configuration change, check the risks:
 - **Test preservation:** deleting legacy deserialization coverage did not delete behavioral
   coverage.
 - **Replay coverage:** a change to a deserializer, the environment reader, or translation runs
-  the replay tests, `cargo nextest run --lib --bins -p agent-data-plane-config-system`. Bless with
-  `ADP_CORPUS_REPLAY_BLESS=1 cargo nextest run --lib -p agent-data-plane-config-system
-  corpus_replay_results_equal_the_known_results_file`. A change to `known-results.txt` is part of
-  the review.
+  the replay tests, `cargo nextest run --lib -p agent-data-plane-config-system corpus_replay`.
+  A change that alters a replayed result updates production code and the matching typed
+  expectation in `src/corpus_replay/` in the same change; never regenerate the corpus to make an
+  agent-data-plane fix pass.
 
 ## Check your work
 

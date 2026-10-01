@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use datadog_agent_config::env_reader::apply_env_at_path_vars;
-use datadog_agent_config::{apply_env_at_path, EnvDecode};
+use datadog_agent_config::EnvDecode;
 use serde::de::value::{Error as ValueError, SeqDeserializer, StrDeserializer, UnitDeserializer};
 use serde::de::{
     DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor,
@@ -34,25 +34,10 @@ use crate::saluki_only::{SalukiOnly, JSON_SEQUENCE_MARKER};
 // struct is therefore a leaf, which lands those types correctly without naming them.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Reads every Saluki-only key from the environment and writes decoded values into `base` at their
-/// nested paths. This is the Saluki-only counterpart to
-/// `datadog_agent_config::apply_datadog_env`.
+/// Reads Saluki-only settings from explicit environment variable name/value pairs.
 ///
-/// A Saluki-only key's environment name is the Agent's standard form: `DD_` + `UPPER(path)` with the
-/// path segments joined by `_`. This surface declares no overridden names. `overwrite` follows the
-/// same file-vs-environment precedence as the Datadog reader.
-///
-/// # Errors
-///
-/// Returns a message when an environment value is malformed for its leaf's decode strategy.
-pub(crate) fn apply_env(base: &mut Value, overwrite: bool) -> Result<(), String> {
-    apply_each_leaf(|name, segments, decode| apply_env_at_path(base, &[name], segments, decode, overwrite))
-}
-
-/// Reads every Saluki-only key from explicitly provided environment variable name/value pairs.
-///
-/// Identical to [`apply_env`] except for where the variables come from, so a caller can build the
-/// base without depending on the ambient process environment.
+/// Names use `DD_` followed by the uppercase path joined with underscores. When `overwrite` is
+/// false, existing values take precedence.
 ///
 /// # Errors
 ///
