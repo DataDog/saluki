@@ -78,7 +78,7 @@ _logs_ while ADP parses it to handle just _metrics_, both processes reading the 
 only the ways that are relevant to them.
 
 The initial scope is deliberately narrow: metrics only, read at startup, under `experimental`. See the [user
-documentation](../../../agent-data-plane/configuration/pipeline-config.md) for the full configuration surface.
+documentation](../../../agent-data-plane/configuration/declarative-routing.md) for the full configuration surface.
 
 ### Consequences
 
@@ -111,4 +111,4 @@ documentation](../../../agent-data-plane/configuration/pipeline-config.md) for t
 
 ## References
 
-- [Declarative metrics routing](../../../agent-data-plane/configuration/pipeline-config.md) (user documentation)
+- [Declarative metrics routing](../../../agent-data-plane/configuration/declarative-routing.md) (user documentation)

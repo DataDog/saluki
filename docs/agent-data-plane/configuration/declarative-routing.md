@@ -1,8 +1,11 @@
-# Declarative metrics routing
+# Declarative telemetry routing
 
 > [!WARNING]
 > Settings under `experimental` are unstable and may change, move, or be removed. Do not rely on backward
 > compatibility.
+
+> [!NOTE]
+> Only metrics are currently supported through declarative telemetry routing.
 
 `experimental.pipeline_config` decides which metrics each Datadog intake endpoint receives. You describe the metrics
 once, as **filter sets**, name the places they can go, as **destinations**, and connect the two with **routes**.
