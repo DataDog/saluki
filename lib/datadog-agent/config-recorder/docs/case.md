@@ -144,10 +144,13 @@ spellings, one modeled key per class.
 - **Class.** For YAML and `set` variants, a modeled key's class is its default-layer Go type
   (`%T` of the default, as getter selection uses, getter-map.md §1). For env variants it is that
   type and the key's schema `env_parser` (none counts as a value), since the parser only acts on
-  env input. A nil-default key's type is `<nil>:<schema type>`. A class's *representative* is its
-  byte-first modeled key; for env classes, the byte-first one with an env binding (§3.2). A class
-  with no env-bound key gets no env variants. A schema bump that adds a key sorting first moves
-  that class's rows to the new key; that is expected. The type's *kind* is `list`
+  env input. A nil-default key's type is `<nil>:<schema type>`. A class's *representative* is
+  its pinned key (`go/gen/depth_reps.go`), fixed by review at the Agent pin; the byte-first
+  modeled key (the byte-first env-bound key for an env class) only proposes a representative
+  while the pin is derived. A class with no env-bound key gets no env variants. A schema bump
+  that adds a key sorting earlier does not move a class's rows to it, and a representative removed from the model
+  or moved to another type, a new class, and a pin entry whose class no longer exists all fail
+  generation with what to update. The type's *kind* is `list`
   (`[]…`), `map` (`map[…]…`) or `scalar` (every other type).
 - **Cases.** One case per variant, named `depth-<source>-<variant>`, holding every class's
   representative that the variant applies to. The splitting rules of §3.1 apply, so a variant

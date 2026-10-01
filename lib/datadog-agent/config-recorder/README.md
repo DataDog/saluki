@@ -12,9 +12,13 @@ Today, the Rust checks (`datadog-agent-config-corpus`, run by `make test`) only 
 corpus itself: its format, its size cap, that its Agent-commit pin matches the vendored schema,
 that its `inputs_digest` is current, that its generated case groups match the overlay and vendored
 schema, that env-only cases stream an environment-variable source, and that its depth group stays
-within its byte budget. Replaying the corpus's records through agent-data-plane's own config
-reader to check that it agrees with the Agent is the corpus's purpose, but that replay does not
-exist yet.
+within its byte budget. They also give each recorded read a stable identity: `Case::check_origin`
+strips the batch and bisection suffixes a schema bump reshuffles (`breadth-yaml`,
+`depth-<shape>`, or the case name), and a corpus test checks that (origin, key, checkpoint,
+getter) names every recorded read exactly once. That identity is for expectations and
+diagnostics, not a runtime case filter. Replaying the corpus's records through agent-data-plane's
+own config reader to check that it agrees with the Agent is the corpus's purpose, but that replay
+does not exist yet.
 
 ## Section reads
 
@@ -53,8 +57,10 @@ records both directories.
   write the same cases.
 - `depth` records the input shapes that break readers: empty, null, wrong-shape and alternate
   spellings. For YAML and `set` inputs, modeled keys fall into classes by default-layer Go type,
-  and each class contributes its byte-first key. For env inputs, classes are by Go type and schema
-  `env_parser`, and each contributes its byte-first env-bound key. There is one case per input
+  and for env inputs by Go type and schema `env_parser`. Each class contributes one
+  representative setting, pinned by review in `go/gen/depth_reps.go` rather than picked by key
+  order, so a schema bump that adds an earlier-sorting key moves no variant's rows; a pin that no
+  longer matches the schema fails generation with what to update. There is one case per input
   shape, `depth-<source>-<shape>`, holding every class the shape applies to, plus
   `depth-env-secondary-name` for keys with more than one env name. Each key records its default
   getters plus `Get`. The generator writes every shape; a corpus test fails when the group's lines

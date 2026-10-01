@@ -52,6 +52,9 @@ pub struct Case {
     pub name: String,
     /// The coverage group.
     pub group: Group,
+    /// The 1-based `corpus.jsonl` line of the case line, which holds the case's `inputs`
+    /// (record.md §3.1): where a diagnostic about generated inputs points.
+    pub input_line: usize,
     /// Behavior catalog ids, in file order.
     pub why: Vec<String>,
     /// The inputs, with `keys` reconstructed when omitted (record.md §3.1).
@@ -303,6 +306,35 @@ impl fmt::Display for Violation {
             write!(f, "file: {}: {}", self.rule, self.message)
         } else {
             write!(f, "line {}: {}: {}", self.line, self.rule, self.message)
+        }
+    }
+}
+
+impl Case {
+    /// The stable origin of the case's checks: what produced them, stripped of the naming a
+    /// schema bump reshuffles (case.md §3.2, §3.2.1).
+    ///
+    /// The `baseline`, `behavior` and `unknown` groups keep the case name. A `depth` case drops
+    /// the `--<key>` suffix of a bisection part, leaving `depth-<variant>`. The batched groups
+    /// (`breadth`, `unsupported`, `excluded`) drop the section batch and any `--<key>` suffix,
+    /// leaving `<group>-<source>`, since a recorded read's own `key` member already names the
+    /// exact setting. This is an assertion identity for replay expectations, not a runtime case
+    /// filter or a category grouping.
+    pub fn check_origin(&self) -> &str {
+        match self.group {
+            Group::Baseline | Group::Behavior | Group::Unknown => &self.name,
+            Group::Depth => match self.name.split_once("--") {
+                Some((origin, _)) => origin,
+                None => &self.name,
+            },
+            Group::Breadth | Group::Unsupported | Group::Excluded => {
+                let mut segments = self.name.splitn(3, '-');
+                let len = match (segments.next(), segments.next()) {
+                    (Some(group), Some(source)) => group.len() + 1 + source.len(),
+                    _ => return &self.name,
+                };
+                self.name.get(..len).unwrap_or(&self.name)
+            }
         }
     }
 }

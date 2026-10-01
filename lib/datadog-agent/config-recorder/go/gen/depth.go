@@ -35,7 +35,8 @@ type depthClass struct {
 	Type string
 	// EnvParser is the schema's `env_parser`, "" when it has none or for a YAML and `set` class.
 	EnvParser string
-	// Rep is the class's byte-first modeled key; for an env class, its byte-first env-bound key.
+	// Rep is the class's representative setting: the pinned key (depth_reps.go), which the
+	// byte-first key only proposes.
 	Rep string
 }
 
@@ -196,11 +197,20 @@ func classType(s *schema.Key, typ string) string {
 	return typ
 }
 
-// depthClasses groups modeled keys into the classes of variants from source and picks each
-// class's representative, sorted by class type then env parser. Env classes are split by env
-// parser, and a class with no env-bound key is left out; YAML and `set` classes are by type only.
-func (g *generator) depthClasses(modeled []string, source depthSource) ([]depthClass, error) {
+// classScan is one source's depth classes with the class id of every modeled key that belongs
+// to one: the byte-first representatives the pin is validated and derived against.
+type classScan struct {
+	classes []depthClass
+	// keyID maps every key of a class to the class's (type, env parser).
+	keyID map[string][2]string
+}
+
+// scanClasses groups modeled keys into the classes of variants from source, sorted by class type
+// then env parser, and picks each class's byte-first representative. Env classes are split by env
+// parser, and a class with no env-bound key is left out; yaml and `set` classes are by type only.
+func (g *generator) scanClasses(modeled []string, source depthSource) (*classScan, error) {
 	byClass := map[[2]string]*depthClass{}
+	keyID := map[string][2]string{}
 	var order [][2]string
 	sorted := append([]string(nil), modeled...)
 	sort.Strings(sorted)
@@ -221,6 +231,7 @@ func (g *generator) depthClasses(modeled []string, source depthSource) ([]depthC
 			}
 			id[1] = s.EnvParser
 		}
+		keyID[k] = id
 		if _, seen := byClass[id]; !seen {
 			byClass[id] = &depthClass{Type: id[0], EnvParser: id[1], Rep: k}
 			order = append(order, id)
@@ -236,7 +247,92 @@ func (g *generator) depthClasses(modeled []string, source depthSource) ([]depthC
 	for i, id := range order {
 		out[i] = *byClass[id]
 	}
-	return out, nil
+	return &classScan{classes: out, keyID: keyID}, nil
+}
+
+// depthClasses returns one source's depth classes with each class's representative resolved
+// against the pin (depth_reps.go): the pinned key when the class has one, an error when it does
+// not, when the pinned key no longer belongs to the class, or when a pin entry names a class that
+// no longer exists. The byte-first representative never survives a pin check on its own.
+func (g *generator) depthClasses(modeled []string, source depthSource) ([]depthClass, error) {
+	scan, err := g.scanClasses(modeled, source)
+	if err != nil {
+		return nil, err
+	}
+	return g.pinReps(scan, source)
+}
+
+// pinReps replaces each class's byte-first representative with the pinned one, rejecting a pin
+// that no longer matches the schema (depth_reps.go).
+func (g *generator) pinReps(scan *classScan, source depthSource) ([]depthClass, error) {
+	classes := scan.classes
+	present := map[[2]string]bool{}
+	for i := range classes {
+		id := [2]string{classes[i].Type, classes[i].EnvParser}
+		present[id] = true
+		pin, ok := g.depthReps[depthRepKey{source, id[0], id[1]}]
+		if !ok {
+			return nil, fmt.Errorf("depth %s class %q: no pinned representative; its byte-first key is %q; review the "+
+				"class's keys at the new Agent pin and add one to pinnedDepthReps in gen/depth_reps.go",
+				source, className(id), classes[i].Rep)
+		}
+		if got, ok := scan.keyID[pin]; !ok || got != id {
+			return nil, fmt.Errorf("depth %s class %q: pinned representative %q no longer belongs to the class "+
+				"(removed from the schema, no longer modeled, or moved to another class); its byte-first key is %q; "+
+				"re-review the class and update pinnedDepthReps in gen/depth_reps.go",
+				source, className(id), pin, classes[i].Rep)
+		}
+		classes[i].Rep = pin
+	}
+	var pinned []depthRepKey
+	for key := range g.depthReps {
+		pinned = append(pinned, key)
+	}
+	sort.Slice(pinned, func(i, j int) bool {
+		a, b := pinned[i], pinned[j]
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		if a.Type != b.Type {
+			return a.Type < b.Type
+		}
+		return a.EnvParser < b.EnvParser
+	})
+	for _, key := range pinned {
+		rep := g.depthReps[key]
+		if key.Source != source || present[[2]string{key.Type, key.EnvParser}] {
+			continue
+		}
+		return nil, fmt.Errorf("pinnedDepthReps pins depth %s class %q through %q, but the class has no modeled "+
+			"keys at this pin; remove the entry from gen/depth_reps.go", source, className([2]string{key.Type, key.EnvParser}), rep)
+	}
+	return classes, nil
+}
+
+// className is a class id as a failure names it: the type, and the env parser when the class has
+// one.
+func className(id [2]string) string {
+	if id[1] == "" {
+		return id[0]
+	}
+	return id[0] + " (env parser " + id[1] + ")"
+}
+
+// deriveDepthReps builds a depth-representative pin from the current byte-first selection. The
+// generator never runs with a derived pin: this exists so a test can pin a synthetic schema the
+// way depth_reps.go pins the real one, and then check that the pin, not key order, decides.
+func (g *generator) deriveDepthReps(modeled []string) (map[depthRepKey]string, error) {
+	reps := map[depthRepKey]string{}
+	for _, source := range []depthSource{sourceYAML, sourceEnv, sourceSet} {
+		scan, err := g.scanClasses(modeled, source)
+		if err != nil {
+			return nil, err
+		}
+		for _, cl := range scan.classes {
+			reps[depthRepKey{source, cl.Type, cl.EnvParser}] = cl.Rep
+		}
+	}
+	return reps, nil
 }
 
 // depthEntry is a depth key entry: the key's default getters, then `Get` if missing (case.md
