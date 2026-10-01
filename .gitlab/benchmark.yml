@@ -182,6 +182,7 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
+      --total-samples 60
       --baseline-image ${BASELINE_SMP_IMG}
       --comparison-image ${COMPARISON_SMP_IMG}
       --baseline-sha ${BASELINE_ADP_SHA}
@@ -323,7 +324,12 @@ binary-size-analysis:
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
   # Don't run binary size analysis unless it's a PR, basically.
+  # Skipped entirely while iterating on the SMP local-report work: this branch's
+  # pipeline is limited to the report flow (see the conditional includes in
+  # .gitlab-ci.yml).
   rules:
+    - if: $CI_COMMIT_BRANCH == "greg/smp-ci-reporting"
+      when: never
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
