@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::BufMut;
-use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::UnixDatagram;
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
@@ -29,29 +29,39 @@ where
 {
     let sock_ref = SockRef::from(socket);
 
-    // Create the message header struct that will be populated by the call to `recvmsg`, which includes the peer
-    // address, message data, and any ancillary (out-of-band) data.
-    //
-    // SAFETY: We're allocating `sockaddr_storage`, which is always large enough to hold any address family's socket
-    // address structure.
-    let sock_storage = SockAddrStorage::zeroed();
-    let sock_storage_len = sock_storage.size_of();
-    let mut sock_addr = unsafe { SockAddr::new(sock_storage, sock_storage_len) };
-
+    // socket2's RecvFlags only exposes payload truncation. Use the native message header so we can also inspect
+    // MSG_CTRUNC, which reports truncated ancillary data.
+    // SAFETY: all-zero values are valid for sockaddr_storage and msghdr.
+    let mut sock_addr: libc::sockaddr_storage = unsafe { mem::zeroed() };
+    let mut msg_hdr: libc::msghdr = unsafe { mem::zeroed() };
     let mut ancillary_data = SocketCredentialsAncillaryData::new();
 
-    let data_buf = unsafe { MaybeUninitSlice::new(buf.chunk_mut().as_uninit_slice_mut()) };
-    let mut data_bufs = [data_buf];
+    // SAFETY: the slice is only used as recvmsg's output buffer. We advance the initialized length after receiving.
+    let data_buf = unsafe { buf.chunk_mut().as_uninit_slice_mut() };
+    let mut iov = libc::iovec {
+        iov_base: data_buf.as_mut_ptr().cast(),
+        iov_len: data_buf.len(),
+    };
+    let control_buf = ancillary_data.as_mut_uninit();
+    msg_hdr.msg_name = (&mut sock_addr as *mut libc::sockaddr_storage).cast();
+    msg_hdr.msg_namelen = mem::size_of_val(&sock_addr) as _;
+    msg_hdr.msg_iov = &mut iov;
+    msg_hdr.msg_iovlen = 1;
+    msg_hdr.msg_control = control_buf.as_mut_ptr().cast();
+    msg_hdr.msg_controllen = control_buf.len() as _;
 
-    let mut msg_hdr = MsgHdrMut::new()
-        .with_addr(&mut sock_addr)
-        .with_buffers(&mut data_bufs)
-        .with_control(ancillary_data.as_mut_uninit());
+    // SAFETY: all pointers reference live, writable buffers of the advertised lengths. The borrowed socket remains
+    // open throughout recvmsg, and sockaddr_storage can hold any returned socket address.
+    let n = unsafe { libc::recvmsg(sock_ref.as_raw_fd(), &mut msg_hdr, libc::MSG_CMSG_CLOEXEC) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let n = n as usize;
 
-    let n = sock_ref.recvmsg(&mut msg_hdr, libc::MSG_CMSG_CLOEXEC)?;
-
-    let control_len = msg_hdr.control_len();
-    let control_truncated = msg_hdr.flags().is_control_truncated();
+    // msg_controllen has different types on glibc and musl.
+    #[allow(clippy::unnecessary_cast)]
+    let control_len = msg_hdr.msg_controllen as usize;
+    let control_truncated = msg_hdr.msg_flags & libc::MSG_CTRUNC != 0;
     // SAFETY: recvmsg initialized control_len bytes in this buffer. Descriptor control messages contain newly
     // received descriptors, owned by this call and closed by process_identity_from_ancillary.
     let process_identity = unsafe {
@@ -264,6 +274,34 @@ mod tests {
             ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable)
         ));
         assert!(addr.process_credentials().is_none());
+    }
+
+    #[test]
+    fn uds_recvmsg_preserves_buffer_on_would_block() {
+        let (_sender, receiver) = unix_dgram_socketpair();
+        receiver.set_nonblocking(true).unwrap();
+        let mut buf = BytesMut::with_capacity(128);
+        buf.extend_from_slice(b"existing data");
+        let error = uds_recvmsg(&receiver, &mut buf)
+            .err()
+            .expect("empty socket should return WouldBlock");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(&buf[..], b"existing data");
+    }
+
+    #[test]
+    fn uds_recvmsg_payload_truncation_does_not_report_control_truncation() {
+        let (sender, receiver) = unix_dgram_socketpair();
+        enable_uds_socket_credentials(&receiver).unwrap();
+        let mut buf = BytesMut::with_capacity(4);
+        let capacity = buf.capacity();
+        let payload = vec![b'x'; capacity + 8];
+        sender.send(&payload).unwrap();
+        let (n, addr) = uds_recvmsg(&receiver, &mut buf).unwrap();
+        assert_eq!(n, capacity);
+        assert_eq!(&buf[..], &payload[..capacity]);
+        assert_eq!(addr.process_credentials().unwrap().pid, std::process::id() as i32);
+        assert!(!addr.has_process_credential_telemetry_error());
     }
 
     #[test]
