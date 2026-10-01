@@ -590,20 +590,34 @@ impl Transform for Aggregate {
                         let was_breached = self.state.context_limit_breached();
 
                         let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
-                        if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
-                            error!(error = %e, "Failed to flush aggregation state.");
-                        }
+                        let flush = async {
+                            if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
+                                error!(error = %e, "Failed to flush aggregation state.");
+                            }
 
-                        self.telemetry.increment_flushes();
+                            self.telemetry.increment_flushes();
 
-                        // If flush recovered us from a breach, log the recovery.
-                        if was_breached && !self.state.context_limit_breached() {
-                            info!("Context limit no longer exceeded, metrics are being accepted again.");
-                        }
+                            // If flush recovered us from a breach, log the recovery.
+                            if was_breached && !self.state.context_limit_breached() {
+                                info!("Context limit no longer exceeded, metrics are being accepted again.");
+                            }
 
-                        match dispatcher.flush().await {
-                            Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
-                            Err(e) => error!(error = %e, "Failed to flush aggregated events."),
+                            match dispatcher.flush().await {
+                                Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
+                                Err(e) => error!(error = %e, "Failed to flush aggregated events."),
+                            }
+                        };
+                        tokio::pin!(flush);
+
+                        // A flush can wait a long time for space in a full downstream channel. Keep answering liveness
+                        // probes while it waits. Probes go first so that a waiting probe is seen on every wakeup, even
+                        // when the flush would use up the task's cooperative budget.
+                        loop {
+                            select! {
+                                biased;
+                                _ = health.live() => {},
+                                _ = &mut flush => break,
+                            }
                         }
                     }
 

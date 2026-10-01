@@ -9,6 +9,10 @@ ignore = [
   # 1.5.x release branch due to an interaction with an older transitive dependency, so we're ignoring this
   # advisory here rather than backporting unrelated dependency bumps for a 1.5.2 patch release.
   "RUSTSEC-2026-0258",
+  # rustls: TLS 1.3 handshake messages accepted across encryption level boundaries. The fix (rustls 0.23.45)
+  # requires aws-lc-rs >=1.18, which changes the FIPS module, so we're ignoring this advisory on the 1.5.x
+  # release branch, as on 1.6.x.
+  "RUSTSEC-2026-0285",
 ]
 
 [bans]
