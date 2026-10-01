@@ -75,7 +75,7 @@ unsafe fn process_identity_from_ancillary(
     ancillary_data: &SocketCredentialsAncillaryData, control_truncated: bool,
 ) -> ProcessIdentity {
     let mut credentials = None;
-    for message in unsafe { ancillary_data.messages() } {
+    for message in ancillary_data.messages() {
         match message {
             ControlMessage::Credentials(creds) => {
                 credentials.get_or_insert(creds);
