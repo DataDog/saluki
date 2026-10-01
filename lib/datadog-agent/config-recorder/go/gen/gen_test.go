@@ -92,7 +92,9 @@ func mustGenerate(t *testing.T, facts *AgentFacts) *Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := Generate(s, o, facts)
+	// A nil pin derives the synthetic schema's own representatives, the way a maintainer pins a
+	// real schema after review; production runs with the reviewed pin instead.
+	r, err := generate(s, o, facts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +293,8 @@ func TestExcludedPerType(t *testing.T) {
 	o := &Overlay{Support: map[string]string{}, Excluded: map[string]bool{"port": true, "gone": true, "flag": true}}
 	f := testFacts()
 	f.DefaultType = map[string]string{"port": "int", "gone": "int", "flag": "bool"}
-	r, err := Generate(s, o, f)
+	// No modeled keys, so no depth classes: the derived pin is empty.
+	r, err := generate(s, o, f, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -170,8 +170,10 @@ type generator struct {
 	facts  *AgentFacts
 	// envBindings is schema.EnvBindings: every leaf's bound env names, by lowercased path.
 	envBindings map[string][]string
-	res         Result
-	names       map[string]bool
+	// depthReps is each depth class's pinned representative (depth_reps.go).
+	depthReps map[depthRepKey]string
+	res       Result
+	names     map[string]bool
 }
 
 func (g *generator) add(c *record.Case) error {
@@ -313,15 +315,25 @@ func (g *generator) envAndYAML(group string, keys []string, withSet bool) error 
 }
 
 // Generate writes the generated groups `baseline`, `breadth`, `unsupported`, `excluded` and
-// `unknown`, batched by section (case.md §3.2), and `depth`, one case per variant (§3.2.1).
+// `unknown`, batched by section (case.md §3.2), and `depth`, one case per variant with each
+// class's representative pinned as reviewed (§3.2.1, depth_reps.go).
 // Overlay keys that are not schema keys are in no generated group; a key the overlay both
 // inventories and excludes is an error.
 func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, error) {
+	return generate(s, overlay, facts, pinnedDepthReps)
+}
+
+// generate is Generate with the depth-representative pin injectable (depth_reps.go). A nil
+// pin derives one from the byte-first classes of this very schema: production never does that
+// (Generate passes the reviewed pinnedDepthReps), but tests use it to pin a synthetic schema
+// before changing it, and to check the pin's own rules.
+func generate(s schema.Schema, overlay *Overlay, facts *AgentFacts, depthReps map[depthRepKey]string) (*Result, error) {
 	leaves, err := s.LowercasedLeaves()
 	if err != nil {
 		return nil, err
 	}
-	g := &generator{leaves: leaves, facts: facts, envBindings: s.EnvBindings(), names: map[string]bool{}}
+	g := &generator{leaves: leaves, facts: facts, envBindings: s.EnvBindings(), depthReps: depthReps,
+		names: map[string]bool{}}
 	var both []string
 	for k := range overlay.Support {
 		if overlay.Excluded[k] {
@@ -347,6 +359,11 @@ func Generate(s schema.Schema, overlay *Overlay, facts *AgentFacts) (*Result, er
 	}
 	sort.Strings(modeled)
 	sort.Strings(unsupported)
+	if g.depthReps == nil {
+		if g.depthReps, err = g.deriveDepthReps(modeled); err != nil {
+			return nil, err
+		}
+	}
 
 	// baseline: every modeled key in one case, with no inputs.
 	if err := g.add(newCase("baseline-default", "baseline", modeled)); err != nil {
