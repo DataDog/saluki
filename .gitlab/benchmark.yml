@@ -170,7 +170,7 @@ run-benchmarks-adp:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
       - outputs/report.json # for debugging, also on S3
-      - outputs/report.v1.json # input of the condensed report
+      - outputs/report.v1.json # input of the condensed report DOES NOT EXIST YET
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
@@ -273,7 +273,7 @@ run-benchmarks-adp-full:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
       - outputs/report.json # for debugging, also on S3
-      - outputs/report.v1.json # input of the condensed report
+      - outputs/report.v1.json # input of the condensed report DOES NOT EXIST YET
       - outputs/condensed-report.md # the posted report, for debugging
     when: always
   script:
@@ -305,6 +305,9 @@ run-benchmarks-adp-full:
       job sync
       --submission-metadata submission_metadata
       --output-path outputs
+    # temp step, until saluki team backend is upgraded to generate v1 reports
+    # this is a vibe-coded generation script, so best effort
+    - python3 ./ci/tooling/temp_upgrade_smp_report_to_v1.py outputs/report.json
     # Condense the report and deliver it. Reporting lives in this job (rather than a separate
     # one) because the on-demand run is an optional manual job: a separate `needs`-based report
     # job would run even when the manual job is not triggered, since GitLab does not block
