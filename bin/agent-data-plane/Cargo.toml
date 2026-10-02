@@ -26,6 +26,7 @@ colored = { workspace = true }
 comfy-table = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-config = { workspace = true }
+datadog-agent-remote-config = { workspace = true }
 datadog-agent-runtime = { workspace = true, features = ["taskdump"] }
 datadog-protos = { workspace = true }
 futures = { workspace = true }

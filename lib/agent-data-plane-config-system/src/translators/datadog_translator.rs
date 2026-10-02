@@ -1463,6 +1463,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.proxy.no_proxy = value;
     }
 
+    fn consume_remote_configuration_apm_sampling_enabled(&mut self, value: bool) {
+        self.config.domains.remote_configuration.apm_sampling_enabled = value;
+    }
+
+    fn consume_remote_configuration_apm_semantics_enabled(&mut self, value: bool) {
+        self.config.domains.remote_configuration.apm_semantics_enabled = value;
+    }
+
+    fn consume_remote_configuration_enabled(&mut self, value: bool) {
+        self.config.domains.remote_configuration.enabled = value;
+    }
+
     fn consume_run_path(&mut self, value: String) {
         // In the vendored schema, run_path is defaulted to the placeholder ${run_path}. Though it
         // seems highly unlikely this could slip through to ADP, we check for it, warn and treat
@@ -1788,6 +1800,38 @@ mod tests {
             assert!(errors.contains(expected), "{errors}");
             assert!(config.domains.traces.replace_tags.is_empty());
         }
+    }
+
+    #[test]
+    fn remote_configuration_keys_translate() {
+        // Exercise non-default values and distinguish every pair of keys to catch swapped translations.
+        for (enabled, sampling, semantics) in [(false, false, true), (false, true, false)] {
+            let (config, errors) = translate_explicit(json!({
+                "remote_configuration": {
+                    "enabled": enabled,
+                    "apm_sampling": { "enabled": sampling },
+                    "apm_semantics": { "enabled": semantics }
+                }
+            }));
+            assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+            let rc = &config.domains.remote_configuration;
+            assert_eq!(
+                (rc.enabled, rc.apm_sampling_enabled, rc.apm_semantics_enabled),
+                (enabled, sampling, semantics)
+            );
+        }
+    }
+
+    #[test]
+    fn remote_configuration_keys_default_from_the_schema() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none(), "translation should succeed: {errors:?}");
+
+        let rc = &config.domains.remote_configuration;
+        assert!(rc.enabled);
+        assert!(rc.apm_sampling_enabled);
+        assert!(!rc.apm_semantics_enabled);
     }
 
     #[test]
