@@ -4010,6 +4010,14 @@ mod tests {
 
         let tree = parent_sup.tree_handle();
         let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+        wait_until("the nested supervisor has started", || {
+            tree.snapshot()
+                .root
+                .children
+                .iter()
+                .any(|child| child.name == "child-sup")
+        })
+        .await;
 
         for _ in 0..60 {
             let snapshot = tree.snapshot();
@@ -4018,7 +4026,11 @@ mod tests {
         }
 
         wait_until("the nested supervisor has been restarted", || {
-            find_node(&tree.snapshot().root.children, "child-sup").restart_count >= 1
+            tree.snapshot()
+                .root
+                .children
+                .iter()
+                .any(|child| child.name == "child-sup" && child.restart_count >= 1)
         })
         .await;
 

@@ -3,7 +3,7 @@
 //! Decodes a `.dog` or `.dog.zstd` capture file into the sequence of `UnixDogstatsdMsg` records it
 //! contains, plus the optional `TaggerState` trailer.
 
-use std::{fs, path::Path};
+use std::{fs, io::Read, path::Path};
 
 use datadog_protos::agent::{TaggerState, UnixDogstatsdMsg};
 use prost::Message;
@@ -37,20 +37,35 @@ impl TrafficCaptureReader {
     /// Detects zstd-compressed inputs by magic bytes and decompresses transparently. Validates the
     /// Datadog capture header and parses the file version.
     pub fn from_path(path: &Path) -> Result<Self, GenericError> {
-        let raw =
-            fs::read(path).map_err(|e| generic_error!("Failed to read capture file '{}': {}", path.display(), e))?;
+        let file = fs::File::open(path)
+            .map_err(|e| generic_error!("Failed to read capture file '{}': {}", path.display(), e))?;
+        Self::from_reader(file, &format!("capture file '{}'", path.display()))
+    }
+
+    /// Reads a capture file from an already-open file descriptor.
+    ///
+    /// Detects zstd-compressed inputs by magic bytes and decompresses transparently. Validates the
+    /// Datadog capture header and parses the file version.
+    pub fn from_file(file: fs::File) -> Result<Self, GenericError> {
+        Self::from_reader(file, "capture file")
+    }
+
+    fn from_reader(mut reader: impl Read, source: &str) -> Result<Self, GenericError> {
+        let mut raw = Vec::new();
+        reader
+            .read_to_end(&mut raw)
+            .map_err(|e| generic_error!("Failed to read {source}: {e}"))?;
 
         let contents = if has_zstd_magic(&raw) {
             zstd::stream::decode_all(raw.as_slice())
-                .map_err(|e| generic_error!("Failed to decompress capture file '{}': {}", path.display(), e))?
+                .map_err(|e| generic_error!("Failed to decompress {source}: {e}"))?
         } else {
             raw
         };
 
         if !valid_header(&contents) {
             return Err(generic_error!(
-                "Capture file '{}' does not begin with a valid Datadog capture header.",
-                path.display()
+                "{source} does not begin with a valid Datadog capture header."
             ));
         }
 
@@ -75,6 +90,11 @@ impl TrafficCaptureReader {
         } else {
             TimestampResolution::Nanoseconds
         }
+    }
+
+    /// Rewinds the record sequence to the first captured DogStatsD record.
+    pub fn rewind(&mut self) {
+        self.offset = DATADOG_HEADER.len();
     }
 
     /// Reads the next captured DogStatsD record from the file.
@@ -198,6 +218,27 @@ mod tests {
         }
 
         assert!(reader.read_next().expect("read should succeed").is_none());
+
+        reader.rewind();
+        let msg = reader
+            .read_next()
+            .expect("read should succeed")
+            .expect("first record after rewind");
+        assert_eq!(msg.timestamp, 1);
+    }
+
+    #[test]
+    fn from_file_reads_the_opened_capture_after_path_changes() {
+        let (path, _dir_guard) = run_capture(1, false, &[sample_record(100, b"metric.a:1|c", 11)]);
+        let file = fs::File::open(&path).expect("capture should open");
+        let replacement = path.with_extension("replacement");
+        fs::write(&replacement, b"not a capture file").expect("replacement capture should be written");
+        fs::rename(&replacement, &path).expect("capture path should be replaced");
+
+        let mut reader = TrafficCaptureReader::from_file(file).expect("reader should use the opened capture");
+        let msg = reader.read_next().expect("read should succeed").expect("record");
+
+        assert_eq!(msg.payload, b"metric.a:1|c");
     }
 
     #[test]
