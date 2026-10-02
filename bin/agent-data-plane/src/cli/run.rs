@@ -822,7 +822,7 @@ fn dogstatsd_source_configuration(
         windows_pipe_security_descriptor: listeners.windows_pipe_security_descriptor.clone(),
         disable_verbose_logs: dogstatsd.debug_log.disable_verbose_logs,
         eol_required: listeners.eol_required.clone(),
-        bind_host: listeners.bind_host.clone(),
+        bind_host: config.shared.bind_host.clone(),
         non_local_traffic: listeners.non_local_traffic,
         autoscale_udp_listeners: listeners.autoscale_udp_listeners,
         allow_context_heap_allocations: contexts.allow_context_heap_allocs,
