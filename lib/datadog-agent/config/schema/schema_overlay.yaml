@@ -3314,6 +3314,45 @@ inventory:
       additional_attributes:
         config_registry_filename: proxy.rs
 
+  remote_configuration.apm_sampling.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Apply APM_SAMPLING remote configurations"
+    documentation: >-
+      ADP applies `APM_SAMPLING` only while it runs the trace pipeline, and only when
+      `remote_configuration.enabled` is also set; see that key for how ADP reads it differently.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.apm_semantics.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Apply APM_SEMANTIC_CORE_DD remote configurations"
+    documentation: >-
+      ADP applies `APM_SEMANTIC_CORE_DD` only while it runs the trace pipeline, and only when
+      `remote_configuration.enabled` is also set; see that key for how ADP reads it differently.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
+  remote_configuration.enabled:
+    support: partial
+    pipelines: [traces]
+    description: "Enable Remote Configuration"
+    documentation: |-
+      ADP uses Remote Configuration only while it runs the trace pipeline and at least one of
+      `remote_configuration.apm_sampling.enabled` or `remote_configuration.apm_semantics.enabled` is set.
+
+      The core Agent turns Remote Configuration off by default on government sites and when FIPS mode is
+      enabled. ADP reads `remote_configuration.enabled` as given, with no such default.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: remote_config.rs
+
   run_path:
     support: full
     pipelines: [cross_cutting]
@@ -5302,8 +5341,6 @@ excluded:
   remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_sampling.enabled: "ignored in initial audit 2026-04-23"
-  remote_configuration.apm_semantics.enabled: "2026-06-10 Trace-agent APM_SEMANTIC_CORE_DD RC subscription; APM/trace concern outside ADP scope."
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
   remote_configuration.config_root: "ignored in initial audit 2026-04-23"
@@ -5312,7 +5349,6 @@ excluded:
   remote_configuration.delegated_auth.provider: "ignored in initial audit 2026-04-23"
   remote_configuration.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
   remote_configuration.director_root: "ignored in initial audit 2026-04-23"
-  remote_configuration.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.key: "ignored in initial audit 2026-04-23"
   remote_configuration.max_backoff_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.no_tls: "ignored in initial audit 2026-04-23"

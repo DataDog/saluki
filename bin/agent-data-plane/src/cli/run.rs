@@ -36,6 +36,7 @@ use saluki_components::{
     },
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
+    remote_config::{SemanticRegistryProvider, TraceSamplingSubscription},
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
         DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
@@ -79,6 +80,7 @@ use crate::{
 use crate::{
     config::{remote_agent_client_configuration, DataPlaneConfiguration},
     internal::env::ADPEnvironmentProvider,
+    remote_config::{self, RemoteConfigSubscriptions},
 };
 
 /// Runs the data plane.
@@ -182,6 +184,12 @@ pub async fn handle_run_command(
         Some(remote_agent_client_configuration(&config_sys.config())?)
     };
 
+    let rc_products = remote_config::enabled_products(&config_sys.config());
+    let (rc_subscriptions, maybe_rc_child) =
+        RemoteConfigSubscriptions::subscribe(rc_products, remote_agent_client_config.as_ref())
+            .await
+            .error_context("Failed to set up Remote Configuration.")?;
+
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
@@ -202,6 +210,7 @@ pub async fn handle_run_command(
         remote_agent_client_config.as_ref(),
         &env_provider,
         &component_registry,
+        rc_subscriptions,
     )
     .await?;
 
@@ -284,6 +293,9 @@ pub async fn handle_run_command(
     }
     root_supervisor.add_worker(internal_supervisor);
     root_supervisor.add_worker(blueprint);
+    if let Some(rc_child) = maybe_rc_child {
+        root_supervisor.add_worker(rc_child);
+    }
 
     // Once the topology is healthy, log readiness and emit our startup metrics.
     tokio::spawn(async move {
@@ -324,6 +336,7 @@ pub async fn handle_run_command(
 async fn create_topology(
     config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
     env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    rc_subscriptions: RemoteConfigSubscriptions,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -332,6 +345,10 @@ async fn create_topology(
     let shared = config.shared.clone();
 
     let mut control_surfaces = TopologyControlSurfaces::default();
+    let RemoteConfigSubscriptions {
+        trace_sampling,
+        semantic_registry,
+    } = rc_subscriptions;
 
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp.data_pipelines_enabled() {
@@ -387,7 +404,14 @@ async fn create_topology(
     }
 
     if dp.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            env_provider,
+            trace_sampling,
+            semantic_registry.clone(),
+        )
+        .await?;
     }
 
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
@@ -408,7 +432,7 @@ async fn create_topology(
     }
 
     if dp.otlp_enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, semantic_registry).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -683,6 +707,7 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 
 async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    trace_sampling: Option<TraceSamplingSubscription>, semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dd_traces_config = DatadogTraceConfiguration::from_configuration(
@@ -692,8 +717,11 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     )
     .with_environment_provider(env_provider.clone())
     .await?;
-    let trace_sampler_config =
+    let mut trace_sampler_config =
         TraceSamplerConfiguration::from_configuration(&config.domains.traces, &config.domains.otlp.traces);
+    if let Some(trace_sampling) = trace_sampling {
+        trace_sampler_config = trace_sampler_config.with_remote_sampling(trace_sampling);
+    }
 
     let trace_obfuscation_config =
         TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
@@ -723,6 +751,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_tag_replacer", trace_tag_replacer_config);
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
+        .with_semantic_registry(semantic_registry)
         .with_environment_provider(env_provider.clone())
         .await?;
     let dd_apm_stats_encoder =
@@ -1088,6 +1117,7 @@ async fn add_dsd_pipeline_to_blueprint(
 
 async fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    semantic_registry: SemanticRegistryProvider,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -1108,7 +1138,8 @@ async fn add_otlp_pipeline_to_blueprint(
         let config = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
         let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces)
-            .with_max_resource_len(config.domains.traces.max_resource_len);
+            .with_max_resource_len(config.domains.traces.max_resource_len)
+            .with_semantic_registry(semantic_registry);
 
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
@@ -1144,6 +1175,7 @@ async fn add_otlp_pipeline_to_blueprint(
         );
         let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
             .with_max_resource_len(config.domains.traces.max_resource_len)
+            .with_semantic_registry(semantic_registry)
             .with_static_metric_tags(static_tags)
             .with_default_hostname(default_hostname);
 

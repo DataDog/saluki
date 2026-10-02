@@ -10,6 +10,7 @@ pub mod dogstatsd;
 pub mod metrics_endpoint_routing;
 pub mod multi_region_failover;
 pub mod otlp;
+pub mod remote_configuration;
 pub mod traces;
 
 /// Per-domain resolved configuration.
@@ -22,4 +23,5 @@ pub struct DomainConfiguration {
     pub checks: checks::Domain,
     pub metrics_endpoint_routing: metrics_endpoint_routing::Domain,
     pub multi_region_failover: multi_region_failover::Domain,
+    pub remote_configuration: remote_configuration::Domain,
 }

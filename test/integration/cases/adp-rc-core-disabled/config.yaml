@@ -1,0 +1,48 @@
+type: integration
+name: "adp-rc-core-disabled"
+description: "Verifies ADP keeps running, and classifies the answer as Remote Configuration being disabled, when the Core Agent has Remote Configuration off"
+timeout: 180s
+# Validate on macOS and Windows before enabling those runtimes.
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-rc-core-disabled"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_OTLP_ENABLED: "true"
+  DD_DATA_PLANE_OTLP_PROXY_ENABLED: "false"
+  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:56317"
+  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:56318"
+  # This site disables Remote Configuration in the Core Agent but not in ADP, which still polls it.
+  DD_SITE: "ddog-gov.com"
+  DD_LOG_LEVEL: "debug"
+
+container:
+  exposed_ports:
+    - "55101/tcp"
+    - "56317/tcp"
+    - "56318/tcp"
+
+procedure:
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/runtime"
+    key: domains.remote_configuration.enabled
+    value: true
+    timeout: 60s
+  # The debug metric log shows that ADP polled and the Agent reported Remote Configuration unavailable.
+  - assertion: log_contains
+    pattern: 'name: "adp.remote_config_polls_total".*outcome:unimplemented'
+    regex: true
+    timeout: 60s
+  # Check the Remote Configuration client's info logs, not just its metrics.
+  - assertion: log_contains
+    pattern: "Remote Configuration is not enabled on the Agent; checking again periodically."
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "adp.remote_config_polls_total.*outcome:(ok|rpc_error|invalid_response)|Failed to poll the Agent|panic|PANIC"
+        regex: true
+        during: 10s
