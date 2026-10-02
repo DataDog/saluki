@@ -387,48 +387,16 @@ mod tests {
 
     #[tokio::test]
     async fn collection_request_accumulates_metrics_then_responds_on_timeout() {
-        use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-        use saluki_core::components::ComponentContext;
+        use saluki_core::components::test_util::TestComponentDriver;
         use saluki_core::data_model::event::metric::Metric;
-        use saluki_core::health::HealthRegistry;
-        use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
-        use saluki_core::topology::interconnect::Consumer;
-        use saluki_core::topology::{EventsBuffer, TopologyContext};
-        use tokio::runtime::Handle;
         use tokio::time::timeout;
 
-        // Build the destination and grab the request sender the API handler would normally use.
+        // Grab the request sender the API handler would normally use, then build and run the destination.
         let config = DogStatsDStatisticsConfiguration::new();
         let request_tx = config.api_handler.state.tx.clone();
-
-        let component_context = ComponentContext::test_destination("test");
-        let destination = config
-            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
+        let control = TestComponentDriver::destination(config)
             .await
             .expect("dsd_stats destination should build");
-
-        // Wire up the destination context: an events channel we control and an idle health handle.
-        let (events_tx, events_rx) = mpsc::channel::<EventsBuffer>(4);
-        let consumer = Consumer::new(component_context.clone(), events_rx);
-        let topology_context = TopologyContext::new(
-            Arc::from("test"),
-            MemoryLimiter::noop(),
-            HealthRegistry::new(),
-            Handle::current(),
-            DataspaceRegistry::new(),
-        );
-        let health = HealthRegistry::new()
-            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
-            .expect("component was not previously registered");
-        let context = DestinationContext::new(
-            &topology_context,
-            &component_context,
-            ComponentRegistry::default(),
-            health,
-            consumer,
-        );
-
-        let run_handle = tokio::spawn(async move { destination.run(context).await });
 
         // Start a one-second collection window. Yield afterwards so the current-thread runtime lets the run loop
         // process the request (marking collection active) before the metrics arrive; otherwise the metrics would be
@@ -441,18 +409,14 @@ mod tests {
         tokio::task::yield_now().await;
 
         // The same context seen twice accumulates a single entry with count 2; a distinct context yields count 1.
-        let mut events = EventsBuffer::default();
-        assert!(events
-            .try_push(Event::Metric(Metric::counter("dsd.stats.repeated", 1.0)))
-            .is_none());
-        assert!(events
-            .try_push(Event::Metric(Metric::counter("dsd.stats.repeated", 1.0)))
-            .is_none());
-        assert!(events
-            .try_push(Event::Metric(Metric::counter("dsd.stats.single", 1.0)))
-            .is_none());
-        events_tx.send(events).await.expect("metrics should be accepted");
-        tokio::task::yield_now().await;
+        control
+            .send_events([
+                Event::Metric(Metric::counter("dsd.stats.repeated", 1.0)),
+                Event::Metric(Metric::counter("dsd.stats.repeated", 1.0)),
+                Event::Metric(Metric::counter("dsd.stats.single", 1.0)),
+            ])
+            .await;
+        control.wait_until_input_drained().await;
 
         // The collection window elapses after one second, completing collection and sending the response; the
         // recv is bounded well above that window so a stalled collection surfaces as a failure, not a hang.
@@ -482,12 +446,7 @@ mod tests {
             .expect("single context should be collected");
         assert_eq!(1, single.count);
 
-        // Closing the events channel lets the run loop terminate cleanly.
-        drop(events_tx);
-        timeout(Duration::from_secs(1), run_handle)
-            .await
-            .expect("run task should stop before timeout")
-            .expect("run task should not panic")
-            .expect("run should complete cleanly");
+        // Shutting down closes the events channel, which lets the run loop terminate cleanly.
+        control.shutdown().await.expect("run should complete cleanly");
     }
 }
