@@ -168,6 +168,18 @@ impl fmt::Display for Adp {
 pub(crate) struct Cause {
     pub(crate) name: &'static str,
     pub(crate) why: &'static str,
+    /// The Saluki issue tracking this difference.
+    pub(crate) issue: Option<u32>,
+}
+
+impl fmt::Display for Cause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.name, self.why)?;
+        if let Some(issue) = self.issue {
+            write!(f, "\nTracking issue: https://github.com/DataDog/saluki/issues/{issue}")?;
+        }
+        Ok(())
+    }
 }
 
 /// How an expectation treats a difference.
@@ -992,9 +1004,10 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                 false,
                 (*check).clone(),
                 format!(
-                    "UNKNOWN ORIGIN: no corpus case has this check origin.\n\nCheck: {}\nExpected ADP: {}\nExpectation: {}\n\nThe expectation names cases that no longer exist; remove it or fix its origin.",
+                    "UNKNOWN ORIGIN: no corpus case has this check origin.\n\nCheck: {}\nExpected ADP: {}\nCause: {}\nExpectation: {}\n\nThe expectation names cases that no longer exist; remove it or fix its origin.",
                     check,
                     entries[0].adp,
+                    entries[0].cause,
                     entries[0].at
                 ),
                 Vec::new(),
@@ -1045,8 +1058,8 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                     false,
                     result.key.clone(),
                     format!(
-                        "{context}\n\n{now}\n\nExpected current ADP ({:?}): {}\nActual ADP: {}\nRecorded Agent: {}\n\n{advice}\nExpectation: {}",
-                        e.status, e.adp, actual, result.agent, e.at
+                        "{context}\n\n{now}\n\nExpected current ADP ({:?}): {}\nActual ADP: {}\nRecorded Agent: {}\n\n{advice}\nCause: {}\nExpectation: {}",
+                        e.status, e.adp, actual, result.agent, e.cause, e.at
                     ),
                     [result.case.clone()],
                 );
@@ -1073,8 +1086,8 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
                     false,
                     result.key.clone(),
                     format!(
-                        "{context}\n\nCHANGED RESULT ({:?}): the expectation no longer describes ADP.\n\nExpected current ADP: {}\nDesired (recorded Agent): {}\nActual ADP: {}\n\nCause: {} ({}){never}\nExpectation: {}",
-                        e.status, e.adp, result.agent, m.adp, e.cause.name, e.cause.why, e.at
+                        "{context}\n\nCHANGED RESULT ({:?}): the expectation no longer describes ADP.\n\nExpected current ADP: {}\nDesired (recorded Agent): {}\nActual ADP: {}\n\nCause: {}{never}\nExpectation: {}",
+                        e.status, e.adp, result.agent, m.adp, e.cause, e.at
                     ),
                     [result.case.clone()],
                 );
@@ -1117,12 +1130,11 @@ pub(crate) fn judge(corpus: &Corpus, collected: &Collected, table: &[Expectation
             false,
             (*check).clone(),
             format!(
-                "UNUSED EXPECTATION: no replay produced a check with this identity.\n\nCases: {}\nCheck: {}\nExpected ADP: {}\nCause: {} ({})\n\nThe check may have stopped running: a removed key, a different checkpoint, getter or key, or a deserialization that blocks its translation. Remove this expectation, or fix the check it names.\nExpectation: {}",
+                "UNUSED EXPECTATION: no replay produced a check with this identity.\n\nCases: {}\nCheck: {}\nExpected ADP: {}\nCause: {}\n\nThe check may have stopped running: a removed key, a different checkpoint, getter or key, or a deserialization that blocks its translation. Remove this expectation, or fix the check it names.\nExpectation: {}",
                 origin_summary(&cases_of_origin, &check.origin),
                 check,
                 e.adp,
-                e.cause.name,
-                e.cause.why,
+                e.cause,
                 e.at
             ),
             cases_of(&check.origin),
@@ -1147,6 +1159,7 @@ mod tests {
     /// Supported leaves that no started case compares with a getter today. Growing this list is a
     /// coverage regression; a case that starts comparing one makes
     /// [`every_supported_leaf_is_compared_by_a_real_comparison`] fail until it is removed.
+    // TODO: Compare receiver sections and provenance: https://github.com/DataDog/saluki/issues/2760.
     const UNCOMPARED_LEAVES: &[&str] = &[
         "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age",
         "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace",
@@ -1175,7 +1188,16 @@ mod tests {
                 .any(|r| r.key.tier == Tier::Translate && r.mismatch.is_none()),
             "the translate tier records successful translations, not only failures"
         );
-        if let Some(message) = judge(corpus, &collected, &expectations()).message() {
+        let table = expectations();
+        for expectation in &table {
+            assert!(
+                expectation.status != Status::KnownBug || expectation.cause.issue.is_some(),
+                "known difference {} needs a tracking issue at {}",
+                expectation.check,
+                expectation.at
+            );
+        }
+        if let Some(message) = judge(corpus, &collected, &table).message() {
             panic!("{message}");
         }
     }
