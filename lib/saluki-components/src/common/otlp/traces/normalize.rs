@@ -230,9 +230,8 @@ pub(super) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilde
 
 /// Normalizes `value` into `out`, clearing any existing contents first.
 ///
-/// Use this when the caller has already determined `value` isn't normalized, so we
-/// can skip a separate normalized fast-path check.
-pub(super) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+/// Always runs normalization, even if `value` is already normalized.
+pub(crate) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     out.clear();
     normalize_tag_value_append_unchecked(value, out);
 }

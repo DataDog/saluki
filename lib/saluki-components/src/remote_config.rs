@@ -5,3 +5,4 @@
 //! handle to components that use its configuration.
 
 pub use crate::common::otlp::semantics::SemanticRegistryProvider;
+pub use crate::transforms::trace_sampler::TraceSamplingSubscription;

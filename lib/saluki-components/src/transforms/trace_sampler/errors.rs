@@ -5,9 +5,13 @@
 
 use std::time::SystemTime;
 
+#[cfg(test)]
+use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::Trace;
 
 use super::score_sampler::{ScoreSampler, ERRORS_RATE_KEY};
+#[cfg(test)]
+use super::signature::Signature;
 
 /// Error sampler for traces.
 ///
@@ -27,6 +31,20 @@ impl ErrorsSampler {
         }
     }
 
+    /// Updates the error sampling target in traces per second.
+    ///
+    /// If the sampler was created with a zero target, it remains disabled even after an update.
+    /// This matches the Datadog Agent's `pkg/trace/sampler/scoresampler.go`.
+    pub(super) fn update_target_tps(&mut self, target_tps: f64) {
+        self.score_sampler.update_target_tps(target_tps);
+    }
+
+    /// Returns the current target traces per second.
+    #[cfg(test)]
+    pub(super) fn get_target_tps(&self) -> f64 {
+        self.score_sampler.test_target_tps()
+    }
+
     /// This method should be called when a trace contains errors and needs to be
     /// evaluated by the error sampler.
     pub(super) fn sample_error(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
@@ -37,6 +55,17 @@ impl ErrorsSampler {
     /// Returns the number of signatures tracked by the underlying sampler.
     pub(super) fn tracked_signature_count(&self) -> u64 {
         self.score_sampler.tracked_signature_count()
+    }
+}
+
+#[cfg(test)]
+impl ErrorsSampler {
+    pub(super) fn test_signature_sample_rates(&self) -> (FastHashMap<Signature, f64>, f64) {
+        self.score_sampler.test_signature_sample_rates()
+    }
+
+    pub(super) fn test_size(&self) -> i64 {
+        self.score_sampler.test_size()
     }
 }
 
