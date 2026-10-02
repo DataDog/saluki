@@ -21,6 +21,10 @@ fn default_otlp_direct_analysis_mode() -> bool {
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
+    /// Whether to omit this case from test discovery. Defaults to `false`.
+    #[serde(default)]
+    pub disabled: bool,
+
     /// Container runtime backend to use.
     pub runtime: Runtime,
 
