@@ -1,7 +1,14 @@
-//! The strict corpus reader: every rule of the corpus format that a file alone can show.
+//! Validates saved Agent configuration records and builds the typed model used by Rust tests.
 //!
-//! This is written from the format's contract (record.md), not from the recorder's Go code, so
-//! that a mismatch between the two surfaces here instead of being copied into both.
+//! [`read`] takes the bytes of `config-recorder/corpus.jsonl`: a header identifying the recording,
+//! followed by test cases and their per-setting observations. It checks each line's JSON encoding,
+//! allowed fields, and values, then checks ordering and relationships between records. It also
+//! reconstructs fields the writer may omit, such as a read's source or an event's update index.
+//!
+//! The result is a [`Corpus`] or line-numbered [`Violation`]s. These checks follow
+//! `config-recorder/docs/record.md` independently of the Go writer. They validate the recording's
+//! structure, not whether ADP reads configuration the same way as the Agent. Comparisons with the
+//! schema and recorder files on disk belong to the separate `corpus_checks` tests.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;

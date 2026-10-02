@@ -1,11 +1,16 @@
-//! Checks of the config recorder's corpus (`lib/datadog-agent/config-recorder/corpus.jsonl`) that
-//! need neither Go nor Docker: its format, its size, and that it is current with the vendored
-//! schema, the overlay and the recorder's own inputs.
+//! Unit tests that keep the saved Agent configuration recordings usable by Rust compatibility tests.
 //!
-//! Every check reads the corpus through [`crate::read`], the only parser of it. This module lives
-//! inside `datadog-agent-config-corpus` (rather than `datadog-agent-config`) because none of its
-//! checks need a `datadog-agent-config` type; they read the corpus and the vendored schema/overlay
-//! files straight off disk.
+//! The Go program in `lib/datadog-agent/config-recorder/` runs the Agent's configuration code with
+//! test inputs and records its stream values and configuration method results. That collection of
+//! recordings, the **corpus**, is checked in as `config-recorder/corpus.jsonl`.
+//!
+//! These tests use [`crate::read`] to validate the file, then compare its Agent commit, input hashes,
+//! and covered settings with the vendored schema, recorder files, and ADP support inventory. They
+//! also check size limits, recorded environment sources, and unique identities for recorded reads.
+//! Failures identify stale or invalid recordings before other tests use them to judge ADP behavior.
+//!
+//! All checks read local files; they need neither Go nor Docker. They belong in this crate because
+//! they validate the recordings, not ADP's configuration types or its agreement with the Agent.
 
 #![allow(missing_docs)]
 

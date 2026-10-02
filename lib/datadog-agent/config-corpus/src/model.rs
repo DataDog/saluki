@@ -1,4 +1,13 @@
-//! The typed corpus, with every member a writer may omit filled in.
+//! Rust types for saved Agent configuration inputs and observations, returned by [`crate::read`].
+//!
+//! A [`Corpus`] holds recording metadata and test [`Case`]s. Each case pairs its inputs with either
+//! a startup error or the Agent's stream settings and configuration method results. Stream settings
+//! describe what ADP receives; method results describe what Agent components read.
+//!
+//! The reader reconstructs omitted fields according to `config-recorder/docs/record.md`, so callers
+//! do not need to understand the file's space-saving rules. [`Corpus::first_snapshot`] combines the
+//! recorded defaults with a case's changes to recover its starting settings. [`Violation`] and
+//! [`Rule`] describe format errors rather than differences between Agent and ADP behavior.
 
 use std::collections::BTreeMap;
 use std::fmt;

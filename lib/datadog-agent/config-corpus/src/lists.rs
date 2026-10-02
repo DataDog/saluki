@@ -1,7 +1,13 @@
-//! The closed lists of names the corpus may use, each tied to where it is defined.
+//! Allowed names in saved Agent configuration records, represented as Rust enums.
 //!
-//! These lists were reviewed against the Agent at [`REVIEWED_AT_AGENT_COMMIT`]. When the pinned
-//! commit changes, re-check every list against it before bumping that constant.
+//! The corpus reader uses these lists to reject unknown names instead of silently accepting a
+//! recording it cannot interpret. [`Source`] identifies where a setting came from, [`Getter`]
+//! names the Agent method called, [`Group`] describes a test case's coverage, and [`Level`]
+//! identifies a recorded warning's severity.
+//!
+//! Agent names were manually reviewed at [`REVIEWED_AT_AGENT_COMMIT`]; the recording format
+//! defines the case groups and permitted reads. When the schema pin changes, review the lists
+//! against their cited definitions before updating that constant.
 
 use std::fmt;
 
