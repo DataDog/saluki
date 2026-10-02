@@ -14,8 +14,8 @@ use serde::Deserialize;
 /// Deserialize a `Vec<String>` from either a sequence or a string.
 ///
 /// A string is read as the Agent casts it to a `[]string` (see [`crate::cast_de::parse_string_slice`]):
-/// a JSON list of strings, or else split on whitespace. A sequence is taken element by element. Any
-/// other JSON shape is a type error.
+/// a JSON list of strings, or else split on whitespace. A sequence is taken element by element; a
+/// null is an empty list. Any other JSON shape is a type error.
 pub(crate) fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -40,6 +40,14 @@ where
             }
             Ok(values)
         }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Vec<String>, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Vec<String>, E> {
+            Ok(Vec::new())
+        }
     }
 
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
@@ -48,23 +56,29 @@ where
 /// Deserialize a JSON array from either a sequence or a JSON-encoded string.
 ///
 /// The element type is inferred from the field; an element that does not fit it is a type error,
-/// so the schema's item shape is enforced at the boundary.
+/// so the schema's item shape is enforced at the boundary. A null array is an empty array, and a
+/// null element is the element type's default: the Agent reads a null in a `[]map[string]string`
+/// as a nil (empty) map.
 pub(crate) fn deserialize_json_array_or_string<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Default,
     D: Deserializer<'de>,
 {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum JsonArrayOrString<T> {
-        Array(Vec<T>),
+        Array(Vec<Option<T>>),
         String(String),
     }
 
-    match JsonArrayOrString::<T>::deserialize(deserializer)? {
-        JsonArrayOrString::Array(values) => Ok(values),
-        JsonArrayOrString::String(value) => serde_json::from_str(&value).map_err(de::Error::custom),
-    }
+    let values = match Option::<JsonArrayOrString<T>>::deserialize(deserializer)? {
+        None => return Ok(Vec::new()),
+        Some(JsonArrayOrString::Array(values)) => values,
+        Some(JsonArrayOrString::String(value)) => {
+            serde_json::from_str::<Vec<Option<T>>>(&value).map_err(de::Error::custom)?
+        }
+    };
+    Ok(values.into_iter().map(Option::unwrap_or_default).collect())
 }
 
 /// Deserialize string-list map values from either scalar strings or sequences.
@@ -145,6 +159,11 @@ mod tests {
     }
 
     #[test]
+    fn null_is_an_empty_list() {
+        assert_eq!(parse(r#"{"list": null}"#), Vec::<String>::new());
+    }
+
+    #[test]
     fn wrong_shape_is_rejected() {
         assert!(serde_json::from_str::<Holder>(r#"{"list": 5}"#).is_err());
     }
@@ -165,6 +184,12 @@ mod tests {
         assert_eq!(parsed["one"], ["api-key"]);
         assert_eq!(parsed["many"], ["first", "second"]);
         assert!(parsed["none"].is_empty());
+    }
+
+    #[test]
+    fn string_map_reads_null_as_empty() {
+        assert!(parse_map(r#"{"map":null}"#).is_empty());
+        assert!(parse_map(r#"{"map":{}}"#).is_empty());
     }
 
     #[test]
@@ -200,6 +225,38 @@ mod tests {
 
         assert_eq!(sequence.values, encoded.values);
         assert_eq!(sequence.values, [serde_json::json!({ "name": "one" })]);
+    }
+
+    #[test]
+    fn json_array_reads_null_as_empty() {
+        let holder: JsonArrayHolder = serde_json::from_str(r#"{"values":null}"#).unwrap();
+        assert!(holder.values.is_empty());
+    }
+
+    #[test]
+    fn json_array_keeps_null_free_form_elements() {
+        let holder: JsonArrayHolder = serde_json::from_str(r#"{"values":[null,{"name":"one"}]}"#).unwrap();
+        assert_eq!(holder.values, [Value::Null, serde_json::json!({ "name": "one" })]);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct StringMapArrayHolder {
+        #[serde(deserialize_with = "deserialize_json_array_or_string")]
+        values: Vec<HashMap<String, String>>,
+    }
+
+    #[test]
+    fn string_map_array_reads_null_elements_as_empty_maps() {
+        // The Agent reads a null in a `[]map[string]string` as a nil map.
+        for json in [
+            r#"{"values":[null,{"name":"one"}]}"#,
+            r#"{"values":"[null,{\"name\":\"one\"}]"}"#,
+        ] {
+            let holder: StringMapArrayHolder = serde_json::from_str(json).unwrap();
+            assert_eq!(holder.values.len(), 2, "{json}");
+            assert!(holder.values[0].is_empty(), "{json}");
+            assert_eq!(holder.values[1]["name"], "one", "{json}");
+        }
     }
 
     #[test]

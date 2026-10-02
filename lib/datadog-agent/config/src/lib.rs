@@ -212,3 +212,83 @@ mod scalar_shape_tests {
         assert_eq!(config.api_key, "");
     }
 }
+
+#[cfg(test)]
+mod null_collection_tests {
+    use serde_json::{json, Value};
+
+    use super::env_decode::EnvDecode;
+    use super::generated::env_keys::DATADOG_ENV_KEYS;
+    use super::DatadogConfiguration;
+
+    // The Agent's configuration stream carries `null` for an empty or cleared list or map, and the
+    // Agent's accessors read it as empty. A key that is absent is different: it keeps the schema default.
+
+    #[test]
+    fn every_collection_leaf_accepts_null() {
+        // Scalar leaves are covered by `scalar_shape_tests`; durations are not collections.
+        let collections = DATADOG_ENV_KEYS.iter().filter(|key| {
+            !matches!(
+                key.decode,
+                EnvDecode::Bool
+                    | EnvDecode::Integer
+                    | EnvDecode::Float
+                    | EnvDecode::RawString
+                    | EnvDecode::DurationString
+            )
+        });
+
+        for key in collections {
+            let mut tree = Value::Null;
+            for segment in key.path.iter().rev() {
+                tree = json!({ *segment: tree });
+            }
+
+            let leaf = key.path.join(".");
+            serde_json::from_value::<DatadogConfiguration>(tree)
+                .unwrap_or_else(|e| panic!("leaf `{leaf}` rejected null: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_null_string_list_is_empty_while_an_absent_one_keeps_its_default() {
+        let absent: DatadogConfiguration = serde_json::from_value(json!({})).expect("empty configuration deserializes");
+        assert!(
+            !absent.histogram_aggregates.is_empty(),
+            "the schema default is not empty"
+        );
+
+        let null: DatadogConfiguration =
+            serde_json::from_value(json!({ "histogram_aggregates": null, "proxy": { "no_proxy": null } }))
+                .expect("null string lists deserialize");
+        assert!(null.histogram_aggregates.is_empty());
+        assert!(null.proxy.no_proxy.is_empty());
+    }
+
+    #[test]
+    fn null_maps_and_object_arrays_are_empty() {
+        let config: DatadogConfiguration = serde_json::from_value(json!({
+            "additional_endpoints": null,
+            "dogstatsd_mapper_profiles": null,
+            "apm_config": { "replace_tags": null },
+            "use_v3_api": { "series": { "endpoints": null } }
+        }))
+        .expect("null collections deserialize");
+
+        assert!(config.additional_endpoints.is_empty());
+        assert!(config.dogstatsd_mapper_profiles.is_empty());
+        assert!(config.apm_config.replace_tags.is_empty());
+        assert!(config.use_v3_api.series.endpoints.is_empty());
+    }
+
+    #[test]
+    fn a_null_replace_tags_rule_is_an_empty_map() {
+        let config: DatadogConfiguration =
+            serde_json::from_value(json!({ "apm_config": { "replace_tags": [null, { "name": "*" }] } }))
+                .expect("a null rule deserializes");
+
+        assert_eq!(config.apm_config.replace_tags.len(), 2);
+        assert!(config.apm_config.replace_tags[0].is_empty());
+        assert_eq!(config.apm_config.replace_tags[1]["name"], "*");
+    }
+}
