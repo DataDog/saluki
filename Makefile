@@ -494,7 +494,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
+check-all: check-fmt check-clippy check-docs check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools ensure-rust-nightly
@@ -518,6 +518,11 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 check-deny-ci: check-rust-build-tools cargo-install-cargo-deny
 check-deny-ci: ## Like check-deny, but on non-main branches only fails on advisories not already present on main
 	@./ci/tooling/check-deny.sh
+
+.PHONY: check-fips-module
+check-fips-module: check-rust-build-tools
+check-fips-module: ## Check that FIPS builds use a FIPS 140-3 certified AWS-LC FIPS module
+	@./ci/tooling/check-fips-module.sh
 
 .PHONY: check-fmt
 check-fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-sort
