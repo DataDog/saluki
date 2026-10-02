@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
 use async_trait::async_trait;
@@ -9,6 +9,7 @@ use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{event::EventType, payload::PayloadType},
     observability::ComponentMetricsExt,
+    topology::PayloadsDispatcher,
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
@@ -173,6 +174,7 @@ where
     health.mark_ready();
 
     let mut pending_flush = false;
+    let mut pending_events = 0;
     let pending_flush_timeout = sleep(flush_timeout);
     pin!(pending_flush_timeout);
 
@@ -192,19 +194,22 @@ where
                     // If we're informed that we need to flush, we'll hold on to this event before triggering a flush and then
                     // retry processing it after flushing.
                     let event_to_retry = match encoder.process_event(event).await? {
-                        ProcessResult::Continue => continue,
+                        ProcessResult::Continue => {
+                            pending_events += 1;
+                            continue;
+                        }
                         ProcessResult::FlushRequired(event) => event,
                     };
 
                     // Flush the encoder, waiting any payloads it has generated.
-                    encoder.flush(context.dispatcher()).await?;
+                    flush_encoder(&mut encoder, context.dispatcher(), &telemetry, &mut pending_events).await?;
 
                     // Now try to process the event again.
                     //
                     // If this fails, then we drop the event because it's a logical bug to not be able to encode an event after
                     // flushing, and we don't want to get stuck in an infinite loop.
                     match encoder.process_event(event_to_retry).await? {
-                        ProcessResult::Continue => {},
+                        ProcessResult::Continue => pending_events += 1,
                         ProcessResult::FlushRequired(_) => {
                             error!("Failed to process event after flushing.");
                             telemetry.events_dropped_encoder().increment(1);
@@ -225,7 +230,7 @@ where
 
                 pending_flush = false;
 
-                encoder.flush(context.dispatcher()).await?;
+                flush_encoder(&mut encoder, context.dispatcher(), &telemetry, &mut pending_events).await?;
 
                 debug!("All pending payloads flushed.");
             }
@@ -233,7 +238,28 @@ where
     }
 
     // Do a final flush since we may have had a pending payloads before breaking out of the loop.
-    encoder.flush(context.dispatcher()).await?;
+    flush_encoder(&mut encoder, context.dispatcher(), &telemetry, &mut pending_events).await?;
+
+    Ok(())
+}
+
+/// Flushes the encoder, recording flush telemetry for the events processed since the last flush.
+///
+/// Flushes with no pending events are not recorded, so the last-flush telemetry always describes a flush that sent
+/// something.
+async fn flush_encoder<E>(
+    encoder: &mut E, dispatcher: &PayloadsDispatcher, telemetry: &ComponentTelemetry, pending_events: &mut u64,
+) -> Result<(), GenericError>
+where
+    E: IncrementalEncoder,
+{
+    let flush_start = Instant::now();
+    encoder.flush(dispatcher).await?;
+
+    if *pending_events > 0 {
+        telemetry.record_flush(*pending_events, flush_start.elapsed());
+        *pending_events = 0;
+    }
 
     Ok(())
 }
