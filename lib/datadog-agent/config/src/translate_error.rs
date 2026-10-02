@@ -15,6 +15,11 @@ pub struct TranslateError {
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 impl TranslateError {
+    /// Returns the Datadog key whose value failed to translate.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
     /// Create a translation error wrapping an underlying error.
     ///
     /// Produces `error translating config key `{key}`: {error}`.
@@ -93,6 +98,15 @@ impl TranslateErrors {
     pub(crate) fn new(errors: Vec<TranslateError>) -> Self {
         debug_assert!(!errors.is_empty(), "TranslateErrors must be non-empty");
         Self(errors)
+    }
+}
+
+impl<'a> IntoIterator for &'a TranslateErrors {
+    type Item = &'a TranslateError;
+    type IntoIter = std::slice::Iter<'a, TranslateError>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 

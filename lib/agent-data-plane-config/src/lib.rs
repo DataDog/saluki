@@ -16,6 +16,7 @@
 //! alone, is a [`ConfigValue<T>`] instead of a plain `T`.
 
 use std::fmt;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -45,6 +46,22 @@ pub struct SalukiConfiguration {
     pub shared: SharedConfiguration,
     /// Per-domain resolved config, grouped by ownership domain.
     pub domains: DomainConfiguration,
+}
+
+impl SalukiConfiguration {
+    /// Returns the topology shutdown timeout.
+    ///
+    /// Uses `control.stop_timeout` when it is set. Otherwise, it sums `control.aggregator_stop_timeout` and
+    /// `shared.endpoints.forwarder.stop_timeout`, returning `Duration::MAX` if the sum overflows.
+    pub fn stop_timeout(&self) -> Duration {
+        match self.control.stop_timeout {
+            Some(timeout) => timeout,
+            None => self
+                .control
+                .aggregator_stop_timeout
+                .saturating_add(self.shared.endpoints.forwarder.stop_timeout),
+        }
+    }
 }
 
 /// An error produced while translating a `DatadogConfiguration` or `SalukiOnly` value into a
@@ -98,5 +115,38 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.error.as_deref().map(|s| s as &(dyn std::error::Error + 'static))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_timeout_uses_the_configured_value() {
+        let mut config = SalukiConfiguration::default();
+        config.control.stop_timeout = Some(Duration::from_secs(11));
+        config.control.aggregator_stop_timeout = Duration::from_secs(3);
+        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
+
+        assert_eq!(config.stop_timeout(), Duration::from_secs(11));
+    }
+
+    #[test]
+    fn stop_timeout_sums_component_timeouts() {
+        let mut config = SalukiConfiguration::default();
+        config.control.aggregator_stop_timeout = Duration::from_secs(3);
+        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
+
+        assert_eq!(config.stop_timeout(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn stop_timeout_saturates_when_sum_overflows() {
+        let mut config = SalukiConfiguration::default();
+        config.control.aggregator_stop_timeout = Duration::MAX;
+        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(1);
+
+        assert_eq!(config.stop_timeout(), Duration::MAX);
     }
 }

@@ -1,0 +1,10 @@
+# Sets the DogStatsD log byte size with a KB suffix and leaves the main log size at its default.
+# Shows the unit base of size-in-bytes reads for `KB`, with a different size on each key.
+name: size-in-bytes-kb
+group: behavior
+why: [getter-size-in-bytes-units]
+yaml: |
+  dogstatsd_log_file_max_size: "5KB"
+keys:
+  - {key: log_file_max_size, getters: [GetString, GetSizeInBytes]}
+  - {key: dogstatsd_log_file_max_size, getters: [GetString, GetSizeInBytes]}
