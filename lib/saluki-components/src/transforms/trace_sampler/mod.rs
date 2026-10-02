@@ -1,16 +1,11 @@
-//! Trace sampling transform.
+//! Decides which incoming traces to forward before they reach the backend.
 //!
-//! This transform implements agent-side head sampling for traces, supporting:
-//! - Probabilistic sampling based on trace ID
-//! - User-set priority preservation
-//! - Error-based sampling as a safety net
-//! - OTLP trace ingestion with proper sampling decision handling
+//! The transform honors user sampling decisions and can keep traces through probabilistic,
+//! priority, error, and rare sampling. It also handles OTLP sampling metadata. When given an
+//! `APM_SAMPLING` subscription, it updates priority and error sampler targets and the rare sampler
+//! switch before processing each buffer. Without a subscription, it uses local configuration.
 //!
-//! TODO:
-//!
-//! - add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-//! - adding missing samplers (priority, nopriority)
-//! - add error tracking standalone mode
+//! TODO: Add trace metrics from `datadog-agent/pkg/trace/sampler/metrics.go`.
 
 use std::sync::{Arc, LazyLock};
 
@@ -83,7 +78,7 @@ pub struct TraceSamplerConfiguration {
     target_traces_per_second: f64,
     extra_sample_rate: f64,
     max_catalog_entries: usize,
-    /// Passed as given to the priority sampler; normalized once as a tag value to select a remote `by_env` entry.
+    /// Local default environment. Priority sampling uses it as given; remote matching uses its normalized tag value.
     default_env: MetaString,
     rare_sampler_enabled: bool,
     rare_sampler_tps: f64,
@@ -92,7 +87,7 @@ pub struct TraceSamplerConfiguration {
     otlp_sampling_rate: f64,
     compute_top_level_by_span_kind: bool,
 
-    /// Remote sampling overrides. Defaults to an inert subscription, leaving static settings unchanged.
+    /// Remote updates, or an inert subscription when remote sampling is not configured.
     remote_sampling: Subscription<RemoteSampling, SamplingError>,
 }
 
@@ -127,9 +122,10 @@ impl TraceSamplerConfiguration {
         }
     }
 
-    /// Applies `APM_SAMPLING` settings from `remote_sampling` to samplers built from this configuration.
+    /// Connects the trace sampler to `APM_SAMPLING` remote updates.
     ///
-    /// Unset settings retain their static values.
+    /// Only priority and error sampling targets and rare sampling can change. For each field
+    /// left unset by the remote configuration, the sampler uses its local setting.
     pub fn with_remote_sampling(mut self, remote_sampling: TraceSamplingSubscription) -> Self {
         self.remote_sampling = remote_sampling.subscription;
         self
@@ -244,12 +240,12 @@ pub struct TraceSampler {
     no_priority_sampler: score_sampler::NoPrioritySampler,
     rare_sampler: rare_sampler::RareSampler,
     telemetry: DecisionWindow,
-    /// Fallbacks for fields left unset by remote configuration.
+    /// Local settings used when a remote configuration leaves a field unset.
     static_settings: SamplerSettings,
     /// Normalized default environment used to select a remote `by_env` entry.
     remote_env: MetaString,
     remote_sampling: Subscription<RemoteSampling, SamplingError>,
-    /// Last applied snapshot; pointer equality avoids reapplying it.
+    /// Last update handled, so each buffer does not reapply the same settings.
     applied_sampling: Option<Arc<RemoteSampling>>,
 }
 
@@ -283,12 +279,12 @@ impl SamplerOutcome {
 }
 
 impl TraceSampler {
-    /// Applies a new remote sampling snapshot.
+    /// Applies the latest accepted remote sampling configuration, if it has changed.
     ///
-    /// Unset fields fall back to static values, not previous overrides. Empty assignments change nothing, matching
-    /// upstream `pkg/trace/remoteconfighandler/remote_config_handler.go:235-238`.
-    ///
-    /// Worker restarts can republish the same settings. Reapplying them preserves learned rates and rare signatures.
+    /// Unset fields use local settings, not previous remote values. When the assignment becomes
+    /// empty, the sampler keeps its last settings, as the Datadog Agent does. A newly published
+    /// configuration can have the same values after a worker restart; applying it again preserves
+    /// learned sampling rates and the rare sampler's record of seen span signatures.
     fn apply_remote_sampling(&mut self) {
         let Some(current) = self.remote_sampling.current() else {
             return;
@@ -303,8 +299,7 @@ impl TraceSampler {
         if let RemoteSampling::Remote { id, config } = &*current {
             let settings = config.resolve(&self.remote_env, &self.static_settings);
             debug!(config_id = %id, ?settings, "Applying remote sampling configuration.");
-            // Leave the no-priority sampler unchanged, matching upstream `updateSamplers`
-            // (`pkg/trace/remoteconfighandler/remote_config_handler.go:258-295`).
+            // The Datadog Agent does not update the no-priority sampler from this product.
             self.priority_sampler
                 .update_target_tps(settings.target_traces_per_second);
             self.error_sampler.update_target_tps(settings.errors_per_second);
@@ -2356,12 +2351,10 @@ mod tests {
         assert_eq!(dm, DECISION_MAKER_MANUAL, "user-set priority gets dm=-4");
     }
 
-    // Remote sampling tests ported from upstream:
+    // Remote sampling tests based on the Datadog Agent's remote configuration tests:
     // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e/pkg/trace/remoteconfighandler/remote_config_handler_test.go
 
-    /// Creates a sampler whose remote sampling configurations come from the returned publisher.
-    ///
-    /// Probabilistic sampling drops every trace, so only the rare sampler can keep the test traces.
+    // With probabilistic sampling set to 0, only the rare sampler can keep test traces.
     fn create_remote_sampler(errors_per_second: f64) -> (TestPublisher<RemoteSampling, SamplingError>, TraceSampler) {
         let (publisher, remote_sampling) = TestPublisher::new();
         let sampler = TraceSampler {
@@ -2396,7 +2389,6 @@ mod tests {
         )
     }
 
-    /// Tests whether the rare sampler keeps a trace with a new signature.
     fn rare_keeps_new_trace(sampler: &mut TraceSampler, span_id: u64) -> bool {
         let mut trace = create_test_trace(vec![
             create_top_level_span(span_id).with_service(MetaString::from(format!("rare-probe-{span_id}")))
@@ -2404,7 +2396,7 @@ mod tests {
         sampler.run_samplers(&mut trace).keep
     }
 
-    /// Port of upstream `TestPrioritySampler`, `TestErrorsSampler`, and `TestRareSampler`.
+    /// Covers the Datadog Agent's priority, error, and rare sampler update cases.
     #[test]
     fn remote_configuration_changes_live_sampler_settings() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
@@ -2419,8 +2411,7 @@ mod tests {
         transform_empty_buffer(&mut sampler);
         assert_eq!(live_tps(&sampler), (41.0, 42.0));
         assert!(rare_keeps_new_trace(&mut sampler, 2));
-        // Upstream `updateSamplers` leaves this target unchanged
-        // (`pkg/trace/remoteconfighandler/remote_config_handler.go:258-295`).
+        // Remote settings do not change the no-priority sampler.
         assert_eq!(sampler.no_priority_sampler.test_target_tps(), 10.0);
     }
 
@@ -2485,7 +2476,7 @@ mod tests {
         assert_eq!(live_tps(&sampler), (7.0, 9.0));
         assert!(rare_keeps_new_trace(&mut sampler, 1));
 
-        // Upstream Go tests marshal unset fields as `null`.
+        // The Datadog Agent's tests send unset fields as `null`.
         publisher.assign::<SamplingDecoder>([(
             "sampling",
             r#"{"all_envs":{"priority_sampler_target_TPS":null,"errors_sampler_target_TPS":null,
@@ -2538,8 +2529,7 @@ mod tests {
         );
     }
 
-    /// An initial target of zero permanently disables the errors sampler, matching upstream
-    /// `pkg/trace/sampler/scoresampler.go:61`.
+    /// Starting with a zero target disables error sampling; a remote update cannot re-enable it.
     #[test]
     fn static_zero_errors_tps_stays_disabled_under_remote_configuration() {
         let (publisher, mut sampler) = create_remote_sampler(0.0);
@@ -2569,7 +2559,7 @@ mod tests {
         assert!(rare_keeps_new_trace(&mut sampler, 1));
     }
 
-    /// Upstream ignores empty updates (`pkg/trace/remoteconfighandler/remote_config_handler.go:235-238`).
+    /// Removing the remote assignment does not undo previously applied settings.
     #[test]
     fn unassigned_after_remote_configuration_keeps_remote_settings() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
@@ -2593,7 +2583,7 @@ mod tests {
         assert!(rare_keeps_new_trace(&mut sampler, 1));
     }
 
-    /// Matches upstream `Sampler.updateTargetTPS` rate scaling (`pkg/trace/sampler/coresampler.go`).
+    /// Changing the target scales rates already learned for trace signatures.
     #[test]
     fn remote_configuration_scales_learned_rates() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);
@@ -2641,7 +2631,7 @@ mod tests {
         );
     }
 
-    /// A worker restart can republish equal settings in a new allocation.
+    /// Republishing the same settings must not clear learned rates or rare-trace history.
     #[test]
     fn reapplying_equal_remote_settings_keeps_sampler_state() {
         let (publisher, mut sampler) = create_remote_sampler(10.0);

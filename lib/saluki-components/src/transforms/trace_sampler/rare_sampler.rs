@@ -148,9 +148,9 @@ impl RareSampler {
         }
     }
 
-    /// Enables or disables the sampler.
+    /// Turns rare sampling on or off without forgetting previously seen span signatures.
     ///
-    /// Preserves seen signatures and the token bucket, matching upstream `pkg/trace/sampler/rare_sampler.go:89-91`.
+    /// The rate limiter also keeps its state, as in the Datadog Agent's `pkg/trace/sampler/rare_sampler.go`.
     pub(super) fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
