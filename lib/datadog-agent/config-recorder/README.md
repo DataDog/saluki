@@ -1,24 +1,26 @@
 # Config recorder
 
-The config recorder is a small Go program built inside a Datadog Agent checkout. For each case in
-[`cases/`](cases/) it builds the Agent's configuration through the Agent's own code (environment,
-`datadog.yaml`, fleet policy, CLI overrides, runtime updates), and records what the Agent streamed
-and what its getters returned.
+The config recorder saves examples of how the Datadog Agent handles configuration. Agent Data
+Plane (ADP) receives values from the Agent but reads them in Rust, where conversions can differ
+from Go. Saved Agent results give compatibility tests a reference without running Go in Rust CI.
 
-The output is [`corpus.jsonl`](corpus.jsonl): one header line, then a case line and key lines per
-case. It is generated; do not edit it by hand.
+The recorder is a Go program built inside a Datadog Agent checkout. A **case** supplies inputs
+such as environment variables, `datadog.yaml`, fleet policy, CLI overrides, and runtime updates.
+The recorder runs the Agent's own configuration code and saves two views:
 
-Today, the Rust checks (`datadog-agent-config-corpus`, run by `make test`) only validate the
-corpus itself: its format, its size cap, that its Agent-commit pin matches the vendored schema,
-that its `inputs_digest` is current, that its generated case groups match the overlay and vendored
-schema, that env-only cases stream an environment-variable source, and that its depth group stays
-within its byte budget. They also give each recorded read a stable identity: `Case::check_origin`
-strips the batch and bisection suffixes a schema bump reshuffles (`breadth-yaml`,
-`depth-<shape>`, or the case name), and a corpus test checks that (origin, key, checkpoint,
-getter) names every recorded read exactly once. That identity is for expectations and
-diagnostics, not a runtime case filter. Replaying the corpus's records through agent-data-plane's
-own config reader to check that it agrees with the Agent is the corpus's purpose, but that replay
-does not exist yet.
+- The **config stream**: values and their sources sent to ADP, first as a snapshot and then as
+  update events.
+- **Getter results**: values returned by configuration methods such as `GetInt` and `GetStringMap`.
+  These methods convert stored values to the types used by Agent components.
+
+The saved collection of cases is the **corpus**, [`corpus.jsonl`](corpus.jsonl). It contains one
+header line, then a case line and per-setting lines for each case. It is generated; do not edit
+it by hand.
+
+The [Rust reader](../config-corpus/README.md), `datadog-agent-config-corpus`, loads these records
+for compatibility tests. Its unit tests validate the recordings' format, size, coverage, and
+consistency with the current schema and recorder inputs. These checks run in CI without Go or
+Docker; they do not compare ADP's behavior with the Agent's.
 
 ## Section reads
 
@@ -55,6 +57,10 @@ records both directories.
   which redistributes that section's other keys into new batch names too.
 - Every value comes from a fixed rule on the key's schema type, default and format, so two runs
   write the same cases.
+- `Case::check_origin` in the Rust reader removes generated batch and split suffixes from case
+  names. Paired with a setting, checkpoint (snapshot or final read), and getter, it identifies a
+  recorded read even when a schema change moves that setting into another batch. A unit test
+  checks that these identities are unique.
 - `depth` records the input shapes that break readers: empty, null, wrong-shape and alternate
   spellings. For YAML and `set` inputs, modeled keys fall into classes by default-layer Go type,
   and for env inputs by Go type and schema `env_parser`. Each class contributes one
