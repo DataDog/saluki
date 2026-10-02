@@ -164,6 +164,14 @@ impl OtlpConfiguration {
         self
     }
 
+    fn traces_translator(&self) -> OtlpTracesTranslator {
+        OtlpTracesTranslator::new(
+            self.otlp.traces.clone(),
+            self.max_resource_len,
+            self.semantic_registry.clone(),
+        )
+    }
+
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         let mut config = metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_summary_mode(self.otlp.metrics.summaries.mode)
@@ -253,11 +261,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_translator = OtlpTracesTranslator::new(
-            self.otlp.traces.clone(),
-            self.max_resource_len,
-            self.semantic_registry.clone(),
-        );
+        let traces_translator = self.traces_translator();
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = resolve_grpc_http2_config(
             &self.otlp.receiver.grpc.keepalive,
@@ -636,12 +640,16 @@ mod tests {
     use agent_data_plane_config::domains::otlp::{
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
+    use datadog_agent_remote_config::TestPublisher;
     use prost::Message;
     use saluki_core::components::ComponentContext;
     use saluki_metrics::test::TestRecorder;
 
     use super::{apply_static_metric_tags, parse_configured_metric_tags, OtlpConfiguration};
-    use crate::common::otlp::{build_metrics, OtlpHandler};
+    use crate::common::otlp::semantics::remote_config::SemanticCoreDecoder;
+    use crate::common::otlp::semantics::SemanticRegistryProvider;
+    use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
+    use crate::common::otlp::{build_metrics, Metrics, OtlpHandler};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -656,6 +664,22 @@ mod tests {
             ..Default::default()
         };
         OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+    }
+
+    #[test]
+    fn injected_provider_reaches_the_traces_translator() {
+        let (publisher, subscription) = TestPublisher::new();
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.traces.string_interner_size = std::num::NonZeroUsize::new(64 * 1024).unwrap();
+        let mut translator =
+            OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+                .with_semantic_registry(SemanticRegistryProvider::from_subscription(subscription))
+                .traces_translator();
+        let metrics = Metrics::for_tests();
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
+
+        publisher.assign::<SemanticCoreDecoder>([("a", custom_status_code_registry())]);
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
     }
 
     #[test]

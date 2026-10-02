@@ -5615,6 +5615,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-rolling-file",
+ "tracing-subscriber",
  "url",
  "zstd",
 ]

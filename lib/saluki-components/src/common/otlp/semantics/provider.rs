@@ -10,9 +10,10 @@
 use std::fmt;
 use std::sync::Arc;
 
-use datadog_agent_remote_config::{ApplyError, ConfigId, Subscription};
+use datadog_agent_remote_config::{ApplyError, ConfigId, RemoteConfigurationClient, Subscription};
 
 use super::registry::{Registry, EMBEDDED_REGISTRY};
+use super::remote_config::SemanticCoreDecoder;
 
 /// Identifies whether a [`SemanticCore`] registry is embedded or supplied by a remote configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +130,18 @@ pub struct SemanticRegistryProvider {
 }
 
 impl SemanticRegistryProvider {
+    /// Subscribes to `APM_SEMANTIC_CORE_DD` on `client`.
+    ///
+    /// Clone the returned provider for every component that reads the registry; a second subscription to the product
+    /// on the same client fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `client` already has a live subscription to `APM_SEMANTIC_CORE_DD`.
+    pub fn subscribe(client: &RemoteConfigurationClient) -> Result<Self, datadog_agent_remote_config::Error> {
+        Ok(Self::from_subscription(client.subscribe::<SemanticCoreDecoder>()?))
+    }
+
     /// Wraps a registry subscription. An inert subscription keeps using the embedded registry.
     pub(crate) fn from_subscription(subscription: Subscription<SemanticCore, SemanticCoreError>) -> Self {
         Self { subscription }
