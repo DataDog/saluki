@@ -1,9 +1,12 @@
 # Contract: case file
 
-A case file is the only input to the config recorder: it names one Agent config construction (env,
-YAML, fleet policy, CLI overrides), the runtime updates applied after the first snapshot, and the
-keys to record. This contract fixes its syntax and exactly what the harness does with each field,
-so a case author and the harness implementer never need to talk.
+A case file describes one test run of the [config recorder](../README.md), the Go program that
+saves Agent configuration behavior for Rust compatibility tests. It supplies startup inputs (env,
+YAML, fleet policy, CLI overrides), runtime updates, and the settings to observe. The recorder
+loads those inputs through the Agent's code, captures its config stream, and calls its
+configuration methods to record their results.
+
+This contract defines the file's syntax and how the recorder applies each field.
 
 Agent citations are at `281d921619d`.
 

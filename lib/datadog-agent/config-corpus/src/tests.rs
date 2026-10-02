@@ -1,4 +1,8 @@
-//! Tests for each rule family, on small inline corpora.
+//! Parser tests for the saved Agent configuration format.
+//!
+//! Small inline recordings exercise [`crate::read`], checking accepted values and rejected format
+//! violations without running the Go recorder. Tests of the checked-in recordings against the
+//! schema and recorder inputs live in `corpus_checks`.
 
 use crate::*;
 
