@@ -50,6 +50,7 @@ use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
+use crate::common::otlp::semantics::SemanticRegistryProvider;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
 /// Parses `otlp_config.metrics.tags` into a set of tags added to every emitted metric.
@@ -134,6 +135,9 @@ pub struct OtlpConfiguration {
     /// Defaults to `usize::MAX`, meaning resource names are not truncated.
     max_resource_len: usize,
 
+    /// Provides the semantic registry used to translate traces.
+    semantic_registry: SemanticRegistryProvider,
+
     /// Workload provider to utilize for origin detection/enrichment.
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
@@ -149,6 +153,7 @@ impl OtlpConfiguration {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
             max_resource_len: usize::MAX,
+            semantic_registry: SemanticRegistryProvider::default(),
             workload_provider: Arc::new(workload_provider),
         }
     }
@@ -188,6 +193,14 @@ impl OtlpConfiguration {
     /// unmodified, including `0`, so the configured behavior is always honored.
     pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
         self.max_resource_len = max_resource_len;
+        self
+    }
+
+    /// Sets the provider of the semantic registry used to translate traces.
+    ///
+    /// Defaults to the embedded registry.
+    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
+        self.semantic_registry = semantic_registry;
         self
     }
 }
@@ -236,7 +249,11 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone(), self.max_resource_len);
+        let traces_translator = OtlpTracesTranslator::new(
+            self.otlp.traces.clone(),
+            self.max_resource_len,
+            self.semantic_registry.clone(),
+        );
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let grpc_http2_config = resolve_grpc_http2_config(
             &self.otlp.receiver.grpc.keepalive,

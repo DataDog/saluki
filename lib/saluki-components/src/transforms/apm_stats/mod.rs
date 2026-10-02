@@ -31,6 +31,7 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
+use crate::common::otlp::semantics::SemanticRegistryProvider;
 use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 
 mod aggregation;
@@ -68,6 +69,7 @@ pub struct ApmStatsTransformConfiguration {
     default_env: MetaString,
     default_hostname: Option<String>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    semantic_registry: SemanticRegistryProvider,
 }
 
 impl ApmStatsTransformConfiguration {
@@ -80,6 +82,7 @@ impl ApmStatsTransformConfiguration {
             default_env: MetaString::from(config.default_env.clone()),
             default_hostname: None,
             workload_provider: None,
+            semantic_registry: SemanticRegistryProvider::default(),
         }
     }
 
@@ -103,6 +106,14 @@ impl ApmStatsTransformConfiguration {
         self.workload_provider = Some(Arc::new(workload_provider));
         self
     }
+
+    /// Sets the provider of the semantic registry used to derive peer tag keys.
+    ///
+    /// Defaults to the embedded registry.
+    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
+        self.semantic_registry = semantic_registry;
+        self
+    }
 }
 
 #[async_trait]
@@ -113,6 +124,7 @@ impl TransformBuilder for ApmStatsTransformConfiguration {
             self.compute_stats_by_span_kind,
             self.peer_tags_aggregation,
             &self.peer_tags,
+            self.semantic_registry.clone(),
             now_nanos(),
         );
 
@@ -453,6 +465,8 @@ impl Transform for ApmStats {
                 maybe_events = context.events().next(), if !final_flush => {
                     match maybe_events {
                         Some(events) => {
+                            // Use one peer tag key set for the whole buffer.
+                            self.concentrator.refresh_registry();
                             for event in events {
                                 if let Event::Trace(trace) = event {
                                     self.process_trace(&trace);
@@ -511,6 +525,7 @@ fn extract_process_tags(trace: &Trace) -> MetaString {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_remote_config::TestPublisher;
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
     use saluki_core::data_model::event::trace::{AttributeValue, Span};
@@ -520,6 +535,8 @@ mod tests {
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
     use super::*;
+    use crate::common::otlp::semantics::provider::SemanticCore;
+    use crate::common::otlp::semantics::{registry::registry_json, Registry};
 
     /// Helper to align timestamp to bucket boundary
     fn align_ts(ts: u64, bsize: u64) -> u64 {
@@ -577,11 +594,108 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn run_refreshes_peer_tag_keys_before_each_buffer() {
+        use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+        use saluki_core::components::ComponentContext;
+        use saluki_core::health::HealthRegistry;
+        use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
+        use saluki_core::topology::interconnect::{Consumer, Dispatcher};
+        use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
+        use tokio::{runtime::Handle, sync::mpsc};
+
+        let now = now_nanos();
+        let (publisher, subscription) = TestPublisher::new();
+        let config = domains::traces::Domain {
+            compute_stats_by_span_kind: true,
+            peer_tags_aggregation: true,
+            ..Default::default()
+        };
+        let component_context = ComponentContext::test_transform("apm_stats");
+        let transform = ApmStatsTransformConfiguration::from_configuration(&config)
+            .with_semantic_registry(SemanticRegistryProvider::from_subscription(subscription))
+            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
+            .await
+            .expect("build should succeed");
+
+        // The buffer refresh must see a registry published after construction.
+        let remapped = registry_json(
+            r#"{"peer.service": {"fallbacks": [
+                {"name": "custom.remote.service", "provider": "otel", "type": "string"}]}}"#,
+        );
+        publisher.accept(SemanticCore::remote(
+            Registry::from_json(&remapped).expect("remapped registry should parse"),
+            "remapped",
+        ));
+
+        let mut meta = FastHashMap::default();
+        meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
+        meta.insert(MetaString::from("custom.remote.service"), MetaString::from("billing"));
+        let span = make_top_level_span(
+            align_ts(now, BUCKET_DURATION_NS),
+            1,
+            100,
+            0,
+            "svc",
+            "resource",
+            0,
+            Some(meta),
+        );
+        let mut input = EventsBuffer::default();
+        assert!(input.try_push(Event::Trace(Trace::new(vec![span]))).is_none());
+
+        let mut dispatcher = Dispatcher::new(component_context.clone());
+        dispatcher.add_output(OutputName::Default).expect("add default output");
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        dispatcher
+            .attach_sender_to_output(&OutputName::Default, out_tx)
+            .expect("attach default sender");
+        let (in_tx, in_rx) = mpsc::channel(1);
+        in_tx.send(input).await.expect("send input buffer");
+        // Closing the input makes the run loop flush and stop.
+        drop(in_tx);
+
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            HealthRegistry::new(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = HealthRegistry::new()
+            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
+            .expect("component was not previously registered");
+        let context = TransformContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            dispatcher,
+            Consumer::new(component_context.clone(), in_rx),
+        );
+        transform.run(context).await.expect("run should succeed");
+
+        let mut peer_tags = Vec::new();
+        while let Ok(buffer) = out_rx.try_recv() {
+            for event in buffer {
+                let Event::TraceStats(stats) = event else { continue };
+                for payload in stats.stats() {
+                    for bucket in payload.stats() {
+                        for grouped in bucket.stats() {
+                            peer_tags.extend(grouped.peer_tags().iter().map(|tag| tag.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(peer_tags, ["custom.remote.service:billing"]);
+    }
+
     #[test]
     fn test_process_trace_creates_stats() {
         let now = now_nanos();
 
-        let concentrator = SpanConcentrator::new(true, true, &[], now);
+        let concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
         let mut transform = ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
@@ -604,7 +718,7 @@ mod tests {
     fn test_weight_applied_to_stats() {
         let now = now_nanos();
 
-        let concentrator = SpanConcentrator::new(true, true, &[], now);
+        let concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
         let mut transform = ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
@@ -649,7 +763,7 @@ mod tests {
         let now = now_nanos();
         let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
-        let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
         // Add a span
         let span = make_top_level_span(aligned_now, 1, 50, 5, "A1", "resource1", 0, None);
@@ -686,7 +800,7 @@ mod tests {
         let now = now_nanos();
         let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
-        let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
         // Create a partial span (has _dd.partial_version metric)
         let mut metrics = FastHashMap::default();
@@ -721,7 +835,7 @@ mod tests {
 
         // Set oldestTs to allow old buckets
         let oldest_ts = aligned_now - 2 * BUCKET_DURATION_NS;
-        let mut concentrator = SpanConcentrator::new(true, true, &[], oldest_ts);
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), oldest_ts);
 
         // Build spans spread over time windows
         let spans = vec![
@@ -775,7 +889,7 @@ mod tests {
         let now = now_nanos();
         let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
-        let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
         // Root span (parent_id = 0, top_level)
         let mut root_metrics = FastHashMap::default();
@@ -864,7 +978,7 @@ mod tests {
 
         // Test with compute_stats_by_span_kind DISABLED
         {
-            let mut concentrator = SpanConcentrator::new(false, true, &[], now);
+            let mut concentrator = SpanConcentrator::new(false, true, &[], Default::default(), now);
 
             let mut attrs = FastHashMap::default();
             attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
@@ -909,7 +1023,7 @@ mod tests {
 
         // Test with compute_stats_by_span_kind ENABLED
         {
-            let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+            let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
             let mut attrs = FastHashMap::default();
             attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
@@ -959,7 +1073,7 @@ mod tests {
 
         // Test without peer tags aggregation enabled
         {
-            let mut concentrator = SpanConcentrator::new(true, false, &[], now);
+            let mut concentrator = SpanConcentrator::new(true, false, &[], Default::default(), now);
 
             let mut attrs = FastHashMap::default();
             attrs.insert(
@@ -1006,7 +1120,7 @@ mod tests {
         // Test with peer tags aggregation enabled
         {
             // Note: BASE_PEER_TAGS already includes db.instance and db.system
-            let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+            let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
             let mut attrs = FastHashMap::default();
             attrs.insert(
@@ -1074,7 +1188,7 @@ mod tests {
         // Test "cold" scenario - all spans in the past should end up in current bucket
         {
             // Start concentrator at current time (cold start)
-            let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+            let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
             // Build spans spread over many time windows (all in the past)
             let spans = vec![
@@ -1458,7 +1572,7 @@ mod tests {
     #[test]
     fn test_version_span_beats_resource_for_otlp() {
         let now = now_nanos();
-        let concentrator = SpanConcentrator::new(true, true, &[], now);
+        let concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
         let transform = ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
