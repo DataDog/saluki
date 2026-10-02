@@ -18,7 +18,7 @@ use super::aggregation::{
 use super::peer_ip_quantize::quantize_peer_ip_addresses;
 use super::peer_tags::PeerTagKeys;
 use super::statsraw::RawBucket;
-use crate::common::otlp::semantics::{Registry, REGISTRY};
+use crate::common::otlp::semantics::SemanticRegistryProvider;
 
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
@@ -83,8 +83,8 @@ pub struct SpanConcentrator {
     /// Operator-configured peer tags, kept so the key set can be rebuilt when the registry changes
     custom_peer_tags: Vec<MetaString>,
 
-    /// Semantic attribute registry the peer tag key set is derived from
-    registry: Registry,
+    /// Supplies embedded or remotely updated mappings from peer concepts to attribute names.
+    registry: SemanticRegistryProvider,
 
     /// Bucket duration in nanoseconds (10 s)
     bsize: u64,
@@ -104,36 +104,25 @@ pub struct SpanConcentrator {
 }
 
 impl SpanConcentrator {
-    /// Creates a new concentrator deriving its peer tag keys from the embedded semantic registry.
-    pub fn new(
-        compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
-    ) -> Self {
-        Self::new_with_registry(
-            compute_stats_by_span_kind,
-            peer_tags_aggregation,
-            custom_peer_tags,
-            &REGISTRY,
-            now,
-        )
-    }
-
-    /// Creates a new concentrator deriving its peer tag keys from the given semantic registry.
+    /// Creates a concentrator that groups spans into time-bucketed APM stats.
     ///
-    /// The key set is a snapshot pinned to the registry's content hash; [`Self::flush`] rebuilds it
-    /// whenever the live registry content hash changes, so remotely shipped semantic updates reach
-    /// stats aggregation without a restart.
-    pub fn new_with_registry(
+    /// Peer tag names come from the provider's current semantic registry, combined with `custom_peer_tags`. Their
+    /// values distinguish stats for different remote services or resources when `peer_tags_aggregation` is enabled.
+    /// Call [`Self::refresh_registry`] before each input event buffer to pick up mapping changes.
+    ///
+    /// `now` is the current Unix timestamp in nanoseconds, used to establish the oldest accepted bucket.
+    pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString],
-        registry: &Registry, now: u64,
+        registry: SemanticRegistryProvider, now: u64,
     ) -> Self {
-        let peer_tag_keys = PeerTagKeys::build(registry, custom_peer_tags);
+        let peer_tag_keys = PeerTagKeys::build(&registry.snapshot(), custom_peer_tags);
 
         Self {
             compute_stats_by_span_kind,
             peer_tags_aggregation,
             peer_tag_keys,
             custom_peer_tags: custom_peer_tags.to_vec(),
-            registry: registry.clone(),
+            registry,
             bsize: BUCKET_DURATION_NS,
             oldest_ts: align_ts(now, BUCKET_DURATION_NS),
             buffer_len: DEFAULT_BUFFER_LEN,
@@ -153,12 +142,17 @@ impl SpanConcentrator {
         self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin);
     }
 
-    pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
-        // Refresh the peer tag key snapshot if the registry content changed. This runs on the
-        // flush cycle, deliberately off the per-span hot path: the steady-state cost is a single
-        // `u64` comparison, and only an actual registry change pays the re-derivation cost.
-        self.peer_tag_keys.refresh(&self.registry, &self.custom_peer_tags);
+    /// Updates the peer tag names used to group subsequent spans when the provider's registry changes.
+    ///
+    /// Compares registry fingerprints and rebuilds the key set only when they differ, preserving custom peer tags.
+    /// Call before converting spans from each input event buffer, so all spans in the buffer use one key set.
+    /// Already aggregated stats are unchanged.
+    pub fn refresh_registry(&mut self) {
+        self.peer_tag_keys
+            .refresh(&self.registry.snapshot(), &self.custom_peer_tags);
+    }
 
+    pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
         let mut container_tags_by_id = FastHashMap::<MetaString, TagSet>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
@@ -374,12 +368,45 @@ fn is_partial_snapshot(span: &Span) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_remote_config::TestPublisher;
+
     use super::*;
+    use crate::common::otlp::semantics::provider::SemanticCore;
+    use crate::common::otlp::semantics::{registry::registry_json, Registry};
+
+    #[test]
+    fn refresh_registry_rebuilds_peer_tag_keys_after_registry_change() {
+        let (publisher, subscription) = TestPublisher::new();
+        let provider = SemanticRegistryProvider::from_subscription(subscription);
+        let mut concentrator = SpanConcentrator::new(true, true, &[], provider, 0);
+        assert!(!concentrator
+            .peer_tag_keys
+            .keys()
+            .iter()
+            .any(|k| k.as_ref() == "custom.remote.service"));
+
+        let modified = registry_json(
+            r#"{
+                "peer.service": {
+                    "fallbacks": [{"name": "peer.service", "provider": "otel", "type": "string"},
+                                  {"name": "custom.remote.service", "provider": "otel", "type": "string"}]
+                }
+            }"#,
+        );
+        publisher.accept(SemanticCore::remote(
+            Registry::from_json(&modified).expect("modified registry should parse"),
+            "modified",
+        ));
+        concentrator.refresh_registry();
+
+        let names: Vec<&str> = concentrator.peer_tag_keys.keys().iter().map(|k| k.as_ref()).collect();
+        assert_eq!(names, ["custom.remote.service", "peer.service"]);
+    }
 
     #[test]
     fn peer_tag_ips_quantize_into_one_aggregation_group() {
         let now = 1_000_000_000u64;
-        let mut concentrator = SpanConcentrator::new(true, true, &[], now);
+        let mut concentrator = SpanConcentrator::new(true, true, &[], Default::default(), now);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),

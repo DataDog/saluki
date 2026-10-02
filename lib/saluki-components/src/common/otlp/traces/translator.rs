@@ -13,7 +13,7 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
-use crate::common::otlp::semantics::REGISTRY;
+use crate::common::otlp::semantics::{Registry, SemanticRegistryProvider};
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, normalize_peer_service_tags,
     otel_span_to_dd_span, otlp_value_to_string,
@@ -175,10 +175,15 @@ pub struct OtlpTracesTranslator {
     max_resource_len: usize,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
+    /// Supplies one registry snapshot per `ResourceSpans` batch, so mappings cannot change midway through a batch.
+    registry: SemanticRegistryProvider,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: domains::otlp::Traces, max_resource_len: usize) -> Self {
+    /// Creates a translator using `registry` for embedded or remotely updated attribute mappings.
+    ///
+    /// Reads the current registry at the start of each [`Self::translate_spans`] call, not at construction.
+    pub fn new(config: domains::otlp::Traces, max_resource_len: usize, registry: SemanticRegistryProvider) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         Self {
@@ -186,6 +191,7 @@ impl OtlpTracesTranslator {
             max_resource_len,
             interner,
             string_builder,
+            registry,
         }
     }
 
@@ -195,6 +201,8 @@ impl OtlpTracesTranslator {
         let compute_top_level = self.config.enable_compute_top_level_by_span_kind;
         let interner = &self.interner;
         let string_builder = &mut self.string_builder;
+        let registry = self.registry.snapshot();
+        let registry: &Registry = &registry;
 
         // Build unified resource metadata for the new Trace fields.
         let resource_meta =
@@ -249,6 +257,7 @@ impl OtlpTracesTranslator {
                     scope_ref,
                     ignore_missing_fields,
                     compute_top_level,
+                    registry,
                     interner,
                     string_builder,
                     entry.trace_id_hex.as_ref(),
@@ -294,7 +303,7 @@ impl OtlpTracesTranslator {
                     continue;
                 }
 
-                normalize_peer_service_tags(&mut dd_span, &REGISTRY, interner, string_builder, metrics);
+                normalize_peer_service_tags(&mut dd_span, registry, interner, string_builder, metrics);
                 entry.spans.push(dd_span);
             }
         }
@@ -373,6 +382,7 @@ fn trace_id_hex_meta(trace_id: &[u8]) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_remote_config::TestPublisher;
     use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
@@ -381,6 +391,8 @@ mod tests {
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
+    use crate::common::otlp::semantics::provider::SemanticCore;
+    use crate::common::otlp::semantics::registry::registry_json;
     use crate::common::otlp::{build_metrics, Metrics};
 
     fn string_kv(key: &str, value: &str) -> KeyValue {
@@ -460,12 +472,110 @@ mod tests {
                 ..Default::default()
             },
             agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::default(),
         );
         let metrics = Metrics::for_tests();
         translator
             .translate_spans(resource_spans, &metrics)
             .filter_map(Event::try_into_trace)
             .collect()
+    }
+
+    #[test]
+    fn translate_spans_uses_registry_published_after_construction() {
+        let (publisher, subscription) = TestPublisher::new();
+        let mut translator = OtlpTracesTranslator::new(
+            domains::otlp::Traces {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                ..Default::default()
+            },
+            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::from_subscription(subscription),
+        );
+        let metrics = Metrics::for_tests();
+        let mut http_status_code = || {
+            let rs = build_resource_spans(
+                vec![],
+                vec![span([1u8; 16], [1u8; 8], vec![int_kv("custom.status_code", 418)])],
+            );
+            let traces: Vec<Trace> = translator
+                .translate_spans(rs, &metrics)
+                .filter_map(Event::try_into_trace)
+                .collect();
+            traces[0].spans()[0]
+                .attributes
+                .get("http.status_code")
+                .and_then(AttributeValue::as_num)
+        };
+
+        assert_eq!(
+            http_status_code(),
+            None,
+            "the embedded registry does not map `custom.status_code`"
+        );
+
+        let remapped = registry_json(
+            r#"{
+                "http.status_code": {
+                    "fallbacks": [{"name": "custom.status_code", "provider": "otel", "type": "int64"}]
+                }
+            }"#,
+        );
+        publisher.accept(SemanticCore::remote(
+            Registry::from_json(&remapped).expect("remapped registry should parse"),
+            "remapped",
+        ));
+
+        assert_eq!(
+            http_status_code(),
+            Some(418.0),
+            "the next batch must resolve with the published registry"
+        );
+    }
+
+    #[test]
+    fn translate_spans_resolves_peer_service_with_registry_published_after_construction() {
+        let (publisher, subscription) = TestPublisher::new();
+        let mut translator = OtlpTracesTranslator::new(
+            domains::otlp::Traces {
+                string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+                ..Default::default()
+            },
+            agent_data_plane_config::defaults::DEFAULT_MAX_RESOURCE_LEN,
+            SemanticRegistryProvider::from_subscription(subscription),
+        );
+        let metrics = Metrics::for_tests();
+        let mut peer_service = || {
+            let rs = build_resource_spans(
+                vec![],
+                vec![span([1u8; 16], [1u8; 8], vec![string_kv("custom.peer", "Checkouts")])],
+            );
+            let traces: Vec<Trace> = translator
+                .translate_spans(rs, &metrics)
+                .filter_map(Event::try_into_trace)
+                .collect();
+            traces[0].spans()[0]
+                .attributes
+                .get("peer.service")
+                .and_then(AttributeValue::as_string)
+                .map(|value| value.to_string())
+        };
+
+        assert_eq!(peer_service(), None, "the embedded registry does not map `custom.peer`");
+
+        let remapped = registry_json(
+            r#"{"peer.service": {"fallbacks": [{"name": "custom.peer", "provider": "otel", "type": "string"}]}}"#,
+        );
+        publisher.accept(SemanticCore::remote(
+            Registry::from_json(&remapped).expect("remapped registry should parse"),
+            "remapped",
+        ));
+
+        assert_eq!(
+            peer_service().as_deref(),
+            Some("checkouts"),
+            "the next batch must normalize `peer.service` with the published registry"
+        );
     }
 
     #[test]
@@ -572,6 +682,7 @@ mod tests {
                 ..Default::default()
             },
             5000,
+            SemanticRegistryProvider::default(),
         );
         let metrics = build_metrics(&ComponentContext::test_source("otlp_test"));
 

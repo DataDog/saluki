@@ -636,7 +636,7 @@ mod tests {
 
         // nil case, peer tag aggregation disabled
         {
-            let concentrator = SpanConcentrator::new(true, false, &[], 0);
+            let concentrator = SpanConcentrator::new(true, false, &[], Default::default(), 0);
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("", FastHashMap::default(), metrics);
             let stat_span = concentrator.new_stat_span_from_span(&span);
@@ -651,7 +651,7 @@ mod tests {
 
         // peer tag aggregation disabled even though peer.service is present
         {
-            let concentrator = SpanConcentrator::new(true, false, &[], 0);
+            let concentrator = SpanConcentrator::new(true, false, &[], Default::default(), 0);
             let mut meta = FastHashMap::default();
             meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
             meta.insert(MetaString::from("peer.service"), MetaString::from("remote-service"));
@@ -673,7 +673,7 @@ mod tests {
                 MetaString::from("db.system"),
                 MetaString::from("peer.service"),
             ];
-            let concentrator = SpanConcentrator::new(true, true, &peer_tags, 0);
+            let concentrator = SpanConcentrator::new(true, true, &peer_tags, Default::default(), 0);
             let mut meta = FastHashMap::default();
             meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
             meta.insert(MetaString::from("peer.service"), MetaString::from("remote-service"));
@@ -695,7 +695,7 @@ mod tests {
                 MetaString::from("db.system"),
                 MetaString::from("peer.service"),
             ];
-            let concentrator = SpanConcentrator::new(true, true, &peer_tags, 0);
+            let concentrator = SpanConcentrator::new(true, true, &peer_tags, Default::default(), 0);
             let mut meta = FastHashMap::default();
             meta.insert(MetaString::from("span.kind"), MetaString::from("producer"));
             meta.insert(MetaString::from("peer.service"), MetaString::from("remote-service"));
@@ -717,7 +717,7 @@ mod tests {
                 MetaString::from("db.system"),
                 MetaString::from("peer.service"),
             ];
-            let concentrator = SpanConcentrator::new(true, true, &peer_tags, 0);
+            let concentrator = SpanConcentrator::new(true, true, &peer_tags, Default::default(), 0);
             let mut meta = FastHashMap::default();
             meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
             meta.insert(MetaString::from("peer.service"), MetaString::from(""));
@@ -751,7 +751,7 @@ mod tests {
             Span::default().with_attributes(attrs)
         };
 
-        let concentrator = SpanConcentrator::new(true, true, &peer_tags, 0);
+        let concentrator = SpanConcentrator::new(true, true, &peer_tags, Default::default(), 0);
 
         // Peer tags are only aggregated for client/producer/consumer span kinds (case-insensitive); server, internal,
         // and unspecified kinds must not carry them. Each case unwraps with `.expect(...)` so a regression that makes
@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn is_root_span() {
-        let concentrator = SpanConcentrator::new(true, true, &[], 0);
+        let concentrator = SpanConcentrator::new(true, true, &[], Default::default(), 0);
 
         // Span with parent_id = 0 -> is_trace_root = true
         {

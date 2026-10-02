@@ -26,7 +26,6 @@ use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KE
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::common::otlp::semantics::{
     lookup_int64, lookup_string, Accessor, Concept, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor, Registry,
-    REGISTRY,
 };
 use crate::common::otlp::traces::normalize::{
     is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name,
@@ -178,8 +177,9 @@ fn normalize_peer_service_tag(
 #[allow(clippy::too_many_arguments)]
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
-    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<&MetaString>, max_resource_len: usize,
+    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, registry: &Registry,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
+    trace_id_hex: Option<&MetaString>, max_resource_len: usize,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -189,6 +189,7 @@ pub fn otel_span_to_dd_span(
         instrumentation_scope,
         ignore_missing_fields,
         compute_top_level_by_span_kind,
+        registry,
         interner,
         string_builder,
         max_resource_len,
@@ -351,7 +352,7 @@ pub fn otel_span_to_dd_span(
     // gRPC spans; that key is checked last, conditionally when the span is identified as gRPC
     // via rpc.system.name or rpc.system (matching the Agent 7.80.1 fallback behavior).
     let combined = OtelSpanAccessor::new(span_attributes, resource_attributes);
-    let grpc_name = lookup_int64(&REGISTRY, &combined, Concept::RpcGrpcStatusCode)
+    let grpc_name = lookup_int64(registry, &combined, Concept::RpcGrpcStatusCode)
         .and_then(|code| {
             let name = grpc_status_code_name(code as u8);
             if name.is_empty() {
@@ -361,7 +362,7 @@ pub fn otel_span_to_dd_span(
             }
         })
         .or_else(|| {
-            lookup_string(&REGISTRY, &combined, Concept::RpcGrpcStatusCode)
+            lookup_string(registry, &combined, Concept::RpcGrpcStatusCode)
                 .filter(|s| !s.is_empty())
                 .and_then(|s| {
                     // Parse string (either decimal "14" or canonical "UNAVAILABLE") to name.
@@ -458,10 +459,11 @@ fn truncate_attributes(attrs: &mut FastHashMap<MetaString, AttributeValue>) {
 // OtelSpanToDDSpanMinimal otelSpanToDDSpan converts an OTel span to a DD span.
 // The converted DD span only has the minimal number of fields for APM stats calculation and is only meant
 // to be used in OTLPTracesToConcentratorInputs. Do not use them for other purposes.
+#[allow(clippy::too_many_arguments)]
 pub fn otel_to_dd_span_minimal(
     otel_span: &OtlpSpan, otel_resource: &Resource, _instrumentation_scope: Option<&OtlpInstrumentationScope>,
-    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>, max_resource_len: usize,
+    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, registry: &Registry,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>, max_resource_len: usize,
 ) -> (DdSpan, FastHashMap<MetaString, AttributeValue>) {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -636,7 +638,9 @@ pub fn otel_to_dd_span_minimal(
         .with_start(start)
         .with_duration(duration);
 
-    if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
+    if let Some(status_code) =
+        get_otel_status_code(registry, span_attributes, resource_attributes, ignore_missing_fields)
+    {
         if status_code >= 0 {
             attrs.insert(
                 MetaString::from_static(HTTP_STATUS_CODE_KEY),
@@ -1735,7 +1739,7 @@ pub(crate) fn get_otel_container_id(
 // through the semantic registry, mirroring upstream's
 // `semantics.LookupInt64(_, _, ConceptHTTPStatusCode)`.
 fn get_otel_status_code(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    registry: &Registry, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
 ) -> Option<i64> {
     let span = OtlpAttributesAccessor::new(span_attributes);
     let resource = OtlpAttributesAccessor::new(resource_attributes);
@@ -1751,7 +1755,7 @@ fn get_otel_status_code(
     }
 
     let combined = OtelSpanAccessor::new(span_attributes, resource_attributes);
-    lookup_int64(&REGISTRY, &combined, Concept::HttpStatusCode)
+    lookup_int64(registry, &combined, Concept::HttpStatusCode)
 }
 
 // Returns an i64 from either an IntValue attribute or a StringValue attribute
@@ -1856,6 +1860,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
 
     use super::*;
+    use crate::common::otlp::semantics::{registry::registry_json, EMBEDDED_REGISTRY};
     use crate::common::otlp::traces::normalize::YEAR_2000_NANOSEC_TS;
 
     // Helper to create a KeyValue with a string value
@@ -2329,7 +2334,12 @@ mod tests {
         ];
 
         for tc in test_cases {
-            let result = get_otel_status_code(&tc.span_attrs, &tc.resource_attrs, tc.ignore_missing_datadog_fields);
+            let result = get_otel_status_code(
+                &EMBEDDED_REGISTRY,
+                &tc.span_attrs,
+                &tc.resource_attrs,
+                tc.ignore_missing_datadog_fields,
+            );
             assert_eq!(result, tc.expected, "test case: {}", tc.name);
         }
     }
@@ -2354,6 +2364,7 @@ mod tests {
             None,
             false,
             true,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut string_builder,
             None,
@@ -2440,6 +2451,7 @@ mod tests {
                 None,
                 false,
                 true,
+                &EMBEDDED_REGISTRY,
                 &interner,
                 &mut string_builder,
                 None,
@@ -2506,6 +2518,7 @@ mod tests {
             Some(&scope),
             false,
             true,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut string_builder,
             None,
@@ -2556,11 +2569,11 @@ mod tests {
 
     #[test]
     fn peer_service_resolves_registered_equivalents_not_literal_keys() {
-        let registry = Registry::from_json(
-            r#"{"concepts":{"peer.service":{"canonical":"peer.service","fallbacks":[
+        let registry = Registry::from_json(&registry_json(
+            r#"{"peer.service":{"canonical":"peer.service","fallbacks":[
                 {"name":"service.peer","provider":"otel","type":"string"},
-                {"name":"peer.service","provider":"datadog","type":"string"}]}}}"#,
-        )
+                {"name":"peer.service","provider":"datadog","type":"string"}]}}"#,
+        ))
         .expect("test registry parses");
 
         let mut span = peer_service_span(&[("service.peer", "checkouts")]);
@@ -2605,7 +2618,7 @@ mod tests {
 
         let mut span = peer_service_span(&[("peer.service", &"a".repeat(120))]);
         let (interner, mut string_builder) = extraction_env();
-        normalize_peer_service_tags(&mut span, &REGISTRY, &interner, &mut string_builder, &metrics);
+        normalize_peer_service_tags(&mut span, &EMBEDDED_REGISTRY, &interner, &mut string_builder, &metrics);
 
         let capped = span
             .attributes
@@ -2641,7 +2654,7 @@ mod tests {
 
         let mut span = peer_service_span(&[("peer.service", "!!!")]);
         let (interner, mut string_builder) = extraction_env();
-        normalize_peer_service_tags(&mut span, &REGISTRY, &interner, &mut string_builder, &metrics);
+        normalize_peer_service_tags(&mut span, &EMBEDDED_REGISTRY, &interner, &mut string_builder, &metrics);
 
         assert_eq!(
             span.attributes
@@ -2667,7 +2680,7 @@ mod tests {
         let (interner, mut string_builder) = extraction_env();
         normalize_peer_service_tags(
             &mut span,
-            &REGISTRY,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut string_builder,
             &Metrics::for_tests(),
@@ -2683,7 +2696,7 @@ mod tests {
         let (interner, mut string_builder) = extraction_env();
         normalize_peer_service_tags(
             &mut span,
-            &REGISTRY,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut string_builder,
             &Metrics::for_tests(),
@@ -3102,7 +3115,18 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000)
+        otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        )
     }
 
     #[test]
@@ -3254,6 +3278,7 @@ mod tests {
             None,
             false,
             true,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut sb,
             None,
@@ -3310,6 +3335,7 @@ mod tests {
             None,
             false,
             true,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut sb,
             None,
@@ -3352,6 +3378,7 @@ mod tests {
             None,
             false,
             true,
+            &EMBEDDED_REGISTRY,
             &interner,
             &mut sb,
             None,
@@ -3399,7 +3426,17 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let (_dd_span, attrs) = otel_to_dd_span_minimal(&span, &resource, None, false, true, &interner, &mut sb, 5000);
+        let (_dd_span, attrs) = otel_to_dd_span_minimal(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            5000,
+        );
         assert!(
             !attrs.contains_key(HTTP_STATUS_CODE_KEY),
             "negative status code must not produce an http.status_code attribute"
@@ -3449,7 +3486,18 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000);
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
 
         assert_eq!(dd_span.duration(), 0);
         // The start is above the year-2000 floor, so it must survive untouched.
@@ -3470,7 +3518,18 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000);
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3500,7 +3559,18 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000);
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
 
         assert_eq!(dd_span.parent_id(), 0);
         assert_eq!(dd_span.span_id(), u64::from_be_bytes([1u8; 8]));
@@ -3517,7 +3587,18 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000);
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
 
         assert_eq!(dd_span.parent_id(), u64::from_be_bytes([2u8; 8]));
     }
@@ -3539,7 +3620,18 @@ mod tests {
                 ..Default::default()
             };
             let resource = Resource::default();
-            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000);
+            let dd_span = otel_span_to_dd_span(
+                &span,
+                &resource,
+                None,
+                false,
+                true,
+                &EMBEDDED_REGISTRY,
+                &interner,
+                &mut sb,
+                None,
+                5000,
+            );
 
             assert_eq!(
                 dd_span.span_type().len(),
@@ -3566,7 +3658,18 @@ mod tests {
             ..Default::default()
         };
         let resource = Resource::default();
-        let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None, 5000);
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &EMBEDDED_REGISTRY,
+            &interner,
+            &mut sb,
+            None,
+            5000,
+        );
 
         assert_eq!(dd_span.span_type(), span_type);
     }

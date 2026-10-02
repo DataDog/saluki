@@ -1,8 +1,8 @@
-//! Peer tag key set derivation from the semantic registry.
+//! Derives the attribute names used to group APM stats by the service or resource a span calls.
 //!
-//! Peer tags identify the remote endpoint a span talked to, and their values are hashed into the
-//! stats aggregation key in the order of the configured key list. The snapshot also records the
-//! registry's content hash so it can be rebuilt when the registry changes.
+//! These attributes are peer tags. Their values contribute to the stats aggregation key in sorted attribute-name
+//! order. [`PeerTagKeys`] combines names from the semantic registry with custom peer tags and tracks the registry's
+//! fingerprint so mapping updates can refresh the list.
 
 use std::sync::Arc;
 
@@ -31,13 +31,13 @@ const PEER_CONCEPTS: &[Concept] = &[
     Concept::DdBaseService,
 ];
 
-/// A snapshot of the peer tag key set, pinned to a registry content hash.
+/// The sorted, deduplicated attribute names used to group spans by peer tag values.
 ///
-/// The key list is `Arc`-backed, so snapshots clone cheaply and can be shared. Whether the snapshot
-/// is stale is answered with a single `u64` comparison against the live registry's content hash.
+/// Includes names from every fallback of the registry's peer concepts, plus configured custom tags. Clones share
+/// the key list. The stored registry fingerprint lets [`Self::refresh`] detect when mappings have changed.
 #[derive(Clone)]
 pub(crate) struct PeerTagKeys {
-    content_hash: u64,
+    fingerprint: u64,
     keys: Arc<[MetaString]>,
 }
 
@@ -53,18 +53,17 @@ impl PeerTagKeys {
         keys.dedup();
 
         Self {
-            content_hash: registry.content_hash(),
+            fingerprint: registry.fingerprint(),
             keys: keys.into(),
         }
     }
 
-    /// Rebuilds the key set if the registry content hash changed since this snapshot was taken.
+    /// Rebuilds peer tag names if the registry fingerprint changed, returning whether a rebuild occurred.
     ///
-    /// Returns `true` when a rebuild happened, `false` when the snapshot was already current. The
-    /// comparison is a single integer check, so calling this on every flush cycle is effectively
-    /// free; only an actual registry change pays the cost of re-deriving the key set.
+    /// Changes to `custom_peer_tags` alone do not trigger a rebuild. Keep them unchanged between calls, or use
+    /// [`Self::build`] to replace the key set.
     pub(crate) fn refresh(&mut self, registry: &Registry, custom_peer_tags: &[MetaString]) -> bool {
-        if self.content_hash == registry.content_hash() {
+        if self.fingerprint == registry.fingerprint() {
             return false;
         }
 
@@ -102,7 +101,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::common::otlp::semantics::REGISTRY;
+    use crate::common::otlp::semantics::{registry::registry_json, EMBEDDED_REGISTRY};
 
     /// The base key set derived from the embedded registry, pinned so that registry or derivation
     /// drift surfaces as a test failure instead of as split stats aggregates in mixed clusters.
@@ -158,7 +157,7 @@ mod tests {
 
     #[test]
     fn base_keys_match_upstream_peer_tags() {
-        let keys = PeerTagKeys::build(&REGISTRY, &[]);
+        let keys = PeerTagKeys::build(&EMBEDDED_REGISTRY, &[]);
         assert_eq!(
             keys.keys().iter().map(|k| k.as_ref()).collect::<Vec<&str>>(),
             EXPECTED_BASE_KEYS,
@@ -171,7 +170,7 @@ mod tests {
         proptest!(|(custom_tags in proptest::collection::vec("[a-z_]{1,12}", 0..16))| {
             let custom: Vec<MetaString> =
                 custom_tags.iter().map(|t: &String| MetaString::from(t.as_str())).collect();
-            let keys = PeerTagKeys::build(&REGISTRY, &custom);
+            let keys = PeerTagKeys::build(&EMBEDDED_REGISTRY, &custom);
 
             for window in keys.keys().windows(2) {
                 prop_assert!(window[0] < window[1], "keys must be strictly sorted");
@@ -188,7 +187,7 @@ mod tests {
             // A duplicate within the custom list itself.
             MetaString::from("my.custom.peer.tag"),
         ];
-        let keys = PeerTagKeys::build(&REGISTRY, &custom);
+        let keys = PeerTagKeys::build(&EMBEDDED_REGISTRY, &custom);
         let names: Vec<&str> = keys.keys().iter().map(|k| k.as_ref()).collect();
 
         assert!(names.contains(&"my.custom.peer.tag"));
@@ -198,25 +197,24 @@ mod tests {
 
     #[test]
     fn refresh_is_a_noop_when_registry_is_unchanged() {
-        let mut keys = PeerTagKeys::build(&REGISTRY, &[]);
-        assert!(!keys.refresh(&REGISTRY, &[]));
+        let mut keys = PeerTagKeys::build(&EMBEDDED_REGISTRY, &[]);
+        assert!(!keys.refresh(&EMBEDDED_REGISTRY, &[]));
     }
 
     #[test]
     fn refresh_rebuilds_when_registry_content_changes() {
-        let mut keys = PeerTagKeys::build(&REGISTRY, &[]);
+        let mut keys = PeerTagKeys::build(&EMBEDDED_REGISTRY, &[]);
 
         // A modified registry: one new attribute in the `peer.service` precedence list.
-        let modified = r#"{
-            "version": "modified",
-            "concepts": {
+        let modified = registry_json(
+            r#"{
                 "peer.service": {
                     "fallbacks": [{"name": "peer.service", "provider": "otel", "type": "string"},
                                   {"name": "custom.remote.service", "provider": "otel", "type": "string"}]
                 }
-            }
-        }"#;
-        let registry = Registry::from_json(modified).expect("modified registry should parse");
+            }"#,
+        );
+        let registry = Registry::from_json(&modified).expect("modified registry should parse");
 
         assert!(keys.refresh(&registry, &[]), "content change must trigger a rebuild");
 
@@ -229,9 +227,11 @@ mod tests {
     }
 
     #[test]
-    fn build_with_empty_concepts_yields_empty_keys() {
-        let empty = r#"{"concepts": {}}"#;
-        let registry = Registry::from_json(empty).expect("empty registry should parse");
+    fn build_without_peer_concepts_yields_empty_keys() {
+        let registry = Registry::from_json(&registry_json(
+            r#"{"http.method": {"fallbacks": [{"name": "http.method", "provider": "otel", "type": "string"}]}}"#,
+        ))
+        .expect("registry without peer concepts should parse");
         let keys = PeerTagKeys::build(&registry, &[]);
         assert!(keys.is_empty());
     }
