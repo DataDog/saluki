@@ -30,12 +30,12 @@ procedure:
     key: domains.remote_configuration.enabled
     value: true
     timeout: 60s
-  # Debug logs expose the poll counter's outcome when its metric context is first created.
+  # The debug metric log shows that ADP polled and the Agent reported Remote Configuration unavailable.
   - assertion: log_contains
     pattern: 'name: "adp.remote_config_polls_total".*outcome:unimplemented'
     regex: true
     timeout: 60s
-  # Check that the RC client's info logs are visible, not just its metrics.
+  # Check the Remote Configuration client's info logs, not just its metrics.
   - assertion: log_contains
     pattern: "Remote Configuration is not enabled on the Agent; checking again periodically."
     timeout: 60s
