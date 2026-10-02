@@ -14,9 +14,13 @@ saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 datadog-agent-apm = { path = ".", features = ["test-util"] }
+
+tokio = { workspace = true, features = ["macros", "rt"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }
 
 [lints]
 workspace = true
