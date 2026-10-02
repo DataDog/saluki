@@ -107,3 +107,4 @@ saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time", "io-util", "net", "rt"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }

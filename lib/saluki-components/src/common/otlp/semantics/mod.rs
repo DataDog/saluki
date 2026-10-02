@@ -5,6 +5,7 @@ pub mod accessor;
 pub mod lookup;
 pub mod provider;
 pub mod registry;
+pub mod remote_config;
 
 pub use accessor::{Accessor, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor};
 pub use lookup::{lookup_float64, lookup_int64, lookup_string};

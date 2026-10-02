@@ -380,6 +380,51 @@ fn trace_id_hex_meta(trace_id: &[u8]) -> Option<MetaString> {
     Some(MetaString::from(Arc::<str>::from(hex)))
 }
 
+/// Translates a span with `custom.status_code` and returns its `http.status_code`.
+///
+/// The embedded registry does not map `custom.status_code`; [`custom_status_code_registry`] does.
+#[cfg(test)]
+pub(crate) fn translate_custom_status_code(translator: &mut OtlpTracesTranslator, metrics: &Metrics) -> Option<f64> {
+    use otlp_protos::opentelemetry::proto::trace::v1::{ScopeSpans, Span as OtlpSpan};
+
+    let span = OtlpSpan {
+        trace_id: vec![1; 16],
+        span_id: vec![1; 8],
+        name: "span".to_owned(),
+        end_time_unix_nano: 2,
+        attributes: vec![otlp_common::KeyValue {
+            key: "custom.status_code".to_owned(),
+            value: Some(otlp_common::AnyValue {
+                value: Some(OtlpValue::IntValue(418)),
+            }),
+        }],
+        ..Default::default()
+    };
+    let resource_spans = ResourceSpans {
+        scope_spans: vec![ScopeSpans {
+            spans: vec![span],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let traces: Vec<Trace> = translator
+        .translate_spans(resource_spans, metrics)
+        .filter_map(Event::try_into_trace)
+        .collect();
+    traces[0].spans()[0]
+        .attributes
+        .get("http.status_code")
+        .and_then(AttributeValue::as_num)
+}
+
+/// Returns a registry document that maps `http.status_code` from `custom.status_code`.
+#[cfg(test)]
+pub(crate) fn custom_status_code_registry() -> String {
+    crate::common::otlp::semantics::registry::registry_json(
+        r#"{"http.status_code":{"fallbacks":[{"name":"custom.status_code","provider":"otel","type":"int64"}]}}"#,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use datadog_agent_remote_config::TestPublisher;
