@@ -1,0 +1,10 @@
+# Sets legacy allowed_additional_checks in YAML, then changes it at runtime.
+# Shows that its integration.additional copy happens only at load and is appended twice then.
+name: infra-mode-legacy-checks-update
+group: behavior
+why: [infra-mode-alias-oneshot, override-funcs-registered-twice]
+yaml: |
+  allowed_additional_checks: [check_a]
+updates:
+  - {key: allowed_additional_checks, value: [check_b], source: remote-config}
+keys: [allowed_additional_checks, integration.additional]

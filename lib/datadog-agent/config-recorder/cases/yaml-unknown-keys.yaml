@@ -1,0 +1,10 @@
+# Sets an unknown top-level YAML key and an unknown child of apm_config.
+# Shows that non-null unknown keys enter the key list and stream with the file source.
+name: yaml-unknown-keys
+group: behavior
+why: [yaml-unknown-key-stored-and-streamed]
+yaml: |
+  unknown_top_xyz: 1
+  apm_config:
+    unknown_child_xyz: [a]
+keys: [apm_config.unknown_child_xyz, unknown_top_xyz]

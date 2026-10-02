@@ -1,0 +1,14 @@
+# Sets a large integer in YAML as a scalar and inside an endpoints map.
+# Shows that streaming through JSON numbers loses precision above 2^53.
+name: yaml-int-above-2-53
+group: behavior
+why: [json-roundtrip-large-int-precision-loss]
+yaml: |
+  cri_connection_timeout: 9007199254740993
+  use_v3_api:
+    series:
+      endpoints:
+        cr_a: 9007199254740993
+keys:
+  - cri_connection_timeout
+  - {key: use_v3_api.series.endpoints, getters: [Get, GetStringMapString]}

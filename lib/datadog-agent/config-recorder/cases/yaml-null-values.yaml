@@ -1,0 +1,9 @@
+# Sets a known key and an unknown key to null in YAML.
+# Shows that the known key keeps its default; the unknown null key is omitted from the stream.
+name: yaml-null-values
+group: behavior
+why: [yaml-null-known-key-ignored, stream-snapshot-skips-nil]
+yaml: |
+  log_level:
+  unknown_null_xyz: ~
+keys: [log_level, unknown_null_xyz]

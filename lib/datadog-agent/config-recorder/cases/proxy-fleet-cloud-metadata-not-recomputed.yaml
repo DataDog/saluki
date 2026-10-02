@@ -1,0 +1,8 @@
+# Enables use_proxy_for_cloud_metadata in a fleet policy and reads proxy.no_proxy.
+# Shows that the proxy adjustment runs before the policy merge and is not repeated.
+name: proxy-fleet-cloud-metadata-not-recomputed
+group: behavior
+why: [load-fixup-skips-fleet-policy]
+fleet_policy: |
+  use_proxy_for_cloud_metadata: true
+keys: [use_proxy_for_cloud_metadata, proxy.no_proxy]
