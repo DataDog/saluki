@@ -1724,10 +1724,19 @@ mod tests {
 
     #[test]
     fn apm_config_replace_tags_rejects_rules_missing_a_name_or_pattern() {
-        // Matches the trace-agent, which fails to start on these. A null rule reads as an empty map.
+        // Matches the trace-agent, which fails to start on these. A null rule reads as an empty map, and
+        // the trace-agent compares the decoded string, so an explicit empty value fails like a missing one.
         for (rules, expected) in [
             (json!([null]), r#"all rules must have a "name" property"#),
             (json!([{ "pattern": "p" }]), r#"all rules must have a "name" property"#),
+            (
+                json!([{ "name": "", "pattern": "p" }]),
+                r#"all rules must have a "name" property"#,
+            ),
+            (
+                json!([{ "name": "*", "pattern": "" }]),
+                r#"all rules must have a "pattern""#,
+            ),
             (
                 json!([{ "name": "*", "repl": "x" }]),
                 r#"all rules must have a "pattern""#,
