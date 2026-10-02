@@ -1,7 +1,12 @@
-//! Semantic attribute registry—port of upstream `pkg/trace/semantics/registry.go`.
+//! Parses mappings that find an attribute by meaning rather than by a fixed name.
 //!
-//! Maps each [`Concept`] to ordered attribute fallbacks. Lookups take the first present fallback with a matching
-//! type and conditions. The embedded `mappings.json` supplies the default registry.
+//! A [`Concept`] such as HTTP status code can have several attribute names or value types across instrumentation
+//! versions. A [`Registry`] lists these alternatives, called fallbacks, in lookup order. Lookups use the first
+//! fallback whose conditions match and whose value can be read as the requested type.
+//!
+//! The embedded `mappings.json` supplies the defaults; remote configurations can supply replacement registries.
+//! [`SemanticRegistryProvider`](super::SemanticRegistryProvider) hides that choice from consumers. Parsing follows
+//! upstream `pkg/trace/semantics/registry.go`.
 
 use std::{
     borrow::Cow,
@@ -44,7 +49,9 @@ pub enum ValueType {
 /// condition with no predicates set always matches.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Condition {
-    /// Identifies the attribute; absent or `null` reads as `""`, as in Go.
+    /// Exact attribute name to test, without looking up other names for the same concept.
+    ///
+    /// An absent or `null` JSON field becomes an empty name, matching upstream decoding.
     #[serde(default, deserialize_with = "null_as_default")]
     pub attribute: String,
     /// When set, requires the attribute's presence (or absence) to match.
@@ -58,7 +65,7 @@ pub struct Condition {
 /// One entry in a concept's fallback precedence list.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TagInfo {
-    /// Identifies the attribute; absent or `null` reads as `""`, as in Go.
+    /// Attribute name to read. An absent or `null` JSON field becomes an empty name.
     #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
     pub provider: Provider,
@@ -66,14 +73,14 @@ pub struct TagInfo {
     pub version: String,
     #[serde(rename = "type")]
     pub value_type: ValueType,
-    /// Conditions that must all match the raw attributes before this fallback applies.
+    /// Conditions that must all match before this attribute can supply the concept's value.
     ///
     /// An absent or `null` list is empty; a `null` element has no predicates and always matches.
     #[serde(default, deserialize_with = "null_elements_as_default")]
     pub when: Vec<Condition>,
 }
 
-/// Reads `null` as the field's zero value, matching Go's `encoding/json`.
+/// Treats JSON `null` as the Rust type's default, matching upstream decoding of zero-valued fields.
 fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -82,7 +89,7 @@ where
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
-/// Reads a `null` list as empty and `null` elements as zero values, matching Go's `encoding/json`.
+/// Treats a JSON `null` list as empty and `null` elements as defaults, matching upstream decoding.
 fn null_elements_as_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -92,7 +99,10 @@ where
     Ok(elements.into_iter().flatten().map(Option::unwrap_or_default).collect())
 }
 
-/// Maps semantic concepts to ordered attribute fallbacks.
+/// Maps semantic concepts to ordered attribute names, types, and conditions for lookups.
+///
+/// For example, the HTTP status-code concept can read either `http.response.status_code` or `http.status_code`.
+/// A registry holds one complete set of mappings; remote registries replace rather than extend the embedded set.
 #[derive(Clone)]
 pub struct Registry {
     version: String,
@@ -102,11 +112,12 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Parses a JSON string with the same validation as [`Registry::from_slice`].
+    /// Parses a registry JSON string, rejecting malformed or unsupported entries.
     ///
     /// # Errors
     ///
-    /// Returns an error if [`Registry::from_slice`] does.
+    /// Uses the same validation as [`Self::from_slice`]. Errors may quote payload keys and must not be sent to the
+    /// remote endpoint.
     pub fn from_json(json: &str) -> Result<Self, GenericError> {
         Self::from_slice(json.as_bytes())
     }
@@ -118,8 +129,10 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Returns an error if parsing fails or any entries are unsupported. Errors may quote payload keys;
-    /// do not report them to the remote endpoint.
+    /// Returns an error for invalid JSON, a missing or empty `concepts` object, or a missing or empty
+    /// `metadata.content_hash` string. Also rejects unknown concepts, malformed mappings, and fallbacks with invalid
+    /// fields, including unknown providers or value types. Errors may quote payload keys; do not send them to the
+    /// remote endpoint.
     pub fn from_slice(json: &[u8]) -> Result<Self, GenericError> {
         let (registry, skipped) = Self::from_slice_permissive(json)?;
         if !skipped.is_empty() {
@@ -131,10 +144,12 @@ impl Registry {
         Ok(registry)
     }
 
-    /// Parses a remote registry, skipping unsupported entries.
+    /// Parses remote registry JSON while retaining the entries this binary understands.
     ///
-    /// Unknown concepts, malformed mappings, and unsupported fallbacks are recorded in [`SkipReport`]. Other
-    /// entries are kept, even if none remain. The report is for local logging only.
+    /// Remote mappings may contain concepts or conventions added after this binary was built. Unknown concepts,
+    /// malformed mappings, and fallbacks with invalid fields (including unknown providers or value types) are skipped
+    /// and recorded in [`SkipReport`]. The result is accepted even if every entry was skipped; missing mappings are
+    /// not filled from the embedded registry. The report is for local logging only.
     ///
     /// A `null` mapping or absent or `null` `fallbacks` gives an empty fallback list. See [`TagInfo`] and [`Condition`]
     /// for field defaults, and [`Registry::version`] for version handling.
@@ -143,9 +158,9 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Requires valid JSON, a nonempty `concepts` object, and a nonempty string `metadata.content_hash`.
-    /// These required fields follow upstream `pkg/trace/semantics/registry.go`. Errors never quote the payload,
-    /// since they are reported to the remote endpoint.
+    /// Returns an error for invalid JSON, a missing or empty `concepts` object, or a missing or empty
+    /// `metadata.content_hash` string. These requirements apply before skipping entries. Errors never quote the
+    /// payload, so they can be reported to the remote endpoint.
     pub(crate) fn from_slice_permissive(json: &[u8]) -> Result<(Self, SkipReport), GenericError> {
         let document: Value = serde_json::from_slice(json).map_err(malformed_error)?;
         let concepts = document.get("concepts").and_then(Value::as_object);
@@ -201,16 +216,18 @@ impl Registry {
         Ok((registry, skipped))
     }
 
-    /// Returns the producer's `metadata.content_hash` verbatim for logs and status.
+    /// Returns the registry's `metadata.content_hash` label for logs and status.
     ///
-    /// Different mappings can carry the same label. Use [`Registry::fingerprint`] to detect changes, not this value.
+    /// This value is not computed or verified here; different mappings can carry the same label. Use
+    /// [`Self::fingerprint`] to detect changes.
     pub fn content_hash(&self) -> &str {
         &self.content_hash
     }
 
-    /// Returns a non-cryptographic hash of the payload bytes for change detection within this process.
+    /// Returns a non-cryptographic hash of the original JSON bytes for change detection within this process.
     ///
-    /// Formatting and metadata changes also trigger rebuilds. Hash collisions can leave derived peer tag keys stale;
+    /// Compare fingerprints to decide whether to rebuild derived data, such as peer tag keys for APM stats.
+    /// Formatting, metadata, and skipped entries also affect the hash. A collision can leave derived data stale;
     /// this is not an integrity check.
     pub fn fingerprint(&self) -> u64 {
         self.fingerprint
@@ -222,7 +239,9 @@ impl Registry {
         self.mappings.get(&concept).map(Vec::as_slice)
     }
 
-    /// Returns the document's `version`, or `""` if absent, `null`, or not a string.
+    /// Returns the document's `version` label, or `""` if absent, `null`, or not a string.
+    ///
+    /// This label is informational; it does not control parsing or update selection.
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -315,7 +334,7 @@ fn malformed_error(e: serde_json::Error) -> GenericError {
     )
 }
 
-/// Checks the required fields from upstream `pkg/trace/semantics/registry.go`.
+/// Rejects documents without concepts or a content-hash label, matching upstream registry validation.
 fn check_required(has_concepts: bool, content_hash: &str) -> Result<(), GenericError> {
     if !has_concepts {
         return Err(generic_error!("Registry JSON contains no concepts."));
@@ -337,9 +356,14 @@ fn fingerprint_for(json: &[u8]) -> u64 {
     hasher.finish()
 }
 
-/// The immutable default registry, parsed from `mappings.json` on first use.
+/// The default semantic mappings compiled into the binary from `mappings.json`.
 ///
-/// Panics on a parse failure, which indicates a build defect.
+/// Parsed once on first access. Components use [`SemanticRegistryProvider`](super::SemanticRegistryProvider) rather
+/// than reading this static directly, so they can use remote mappings when available.
+///
+/// # Panics
+///
+/// Panics on first access if the embedded mappings are invalid or unsupported, which indicates a build defect.
 pub static EMBEDDED_REGISTRY: LazyLock<Arc<Registry>> = LazyLock::new(|| {
     Arc::new(Registry::from_json(MAPPINGS_JSON).expect("embedded semantic mappings.json failed to load"))
 });

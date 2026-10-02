@@ -107,9 +107,13 @@ impl ApmStatsTransformConfiguration {
         self
     }
 
-    /// Sets the provider of the semantic registry used to derive peer tag keys.
+    /// Sets the provider of semantic mappings used to choose peer tag names for stats grouping.
     ///
-    /// Defaults to the embedded registry.
+    /// Peer tags describe the remote service or resource a span calls. The transform combines their names from the
+    /// registry with configured custom peer tags. With a subscribed provider, it checks for changed mappings before
+    /// each input event buffer; all spans in that buffer use the same key set.
+    ///
+    /// Defaults to embedded mappings without remote updates.
     pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
         self.semantic_registry = semantic_registry;
         self
