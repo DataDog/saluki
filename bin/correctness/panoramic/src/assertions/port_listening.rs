@@ -6,7 +6,12 @@ use futures::TryStreamExt as _;
 use tokio::net::TcpStream;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::assertions::{
+    polling::{run_poll_attempt, PollAttemptResult, PROBE_ATTEMPT_TIMEOUT},
+    Assertion, AssertionContext, AssertionResult,
+};
+
+const PROBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Assertion that checks a port is listening.
 pub struct PortListeningAssertion {
@@ -90,7 +95,48 @@ impl Assertion for PortListeningAssertion {
         let deadline = Instant::now() + self.timeout;
 
         loop {
-            if Instant::now() > deadline {
+            match run_poll_attempt(
+                deadline,
+                PROBE_ATTEMPT_TIMEOUT,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+                probe.run(&ctx.container_name),
+            )
+            .await
+            {
+                PollAttemptResult::Completed(true) => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: true,
+                        message: format!(
+                            "Port {}/{} ({}) is listening.",
+                            self.port,
+                            self.protocol,
+                            probe.target_label()
+                        ),
+                        duration: started.elapsed(),
+                    };
+                }
+                PollAttemptResult::Completed(false) => {}
+                PollAttemptResult::TimedOut => {
+                    trace!(
+                        port = self.port,
+                        protocol = %self.protocol,
+                        target = %probe.target_label(),
+                        "Port probe attempt timed out, retrying..."
+                    );
+                }
+                PollAttemptResult::Cancelled => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: "Assertion cancelled because container exited.".to_string(),
+                        duration: started.elapsed(),
+                    };
+                }
+            }
+
+            if Instant::now() >= deadline {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,
@@ -105,29 +151,6 @@ impl Assertion for PortListeningAssertion {
                 };
             }
 
-            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: "Assertion cancelled because container exited.".to_string(),
-                    duration: started.elapsed(),
-                };
-            }
-
-            if probe.run(&ctx.container_name).await {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: true,
-                    message: format!(
-                        "Port {}/{} ({}) is listening.",
-                        self.port,
-                        self.protocol,
-                        probe.target_label()
-                    ),
-                    duration: started.elapsed(),
-                };
-            }
-
             trace!(
                 port = self.port,
                 protocol = %self.protocol,
@@ -135,7 +158,7 @@ impl Assertion for PortListeningAssertion {
                 "Port not yet listening, retrying..."
             );
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
         }
     }
 }
