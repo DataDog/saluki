@@ -126,7 +126,6 @@ where
 ///
 /// A null is an empty map: the Agent's configuration stream can carry `null` for an empty or
 /// cleared map, and its map accessors read it as empty.
-///
 /// # Errors
 ///
 /// Returns an error when the value is neither a map, a null, nor a string that decodes to a map, or

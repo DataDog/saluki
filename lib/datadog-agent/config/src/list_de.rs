@@ -3,10 +3,6 @@
 //! String lists can arrive as sequences or space-separated environment strings. Map values
 //! containing string lists can likewise arrive as scalars or sequences. Free-form object arrays can
 //! arrive as sequences or JSON-encoded strings. These adapters normalize each form at the boundary.
-//!
-//! The Agent's configuration stream can also carry `null` for an empty list, so each adapter reads a
-//! null as an empty list, which is what the Agent's accessors return for it. A key that is absent
-//! entirely is not routed through these adapters and keeps its schema default.
 
 use std::collections::HashMap;
 use std::fmt;
