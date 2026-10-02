@@ -92,7 +92,7 @@ FMT_BLUE = \033[0;36m
 FMT_SALUKI_LOGO = \033[1m\033[38;5;55m
 FMT_END = \033[0m
 
-# Make function syntax: https://www.gnu.org/software/make/manual/make.html#Syntax-of-Functions
+# "One weird trick!" https://www.gnu.org/software/make/manual/make.html#Syntax-of-Functions
 EMPTY:=
 SPACE:= ${EMPTY} ${EMPTY}
 COMMA:= ,
@@ -232,7 +232,7 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		.
 
 
-# TODO: Use a suite-neutral name; integration tests also use this image.
+# TODO: Use a suite-neutral name now that integration tests also use this image.
 .PHONY: build-correctness-tools-image
 build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
 	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."
@@ -675,7 +675,7 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 # ADP path tracks $$BUILD_PROFILE so a tagged release pipeline (BUILD_PROFILE=optimized-release
 # in .gitlab-ci.yml workflow rules) tests the same binary it's about to ship — mirroring how the
 # linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
-# panoramic stays at target/release/ unconditionally: it runs the tests, not the binary under test.
+# panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
 # build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
 test-integration-macos-run: BUILD_PROFILE ?= release
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
