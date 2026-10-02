@@ -20,6 +20,7 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
+use crate::common::otlp::semantics::SemanticRegistryProvider;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 use crate::common::otlp::{
     build_metrics, Metrics, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
@@ -34,6 +35,9 @@ pub struct OtlpDecoderConfiguration {
     ///
     /// Defaults to `usize::MAX`, meaning resource names are not truncated.
     max_resource_len: usize,
+
+    /// Provides the semantic registry used to translate traces.
+    semantic_registry: SemanticRegistryProvider,
 }
 
 impl OtlpDecoderConfiguration {
@@ -42,6 +46,7 @@ impl OtlpDecoderConfiguration {
         Self {
             traces: traces.clone(),
             max_resource_len: usize::MAX,
+            semantic_registry: SemanticRegistryProvider::default(),
         }
     }
 
@@ -54,6 +59,14 @@ impl OtlpDecoderConfiguration {
     /// unmodified, including `0`, so the configured behavior is always honored.
     pub fn with_max_resource_len(mut self, max_resource_len: usize) -> Self {
         self.max_resource_len = max_resource_len;
+        self
+    }
+
+    /// Sets the provider of the semantic registry used to translate traces.
+    ///
+    /// Defaults to the embedded registry.
+    pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
+        self.semantic_registry = semantic_registry;
         self
     }
 }
@@ -70,7 +83,11 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(context.component_context());
-        let traces_translator = OtlpTracesTranslator::new(self.traces.clone(), self.max_resource_len);
+        let traces_translator = OtlpTracesTranslator::new(
+            self.traces.clone(),
+            self.max_resource_len,
+            self.semantic_registry.clone(),
+        );
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,

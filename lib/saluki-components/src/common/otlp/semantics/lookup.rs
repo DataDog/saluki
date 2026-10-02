@@ -166,7 +166,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value, AnyValue, KeyValue};
 
     use super::super::accessor::{OtelSpanAccessor, OtlpAttributesAccessor};
-    use super::super::registry::REGISTRY;
+    use super::super::registry::{registry_json, EMBEDDED_REGISTRY};
     use super::*;
 
     fn kv(key: &str, value: Value) -> KeyValue {
@@ -180,7 +180,7 @@ mod tests {
     fn int64_int_attr_matches() {
         let attrs = vec![kv("http.status_code", Value::IntValue(500))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), Some(500));
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(500));
     }
 
     #[test]
@@ -188,21 +188,21 @@ mod tests {
         // The lading reproduction: http.response.status_code sent as StringValue.
         let attrs = vec![kv("http.response.status_code", Value::StringValue("500".into()))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), Some(500));
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(500));
     }
 
     #[test]
     fn int64_malformed_string_returns_none() {
         let attrs = vec![kv("http.status_code", Value::StringValue("not-a-number".into()))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), None);
     }
 
     #[test]
     fn int64_empty_string_returns_none() {
         let attrs = vec![kv("http.status_code", Value::StringValue(String::new()))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), None);
     }
 
     #[test]
@@ -210,14 +210,14 @@ mod tests {
         // "200.0" is an integer-valued float — accept it.
         let attrs = vec![kv("http.status_code", Value::StringValue("200.0".into()))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), Some(200));
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(200));
     }
 
     #[test]
     fn int64_string_with_true_fractional_returns_none() {
         let attrs = vec![kv("http.status_code", Value::StringValue("200.5".into()))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), None);
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
         let span = vec![kv("http.status_code", Value::IntValue(201))];
         let resource = vec![kv("http.status_code", Value::IntValue(500))];
         let a = OtelSpanAccessor::new(&span, &resource);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), Some(201));
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(201));
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
         let span: Vec<KeyValue> = vec![];
         let resource = vec![kv("http.response.status_code", Value::StringValue("418".into()))];
         let a = OtelSpanAccessor::new(&span, &resource);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), Some(418));
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(418));
     }
 
     #[test]
@@ -243,7 +243,7 @@ mod tests {
         // precedence list should match.
         let attrs = vec![kv("http.status_code", Value::StringValue("204".into()))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::HttpStatusCode), Some(204));
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::HttpStatusCode), Some(204));
     }
 
     #[test]
@@ -253,7 +253,7 @@ mod tests {
         let attrs = vec![kv("rpc.grpc.status_code", Value::IntValue(14))];
         let a = OtlpAttributesAccessor::new(&attrs);
         assert_eq!(
-            lookup_string(&REGISTRY, &a, Concept::RpcGrpcStatusCode).as_deref(),
+            lookup_string(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode).as_deref(),
             Some("14"),
         );
     }
@@ -263,7 +263,7 @@ mod tests {
         let attrs = vec![kv("service.name", Value::StringValue("cart".into()))];
         let a = OtlpAttributesAccessor::new(&attrs);
         assert_eq!(
-            lookup_string(&REGISTRY, &a, Concept::ServiceName).as_deref(),
+            lookup_string(&EMBEDDED_REGISTRY, &a, Concept::ServiceName).as_deref(),
             Some("cart"),
         );
     }
@@ -272,7 +272,7 @@ mod tests {
     fn float64_float_matches_first() {
         let attrs = vec![kv("_dd.top_level", Value::DoubleValue(1.0))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_float64(&REGISTRY, &a, Concept::DdTopLevel), Some(1.0));
+        assert_eq!(lookup_float64(&EMBEDDED_REGISTRY, &a, Concept::DdTopLevel), Some(1.0));
     }
 
     #[test]
@@ -282,23 +282,26 @@ mod tests {
         // accept it. The bounds check must reject it first.
         let attrs = vec![kv("_dd.top_level", Value::DoubleValue(9223372036854775808.0))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::DdTopLevel), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::DdTopLevel), None);
 
         let attrs = vec![kv("_dd.top_level", Value::DoubleValue(1.0e19))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::DdTopLevel), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::DdTopLevel), None);
 
         // `-2^63` is exactly `i64::MIN` and must be accepted.
         let attrs = vec![kv("_dd.top_level", Value::DoubleValue(-9223372036854775808.0))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::DdTopLevel), Some(i64::MIN));
+        assert_eq!(
+            lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::DdTopLevel),
+            Some(i64::MIN)
+        );
     }
 
     #[test]
     fn float64_missing_concept_returns_none() {
         let attrs: Vec<KeyValue> = vec![];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_float64(&REGISTRY, &a, Concept::DdTopLevel), None);
+        assert_eq!(lookup_float64(&EMBEDDED_REGISTRY, &a, Concept::DdTopLevel), None);
     }
 
     #[test]
@@ -311,7 +314,7 @@ mod tests {
             kv("rpc.system", Value::StringValue("apache_dubbo".into())),
         ];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
     }
 
     #[test]
@@ -321,7 +324,10 @@ mod tests {
             kv("rpc.system", Value::StringValue("grpc".into())),
         ];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::RpcGrpcStatusCode), Some(14));
+        assert_eq!(
+            lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode),
+            Some(14)
+        );
     }
 
     #[test]
@@ -330,7 +336,7 @@ mod tests {
         // fallback must be skipped.
         let attrs = vec![kv("rpc.response.status_code", Value::IntValue(14))];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
     }
 
     #[test]
@@ -345,7 +351,10 @@ mod tests {
             kv("rpc.grpc.status_code", Value::IntValue(3)),
         ];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::RpcGrpcStatusCode), Some(3));
+        assert_eq!(
+            lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode),
+            Some(3)
+        );
     }
 
     #[test]
@@ -358,7 +367,7 @@ mod tests {
             kv("rpc.response.status_code", Value::IntValue(14)),
         ];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_int64(&REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
+        assert_eq!(lookup_int64(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
     }
 
     #[test]
@@ -368,7 +377,7 @@ mod tests {
             kv("rpc.system", Value::StringValue("apache_dubbo".into())),
         ];
         let a = OtlpAttributesAccessor::new(&attrs);
-        assert_eq!(lookup_string(&REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
+        assert_eq!(lookup_string(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode), None);
     }
 
     #[test]
@@ -379,8 +388,24 @@ mod tests {
         ];
         let a = OtlpAttributesAccessor::new(&attrs);
         assert_eq!(
-            lookup_string(&REGISTRY, &a, Concept::RpcGrpcStatusCode).as_deref(),
+            lookup_string(&EMBEDDED_REGISTRY, &a, Concept::RpcGrpcStatusCode).as_deref(),
             Some("14"),
+        );
+    }
+
+    // A `null` condition matches every span, as in upstream `pkg/trace/semantics/lookup.go`.
+    #[test]
+    fn null_condition_does_not_block_fallback() {
+        let json = registry_json(
+            r#"{"db.statement": {"fallbacks": [
+                {"name": "custom.statement", "provider": "otel", "type": "string", "when": [null]}]}}"#,
+        );
+        let registry = Registry::from_json(&json).expect("a null condition should parse");
+        let attrs = vec![kv("custom.statement", Value::StringValue("SELECT 1".into()))];
+        let a = OtlpAttributesAccessor::new(&attrs);
+        assert_eq!(
+            lookup_string(&registry, &a, Concept::DbStatement).as_deref(),
+            Some("SELECT 1")
         );
     }
 }
