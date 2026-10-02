@@ -113,19 +113,33 @@ A result whose shape disagrees with its getter is a failing corpus check.
 - `IsConfigured` is a property of the key's sources, not of its value. agent-data-plane keeps it
   as provenance in its source tree, not in the typed leaf.
 
-Both belong to a provenance tier, not to this one.
+Both belong to a provenance tier, not to this one. This work is tracked in
+[Saluki #2760](https://github.com/DataDog/saluki/issues/2760).
 
 ### 6.1 Recorded getters with no leaf rule
 
 | Getter            | Where it is recorded                         | What compares it                                                    |
 |-------------------|----------------------------------------------|---------------------------------------------------------------------|
 | `GetSizeInBytes`  | byte-size keys such as `log_file_max_size`   | the derived tier, against the byte count ADP translates             |
-| `GetFloat64Slice` | `histogram_percentiles`                      | nothing yet: the leaf is a string list that ADP parses later, and no rule emulates that parse |
+| `GetFloat64Slice` | `histogram_percentiles`                      | no comparison yet: ADP parses the string list later; [#2759](https://github.com/DataDog/saluki/issues/2759) tracks the consumer comparison |
 | `GetStringMap`    | map keys, with `GetStringMapString`          | nothing: `StringMap` emulates `GetStringMapString` (decision 2)     |
 | `ReadConfigSection`, `IsConfigured` | section and source probes  | nothing: explicit-only (§6)                                          |
 
 A case that records only these getters has no leaf comparison. These are coverage limitations,
 not evidence that ADP matches those getters. The corpus retains the reads for future comparisons.
+
+### 6.2 Consumer and provenance follow-ups
+
+| Cases | Missing comparison | Tracking issue |
+|-------|--------------------|----------------|
+| `mapper-profiles-wrong-field-type` | The Agent's structured decoder, not only raw `Get`; a numeric field surviving `Get` does not prove the consumer accepts it | [#2758](https://github.com/DataDog/saluki/issues/2758) |
+| `float64-slice-bad-element` | Effective histogram percentile parsing and consumer behavior | [#2759](https://github.com/DataDog/saluki/issues/2759) |
+| `is-configured-default-null-section`, `otlp-receiver-section`, `otlp-receiver-nil-grpc` | Source provenance and configured sections, including the information absent from the stream | [#2760](https://github.com/DataDog/saluki/issues/2760) |
+
+These gaps are not passing comparisons or expected failures. Existing differences link their issues
+through `Cause::issue` in `corpus_replay/expected.rs`; replay failures print that link. Every known-bug
+expectation must have a tracking issue. A tracking issue may request an investigation rather than
+prescribe a behavior change.
 
 ## 7. Not observable from the stream
 
@@ -169,5 +183,6 @@ No normalization is allowed beyond decisions 5, 6, 8 and 11.
 5. Run the replay tests, `cargo nextest run --lib -p agent-data-plane-config-system
    corpus_replay`. A new difference fails its check. Decide whether it is intentional
    agent-data-plane behavior or a known bug, and record the exact expected value, the desired
-   value, and the reason in the typed expectation beside the replay code. A fix changes production
-   code and that expectation together, never the recorded corpus.
+   value, and the reason in the typed expectation beside the replay code. Link known bugs to their
+   Saluki issue through the expectation's cause. A fix changes production code and that expectation
+   together, never the recorded corpus.

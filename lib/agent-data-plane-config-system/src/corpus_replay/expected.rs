@@ -8,7 +8,7 @@
 //! the Agent writes the value only while starting up, ADP deliberately rejects an invalid enum or
 //! size string, the Agent's wire format loses the number, or the compared getter reads a raw
 //! string where ADP decodes structure (see `RAW_JSON_REPRESENTATION`). Every other entry is a
-//! `known_bug`.
+//! `known_bug`. Causes link tracking issues without changing which individual checks they explain.
 
 use super::expectations::Tier::{Bootstrap, Derived, Deserialize, Leaf, Translate};
 use super::expectations::{intentional, known_bug, Adp, Cause, Entry, Expectation};
@@ -86,7 +86,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             getter: "GetString",
             key: "run_path",
             adp: Adp::value("\"${run_path}\""),
-            cause: UNRESOLVED_AGENT_DEFAULT,
+            cause: RUN_PATH_DEFAULT,
         }),
         intentional(Entry {
             origin: "baseline-default",
@@ -115,7 +115,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_METRIC_TAG_FILTERLIST` (metric_tag_filterlist): invalid JSON: expected value at line 1 column 1",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: MALFORMED_JSON_STRING,
         }),
         known_bug(Entry {
             origin: "breadth-env",
@@ -550,7 +550,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_ALLOW_ARBITRARY_TAGS` (allow_arbitrary_tags): invalid boolean `on`",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: UNPARSEABLE_SCALAR_STRING,
         }),
         known_bug(Entry {
             origin: "depth-env-bool-words",
@@ -592,7 +592,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_AGENT_IPC_GRPC_MAX_MESSAGE_SIZE` (agent_ipc.grpc_max_message_size): invalid integer `1.342177295e+08`",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: UNPARSEABLE_SCALAR_STRING,
         }),
         known_bug(Entry {
             origin: "depth-env-float",
@@ -719,7 +719,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_APM_PEER_TAGS` (apm_config.peer_tags): invalid JSON: expected value at line 1 column 1",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: MALFORMED_JSON_STRING,
         }),
         known_bug(Entry {
             origin: "depth-env-mixed-string",
@@ -779,7 +779,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_ADDITIONAL_ENDPOINTS` (additional_endpoints): invalid JSON: expected value at line 1 column 1",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: MALFORMED_JSON_STRING,
         }),
         known_bug(Entry {
             origin: "depth-env-not-json",
@@ -1962,7 +1962,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_DOGSTATSD_ORIGIN_DETECTION` (dogstatsd_origin_detection): invalid boolean `yes`",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: UNPARSEABLE_SCALAR_STRING,
         }),
         known_bug(Entry {
             origin: "env-bool-unparseable-kept-raw",
@@ -2011,7 +2011,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "failed to build the configuration base: environment variable `DD_ADDITIONAL_ENDPOINTS` (additional_endpoints): invalid JSON: key must be a string at line 1 column 2",
             ),
-            cause: BOOTSTRAP_ENV_PARSING,
+            cause: MALFORMED_JSON_STRING,
         }),
         known_bug(Entry {
             origin: "env-map-bad-json",
@@ -2051,7 +2051,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "1 config translation error(s):\n  - error translating config key `log_file_max_size`, couldn't parse \"x10KB\" into a known SI unit, Failed to parse unit \"x10...\"",
             ),
-            cause: TRANSLATOR_NARROW_PARSE,
+            cause: BYTE_SIZE_PARSE,
         }),
         known_bug(Entry {
             origin: "int-string-base-prefix",
@@ -2073,7 +2073,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "error translating config key `log_file_max_size`, couldn't parse \"x10KB\" into a known SI unit, Failed to parse unit \"x10...\"",
             ),
-            cause: TRANSLATOR_NARROW_PARSE,
+            cause: BYTE_SIZE_PARSE,
         }),
         known_bug(Entry {
             origin: "mapper-profiles-wrong-field-type",
@@ -2084,7 +2084,7 @@ pub(crate) fn expectations() -> Vec<Expectation> {
             adp: Adp::error(
                 "error translating config key `dogstatsd_mapper_profiles`: invalid type: integer `123`, expected a string",
             ),
-            cause: TRANSLATOR_NARROW_PARSE,
+            cause: STRUCT_DECODE,
         }),
         intentional(Entry {
             origin: "proxy-env-bare-lowercase",
@@ -2324,21 +2324,25 @@ pub(crate) fn expectations() -> Vec<Expectation> {
 const AGENT_LOAD_WRITE: Cause = Cause {
     name: "agent-load-write",
     why: "the Agent writes the value while loading (proxy from env, FIPS endpoints, payload switches, api_key trim, stop timeout); only the stream carries it",
+    issue: None,
 };
 
 const BOOTSTRAP_ENV_PARSING: Cause = Cause {
     name: "bootstrap-env-parsing",
-    why: "ADP's own DD_* reader is stricter than the Agent's (bool words, hex, float strings, bad JSON abort the boot) and ignores per-key list separators",
+    why: "ADP's own DD_* reader rejects base-prefixed integers and does not match the Agent's per-key list separators",
+    issue: Some(2753),
 };
 
 const BOOTSTRAP_YAML_LOADING: Cause = Cause {
     name: "bootstrap-yaml-loading",
     why: "ADP's own datadog.yaml reader has no YAML 1.1 resolution (octal, yes/no), no dotted-key split, and loses NaN",
+    issue: Some(2754),
 };
 
 const COLLECTION_SHAPE_MISMATCH: Cause = Cause {
     name: "collection-shape-mismatch",
     why: "a collection key given the wrong collection (a list for a map, strings for a list of maps); the Agent casts, ADP rejects",
+    issue: Some(2756),
 };
 
 const RAW_JSON_REPRESENTATION: Cause = Cause {
@@ -2346,59 +2350,84 @@ const RAW_JSON_REPRESENTATION: Cause = Cause {
     why: "the environment variable holds JSON text: ADP's reader decodes it into the structured value, \
 while the Agent's raw `Get` returns the string verbatim; `Get` is not how an Agent consumer reads \
 this key, so the difference is one of representation, not behavior",
+    issue: None,
 };
 
 const MALFORMED_JSON_STRING: Cause = Cause {
     name: "malformed-json-string",
     why: "a non-JSON string for a map or JSON-list key; the Agent's getter returns empty with a warning, ADP rejects",
+    issue: Some(2756),
 };
 
 const NON_STRING_MAP_VALUE: Cause = Cause {
     name: "non-string-map-value",
     why: "a non-string value in a string map; the Agent's getter stringifies it, ADP rejects",
+    issue: Some(2752),
 };
 
 const NULL_COLLECTION: Cause = Cause {
     name: "null-collection",
     why: "the stream carries null for an empty or unset list or map; the Agent's getter reads empty, ADP rejects",
+    issue: Some(2750),
 };
 
 const SCALAR_GIVEN_COLLECTION: Cause = Cause {
     name: "scalar-given-collection",
     why: "a map or list for a scalar key; the Agent's getter casts it to the zero value, ADP rejects",
+    issue: Some(2755),
 };
 
 const SIZE_UNIT_BASE: Cause = Cause {
     name: "size-unit-base",
     why: "ADP parses KB, MB and GB byte sizes as powers of 1000; the Agent's GetSizeInBytes uses powers of 1024",
+    issue: Some(2751),
 };
 
 const STOP_TIMEOUT_RECOMPUTED: Cause = Cause {
     name: "stop-timeout-recomputed",
     why: "the Agent computes data_plane.stop_timeout once at load; ADP recomputes it from later inputs",
+    issue: Some(2757),
 };
 
-const TRANSLATOR_NARROW_PARSE: Cause = Cause {
-    name: "translator-narrow-parse",
-    why: "the translator rejects forms the Agent accepts: a base-prefixed size, a number for a string field",
+const BYTE_SIZE_PARSE: Cause = Cause {
+    name: "byte-size-parse",
+    why: "the translator rejects a base-prefixed size the Agent's getter accepts",
+    issue: Some(2751),
+};
+
+const STRUCT_DECODE: Cause = Cause {
+    name: "struct-decode",
+    why:
+        "the translator rejects a number for a string field; the corpus records raw Get, not the Agent's struct decode",
+    issue: Some(2758),
 };
 
 const TRANSLATOR_REJECTS_VALUE: Cause = Cause {
     name: "translator-rejects-value",
     why: "the translator rejects a string that is not a valid enum or size value, and with it the whole update; the Agent's getter passes it through",
+    issue: None,
 };
 
 const UNPARSEABLE_SCALAR_STRING: Cause = Cause {
     name: "unparseable-scalar-string",
     why: "a string that does not parse as the key's bool or number (on, yes, empty, 2.5); the Agent's getter reads zero, ADP rejects",
+    issue: Some(2755),
 };
 
 const UNRESOLVED_AGENT_DEFAULT: Cause = Cause {
     name: "unresolved-agent-default",
     why: "ADP's defaults differ from the Agent's resolved defaults (unexpanded ${log_path} and ${run_path}, container paths, no DogStatsD socket)",
+    issue: Some(1802),
+};
+
+const RUN_PATH_DEFAULT: Cause = Cause {
+    name: "run-path-default",
+    why: "ADP's local source model keeps the ${run_path} placeholder; the runtime fallback is tracked separately",
+    issue: Some(2484),
 };
 
 const WIRE_NUMBER_LOSS: Cause = Cause {
     name: "wire-number-loss",
     why: "NaN and integers above 2^53 do not survive the protobuf stream; ADP cannot recover them",
+    issue: None,
 };
