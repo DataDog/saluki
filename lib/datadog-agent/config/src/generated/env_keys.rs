@@ -1089,6 +1089,21 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::StringList,
     },
     EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_APM_SAMPLING_ENABLED"],
+        path: &["remote_configuration", "apm_sampling", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_APM_SEMANTICS_ENABLED"],
+        path: &["remote_configuration", "apm_semantics", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
+        env_vars: &["DD_REMOTE_CONFIGURATION_ENABLED"],
+        path: &["remote_configuration", "enabled"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_RUN_PATH"],
         path: &["run_path"],
         decode: EnvDecode::RawString,

@@ -418,27 +418,30 @@ setting has no effect in ADP.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                                   | Description                                  |
-| -------------------------------------------- | -------------------------------------------- |
-| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop     |
-| `apm_config.features`                        | Beta APM feature flags                       |
-| `cri_socket_path`                            | containerd/CRI socket path                   |
-| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                 |
-| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                |
-| `dogstatsd_workers_count`                    | Number of DSD processing workers             |
-| `env`                                        | Agent environment name                       |
-| `forwarder_apikey_validation_interval`       | API key check interval (minutes)             |
-| `forwarder_high_prio_buffer_size`            | High-priority request queue size             |
-| `forwarder_num_workers`                      | Concurrent forwarder workers                 |
-| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop      |
-| `log_level`                                  | Log verbosity directives                     |
-| `min_tls_version`                            | Minimum TLS version for HTTPS connections    |
-| `multi_region_failover.enabled`              | Enable multi-region failover mode            |
-| `secret_backend_command`                     | Path to the Agent secret-fetch executable    |
-| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403 |
-| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)               |
-| `skip_ssl_validation`                        | Skip TLS cert validation                     |
-| `statsd_forward_host`                        | UDP packet forwarding destination host       |
+| Config Key                                   | Description                                      |
+| -------------------------------------------- | ------------------------------------------------ |
+| `aggregator_stop_timeout`                    | Timeout (s) for aggregator flush on stop         |
+| `apm_config.features`                        | Beta APM feature flags                           |
+| `cri_socket_path`                            | containerd/CRI socket path                       |
+| `dogstatsd_mapper_cache_size`                | Mapper result LRU cache size                     |
+| `dogstatsd_metrics_stats_enable`             | Enable per-metric debug stats                    |
+| `dogstatsd_workers_count`                    | Number of DSD processing workers                 |
+| `env`                                        | Agent environment name                           |
+| `forwarder_apikey_validation_interval`       | API key check interval (minutes)                 |
+| `forwarder_high_prio_buffer_size`            | High-priority request queue size                 |
+| `forwarder_num_workers`                      | Concurrent forwarder workers                     |
+| `forwarder_stop_timeout`                     | Timeout (s) for forwarder graceful stop          |
+| `log_level`                                  | Log verbosity directives                         |
+| `min_tls_version`                            | Minimum TLS version for HTTPS connections        |
+| `multi_region_failover.enabled`              | Enable multi-region failover mode                |
+| `remote_configuration.apm_sampling.enabled`  | Apply APM_SAMPLING remote configurations         |
+| `remote_configuration.apm_semantics.enabled` | Apply APM_SEMANTIC_CORE_DD remote configurations |
+| `remote_configuration.enabled`               | Enable Remote Configuration                      |
+| `secret_backend_command`                     | Path to the Agent secret-fetch executable        |
+| `secret_refresh_on_api_key_failure_interval` | Minutes between secret refreshes after a 403     |
+| `serializer_zstd_compressor_level`           | Zstd compression level (Agent)                   |
+| `skip_ssl_validation`                        | Skip TLS cert validation                         |
+| `statsd_forward_host`                        | UDP packet forwarding destination host           |
 
 ### `aggregator_stop_timeout`
 
@@ -623,6 +626,22 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `remote_configuration.apm_sampling.enabled`
+
+ADP applies `APM_SAMPLING` only while it runs the trace pipeline, and only when `remote_configuration.enabled` is also set; see that key for how ADP reads it differently.
+
+### `remote_configuration.apm_semantics.enabled`
+
+ADP applies `APM_SEMANTIC_CORE_DD` only while it runs the trace pipeline, and only when `remote_configuration.enabled` is also set; see that key for how ADP reads it differently.
+
+### `remote_configuration.enabled`
+
+ADP uses Remote Configuration only while it runs the trace pipeline and at least one of
+`remote_configuration.apm_sampling.enabled` or `remote_configuration.apm_semantics.enabled` is set.
+
+The core Agent turns Remote Configuration off by default on government sites and when FIPS mode is
+enabled. ADP reads `remote_configuration.enabled` as given, with no such default.
 
 ### `secret_backend_command`
 

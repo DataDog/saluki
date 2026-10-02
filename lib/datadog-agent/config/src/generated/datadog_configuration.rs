@@ -460,6 +460,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub proxy: Proxy,
 
+    #[serde(default)]
+    pub remote_configuration: RemoteConfiguration,
+
     #[serde(default = "defaults::datadog_configuration_run_path")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub run_path: String,
@@ -697,6 +700,7 @@ impl Default for DatadogConfiguration {
             otlp_config: Default::default(),
             provider_kind: Default::default(),
             proxy: Default::default(),
+            remote_configuration: Default::default(),
             run_path: defaults::datadog_configuration_run_path(),
             secret_backend_command: Default::default(),
             secret_refresh_on_api_key_failure_interval: Default::default(),
@@ -1965,6 +1969,59 @@ impl Default for Proxy {
             http: Default::default(),
             https: Default::default(),
             no_proxy: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct RemoteConfiguration {
+    #[serde(default)]
+    pub apm_sampling: RemoteConfigurationApmSampling,
+
+    #[serde(default)]
+    pub apm_semantics: RemoteConfigurationApmSemantics,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for RemoteConfiguration {
+    fn default() -> Self {
+        Self {
+            apm_sampling: Default::default(),
+            apm_semantics: Default::default(),
+            enabled: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct RemoteConfigurationApmSampling {
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for RemoteConfigurationApmSampling {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct RemoteConfigurationApmSemantics {
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub enabled: bool,
+}
+
+impl Default for RemoteConfigurationApmSemantics {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
         }
     }
 }

@@ -21,6 +21,7 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "containerd_protos",
     "datadog_protos",
     "datadog_agent_commons",
+    "datadog_agent_remote_config",
     "ddsketch",
     "otlp_protos",
     "ottl",

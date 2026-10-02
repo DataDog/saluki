@@ -225,6 +225,9 @@ pub trait DatadogConfigWitness {
     fn consume_proxy_http(&mut self, value: String);
     fn consume_proxy_https(&mut self, value: String);
     fn consume_proxy_no_proxy(&mut self, value: Vec<String>);
+    fn consume_remote_configuration_apm_sampling_enabled(&mut self, value: bool);
+    fn consume_remote_configuration_apm_semantics_enabled(&mut self, value: bool);
+    fn consume_remote_configuration_enabled(&mut self, value: bool);
     fn consume_run_path(&mut self, value: String);
     fn consume_secret_backend_command(&mut self, value: String);
     fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64);
@@ -629,6 +632,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_proxy_http(config.proxy.http.clone());
     consumer.consume_proxy_https(config.proxy.https.clone());
     consumer.consume_proxy_no_proxy(config.proxy.no_proxy.clone());
+    consumer
+        .consume_remote_configuration_apm_sampling_enabled(config.remote_configuration.apm_sampling.enabled.clone());
+    consumer
+        .consume_remote_configuration_apm_semantics_enabled(config.remote_configuration.apm_semantics.enabled.clone());
+    consumer.consume_remote_configuration_enabled(config.remote_configuration.enabled.clone());
     consumer.consume_run_path(config.run_path.clone());
     consumer.consume_secret_backend_command(config.secret_backend_command.clone());
     consumer

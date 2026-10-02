@@ -16,6 +16,7 @@ use datadog_protos::agent::{
 use datadog_protos::remote_config::{ClientGetConfigsRequest, ClientGetConfigsResponse};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
+use saluki_metadata::AppDetails;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint},
@@ -33,6 +34,17 @@ pub use self::streaming::StreamingResponse;
 
 const CONNECT_RETRY_ATTEMPTS: usize = 10;
 const CONNECT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Formats the application's name for the Agent's configuration stream and Remote Configuration client identity.
+///
+/// Converts the full name to lowercase and replaces spaces and underscores with hyphens.
+pub fn client_name(app_details: &AppDetails) -> String {
+    app_details
+        .full_name()
+        .replace(" ", "-")
+        .replace("_", "-")
+        .to_lowercase()
+}
 
 /// A client for interacting with the Datadog Agent's internal gRPC-based API.
 #[derive(Clone)]
@@ -266,15 +278,8 @@ impl RemoteAgentClient {
     /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
     pub fn stream_config_events(&mut self, session_id: &SessionId) -> StreamingResponse<ConfigEvent> {
         let mut client = self.secure_client.clone();
-        let app_details = saluki_metadata::get_app_details();
-        let formatted_full_name = app_details
-            .full_name()
-            .replace(" ", "-")
-            .replace("_", "-")
-            .to_lowercase();
-
         let mut request = Request::new(ConfigStreamRequest {
-            name: formatted_full_name,
+            name: client_name(saluki_metadata::get_app_details()),
         });
 
         request
@@ -303,5 +308,18 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_metadata::{AppDetails, Version};
+
+    use super::client_name;
+
+    #[test]
+    fn client_name_is_the_lowercased_hyphenated_full_name() {
+        let details = AppDetails::new("Agent Data_Plane", "data-plane", "adp", Version::new("1.0.0", 1, 0, 0));
+        assert_eq!(client_name(&details), "agent-data-plane");
     }
 }
