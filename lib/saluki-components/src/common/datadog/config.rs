@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use agent_data_plane_config::shared::{self, Endpoints, SharedConfiguration, V3SeriesMode};
 use saluki_error::GenericError;
@@ -6,10 +6,11 @@ use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
 use super::{
-    endpoints::{EndpointConfiguration, EndpointRoute, ResolvedEndpoint, RoutableEndpoint, SingleDestination},
+    endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint, SingleDestination},
     protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
+    routing::RoutingTargetCatalog,
 };
 
 const fn default_api_key_validation_interval_mins() -> i64 {
@@ -274,6 +275,13 @@ pub struct ForwarderConfiguration {
 
     /// How often API keys are checked for validity against the intake.
     api_key_validation_interval: Duration,
+
+    /// Routing targets that metrics payloads may be addressed to.
+    ///
+    /// When set, each endpoint is labeled with its routing target so that a payload addressed to specific targets
+    /// reaches only those. When unset, no endpoint is a target, and a payload addressed to specific targets reaches
+    /// none of them.
+    routing_targets: Option<Arc<RoutingTargetCatalog>>,
 }
 
 /// The endpoint and V3 routing settings that depend on a forwarder's destination.
@@ -361,7 +369,17 @@ impl ForwarderConfiguration {
             tls_handshake_timeout: endpoints.tls.handshake_timeout,
             allow_arbitrary_tags: endpoints.allow_arbitrary_tags,
             api_key_validation_interval: api_key_validation_interval(forwarder.apikey_validation_interval),
+            routing_targets: None,
         }
+    }
+
+    /// Sets the routing targets that metrics payloads may be addressed to.
+    ///
+    /// The catalog must be the one shared with every encoder that addresses payloads to this forwarder, and it must
+    /// have been built from the same endpoint configuration as this forwarder.
+    pub(crate) fn with_routing_targets(mut self, routing_targets: Arc<RoutingTargetCatalog>) -> Self {
+        self.routing_targets = Some(routing_targets);
+        self
     }
 
     /// Returns the maximum number of concurrent requests for an individual endpoint.
@@ -405,21 +423,35 @@ impl ForwarderConfiguration {
         self.http_protocol.into()
     }
 
-    /// Returns the allowlist policy identity without changing the endpoint's delivery or protocol settings.
-    pub(crate) fn metrics_policy_endpoint<'a>(
-        &'a self, route: EndpointRoute, endpoint: &'a ResolvedEndpoint,
-    ) -> &'a str {
-        match route {
-            EndpointRoute::MetricsPrimary => self.endpoint.primary_endpoint(),
-            EndpointRoute::Primary | EndpointRoute::Additional => endpoint.configured_endpoint(),
-        }
-    }
-
     /// Builds resolved endpoints with routing metadata.
     ///
     /// Each endpoint starts with the key its configuration resolved to. A forwarder may bind it to a live
     /// configuration view through [`ApiKeyRefresher`][super::api_key::ApiKeyRefresher].
+    ///
+    /// When routing targets are set, each endpoint is labeled with the target it delivers for. An alternate metrics
+    /// intake delivers for the primary target, because it replaces the primary endpoint for metrics.
     pub(crate) fn build_routable_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
+        let mut endpoints = self.build_unlabeled_endpoints()?;
+        if let Some(catalog) = &self.routing_targets {
+            endpoints = endpoints
+                .into_iter()
+                .map(|endpoint| {
+                    let target = match endpoint.route() {
+                        EndpointRoute::Primary | EndpointRoute::MetricsPrimary => Some(catalog.primary()),
+                        EndpointRoute::Additional => endpoint
+                            .endpoint()
+                            .additional_endpoint_queue_key()
+                            .and_then(|(url, index)| catalog.find_additional(url, index)),
+                    };
+                    endpoint.with_target(target)
+                })
+                .collect();
+        }
+
+        Ok(endpoints)
+    }
+
+    fn build_unlabeled_endpoints(&self) -> Result<Vec<RoutableEndpoint>, GenericError> {
         // Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
         let mut endpoints = Vec::new();
         endpoints.push(RoutableEndpoint::new(
@@ -568,7 +600,7 @@ mod tests {
             .expect("endpoints should resolve")
             .into_iter()
             .filter_map(|endpoint| {
-                let (endpoint_route, endpoint) = endpoint.into_parts();
+                let (endpoint_route, endpoint, _) = endpoint.into_parts();
                 (endpoint_route == route).then(|| endpoint.endpoint().to_string())
             })
             .collect()
