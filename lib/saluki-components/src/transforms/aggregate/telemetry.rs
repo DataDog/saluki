@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use metrics::{Counter, Gauge};
 use saluki_core::data_model::event::metric::{context::Context, MetricValues};
 use saluki_metrics::MetricsBuilder;
@@ -48,6 +50,13 @@ impl MetricTypedGauge {
     }
 }
 
+/// Number of series and sketches flushed in a single flush.
+#[derive(Default)]
+pub struct FlushCounts {
+    series: u64,
+    sketches: u64,
+}
+
 #[derive(Clone)]
 pub struct Telemetry {
     active_contexts: Gauge,
@@ -57,6 +66,9 @@ pub struct Telemetry {
     flushes: Counter,
     series_flushed: Counter,
     sketches_flushed: Counter,
+    last_flush_series: Gauge,
+    last_flush_sketches: Gauge,
+    last_flush_duration: Gauge,
 }
 
 impl Telemetry {
@@ -69,6 +81,9 @@ impl Telemetry {
             flushes: builder.register_counter("aggregate_flushes_total"),
             series_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:series"]),
             sketches_flushed: builder.register_counter_with_tags("aggregate_flushed_total", ["data_type:sketches"]),
+            last_flush_series: builder.register_gauge_with_tags("aggregate_last_flush_count", ["data_type:series"]),
+            last_flush_sketches: builder.register_gauge_with_tags("aggregate_last_flush_count", ["data_type:sketches"]),
+            last_flush_duration: builder.register_gauge("aggregate_last_flush_duration_nanoseconds"),
         }
     }
 
@@ -82,6 +97,9 @@ impl Telemetry {
             flushes: Counter::noop(),
             series_flushed: Counter::noop(),
             sketches_flushed: Counter::noop(),
+            last_flush_series: Gauge::noop(),
+            last_flush_sketches: Gauge::noop(),
+            last_flush_duration: Gauge::noop(),
         }
     }
 
@@ -109,11 +127,22 @@ impl Telemetry {
         self.flushes.increment(1);
     }
 
-    pub fn increment_flushed(&self, values: &MetricValues) {
+    pub fn increment_flushed(&self, values: &MetricValues, counts: &mut FlushCounts) {
         if values.is_serie() {
             self.series_flushed.increment(1);
+            counts.series += 1;
         } else if values.is_sketch() {
             self.sketches_flushed.increment(1);
+            counts.sketches += 1;
         }
+    }
+
+    pub fn record_last_flush_counts(&self, counts: &FlushCounts) {
+        self.last_flush_series.set(counts.series as f64);
+        self.last_flush_sketches.set(counts.sketches as f64);
+    }
+
+    pub fn record_last_flush_duration(&self, duration: Duration) {
+        self.last_flush_duration.set(duration.as_nanos() as f64);
     }
 }
