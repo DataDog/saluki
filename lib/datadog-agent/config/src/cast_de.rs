@@ -124,10 +124,13 @@ where
 /// The Agent stores a map-typed environment variable as its raw string and decodes the JSON when the
 /// key is read, so its configuration stream carries the string.
 ///
+/// A null is an empty map: the Agent's configuration stream can carry `null` for an empty or
+/// cleared map, and its map accessors read it as empty.
+///
 /// # Errors
 ///
-/// Returns an error when the value is neither a map nor a string that decodes to one, or when a map
-/// value does not deserialize as `V`.
+/// Returns an error when the value is neither a map, a null, nor a string that decodes to a map, or
+/// when a map value does not deserialize as `V`.
 pub(crate) fn deserialize_map_or_json_string<'de, D, V>(deserializer: D) -> Result<HashMap<String, V>, D::Error>
 where
     D: Deserializer<'de>,
@@ -148,6 +151,14 @@ where
 
         fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
             HashMap::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(HashMap::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(HashMap::new())
         }
     }
 
@@ -589,6 +600,16 @@ mod tests {
                 serde_json::from_value::<StringMap>(rejected.clone()).is_err(),
                 "{rejected}"
             );
+        }
+    }
+
+    #[test]
+    fn string_map_reads_null_as_empty() {
+        for empty in [json!(null), json!({})] {
+            let values = serde_json::from_value::<StringMap>(empty.clone())
+                .expect("empty map deserializes")
+                .0;
+            assert!(values.is_empty(), "{empty}");
         }
     }
 
