@@ -1,7 +1,12 @@
 # Contract: getter map
 
-This contract fixes which Agent getters the config recorder calls on a key and how each Go result is written as JSON in a record's `reads` (record.md §5.3). It says nothing
-about how the Rust side uses those results.
+An Agent configuration **getter** is a method such as `GetInt` or `GetStringMap` that reads a
+setting and converts its value to a Go type. The [config recorder](../README.md) calls these
+methods to save the values Agent components would read.
+
+This contract defines which methods the recorder calls for each setting and how it writes their
+return values as JSON in a record's `reads` ([record format](record.md) §5.3). It does not define
+how Rust tests compare those results with ADP values.
 
 Agent citations are at `281d921619d`. `getter.go` is `pkg/config/nodetreemodel/getter.go`;
 `codegen` is `tasks/schema/codegen_init_settings.py`.

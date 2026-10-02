@@ -6,14 +6,11 @@ license = { workspace = true }
 repository = { workspace = true }
 publish = false
 
-# A leaf crate: it reads the config recorder's corpus from its contract alone, so it depends on no
-# config crate and no protobuf code.
+# Reading saved Agent results needs neither ADP configuration types nor protobuf code.
 [dependencies]
 serde_json = { workspace = true }
 
-# Dev-only: the corpus_checks module also loads the vendored schema and overlay to check the
-# corpus's case groups against them, and hashes the recorder's inputs to check staleness. Neither
-# use makes this crate depend on datadog-agent-config.
+# Unit tests compare the recordings with the schema, ADP support inventory, and recorder inputs.
 [dev-dependencies]
 datadog-agent-config-overlay-model = { workspace = true }
 sha2 = { workspace = true }

@@ -1,8 +1,17 @@
-//! Getter results decoded by their getter's Go return type (getter-map.md §2) and the result
-//! encoding (getter-map.md §3).
+//! Decodes recorded Agent configuration method results into Rust values for compatibility tests.
 //!
-//! Every number keeps its exact token next to its parsed value, so a consumer can compare exactly,
-//! and integer and float tokens stay distinct at every depth.
+//! A **getter** is an Agent method that reads a setting, such as `GetInt` or `GetStringMap`.
+//! The Go config recorder calls these methods and saves their results alongside the values the
+//! Agent streams to ADP. The two can differ because getters convert stored values to Go types.
+//!
+//! The corpus reader passes each saved result and method name to [`decode`]. This module checks
+//! the result against that method's return type: `GetInt` must hold an integer, for example, and
+//! `GetStringSlice` must hold strings or a nil slice. It decodes the result; it does not call Go
+//! or reproduce the getter's conversions.
+//!
+//! [`GetterResult`] preserves nil versus empty collections and integers versus floats. [`Number`]
+//! also keeps the original JSON number text so a test need not rely on a rounded parsed value.
+//! The method types and encodings are defined in `config-recorder/docs/getter-map.md`.
 
 use std::collections::BTreeMap;
 
@@ -50,7 +59,7 @@ pub enum GoValue {
     Map(BTreeMap<String, GoValue>),
 }
 
-/// A getter's result, typed by the getter's Go return type.
+/// The recorded return value of an Agent configuration method, decoded into the matching Rust type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GetterResult {
     /// `GetBool`.
