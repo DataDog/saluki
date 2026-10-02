@@ -409,8 +409,8 @@
 <a href=#409 id=409 data-nosnippet>409</a>    <span class="doccomment">/// Returns a JSON snapshot of the current readiness and liveness state of all registered components.
 <a href=#410 id=410 data-nosnippet>410</a>    ///
 <a href=#411 id=411 data-nosnippet>411</a>    /// Each component appears as a key in the returned JSON object, with its `live` and `ready` boolean fields
-<a href=#412 id=412 data-nosnippet>412</a>    /// reflecting the state at the time of the call. This is the same data exposed by the `/health/ready` and
-<a href=#413 id=413 data-nosnippet>413</a>    /// `/health/live` HTTP endpoints, but collected in a single pass for use outside of the HTTP handler path (for
+<a href=#412 id=412 data-nosnippet>412</a>    /// reflecting the state at the time of the call. This is the same data exposed by the `/ready` and `/live`
+<a href=#413 id=413 data-nosnippet>413</a>    /// HTTP endpoints, but collected in a single pass for use outside of the HTTP handler path (for
 <a href=#414 id=414 data-nosnippet>414</a>    /// example, when building a diagnostic artifact).
 <a href=#415 id=415 data-nosnippet>415</a>    </span><span class="kw">pub fn </span>snapshot_json(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; String {
 <a href=#416 id=416 data-nosnippet>416</a>        <span class="attr">#[derive(serde::Serialize)]
