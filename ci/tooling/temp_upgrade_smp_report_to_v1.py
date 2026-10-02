@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Best-effort generation of report.v1.json from an unversioned report.json.
 
+Reference source: report-parity-experiments/temp_upgrade_smp_report_to_v1.py.
+The Agent and Saluki CI converters are byte-for-byte copies of this file.
+Make changes in the reference, then copy it to the team-local filenames.
+Conversion uses JSON only, never rendered Markdown or PR-comment baselines.
+
 Both files are emitted by consignor-report from the same Builder state:
 - report.json:     Builder::into_json     (services/consignor/src/report.rs)
 - report.v1.json:  Builder::into_json_v1 (services/consignor/src/report/json_v1.rs)
@@ -13,11 +18,13 @@ What is derivable from report.json:
     is_regression maps to is_significant_change)
   - bounds_checks, comparison variant only, aggregated per check name
     (pass_count / total_count / min_observed / max_observed)
+    Empty comparison checks are retained with zero counts, so missing
+    quality-gate data does not disappear during conversion.
   - erratic (goal row first, else first bounds check, else False)
 - failed_replicates (from failed_replicates.executions; buckets sorted by
   replicate index; list stable-sorted by experiment then variant)
 
-What report.json does NOT contain (placeholders emitted, see KNOWN_GAPS):
+What report.json does NOT contain (placeholders emitted):
 - bounds_checks[].series -> the check name as a placeholder (the metric series
   name is dropped by the unversioned serializer; the v1 schema requires a
   string, so null would not parse)
@@ -25,12 +32,14 @@ What report.json does NOT contain (placeholders emitted, see KNOWN_GAPS):
   on the check name; can be wrong when name and series differ
 - quantile_checks -> [] (cairn quantile results are not serialized at all)
 - analysis_errors -> []
+- historical reports without failed_replicates -> [] with a warning; the
+  missing failure modes, retry counts, and dead/retried status cannot be inferred
 - experiments whose only data was a no-optimization-goal row, quantile rows,
   or analysis errors: they never appear in report.json and are omitted.
 
 Usage:
-  report_v1_from_json.py report.json [--output PATH] [--force]
-  report_v1_from_json.py DIR_OR_REPORT... --compare
+  temp_upgrade_smp_report_to_v1.py report.json [--output PATH] [--force]
+  temp_upgrade_smp_report_to_v1.py DIR_OR_REPORT... --compare
 
 --compare generates in memory and diffs against the existing report.v1.json
 next to each input, classifying differences into known gaps vs unexpected.
@@ -88,7 +97,7 @@ def goal_token(goal: str) -> str:
     if goal in GOAL_TOKENS:
         return GOAL_TOKENS[goal]
     # fallback: CamelCase -> snake_case
-    token = "@" + re.sub(r"(?<!^)(?=[A-Z])", "_", goal).lower()
+    token = re.sub(r"(?<!^)(?=[A-Z])", "_", goal).lower()
     print(f"warning: unknown optimization goal {goal!r}, token {token!r}", file=sys.stderr)
     return token
 
@@ -122,15 +131,13 @@ def build_optimization_goal(raw: dict) -> dict:
 def build_bounds_check(name: str, raw: dict) -> dict | None:
     """Aggregate one report.json bounds check into a v1 BoundsCheck.
 
-    Returns None if the check has no comparison-variant rows: json_v1.rs
-    only creates v1 entries while iterating comparison rows.
+    Retain empty comparison results with zero counts. Native v1 omits these
+    checks, but preserving the legacy check lets CI detect missing gate data.
     """
     if raw.get("bounds_check_type") != "bounds":
         print(f"warning: skipping non-bounds check {name!r}", file=sys.stderr)
         return None
-    replicates = raw.get("results", {}).get("comparison")
-    if not replicates:
-        return None
+    replicates = (raw.get("results") or {}).get("comparison") or []
 
     mins = [r["min_observed"] for r in replicates if r.get("min_observed") is not None]
     maxs = [r["max_observed"] for r in replicates if r.get("max_observed") is not None]
@@ -216,6 +223,13 @@ def convert(report: dict) -> dict:
     time_range = report.get("time_range")
     if not job_info or not time_range:
         raise ValueError("report.json is missing job_info or time_range")
+
+    if "failed_replicates" not in report:
+        print(
+            f"warning: {report['job_id']}: report.json did not serialize failed_replicates; "
+            "v1 uses [] because failure details are unavailable, not because no failures occurred",
+            file=sys.stderr,
+        )
 
     experiments = [
         build_experiment(name, report["experiments"][name])
