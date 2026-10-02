@@ -16,6 +16,7 @@ members = [
   "lib/datadog-agent/remote-config",
   "lib/ddsketch",
   "lib/go-duration",
+  "lib/go-strconv",
   "lib/ottl",
   "lib/process-memory",
   "lib/prometheus-exposition",
@@ -62,6 +63,7 @@ datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 go-duration = { path = "lib/go-duration" }
+go-strconv = { path = "lib/go-strconv" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
 saluki-antithesis = { path = "lib/saluki-antithesis" }
