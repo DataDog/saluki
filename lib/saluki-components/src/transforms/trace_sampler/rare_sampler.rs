@@ -148,6 +148,13 @@ impl RareSampler {
         }
     }
 
+    /// Enables or disables the sampler.
+    ///
+    /// Preserves seen signatures and the token bucket, matching upstream `pkg/trace/sampler/rare_sampler.go:89-91`.
+    pub(super) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     /// Sample a trace. Returns `true` if the trace should be kept by the rare sampler.
     ///
     /// Iterates top-level and measured spans. If any span has a signature that hasn't been seen
