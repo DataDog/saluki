@@ -31,9 +31,10 @@ impl ErrorsSampler {
         }
     }
 
-    /// Updates the target traces per second.
+    /// Updates the error sampling target in traces per second.
     ///
-    /// An initial target of `0` permanently disables sampling, matching upstream `pkg/trace/sampler/scoresampler.go:61`.
+    /// If the sampler was created with a zero target, it remains disabled even after an update.
+    /// This matches the Datadog Agent's `pkg/trace/sampler/scoresampler.go`.
     pub(super) fn update_target_tps(&mut self, target_tps: f64) {
         self.score_sampler.update_target_tps(target_tps);
     }

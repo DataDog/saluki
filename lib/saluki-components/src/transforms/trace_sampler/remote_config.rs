@@ -1,6 +1,10 @@
-//! Decoding of the `APM_SAMPLING` Remote Configuration product into sampler settings.
+//! Remote Configuration settings for trace sampling.
 //!
-//! Port of upstream `onUpdate` and `updateSamplers` (`pkg/trace/remoteconfighandler/remote_config_handler.go`).
+//! The `APM_SAMPLING` product can change the priority and error samplers' target traces per second
+//! and turn rare sampling on or off. A configuration may set values for every environment or
+//! override individual fields for a specific environment. Unset fields use the local trace sampler
+//! settings. See the Datadog Agent's `pkg/trace/remoteconfighandler/remote_config_handler.go` for
+//! the behavior this module follows.
 
 use std::fmt;
 
@@ -9,9 +13,9 @@ use datadog_agent_remote_config::{
 };
 use serde::{Deserialize, Deserializer};
 
-/// Sampler settings that `APM_SAMPLING` can override for all environments or one environment.
+/// Optional sampling settings for all environments or one named environment.
 ///
-/// A field that is absent or `null` is not set; an explicit `0` or `false` is.
+/// Missing and `null` fields leave that setting unset; `0` and `false` are explicit values.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct SamplerEnvConfig {
     /// Target traces per second for the priority sampler.
@@ -31,10 +35,10 @@ pub(crate) struct SamplerEnvConfig {
     pub(crate) rare_sampler_enabled: Option<bool>,
 }
 
-/// Sampler settings for one environment.
+/// An environment name and its sampling overrides.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct EnvAndConfig {
-    /// The environment these settings apply to, compared without normalization.
+    /// Environment to match against the normalized local default; the payload name is used as given.
     #[serde(default, deserialize_with = "null_as_default")]
     pub(crate) env: String,
 
@@ -43,10 +47,10 @@ pub(crate) struct EnvAndConfig {
     pub(crate) config: SamplerEnvConfig,
 }
 
-/// One `APM_SAMPLING` configuration.
+/// Settings supplied by one `APM_SAMPLING` configuration.
 ///
-/// Uses upstream field names from `pkg/remoteconfig/state/products/apmsampling/sampler_config.go`, accepts lowercase
-/// `_tps` aliases, and ignores unknown fields.
+/// The Datadog Agent sends the `*_TPS` field names. Lowercase `*_tps` names also work;
+/// unknown fields are ignored.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct SamplerConfig {
     /// Settings for every environment.
@@ -58,7 +62,7 @@ pub(crate) struct SamplerConfig {
     pub(crate) by_env: Vec<EnvAndConfig>,
 }
 
-/// Deserializes `null` fields, including `env`, as their Go `encoding/json` zero values.
+/// Treats `null` like a missing field, as the Datadog Agent's JSON decoder does.
 fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -67,7 +71,7 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-/// Deserializes a `null` list or element as the type's default.
+/// Treats a `null` list as empty and a `null` entry as an empty value.
 fn null_entries_as_default<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -77,7 +81,7 @@ where
     Ok(entries.into_iter().map(Option::unwrap_or_default).collect())
 }
 
-/// The static or resolved values of the settings `APM_SAMPLING` can override.
+/// Effective sampling settings, either from local configuration or resolved remote overrides.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SamplerSettings {
     /// Target traces per second for the priority sampler.
@@ -91,12 +95,11 @@ pub(crate) struct SamplerSettings {
 }
 
 impl SamplerConfig {
-    /// Resolves each setting for `default_env`, falling back to `static_settings`.
+    /// Chooses settings for the local default environment.
     ///
-    /// Uses the last matching `by_env` entry. Unset fields fall back to `all_envs`, then `static_settings`.
-    ///
-    /// The caller must normalize `default_env` as a tag value. Payload `env` values are compared as given, matching
-    /// upstream configuration handling.
+    /// For each field, use the last matching `by_env` entry, then `all_envs`, then the local settings.
+    /// The caller normalizes `default_env` as a tag value; names in the remote payload are
+    /// compared as given. A payload name such as `Prod` will not match a normalized `prod`.
     pub(crate) fn resolve(&self, default_env: &str, static_settings: &SamplerSettings) -> SamplerSettings {
         let for_env = self
             .by_env
@@ -124,15 +127,13 @@ impl SamplerConfig {
     }
 }
 
-/// The sampling configuration chosen from one `APM_SAMPLING` assignment.
+/// The result of an accepted `APM_SAMPLING` assignment.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RemoteSampling {
-    /// No configuration is assigned.
-    ///
-    /// The sampler keeps its last applied settings, matching upstream handling of empty assignments.
+    /// No configuration is assigned; keep the last applied remote settings, if any.
     Unassigned,
 
-    /// The assigned configuration with this ID.
+    /// The one assigned configuration and its ID.
     Remote {
         /// The configuration's ID.
         id: ConfigId,
@@ -142,9 +143,9 @@ pub(crate) enum RemoteSampling {
     },
 }
 
-/// An error while decoding or choosing an `APM_SAMPLING` configuration.
+/// Why an `APM_SAMPLING` assignment was rejected.
 ///
-/// Its text is reported to the remote endpoint as the configuration's apply error.
+/// The client reports this error to the remote configuration service.
 #[derive(Debug)]
 pub(crate) enum SamplingError {
     /// A configuration's payload is not a valid sampling configuration.
@@ -181,12 +182,13 @@ impl ApplyError for SamplingError {
     }
 }
 
-/// An `APM_SAMPLING` subscription for the trace sampler.
+/// Receives `APM_SAMPLING` updates for a trace sampler.
 ///
-/// Overrides priority and errors sampler targets and enables or disables rare sampling. Pass it to
-/// [`TraceSamplerConfiguration::with_remote_sampling`] to apply updates before each event buffer.
-///
-/// The product stays subscribed while the configuration or a sampler built from it exists.
+/// Create this from the remote configuration client and pass it to
+/// [`TraceSamplerConfiguration::with_remote_sampling`]. The sampler applies accepted updates
+/// before processing each buffer of traces. It keeps its current settings if an update is rejected
+/// or no configuration is assigned. Dropping the last subscription (including copies held by
+/// samplers) unsubscribes from the product.
 ///
 /// [`TraceSamplerConfiguration::with_remote_sampling`]: super::TraceSamplerConfiguration::with_remote_sampling
 #[derive(Debug)]
@@ -207,11 +209,10 @@ impl TraceSamplingSubscription {
     }
 }
 
-/// Decodes `APM_SAMPLING` configurations into a [`RemoteSampling`].
+/// Accepts at most one `APM_SAMPLING` configuration per update.
 ///
-/// - None assigned: [`RemoteSampling::Unassigned`].
-/// - One assigned: use it if it decodes; otherwise reject the snapshot.
-/// - More than one assigned: reject the snapshot, even if every one decodes.
+/// No assignment produces [`RemoteSampling::Unassigned`]. An invalid or multiple-configuration
+/// assignment is rejected, leaving subscribers with the last accepted update.
 #[derive(Default)]
 pub(crate) struct SamplingDecoder {
     assigned: usize,
@@ -225,9 +226,9 @@ impl ProductDecoder for SamplingDecoder {
     type Error = SamplingError;
 
     fn decode(&mut self, id: &ConfigId, payload: &[u8]) -> Result<(), Self::Error> {
-        // Count before parsing so an assignment with only invalid configurations is not treated as empty.
+        // Count before parsing so invalid configurations still count toward the one-config limit.
         self.assigned += 1;
-        // Match Go's `encoding/json`: a `null` payload leaves every field unset.
+        // The Datadog Agent treats a `null` payload as a configuration with no fields set.
         let config = decode_json::<Option<SamplerConfig>>(payload)
             .map_err(SamplingError::InvalidPayload)?
             .unwrap_or_default();
@@ -237,7 +238,7 @@ impl ProductDecoder for SamplingDecoder {
 
     fn build(self) -> Result<Self::Snapshot, Self::Error> {
         if self.assigned > 1 {
-            // The client logs this rejection; do not log it twice.
+            // The client reports this rejection.
             return Err(SamplingError::TooManyConfigurations {
                 assigned: self.assigned,
             });
@@ -353,7 +354,7 @@ mod tests {
         assert_eq!(config.all_envs, env_config(None, None, Some(true)));
     }
 
-    // Ported from upstream `TestEnvPrecedence`, extended to the remaining fallbacks:
+    // Based on the Datadog Agent's `TestEnvPrecedence`, with additional fallback cases:
     // https://github.com/DataDog/datadog-agent/blob/17ecddf4e3e83ccbb0e68aeb99461d1a1d902927/pkg/trace/remoteconfighandler/remote_config_handler_test.go#L289-L322
     #[test]
     fn resolve_prefers_env_then_all_envs_then_static() {
