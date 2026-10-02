@@ -1,10 +1,11 @@
-//! Defines Remote Configuration and product settings for the data plane.
+//! Controls which trace settings ADP receives from the core Agent through Remote Configuration.
 
 use serde::Serialize;
 
-/// Holds resolved Remote Configuration switches for product selection.
+/// Switches for remote trace sampling settings and OTLP trace attribute mappings.
 ///
-/// A product switch has no effect unless [`enabled`](Self::enabled) is `true`.
+/// ADP subscribes only in connected mode with a local trace pipeline. Each product switch also requires
+/// [`enabled`](Self::enabled) to be `true`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Domain {
     /// Controls Remote Configuration (`remote_configuration.enabled`).
@@ -13,12 +14,12 @@ pub struct Domain {
     /// government sites or in FIPS mode.
     pub enabled: bool,
 
-    /// Controls trace sampling updates (`remote_configuration.apm_sampling.enabled`).
+    /// Controls remote trace sampling updates (`remote_configuration.apm_sampling.enabled`).
     ///
     /// Defaults to `true`. Has no effect when [`enabled`](Self::enabled) is `false`.
     pub apm_sampling_enabled: bool,
 
-    /// Controls semantic-registry updates (`remote_configuration.apm_semantics.enabled`).
+    /// Controls remote OTLP trace attribute mappings (`remote_configuration.apm_semantics.enabled`).
     ///
     /// Defaults to `false`. Has no effect when [`enabled`](Self::enabled) is `false`.
     pub apm_semantics_enabled: bool,
