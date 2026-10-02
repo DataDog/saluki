@@ -587,6 +587,53 @@ mod tests {
         );
     }
 
+    // The Agent streams `null` for an empty list, including one produced by ordinary loading, such as
+    // `histogram_aggregates: []` in YAML. Its accessors read the null as empty, so startup must too.
+    #[tokio::test]
+    async fn connected_startup_reads_null_collections_as_empty() {
+        let (agent_tx, agent_rx) = mpsc::channel(1);
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("histogram_aggregates", Value::Null),
+                ConfigSetting::explicit("proxy.no_proxy", Value::Null),
+                ConfigSetting::explicit("additional_endpoints", Value::Null),
+            ]))
+            .await
+            .unwrap();
+        let base = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+
+        let (system, _updates) = ConfigurationSystem::connected(agent_rx, base)
+            .await
+            .expect("startup accepts streamed null collections");
+
+        let config = system.config();
+        assert!(config.shared.metrics_encoding.histogram.aggregates.is_empty());
+        assert!(config.shared.endpoints.proxy.no_proxy.is_empty());
+        assert!(config.shared.endpoints.additional_endpoints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn null_update_clears_a_collection_rather_than_restoring_its_default() {
+        let (system, agent_tx) = connected_system(json!({
+            "additional_endpoints": { "https://app.datadoghq.com": ["second-org-key"] },
+            "histogram_aggregates": ["max"]
+        }))
+        .await;
+        assert!(!system.config().shared.endpoints.additional_endpoints.is_empty());
+
+        for key in ["additional_endpoints", "histogram_aggregates"] {
+            agent_tx
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(key, Value::Null)))
+                .await
+                .unwrap();
+        }
+        await_config(&system, "the cleared collections", |config| {
+            config.shared.endpoints.additional_endpoints.is_empty()
+                && config.shared.metrics_encoding.histogram.aggregates.is_empty()
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn connected_stream_translates_metrics_v3_routing_configuration() {
         let (system, agent_tx) = connected_system(json!({
