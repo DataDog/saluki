@@ -456,7 +456,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_apm_config_replace_tags(&mut self, value: Vec<HashMap<String, String>>) {
         // The schema models each rule as a free string map; this gives it the typed
         // `name`/`pattern`/`repl` shape the replacer consumes.
-        self.config.domains.traces.replace_tags = value
+        let rules: Vec<ReplaceRule> = value
             .into_iter()
             .map(|rule| ReplaceRule {
                 name: rule.get("name").cloned().unwrap_or_default(),
@@ -464,6 +464,22 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 repl: rule.get("repl").cloned().unwrap_or_default(),
             })
             .collect();
+
+        // The trace-agent refuses to start when a rule lacks either field, which includes a null rule
+        // (read as an empty map). `repl` may be empty: that deletes the matched text.
+        for rule in &rules {
+            let message = if rule.name.is_empty() {
+                r#"all rules must have a "name" property (use "*" to target all)"#
+            } else if rule.pattern.is_empty() {
+                r#"all rules must have a "pattern""#
+            } else {
+                continue;
+            };
+            self.record_error(TranslateError::new_with_message("apm_config.replace_tags", message));
+            return;
+        }
+
+        self.config.domains.traces.replace_tags = rules;
     }
 
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
@@ -1704,6 +1720,36 @@ mod tests {
         assert_eq!(traces.replace_tags[0].name, "http.url");
         assert_eq!(traces.replace_tags[0].pattern, "p");
         assert_eq!(traces.replace_tags[0].repl, "");
+    }
+
+    #[test]
+    fn apm_config_replace_tags_rejects_rules_missing_a_name_or_pattern() {
+        // Matches the trace-agent, which fails to start on these. A null rule reads as an empty map, and
+        // the trace-agent compares the decoded string, so an explicit empty value fails like a missing one.
+        for (rules, expected) in [
+            (json!([null]), r#"all rules must have a "name" property"#),
+            (json!([{ "pattern": "p" }]), r#"all rules must have a "name" property"#),
+            (
+                json!([{ "name": "", "pattern": "p" }]),
+                r#"all rules must have a "name" property"#,
+            ),
+            (
+                json!([{ "name": "*", "pattern": "" }]),
+                r#"all rules must have a "pattern""#,
+            ),
+            (
+                json!([{ "name": "*", "repl": "x" }]),
+                r#"all rules must have a "pattern""#,
+            ),
+        ] {
+            let (config, errors) = translate_explicit(json!({ "apm_config": { "replace_tags": rules } }));
+            let errors = errors
+                .unwrap_or_else(|| panic!("{rules} should be rejected"))
+                .to_string();
+            assert!(errors.contains("apm_config.replace_tags"), "{errors}");
+            assert!(errors.contains(expected), "{errors}");
+            assert!(config.domains.traces.replace_tags.is_empty());
+        }
     }
 
     #[test]
