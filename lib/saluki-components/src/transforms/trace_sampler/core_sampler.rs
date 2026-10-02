@@ -221,6 +221,11 @@ impl Sampler {
         self.target_tps = target_tps;
 
         if prev_target == 0.0 {
+            // A zero target leaves zero rates, which no ratio can scale back up. The Datadog Agent leaves them until
+            // the next bucket begins, dropping every trace of those signatures meanwhile; recompute them now instead.
+            if target_tps > 0.0 {
+                self.update_rates(self.last_bucket_id, self.last_bucket_id);
+            }
             return;
         }
         let ratio = target_tps / prev_target;
@@ -283,5 +288,28 @@ mod tests {
 
         // An unknown signature falls to the default rate, which the extra rate does not scale.
         assert_eq!(sampler.get_signature_sample_rate(&Signature(2)), 1.0);
+    }
+
+    #[test]
+    fn target_rising_from_zero_recomputes_learned_rates() {
+        let mut sampler = Sampler::new(1.0, 10.0);
+        let sig = Signature(1);
+
+        // 100 traces in one 5-second bucket are 20 traces per second, so a target of 10 learns a rate of 0.5 once the
+        // next bucket begins.
+        let start = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for now in [start, start + Duration::from_secs(10)] {
+            for _ in 0..100 {
+                sampler.count_weighted_sig(now, &sig, 1.0);
+            }
+        }
+        assert_eq!(sampler.get_signature_sample_rate(&sig), 0.5);
+
+        sampler.update_target_tps(0.0);
+        assert_eq!(sampler.get_signature_sample_rate(&sig), 0.0);
+
+        // Still within the same bucket, so only the update itself can restore the rate.
+        sampler.update_target_tps(10.0);
+        assert_eq!(sampler.get_signature_sample_rate(&sig), 0.5);
     }
 }
