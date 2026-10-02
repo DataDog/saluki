@@ -1,6 +1,8 @@
-//! Decoding of the `APM_SEMANTIC_CORE_DD` Remote Configuration product into a semantic registry.
+//! Loads semantic mappings from the `APM_SEMANTIC_CORE_DD` Remote Configuration product.
 //!
-//! Port of upstream `onSemanticCoreUpdate` (`pkg/trace/remoteconfighandler/remote_config_handler.go`).
+//! The Remote Configuration client gives [`SemanticCoreDecoder`] the currently assigned files. It selects a complete
+//! registry for [`SemanticRegistryProvider`](super::provider::SemanticRegistryProvider) to serve to trace consumers.
+//! This follows the Datadog Agent's `onSemanticCoreUpdate` (`pkg/trace/remoteconfighandler/remote_config_handler.go`).
 
 use std::sync::Arc;
 
@@ -10,18 +12,19 @@ use tracing::{info, warn};
 use super::provider::{Origin, SemanticCore, SemanticCoreError};
 use super::registry::{Registry, EMBEDDED_REGISTRY};
 
-/// Decodes `APM_SEMANTIC_CORE_DD` configurations into a [`SemanticCore`].
+/// Selects a registry from the configurations assigned to `APM_SEMANTIC_CORE_DD`.
 ///
-/// Each configuration replaces the whole registry; configurations are never merged.
+/// The Remote Configuration client calls [`ProductDecoder::decode`] for each assigned file in ID order, then
+/// [`ProductDecoder::build`] once. Each file is a complete replacement for the registry, not a patch. Unknown
+/// concepts and unsupported fallbacks are skipped; the rest of a valid file is used.
 ///
-/// - An empty assignment restores the embedded registry, including on removal or expiration.
-/// - Each valid configuration is acknowledged. The last valid one in ascending ID order wins.
-/// - Unsupported entries are skipped with a warning, without rejecting the configuration.
-/// - If none of the assigned configurations is valid, providers keep the last accepted registry.
+/// With no files assigned (including after removal or expiration), the embedded registry is used. If all assigned
+/// files are invalid, the update is rejected and readers keep the last accepted registry. When multiple files are
+/// assigned, a warning is logged and the last valid file in ID order wins. Valid files are acknowledged only when
+/// the update is accepted.
 ///
-/// Multiple assignments produce a warning, even if all are invalid. Upstream sorts full paths, including
-/// `datadog/<org>/` or `employee/` prefixes; this client sorts IDs. Selection can therefore differ when multiple
-/// configurations are assigned.
+/// The Datadog Agent orders files by full path rather than ID, so it may choose a different file when multiple
+/// are assigned.
 #[derive(Default)]
 pub(crate) struct SemanticCoreDecoder {
     assigned: usize,
@@ -52,8 +55,7 @@ impl ProductDecoder for SemanticCoreDecoder {
 
     fn build(self) -> Result<Self::Snapshot, Self::Error> {
         let Self { assigned, chosen } = self;
-        // Warn even if all were invalid, matching upstream
-        // `pkg/trace/remoteconfighandler/remote_config_handler.go:356-358`.
+        // Match the Datadog Agent's warning even when every assigned file is invalid.
         if assigned > 1 {
             warn!(
                 assigned,
@@ -101,7 +103,6 @@ mod tests {
     const DB_STATEMENT: &str = r#"{"db.statement":{"canonical":"db.statement","fallbacks":[{"name":"db.statement","provider":"datadog","type":"string"}]}}"#;
     const HTTP_METHOD: &str = r#"{"http.method":{"canonical":"http.method","fallbacks":[{"name":"http.method","provider":"otel","type":"string"}]}}"#;
 
-    /// Builds a valid registry document with the given version and `concepts` object.
     fn payload(version: &str, concepts: &str) -> String {
         format!(r#"{{"version":"{version}","metadata":{{"content_hash":"hash-{version}"}},"concepts":{concepts}}}"#)
     }
@@ -121,7 +122,6 @@ mod tests {
         (verdicts, decoder.build().map_err(|e| e.apply_error()))
     }
 
-    /// Records event levels and fields for log assertions.
     struct EventRecorder(Arc<Mutex<Vec<(Level, String)>>>);
 
     struct FieldWriter(String);
@@ -193,7 +193,7 @@ mod tests {
         );
     }
 
-    // Upstream accepts unknown concept keys (`pkg/trace/semantics/registry.go:107-111`).
+    // The Datadog Agent accepts unknown concept keys (`pkg/trace/semantics/registry.go:107-111`).
     #[test]
     fn decode_loads_known_concepts_and_warns_about_unknown_ones() {
         let mixed = payload(
@@ -303,8 +303,7 @@ mod tests {
         );
     }
 
-    // Match upstream's warning for invalid assignments too
-    // (`pkg/trace/remoteconfighandler/remote_config_handler.go:356-358`).
+    // The Datadog Agent also warns when every assigned file is invalid.
     #[test]
     fn build_warns_about_more_than_one_configuration_even_when_all_are_rejected() {
         assert_eq!(
@@ -340,7 +339,6 @@ mod tests {
         assert_eq!(snapshot.assigned, 3);
     }
 
-    /// Returns a test publisher and a provider sharing its subscription.
     fn provider() -> (TestPublisher<SemanticCore, SemanticCoreError>, SemanticRegistryProvider) {
         let (publisher, subscription) = TestPublisher::new();
         (publisher, SemanticRegistryProvider::from_subscription(subscription))

@@ -1,7 +1,7 @@
-//! Remote Configuration consumers for this crate's components.
+//! Entry points for components to receive Remote Configuration updates.
 //!
-//! Each type here subscribes to one product on a
-//! [`RemoteConfigurationClient`](datadog_agent_remote_config::RemoteConfigurationClient) and is handed to the
-//! components that read it.
+//! Subscribe to each product through a shared
+//! [`RemoteConfigurationClient`](datadog_agent_remote_config::RemoteConfigurationClient), then pass the resulting
+//! handle to components that use its configuration.
 
 pub use crate::common::otlp::semantics::SemanticRegistryProvider;
