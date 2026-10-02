@@ -151,7 +151,8 @@ mod scalar_shape_tests {
             // A boolean, integer, or float leaf must accept its string spelling (how it arrives from an
             // environment variable, and how an operator may write it in YAML); a string leaf must accept
             // a boolean. Each written value differs from the leaf's default, so a coercion that silently
-            // failed to land cannot be mistaken for one that worked.
+            // failed to land cannot be mistaken for one that worked. An integer is written in hexadecimal,
+            // which the Agent reads through Go's integer literal syntax and a decimal-only parser rejects.
             let (written, expected) = match key.decode {
                 EnvDecode::Bool => {
                     let flipped = !current.and_then(Value::as_bool).unwrap_or(false);
@@ -159,7 +160,8 @@ mod scalar_shape_tests {
                 }
                 EnvDecode::Integer => {
                     let bumped = current.and_then(Value::as_i64).unwrap_or(0) + 1;
-                    (json!(bumped.to_string()), json!(bumped))
+                    let sign = if bumped < 0 { "-" } else { "" };
+                    (json!(format!("{sign}{:#x}", bumped.unsigned_abs())), json!(bumped))
                 }
                 EnvDecode::Float => {
                     let bumped = current.and_then(Value::as_f64).unwrap_or(0.0) + 1.5;

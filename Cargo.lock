@@ -1324,6 +1324,7 @@ dependencies = [
  "datadog-agent-config-overlay-model",
  "figment",
  "go-duration",
+ "go-strconv",
  "indexmap",
  "prettyplease 0.3.0",
  "schemars",
@@ -2889,6 +2890,10 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "go-duration"
+version = "0.1.0"
+
+[[package]]
+name = "go-strconv"
 version = "0.1.0"
 
 [[package]]

@@ -1,8 +1,9 @@
 //! Serde deserialization for list schema fields with multiple source shapes.
 //!
-//! String lists can arrive as sequences or space-separated environment strings. Map values
-//! containing string lists can likewise arrive as scalars or sequences. Free-form object arrays can
-//! arrive as sequences or JSON-encoded strings. These adapters normalize each form at the boundary.
+//! String lists can arrive as sequences or as strings holding a JSON list or space-separated values.
+//! Map values containing string lists can likewise arrive as scalars or sequences. Free-form object
+//! arrays can arrive as sequences or JSON-encoded strings. These adapters normalize each form at the
+//! boundary.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -10,10 +11,11 @@ use std::fmt;
 use serde::de::{self, DeserializeOwned, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
 
-/// Deserialize a `Vec<String>` from either a sequence or a space-separated string.
+/// Deserialize a `Vec<String>` from either a sequence or a string.
 ///
-/// A string is split on whitespace (matching the Agent's space-separated env convention); a
-/// sequence is taken element by element. Any other JSON shape is a type error.
+/// A string is read as the Agent casts it to a `[]string` (see [`crate::cast_de::parse_string_slice`]):
+/// a JSON list of strings, or else split on whitespace. A sequence is taken element by element. Any
+/// other JSON shape is a type error.
 pub(crate) fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -24,11 +26,11 @@ where
         type Value = Vec<String>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a sequence or a space-separated string")
+            f.write_str("a sequence, a JSON list string, or a space-separated string")
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            Ok(v.split_whitespace().map(str::to_owned).collect())
+            Ok(crate::cast_de::parse_string_slice(v))
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
@@ -126,6 +128,14 @@ mod tests {
             vec!["env:prod", "team:core"]
         );
         assert_eq!(parse(r#"{"list": "solo"}"#), vec!["solo"]);
+    }
+
+    #[test]
+    fn json_list_string_is_decoded() {
+        // A quoted YAML value or a stream string holding a JSON list reads as that list, not as one
+        // whitespace-free element.
+        assert_eq!(parse(r#"{"list": "[\"cr-a\",\"cr-b\"]"}"#), vec!["cr-a", "cr-b"]);
+        assert_eq!(parse(r#"{"list": "[\"a b\"]"}"#), vec!["a b"]);
     }
 
     #[test]
