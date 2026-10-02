@@ -1,8 +1,12 @@
 # Contract: corpus records
 
-The corpus, `lib/datadog-agent/config-recorder/corpus.jsonl` in saluki, is the only interface
-between the Go config recorder and the Rust replay tests. This contract fixes its line types,
-fields, encodings and order, so each side can be built without the other.
+The **corpus** is a collection of saved Datadog Agent configuration test runs in
+[`corpus.jsonl`](../corpus.jsonl). The Go [config recorder](../README.md) writes it; Rust tests
+read it to compare ADP's configuration behavior with the Agent's.
+
+Each run records its inputs, values sent over the Agent's config stream, and results from
+configuration methods such as `GetInt`. This contract defines the file's line types, fields,
+encodings, and order so the Go writer and Rust reader can be implemented independently.
 
 Agent citations are at `281d921619d`. Value encodings for getter results are in `getter-map.md`
 §3; this file references them.

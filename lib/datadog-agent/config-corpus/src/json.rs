@@ -1,11 +1,13 @@
-//! A JSON scanner that keeps the facts a canonical-form check needs.
+//! Parses JSON lines without losing the details needed to validate saved Agent configuration records.
 //!
-//! `serde_json` normalizes escapes, member order and number text away, so the strict corpus reader
-//! parses each line itself from a `&str` the caller has checked as UTF-8. The scanner accepts no
-//! whitespace between tokens (canonical lines have none), rejects unsorted or duplicate object members
-//! at every depth, and records for every string
-//! whether its escaping is exactly what Go's `encoding/json` writes with `SetEscapeHTML(false)`.
-//! Whether that matters depends on where the string sits, which only the line reader knows.
+//! The corpus reader uses this module before decoding each record. The file format requires sorted,
+//! unique object members, no whitespace between tokens, and specific string escaping. These rules
+//! keep regenerated recordings consistent and their diffs readable. Deserializing directly into
+//! `serde_json::Value` would lose member order, duplicate keys, escapes, and the original number text.
+//!
+//! [`parse_line`] checks whitespace and member order while building a [`Json`] tree. It keeps number
+//! text unchanged and marks whether each string uses Go's `encoding/json` escaping. The record reader
+//! then checks that mark where required: streamed protobuf values use protojson's escaping instead.
 
 /// A parsed JSON value.
 #[derive(Debug)]
