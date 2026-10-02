@@ -135,7 +135,7 @@ pub struct OtlpConfiguration {
     /// Defaults to `usize::MAX`, meaning resource names are not truncated.
     max_resource_len: usize,
 
-    /// Provides the semantic registry used to translate traces.
+    /// Supplies attribute mappings for trace translation. Defaults to embedded mappings without remote updates.
     semantic_registry: SemanticRegistryProvider,
 
     /// Workload provider to utilize for origin detection/enrichment.
@@ -196,9 +196,13 @@ impl OtlpConfiguration {
         self
     }
 
-    /// Sets the provider of the semantic registry used to translate traces.
+    /// Sets the provider of attribute mappings used by registry-based trace lookups.
     ///
-    /// Defaults to the embedded registry.
+    /// Pass a subscribed provider to receive remote mapping updates. The translator reads one registry snapshot per
+    /// `ResourceSpans` batch, so an update cannot change mappings midway through that batch. Metrics and logs are
+    /// unaffected.
+    ///
+    /// Defaults to embedded mappings without remote updates.
     pub fn with_semantic_registry(mut self, semantic_registry: SemanticRegistryProvider) -> Self {
         self.semantic_registry = semantic_registry;
         self

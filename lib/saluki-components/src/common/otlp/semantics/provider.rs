@@ -1,4 +1,11 @@
-//! Access to the semantic registry selected by Remote Configuration.
+//! Access to embedded or remotely updated semantic mappings through one provider.
+//!
+//! A semantic registry maps concepts such as HTTP status code to attribute names and types. Trace translation and
+//! APM stats use [`SemanticRegistryProvider`] without choosing between embedded and remotely supplied mappings.
+//!
+//! With Remote Configuration disabled, the default provider always uses the embedded registry. A subscribed provider
+//! also starts with the embedded registry, then returns the latest accepted `APM_SEMANTIC_CORE_DD` update. Reading one
+//! snapshot per batch keeps its mappings consistent even if an update arrives during processing.
 
 use std::fmt;
 use std::sync::Arc;
@@ -7,7 +14,7 @@ use datadog_agent_remote_config::{ApplyError, ConfigId, Subscription};
 
 use super::registry::{Registry, EMBEDDED_REGISTRY};
 
-/// Where a [`SemanticCore`] snapshot's registry came from.
+/// Identifies whether a [`SemanticCore`] registry is embedded or supplied by a remote configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// The registry embedded in the binary, used when no configuration is assigned.
@@ -27,9 +34,13 @@ impl fmt::Display for Origin {
     }
 }
 
-/// The semantic registry chosen from one `APM_SEMANTIC_CORE_DD` assignment.
+/// The registry selected from a set of remote semantic-mapping configurations.
+///
+/// `APM_SEMANTIC_CORE_DD` is the Remote Configuration product that distributes semantic registries. An assignment is
+/// the set of configurations currently supplied for that product. This snapshot holds the selected registry and its
+/// origin, or the embedded registry when the assignment is empty.
 pub struct SemanticCore {
-    /// The chosen registry.
+    /// The complete registry to use, not a set of changes to the previous registry.
     pub(crate) registry: Arc<Registry>,
 
     /// Where the registry came from.
@@ -62,14 +73,15 @@ impl fmt::Debug for SemanticCore {
     }
 }
 
-/// An error decoding or choosing an `APM_SEMANTIC_CORE_DD` registry.
+/// Explains why a remote semantic registry could not be parsed or selected.
 ///
-/// Its text is reported to the remote endpoint as the configuration's apply error.
+/// The Remote Configuration client reports this error to the server. Error text must not include payload contents.
+/// A rejected update leaves the provider's last accepted registry unchanged.
 #[derive(Debug)]
 pub enum SemanticCoreError {
     /// A configuration's payload is not a valid registry.
     InvalidRegistry {
-        /// Rejection reason; must not quote the payload.
+        /// Rejection reason safe to send to the server, without quoting payload contents.
         reason: String,
     },
 
@@ -100,23 +112,32 @@ impl ApplyError for SemanticCoreError {
     }
 }
 
-/// Provides the last accepted `APM_SEMANTIC_CORE_DD` registry, or the embedded registry before any update.
+/// Supplies semantic mappings from either the embedded registry or the latest accepted remote update.
 ///
-/// Clones share the subscription. The default provider always returns the embedded registry.
+/// Consumers find attribute names for concepts such as HTTP status code without choosing a registry source.
+/// The default provider always returns the embedded registry: it never subscribes or waits for updates. Use it when
+/// Remote Configuration is disabled by configuration or deployment policy.
+///
+/// With a live subscription to `APM_SEMANTIC_CORE_DD`, the provider uses the embedded registry until an update is
+/// accepted, then returns the latest accepted registry. Rejected updates leave that registry unchanged.
+///
+/// Clones share the subscription. Each component calls [`Self::snapshot`] at its batch boundary to keep one set of
+/// mappings throughout processing.
 #[derive(Clone, Debug)]
 pub struct SemanticRegistryProvider {
     subscription: Subscription<SemanticCore, SemanticCoreError>,
 }
 
 impl SemanticRegistryProvider {
-    /// Creates a provider that reads `subscription`.
+    /// Wraps a registry subscription. An inert subscription keeps using the embedded registry.
     pub(crate) fn from_subscription(subscription: Subscription<SemanticCore, SemanticCoreError>) -> Self {
         Self { subscription }
     }
 
-    /// Returns the current registry.
+    /// Returns the latest accepted registry, or the embedded registry if the subscription has no accepted value.
     ///
-    /// Call this once per batch and use the returned registry for the whole batch.
+    /// Returns immediately, without waiting for an update. The registry is immutable and remains valid after later
+    /// updates. Call once per batch and use the result throughout; calling again can return a newer registry.
     pub fn snapshot(&self) -> Arc<Registry> {
         match self.subscription.current() {
             Some(core) => Arc::clone(&core.registry),

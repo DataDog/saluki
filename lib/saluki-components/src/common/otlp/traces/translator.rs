@@ -175,12 +175,14 @@ pub struct OtlpTracesTranslator {
     max_resource_len: usize,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
-    /// Supplies one registry snapshot per `ResourceSpans` batch, so updates cannot split a batch.
+    /// Supplies one registry snapshot per `ResourceSpans` batch, so mappings cannot change midway through a batch.
     registry: SemanticRegistryProvider,
 }
 
 impl OtlpTracesTranslator {
-    /// Creates a translator that reads the semantic registry from `registry`.
+    /// Creates a translator using `registry` for embedded or remotely updated attribute mappings.
+    ///
+    /// Reads the current registry at the start of each [`Self::translate_spans`] call, not at construction.
     pub fn new(config: domains::otlp::Traces, max_resource_len: usize, registry: SemanticRegistryProvider) -> Self {
         let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());

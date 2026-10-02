@@ -1,8 +1,8 @@
-//! Peer tag key set derivation from the semantic registry.
+//! Derives the attribute names used to group APM stats by the service or resource a span calls.
 //!
-//! Peer tags identify the remote endpoint a span talked to, and their values are hashed into the
-//! stats aggregation key in the order of the configured key list. The snapshot also records the
-//! registry's fingerprint so it can be rebuilt when the registry changes.
+//! These attributes are peer tags. Their values contribute to the stats aggregation key in sorted attribute-name
+//! order. [`PeerTagKeys`] combines names from the semantic registry with custom peer tags and tracks the registry's
+//! fingerprint so mapping updates can refresh the list.
 
 use std::sync::Arc;
 
@@ -31,9 +31,10 @@ const PEER_CONCEPTS: &[Concept] = &[
     Concept::DdBaseService,
 ];
 
-/// Stores peer tag keys and the fingerprint of the registry used to derive them.
+/// The sorted, deduplicated attribute names used to group spans by peer tag values.
 ///
-/// Clones share the keys; a fingerprint comparison determines when to rebuild them.
+/// Includes names from every fallback of the registry's peer concepts, plus configured custom tags. Clones share
+/// the key list. The stored registry fingerprint lets [`Self::refresh`] detect when mappings have changed.
 #[derive(Clone)]
 pub(crate) struct PeerTagKeys {
     fingerprint: u64,
@@ -57,9 +58,10 @@ impl PeerTagKeys {
         }
     }
 
-    /// Rebuilds the keys only when `registry` has a different fingerprint from this snapshot.
+    /// Rebuilds peer tag names if the registry fingerprint changed, returning whether a rebuild occurred.
     ///
-    /// Returns `true` if rebuilt. Changes to `custom_peer_tags` alone do not trigger a rebuild.
+    /// Changes to `custom_peer_tags` alone do not trigger a rebuild. Keep them unchanged between calls, or use
+    /// [`Self::build`] to replace the key set.
     pub(crate) fn refresh(&mut self, registry: &Registry, custom_peer_tags: &[MetaString]) -> bool {
         if self.fingerprint == registry.fingerprint() {
             return false;

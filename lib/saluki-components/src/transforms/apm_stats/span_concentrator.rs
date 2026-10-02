@@ -83,7 +83,7 @@ pub struct SpanConcentrator {
     /// Operator-configured peer tags, kept so the key set can be rebuilt when the registry changes
     custom_peer_tags: Vec<MetaString>,
 
-    /// Provides the registry for [`Self::refresh_registry`].
+    /// Supplies embedded or remotely updated mappings from peer concepts to attribute names.
     registry: SemanticRegistryProvider,
 
     /// Bucket duration in nanoseconds (10 s)
@@ -104,9 +104,13 @@ pub struct SpanConcentrator {
 }
 
 impl SpanConcentrator {
-    /// Creates a concentrator using the semantic registry from `registry`.
+    /// Creates a concentrator that groups spans into time-bucketed APM stats.
     ///
-    /// Peer tag keys start from its current registry; [`Self::refresh_registry`] picks up replacements.
+    /// Peer tag names come from the provider's current semantic registry, combined with `custom_peer_tags`. Their
+    /// values distinguish stats for different remote services or resources when `peer_tags_aggregation` is enabled.
+    /// Call [`Self::refresh_registry`] before each input event buffer to pick up mapping changes.
+    ///
+    /// `now` is the current Unix timestamp in nanoseconds, used to establish the oldest accepted bucket.
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString],
         registry: SemanticRegistryProvider, now: u64,
@@ -138,9 +142,11 @@ impl SpanConcentrator {
         self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin);
     }
 
-    /// Rebuilds peer tag keys if the current registry's fingerprint differs from their snapshot.
+    /// Updates the peer tag names used to group subsequent spans when the provider's registry changes.
     ///
-    /// Call this before adding spans from each event buffer, so the buffer uses one key set.
+    /// Compares registry fingerprints and rebuilds the key set only when they differ, preserving custom peer tags.
+    /// Call before converting spans from each input event buffer, so all spans in the buffer use one key set.
+    /// Already aggregated stats are unchanged.
     pub fn refresh_registry(&mut self) {
         self.peer_tag_keys
             .refresh(&self.registry.snapshot(), &self.custom_peer_tags);
