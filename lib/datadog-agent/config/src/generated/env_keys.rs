@@ -33,6 +33,16 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_APM_CONFIG_ANALYZED_RATE_BY_SERVICE"],
+        path: &["apm_config", "analyzed_rate_by_service"],
+        decode: EnvDecode::JsonValue,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_ANALYZED_SPANS"],
+        path: &["apm_config", "analyzed_spans"],
+        decode: EnvDecode::TracesSpan,
+    },
+    EnvKey {
         env_vars: &["DD_APM_COMPUTE_STATS_BY_SPAN_KIND"],
         path: &["apm_config", "compute_stats_by_span_kind"],
         decode: EnvDecode::Bool,
@@ -66,6 +76,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_APM_CONFIG_MAX_CATALOG_ENTRIES"],
         path: &["apm_config", "max_catalog_entries"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_APM_MAX_EPS", "DD_MAX_EPS"],
+        path: &["apm_config", "max_events_per_second"],
+        decode: EnvDecode::Float,
     },
     EnvKey {
         env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],

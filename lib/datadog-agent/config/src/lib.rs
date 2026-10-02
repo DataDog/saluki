@@ -25,6 +25,7 @@ mod schema_defaults;
 /// The translation error type recorded by the translator and surfaced by the witness driver.
 mod translate_error;
 
+pub use cast_de::cast_to_f64;
 pub use cast_de::cast_to_string;
 pub use env_decode::EnvDecode;
 pub use env_provider::DatadogEnvProvider;
@@ -112,6 +113,15 @@ mod scalar_shape_tests {
         let config: DatadogConfiguration = serde_json::from_value(json!({ "dogstatsd_non_local_traffic": "true" }))
             .expect("boolean string deserializes");
         assert!(config.dogstatsd_non_local_traffic);
+    }
+
+    #[test]
+    fn number_map_leaf_accepts_numeric_string_values() {
+        let config: DatadogConfiguration = serde_json::from_value(json!({
+            "apm_config": { "analyzed_rate_by_service": { "service": "0.8" } }
+        }))
+        .expect("numeric string map deserializes");
+        assert_eq!(config.apm_config.analyzed_rate_by_service["service"], 0.8);
     }
 
     #[test]

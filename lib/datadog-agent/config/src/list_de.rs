@@ -84,7 +84,7 @@ where
         Seq(Vec<String>),
     }
 
-    let values = crate::cast_de::deserialize_map_or_json_string::<_, ScalarOrSeq>(deserializer)?;
+    let values = crate::cast_de::deserialize_map_or_json_string::<_, HashMap<String, ScalarOrSeq>>(deserializer)?;
     Ok(values
         .into_iter()
         .map(|(key, value)| {
