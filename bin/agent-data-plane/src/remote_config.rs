@@ -1,4 +1,9 @@
-//! Selects Remote Configuration products and subscribes to them for the topology.
+//! Connects the trace pipeline to the core Agent's Remote Configuration service.
+//!
+//! The Agent supplies trace sampling settings (`APM_SAMPLING`) and mappings from trace concepts such
+//! as HTTP status to attribute names (`APM_SEMANTIC_CORE_DD`). In connected mode with a local trace
+//! pipeline, ADP subscribes to enabled products and runs a worker that polls for updates. Without a
+//! subscription, components use configured sampling settings and the mappings embedded in ADP.
 
 use std::time::Duration;
 
@@ -17,13 +22,13 @@ use saluki_metadata::AppDetails;
 
 use crate::config::DataPlaneConfiguration;
 
-/// Identifies the Remote Configuration products enabled for the data plane.
+/// The trace products ADP requests from the Agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RcProducts {
-    /// Whether Remote Configuration supplies trace sampling rates.
+    /// Whether to request trace sampling settings.
     pub sampling: bool,
 
-    /// Whether Remote Configuration supplies the OTLP semantic registry.
+    /// Whether to request OTLP trace attribute mappings.
     pub semantics: bool,
 }
 
@@ -40,10 +45,10 @@ impl RcProducts {
     }
 }
 
-/// Selects the Remote Configuration products enabled by `config`.
+/// Chooses which trace products to subscribe to from `config`.
 ///
-/// Requires both the global and product switches, as in the trace-agent. ADP also requires a local trace pipeline
-/// and connected mode.
+/// Subscriptions require connected mode, a local trace pipeline, the global Remote Configuration switch, and the
+/// corresponding product switch.
 pub(crate) fn enabled_products(config: &SalukiConfiguration) -> RcProducts {
     let dp = DataPlaneConfiguration::from_configuration(config);
     let rc = &config.domains.remote_configuration;
@@ -58,9 +63,9 @@ pub(crate) fn enabled_products(config: &SalukiConfiguration) -> RcProducts {
     }
 }
 
-/// Builds the Remote Configuration client identity from `client_name` and the application version.
+/// Creates the identity ADP sends when polling the Agent for Remote Configuration.
 ///
-/// `client_name` is also the name used on the Agent's configuration stream.
+/// Uses the same application name as ADP's separate configuration-update stream, plus this build's version.
 pub(crate) fn rc_identity(app_details: &AppDetails) -> ClientKind {
     ClientKind::Agent(AgentIdentity::new(
         client_name(app_details),
@@ -68,28 +73,28 @@ pub(crate) fn rc_identity(app_details: &AppDetails) -> ClientKind {
     ))
 }
 
-/// Remote Configuration subscriptions for components in the topology.
+/// Handles passed to trace components for Remote Configuration updates.
 ///
-/// The default subscribes to nothing: the trace sampler uses its configured rates and the semantic registry provider
-/// serves the embedded registry.
+/// By default, the sampler uses its configured settings, and OTLP translation and APM stats use the attribute mappings
+/// embedded in ADP. When subscribed, these components read updates from the same polling worker.
 #[derive(Default)]
 pub(crate) struct RemoteConfigSubscriptions {
-    /// Sampling targets for the trace sampler, present when `APM_SAMPLING` is enabled.
+    /// Sampling settings for the trace sampler, if `APM_SAMPLING` is enabled.
     pub trace_sampling: Option<TraceSamplingSubscription>,
 
-    /// Semantic registry for the OTLP source, the OTLP decoder, and APM stats.
+    /// Attribute mappings shared by the OTLP source, OTLP decoder, and APM stats.
     pub semantic_registry: SemanticRegistryProvider,
 }
 
 impl RemoteConfigSubscriptions {
-    /// Connects to the Agent and subscribes to the enabled `products`.
+    /// Connects to the Agent and subscribes to the selected `products`.
     ///
-    /// Returns subscriptions and a supervisor child that runs the RC worker. Without enabled products or
-    /// `remote_agent`, returns defaults and no child without connecting. Subscriptions keep the shared client state alive.
+    /// With no products or no Agent connection settings, returns default handles and no worker without connecting.
+    /// Otherwise, returns a child supervisor for the polling worker. The subscriptions keep its shared state alive.
     ///
     /// # Errors
     ///
-    /// Returns an error if connecting or creating the client, subscriptions, or supervisor fails.
+    /// Returns an error if the Agent connection, client setup, subscription, or supervisor creation fails.
     pub(crate) async fn subscribe(
         products: RcProducts, remote_agent: Option<&RemoteAgentClientConfiguration>,
     ) -> Result<(Self, Option<ChildSpecification<SupervisorSpec>>), GenericError> {
@@ -97,7 +102,7 @@ impl RemoteConfigSubscriptions {
             return Ok((Self::default(), None));
         };
 
-        // Use a separate connection for Remote Configuration.
+        // Remote Configuration has its own Agent connection, separate from other ADP services.
         let agent = RemoteAgentClient::connect(remote_agent)
             .await
             .error_context("Failed to connect to the Datadog Agent for Remote Configuration.")?;
@@ -116,13 +121,11 @@ impl RemoteConfigSubscriptions {
     }
 }
 
-/// Creates the `remote-config` supervisor for `worker` as a temporary child of root.
+/// Runs the Remote Configuration polling worker under its own supervisor.
 ///
-/// When the worker exhausts its restart budget, Remote Configuration stops. Root keeps running, and consumers
-/// retain their last applied configuration.
-///
-/// The worker's `initialize` must be infallible: initialization errors reach root regardless of restart policy and
-/// stop the process.
+/// The worker can restart five times within 60 seconds. If it keeps failing, polling stops but the rest of ADP keeps
+/// running with the last accepted settings. The worker's `initialize` must not fail: initialization errors stop ADP
+/// rather than triggering a restart.
 fn remote_config_child(
     worker: impl Supervisable + 'static,
 ) -> Result<ChildSpecification<SupervisorSpec>, SupervisorError> {

@@ -14,9 +14,9 @@ env:
   DD_DATA_PLANE_OTLP_PROXY_ENABLED: "false"
   DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:56317"
   DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:56318"
-  # Disable all RC products while keeping the trace pipeline enabled.
+  # Disable Remote Configuration globally while keeping the trace pipeline enabled.
   DD_REMOTE_CONFIGURATION_ENABLED: "false"
-  # Debug logs would expose a poll counter's metric context if a worker ran.
+  # If the worker starts polling, it logs a Remote Configuration metric at debug level.
   DD_LOG_LEVEL: "debug"
 
 container:

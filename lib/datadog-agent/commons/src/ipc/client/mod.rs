@@ -35,7 +35,7 @@ pub use self::streaming::StreamingResponse;
 const CONNECT_RETRY_ATTEMPTS: usize = 10;
 const CONNECT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
-/// Formats the application's name for the Agent's configuration stream and Remote Configuration client identity.
+/// Formats an application name for the Agent's configuration-update stream and Remote Configuration requests.
 ///
 /// Converts the full name to lowercase and replaces spaces and underscores with hyphens.
 pub fn client_name(app_details: &AppDetails) -> String {
