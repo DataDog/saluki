@@ -32,11 +32,12 @@
 //!
 //! # Shutdown
 //!
-//! Shutting a subtree down is a _trigger_, not an enforcement. A one-shot child is never handed the shutdown signal at
-//! all: it runs until it reaches its own terminal condition -- an input channel closing, a loop finishing, a request
-//! completing -- and the supervisor waits for it. That is what lets a set of tasks connected by channels drain in
-//! dependency order without any of them having to know that order, and it is why the shutdown signal being invisible
-//! here costs nothing.
+//! A subtree shutdown is a _trigger_, not an enforcement. A one-shot child built with [`worker`] never receives the
+//! shutdown signal. It runs until it reaches its own terminal condition, and the supervisor waits for it. Examples of a
+//! terminal condition are an input channel that closes, a loop that finishes, and a request that completes.
+//!
+//! This behavior lets a set of tasks that are connected by channels drain in dependency order. The tasks do not have to
+//! know that order. Because of this behavior, it is not a problem that a one-shot child cannot see the shutdown signal.
 //!
 //! What bounds the wait is the supervisor's [shutdown budget][super::Supervisor::with_shutdown_budget], which covers
 //! the whole set of children rather than each guessing at how long it ought to take. A supervisor without a budget has
@@ -46,11 +47,20 @@
 //!
 //! - Work with no terminal condition -- an endless background loop -- would hold the drain until the budget elapsed.
 //!   Give it [`ShutdownStrategy::Brutal`] via [`ChildBuilder::with_shutdown_strategy`] so it is aborted at once.
-//! - Work that must observe shutdown to know it should stop, or that needs to run cleanup, isn't a one-shot worker at
-//!   all: implement [`Supervisable`] directly, which does receive the signal.
+//! - If work must observe shutdown to know that it must stop, or must run cleanup, build it with
+//!   [`worker_with_shutdown`]. The body of that worker receives the shutdown signal. You can also implement
+//!   [`Supervisable`] directly.
 //!
 //! [`ChildBuilder::with_shutdown_timeout`] imposes a deadline shorter than the budget when a particular child should
 //! be abandoned sooner than its siblings.
+//!
+//! # Children of the current process
+//!
+//! [`ChildBuilder::spawn`] makes a child a sibling of the current process, under the same supervisor.
+//! [`ChildBuilder::spawn_child`] makes the child a child of the current process instead, and the [scope][super::scope]
+//! of that process holds it. The process does not finish until its children finish. When the body of the process
+//! returns, the scope tells the children to stop. [`ChildBuilder::needed`] marks a child that the process cannot work
+//! without.
 //!
 //! # Task naming
 //!
@@ -61,9 +71,11 @@
 
 use std::{future::Future, marker::PhantomData, time::Duration};
 
+use saluki_common::sync::shutdown::ShutdownHandle;
 use tokio::runtime::Handle;
 
 use super::{
+    scope::{self, Edge, Scope},
     ChildId, ChildSpecification, FnWorker, IntoWorkerResult, RestartType, ShutdownStrategy, Supervisable, Supervisor,
     SupervisorHandle, SupervisorSpec, WorkerSpec,
 };
@@ -82,6 +94,23 @@ where
     Fut::Output: IntoWorkerResult,
 {
     ChildBuilder::one_shot(BuilderTarget::Ambient, FnWorker::new(name, fut))
+}
+
+/// Creates a builder for a child task on the ambient supervisor, with a body that receives the shutdown signal.
+///
+/// The ambient counterpart to [`SupervisorHandle::worker_with_shutdown`].
+///
+/// # Panics
+///
+/// [`ChildBuilder::spawn`] panics if there is no ambient supervisor. See [`spawn`][super::spawn].
+pub fn worker_with_shutdown<N, F, Fut>(name: N, f: F) -> ChildBuilder<'static>
+where
+    N: Into<String>,
+    F: FnOnce(ShutdownHandle) -> Fut + Send + 'static,
+    Fut: Future + Send + 'static,
+    Fut::Output: IntoWorkerResult,
+{
+    ChildBuilder::one_shot(BuilderTarget::Ambient, FnWorker::with_shutdown(name, f))
 }
 
 /// Creates a builder for a supervisable child task on the ambient supervisor.
@@ -123,6 +152,21 @@ impl SupervisorHandle {
         Fut::Output: IntoWorkerResult,
     {
         ChildBuilder::one_shot(BuilderTarget::Handle(self), FnWorker::new(name, fut))
+    }
+
+    /// Creates a builder for a child task with a body that receives the shutdown signal.
+    ///
+    /// `f` receives the [`ShutdownHandle`] of the task when the task starts. Use this method for work that must observe
+    /// shutdown to stop in time. Such work stops when it observes shutdown, not when it reaches its own terminal
+    /// condition. An example is a long-lived connection that must close gracefully. See [`FnWorker::with_shutdown`].
+    pub fn worker_with_shutdown<N, F, Fut>(&self, name: N, f: F) -> ChildBuilder<'_>
+    where
+        N: Into<String>,
+        F: FnOnce(ShutdownHandle) -> Fut + Send + 'static,
+        Fut: Future + Send + 'static,
+        Fut::Output: IntoWorkerResult,
+    {
+        ChildBuilder::one_shot(BuilderTarget::Handle(self), FnWorker::with_shutdown(name, f))
     }
 
     /// Creates a builder for a supervisable child task.
@@ -369,6 +413,69 @@ impl<'a, S: BuilderState> ChildBuilder<'a, S> {
         match target {
             BuilderTarget::Ambient => super::spawn(spec),
             BuilderTarget::Handle(supervisor) => supervisor.spawn(spec),
+        }
+    }
+
+    /// Marks this child as one that its owner cannot work without.
+    ///
+    /// This setting applies when the child is spawned into a [scope][super::scope]. If the child terminates without a
+    /// request to stop, and its restart policy does not restart it, the process that owns the scope fails. The process
+    /// does not continue without the child. A supervisor ignores this setting and uses
+    /// [significance][ChildBuilder::with_significant] instead.
+    ///
+    /// The default is hosted. If a hosted child terminates and is not restarted, its owner reaps the child and
+    /// continues. In both cases, if a child stops more often than the restart limit of its scope allows, the owner
+    /// fails.
+    pub fn needed(self) -> Self {
+        self.map_spec(|spec| spec.with_edge(Edge::Needed))
+    }
+
+    /// Spawns the child into the scope of the current process, so that the child belongs to that process.
+    ///
+    /// [`spawn`][Self::spawn] makes the child a sibling of the current process, under the same supervisor. This method
+    /// is different: it makes the child a child of the current process itself. The process does not finish until the
+    /// child finishes. When the body of the process returns, the scope tells the child to stop. See
+    /// [`scope`][super::scope] for the details. The supervisor that this builder was created from has no effect here.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no current scope. This means that the caller does not run in a supervised process. For code
+    /// that can run outside supervision, use [`spawn_child_or_detached`][Self::spawn_child_or_detached].
+    pub fn spawn_child(self) -> ChildId {
+        let Self { spec, .. } = self;
+
+        match scope::current() {
+            Some(scope) => scope.spawn(spec),
+            None => panic!(
+                "`spawn_child` called outside of a supervised process: there is no current scope to spawn into. Use \
+                 `spawn_child_or_detached` for code that may run outside supervision."
+            ),
+        }
+    }
+
+    /// Spawns the child into `scope`.
+    pub fn spawn_in(self, scope: &Scope) -> ChildId {
+        let Self { spec, .. } = self;
+
+        scope.spawn(spec)
+    }
+
+    /// Spawns the child into the scope of the current process, as [`spawn_child`][Self::spawn_child] does, or as a
+    /// detached task outside supervision.
+    ///
+    /// Returns the [`ChildId`] of the child, or `None` if there was no current scope and the child started as a
+    /// detached task instead. A detached child never receives a shutdown signal, and nothing restarts it or waits for
+    /// it. This is how the same work runs without scopes at all. Thus, this method is the correct choice for code that
+    /// can be called from any location, such as a primitive that a test can construct.
+    pub fn spawn_child_or_detached(self) -> Option<ChildId> {
+        let Self { spec, .. } = self;
+
+        match scope::current() {
+            Some(scope) => Some(scope.spawn(spec)),
+            None => {
+                scope::spawn_detached(spec, ShutdownHandle::noop());
+                None
+            }
         }
     }
 }
