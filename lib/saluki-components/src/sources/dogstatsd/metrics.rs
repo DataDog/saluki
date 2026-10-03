@@ -9,7 +9,7 @@ use saluki_core::{
     components::ComponentContext,
     observability::{metrics as internal_metrics, ComponentMetricsExt as _},
 };
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{ListenAddress, ProcessCredentialsError};
 use saluki_metrics::MetricsBuilder;
 
 const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
@@ -169,7 +169,9 @@ pub(super) struct Metrics {
     metric_decoder_errors: Counter,
     event_decoder_errors: Counter,
     service_check_decoder_errors: Counter,
-    origin_detection_errors: Counter,
+    origin_detection_invalid_credentials: Counter,
+    origin_detection_zero_pid: Counter,
+    origin_detection_truncated_control_data: Counter,
     failed_context_resolve_total: Counter,
     connections_active: Gauge,
     packet_receive_success: Counter,
@@ -193,7 +195,9 @@ impl Metrics {
             metric_decoder_errors: Counter::noop(),
             event_decoder_errors: Counter::noop(),
             service_check_decoder_errors: Counter::noop(),
-            origin_detection_errors: Counter::noop(),
+            origin_detection_invalid_credentials: Counter::noop(),
+            origin_detection_zero_pid: Counter::noop(),
+            origin_detection_truncated_control_data: Counter::noop(),
             failed_context_resolve_total: Counter::noop(),
             connections_active: Gauge::noop(),
             packet_receive_success: Counter::noop(),
@@ -251,8 +255,14 @@ impl Metrics {
         &self.service_check_decoder_errors
     }
 
-    pub(super) fn origin_detection_errors(&self) -> &Counter {
-        &self.origin_detection_errors
+    pub(super) fn record_origin_detection_error(&self, error: ProcessCredentialsError, count: u64) {
+        let counter = match error {
+            ProcessCredentialsError::InvalidCredentials => &self.origin_detection_invalid_credentials,
+            ProcessCredentialsError::ZeroPid => &self.origin_detection_zero_pid,
+            ProcessCredentialsError::TruncatedControlData => &self.origin_detection_truncated_control_data,
+            ProcessCredentialsError::UnsupportedPlatform => return,
+        };
+        counter.increment(count);
     }
 
     pub(super) fn failed_context_resolve_total(&self) -> &Counter {
@@ -282,6 +292,13 @@ impl Metrics {
     pub(super) fn packet_forwarding_errors(&self) -> &Counter {
         &self.packet_forwarding_errors
     }
+}
+
+fn origin_detection_error_counter(builder: &MetricsBuilder, reason: &'static str) -> Counter {
+    builder.register_counter_with_tags(
+        METRIC_ERRORS_TOTAL,
+        [("error_type", ERROR_TYPE_ORIGIN_DETECTION), ("reason", reason)],
+    )
 }
 
 pub(super) fn build_metrics(
@@ -330,8 +347,9 @@ pub(super) fn build_metrics(
             METRIC_ERRORS_TOTAL,
             error_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
         ),
-        origin_detection_errors: builder
-            .register_counter_with_tags(METRIC_ERRORS_TOTAL, [("error_type", ERROR_TYPE_ORIGIN_DETECTION)]),
+        origin_detection_invalid_credentials: origin_detection_error_counter(&builder, "invalid_credentials"),
+        origin_detection_zero_pid: origin_detection_error_counter(&builder, "zero_pid"),
+        origin_detection_truncated_control_data: origin_detection_error_counter(&builder, "truncated_control_data"),
         connections_active: builder
             .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
         packet_receive_success: builder.register_counter_with_tags(
