@@ -9,6 +9,7 @@ members = [
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
   "lib/datadog-agent/commons",
+  "lib/datadog-agent/checks-protocol",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
@@ -55,6 +56,7 @@ repository = "https://github.com/DataDog/saluki"
 agent-data-plane-config = { path = "lib/agent-data-plane-config" }
 agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
+datadog-checks-protocol = { path = "lib/datadog-agent/checks-protocol" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
 datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }

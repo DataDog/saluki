@@ -11,10 +11,33 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAX_FRAME: usize = 256;
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(50);
+static LAST_SESSION_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_session_id() -> io::Result<u64> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| invalid(error.to_string()))?;
+    let nanos = u64::try_from(now.as_nanos()).map_err(|_| invalid("session clock exceeds u64"))?;
+    let seed = nanos ^ (std::process::id() as u64).rotate_left(32);
+    loop {
+        let previous = LAST_SESSION_ID.load(Ordering::Relaxed);
+        let next = previous
+            .max(seed)
+            .checked_add(1)
+            .ok_or_else(|| invalid("session identifiers exhausted"))?;
+        if LAST_SESSION_ID
+            .compare_exchange_weak(previous, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Ok(next);
+        }
+    }
+}
 
 fn phase(name: &'static str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{name}: {error}"))
@@ -315,11 +338,7 @@ fn open_inner(
         reject(&mut stream, &error, deadline);
         return Err(error);
     }
-    let id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| invalid(e.to_string()))?
-        .as_nanos() as u64
-        ^ (std::process::id() as u64);
+    let id = next_session_id()?;
     let (mut shared, name) =
         Shared::create(id, capacity, protocol.version).map_err(|e| phase("creating shared memory", e))?;
     let offer = offer_frame(id, &name, capacity, &protocol);
@@ -639,6 +658,18 @@ mod tests {
         version: 2,
         message_types: &[1, 2],
     };
+
+    #[test]
+    fn concurrent_sessions_get_distinct_identifiers() {
+        let workers: Vec<_> = (0..32).map(|_| thread::spawn(next_session_id)).collect();
+        let mut ids: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 32);
+    }
 
     fn unused_loopback_address() -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

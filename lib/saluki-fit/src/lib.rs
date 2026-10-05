@@ -47,6 +47,10 @@ impl Producer {
     pub fn session_id(&self) -> u64 {
         self.id
     }
+    /// Returns the configured ring capacity in bytes.
+    pub fn ring_capacity(&self) -> usize {
+        self.shared.capacity
+    }
     /// Publishes the fitting prefix and reports notification failures after publication.
     pub fn send_batch(&mut self, records: &[Record<'_>]) -> io::Result<SendResult> {
         self.shared.send_batch(records, &self.protocol)
