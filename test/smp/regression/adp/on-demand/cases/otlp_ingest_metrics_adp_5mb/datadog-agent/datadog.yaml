@@ -1,0 +1,10 @@
+hostname: smp-regression
+api_key: foo00000001
+dd_url: http://127.0.0.1:9091
+auth_token_file_path: /tmp/agent-auth-token
+cloud_provider_metadata: []
+remote_configuration:
+  enabled: false
+dogstatsd_port: 0
+telemetry:
+  enabled: true

@@ -388,6 +388,73 @@ templates:
         # TODO(#2177): Return OTLP generator targets from the temporary ADP-only `6317`/`6318`
         # defaults to the canonical schema-provided `4317`/`4318` endpoints.
 
+  # Base template for the OTLP metrics platform-comparison experiments: the converged Datadog Agent
+  # image with the Core Agent always running, where each experiment selects which OTLP ingestion
+  # path handles the traffic -- the Core Agent's own receiver, DDOT (`otel-agent`), or ADP. The
+  # legs are identical apart from that selection, so their results are comparable with each
+  # other, with the Core Agent leg doubling as the sidecar-less baseline. They are defined as
+  # `on_demand` experiments and only run through the manual on-demand CI job.
+  otlp_ingest_converged_base:
+    target:
+      name: datadog-agent
+      command: /bin/entrypoint.sh
+
+      memory_allotment: 4GiB
+
+      files:
+        empty.yaml: null
+        cert.pem: null
+        datadog.yaml:
+          content:
+            hostname: smp-regression
+            api_key: foo00000001
+
+            # SMP's blackholes stand in for the intake.
+            dd_url: http://127.0.0.1:9091
+
+            # The target's configuration directory is mounted read-only, so the Agent can't write
+            # its IPC credentials to the default location underneath it.
+            auth_token_file_path: /tmp/agent-auth-token
+
+            # Keep the target from poking around its execution environment or the network, which
+            # would otherwise add noise the experiment doesn't control for.
+            cloud_provider_metadata: []
+            remote_configuration:
+              enabled: false
+
+            # No DogStatsD traffic in these experiments: OTLP metrics only.
+            dogstatsd_port: 0
+
+            telemetry:
+              enabled: true
+
+      environment:
+        # Run in the standard control plane/data plane mode, with the Core Agent supervising.
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+
+        # Legs other than the ADP leg leave the data plane off: the s6 data-plane service starts
+        # agent-data-plane, which sees the disabled setting and exits cleanly, at which point s6
+        # disables the service.
+        DD_DATA_PLANE_ENABLED: "false"
+
+        # No DogStatsD listener on the data plane either.
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+
+        # The Core Agent provides the IPC certificate here, so drop the standalone dummy.
+        DD_IPC_CERT_FILE_PATH: null
+
+    lading:
+      generator:
+        # Identical load in every leg; each experiment only sets `target_uri` to the listener of
+        # the OTLP path it measures.
+        - grpc:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            maximum_prebuild_cache_size_bytes: "512 MiB"
+            variant:
+              opentelemetry_metrics: {}
+
   # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
   otlp_traces_5mb_base:
     extends: otlp_base
@@ -720,29 +787,94 @@ experiments:
   # OTLP Experiments
   # ============================================================================
 
-  - name: otlp_ingest_metrics_5mb
-    extends: otlp_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
+  # ----------------------------------------------------------------------------
+  # OTLP metrics ingestion platform comparison (on-demand)
+  #
+  # Three legs over the same converged image and the same Core Agent, identical lading load, where
+  # the only variable is which process handles OTLP metrics ingest. Compare the legs against each
+  # other, using the Core Agent leg as the sidecar-less baseline: the difference between a sidecar
+  # leg and the baseline is that sidecar's cost. These are `on_demand` experiments: they never run
+  # in the nightly suite, only through the `run-benchmarks-adp-on-demand` manual CI job.
+  # ----------------------------------------------------------------------------
 
+  # Leg 1: the Core Agent's own OTLP receiver handles ingest, no sidecars.
+  - name: otlp_ingest_metrics_agent_5mb
+    extends: otlp_ingest_converged_base
+    on_demand: true
+    optimization_goal: memory
     target:
-      environment:
-        DD_AGGREGATE_CONTEXT_LIMIT: "3100"
-        DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
-        DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE: "4MiB"
-
+      files:
+        datadog.yaml:
+          content:
+            # With the data plane disabled, nothing redirects these endpoints out of the way (see
+            # docker/cont-init.d/99-agent-data-plane.sh), so the Core Agent owns port 4317.
+            otlp_config:
+              receiver:
+                protocols:
+                  grpc:
+                    endpoint: 127.0.0.1:4317
+              metrics:
+                enabled: true
     lading:
       generator:
         - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
+  # Leg 2: DDOT (`otel-agent`, the otelcol-based collector shipped in the Agent image) handles
+  # ingest, supervised by s6 alongside the Core Agent.
+  - name: otlp_ingest_metrics_ddot_5mb
+    extends: otlp_ingest_converged_base
+    on_demand: true
+    optimization_goal: memory
+    target:
+      environment:
+        # Starts the otel-agent sidecar (it exits immediately when this is unset).
+        DD_OTELCOLLECTOR_ENABLED: "true"
+      files:
+        # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
+        otel-config.yaml:
+          content:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+            exporters:
+              datadog:
+                hostname: smp-regression
+                api:
+                  key: foo00000001
+                  site: 127.0.0.1:9091
+                metrics:
+                  endpoint: http://127.0.0.1:9091
+            service:
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  exporters: [datadog]
+    lading:
+      generator:
+        - grpc:
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
+  # Leg 3: ADP handles ingest as the data-plane sidecar.
+  - name: otlp_ingest_metrics_adp_5mb
+    extends: otlp_ingest_converged_base
+    on_demand: true
+    optimization_goal: memory
+    target:
+      environment:
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_OTLP_ENABLED: "true"
+        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+        DD_OTLP_CONFIG: "{}"
+    lading:
+      generator:
+        - grpc:
+            # ADP listens on the temporary ADP-only OTLP ports in converged mode (#2177); the
+            # Core Agent's own receiver gets redirected out of the way by cont-init.
             target_uri: "http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-            bytes_per_second: "5 MiB"
-            parallel_connections: 1
-            maximum_prebuild_cache_size_bytes: "512 MiB"
-            variant:
-              opentelemetry_metrics: {}
 
   - name: otlp_ingest_logs_5mb
     extends: otlp_base

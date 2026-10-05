@@ -1,0 +1,20 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+exporters:
+  datadog:
+    hostname: smp-regression
+    api:
+      key: foo00000001
+      site: 127.0.0.1:9091
+    metrics:
+      endpoint: http://127.0.0.1:9091
+service:
+  pipelines:
+    metrics:
+      receivers:
+      - otlp
+      exporters:
+      - datadog

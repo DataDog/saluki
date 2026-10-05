@@ -44,7 +44,11 @@ test/smp/regression/adp/
 │           ├── experiment.yaml
 │           ├── lading/lading.yaml
 │           └── agent-data-plane/...
-└── full/                     # Nightly / on-demand suite (all experiments; a superset)
+├── full/                     # Nightly suite (all experiments except `on_demand` ones; a superset)
+│   ├── config.yaml
+│   └── cases/
+│       └── <experiment_name>/
+└── on-demand/                # Manual-only suite (`on_demand: true` experiments)
     ├── config.yaml
     └── cases/
         └── <experiment_name>/...
@@ -56,19 +60,26 @@ test/smp/regression/adp/
 
 ## Suites
 
-Experiments are generated into two suites, each a self-contained SMP target-config directory:
+Experiments are generated into three suites, each a self-contained SMP target-config directory:
 
 - **`quality-gates/`** — the PR gate. Contains only experiments that declare `checks:` (those
   whose bounds define whether a PR is suitable to merge). CI runs this suite on every PR and
   fails the pipeline if a bound is breached.
-- **`full/`** — the superset of *all* experiments (including the quality gates). CI runs this
-  suite nightly on `main` (summarizing to Slack) for long-term trend analysis, and on-demand as
-  a manual job on a PR (reporting to the PR). The full suite never gates a PR.
+- **`full/`** — the superset of all experiments not flagged `on_demand` (including the quality
+  gates). CI runs this suite nightly on `main` (summarizing to Slack) for long-term trend
+  analysis, and on-demand as a manual job on a PR (reporting to the PR). The full suite never
+  gates a PR.
+- **`on-demand/`** — the manually triggered subset: experiments flagged `on_demand: true`.
+  These never run automatically, neither nightly nor as a PR gate; they only run when someone
+  presses the `run-benchmarks-adp-on-demand` manual job on a PR pipeline. This is where
+  platform-comparison experiments (for example, OTLP metrics ingest across the Core Agent,
+  DDOT, and ADP) live.
 
 An experiment's membership is derived automatically: it joins `quality-gates/` if and only if it
-declares `checks:`. There is no separate flag to maintain — the bound *is* the gate. Define each
-experiment once in `experiments.yaml`; the generator writes the gating experiments, identically,
-into both suite directories.
+declares `checks:` (and is not `on_demand`), and it joins `on-demand/` if and only if it sets
+`on_demand: true`. There is no separate flag to maintain — the bound *is* the gate, and `on_demand`
+*is* the manual trigger. Define each experiment once in `experiments.yaml`; the generator writes
+the gating experiments, identically, into the `full/` and `quality-gates/` directories.
 
 ## Defining Experiments
 
