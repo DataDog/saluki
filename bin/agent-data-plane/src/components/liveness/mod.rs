@@ -44,20 +44,33 @@ pub struct LivenessConfiguration {
     hostname: MetaString,
     version: MetaString,
     add_container_tags: bool,
+    emit_vitals: bool,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl LivenessConfiguration {
     /// Creates a liveness source configuration using the configured environment.
     pub async fn from_environment_provider(
-        env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
+        env_provider: &ADPEnvironmentProvider, add_container_tags: bool, emit_vitals: bool,
     ) -> Result<Self, GenericError> {
         let hostname = env_provider
             .host()
             .get_hostname()
             .await
             .error_context("Failed to get hostname for liveness source.")?;
-        Ok(Self::from_hostname(hostname).with_container_tags(add_container_tags, env_provider.workload().clone()))
+        Ok(Self::from_hostname(hostname)
+            .with_container_tags(add_container_tags, env_provider.workload().clone())
+            .with_vitals(emit_vitals))
+    }
+
+    /// Sets whether the source also emits the process resource readings.
+    ///
+    /// The readings publish under the trace agent's series names, so they belong only to the
+    /// process running the traces pipeline; every other configuration leaves them to whichever
+    /// process is.
+    fn with_vitals(mut self, emit_vitals: bool) -> Self {
+        self.emit_vitals = emit_vitals;
+        self
     }
 
     fn from_hostname(hostname: String) -> Self {
@@ -65,6 +78,7 @@ impl LivenessConfiguration {
             hostname: hostname.into(),
             version: saluki_metadata::get_app_details().version().raw().into(),
             add_container_tags: false,
+            emit_vitals: false,
             workload_provider: None,
         }
     }
@@ -86,6 +100,7 @@ impl SourceBuilder for LivenessConfiguration {
             self.hostname.clone(),
             self.version.clone(),
             self.add_container_tags,
+            self.emit_vitals,
             self.workload_provider.clone(),
         )))
     }
@@ -113,12 +128,13 @@ struct Liveness {
     cpu_context: Context,
     memory_context: Context,
     add_container_tags: bool,
+    emit_vitals: bool,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl Liveness {
     fn new(
-        hostname: MetaString, version: MetaString, add_container_tags: bool,
+        hostname: MetaString, version: MetaString, add_container_tags: bool, emit_vitals: bool,
         workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     ) -> Self {
         let (metric_context, service_check) = create_liveness_payloads(hostname, version);
@@ -129,20 +145,26 @@ impl Liveness {
             cpu_context,
             memory_context,
             add_container_tags,
+            emit_vitals,
             workload_provider,
         }
     }
 
-    /// Builds the process resource readings as gauge events.
+    /// Builds the process resource readings as gauge events, when this process owns them.
     ///
-    /// The readings come from the shared process info cache, so the tick cadence controls delivery,
-    /// not reading cost.
-    fn vitals_at(&self) -> [Event; 2] {
+    /// The readings publish under the trace agent's series names, so they are only emitted when
+    /// this process runs the traces pipeline. The values come from the shared process info cache,
+    /// so the tick cadence controls delivery, not reading cost.
+    fn vitals_at(&self) -> Option<[Event; 2]> {
+        if !self.emit_vitals {
+            return None;
+        }
+
         let (cpu_percent, rss_bytes) = (process_info::cpu_percent(), process_info::resident_set_size());
-        [
+        Some([
             Event::Metric(Metric::gauge(self.cpu_context.clone(), cpu_percent)),
             Event::Metric(Metric::gauge(self.memory_context.clone(), rss_bytes as f64)),
-        ]
+        ])
     }
 
     fn signals_at(&self, timestamp: u64) -> (Event, Event) {
@@ -213,9 +235,11 @@ impl Source for Liveness {
                         warn!(error = %error, "Failed to dispatch liveness service check.");
                     }
 
-                    for vital in self.vitals_at() {
-                        if let Err(error) = context.dispatcher().dispatch_one_named("metrics", vital).await {
-                            warn!(error = %error, "Failed to dispatch resource metric.");
+                    if let Some(vitals) = self.vitals_at() {
+                        for vital in vitals {
+                            if let Err(error) = context.dispatcher().dispatch_one_named("metrics", vital).await {
+                                warn!(error = %error, "Failed to dispatch resource metric.");
+                            }
                         }
                     }
                 },
@@ -294,9 +318,9 @@ mod tests {
 
     #[test]
     fn vitals_carry_the_published_names_and_real_readings() {
-        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, None);
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, true, None);
 
-        let [cpu, memory] = liveness.vitals_at();
+        let [cpu, memory] = liveness.vitals_at().expect("this process owns the vitals series");
         let Event::Metric(cpu) = cpu else {
             panic!("expected cpu metric event");
         };
@@ -313,6 +337,12 @@ mod tests {
             MetricValues::Gauge(points) => assert!(!points.is_empty(), "the test process has a resident set"),
             _ => panic!("expected memory reading to be a gauge"),
         }
+    }
+
+    #[test]
+    fn vitals_are_absent_when_the_traces_pipeline_runs_elsewhere() {
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, false, None);
+        assert!(liveness.vitals_at().is_none(), "another process owns the series");
     }
 
     #[test]
@@ -344,6 +374,7 @@ mod tests {
             "host-a".into(),
             "1.2.3".into(),
             true,
+            false,
             Some(Arc::new(ContainerTagProvider {
                 self_container_entity: resolved_self_container_entity(),
                 tags: container_tags(),
@@ -369,6 +400,7 @@ mod tests {
             "host-a".into(),
             "1.2.3".into(),
             false,
+            false,
             Some(Arc::new(ContainerTagProvider {
                 self_container_entity: resolved_self_container_entity(),
                 tags: container_tags(),
@@ -389,7 +421,7 @@ mod tests {
 
     #[test]
     fn unavailable_container_tags_are_absent() {
-        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), true, None);
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), true, false, None);
         let (metric, service_check) = liveness.signals_at(0);
 
         let Event::Metric(metric) = metric else {
@@ -405,7 +437,7 @@ mod tests {
 
     #[test]
     fn metric_payload_has_required_contract() {
-        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, None);
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, false, None);
         let (metric, _) = liveness.signals_at(0);
 
         let Event::Metric(metric) = metric else {
@@ -419,7 +451,7 @@ mod tests {
 
     #[test]
     fn metric_payload_uses_emission_timestamp() {
-        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, None);
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, false, None);
         let emission_timestamp = 1_700_000_000;
         let (metric, _) = liveness.signals_at(emission_timestamp);
         let Event::Metric(metric) = metric else {
@@ -431,7 +463,7 @@ mod tests {
 
     #[test]
     fn prebuilt_service_check_payload_has_required_contract() {
-        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, None);
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into(), false, false, None);
         let (_, service_check) = liveness.signals_at(0);
 
         let Event::ServiceCheck(service_check) = service_check else {
