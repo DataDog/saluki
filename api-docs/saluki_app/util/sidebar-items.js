@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["wait_for_shutdown_signal"]};
+window.SIDEBAR_ITEMS = {"fn":["get_async_runtime_parallelism","wait_for_shutdown_signal"]};
