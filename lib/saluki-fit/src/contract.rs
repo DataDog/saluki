@@ -17,7 +17,7 @@ pub struct ProtocolDescriptor {
 }
 impl ProtocolDescriptor {
     pub(crate) fn validate(&self) -> io::Result<()> {
-        if self.message_types.is_empty() || self.message_types.iter().any(|&id| id == 0) {
+        if self.message_types.is_empty() || self.message_types.contains(&0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "message type IDs must be nonzero and nonempty",

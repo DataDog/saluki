@@ -96,7 +96,7 @@ impl ProducerConfig {
 }
 
 pub(crate) fn validate_capacity(capacity: usize) -> io::Result<()> {
-    if !(16..=MAX_RING_CAPACITY).contains(&capacity) || capacity % 8 != 0 {
+    if !(16..=MAX_RING_CAPACITY).contains(&capacity) || !capacity.is_multiple_of(8) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "ring capacity must be a multiple of 8 from 16 bytes through 1 GiB",

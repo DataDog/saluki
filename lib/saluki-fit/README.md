@@ -18,7 +18,9 @@ The transport supports little-endian x86-64 and AArch64 on Linux or macOS. Share
 
 `Producer::send_batch` publishes the fitting prefix and reports its accepted count, first rejection, and any notification error separately. Published records must not be retried just because waking the consumer failed. A full ring rejects incoming records immediately. `Consumer::receive` blocks when the ring is empty, copies one payload into owned bytes, and releases its ring space.
 
-One established session has one producer and one consumer. There is no peer liveness check, automatic reconnect, or replay. If a peer exits while the other is waiting, the wait may remain blocked. Local cancellation for application shutdown is a separate integration step.
+One established session has one producer and one consumer. There is no peer liveness check, automatic reconnect, or replay. If a peer exits while the other is waiting, the wait may remain blocked.
+
+For local shutdown, pass a clone of `CancellationToken` to `Producer::connect_with_cancel`, `Consumer::open_with_cancel`, or `Consumer::receive_with_cancel`. Call `cancel` from the supervising thread, then join the worker before releasing its handle. Cancelled setup returns an `Interrupted` error; cancelled receive returns `Ok(None)`, without consuming a record. A token is permanently cancelled and supports one active receive. Cancelling an idle receive wakes the native address wait, including when cancellation races with entry into that wait. Normal idle operation still sleeps without a timeout or polling loop. Setup uses short cancellation checks within its existing 60-second deadline.
 
 The queue record format, memory ordering, and setup framing originate from the FIT template. Changes to application codecs require an application protocol-version update. Changes to the shared queue layout require a layout-version update on both peers.
 

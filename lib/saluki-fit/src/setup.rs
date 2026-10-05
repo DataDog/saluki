@@ -1,3 +1,4 @@
+use crate::cancellation::CancellationToken;
 use crate::config::{validate_capacity, ConsumerConfig, ProducerConfig, SetupEndpoint};
 use crate::contract::{check_contract, contract, ProtocolDescriptor, RECORD_HEADER_SIZE};
 use crate::mapping::Shared;
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAX_FRAME: usize = 256;
+const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
 fn phase(name: &'static str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{name}: {error}"))
@@ -25,9 +27,33 @@ fn deadline_remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "setup deadline expired"))
 }
 
-fn wait_for(fd: RawFd, events: libc::c_short, deadline: Instant) -> io::Result<()> {
+fn check_cancel(cancellation: Option<&CancellationToken>) -> io::Result<()> {
+    if let Some(token) = cancellation {
+        token.check()?;
+    }
+    Ok(())
+}
+
+fn sleep_until(duration: Duration, cancellation: Option<&CancellationToken>) -> io::Result<()> {
+    if let Some(token) = cancellation {
+        token.wait_for(duration)
+    } else {
+        thread::sleep(duration);
+        Ok(())
+    }
+}
+
+fn wait_for(
+    fd: RawFd, events: libc::c_short, deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<()> {
     loop {
+        check_cancel(cancellation)?;
         let remaining = deadline_remaining(deadline)?;
+        let remaining = if cancellation.is_some() {
+            remaining.min(CANCEL_CHECK_INTERVAL)
+        } else {
+            remaining
+        };
         let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
         let mut pollfd = libc::pollfd { fd, events, revents: 0 };
         let count = unsafe { libc::poll(&mut pollfd, 1, millis) };
@@ -82,15 +108,18 @@ impl AsRawFd for SetupStream {
     }
 }
 
-fn read_exact_until(stream: &mut SetupStream, mut buf: &mut [u8], deadline: Instant) -> io::Result<()> {
+fn read_exact_until(
+    stream: &mut SetupStream, mut buf: &mut [u8], deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<()> {
     while !buf.is_empty() {
+        check_cancel(cancellation)?;
         deadline_remaining(deadline)?;
         match stream.read(buf) {
             Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "setup connection closed")),
             Ok(n) => buf = &mut buf[n..],
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                wait_for(stream.as_raw_fd(), libc::POLLIN, deadline)?;
+                wait_for(stream.as_raw_fd(), libc::POLLIN, deadline, cancellation)?;
             }
             Err(e) => return Err(e),
         }
@@ -98,15 +127,18 @@ fn read_exact_until(stream: &mut SetupStream, mut buf: &mut [u8], deadline: Inst
     Ok(())
 }
 
-fn write_all_until(stream: &mut SetupStream, mut buf: &[u8], deadline: Instant) -> io::Result<()> {
+fn write_all_until(
+    stream: &mut SetupStream, mut buf: &[u8], deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<()> {
     while !buf.is_empty() {
+        check_cancel(cancellation)?;
         deadline_remaining(deadline)?;
         match stream.write(buf) {
             Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "setup write returned zero")),
             Ok(n) => buf = &buf[n..],
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                wait_for(stream.as_raw_fd(), libc::POLLOUT, deadline)?;
+                wait_for(stream.as_raw_fd(), libc::POLLOUT, deadline, cancellation)?;
             }
             Err(e) => return Err(e),
         }
@@ -114,23 +146,28 @@ fn write_all_until(stream: &mut SetupStream, mut buf: &[u8], deadline: Instant) 
     Ok(())
 }
 
-fn send(stream: &mut SetupStream, body: &[u8], deadline: Instant) -> io::Result<()> {
+fn send(
+    stream: &mut SetupStream, body: &[u8], deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<()> {
+    check_cancel(cancellation)?;
     if body.is_empty() || body.len() > MAX_FRAME {
         return Err(invalid("invalid outgoing setup frame size"));
     }
-    write_all_until(stream, &(body.len() as u32).to_be_bytes(), deadline)?;
-    write_all_until(stream, body, deadline)
+    write_all_until(stream, &(body.len() as u32).to_be_bytes(), deadline, cancellation)?;
+    write_all_until(stream, body, deadline, cancellation)
 }
 
-fn receive(stream: &mut SetupStream, deadline: Instant) -> io::Result<Vec<u8>> {
+fn receive(
+    stream: &mut SetupStream, deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<Vec<u8>> {
     let mut prefix = [0; 4];
-    read_exact_until(stream, &mut prefix, deadline)?;
+    read_exact_until(stream, &mut prefix, deadline, cancellation)?;
     let len = u32::from_be_bytes(prefix) as usize;
     if len == 0 || len > MAX_FRAME {
         return Err(invalid(format!("setup frame length {len} exceeds 1..={MAX_FRAME}")));
     }
     let mut body = vec![0; len];
-    read_exact_until(stream, &mut body, deadline)?;
+    read_exact_until(stream, &mut body, deadline, cancellation)?;
     Ok(body)
 }
 
@@ -139,10 +176,10 @@ fn reject(stream: &mut SetupStream, error: &io::Error, deadline: Instant) {
     let bytes = detail.as_bytes();
     let mut frame = vec![2];
     frame.extend_from_slice(&bytes[..bytes.len().min(MAX_FRAME - 1)]);
-    let _ = send(stream, &frame, deadline);
+    let _ = send(stream, &frame, deadline, None);
 }
 
-fn expected_message<'a>(frame: &'a [u8], tag: u8) -> io::Result<&'a [u8]> {
+fn expected_message(frame: &[u8], tag: u8) -> io::Result<&[u8]> {
     if frame.first() == Some(&2) {
         return Err(invalid(format!(
             "peer rejected setup: {}",
@@ -219,7 +256,8 @@ fn check_os_version() -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    let value = std::str::from_utf8(&bytes[..len.saturating_sub(1)]).map_err(|_| invalid("invalid macOS version"))?;
+    let value =
+        simdutf8::basic::from_utf8(&bytes[..len.saturating_sub(1)]).map_err(|_| invalid("invalid macOS version"))?;
     let mut parts = value.split('.');
     let major = parts.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
     let minor = parts.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
@@ -235,6 +273,19 @@ fn check_os_version() -> io::Result<()> {
 
 /// Accept one producer and initialize its shared queue.
 pub(crate) fn open(config: ConsumerConfig, protocol: ProtocolDescriptor) -> io::Result<Consumer> {
+    open_inner(config, protocol, None)
+}
+
+pub(crate) fn open_with_cancel(
+    config: ConsumerConfig, protocol: ProtocolDescriptor, cancellation: &CancellationToken,
+) -> io::Result<Consumer> {
+    open_inner(config, protocol, Some(cancellation))
+}
+
+fn open_inner(
+    config: ConsumerConfig, protocol: ProtocolDescriptor, cancellation: Option<&CancellationToken>,
+) -> io::Result<Consumer> {
+    check_cancel(cancellation)?;
     let deadline = config.validate()?;
     protocol.validate()?;
     check_os_version()?;
@@ -247,18 +298,18 @@ pub(crate) fn open(config: ConsumerConfig, protocol: ProtocolDescriptor) -> io::
             let endpoint = Some(UnixEndpoint(path.to_path_buf()));
             fs::set_permissions(path, Permissions::from_mode(0o600))?;
             listener.set_nonblocking(true)?;
-            let stream = accept_until(&listener, deadline)?;
+            let stream = accept_until(&listener, deadline, cancellation)?;
             (stream, SetupListener::Unix { _listener: listener }, endpoint)
         }
         SetupEndpoint::Tcp(address) => {
             ensure_loopback(*address)?;
             let listener = TcpListener::bind(address).map_err(|e| phase("binding TCP setup listener", e))?;
             listener.set_nonblocking(true)?;
-            let stream = accept_tcp_until(&listener, deadline)?;
+            let stream = accept_tcp_until(&listener, deadline, cancellation)?;
             (stream, SetupListener::Tcp { _listener: listener }, None)
         }
     };
-    let hello = receive(&mut stream, deadline).map_err(|e| phase("waiting for Hello", e))?;
+    let hello = receive(&mut stream, deadline, cancellation).map_err(|e| phase("waiting for Hello", e))?;
     let checked = expected_message(&hello, 1).and_then(|body| check_contract(body, 1, &protocol));
     if let Err(error) = checked {
         reject(&mut stream, &error, deadline);
@@ -272,8 +323,8 @@ pub(crate) fn open(config: ConsumerConfig, protocol: ProtocolDescriptor) -> io::
     let (mut shared, name) =
         Shared::create(id, capacity, protocol.version).map_err(|e| phase("creating shared memory", e))?;
     let offer = offer_frame(id, &name, capacity, &protocol);
-    send(&mut stream, &offer, deadline).map_err(|e| phase("sending Offer", e))?;
-    let ready = receive(&mut stream, deadline).map_err(|e| phase("waiting for Ready", e))?;
+    send(&mut stream, &offer, deadline, cancellation).map_err(|e| phase("sending Offer", e))?;
+    let ready = receive(&mut stream, deadline, cancellation).map_err(|e| phase("waiting for Ready", e))?;
     let ready_body = match expected_message(&ready, 4) {
         Ok(body) => body,
         Err(error) => {
@@ -293,7 +344,7 @@ pub(crate) fn open(config: ConsumerConfig, protocol: ProtocolDescriptor) -> io::
         .map_err(|e| phase("unlinking offered shared memory", e))?;
     let mut start = vec![5];
     start.extend_from_slice(&id.to_be_bytes());
-    send(&mut stream, &start, deadline).map_err(|e| phase("sending Start", e))?;
+    send(&mut stream, &start, deadline, cancellation).map_err(|e| phase("sending Start", e))?;
     drop(stream);
     drop(_listener);
     drop(_endpoint);
@@ -302,22 +353,36 @@ pub(crate) fn open(config: ConsumerConfig, protocol: ProtocolDescriptor) -> io::
 
 /// Connect once to the consumer and initialize a producer queue session.
 pub(crate) fn connect(config: ProducerConfig, protocol: ProtocolDescriptor) -> io::Result<Producer> {
+    connect_inner(config, protocol, None)
+}
+
+pub(crate) fn connect_with_cancel(
+    config: ProducerConfig, protocol: ProtocolDescriptor, cancellation: &CancellationToken,
+) -> io::Result<Producer> {
+    connect_inner(config, protocol, Some(cancellation))
+}
+
+fn connect_inner(
+    config: ProducerConfig, protocol: ProtocolDescriptor, cancellation: Option<&CancellationToken>,
+) -> io::Result<Producer> {
+    check_cancel(cancellation)?;
     let deadline = config.validate()?;
     protocol.validate()?;
     check_os_version()?;
     let mut stream = match &config.endpoint {
         SetupEndpoint::Unix(path) => {
-            connect_until(path, deadline).map_err(|e| phase("connecting to setup socket", e))?
+            connect_until(path, deadline, cancellation).map_err(|e| phase("connecting to setup socket", e))?
         }
         SetupEndpoint::Tcp(address) => {
             ensure_loopback(*address)?;
-            connect_tcp_until(*address, deadline).map_err(|e| phase("connecting to TCP setup endpoint", e))?
+            connect_tcp_until(*address, deadline, cancellation)
+                .map_err(|e| phase("connecting to TCP setup endpoint", e))?
         }
     };
     let mut hello = vec![1];
     hello.extend_from_slice(&contract(1, &protocol));
-    send(&mut stream, &hello, deadline).map_err(|e| phase("sending Hello", e))?;
-    let offer = receive(&mut stream, deadline).map_err(|e| phase("waiting for Offer", e))?;
+    send(&mut stream, &hello, deadline, cancellation).map_err(|e| phase("sending Hello", e))?;
+    let offer = receive(&mut stream, deadline, cancellation).map_err(|e| phase("waiting for Offer", e))?;
     let body = match expected_message(&offer, 3) {
         Ok(body) => body,
         Err(error) => {
@@ -354,7 +419,7 @@ pub(crate) fn connect(config: ProducerConfig, protocol: ProtocolDescriptor) -> i
         if tail.len() != 25 + name_len {
             return Err(invalid("Offer shared-memory name length mismatch"));
         }
-        let name = std::str::from_utf8(&tail[25..]).map_err(|_| invalid("Offer name is not UTF-8"))?;
+        let name = simdutf8::basic::from_utf8(&tail[25..]).map_err(|_| invalid("Offer name is not UTF-8"))?;
         let shared = Shared::open(name, id, capacity, protocol.version)
             .map_err(|e| phase("opening offered shared memory", e))?;
         Ok((id, shared))
@@ -368,8 +433,8 @@ pub(crate) fn connect(config: ProducerConfig, protocol: ProtocolDescriptor) -> i
     };
     let mut ready = vec![4];
     ready.extend_from_slice(&id.to_be_bytes());
-    send(&mut stream, &ready, deadline).map_err(|e| phase("sending Ready", e))?;
-    let start = receive(&mut stream, deadline).map_err(|e| phase("waiting for Start", e))?;
+    send(&mut stream, &ready, deadline, cancellation).map_err(|e| phase("sending Ready", e))?;
+    let start = receive(&mut stream, deadline, cancellation).map_err(|e| phase("waiting for Start", e))?;
     let start_body = match expected_message(&start, 5) {
         Ok(body) => body,
         Err(error) => {
@@ -388,7 +453,8 @@ pub(crate) fn connect(config: ProducerConfig, protocol: ProtocolDescriptor) -> i
     Ok(Producer { id, shared, protocol })
 }
 
-fn connect_until(path: &Path, deadline: Instant) -> io::Result<SetupStream> {
+fn connect_until(path: &Path, deadline: Instant, cancellation: Option<&CancellationToken>) -> io::Result<SetupStream> {
+    check_cancel(cancellation)?;
     let path_bytes = path.as_os_str().as_encoded_bytes();
     if path_bytes.len() >= 104 || path_bytes.contains(&0) {
         return Err(invalid("invalid or too-long socket path"));
@@ -424,7 +490,13 @@ fn connect_until(path: &Path, deadline: Instant) -> io::Result<SetupStream> {
                 return Err(error);
             }
             loop {
+                check_cancel(cancellation)?;
                 let remaining = deadline_remaining(deadline)?;
+                let remaining = if cancellation.is_some() {
+                    remaining.min(CANCEL_CHECK_INTERVAL)
+                } else {
+                    remaining
+                };
                 let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
                 let mut pollfd = libc::pollfd {
                     fd,
@@ -486,8 +558,11 @@ fn ensure_loopback(address: std::net::SocketAddr) -> io::Result<()> {
     }
 }
 
-fn accept_until(listener: &UnixListener, deadline: Instant) -> io::Result<SetupStream> {
+fn accept_until(
+    listener: &UnixListener, deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<SetupStream> {
     loop {
+        check_cancel(cancellation)?;
         match listener.accept() {
             Ok((stream, _)) => {
                 stream.set_nonblocking(true)?;
@@ -495,15 +570,18 @@ fn accept_until(listener: &UnixListener, deadline: Instant) -> io::Result<SetupS
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 deadline_remaining(deadline)?;
-                thread::sleep(Duration::from_millis(10));
+                sleep_until(Duration::from_millis(10), cancellation)?;
             }
             Err(error) => return Err(error),
         }
     }
 }
 
-fn accept_tcp_until(listener: &TcpListener, deadline: Instant) -> io::Result<SetupStream> {
+fn accept_tcp_until(
+    listener: &TcpListener, deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<SetupStream> {
     loop {
+        check_cancel(cancellation)?;
         match listener.accept() {
             Ok((stream, peer)) => {
                 if !peer.ip().is_loopback() {
@@ -517,24 +595,35 @@ fn accept_tcp_until(listener: &TcpListener, deadline: Instant) -> io::Result<Set
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 deadline_remaining(deadline)?;
-                thread::sleep(Duration::from_millis(10));
+                sleep_until(Duration::from_millis(10), cancellation)?;
             }
             Err(error) => return Err(error),
         }
     }
 }
 
-fn connect_tcp_until(address: std::net::SocketAddr, deadline: Instant) -> io::Result<SetupStream> {
+fn connect_tcp_until(
+    address: std::net::SocketAddr, deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<SetupStream> {
     loop {
+        check_cancel(cancellation)?;
         let timeout = deadline_remaining(deadline)?;
+        let timeout = if cancellation.is_some() {
+            timeout.min(CANCEL_CHECK_INTERVAL)
+        } else {
+            timeout
+        };
         match TcpStream::connect_timeout(&address, timeout) {
             Ok(stream) => {
                 stream.set_nonblocking(true)?;
                 return Ok(SetupStream::Tcp(stream));
             }
-            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+            Err(error)
+                if error.kind() == io::ErrorKind::ConnectionRefused
+                    || (cancellation.is_some() && error.kind() == io::ErrorKind::TimedOut) =>
+            {
                 deadline_remaining(deadline)?;
-                thread::sleep(Duration::from_millis(10));
+                sleep_until(Duration::from_millis(10), cancellation)?;
             }
             Err(error) => return Err(error),
         }
@@ -550,6 +639,74 @@ mod tests {
         version: 2,
         message_types: &[1, 2],
     };
+
+    fn unused_loopback_address() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    }
+
+    #[test]
+    fn cancellation_stops_waiting_for_a_peer() {
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let address = unused_loopback_address();
+        let worker = thread::spawn(move || {
+            open_with_cancel(ConsumerConfig::tcp(address), TEST_PROTOCOL, &worker_token)
+                .err()
+                .unwrap()
+        });
+        thread::sleep(Duration::from_millis(30));
+        let started = Instant::now();
+        token.cancel().unwrap();
+        assert_eq!(worker.join().unwrap().kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cancellation_stops_connect_retries() {
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let address = unused_loopback_address();
+        let worker = thread::spawn(move || {
+            connect_with_cancel(ProducerConfig::tcp(address), TEST_PROTOCOL, &worker_token)
+                .err()
+                .unwrap()
+        });
+        thread::sleep(Duration::from_millis(30));
+        let started = Instant::now();
+        token.cancel().unwrap();
+        assert_eq!(worker.join().unwrap().kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cancellation_stops_a_partial_hello() {
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let address = unused_loopback_address();
+        let worker = thread::spawn(move || {
+            open_with_cancel(ConsumerConfig::tcp(address), TEST_PROTOCOL, &worker_token)
+                .err()
+                .unwrap()
+        });
+        let connect_deadline = Instant::now() + Duration::from_secs(2);
+        let mut connector = loop {
+            match TcpStream::connect(address) {
+                Ok(stream) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                    assert!(Instant::now() < connect_deadline, "consumer did not bind");
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("unexpected connect error: {error}"),
+            }
+        };
+        connector.write_all(&[0]).unwrap();
+        thread::sleep(Duration::from_millis(30));
+        let started = Instant::now();
+        token.cancel().unwrap();
+        assert_eq!(worker.join().unwrap().kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn mismatched_protocol_is_rejected_during_setup() {
@@ -637,16 +794,17 @@ mod tests {
             stream.set_nonblocking(true).unwrap();
             let mut stream = SetupStream::Unix(stream);
             let deadline = Instant::now() + crate::DEFAULT_SETUP_TIMEOUT;
-            let hello = receive(&mut stream, deadline).unwrap();
+            let hello = receive(&mut stream, deadline, None).unwrap();
             check_contract(expected_message(&hello, 1).unwrap(), 1, &TEST_PROTOCOL).unwrap();
             let (_shared, name) = Shared::create(id, crate::DEFAULT_RING_CAPACITY, TEST_PROTOCOL.version).unwrap();
             send(
                 &mut stream,
                 &offer_frame(id, &name, crate::DEFAULT_RING_CAPACITY, &TEST_PROTOCOL),
                 deadline,
+                None,
             )
             .unwrap();
-            let ready = receive(&mut stream, deadline).unwrap();
+            let ready = receive(&mut stream, deadline, None).unwrap();
             assert_eq!(expected_message(&ready, 4).unwrap(), id.to_be_bytes());
             // Closing here must never be interpreted as Start.
         });

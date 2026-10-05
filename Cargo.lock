@@ -5724,6 +5724,7 @@ name = "saluki-fit"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "simdutf8",
 ]
 
 [[package]]

@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
+simdutf8 = { workspace = true }
