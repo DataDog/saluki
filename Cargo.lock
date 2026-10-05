@@ -1396,6 +1396,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-checks-protocol"
+version = "0.1.0"
+dependencies = [
+ "saluki-fit",
+ "simdutf8",
+]
+
+[[package]]
 name = "datadog-intake"
 version = "0.1.0"
 dependencies = [
