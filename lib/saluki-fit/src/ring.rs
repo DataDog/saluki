@@ -1,5 +1,5 @@
 use crate::wait::{wait, wake};
-use crate::{contract::ProtocolDescriptor, invalid, mapping::Shared};
+use crate::{cancellation::CancellationToken, contract::ProtocolDescriptor, invalid, mapping::Shared};
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -38,7 +38,7 @@ impl Shared {
     fn indexes(&self) -> io::Result<(usize, usize)> {
         let r = self.index(READ_OFFSET).load(Ordering::Acquire) as usize;
         let w = self.index(WRITE_OFFSET).load(Ordering::Acquire) as usize;
-        if r >= self.capacity || w >= self.capacity || r % 8 != 0 || w % 8 != 0 {
+        if r >= self.capacity || w >= self.capacity || !r.is_multiple_of(8) || !w.is_multiple_of(8) {
             return Err(invalid("queue index is outside the aligned ring"));
         }
         Ok((r, w))
@@ -74,7 +74,7 @@ impl Shared {
                 break;
             }
             let read = self.index(READ_OFFSET).load(Ordering::Acquire) as usize;
-            if read >= self.capacity || read % 8 != 0 {
+            if read >= self.capacity || !read.is_multiple_of(8) {
                 return Err(invalid("invalid read index"));
             }
             let used = if cursor >= read {
@@ -129,10 +129,30 @@ impl Shared {
         })
     }
     pub(crate) fn receive(&mut self, protocol: &ProtocolDescriptor) -> io::Result<(u32, Vec<u8>)> {
+        self.receive_inner(protocol, None)?
+            .ok_or_else(|| invalid("uncancelled receive stopped"))
+    }
+    pub(crate) fn receive_with_cancel(
+        &mut self, protocol: &ProtocolDescriptor, cancellation: &CancellationToken,
+    ) -> io::Result<Option<(u32, Vec<u8>)>> {
+        self.receive_inner(protocol, Some(cancellation))
+    }
+    fn receive_inner(
+        &mut self, protocol: &ProtocolDescriptor, cancellation: Option<&CancellationToken>,
+    ) -> io::Result<Option<(u32, Vec<u8>)>> {
         loop {
+            if cancellation.is_some_and(|token| token.check().is_err()) {
+                return Ok(None);
+            }
             let (read, write) = self.indexes()?;
             if read == write {
-                wait(self.index(WRITE_OFFSET), write as u32)?;
+                if let Some(token) = cancellation {
+                    if !token.wait_on(self.index(WRITE_OFFSET), write as u32)? {
+                        return Ok(None);
+                    }
+                } else {
+                    wait(self.index(WRITE_OFFSET), write as u32)?;
+                }
                 continue;
             }
             let span = if write > read {
@@ -167,7 +187,7 @@ impl Shared {
             let data = unsafe { std::slice::from_raw_parts(at.add(HEADER), len).to_vec() };
             self.index(READ_OFFSET)
                 .store(((read + size) % self.capacity) as u32, Ordering::Release);
-            return Ok((kind, data));
+            return Ok(Some((kind, data)));
         }
     }
 }
@@ -175,12 +195,44 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CancellationToken;
     use std::time::{SystemTime, UNIX_EPOCH};
     const DEFAULT: ProtocolDescriptor = ProtocolDescriptor {
         id: *b"CORE0001",
         version: 2,
         message_types: &[1, 42],
     };
+
+    #[test]
+    fn cancelled_receive_keeps_published_record_available() {
+        let (mut producer, mut consumer) = pair(64);
+        producer.send_batch(&[record(b"retained")], &DEFAULT).unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel().unwrap();
+        assert!(consumer.receive_with_cancel(&DEFAULT, &cancellation).unwrap().is_none());
+        assert_eq!(consumer.receive(&DEFAULT).unwrap(), (1, b"retained".to_vec()));
+    }
+
+    #[test]
+    fn cancellation_stops_a_blocked_receive_without_reclaiming_space() {
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+            let (mut consumer, _) = Shared::create(id, 64, DEFAULT.version).unwrap();
+            let read_before = consumer.index(READ_OFFSET).load(Ordering::Acquire);
+            ready_tx.send(()).unwrap();
+            let received = consumer.receive_with_cancel(&DEFAULT, &worker_cancellation).unwrap();
+            let read_after = consumer.index(READ_OFFSET).load(Ordering::Acquire);
+            (received, read_before, read_after)
+        });
+        ready_rx.recv().unwrap();
+        cancellation.cancel().unwrap();
+        let (received, read_before, read_after) = worker.join().unwrap();
+        assert!(received.is_none());
+        assert_eq!(read_before, read_after);
+    }
     const ALTERNATE: ProtocolDescriptor = ProtocolDescriptor {
         id: *b"ALT00001",
         version: 2,

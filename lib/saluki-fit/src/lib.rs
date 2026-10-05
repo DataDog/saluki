@@ -8,12 +8,14 @@
     target_has_atomic = "32",
     any(target_os = "linux", target_os = "macos")
 ))]
+mod cancellation;
 mod config;
 mod contract;
 mod mapping;
 mod ring;
 mod setup;
 mod wait;
+pub use cancellation::CancellationToken;
 pub use config::{
     ConsumerConfig, ProducerConfig, SetupEndpoint, DEFAULT_RING_CAPACITY, DEFAULT_SETUP_TIMEOUT, MAX_RING_CAPACITY,
 };
@@ -36,6 +38,12 @@ impl Producer {
     pub fn connect(config: ProducerConfig, protocol: ProtocolDescriptor) -> io::Result<Self> {
         setup::connect(config, protocol)
     }
+    /// Connects while allowing the local supervisor to cancel setup.
+    pub fn connect_with_cancel(
+        config: ProducerConfig, protocol: ProtocolDescriptor, cancellation: &CancellationToken,
+    ) -> io::Result<Self> {
+        setup::connect_with_cancel(config, protocol, cancellation)
+    }
     pub fn session_id(&self) -> u64 {
         self.id
     }
@@ -54,11 +62,22 @@ impl Consumer {
     pub fn open(config: ConsumerConfig, protocol: ProtocolDescriptor) -> io::Result<Self> {
         setup::open(config, protocol)
     }
+    /// Opens while allowing the local supervisor to cancel setup.
+    pub fn open_with_cancel(
+        config: ConsumerConfig, protocol: ProtocolDescriptor, cancellation: &CancellationToken,
+    ) -> io::Result<Self> {
+        setup::open_with_cancel(config, protocol, cancellation)
+    }
     pub fn session_id(&self) -> u64 {
         self.id
     }
     /// Returns an owned payload and releases its queue bytes.
     pub fn receive(&mut self) -> io::Result<(u32, Vec<u8>)> {
         self.shared.receive(&self.protocol)
+    }
+    /// Receives one owned record, or `None` after local cancellation.
+    /// A record already being copied may finish before cancellation is observed.
+    pub fn receive_with_cancel(&mut self, cancellation: &CancellationToken) -> io::Result<Option<(u32, Vec<u8>)>> {
+        self.shared.receive_with_cancel(&self.protocol, cancellation)
     }
 }
