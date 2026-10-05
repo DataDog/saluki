@@ -42,7 +42,6 @@ dependencies = [
  "hyper",
  "metrics",
  "ottl",
- "process-memory",
  "prost",
  "prost-types",
  "rcgen",
