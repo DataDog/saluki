@@ -31,6 +31,7 @@ members = [
   "lib/saluki-core",
   "lib/saluki-env",
   "lib/saluki-error",
+  "lib/saluki-fit",
   "lib/saluki-io",
   "lib/saluki-metadata",
   "lib/saluki-metrics",
@@ -73,6 +74,7 @@ saluki-config = { path = "lib/saluki-config" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
+saluki-fit = { path = "lib/saluki-fit" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metrics = { path = "lib/saluki-metrics" }
