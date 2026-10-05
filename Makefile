@@ -54,6 +54,11 @@ export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 # move both at once.
 export RUST_NIGHTLY_VERSION ?= nightly-2026-01-18
 
+# Pinned nightly toolchain for the AIX cross-check. AIX has no prebuilt standard library, so the check builds it from
+# source, which doesn't work on RUST_NIGHTLY_VERSION or our stable toolchain. Fold this into RUST_NIGHTLY_VERSION once
+# that's new enough.
+export RUST_AIX_NIGHTLY_VERSION ?= nightly-2026-08-25
+
 # Tool configuration.
 export AUTOINSTALL ?= true
 export CARGO_BIN_DIR := $(shell echo "${HOME}/.cargo/bin")
@@ -494,7 +499,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-docs check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features
+check-all: check-fmt check-clippy check-docs check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features check-aix-cross
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools ensure-rust-nightly
@@ -546,6 +551,11 @@ check-features: ## Checks that all packages with feature flags can be built with
 	xargs -I {} -- cargo read-manifest --manifest-path {} | \
 	jq -r "select(.features | del(.default) | length > 0) | .name" | \
 	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
+
+.PHONY: check-aix-cross
+check-aix-cross: check-rust-build-tools ensure-rust-aix-nightly
+check-aix-cross: ## Checks that agent-data-plane compiles for AIX (type-checks only, from a non-AIX host)
+	@./ci/tooling/check-aix-cross.sh
 
 .PHONY: check-unused-deps
 check-unused-deps: check-rust-build-tools cargo-install-cargo-machete
@@ -769,6 +779,16 @@ ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
 endif
 	@echo "[*] Installing/updating nightly Rust ($(RUST_NIGHTLY_VERSION))..."
 	@rustup toolchain install $(RUST_NIGHTLY_VERSION) --profile minimal --component rustfmt
+
+.PHONY: ensure-rust-aix-nightly
+ensure-rust-aix-nightly:
+ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
+	$(error "Rustup must be present to install the nightly toolchain: https://www.rust-lang.org/tools/install")
+endif
+	@echo "[*] Installing/updating nightly Rust for AIX cross-checks ($(RUST_AIX_NIGHTLY_VERSION))..."
+# Build scripts run under this toolchain too, and some format the code they generate with `rustfmt`. Without it,
+# they'd fall back to writing unformatted code over checked-in files.
+	@rustup toolchain install $(RUST_AIX_NIGHTLY_VERSION) --profile minimal --component rust-src --component rustfmt
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri: ensure-rust-nightly
