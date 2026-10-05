@@ -390,6 +390,25 @@ pub struct EnablePayloads {
     pub sketches: bool,
 }
 
+/// One `metric_filterlist_prefix` rule.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct MetricPrefixRule {
+    /// Prefix of metric names to drop.
+    ///
+    /// The empty string matches every storable metric name.
+    pub prefix: String,
+
+    /// Prefix exceptions that are kept.
+    ///
+    /// Exceptions apply across all prefix rules.
+    pub except_prefix: Vec<String>,
+
+    /// Exact-name exceptions that are kept.
+    ///
+    /// Exceptions apply across all prefix rules.
+    pub except_exact: Vec<String>,
+}
+
 /// Metric-name filtering (dynamic-capable).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct MetricFilter {
@@ -402,6 +421,11 @@ pub struct MetricFilter {
     ///
     /// Defaults to `false`, which requires exact matches.
     pub match_prefix: bool,
+
+    /// Additional per-entry prefix rules with optional exceptions.
+    ///
+    /// Defaults to an empty list.
+    pub prefix_rules: Vec<MetricPrefixRule>,
 }
 
 /// Metric namespace prefixing.

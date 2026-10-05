@@ -405,7 +405,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
+    use agent_data_plane_config::domains::dogstatsd::{MetricPrefixRule, OriginTagCardinality};
     use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
@@ -1435,6 +1435,39 @@ mod tests {
             .expect("view observes the current filterlist shadowing the legacy blocklist again");
         assert_eq!(restored.values, vec!["current.duration.avg".to_string()]);
         assert!(!restored.match_prefix);
+    }
+
+    #[tokio::test]
+    async fn live_metric_filter_tracks_prefix_rules() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let mut metric_filter = system.live(|c| &c.domains.dogstatsd.metric_filter);
+        assert!(metric_filter.prefix_rules.is_empty());
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist_prefix",
+                json!([
+                    {
+                        "prefix": "service.",
+                        "except_prefix": ["service.keep."],
+                        "except_exact": ["service.keep.exact"],
+                    }
+                ]),
+            )))
+            .await
+            .unwrap();
+
+        let updated = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+            .await
+            .expect("view observes metric_filterlist_prefix updates");
+        assert_eq!(
+            updated.prefix_rules,
+            vec![MetricPrefixRule {
+                prefix: "service.".to_string(),
+                except_prefix: vec!["service.keep.".to_string()],
+                except_exact: vec!["service.keep.exact".to_string()],
+            }]
+        );
     }
 
     #[tokio::test]

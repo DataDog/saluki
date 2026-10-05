@@ -22,8 +22,7 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-use crate::components::dogstatsd_filterlist::Blocklist;
-
+use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist};
 mod telemetry;
 
 use self::telemetry::Telemetry;
@@ -147,18 +146,8 @@ struct DogStatsDPostAggregateFilter {
 
 impl DogStatsDPostAggregateFilter {
     fn sync_matcher(&mut self) {
-        let histogram_values = self
-            .metric_filter
-            .values
-            .iter()
-            .filter(|value| self.histogram_suffixes.contains_filter_entry(value))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        self.matcher = Blocklist::new(
-            histogram_values.iter().map(String::as_str),
-            self.metric_filter.match_prefix,
-        );
+        let (matcher, _) = compile_metric_filter(&self.metric_filter);
+        self.matcher = matcher.restrict_exact(|value| self.histogram_suffixes.contains_filter_entry(value));
     }
 
     fn should_filter_metric(&self, metric: &Metric) -> bool {
@@ -248,6 +237,7 @@ mod tests {
         let metric_filter = MetricFilter {
             values: values.into_iter().map(ToString::to_string).collect(),
             match_prefix,
+            prefix_rules: Vec::new(),
         };
 
         let mut filter = DogStatsDPostAggregateFilter {
@@ -307,7 +297,7 @@ mod tests {
     // Mirrors Datadog Agent histogram-specific filterlist derivation:
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist_test.go#L19
     #[test]
-    fn prefix_match_uses_only_histogram_specific_filter_entries() {
+    fn prefix_match_keeps_global_prefix_behavior() {
         let filter = noop_filter(vec!["request.duration", "db.query.max"], true);
 
         let names = filter_metric_names(
@@ -319,11 +309,44 @@ mod tests {
             ],
         );
 
-        assert_eq!(names, vec!["request.duration.max"]);
+        assert!(names.is_empty());
     }
 
     // Mirrors Datadog Agent histogram-specific filterlist derivation:
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist_test.go#L19
+    #[test]
+    fn prefix_rules_apply_to_histogram_outputs_with_global_exceptions() {
+        let histogram_suffixes = HistogramSuffixes::try_new(&["avg".to_string()], &[]).unwrap();
+        let metric_filter = MetricFilter {
+            values: Vec::new(),
+            match_prefix: false,
+            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: vec!["requests.keep.".to_string()],
+                except_exact: vec!["requests.exact.keep.avg".to_string()],
+            }],
+        };
+
+        let mut filter = DogStatsDPostAggregateFilter {
+            matcher: Blocklist::default(),
+            metric_filter: Live::new_fixed(metric_filter),
+            histogram_suffixes,
+            telemetry: Telemetry::noop(),
+        };
+        filter.sync_matcher();
+
+        let names = filter_metric_names(
+            &filter,
+            vec![
+                Metric::gauge("requests.db.avg", 1.0),
+                Metric::gauge("requests.keep.db.avg", 1.0),
+                Metric::gauge("requests.exact.keep.avg", 1.0),
+            ],
+        );
+
+        assert_eq!(names, vec!["requests.exact.keep.avg", "requests.keep.db.avg"]);
+    }
+
     #[test]
     fn non_histogram_filterlist_entries_are_ignored() {
         let filter = noop_filter(vec!["custom.metric"], false);

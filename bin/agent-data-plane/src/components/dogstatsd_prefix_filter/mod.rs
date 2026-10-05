@@ -16,10 +16,9 @@ use saluki_core::{
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
-use crate::components::dogstatsd_filterlist::Blocklist;
-
+use crate::components::dogstatsd_filterlist::{compile_metric_filter, Blocklist};
 const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
 const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
 const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_points_total";
@@ -136,11 +135,39 @@ struct DogStatsDPrefixFilter {
 
 impl DogStatsDPrefixFilter {
     fn sync_matcher(&mut self, count_update: bool) {
-        self.matcher = Blocklist::new(
-            self.metric_filter.values.iter().map(String::as_str),
-            self.metric_filter.match_prefix,
-        );
-        self.telemetry.set_filterlist_size(self.metric_filter.values.len());
+        let (matcher, report) = compile_metric_filter(&self.metric_filter);
+
+        for entry in &report.dropped_entries {
+            warn!(
+                entry = %entry,
+                "metric_filterlist: dropping entry that cannot match any metric name stored by Datadog"
+            );
+        }
+        for prefix in &report.dropped_rules {
+            warn!(
+                prefix = %prefix,
+                "metric_filterlist_prefix: dropping entry that cannot match any metric name stored by Datadog"
+            );
+        }
+        for exception in &report.dropped_exceptions {
+            warn!(
+                exception = %exception,
+                "metric_filterlist_prefix: dropping exception that cannot match any metric name stored by Datadog"
+            );
+        }
+        for prefix in &report.shadowed_rules {
+            warn!(
+                prefix = %prefix,
+                "metric_filterlist_prefix: dropping entry covered by an unconditional metric_filterlist prefix"
+            );
+        }
+
+        if matcher.matches_all() {
+            warn!("the metric filterlist matches every metric name: all storable metrics are dropped");
+        }
+
+        self.telemetry.set_filterlist_size(matcher.len());
+        self.matcher = matcher;
         if count_update {
             self.telemetry.increment_filterlist_updates();
         }
@@ -375,12 +402,41 @@ mod tests {
         assert!(!filter.process_metric(&mut metric));
     }
 
+    #[test]
+    fn typed_filter_prefix_rules_with_exceptions_are_applied() {
+        let metric_filter = Live::new_fixed(MetricFilter {
+            values: vec!["exact.blocked".to_string()],
+            match_prefix: false,
+            prefix_rules: vec![agent_data_plane_config::domains::dogstatsd::MetricPrefixRule {
+                prefix: "prefixed.".to_string(),
+                except_prefix: vec!["prefixed.keep.".to_string()],
+                except_exact: vec!["prefixed.keep.exact".to_string()],
+            }],
+        });
+
+        let mut filter = FilterBuilder::new().metric_filter(metric_filter).build();
+        filter.sync_matcher(false);
+
+        let mut exact = Metric::gauge("exact.blocked", 1.0);
+        assert!(!filter.process_metric(&mut exact));
+
+        let mut prefixed = Metric::gauge("prefixed.anything", 1.0);
+        assert!(!filter.process_metric(&mut prefixed));
+
+        let mut except_exact = Metric::gauge("prefixed.keep.exact", 1.0);
+        assert!(filter.process_metric(&mut except_exact));
+
+        let mut except_prefix = Metric::gauge("prefixed.keep.waiting", 1.0);
+        assert!(filter.process_metric(&mut except_prefix));
+    }
+
     #[tokio::test]
     async fn typed_live_updates_rebuild_the_matcher() {
         let mut initial = agent_data_plane_config::SalukiConfiguration::default();
         initial.domains.dogstatsd.metric_filter = MetricFilter {
             values: vec!["foobar".to_string(), "test".to_string()],
             match_prefix: false,
+            prefix_rules: Vec::new(),
         };
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(initial));
         let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
@@ -400,6 +456,7 @@ mod tests {
         updated.domains.dogstatsd.metric_filter = MetricFilter {
             values: vec!["foo".to_string()],
             match_prefix: true,
+            prefix_rules: Vec::new(),
         };
         cell.store(Arc::new(updated));
         tick_tx.send_replace(());
@@ -423,6 +480,7 @@ mod tests {
         let metric_filter = Live::new_fixed(MetricFilter {
             values: vec!["preferred".to_string()],
             match_prefix: false,
+            prefix_rules: Vec::new(),
         });
         let mut filter = FilterBuilder::new()
             .metric_filter(metric_filter)
@@ -436,11 +494,12 @@ mod tests {
         filter.metric_filter = Live::new_fixed(MetricFilter {
             values: vec!["foo".to_string(), "foobar".to_string()],
             match_prefix: true,
+            prefix_rules: Vec::new(),
         });
         filter.sync_matcher(true);
 
         assert_eq!(recorder.counter(METRIC_FILTERLIST_UPDATES_METRIC), Some(1));
-        assert_eq!(recorder.gauge(METRIC_FILTERLIST_SIZE_METRIC), Some(2.0));
+        assert_eq!(recorder.gauge(METRIC_FILTERLIST_SIZE_METRIC), Some(1.0));
 
         let mut metric = Metric::gauge("foobar.baz", 1.0);
         assert!(!filter.process_metric(&mut metric));

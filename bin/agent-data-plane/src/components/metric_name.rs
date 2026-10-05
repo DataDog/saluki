@@ -207,6 +207,34 @@ pub(super) fn normalize_into<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option
     Some(buf.as_bytes())
 }
 
+/// Writes `prefix` as the intake stores the start of matching names.
+///
+/// A metric-name prefix is not a complete metric name: the last byte is a boundary that can be
+/// consumed by full-name normalization. Preserving that boundary keeps a prefix from widening into
+/// a larger family. For example, `service_` must keep matching only `service_...` names rather than
+/// widening to `service...`.
+///
+/// Returns `None` when no stored metric name can start with `prefix`, except that the empty prefix
+/// is valid and matches every storable metric name.
+pub(super) fn normalize_prefix_into<'buf>(buf: &'buf mut NameBuf, prefix: &str) -> Option<&'buf [u8]> {
+    if prefix.is_empty() {
+        buf.clear();
+        return Some(buf.as_bytes());
+    }
+
+    normalize_into(buf, prefix)?;
+
+    // Restore the boundary a full-name normalization would drop. A non-alphanumeric, non-period
+    // boundary survives as an underscore when an alphanumeric follows it, unless a period already
+    // absorbed it.
+    let last = prefix.as_bytes()[prefix.len() - 1];
+    if !is_alphanumeric(last) && last != b'.' && buf.last() != Some(b'.') {
+        buf.push(b'_');
+    }
+
+    Some(buf.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +246,12 @@ mod tests {
     fn normalize(name: &str) -> Option<String> {
         let mut buf = NameBuf::new();
         normalize_into(&mut buf, name)
+            .map(|normalized| String::from_utf8(normalized.to_vec()).expect("normalized names are ASCII"))
+    }
+
+    fn normalize_prefix(prefix: &str) -> Option<String> {
+        let mut buf = NameBuf::new();
+        normalize_prefix_into(&mut buf, prefix)
             .map(|normalized| String::from_utf8(normalized.to_vec()).expect("normalized names are ASCII"))
     }
 
@@ -284,6 +318,42 @@ mod tests {
             let once = normalize(input).expect("should be storable");
             let twice = normalize(&once).expect("should be storable");
             assert_eq!(once, twice, "input: {:?}", input);
+        }
+    }
+
+    #[test]
+    fn prefix_normalization_preserves_boundaries() {
+        let cases: &[(&str, &str)] = &[
+            ("service_", "service_"),
+            ("service-", "service_"),
+            ("service ", "service_"),
+            ("service__", "service_"),
+            ("service.a-", "service.a_"),
+            ("service.", "service."),
+            ("service._", "service."),
+            ("service-.", "service."),
+            ("service", "service"),
+            ("my metric.", "my_metric."),
+            ("my metric", "my_metric"),
+            ("MyService.Sub", "MyService.Sub"),
+            ("café", "caf_"),
+            ("", ""),
+        ];
+
+        for (input, expected) in cases {
+            let actual = normalize_prefix(input).expect("expected usable prefix");
+            assert_eq!(actual, *expected, "input: {:?}", input);
+            assert_eq!(normalize_prefix(&actual), Some(actual.clone()), "input: {:?}", input);
+        }
+    }
+
+    #[test]
+    fn unusable_prefixes_are_rejected() {
+        let over_limit = "a".repeat(MAX_LENGTH + 1);
+        let cases = ["123.", "_", ".", "-", "123", over_limit.as_str()];
+
+        for input in cases {
+            assert_eq!(normalize_prefix(input), None, "input: {:?}", input);
         }
     }
 

@@ -429,6 +429,9 @@ pub struct DatadogConfiguration {
     pub metric_filterlist_match_prefix: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub metric_filterlist_prefix: Vec<::serde_json::Map<String, ::serde_json::Value>>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub metric_tag_filterlist: Vec<::serde_json::Value>,
 
@@ -688,6 +691,7 @@ impl Default for DatadogConfiguration {
             log_to_syslog: Default::default(),
             metric_filterlist: Default::default(),
             metric_filterlist_match_prefix: Default::default(),
+            metric_filterlist_prefix: Default::default(),
             metric_tag_filterlist: Default::default(),
             min_tls_version: defaults::datadog_configuration_min_tls_version(),
             multi_region_failover: Default::default(),
