@@ -401,8 +401,16 @@ async fn create_topology(
             dp.traces_pipeline_required(),
         )
         .await?;
+        let panic_reporter_hostname = env_provider
+            .host()
+            .get_hostname()
+            .await
+            .error_context("Failed to get hostname for panic reporter source.")?;
         blueprint
-            .add_source("panic_reporter_in", panic_reporter::PanicReporterConfiguration)?
+            .add_source(
+                "panic_reporter_in",
+                panic_reporter::PanicReporterConfiguration::from_hostname(panic_reporter_hostname.into()),
+            )?
             .connect_components("panic_reporter_in.metrics", "metrics_enrich")?;
     }
 

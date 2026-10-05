@@ -16,11 +16,7 @@ indexmap = { workspace = true }
 itoa = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
-<<<<<<< HEAD
-=======
 process-memory = { workspace = true }
-quick_cache = { workspace = true }
->>>>>>> f148b6aeee (feat(traces): report CPU and memory usage)
 regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
 saluki-antithesis = { workspace = true }
 saluki-error = { workspace = true }
@@ -36,6 +32,9 @@ tracing-subscriber = { workspace = true, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

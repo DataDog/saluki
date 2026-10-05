@@ -137,8 +137,8 @@ impl Liveness {
         hostname: MetaString, version: MetaString, add_container_tags: bool, emit_vitals: bool,
         workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     ) -> Self {
-        let (metric_context, service_check) = create_liveness_payloads(hostname, version);
-        let (cpu_context, memory_context) = create_vitals_payloads();
+        let (metric_context, service_check) = create_liveness_payloads(hostname.clone(), version);
+        let (cpu_context, memory_context) = create_vitals_payloads(hostname.clone());
         Self {
             metric_context,
             service_check,
@@ -261,10 +261,10 @@ fn create_liveness_payloads(hostname: MetaString, version: MetaString) -> (Conte
     (metric_context, service_check)
 }
 
-fn create_vitals_payloads() -> (Context, Context) {
+fn create_vitals_payloads(hostname: MetaString) -> (Context, Context) {
     (
-        Context::from_parts(METRIC_CPU_PERCENT, TagSet::default()),
-        Context::from_parts(METRIC_MEMORY, TagSet::default()),
+        Context::from_parts(METRIC_CPU_PERCENT, TagSet::default()).with_host(hostname.clone()),
+        Context::from_parts(METRIC_MEMORY, TagSet::default()).with_host(hostname),
     )
 }
 

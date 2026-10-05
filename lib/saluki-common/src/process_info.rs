@@ -18,6 +18,7 @@ struct ProcessInfoInner {
     last_refresh: Option<Instant>,
     rss_bytes: u64,
     cpu_time: Option<Duration>,
+    cpu_sampled_at: Option<Instant>,
     cpu_percent: f64,
 }
 
@@ -28,6 +29,7 @@ impl Default for ProcessInfoInner {
             last_refresh: None,
             rss_bytes: 0,
             cpu_time: None,
+            cpu_sampled_at: None,
             cpu_percent: 0.0,
         }
     }
@@ -44,15 +46,19 @@ impl ProcessInfoInner {
             return;
         }
 
-        if let (Some(previous_cpu), Some(last_refresh), Some(cpu)) = (self.cpu_time, self.last_refresh, cpu) {
+        // The percentage derives from consecutive samples, so the wall-time baseline is the
+        // timestamp of the last valid CPU sample: a failed read keeps the older pair intact,
+        // rather than letting the skipped window inflate the next derivation.
+        if let (Some(previous_cpu), Some(previous_at), Some(cpu)) = (self.cpu_time, self.cpu_sampled_at, cpu) {
             let cpu_delta = cpu.saturating_sub(previous_cpu).as_secs_f64();
-            let wall_delta = (now - last_refresh).as_secs_f64();
+            let wall_delta = (now - previous_at).as_secs_f64();
             if wall_delta > 0.0 {
                 self.cpu_percent = cpu_delta / wall_delta * 100.0;
             }
-            self.cpu_time = Some(cpu);
-        } else if cpu.is_some() {
+        }
+        if cpu.is_some() {
             self.cpu_time = cpu;
+            self.cpu_sampled_at = Some(now);
         }
 
         if let Some(rss) = rss {
@@ -64,6 +70,12 @@ impl ProcessInfoInner {
 
     fn refresh(&mut self) {
         let now = Instant::now();
+        // The window check comes before the reads so a caller within the cache window pays no
+        // syscalls: both getters consult the cache on every call, and only an expired window
+        // reaches the operating system.
+        if self.last_refresh.is_some_and(|last| now - last < CACHE_WINDOW) {
+            return;
+        }
         let rss = self.querier.resident_set_size().map(|bytes| bytes as u64);
         let cpu = read_process_cpu_time();
         self.refresh_at(now, rss, cpu);
@@ -91,29 +103,16 @@ pub fn resident_set_size() -> u64 {
 ///
 /// The value is derived from the CPU-time delta between consecutive cache windows, so it can
 /// exceed 100 on multi-core. It reads as zero until the second window provides a pair of samples
-/// to difference, and on platforms without a process CPU clock it stays zero.
+/// to difference.
 pub fn cpu_percent() -> f64 {
     let mut info = lock();
     info.refresh();
     info.cpu_percent
 }
 
-/// Returns the process's cumulative CPU time, or `None` where no process CPU clock exists.
-#[cfg(target_os = "linux")]
-fn read_process_cpu_time() -> Option<Duration> {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY: We pass a valid reference to the `timespec` struct, and `CLOCK_PROCESS_CPUTIME_ID`
-    // has been available since Linux 2.6.12.
-    let ret = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-    if ret == 0 {
-        Some(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
-    } else {
-        None
-    }
-}
-
-/// Returns the process's cumulative CPU time, or `None` where no process CPU clock exists.
-#[cfg(target_os = "macos")]
+/// Returns the process's cumulative CPU time, or `None` where the platform provides no
+/// per-process accounting.
+#[cfg(unix)]
 fn read_process_cpu_time() -> Option<Duration> {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: We pass a valid reference to the `rusage` struct, and `RUSAGE_SELF` targets the
@@ -128,8 +127,47 @@ fn read_process_cpu_time() -> Option<Duration> {
     }
 }
 
-/// Returns the process's cumulative CPU time, or `None` where no process CPU clock exists.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Returns the process's cumulative CPU time, or `None` where the platform provides no
+/// per-process accounting.
+#[cfg(windows)]
+fn read_process_cpu_time() -> Option<Duration> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    let mut user_time: FILETIME = unsafe { std::mem::zeroed() };
+    let mut kernel_time: FILETIME = unsafe { std::mem::zeroed() };
+    // SAFETY: Both parameters are valid references to zeroed `FILETIME` structs, and
+    // `GetCurrentProcess` returns a pseudo-handle that is valid for the calling process. The
+    // creation and exit times are required parameters but not needed here; passing valid
+    // references satisfies the contract without the results being read.
+    let ret = unsafe {
+        let mut creation_time: FILETIME = std::mem::zeroed();
+        let mut exit_time: FILETIME = std::mem::zeroed();
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation_time,
+            &mut exit_time,
+            &mut kernel_time,
+            &mut user_time,
+        )
+    };
+    if ret == 0 {
+        return None;
+    }
+
+    Some(filetime_as_duration(user_time) + filetime_as_duration(kernel_time))
+}
+
+/// Converts a `FILETIME` count of 100-nanosecond intervals into a duration.
+#[cfg(windows)]
+fn filetime_as_duration(time: FILETIME) -> Duration {
+    let intervals = (time.dwHighDateTime as u64) << 32 | time.dwLowDateTime as u64;
+    Duration::from_nanos(intervals * 100)
+}
+
+/// Returns the process's cumulative CPU time, or `None` where the platform provides no
+/// per-process accounting.
+#[cfg(not(any(unix, windows)))]
 fn read_process_cpu_time() -> Option<Duration> {
     None
 }
@@ -182,6 +220,22 @@ mod tests {
         // Thirty seconds of CPU time over a twenty second window: two cores fully used.
         info.refresh_at(step(start, 20), Some(200), Some(Duration::from_secs(31)));
         assert!((info.cpu_percent - 150.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_failed_read_does_not_shorten_the_next_derivations_wall_window() {
+        let mut info = ProcessInfoInner::default();
+        let start = Instant::now();
+
+        info.refresh_at(step(start, 0), Some(100), Some(Duration::from_secs(1)));
+        // A transient failure at the 20-second mark advances the cache window but not the sample
+        // pair.
+        info.refresh_at(step(start, 20), None, None);
+
+        // The next valid sample derives over the full forty seconds since the last valid sample,
+        // not the twenty since the failed one: two CPU-seconds over forty wall-seconds is 5%.
+        info.refresh_at(step(start, 40), Some(300), Some(Duration::from_secs(3)));
+        assert!((info.cpu_percent - 5.0).abs() < f64::EPSILON);
     }
 
     #[test]

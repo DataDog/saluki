@@ -14,11 +14,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use saluki_common::collections::FastHashMap;
-use saluki_context::{tags::TagSet, Context};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{sources::*, BuildContext},
-    data_model::event::{metric::Metric, Event, EventType},
+    data_model::{
+        event::{
+            metric::{context::Context, Metric},
+            Event, EventType,
+        },
+        tags::TagSet,
+    },
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
@@ -123,12 +128,23 @@ fn truncate_bytes(value: &str, max_bytes: usize) -> &str {
 ///
 /// Each window drains the counts and reports every tag as a delta counter, so quiet windows
 /// report nothing and an alert window count is the number of panics it contained.
-pub struct PanicReporterConfiguration;
+pub struct PanicReporterConfiguration {
+    hostname: MetaString,
+}
+
+impl PanicReporterConfiguration {
+    /// Creates a reporter that publishes under the given hostname.
+    pub fn from_hostname(hostname: MetaString) -> Self {
+        Self { hostname }
+    }
+}
 
 #[async_trait]
 impl SourceBuilder for PanicReporterConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(PanicReporter))
+        Ok(Box::new(PanicReporter {
+            hostname: self.hostname.clone(),
+        }))
     }
 
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
@@ -146,7 +162,9 @@ impl MemoryBounds for PanicReporterConfiguration {
     }
 }
 
-struct PanicReporter;
+struct PanicReporter {
+    hostname: MetaString,
+}
 
 #[async_trait]
 impl Source for PanicReporter {
@@ -168,7 +186,7 @@ impl Source for PanicReporter {
                     // never ticks again; drain the final counts before stopping.
                     debug!("Received shutdown signal.");
                     for (tag, count) in drain_panic_counts() {
-                        let event = panic_metric_event(&tag, count);
+                        let event = panic_metric_event(&self.hostname, &tag, count);
                         if let Err(error) = context.dispatcher().dispatch_one_named("metrics", event).await {
                             warn!(error = %error, "Failed to dispatch panic metric during shutdown.");
                         }
@@ -178,7 +196,7 @@ impl Source for PanicReporter {
                 _ = health.live() => continue,
                 _ = tick_interval.tick() => {
                     for (tag, count) in drain_panic_counts() {
-                        let event = panic_metric_event(&tag, count);
+                        let event = panic_metric_event(&self.hostname, &tag, count);
                         if let Err(error) = context.dispatcher().dispatch_one_named("metrics", event).await {
                             warn!(error = %error, "Failed to dispatch panic metric.");
                         }
@@ -199,11 +217,11 @@ fn drain_panic_counts() -> Vec<(MetaString, u64)> {
 }
 
 /// Builds the metric event for one panic tag's window count.
-fn panic_metric_event(tag: &str, count: u64) -> Event {
+fn panic_metric_event(hostname: &MetaString, tag: &str, count: u64) -> Event {
     let mut tags = TagSet::with_capacity(1);
     tags.insert_tag(MetaString::from(format!("err:{}", tag)));
     Event::Metric(Metric::counter(
-        Context::from_parts(PANIC_METRIC_NAME, tags),
+        Context::from_parts(PANIC_METRIC_NAME, tags).with_host(hostname.clone()),
         count as f64,
     ))
 }
@@ -274,7 +292,7 @@ mod tests {
 
     #[test]
     fn panic_metrics_carry_the_tag_and_count() {
-        let event = panic_metric_event("out of memory", 4);
+        let event = panic_metric_event(&MetaString::from("host-a"), "out of memory", 4);
         let metric = event.try_as_metric().expect("panic metrics are metric events");
         assert_eq!(metric.context().name(), "datadog.trace_agent.panic");
         assert!(metric.context().tags().has_tag("err:out of memory"));
