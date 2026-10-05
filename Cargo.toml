@@ -150,7 +150,6 @@ quote = { version = "1", default-features = false, features = ["proc-macro"] }
 derive-where = { version = "1.6", default-features = false }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
 prost = { version = "0.14", default-features = false }
-quanta = { version = "0.12", default-features = false }
 crossterm = { version = "0.29", default-features = false }
 rand = { version = "0.10", default-features = false }
 rand_distr = { version = "0.6", default-features = false }
