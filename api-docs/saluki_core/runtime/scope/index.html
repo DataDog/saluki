@@ -1,0 +1,75 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Structured concurrency scopes."><title>saluki_core::runtime::scope - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="saluki_core" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module scope</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../saluki_core/index.html">saluki_<wbr>core</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module scope</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#how-a-scope-closes" title="How a scope closes">How a scope closes</a></li><li><a href="#requested-exits-and-other-exits" title="Requested exits and other exits">Requested exits and other exits</a></li><li><a href="#how-to-spawn-children" title="How to spawn children">How to spawn children</a></li><li><a href="#scopes-owned-by-values" title="Scopes owned by values">Scopes owned by values</a></li><li><a href="#pre-created-scopes" title="Pre-created scopes">Pre-created scopes</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="../index.html">In saluki_<wbr>core::<wbr>runtime</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">saluki_core</a>::<wbr><a href="../index.html">runtime</a></div><h1>Module <span>scope</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/saluki_core/runtime/scope/mod.rs.html#1-668">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Structured concurrency scopes.</p>
+<p>A supervisor runs a set of children and restarts them when they fail. A <em>scope</em> is the same mechanism, but a single
+process owns it instead of a supervisor. The children that a worker spawns into its scope belong to that worker.
+Each child runs as a separate task, but the worker does not finish until all of its children finish.</p>
+<p>When the worker stops, the scope tells its children to stop too. The worker stops for one of these reasons:</p>
+<ul>
+<li>Its body returned.</li>
+<li>It failed.</li>
+<li>It was told to stop.</li>
+</ul>
+<p>Every supervised worker has a scope. The runtime creates the scope at the first spawn into it, so a worker that
+never spawns a child uses no resources for a scope. The supervision tree shows the children of a worker below that
+worker.</p>
+<h2 id="how-a-scope-closes"><a class="doc-anchor" href="#how-a-scope-closes">§</a>How a scope closes</h2>
+<p>A scope closes when the body of its owner finishes. When the scope closes, it stops each child according to the
+child’s own shutdown strategy, the same as a supervisor stops its children. It tells each graceful child to stop,
+waits for the child up to the child’s own timeout, and then aborts the child if it still runs. It aborts each
+brutal child at once. The scope adds no deadline of its own, and it does not pass the deadline of its owner to its
+children. A supervisor’s <a href="../struct.Supervisor.html#method.with_shutdown_budget" title="method saluki_core::runtime::Supervisor::with_shutdown_budget">shutdown budget</a> does not reach into a
+scope either. Thus, a closure-based child keeps the default strategy of a closure: it is graceful, with a timeout of
+five seconds.</p>
+<p>The body can spawn children right before it returns, before they start. If the body returns normally, these
+children still start, and then they are told to stop. If the body fails, they never start.</p>
+<p>The scope does not close only because the owner was told to stop. The owner decides when its children stop, because
+its scope closes only when its body returns. Thus, the owner can stop its children in the order that it chooses. For
+example, it can refuse new connections first, and then close the connections that it has. The signal that the
+children get when the scope closes is the last step of that order. A child that already stopped, for example
+because its input closed, has nothing left to do then.</p>
+<p>The timeouts of the children start only when the scope closes, after the body of the owner returns. Thus, the
+shutdown strategy of the owner must cover the time for its own body to stop and the time for its children to stop.
+If the owner does not stop in time, whatever supervises the owner aborts it. Its children are then aborted with it,
+without a signal and without being counted, and the runtime logs their names. Along any path in the supervision
+tree, the outermost finite timeout is the actual limit, and a child timeout that is longer than the timeout of its
+owner has no effect.</p>
+<h2 id="requested-exits-and-other-exits"><a class="doc-anchor" href="#requested-exits-and-other-exits">§</a>Requested exits and other exits</h2>
+<p>If a child exits while its scope closes, the exit is a requested exit. If a child exits after its owner, or a
+process above its owner, was told to stop, the exit is also a requested exit, even if the scope is still open. The
+scope never restarts a child after a requested exit, and a requested exit never fails the owner. Thus, a child that
+exits while its owner drains cannot cut that drain short.</p>
+<p>If a child exits while its scope is open and no stop was requested, the child stopped by itself. Two things then
+decide what occurs next:</p>
+<ul>
+<li>Its restart policy decides if the scope restarts it, the same as under a supervisor.</li>
+<li>Its <em>edge</em> decides what occurs if the scope does not restart it. The default is a <em>hosted</em> child: the scope reaps
+it, and its owner continues. A <em>needed</em> child is a child that its owner cannot work without, and it fails the
+owner. To mark a child as needed, use <a href="../struct.ChildBuilder.html#method.needed" title="method saluki_core::runtime::ChildBuilder::needed"><code>ChildBuilder::needed</code></a>.</li>
+</ul>
+<p>A child can stop again and again. If one more restart exceeds the restart limit of the scope, the child fails the
+owner. The edge of the child has no effect on this, and under a supervisor, the same child stops the supervisor. A
+restart is a reset. If a child continues to fail, the failure goes to the next level of the supervision tree, and
+that level tries again.</p>
+<p>This also applies to the children of a <a href="fn.nested.html" title="fn saluki_core::runtime::scope::nested">nested</a> scope: they fail the process that the scope belongs to.</p>
+<h2 id="how-to-spawn-children"><a class="doc-anchor" href="#how-to-spawn-children">§</a>How to spawn children</h2>
+<p><a href="../struct.ChildBuilder.html#method.spawn_child" title="method saluki_core::runtime::ChildBuilder::spawn_child"><code>ChildBuilder::spawn_child</code></a> spawns into the scope of the current
+process. <a href="fn.current.html" title="fn saluki_core::runtime::scope::current"><code>current</code></a> returns a handle to that scope, and you can move that handle to other tasks. Some code can run
+fully outside supervision, for example a primitive that a test constructs. That code uses
+<a href="../struct.ChildBuilder.html#method.spawn_child_or_detached" title="method saluki_core::runtime::ChildBuilder::spawn_child_or_detached"><code>spawn_child_or_detached</code></a> or <a href="fn.nested_or_detached.html" title="fn saluki_core::runtime::scope::nested_or_detached"><code>nested_or_detached</code></a>. If
+there is no scope, these functions run the work as a detached task, the same as without scopes.</p>
+<h2 id="scopes-owned-by-values"><a class="doc-anchor" href="#scopes-owned-by-values">§</a>Scopes owned by values</h2>
+<p><a href="fn.nested.html" title="fn saluki_core::runtime::scope::nested"><code>nested</code></a> creates a scope that a value owns instead of a process. Its children run under the current process, but
+the <a href="struct.ScopeGuard.html" title="struct saluki_core::runtime::scope::ScopeGuard"><code>ScopeGuard</code></a> that it returns stops them when the guard is dropped. For example, a cache can hold the guard for
+its background tasks. The tasks then stop when the last copy of the cache is dropped or when the process that owns
+the cache stops, whichever occurs first. In both cases, nothing restarts the tasks, because they were told to stop.
+If the process stops before the nested scope can start, the nested scope closes at once, and its tasks never run.</p>
+<h2 id="pre-created-scopes"><a class="doc-anchor" href="#pre-created-scopes">§</a>Pre-created scopes</h2>
+<p><a href="struct.UnadoptedScope.html#method.new" title="associated function saluki_core::runtime::scope::UnadoptedScope::new"><code>UnadoptedScope::new</code></a> creates a scope before the process that later owns it exists. The scope holds the children
+that are spawned into it until a worker adopts it. Then the children start as children of that worker. This is how
+the process that runs a component can own work that was spawned while the component was built. An example is the
+background tasks of a cache that is constructed together with the component.</p>
+<p>The <a href="struct.UnadoptedScope.html" title="struct saluki_core::runtime::scope::UnadoptedScope"><code>UnadoptedScope</code></a> holds the children that wait. Handles to the scope do not. Thus, if the <code>UnadoptedScope</code> is
+dropped before a worker adopts it, the children that wait are dropped too, even if one of them holds a handle to the
+scope.</p>
+<p>Only one worker can adopt a scope. If that worker starts again, for example because its supervisor restarts, the
+new instance gets a new scope of its own. The pre-created scope closed when the first instance stopped.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Scope.html" title="struct saluki_core::runtime::scope::Scope">Scope</a></dt><dd>A set of children owned by one process.</dd><dt><a class="struct" href="struct.ScopeGuard.html" title="struct saluki_core::runtime::scope::ScopeGuard">Scope<wbr>Guard</a></dt><dd>A scope that a value owns, which closes when the guard is dropped.</dd><dt><a class="struct" href="struct.UnadoptedScope.html" title="struct saluki_core::runtime::scope::UnadoptedScope">Unadopted<wbr>Scope</a></dt><dd>A scope that no process owns yet.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.ScopeError.html" title="enum saluki_core::runtime::scope::ScopeError">Scope<wbr>Error</a></dt><dd>Errors that make a worker fail because of a child in its scope.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.current.html" title="fn saluki_core::runtime::scope::current">current</a></dt><dd>Returns the scope of the current process.</dd><dt><a class="fn" href="fn.nested.html" title="fn saluki_core::runtime::scope::nested">nested</a></dt><dd>Creates a scope that a value owns instead of a process.</dd><dt><a class="fn" href="fn.nested_or_detached.html" title="fn saluki_core::runtime::scope::nested_or_detached">nested_<wbr>or_<wbr>detached</a></dt><dd>Creates a scope that a value owns, as <a href="fn.nested.html" title="fn saluki_core::runtime::scope::nested"><code>nested</code></a> does, or a detached guard that acts as a scope outside supervision.</dd></dl></section></div></main></body></html>

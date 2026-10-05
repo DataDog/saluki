@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ScopeError"],"fn":["current","nested","nested_or_detached"],"struct":["Scope","ScopeGuard","UnadoptedScope"]};

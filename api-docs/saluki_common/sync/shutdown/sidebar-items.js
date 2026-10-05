@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ShutdownCoordinator","ShutdownHandle"]};
+window.SIDEBAR_ITEMS = {"struct":["ShutdownCoordinator","ShutdownHandle","ShutdownView"]};
