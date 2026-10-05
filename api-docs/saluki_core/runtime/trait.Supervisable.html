@@ -3,7 +3,7 @@
     fn <a href="#tymethod.name" class="fn">name</a>(&amp;self) -&gt; &amp;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a>;
 <span class="item-spacer"></span>    fn <a href="#tymethod.initialize" class="fn">initialize</a>&lt;'life0, 'async_trait&gt;(
         &amp;'life0 self,
-        process_shutdown: ShutdownHandle,
+        process_shutdown: <a class="struct" href="../../saluki_common/sync/shutdown/struct.ShutdownHandle.html" title="struct saluki_common::sync::shutdown::ShutdownHandle">ShutdownHandle</a>,
     ) -&gt; <a class="struct" href="https://doc.rust-lang.org/nightly/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/nightly/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="type" href="type.SupervisorFuture.html" title="type saluki_core::runtime::SupervisorFuture">SupervisorFuture</a>, <a class="enum" href="enum.InitializationError.html" title="enum saluki_core::runtime::InitializationError">InitializationError</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'async_trait&gt;&gt;
        <span class="where">where Self: 'async_trait,
              'life0: 'async_trait</span>;
@@ -15,7 +15,7 @@
 </div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.name" class="method"><a class="src rightside" href="../../src/saluki_core/runtime/supervisable.rs.html#52">Source</a><h4 class="code-header">fn <a href="#tymethod.name" class="fn">name</a>(&amp;self) -&gt; &amp;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a></h4></section></summary><div class="docblock"><p>Returns the name of the process.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="tymethod.initialize" class="method"><a class="src rightside" href="../../src/saluki_core/runtime/supervisable.rs.html#88">Source</a><h4 class="code-header">fn <a href="#tymethod.initialize" class="fn">initialize</a>&lt;'life0, 'async_trait&gt;(
     &amp;'life0 self,
-    process_shutdown: ShutdownHandle,
+    process_shutdown: <a class="struct" href="../../saluki_common/sync/shutdown/struct.ShutdownHandle.html" title="struct saluki_common::sync::shutdown::ShutdownHandle">ShutdownHandle</a>,
 ) -&gt; <a class="struct" href="https://doc.rust-lang.org/nightly/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/nightly/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="type" href="type.SupervisorFuture.html" title="type saluki_core::runtime::SupervisorFuture">SupervisorFuture</a>, <a class="enum" href="enum.InitializationError.html" title="enum saluki_core::runtime::InitializationError">InitializationError</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'async_trait&gt;&gt;<div class="where">where
     Self: 'async_trait,
     'life0: 'async_trait,</div></h4></section></summary><div class="docblock"><p>Initializes the process asynchronously.</p>
@@ -32,7 +32,7 @@ will be unable to shut down gracefully and will be forcefully aborted after the 
 <p>Shutting a subtree down is a <em>trigger</em>, not an enforcement: many workers ignore the signal entirely and stop
 only when they reach their own terminal condition, such as an input channel closing. Reporting <code>false</code> lets the
 supervisor skip creating a shutdown coordinator it would never usefully fire, and hand the process a
-[<code>ShutdownHandle::noop</code>] instead.</p>
+<a href="../../saluki_common/sync/shutdown/struct.ShutdownHandle.html#method.noop" title="associated function saluki_common::sync::shutdown::ShutdownHandle::noop"><code>ShutdownHandle::noop</code></a> instead.</p>
 <p>This says nothing about <em>whether</em> the supervisor waits for the process – that’s
 <a href="trait.Supervisable.html#method.shutdown_strategy" title="method saluki_core::runtime::Supervisable::shutdown_strategy"><code>shutdown_strategy</code></a>. A process that ignores the signal is still waited for, up to
 whatever deadline applies to it.</p>
