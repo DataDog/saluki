@@ -57,7 +57,7 @@ use saluki_core::{
 };
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::ListenAddress;
+use saluki_fit::{ConsumerConfig, SetupEndpoint};
 use stringtheory::MetaString;
 use tracing::{debug, info, warn};
 
@@ -399,7 +399,7 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp.checks_enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks, env_provider).await?;
     }
 
     if dp.dogstatsd_enabled() {
@@ -430,16 +430,19 @@ async fn add_liveness_source_to_blueprint(
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, checks: &agent_data_plane_config::domains::checks::Domain,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
-        .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
+    let setup_endpoint = SetupEndpoint::parse(&checks.ipc_endpoint)
+        .map_err(|error| generic_error!("Invalid checks IPC endpoint `{}`: {error}", checks.ipc_endpoint))?;
+    let mut consumer_config = ConsumerConfig::for_endpoint(setup_endpoint);
+    consumer_config.ring_capacity = checks.ipc_ring_capacity_bytes;
     let default_hostname = env_provider
         .host()
         .get_hostname()
         .await
         .error_context("Failed to get default hostname for Checks IPC source.")?;
-    let checks_config = ChecksIPCConfiguration::new(grpc_endpoint, default_hostname);
+    let checks_config = ChecksIPCConfiguration::new(consumer_config, default_hostname);
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?

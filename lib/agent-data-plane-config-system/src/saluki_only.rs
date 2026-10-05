@@ -155,6 +155,8 @@ pub struct SalukiOnly {
     pub remote_agent_string_interner_size_bytes: Option<NonZeroUsize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
     pub checks_ipc_endpoint: Option<String>,
+    /// Checks FIT shared-memory ring capacity (`checks_ipc_ring_capacity_bytes`).
+    pub checks_ipc_ring_capacity_bytes: Option<usize>,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
     /// byte-size string such as `512MB`. `ByteSize` accepts both forms, so a numeric value does not
     /// fail the load.
@@ -779,6 +781,9 @@ impl SalukiOnly {
         if let Some(v) = &self.checks_ipc_endpoint {
             config.domains.checks.ipc_endpoint = v.clone();
         }
+        if let Some(v) = self.checks_ipc_ring_capacity_bytes {
+            config.domains.checks.ipc_ring_capacity_bytes = v;
+        }
     }
 }
 
@@ -805,7 +810,8 @@ mod tests {
             // top-level scalars
             "metrics_level": "debug",
             "remote_agent_string_interner_size_bytes": 4096,
-            "checks_ipc_endpoint": "localhost:5006",
+            "checks_ipc_endpoint": "tcp:127.0.0.1:5102",
+            "checks_ipc_ring_capacity_bytes": 2097152,
             "memory_limit": "512MB",
             "memory_slop_factor": 0.3,
             "enable_global_limiter": false,
@@ -998,7 +1004,8 @@ mod tests {
         assert_eq!(apm.dispatch_timeout, Duration::from_secs(3));
 
         // domains.checks
-        assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+        assert_eq!(config.domains.checks.ipc_endpoint, "tcp:127.0.0.1:5102");
+        assert_eq!(config.domains.checks.ipc_ring_capacity_bytes, 2097152);
     }
 
     /// `data_plane.apm.max_payload_size` is a byte size, but the equivalent Agent key
