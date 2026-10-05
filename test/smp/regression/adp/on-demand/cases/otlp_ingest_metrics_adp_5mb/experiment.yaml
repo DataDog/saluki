@@ -1,24 +1,24 @@
-optimization_goal: cpu
+optimization_goal: memory
 erratic: false
 target:
-  name: agent-data-plane
-  command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+  name: datadog-agent
+  command: /bin/entrypoint.sh
   cpu_allotment: 4
-  memory_allotment: 2GiB
+  memory_allotment: 4GiB
   environment:
     DD_HOSTNAME: smp-regression
     DD_API_KEY: foo00000001
     DD_DD_URL: http://127.0.0.1:9091
     DD_USE_V3_API_SERIES_ENDPOINTS: "{\"http://127.0.0.1:9091\":\"true\"}"
-    DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
     DD_LOG_FORMAT_JSON: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
     DD_METRICS_LEVEL: trace
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
     DD_DATA_PLANE_OTLP_ENABLED: "true"
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
     DD_OTLP_CONFIG: "{}"
-    DD_AGGREGATE_CONTEXT_LIMIT: "3100"
-    DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
-    DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE: 4MiB
   profiling_environment:
     DD_SERVICE: agent-data-plane
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap

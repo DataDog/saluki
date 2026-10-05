@@ -305,6 +305,65 @@ run-benchmarks-adp-full:
         cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane, full suite)"
       fi
 
+run-benchmarks-adp-on-demand:
+  stage: benchmark
+  # The on-demand suite: experiments flagged `on_demand: true` in experiments.yaml (the OTLP
+  # metrics platform comparison, and other one-off performance questions). This is the only way
+  # those experiments run: never scheduled, never a PR gate, only when someone presses the
+  # button on a PR pipeline. Like the full suite, it does not run `smp job result`, so it never
+  # fails the pipeline on a regression. Reporting is inline here for the same reason as the full
+  # suite: a separate `needs`-based report job would run even when this manual job is never
+  # triggered, since GitLab does not block dependents on an un-triggered `allow_failure` manual
+  # job.
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+      when: manual
+      allow_failure: true
+  timeout: 2h
+  needs:
+    - build-adp-baseline-image
+    - build-adp-comparison-image
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata # for provenance, debugging
+      - outputs/report.md # for debugging, also on S3
+      - outputs/report.json # for debugging, also on S3
+      - outputs/condensed-report.md # the posted report, for debugging
+    when: always
+  script:
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./ci/tooling/configure-smp-aws-credentials.sh
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - echo "Running on-demand suite -- baseline ${BASELINE_ADP_SHA}, comparison ${COMPARISON_ADP_SHA}."
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job submit
+      --warmup-seconds 0
+      --baseline-image ${BASELINE_SMP_IMG}
+      --comparison-image ${COMPARISON_SMP_IMG}
+      --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-sha ${COMPARISON_ADP_SHA}
+      --target-config-dir ./test/smp/regression/adp/on-demand/
+      --submission-metadata submission_metadata
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
+    - python3 ./ci/tooling/build-smp-report.py
+      --report-json outputs/report.json
+      --output-report outputs/condensed-report.md
+    - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane, on-demand suite)"
+
 binary-size-analysis:
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
