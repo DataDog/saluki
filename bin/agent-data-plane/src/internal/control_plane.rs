@@ -8,6 +8,7 @@ use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker, api::APIBuilder, config::ConfigWorker, logging::LoggingOverrideController,
 };
+use saluki_components::http::ServicesEndpointsWorker;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::{
     health::HealthRegistry,
@@ -47,6 +48,7 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
+    supervisor.add_worker(ServicesEndpointsWorker::new());
     supervisor.add_worker(InternalTelemetryAPIWorker::new());
     supervisor.add_worker(DynamicLogLevelWorker::new(
         config_system.live(|config| &config.control.logging.level),
