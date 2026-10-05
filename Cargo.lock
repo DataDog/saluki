@@ -5720,6 +5720,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-fit"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "saluki-io"
 version = "0.1.0"
 dependencies = [
