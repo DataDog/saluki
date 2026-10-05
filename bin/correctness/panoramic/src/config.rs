@@ -446,6 +446,8 @@ pub enum AssertionConfig {
         endpoint: String,
         /// Matcher applied to the response status code.
         status: HttpStatusMatcher,
+        /// Matcher applied to the response body code.
+        body: Option<HttpBodyMatcher>,
         /// Whether to skip TLS certificate verification for `https://` endpoints.
         ///
         /// Defaults to `false`. Set to `true` when probing endpoints that serve self-signed
@@ -532,6 +534,17 @@ pub enum HttpStatusMatcher {
     Equal(u16),
     /// Assertion passes when the response status code is anything other than this value.
     NotEqual(u16),
+}
+
+/// Matcher for the response body of an [`AssertionConfig::HttpCheck`].
+///
+/// Exactly one variant is set at deserialization time, so the assertion either requires a specific
+/// body or rejects a specific body.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpBodyMatcher {
+    /// Assertion passes when the response body equals this value.
+    Equal(String),
 }
 
 impl ActionConfig {
