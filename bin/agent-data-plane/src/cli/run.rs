@@ -394,9 +394,23 @@ async fn create_topology(
     // OTLP proxy mode must not construct liveness or output paths that it does not otherwise need.
     if !dp.standalone_mode() {
         let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
-        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
+        add_liveness_source_to_blueprint(
+            &mut blueprint,
+            env_provider,
+            add_container_tags,
+            dp.traces_pipeline_required(),
+        )
+        .await?;
+        let panic_reporter_hostname = env_provider
+            .host()
+            .get_hostname()
+            .await
+            .error_context("Failed to get hostname for panic reporter source.")?;
         blueprint
-            .add_source("panic_reporter_in", panic_reporter::PanicReporterConfiguration)?
+            .add_source(
+                "panic_reporter_in",
+                panic_reporter::PanicReporterConfiguration::from_hostname(panic_reporter_hostname.into()),
+            )?
             .connect_components("panic_reporter_in.metrics", "metrics_enrich")?;
     }
 
@@ -421,8 +435,10 @@ const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
 
 async fn add_liveness_source_to_blueprint(
     blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
+    emit_vitals: bool,
 ) -> Result<(), GenericError> {
-    let liveness_config = LivenessConfiguration::from_environment_provider(env_provider, add_container_tags).await?;
+    let liveness_config =
+        LivenessConfiguration::from_environment_provider(env_provider, add_container_tags, emit_vitals).await?;
 
     blueprint
         .add_source("liveness_in", liveness_config)?
