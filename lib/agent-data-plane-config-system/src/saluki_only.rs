@@ -241,6 +241,8 @@ pub struct SalukiOnly {
 pub struct DataPlane {
     /// Experimental plaintext gRPC metrics endpoint; unset disables stateful delivery.
     pub stateful_metrics_endpoint: Option<String>,
+    /// Further experimental gRPC metrics endpoints that receive every stateful payload.
+    pub stateful_metrics_additional_endpoints: Vec<String>,
     /// Independent stateful sender tasks; defaults to three and rejects zero.
     pub stateful_metrics_workers: NonZeroUsize,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
@@ -255,6 +257,7 @@ impl Default for DataPlane {
     fn default() -> Self {
         Self {
             stateful_metrics_endpoint: None,
+            stateful_metrics_additional_endpoints: Vec::new(),
             stateful_metrics_workers: DEFAULT_STATEFUL_METRICS_WORKERS,
             standalone_mode: None,
             checks: DataPlaneChecks::default(),
@@ -531,6 +534,8 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         config.domains.stateful_metrics.endpoint = self.data_plane.stateful_metrics_endpoint.clone();
+        config.domains.stateful_metrics.additional_endpoints =
+            self.data_plane.stateful_metrics_additional_endpoints.clone();
         config.domains.stateful_metrics.workers = self.data_plane.stateful_metrics_workers;
         // control
         if let Some(v) = self.data_plane.standalone_mode {

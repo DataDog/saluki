@@ -481,7 +481,10 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
             .add_destination(
                 "stateful_metrics",
                 StatefulMetricsConfiguration {
-                    endpoint: endpoint.clone().into(),
+                    endpoints: std::iter::once(endpoint)
+                        .chain(&config.domains.stateful_metrics.additional_endpoints)
+                        .map(|endpoint| endpoint.clone().into())
+                        .collect(),
                     workers: config.domains.stateful_metrics.workers,
                     api_key: config_system.live(|config| &config.shared.endpoints.api_key),
                     compression_level: shared.endpoints.compression.effective_zstd_level(),

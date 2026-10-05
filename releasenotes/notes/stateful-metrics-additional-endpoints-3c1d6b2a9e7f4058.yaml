@@ -1,0 +1,7 @@
+features:
+  - |
+    Add ``data_plane.stateful_metrics_additional_endpoints`` to the experimental
+    stateful metrics path. Each listed plaintext gRPC intake receives every
+    stateful payload using the primary API key. Batches an endpoint could not
+    carry are retried only to that endpoint, from a per-endpoint retry lane, so
+    an outage on one endpoint does not delay delivery to the others.
