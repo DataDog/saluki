@@ -1,0 +1,6 @@
+enhancements:
+  - |
+    The ``dogstatsd.uds_origin_detection_error`` telemetry metric now carries a ``reason`` tag that identifies why
+    origin detection failed for a UDS packet: ``zero_pid`` when the sender's process ID isn't visible to Agent Data
+    Plane, typically because Agent Data Plane isn't running in the host PID namespace, or ``invalid_credentials`` when
+    the packet arrived without usable process credentials.
