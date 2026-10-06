@@ -16,7 +16,7 @@ pub mod transaction;
 pub mod validation;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span, Trace};
 use stringtheory::MetaString;
 use tracing::debug;
 

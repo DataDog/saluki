@@ -8,7 +8,7 @@ use std::{
 
 use fnv::FnvHasher;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
-use saluki_core::data_model::event::trace::AttributeValue;
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _};
 use stringtheory::MetaString;
 
 pub const BUCKET_DURATION_NS: u64 = 10_000_000_000;

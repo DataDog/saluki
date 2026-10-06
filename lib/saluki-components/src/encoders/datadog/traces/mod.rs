@@ -12,7 +12,7 @@ use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{
         event::{
-            trace::{AttributeValue, Trace},
+            trace::{AttributeValue, AttributeValueExt as _, Trace},
             EventType,
         },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
