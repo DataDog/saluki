@@ -1,4 +1,4 @@
-//! Simple http endpoints ported from the go trace agent for backward compatibility
+//! Simple HTTP endpoints ported from the go trace agent for backward compatibility
 use axum::{response::IntoResponse, routing::get, Router};
 use saluki_api::{APIHandler, DynamicRoute, EndpointType};
 use saluki_common::sync::shutdown::ShutdownHandle;
@@ -33,7 +33,7 @@ impl APIHandler for ServicesEndpointsAPIHandler {
     }
 }
 
-/// Answers "OK" to http calls to /services and /v0.{1,2,3,4}/services
+/// Answers "OK" to HTTP calls to /services and /v0.{1,2,3,4}/services
 pub struct ServicesEndpointsWorker {}
 
 impl ServicesEndpointsWorker {
