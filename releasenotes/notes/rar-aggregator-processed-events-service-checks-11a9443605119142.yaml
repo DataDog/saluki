@@ -1,0 +1,5 @@
+enhancements:
+  - |
+    Agent Data Plane now reports ``aggregator.processed`` for events and service checks, and
+    ``aggregator.number_of_flush``, through the Datadog Agent telemetry endpoint. The
+    ``aggregate_flushes_total`` internal metric is now emitted at the default telemetry level.

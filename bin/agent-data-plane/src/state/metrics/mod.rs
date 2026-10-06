@@ -567,6 +567,10 @@ mod tests {
             find("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
         );
+        assert_eq!(
+            find("aggregator.number_of_flush"),
+            Some("Number of flushes done by the aggregator")
+        );
         assert_eq!(find("filterlist.size"), Some("Metric filter list size"));
         assert_eq!(
             find("filterlist.updates"),
@@ -649,6 +653,44 @@ mod tests {
             remapped_name("adp.component_events_received_total", "component_id:dsd_agg"),
             Some("aggregator.processed")
         );
+    }
+
+    #[test]
+    fn render_rar_telemetry_remaps_aggregator_processed_and_flush_count() {
+        // Events and service checks bypass the aggregator in ADP, so the events received by their encoders stand in
+        // for the Core Agent aggregator's processed counts.
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.component_events_received_total", &["component_id:dsd_agg"]),
+                10.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dd_events_encode"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dd_service_checks_encode"],
+                ),
+                4.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.aggregate_flushes_total", &["component_id:dsd_agg"]),
+                7.0,
+            )),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        assert!(output.contains("aggregator__processed{data_type=\"dogstatsd_metrics\"} 10"));
+        assert!(output.contains("aggregator__processed{data_type=\"events\"} 3"));
+        assert!(output.contains("aggregator__processed{data_type=\"service_checks\"} 4"));
+        assert!(output.contains("aggregator__number_of_flush 7"));
+        assert!(output.contains("# TYPE aggregator__number_of_flush counter"));
     }
 
     #[test]
