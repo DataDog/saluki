@@ -25,8 +25,8 @@ use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use foldspace_core::{
     proto::stateful::batch_status, CoreConfig, LogicalMetricBatch, MetricClientEffect, MetricClientError,
-    MetricEndpointId, MetricFailureAction, MetricStreamError, MetricStreamFailure, MetricStreamFailureKind,
-    SenderConfig, StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
+    MetricDictionaryEvictionConfig, MetricEndpointId, MetricFailureAction, MetricStreamError, MetricStreamFailure,
+    MetricStreamFailureKind, SenderConfig, StatefulMetricsClient, StreamId, TimerKind, ZstdBatchCompressor,
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
 use saluki_common::task::JoinSetExt as _;
@@ -80,6 +80,11 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+// Per worker. Keep both limits well above the live working set: a cap near it re-sends a large
+// share of definitions every flush, and the grace period stops a cap below it from bounding memory.
+const DICTIONARY_MAX_ENTRIES: usize = 20_000;
+const DICTIONARY_MAX_ESTIMATED_BYTES: i64 = 16 * 1024 * 1024;
+const DICTIONARY_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// Opt-in destination for stateful series; delivery never switches automatically to HTTP.
 pub struct StatefulMetricsConfiguration {
@@ -268,8 +273,13 @@ impl StatefulMetricsWorker {
                 max_inflight_payloads: MAX_INFLIGHT_BATCHES,
                 ..SenderConfig::default()
             },
+            metrics_dictionary_eviction: Some(MetricDictionaryEvictionConfig {
+                max_item_count: DICTIONARY_MAX_ENTRIES,
+                max_memory_bytes: DICTIONARY_MAX_ESTIMATED_BYTES,
+                stale_after: DICTIONARY_STALE_AFTER,
+                ..MetricDictionaryEvictionConfig::default()
+            }),
             metrics_endpoints: endpoints.len(),
-            ..CoreConfig::default()
         };
         let stream_lifetime = config.sender.stream_lifetime;
         Self {

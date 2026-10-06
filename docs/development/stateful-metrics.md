@@ -239,8 +239,17 @@ multiplies the aggregate high-priority capacity, retry-memory budget, disk budge
 number of inflight payloads (8 per endpoint per worker). Adding endpoints splits each worker's retry
 budgets rather than multiplying them, but adds a transport and inflight window per endpoint. Each worker also adds a transport, compression state,
 dictionaries, a partial batch, and a two-batch input queue. Series distribution and dictionary
-reuse affect actual memory; these limits do not bound total process memory or dictionary bytes.
+reuse affect actual memory; these limits do not bound total process memory.
 The configured series threshold and flush timeout apply independently to each worker.
+
+Each worker's dictionary uses Foldspace local eviction with ADP's defaults: 20,000 entries,
+16 MiB of Foldspace-estimated bytes, and removal of entries no payload has referenced for 30
+minutes. The entry and byte caps sit well above the live working set (about 7,000 entries per
+worker for a 110-pod node), so in normal operation eviction only removes definitions for series
+that stopped reporting, such as departed pods. Real heap is about 1.5 times the estimate, because
+the estimate excludes the rule store's copy of each definition and per-endpoint sent sets. The caps
+cannot shrink the dictionary below the live working set: recently created definitions are protected
+by Foldspace's 30-second grace period. The aggregator's context limit bounds the live set instead.
 
 Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush
@@ -261,8 +270,7 @@ Foldspace itself reads no clock and creates no runtime task.
 
 This is an opt-in plaintext integration experiment with one or more stateful endpoints sharing the
 primary API key, and configurable sender workers. The HTTP forwarder's `additional_endpoints` is rejected. Existing MRF and autoscaling-failover branches remain separate
-from this primary path. TLS, proxy support, dictionary eviction, and byte limits on core inflight data and
-protocol dictionaries remain future work.
+from this primary path. TLS, proxy support, and byte limits on core inflight data remain future work.
 
 Run focused tests with:
 
