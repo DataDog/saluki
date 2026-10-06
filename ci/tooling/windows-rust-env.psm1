@@ -142,7 +142,7 @@ function Initialize-RustEnvironment {
     $Toolchain = $ToolchainMatch.Matches[0].Groups[1].Value
 
     Write-Host "[*] Ensuring Rust toolchain ${Toolchain} is installed..."
-    Invoke-Native rustup toolchain install --profile minimal $Toolchain
+    Invoke-Native rustup toolchain install --no-self-update --profile minimal $Toolchain
     Invoke-Native rustup default $Toolchain
     Invoke-Native rustup show
     Invoke-Native cargo --version

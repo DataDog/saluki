@@ -87,11 +87,18 @@ pub enum RuntimeMode {
 /// A handle to a supervisor running in a dedicated runtime.
 ///
 /// Allows capturing any runtime initialization failures as well as the result of the supervisor's execution.
+///
+/// Dropping the handle before the supervisor finishes tears the supervisor down. An abort of the task that awaits the
+/// handle cannot cancel the supervisor itself, because the supervisor runs on a thread of its own. Without this, an
+/// aborted parent would leave the supervisor running, with nothing waiting for it.
 pub(crate) struct DedicatedRuntimeHandle {
     supervisor_id: String,
     init_rx: Option<oneshot::Receiver<Result<(), GenericError>>>,
     result_rx: oneshot::Receiver<Result<(), SupervisorError>>,
     thread_handle: Option<JoinHandle<()>>,
+
+    /// Tears the supervisor down when dropped. The runtime thread stops the supervisor as soon as this sender is gone.
+    _teardown: oneshot::Sender<()>,
 }
 
 impl Future for DedicatedRuntimeHandle {
@@ -161,6 +168,7 @@ pub(crate) fn spawn_dedicated_runtime(
 ) -> Result<DedicatedRuntimeHandle, GenericError> {
     let (init_tx, init_rx) = oneshot::channel();
     let (result_tx, result_rx) = oneshot::channel();
+    let (teardown_tx, teardown_rx) = oneshot::channel::<()>();
 
     let supervisor_id = supervisor.id().to_string();
     let thread_name = format!("{}-sup-rt", supervisor_id);
@@ -186,8 +194,18 @@ pub(crate) fn spawn_dedicated_runtime(
             //
             // We pass the parent's dataspace so the nested supervisor inherits it across the
             // thread boundary rather than creating a new one.
-            let result = runtime.block_on(supervisor.run_with_shutdown_inner(process_shutdown, Some(dataspace)));
-            let _ = result_tx.send(result);
+            //
+            // If the handle is dropped first, nothing waits for the result anymore. Then we drop the supervisor
+            // immediately, which aborts its children, and dropping the runtime below cancels whatever is left on it.
+            let result = runtime.block_on(async {
+                tokio::select! {
+                    result = supervisor.run_with_shutdown_inner(process_shutdown, Some(dataspace)) => Some(result),
+                    _ = teardown_rx => None,
+                }
+            });
+            if let Some(result) = result {
+                let _ = result_tx.send(result);
+            }
         })
         .map_err(|e| generic_error!("Failed to spawn dedicated runtime thread '{}': {}", thread_name, e))?;
 
@@ -196,5 +214,6 @@ pub(crate) fn spawn_dedicated_runtime(
         init_rx: Some(init_rx),
         result_rx,
         thread_handle: Some(thread_handle),
+        _teardown: teardown_tx,
     })
 }

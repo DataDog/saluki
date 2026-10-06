@@ -161,6 +161,31 @@ impl ShutdownHandle {
     pub fn is_triggered(&self) -> bool {
         self.state.flag.load(Acquire)
     }
+
+    /// Returns a read-only view of this handle's shutdown signal.
+    ///
+    /// Clone the view to observe the signal from other tasks.
+    pub fn view(&self) -> ShutdownView {
+        ShutdownView {
+            state: Arc::clone(&self.state),
+        }
+    }
+}
+
+/// A read-only view of the shutdown signal of a [`ShutdownHandle`].
+///
+/// A view reports the same state as the handle that it came from. But a view is not a handle: it does not count as an
+/// outstanding handle, so [`ShutdownCoordinator::shutdown_and_wait`] does not wait for it, and it cannot be awaited.
+#[derive(Clone)]
+pub struct ShutdownView {
+    state: Arc<ShutdownInner>,
+}
+
+impl ShutdownView {
+    /// Returns `true` if shutdown has been triggered.
+    pub fn is_triggered(&self) -> bool {
+        self.state.flag.load(Acquire)
+    }
 }
 
 impl Future for ShutdownHandle {
@@ -219,6 +244,30 @@ mod tests {
 
         drop(coordinator);
         assert!(handle.is_triggered());
+    }
+
+    #[test]
+    fn view_reports_the_state_of_its_handle() {
+        let (coordinator, handle) = ShutdownHandle::paired();
+        let view = handle.view();
+        assert!(!view.is_triggered());
+
+        coordinator.shutdown();
+        assert!(view.is_triggered());
+    }
+
+    #[tokio::test]
+    async fn view_is_not_waited_for() {
+        let (coordinator, handle) = ShutdownHandle::paired();
+        let view = handle.view();
+
+        // The view is not an outstanding handle. Thus, after the handle is dropped, a coordinator that waits for its
+        // handles does not wait for the view.
+        drop(handle);
+        tokio::time::timeout(std::time::Duration::from_secs(1), coordinator.shutdown_and_wait())
+            .await
+            .expect("the view must not hold up the coordinator");
+        assert!(view.is_triggered());
     }
 
     #[test]

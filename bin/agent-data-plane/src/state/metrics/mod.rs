@@ -652,6 +652,38 @@ mod tests {
     }
 
     #[test]
+    fn uds_origin_detection_errors_keep_reason_for_rar_but_aggregate_for_compat() {
+        let metrics: Vec<_> = [("reason:zero_pid", 2.0), ("reason:invalid_credentials", 3.0)]
+            .into_iter()
+            .map(|(reason, count)| {
+                Event::Metric(Metric::counter(
+                    Context::from_static_parts(
+                        "adp.component_errors_total",
+                        &["component_id:dsd_in", "error_type:origin_detection", reason],
+                    ),
+                    count,
+                ))
+            })
+            .collect();
+
+        let rar_output = render_with(get_datadog_agent_remappings(), metrics.clone());
+        assert!(
+            rar_output.contains("dogstatsd__uds_origin_detection_error{reason=\"zero_pid\"} 2"),
+            "{rar_output}"
+        );
+        assert!(
+            rar_output.contains("dogstatsd__uds_origin_detection_error{reason=\"invalid_credentials\"} 3"),
+            "{rar_output}"
+        );
+
+        let compat_output = render_with(get_compat_remappings(), metrics);
+        assert!(
+            compat_output.contains("dogstatsd_uds_origin_detection_errors 5"),
+            "{compat_output}"
+        );
+    }
+
+    #[test]
     fn rar_telemetry_remaps_supported_dogstatsd_client_byte_telemetry_as_counters() {
         let metrics = [
             "adp.dogstatsd_client_telemetry_bytes_sent",

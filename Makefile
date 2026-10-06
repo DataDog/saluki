@@ -37,7 +37,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.83.3
+MACOS_TEST_AGENT_VERSION ?= 7.84.1
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -53,6 +53,11 @@ export PANORAMIC_LOG_DIR ?= $(SALUKI_TEST_OUTPUT_DIR)/panoramic
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
 # move both at once.
 export RUST_NIGHTLY_VERSION ?= nightly-2026-01-18
+
+# Pinned nightly toolchain for the AIX cross-check. AIX has no prebuilt standard library, so the check builds it from
+# source, which doesn't work on RUST_NIGHTLY_VERSION or our stable toolchain. Fold this into RUST_NIGHTLY_VERSION once
+# that's new enough.
+export RUST_AIX_NIGHTLY_VERSION ?= nightly-2026-08-25
 
 # Tool configuration.
 export AUTOINSTALL ?= true
@@ -494,7 +499,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
+check-all: check-fmt check-clippy check-docs check-deny check-fips-module check-licenses check-unused-deps generate-api-docs check-features check-aix-cross
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools ensure-rust-nightly
@@ -519,6 +524,11 @@ check-deny-ci: check-rust-build-tools cargo-install-cargo-deny
 check-deny-ci: ## Like check-deny, but on non-main branches only fails on advisories not already present on main
 	@./ci/tooling/check-deny.sh
 
+.PHONY: check-fips-module
+check-fips-module: check-rust-build-tools
+check-fips-module: ## Check that FIPS builds use a FIPS 140-3 certified AWS-LC FIPS module
+	@./ci/tooling/check-fips-module.sh
+
 .PHONY: check-fmt
 check-fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly
@@ -541,6 +551,11 @@ check-features: ## Checks that all packages with feature flags can be built with
 	xargs -I {} -- cargo read-manifest --manifest-path {} | \
 	jq -r "select(.features | del(.default) | length > 0) | .name" | \
 	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
+
+.PHONY: check-aix-cross
+check-aix-cross: check-rust-build-tools ensure-rust-aix-nightly
+check-aix-cross: ## Checks that agent-data-plane compiles for AIX (type-checks only, from a non-AIX host)
+	@./ci/tooling/check-aix-cross.sh
 
 .PHONY: check-unused-deps
 check-unused-deps: check-rust-build-tools cargo-install-cargo-machete
@@ -764,6 +779,16 @@ ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
 endif
 	@echo "[*] Installing/updating nightly Rust ($(RUST_NIGHTLY_VERSION))..."
 	@rustup toolchain install $(RUST_NIGHTLY_VERSION) --profile minimal --component rustfmt
+
+.PHONY: ensure-rust-aix-nightly
+ensure-rust-aix-nightly:
+ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
+	$(error "Rustup must be present to install the nightly toolchain: https://www.rust-lang.org/tools/install")
+endif
+	@echo "[*] Installing/updating nightly Rust for AIX cross-checks ($(RUST_AIX_NIGHTLY_VERSION))..."
+# Build scripts run under this toolchain too, and some format the code they generate with `rustfmt`. Without it,
+# they'd fall back to writing unformatted code over checked-in files.
+	@rustup toolchain install $(RUST_AIX_NIGHTLY_VERSION) --profile minimal --component rust-src --component rustfmt
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri: ensure-rust-nightly

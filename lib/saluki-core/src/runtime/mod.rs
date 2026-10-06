@@ -59,6 +59,25 @@
 //! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
 //! supervisor that shuts down before it reaches the child never starts it at all.
 //!
+//! # Scopes
+//!
+//! A supervisor owns its children. If a worker spawns a child through [`spawn`], the child is only a sibling of the
+//! worker, and their supervisor owns it. Every supervised worker also has a [scope]. The worker owns the children that
+//! it spawns into its scope with [`ChildBuilder::spawn_child`].
+//!
+//! Each of these children runs as a separate task. The worker does not finish until all of these children finish. When
+//! the body of the worker returns, the scope stops them, each according to its own shutdown strategy, as a supervisor
+//! does.
+//!
+//! A scope restarts its children according to their restart policies, as a supervisor does. If a child stops more often
+//! than the restart limit of the scope allows, the owner of the child fails. A supervisor fails in the same condition.
+//! The owner also fails if a child marked [needed][ChildBuilder::needed] terminates and the scope does not restart it.
+//! After the owner is told to stop, the scope no longer restarts its children, and no exit of a child fails the owner.
+//!
+//! A value can also own a scope, so that the background tasks of a primitive stop when the primitive stops. See
+//! [`scope::nested`]. You can also create a scope before the process that will own it exists, with [`UnadoptedScope`].
+//! This lets work spawned during the construction of something belong to the process that later runs that thing.
+//!
 //! # Supervision trees
 //!
 //! As supervisors can be nested, this allows building a tree of supervisors (hence _supervision trees_) where leaf
@@ -119,10 +138,13 @@ pub use self::tree::{
 mod spawn;
 pub use self::spawn::spawn;
 
+pub mod scope;
+pub use self::scope::{Scope, ScopeError, ScopeGuard, UnadoptedScope};
+
 mod builder;
 pub use self::builder::{
-    nested_supervisor, supervisable, worker, BuilderState, CanTerminate, ChildBuilder, NestedSupervisorBuilder,
-    OneShot, Restartable, Terminable,
+    nested_supervisor, supervisable, worker, worker_with_shutdown, BuilderState, CanTerminate, ChildBuilder,
+    NestedSupervisorBuilder, OneShot, Restartable, Terminable,
 };
 
 mod workers;
