@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    Agent Data Plane no longer rejects configuration when the Datadog Agent reports an empty list or map
+    as ``null``, for example ``histogram_aggregates: []``, an empty ``proxy.no_proxy``, or a runtime update
+    that clears ``additional_endpoints``. These settings now read as empty, as they do in the Datadog Agent,
+    instead of failing startup or discarding the update.
+  - |
+    Agent Data Plane now rejects an ``apm_config.replace_tags`` rule that has no ``name`` or no ``pattern``,
+    matching the Trace Agent. Previously such a rule was accepted.
