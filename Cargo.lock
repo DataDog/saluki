@@ -836,6 +836,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "checks-ipc-bench"
+version = "0.1.0"
+dependencies = [
+ "datadog-checks-protocol",
+ "datadog-protos",
+ "libc",
+ "prost",
+ "saluki-fit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
