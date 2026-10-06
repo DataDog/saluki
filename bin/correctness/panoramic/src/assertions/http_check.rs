@@ -255,14 +255,7 @@ async fn get_response_in_container(
     if insecure_skip_verify {
         cmd.push("-k".to_string());
     }
-    cmd.extend([
-        "-s".to_string(),
-        "-o".to_string(),
-        "NUL".to_string(),
-        "-w".to_string(),
-        "%{http_code}".to_string(),
-        endpoint,
-    ]);
+    cmd.extend(["-s".to_string(), "-w".to_string(), "%{http_code}".to_string(), endpoint]);
     let exec = docker
         .create_exec(
             container_name,
@@ -302,11 +295,14 @@ async fn get_response_in_container(
         return Ok(None);
     }
 
-    let status = stdout.trim().parse::<u16>().ok().filter(|status| *status != 0);
-    #[allow(unreachable_code)]
+    let Some((body, status)) = stdout.rsplit_once("\r\n") else {
+        return Err(format!("Failed to parse curl.exe output: stdout={stdout:?}"));
+    };
+
+    let status = status.trim().parse::<u16>().ok().filter(|status| *status != 0);
     let response = status.map(|status| HttpResponse {
         status,
-        body: todo!("Parse curl body"),
+        body: Some(body.to_string()),
     });
     Ok(response)
 }
