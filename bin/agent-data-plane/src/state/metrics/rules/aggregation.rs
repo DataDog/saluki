@@ -31,6 +31,21 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
         )
         .with_additional_tags(["data_type:dogstatsd_metrics"])
         .with_help_text("Amount of metrics/services_checks/events processed by the aggregator"),
+        // Events and service checks don't pass through an aggregator in ADP, so their encoders stand in for it.
+        RemapperRule::by_name_and_tags(
+            "adp.component_events_received_total",
+            &["component_id:dd_events_encode"],
+            "aggregator.processed",
+        )
+        .with_additional_tags(["data_type:events"])
+        .with_help_text("Amount of metrics/services_checks/events processed by the aggregator"),
+        RemapperRule::by_name_and_tags(
+            "adp.component_events_received_total",
+            &["component_id:dd_service_checks_encode"],
+            "aggregator.processed",
+        )
+        .with_additional_tags(["data_type:service_checks"])
+        .with_help_text("Amount of metrics/services_checks/events processed by the aggregator"),
         RemapperRule::by_name_and_tags(
             "adp.aggregate_passthrough_metrics_total",
             &[NO_AGG_SPLIT_COMPONENT_TAG],
@@ -51,5 +66,11 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["data_type"])
         .with_help_text("Number of metrics/service checks/events flushed"),
+        RemapperRule::by_name_and_tags(
+            "adp.aggregate_flushes_total",
+            &["component_id:dsd_agg"],
+            "aggregator.number_of_flush",
+        )
+        .with_help_text("Number of flushes done by the aggregator"),
     ]
 }
