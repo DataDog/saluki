@@ -21,9 +21,7 @@ impl ServicesEndpointsAPIHandler {
 impl APIHandler for ServicesEndpointsAPIHandler {
     type State = ();
 
-    fn generate_initial_state(&self) -> Self::State {
-        ()
-    }
+    fn generate_initial_state(&self) -> Self::State {}
 
     fn generate_routes(&self) -> axum::Router<Self::State> {
         Router::new()

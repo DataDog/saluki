@@ -1835,6 +1835,7 @@ procedure:
         let mut http = AssertionConfig::HttpCheck {
             endpoint: "http://{{PANORAMIC_DYNAMIC_IP}}:{{PANORAMIC_DYNAMIC_PORT}}/health".to_string(),
             status: HttpStatusMatcher::Equal(200),
+            body: None,
             insecure_skip_verify: false,
             timeout: HumanDuration(Duration::from_secs(1)),
         };
