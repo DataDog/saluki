@@ -66,7 +66,7 @@
 <a href=#66 id=66 data-nosnippet>66</a>            active_contexts_by_type: MetricTypedGauge::new(builder, <span class="string">"aggregate_active_contexts_by_type"</span>),
 <a href=#67 id=67 data-nosnippet>67</a>            active_contexts_bytes_by_type: MetricTypedGauge::new(builder, <span class="string">"aggregate_active_contexts_bytes_by_type"</span>),
 <a href=#68 id=68 data-nosnippet>68</a>            events_dropped: builder.register_counter_with_tags(<span class="string">"component_events_dropped_total"</span>, [<span class="string">"intentional:true"</span>]),
-<a href=#69 id=69 data-nosnippet>69</a>            flushes: builder.register_debug_counter(<span class="string">"aggregate_flushes_total"</span>),
+<a href=#69 id=69 data-nosnippet>69</a>            flushes: builder.register_counter(<span class="string">"aggregate_flushes_total"</span>),
 <a href=#70 id=70 data-nosnippet>70</a>            series_flushed: builder.register_counter_with_tags(<span class="string">"aggregate_flushed_total"</span>, [<span class="string">"data_type:series"</span>]),
 <a href=#71 id=71 data-nosnippet>71</a>            sketches_flushed: builder.register_counter_with_tags(<span class="string">"aggregate_flushed_total"</span>, [<span class="string">"data_type:sketches"</span>]),
 <a href=#72 id=72 data-nosnippet>72</a>        }
