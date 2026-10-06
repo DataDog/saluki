@@ -12,6 +12,7 @@ workspace = true
 datadog-checks-protocol = { workspace = true }
 datadog-protos = { workspace = true }
 libc = { workspace = true }
+process-memory = { workspace = true }
 saluki-fit = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

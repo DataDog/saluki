@@ -65,6 +65,8 @@ pub struct Snapshot {
     pub checksum_sum: u64,
     pub checksum_xor: u64,
     pub cpu_us: u64,
+    pub rss_bytes: u64,
+    pub peak_rss_bytes: u64,
     pub timestamp_ns: u64,
     pub done: bool,
     pub fatal: bool,
@@ -86,6 +88,8 @@ impl Snapshot {
             checksum_sum: self.checksum_sum.wrapping_sub(base.checksum_sum),
             checksum_xor: self.checksum_xor ^ base.checksum_xor,
             cpu_us: self.cpu_us.saturating_sub(base.cpu_us),
+            rss_bytes: self.rss_bytes,
+            peak_rss_bytes: self.peak_rss_bytes,
             timestamp_ns: self.timestamp_ns,
             done: self.done,
             fatal: self.fatal,
@@ -114,6 +118,7 @@ pub struct SharedStats {
 impl SharedStats {
     pub fn snapshot(&self) -> Snapshot {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        let (cpu_us, peak_rss_bytes) = process_usage();
         Snapshot {
             scheduled: load(&self.scheduled),
             attempted: load(&self.attempted),
@@ -127,7 +132,9 @@ impl SharedStats {
             out_of_order: load(&self.out_of_order),
             checksum_sum: load(&self.checksum_sum),
             checksum_xor: load(&self.checksum_xor),
-            cpu_us: cpu_us(),
+            cpu_us,
+            rss_bytes: process_memory::Querier::default().resident_set_size().unwrap_or(0) as u64,
+            peak_rss_bytes,
             timestamp_ns: clock_ns(),
             done: self.done.load(Ordering::Relaxed),
             fatal: self.fatal.load(Ordering::Relaxed),
@@ -168,14 +175,18 @@ pub fn deadline_missed(now_ns: u64, deadline_ns: u64) -> bool {
     now_ns > deadline_ns.saturating_add(CATCH_UP_NS)
 }
 
-fn cpu_us() -> u64 {
+fn process_usage() -> (u64, u64) {
     // SAFETY: `usage` is writable and `RUSAGE_SELF` is valid on macOS/Linux.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
-        return 0;
+        return (0, 0);
     }
     let micros = |time: libc::timeval| (time.tv_sec as u64) * 1_000_000 + time.tv_usec as u64;
-    micros(usage.ru_utime) + micros(usage.ru_stime)
+    #[cfg(target_os = "macos")]
+    let peak_rss_bytes = usage.ru_maxrss as u64;
+    #[cfg(not(target_os = "macos"))]
+    let peak_rss_bytes = (usage.ru_maxrss as u64) * 1024;
+    (micros(usage.ru_utime) + micros(usage.ru_stime), peak_rss_bytes)
 }
 
 pub fn fixture(workload: Workload, sequence: u64) -> Message {

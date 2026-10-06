@@ -842,6 +842,7 @@ dependencies = [
  "datadog-checks-protocol",
  "datadog-protos",
  "libc",
+ "process-memory",
  "prost",
  "saluki-fit",
  "serde",

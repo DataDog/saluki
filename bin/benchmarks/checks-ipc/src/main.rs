@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 
 type Result<T> = std::result::Result<T, String>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProfileKind {
+    Cpu,
+    Memory,
+}
+
 #[derive(Clone)]
 struct Options {
     transport: Transport,
@@ -28,6 +34,7 @@ struct Options {
     repetitions: usize,
     output: PathBuf,
     side: Option<String>,
+    profile_kind: ProfileKind,
     min_rate: u64,
     max_rate: u64,
     consumer_delay_us: u64,
@@ -46,6 +53,7 @@ impl Default for Options {
             repetitions: 1,
             output: PathBuf::from("bin/benchmarks/checks-ipc/results"),
             side: None,
+            profile_kind: ProfileKind::Cpu,
             min_rate: 100,
             max_rate: 10_000_000,
             consumer_delay_us: 0,
@@ -75,6 +83,13 @@ fn parse_options(args: &[String]) -> Result<Options> {
             "--repetitions" => options.repetitions = value.parse().map_err(|_| "invalid repetitions")?,
             "--output" => options.output = PathBuf::from(value),
             "--side" => options.side = Some(value.clone()),
+            "--kind" => {
+                options.profile_kind = match value.as_str() {
+                    "cpu" => ProfileKind::Cpu,
+                    "memory" => ProfileKind::Memory,
+                    _ => return Err("profile kind must be cpu or memory".into()),
+                }
+            }
             "--min-rate" => options.min_rate = value.parse().map_err(|_| "invalid minimum rate")?,
             "--max-rate" => options.max_rate = value.parse().map_err(|_| "invalid maximum rate")?,
             "--consumer-delay-us" => options.consumer_delay_us = value.parse().map_err(|_| "invalid consumer delay")?,
@@ -174,7 +189,11 @@ impl ChildLink {
             options.ring_capacity.to_string(),
             options.consumer_delay_us.to_string(),
         ];
-        let mut command = worker_command(&executable, profile);
+        let cpu_profile = profile.filter(|_| options.profile_kind == ProfileKind::Cpu);
+        let mut command = worker_command(&executable, cpu_profile);
+        if profile.is_some() && options.profile_kind == ProfileKind::Memory {
+            command.env("MallocStackLogging", "1");
+        }
         command
             .args(arguments)
             .stdin(Stdio::piped())
@@ -274,6 +293,14 @@ struct Trial {
     end_ns: u64,
     producer: Snapshot,
     consumer: Snapshot,
+    producer_setup_rss_bytes: u64,
+    consumer_setup_rss_bytes: u64,
+    producer_measurement_baseline_rss_bytes: u64,
+    consumer_measurement_baseline_rss_bytes: u64,
+    producer_average_rss_bytes: u64,
+    consumer_average_rss_bytes: u64,
+    producer_peak_rss_bytes: u64,
+    consumer_peak_rss_bytes: u64,
     in_window_decoded: u64,
     drain_ms: f64,
     backlog_slope_per_sec: f64,
@@ -378,6 +405,36 @@ fn classify(
     failures
 }
 
+fn capture_memory_profile(worker: &ChildLink, prefix: &Path) -> Result<()> {
+    let pid = worker.child.id().to_string();
+    for (suffix, program, arguments) in [
+        ("vmmap.txt", "vmmap", vec!["-summary", pid.as_str()]),
+        ("heap.txt", "heap", vec!["-s", pid.as_str()]),
+        ("allocations.txt", "malloc_history", vec![pid.as_str(), "-callTree"]),
+        (
+            "allocation-counts.txt",
+            "malloc_history",
+            vec![pid.as_str(), "-allByCount"],
+        ),
+    ] {
+        let path = PathBuf::from(format!("{}-{suffix}", prefix.display()));
+        let output = File::create(&path).map_err(|error| error.to_string())?;
+        let result = Command::new(program)
+            .args(arguments)
+            .stdout(Stdio::from(output))
+            .output()
+            .map_err(|error| format!("{program}: {error}"))?;
+        if !result.status.success() {
+            return Err(format!(
+                "{program} failed for {}: {}",
+                worker.label,
+                String::from_utf8_lossy(&result.stderr)
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn trial(options: &Options, profile: Option<&Path>) -> Result<Trial> {
     let temporary = tempfile::Builder::new()
         .prefix("checks-ipc-")
@@ -398,6 +455,9 @@ fn trial(options: &Options, profile: Option<&Path>) -> Result<Trial> {
         &address,
         profile.filter(|_| options.side.as_deref() == Some("producer")),
     )?;
+
+    let setup_producer = producer.snapshot()?;
+    let setup_consumer = consumer.snapshot()?;
 
     let warm_start = common::clock_ns() + 500_000_000;
     let warmup = Phase {
@@ -428,12 +488,24 @@ fn trial(options: &Options, profile: Option<&Path>) -> Result<Trial> {
     };
     producer.start(&measure)?;
     let mut samples = Vec::new();
+    let mut captured_memory = false;
     while common::clock_ns() < end_ns {
         common::sleep_until((common::clock_ns() + 100_000_000).min(end_ns));
         samples.push(Sample {
             producer: producer.snapshot()?,
             consumer: consumer.snapshot()?,
         });
+        if let Some(prefix) = profile.filter(|_| options.profile_kind == ProfileKind::Memory) {
+            if !captured_memory && common::clock_ns() >= start_ns + (end_ns - start_ns) / 2 {
+                let selected = if options.side.as_deref() == Some("producer") {
+                    &producer
+                } else {
+                    &consumer
+                };
+                capture_memory_profile(selected, prefix)?;
+                captured_memory = true;
+            }
+        }
     }
     let window_producer = producer.snapshot()?;
     let window_consumer = consumer.snapshot()?;
@@ -445,6 +517,14 @@ fn trial(options: &Options, profile: Option<&Path>) -> Result<Trial> {
     received.cpu_us = window_consumer.cpu_us.saturating_sub(baseline_consumer.cpu_us);
     let in_window_decoded = window_consumer.decoded.saturating_sub(baseline_consumer.decoded);
     let slope = trend(&samples, start_ns, end_ns);
+    let average_rss = |select: fn(&Sample) -> u64| -> u64 {
+        if samples.is_empty() {
+            return 0;
+        }
+        samples.iter().map(select).sum::<u64>() / samples.len() as u64
+    };
+    let producer_average_rss_bytes = average_rss(|sample| sample.producer.rss_bytes);
+    let consumer_average_rss_bytes = average_rss(|sample| sample.consumer.rss_bytes);
     let failures = classify(produced, received, in_window_decoded, drain_ms, slope, options.rate);
     let profile_name = profile.map(|path| path.display().to_string());
     producer.stop()?;
@@ -462,6 +542,14 @@ fn trial(options: &Options, profile: Option<&Path>) -> Result<Trial> {
         end_ns,
         producer: produced,
         consumer: received,
+        producer_setup_rss_bytes: setup_producer.rss_bytes,
+        consumer_setup_rss_bytes: setup_consumer.rss_bytes,
+        producer_measurement_baseline_rss_bytes: baseline_producer.rss_bytes,
+        consumer_measurement_baseline_rss_bytes: baseline_consumer.rss_bytes,
+        producer_average_rss_bytes,
+        consumer_average_rss_bytes,
+        producer_peak_rss_bytes: produced.peak_rss_bytes,
+        consumer_peak_rss_bytes: received.peak_rss_bytes,
         in_window_decoded,
         drain_ms,
         backlog_slope_per_sec: slope,
@@ -492,12 +580,14 @@ fn save_trial(directory: &Path, index: usize, trial: &Trial) -> Result<()> {
 fn print_trial(trial: &Trial) {
     let secs = trial.duration_secs as f64;
     println!(
-        "{:?} {:?} batch={} rate={} accepted={} received={} in_window={:.0}/s rejected={} missed={} cpu_ms={:.1} pass={} {}",
+        "{:?} {:?} batch={} rate={} accepted={} received={} in_window={:.0}/s rejected={} missed={} cpu_ms={:.1} avg_rss_mib={:.1} peak_rss_mib={:.1} pass={} {}",
         trial.transport, trial.workload, trial.batch,
         trial.rate.map_or_else(|| "unlimited".into(), |rate| rate.to_string()),
         trial.producer.accepted, trial.consumer.decoded, trial.in_window_decoded as f64 / secs,
         trial.producer.rejected, trial.producer.schedule_missed,
         (trial.producer.cpu_us + trial.consumer.cpu_us) as f64 / 1000.0,
+        (trial.producer_average_rss_bytes + trial.consumer_average_rss_bytes) as f64 / 1_048_576.0,
+        (trial.producer_peak_rss_bytes + trial.consumer_peak_rss_bytes) as f64 / 1_048_576.0,
         trial.pass, trial.failures.join("; "),
     );
 }
@@ -505,7 +595,10 @@ fn print_trial(trial: &Trial) {
 fn run_many(options: &Options, directory: &Path, profile: bool) -> Result<Vec<Trial>> {
     let mut trials = Vec::new();
     for index in 0..options.repetitions {
-        let profile_path = profile.then(|| directory.join(format!("profile-{index:03}.json")));
+        let profile_path = profile.then(|| match options.profile_kind {
+            ProfileKind::Cpu => directory.join(format!("profile-{index:03}.json")),
+            ProfileKind::Memory => directory.join(format!("memory-{index:03}")),
+        });
         let result = trial(options, profile_path.as_deref())?;
         save_trial(directory, index, &result)?;
         print_trial(&result);
@@ -517,12 +610,12 @@ fn run_many(options: &Options, directory: &Path, profile: bool) -> Result<Vec<Tr
 
 fn write_summary(directory: &Path, trials: &[Trial]) -> Result<()> {
     let mut file = File::create(directory.join("summary.csv")).map_err(|error| error.to_string())?;
-    writeln!(file, "transport,workload,batch,rate,accepted,decoded,in_window_per_sec,rejected,schedule_missed,producer_cpu_ms,consumer_cpu_ms,drain_ms,pass")
+    writeln!(file, "transport,workload,batch,rate,accepted,decoded,in_window_per_sec,rejected,schedule_missed,producer_cpu_ms,consumer_cpu_ms,producer_setup_rss_bytes,consumer_setup_rss_bytes,producer_average_rss_bytes,consumer_average_rss_bytes,producer_peak_rss_bytes,consumer_peak_rss_bytes,drain_ms,pass")
         .map_err(|error| error.to_string())?;
     for trial in trials {
         writeln!(
             file,
-            "{:?},{:?},{},{},{},{},{:.1},{},{},{:.1},{:.1},{:.1},{}",
+            "{:?},{:?},{},{},{},{},{:.1},{},{},{:.1},{:.1},{},{},{},{},{},{},{:.1},{}",
             trial.transport,
             trial.workload,
             trial.batch,
@@ -536,18 +629,24 @@ fn write_summary(directory: &Path, trials: &[Trial]) -> Result<()> {
             trial.producer.schedule_missed,
             trial.producer.cpu_us as f64 / 1000.0,
             trial.consumer.cpu_us as f64 / 1000.0,
+            trial.producer_setup_rss_bytes,
+            trial.consumer_setup_rss_bytes,
+            trial.producer_average_rss_bytes,
+            trial.consumer_average_rss_bytes,
+            trial.producer_peak_rss_bytes,
+            trial.consumer_peak_rss_bytes,
             trial.drain_ms,
             trial.pass,
         )
         .map_err(|error| error.to_string())?;
     }
     let mut markdown = File::create(directory.join("summary.md")).map_err(|error| error.to_string())?;
-    writeln!(markdown, "# Checks IPC benchmark results\n\n| Transport | Workload | Batch | Offered/s | Delivered/s | Rejected | Missed | Combined CPU ms | Pass |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    writeln!(markdown, "# Checks IPC benchmark results\n\n| Transport | Workload | Batch | Offered/s | Delivered/s | Rejected | Missed | Combined CPU ms | Average RSS MiB | Peak RSS MiB | Pass |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
         .map_err(|error| error.to_string())?;
     for trial in trials {
         writeln!(
             markdown,
-            "| {:?} | {:?} | {} | {} | {:.0} | {} | {} | {:.1} | {} |",
+            "| {:?} | {:?} | {} | {} | {:.0} | {} | {} | {:.1} | {:.1} | {:.1} | {} |",
             trial.transport,
             trial.workload,
             trial.batch,
@@ -558,6 +657,8 @@ fn write_summary(directory: &Path, trials: &[Trial]) -> Result<()> {
             trial.producer.rejected,
             trial.producer.schedule_missed,
             (trial.producer.cpu_us + trial.consumer.cpu_us) as f64 / 1000.0,
+            (trial.producer_average_rss_bytes + trial.consumer_average_rss_bytes) as f64 / 1_048_576.0,
+            (trial.producer_peak_rss_bytes + trial.consumer_peak_rss_bytes) as f64 / 1_048_576.0,
             trial.pass,
         )
         .map_err(|error| error.to_string())?;
@@ -684,7 +785,7 @@ fn provenance(directory: &Path) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "checks-ipc-bench run|search|profile [--transport fit|grpc] [--workload metrics|logs] [--batch N] [--rate N|unlimited] [--ring BYTES] [--warmup SECONDS] [--duration SECONDS] [--repetitions N] [--output DIR] [--side producer|consumer] [--min-rate N] [--max-rate N] [--consumer-delay-us N]"
+    "checks-ipc-bench run|search|profile [--transport fit|grpc] [--workload metrics|logs] [--batch N] [--rate N|unlimited] [--ring BYTES] [--warmup SECONDS] [--duration SECONDS] [--repetitions N] [--output DIR] [--side producer|consumer] [--kind cpu|memory] [--min-rate N] [--max-rate N] [--consumer-delay-us N]"
 }
 
 fn main() {
@@ -724,12 +825,16 @@ fn real_main() -> Result<()> {
             if options.side.is_none() {
                 return Err("profile requires --side producer|consumer".into());
             }
-            if !Command::new("samply")
-                .arg("--version")
-                .output()
-                .is_ok_and(|output| output.status.success())
-            {
-                return Err("Samply is unavailable; install it with `cargo install --locked samply`".into());
+            if options.profile_kind == ProfileKind::Cpu {
+                if !Command::new("samply")
+                    .arg("--version")
+                    .output()
+                    .is_ok_and(|output| output.status.success())
+                {
+                    return Err("Samply is unavailable; install it with `cargo install --locked samply`".into());
+                }
+            } else if !cfg!(target_os = "macos") {
+                return Err("memory profiling currently uses macOS heap tools".into());
             }
             let symbol_status = Command::new("dsymutil")
                 .arg(directory.join("checks-ipc-bench"))

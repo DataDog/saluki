@@ -1,5 +1,7 @@
 # Checks IPC throughput benchmark
 
+The [macOS FIT versus gRPC measurements](RESULTS.md) include isolated transport and whole-application comparisons.
+
 This host-only benchmark runs a producer and consumer in separate processes. It uses the real typed FIT Checks protocol
 or a benchmark-only plaintext gRPC server using the existing Checks `.proto` service. Each explicit batch is sent
 sequentially. A record is delivered when the consumer decodes and validates it. This measures logical payload
@@ -52,7 +54,10 @@ Each invocation creates a unique ignored directory under `bin/benchmarks/checks-
 all counts, a 100 ms time series, throughput, CPU time, backlog slope, drain time, and pass/failure reasons.
 `summary.csv` and `summary.md` give compact views; `provenance.json` records the checkout and build context, and a copy
 of the executable is saved alongside the results. Setup, warmup, and draining are excluded from the in-window
-rate. The `cpu_ms` printed at the console is the sum of producer and consumer process CPU during measurement.
+rate. The `cpu_ms` printed at the console is the sum of producer and consumer process CPU during measurement. Each
+worker reports current RSS and peak RSS; the trial includes RSS at completed setup, after warmup, and as 100 ms samples
+during measurement. The summary gives the sum of both workers' average and peak RSS. Shared pages can appear in both
+processes' RSS, so that sum is a process-accounting comparison rather than unique system memory.
 
 `--consumer-delay-us` is a test-only option for deliberately slowing the decoder. Leave it at zero for performance
 results.
@@ -75,3 +80,19 @@ symbolication. Profiles show sampled CPU stacks and waiting, not precise allocat
 The profile's setup and warmup interval precedes the 30-second measurement interval; use `start_ns` and `end_ns` from
 the corresponding trial JSON to identify the measured section. The profile run also writes its own counts, but sampling
 can change throughput, so compare only unprofiled runs for headline rates.
+
+## Profile memory on macOS
+
+Memory profiling uses the macOS `vmmap`, `heap`, and `malloc_history` tools. It launches only the selected worker with
+`MallocStackLogging=1` and captures a snapshot halfway through the measurement interval:
+
+```sh
+target/optimized-release/checks-ipc-bench profile --kind memory --transport fit --workload metrics --rate 10000 --side producer
+target/optimized-release/checks-ipc-bench profile --kind memory --transport grpc --workload metrics --rate 10000 --side consumer
+```
+
+Each run saves `memory-000-vmmap.txt` for the process map and physical footprint, `memory-000-heap.txt` for live heap
+sizes, `memory-000-allocations.txt` for the stack-logged allocation tree, and `memory-000-allocation-counts.txt` for
+allocation frequency. Run both sides and both transports
+separately. This instrumentation changes allocation costs, so compare steady-state RSS and CPU with ordinary `run`
+results, and use these files only to attribute memory to benchmark fixtures, codecs, FIT mapping, or gRPC buffers.
