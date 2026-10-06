@@ -18,6 +18,7 @@ use tracing::{debug, error, warn};
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
+    scope::{Adoption, Edge, UnadoptedScope},
     supervisable::{InitializationError, ShutdownStrategy, Supervisable},
     tree::{ChildFacts, ChildKey, NodeConfig, Roster, SupervisionTreeHandle, SupervisorNode},
     worker_state::WorkerState,
@@ -301,6 +302,39 @@ impl ChildSpecification<WorkerSpec> {
         self.spec_inner.options.shutdown = ChildShutdown::BudgetBounded;
         self
     }
+
+    /// Sets how the termination of this worker affects the [`Scope`][super::Scope] that owns it.
+    ///
+    /// Only a scope uses this option. A supervisor uses significance instead. See [`Edge`].
+    #[must_use]
+    pub(crate) fn with_edge(mut self, edge: Edge) -> Self {
+        self.spec_inner.options.edge = edge;
+        self
+    }
+
+    /// Makes a failure of this worker fail the owner of the [`Scope`][super::Scope] that it is spawned into, whatever
+    /// its edge is.
+    ///
+    /// Use this for a worker that only holds children of its own, such as the host of a nested scope. This worker fails
+    /// only when one of its children fails, so its failure is the failure of its children. That failure must get to the
+    /// owner of the worker in the same way as a failure of those children. If the worker finishes cleanly, it is only
+    /// reaped. Only a scope uses this option.
+    #[must_use]
+    pub(crate) fn forwarding_failures(mut self) -> Self {
+        self.spec_inner.options.forwards_failures = true;
+        self
+    }
+
+    /// Makes this worker adopt `scope` as its own, so that the worker does not create a scope on demand.
+    ///
+    /// If children are spawned into `scope` before the worker starts, the scope holds them until the worker starts.
+    /// Then they start as children of the worker. Work can be spawned while something is built, before the process that
+    /// will own the work exists. This option is how that process becomes the owner of that work.
+    #[must_use]
+    pub(crate) fn adopting(mut self, scope: UnadoptedScope) -> Self {
+        self.spec_inner.options.adopt = Some(Adoption::new(scope));
+        self
+    }
 }
 
 // Crate-internal for the same reason as the worker surface above: `NestedSupervisorBuilder` is the public front end,
@@ -385,6 +419,13 @@ pub struct LoweredChild {
     config: ChildConfig,
 }
 
+impl LoweredChild {
+    /// Splits the lowered child into its runnable form and its configuration.
+    pub(super) fn into_parts(self) -> (SupervisedChild, ChildConfig) {
+        (self.spec, self.config)
+    }
+}
+
 impl ChildState for WorkerSpec {
     fn into_child_parts(spec: ChildSpecification<Self>, default_restart: RestartType) -> LoweredChild {
         let WorkerSpec { worker, options } = spec.spec_inner;
@@ -433,7 +474,7 @@ impl SupervisedChild {
         }
     }
 
-    fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         match self {
             Self::Worker(worker) => worker.name(),
             Self::Supervisor(supervisor) => &supervisor.supervisor_id,
@@ -582,6 +623,15 @@ pub(super) struct ChildOptions {
     runtime: Option<Handle>,
 
     shutdown: ChildShutdown,
+
+    /// How the child's termination affects the scope that owns it, if the child is spawned into a scope.
+    edge: Edge,
+
+    /// Whether a failure of the child fails the scope that owns it, whatever its edge is.
+    forwards_failures: bool,
+
+    /// A pre-created scope for the child to adopt as its own.
+    adopt: Option<Adoption>,
 }
 
 impl ChildOptions {
@@ -592,21 +642,60 @@ impl ChildOptions {
             significant: self.significant,
             runtime: self.runtime,
             shutdown: self.shutdown,
+            edge: self.edge,
+            forwards_failures: self.forwards_failures,
+            adopt: self.adopt,
         }
     }
 }
 
-/// Per-child configuration: its [`RestartType`], whether it is _significant_ (see [`AutoShutdown`]), the runtime it
-/// runs on, and how its shutdown strategy is decided.
+/// Per-child configuration.
+///
+/// The configuration of a child contains:
+///
+/// - the [`RestartType`] of the child
+/// - whether the child is _significant_ (see [`AutoShutdown`])
+/// - the runtime that the child runs on
+/// - how the shutdown strategy of the child is decided
+/// - how the termination of the child affects a scope that owns it
+/// - the scope that the child adopts, if there is one
 #[derive(Clone, Debug)]
 pub(super) struct ChildConfig {
     restart: RestartType,
     significant: bool,
     runtime: Option<Handle>,
     shutdown: ChildShutdown,
+    edge: Edge,
+    forwards_failures: bool,
+    adopt: Option<Adoption>,
 }
 
 impl ChildConfig {
+    /// Returns the child's restart policy.
+    pub(super) fn restart(&self) -> RestartType {
+        self.restart
+    }
+
+    /// Returns whether the child is significant to a supervisor.
+    pub(super) fn significant(&self) -> bool {
+        self.significant
+    }
+
+    /// Returns how the child's termination affects a scope that owns it.
+    pub(super) fn edge(&self) -> Edge {
+        self.edge
+    }
+
+    /// Returns whether a failure of the child fails a scope that owns it, whatever its edge is.
+    pub(super) fn forwards_failures(&self) -> bool {
+        self.forwards_failures
+    }
+
+    /// Returns the pre-created scope the child adopts as its own, if any.
+    pub(super) fn adopt(&self) -> Option<&Adoption> {
+        self.adopt.as_ref()
+    }
+
     /// Returns the runtime the child should be spawned on, if it isn't the supervisor's own.
     pub(super) fn runtime(&self) -> Option<&Handle> {
         self.runtime.as_ref()
@@ -636,6 +725,11 @@ struct ChildEntry {
 pub struct ChildId(u64);
 
 impl ChildId {
+    /// Wraps a raw identifier.
+    pub(super) const fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+
     /// Returns the raw numeric value of this identifier.
     pub const fn as_u64(self) -> u64 {
         self.0
@@ -954,6 +1048,16 @@ impl Supervisor {
     ///
     /// Warn-only: the child still starts, since an inert flag is useless rather than unsafe.
     fn warn_if_significance_is_inert(&self, config: &ChildConfig, child_name: &str, auto_shutdown: AutoShutdown) {
+        // Also warn about a child marked needed. That mark is about the scope that owns the child, and a supervisor
+        // uses significance instead.
+        if config.edge == Edge::Needed {
+            warn!(
+                supervisor_id = %self.supervisor_id,
+                child_name,
+                "Child is marked needed, but it belongs to a supervisor rather than a scope, so the flag has no effect."
+            );
+        }
+
         if !config.significant {
             return;
         }
