@@ -1,6 +1,6 @@
 //! Shared priority scheduling and persistent retry storage for delivery components.
 
-use std::{path::Path, sync::Arc};
+use std::{num::NonZeroU64, path::Path, sync::Arc};
 
 use agent_data_plane_config::shared::SharedConfiguration;
 use saluki_error::GenericError;
@@ -36,15 +36,24 @@ impl DeliveryQueueConfiguration {
         (self.retry.storage_max_size_bytes() > 0).then(|| self.retry.storage_path())
     }
 
-    /// Builds a queue with a distinct storage namespace and endpoint telemetry.
+    /// Returns settings whose retry memory and disk budgets are an even share across `parts` queues.
+    ///
+    /// High-priority capacity is unchanged. Use this when one delivery worker splits its retry budget
+    /// across several queues so that their combined usage stays within the configured limits.
+    pub fn with_budget_share(&self, parts: NonZeroU64) -> Self {
+        Self {
+            high_priority_capacity: self.high_priority_capacity,
+            retry: self.retry.with_budget_share(parts),
+        }
+    }
+
+    /// Builds a retry-only queue with a distinct storage namespace and no high-priority fast path.
     ///
     /// Callers must use a stable queue name unique to the payload format, destination, and worker.
     ///
     /// # Errors
     /// Returns an error if explicitly configured disk persistence cannot be initialized.
-    pub async fn build<T: Retryable>(
-        &self, queue_name: String, endpoint: &str, builder: &MetricsBuilder,
-    ) -> Result<PendingTransactions<T>, GenericError> {
+    pub async fn build_retry_queue<T: Retryable>(&self, queue_name: String) -> Result<RetryQueue<T>, GenericError> {
         let retry = &self.retry;
         let mut queue = RetryQueue::new(queue_name, retry.queue_max_size_bytes())
             .with_flush_to_disk_mem_ratio(retry.flush_to_disk_mem_ratio());
@@ -59,6 +68,20 @@ impl DeliveryQueueConfiguration {
                 })
                 .await?;
         }
+        Ok(queue)
+    }
+
+    /// Builds a queue with a distinct storage namespace and endpoint telemetry.
+    ///
+    /// Callers must use a stable queue name unique to the payload format, destination, and worker.
+    ///
+    /// # Errors
+    /// Returns an error if explicitly configured disk persistence cannot be initialized.
+    pub async fn build<T: Retryable>(
+        &self, queue_name: String, endpoint: &str, builder: &MetricsBuilder,
+    ) -> Result<PendingTransactions<T>, GenericError> {
+        let retry = &self.retry;
+        let queue = self.build_retry_queue(queue_name).await?;
         let shared = SharedTransactionQueueTelemetry::from_builder(builder);
         let telemetry = TransactionQueueTelemetry::from_builder(builder, endpoint, shared);
         Ok(PendingTransactions::new(

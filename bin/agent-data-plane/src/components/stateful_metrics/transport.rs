@@ -4,9 +4,12 @@ use std::{collections::VecDeque, future::pending};
 
 use foldspace_core::{
     proto::stateful::{stateful_intake_client::StatefulIntakeClient, BatchStatus, StatefulBatch},
-    StreamId,
+    MetricEndpointId, StreamId,
 };
-use futures::{future::BoxFuture, FutureExt as _};
+use futures::{
+    future::{select_all, BoxFuture},
+    FutureExt as _,
+};
 use tokio::{
     select,
     sync::mpsc::{self, error::TrySendError},
@@ -24,6 +27,7 @@ use super::{CONNECT_TIMEOUT, MAX_INFLIGHT_BATCHES};
 const REQUESTED_STATE_BYTES: &str = "5242880";
 
 pub(super) struct Transport {
+    pub endpoint: MetricEndpointId,
     pub stream_id: StreamId,
     pub sender: mpsc::Sender<StatefulBatch>,
     pub state: TransportState,
@@ -36,6 +40,7 @@ pub(super) enum TransportState {
 }
 
 pub(super) struct TransportEvent {
+    pub endpoint: MetricEndpointId,
     pub stream_id: StreamId,
     pub kind: TransportEventKind,
 }
@@ -47,7 +52,9 @@ pub(super) enum TransportEventKind {
 }
 
 impl Transport {
-    pub fn open(stream_id: StreamId, endpoint: Endpoint, api_key: MetadataValue<Ascii>) -> Self {
+    pub fn open(
+        endpoint_id: MetricEndpointId, stream_id: StreamId, endpoint: Endpoint, api_key: MetadataValue<Ascii>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(MAX_INFLIGHT_BATCHES + 1);
         let mut request = Request::new(ReceiverStream::new(receiver));
         request.metadata_mut().insert("dd-api-key", api_key);
@@ -74,6 +81,7 @@ impl Transport {
         }
         .boxed();
         Self {
+            endpoint: endpoint_id,
             stream_id,
             sender,
             state: TransportState::Connecting(opening),
@@ -120,15 +128,22 @@ impl Transport {
             },
         };
         TransportEvent {
+            endpoint: self.endpoint,
             stream_id: self.stream_id,
             kind,
         }
     }
 }
 
-pub(super) async fn next_transport_event(transport: &mut Option<Transport>) -> TransportEvent {
-    match transport {
-        Some(transport) => transport.next_event().await,
-        None => pending().await,
+/// Waits for the next event from any endpoint's transport. Cancel-safe, like each transport's wait.
+pub(super) async fn next_transport_event(transports: &mut [Option<Transport>]) -> TransportEvent {
+    let waits: Vec<_> = transports
+        .iter_mut()
+        .flatten()
+        .map(|transport| transport.next_event().boxed())
+        .collect();
+    if waits.is_empty() {
+        return pending().await;
     }
+    select_all(waits).await.0
 }

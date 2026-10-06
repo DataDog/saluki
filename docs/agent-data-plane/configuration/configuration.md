@@ -706,6 +706,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                |                  |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                         | localhost:6317   |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                         | localhost:6318   |
+| `data_plane.stateful_metrics_additional_endpoints`              | Further stateful series gRPC intake endpoints         | []               |
 | `data_plane.stateful_metrics_endpoint`                          | Experimental stateful series gRPC intake endpoint     | unset (disabled) |
 | `data_plane.stateful_metrics_workers`                           | Number of independent stateful metrics sender workers | 3                |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                   | true             |
@@ -742,6 +743,10 @@ Positive worker count, default 3. Requires a restart. Each worker owns its queue
 ### `data_plane.stateful_metrics_endpoint`
 
 Set an http://host:port endpoint for stateful metrics integration testing. Sketches continue over HTTP. Requires a restart; unset preserves existing delivery.
+
+### `data_plane.stateful_metrics_additional_endpoints`
+
+List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.stateful_metrics_endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Drain an endpoint's persisted retries before removing it.
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 

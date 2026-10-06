@@ -36,6 +36,7 @@ impl Telemetry {
             MetricStreamFailureKind::InvalidArgument => "InvalidArgument",
             MetricStreamFailureKind::Unauthenticated => "Unauthenticated",
             MetricStreamFailureKind::FailedPrecondition => "FailedPrecondition",
+            MetricStreamFailureKind::ProtocolViolation => "ProtocolViolation",
         };
         self.stream_failures
             .entry(kind)

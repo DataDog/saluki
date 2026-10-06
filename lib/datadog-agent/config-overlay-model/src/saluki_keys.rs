@@ -52,6 +52,21 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp])",
         filename: "data_plane.rs",
     },
+    SalukiKey {
+        yaml_path: "data_plane.stateful_metrics_additional_endpoints",
+        description: "Further stateful series gRPC intake endpoints",
+        default: "[]",
+        documentation: Some("List of distinct http://host:port endpoints that also receive every stateful metrics payload, using the primary API key. Requires data_plane.stateful_metrics_endpoint and a restart. Retry memory and disk budgets are split between a shared queue and one retry lane per endpoint. Drain an endpoint's persisted retries before removing it."),
+        value_type: "ValueType::StringList",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp])",
+        filename: "data_plane.rs",
+    },
     // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
