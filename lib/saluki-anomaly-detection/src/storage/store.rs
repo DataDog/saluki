@@ -687,6 +687,11 @@ impl StorageView for TimeSeriesStorage {
     fn series_generation(&self) -> u64 {
         self.series_gen
     }
+
+    fn supports_aggregate(&self, series: SeriesRef, aggregate: Aggregate) -> bool {
+        // Delegates to the inherent method of the same name (`TimeSeriesStorage::supports_aggregate`).
+        TimeSeriesStorage::supports_aggregate(self, series, aggregate)
+    }
 }
 
 /// Returns whether a series matches a filter.
@@ -1577,6 +1582,24 @@ mod tests {
 
         // Unknown refs report support so detectors can tolerate eviction races.
         assert!(storage.supports_aggregate(SeriesRef::new(999), Aggregate::Sum));
+
+        // The read-only detector view delegates to the same policy.
+        storage.set_supported_aggregations(series_ref, &[Aggregate::Average]);
+        assert!(<TimeSeriesStorage as StorageView>::supports_aggregate(
+            &storage,
+            series_ref,
+            Aggregate::Average
+        ));
+        assert!(!<TimeSeriesStorage as StorageView>::supports_aggregate(
+            &storage,
+            series_ref,
+            Aggregate::Sum
+        ));
+        assert!(<TimeSeriesStorage as StorageView>::supports_aggregate(
+            &storage,
+            SeriesRef::new(999),
+            Aggregate::Sum
+        ));
     }
 
     #[test]

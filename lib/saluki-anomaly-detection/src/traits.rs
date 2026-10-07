@@ -43,6 +43,17 @@ pub trait StorageView {
     /// Returns a global counter that increments only when the set of live series changes. Detectors use this
     /// to cache [`StorageView::list_series`] results and refresh them only when series appear or disappear.
     fn series_generation(&self) -> u64;
+
+    /// Returns whether the series allows the requested aggregate.
+    ///
+    /// Some producers store a point representation that only gives useful semantics to a subset of
+    /// aggregates (for example an average-only log bucketizer). Detectors skip aggregates that are not
+    /// supported rather than scoring a meaningless read. The default implementation reports `true`, which is
+    /// the fallback the Go observer uses when the store provides no such policy, and an unknown ref also
+    /// reports `true` so that detectors tolerate series evicted between passes.
+    fn supports_aggregate(&self, _series: SeriesRef, _aggregate: Aggregate) -> bool {
+        true
+    }
 }
 
 /// A detector analyzes stored series for anomalies.
