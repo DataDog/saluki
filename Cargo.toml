@@ -42,6 +42,7 @@ members = [
   "test/antithesis/scenarios/differential",
   "test/antithesis/scenarios/general",
 ]
+exclude = ["vendor/foldspace-core"]
 resolver = "2"
 
 [workspace.package]
@@ -118,7 +119,7 @@ async-compression = { version = "0.4.42", default-features = false, features = [
 zstd = { version = "0.14.0", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
-foldspace-core = { git = "https://github.com/DataDog/foldspace", rev = "eb1ce3cfbf6f95ff6ae02d7a7dc25bf849b841b0" }
+foldspace-core = { path = "vendor/foldspace-core" }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
 h2 = { version = "0.4", default-features = false }
 headers = { version = "0.4", default-features = false }
