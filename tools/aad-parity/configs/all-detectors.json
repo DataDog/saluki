@@ -1,0 +1,29 @@
+{
+  "components": {
+    "bocpd": { "enabled": true, "warmup_points": 40 },
+    "scanmw": { "enabled": true },
+    "scanwelch": { "enabled": true },
+    "holt_residual": { "enabled": true, "warmup_points": 15, "residual_window": 25 },
+    "tukey_biweight": { "enabled": true, "window_size": 40, "min_points": 40 },
+    "log_metrics_extractor": { "enabled": false },
+    "log_pattern_extractor": { "enabled": false },
+    "connection_error_extractor": { "enabled": false },
+    "time_cluster": { "enabled": false },
+    "passthrough": { "enabled": false },
+    "anomaly_scorer": {
+      "enabled": true,
+      "alpha": 0.014,
+      "saturation_k": 5,
+      "window_secs": 15,
+      "low_threshold": 0.15,
+      "high_threshold": 0.40,
+      "margin_pct": 0.20,
+      "correlation_events": true,
+      "correlation_event_threshold": "high",
+      "cooldown_secs": 0,
+      "max_episode_anomalies": 50,
+      "max_reported_items": 16,
+      "max_buckets": 100000000
+    }
+  }
+}
