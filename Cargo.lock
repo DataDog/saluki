@@ -201,6 +201,9 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "parquet",
+ "saluki-anomaly-detection",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

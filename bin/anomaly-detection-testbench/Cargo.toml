@@ -18,6 +18,9 @@ parquet = { version = "60.0.0", default-features = false, features = [
   "snap",
   "zstd",
 ] }
+saluki-anomaly-detection = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
