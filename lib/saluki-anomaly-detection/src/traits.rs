@@ -32,7 +32,8 @@ pub trait StorageView {
     fn get_series_range(&self, series: SeriesRef, start_sec: i64, end_sec: i64, aggregate: Aggregate)
         -> Option<Series>;
 
-    /// Returns the number of raw samples with timestamp `<= end_sec`, or `0` if the series is not live.
+    /// Returns the number of stored buckets (points) with timestamp `<= end_sec`, or `0` if the series is
+    /// not live. A bucket may hold more than one raw sample after a same-second merge.
     fn point_count_up_to(&self, series: SeriesRef, end_sec: i64) -> usize;
 
     /// Returns a per-series write counter that increments on every write, including same-bucket merges.
