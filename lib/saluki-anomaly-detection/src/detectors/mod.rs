@@ -21,6 +21,7 @@
 //!   `ForEachLastPoints` fast path performs, implemented over the trait's range and count methods.
 
 pub mod bocpd;
+pub mod holt_residual;
 pub mod numerics;
 pub mod scan;
 pub mod scanmw;
