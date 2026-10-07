@@ -1,8 +1,15 @@
 //! Detector implementations and the shared numerical utilities they build on.
 //!
 //! Anomaly detectors are ported one at a time from the Agent's Go `observer/impl` package. Everything that
-//! more than one detector needs lives in [`numerics`] so the individual detector modules stay focused on
-//! their algorithm instead of re-deriving medians, ranks, or tail probabilities.
+//! more than one detector needs lives in a shared module so the individual detector modules stay focused on
+//! their algorithm:
+//!
+//! * [`numerics`] holds the pure statistical helpers (medians, MAD, ranks, tie correction, tail
+//!   probabilities, rank-biserial correlation) and the reusable scan workspace.
+//! * [`scan`] holds the streaming machinery the scan-based detectors share: per-series state, the
+//!   discovery/visibility/gating loop, the shared verification statistics, and anomaly assembly.
+//! * [`scanmw`] is the Mann-Whitney scan changepoint detector.
+//! * [`scanwelch`] is the Welch-t scan changepoint detector with Mann-Whitney verification.
 //!
 //! This module also holds the two pieces of storage plumbing that the Go detectors share at the detector
 //! layer rather than in the numerics file:
@@ -15,6 +22,9 @@
 
 pub mod bocpd;
 pub mod numerics;
+pub mod scan;
+pub mod scanmw;
+pub mod scanwelch;
 pub mod tukey_biweight;
 
 use crate::identity::{Aggregate, SeriesRef};
