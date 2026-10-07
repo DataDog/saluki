@@ -4,8 +4,8 @@
 //! data model ([`model`]), series identity and the Go-compatible hashing used by the historical store
 //! ([`identity`]), typed configuration with the Agent's defaults ([`config`]), the bounded bucket store
 //! that detectors read from ([`storage`]), the small detector/extractor/scorer interfaces that the
-//! engine drives ([`traits`]), and the detector implementations with their shared statistics
-//! ([`detectors`]).
+//! engine drives ([`traits`]), the detector implementations with their shared statistics
+//! ([`detectors`]), and the anomaly scorer itself ([`scorer`]).
 //!
 //! # Design
 //!
@@ -43,5 +43,6 @@ pub mod config;
 pub mod detectors;
 pub mod identity;
 pub mod model;
+pub mod scorer;
 pub mod storage;
 pub mod traits;

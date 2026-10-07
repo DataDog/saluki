@@ -156,6 +156,13 @@ pub struct AnomalyScorerConfig {
     ///
     /// The Go reader clamps this to `[10, 1000]`; the top-anomaly buffer retains ten times this count.
     pub max_reported_items: usize,
+
+    /// Cap on the number of [`crate::scorer::AnomalyScoreBucket`] entries retained in
+    /// [`crate::scorer::AnomalyScorer::score_state`]. Default: `0`.
+    ///
+    /// `0` means "cap at [`Self::window_secs`]", which is the live-Agent behavior; a large positive value
+    /// (for example `i64::MAX`) keeps an unlimited history for offline replay.
+    pub max_buckets: i64,
 }
 
 impl AnomalyScorerConfig {
@@ -184,6 +191,7 @@ impl AnomalyScorerConfig {
             cooldown_secs: 300,
             max_episode_anomalies: 50,
             max_reported_items: 16,
+            max_buckets: 0,
         }
     }
 
@@ -251,6 +259,7 @@ mod tests {
         assert_eq!(config.cooldown_secs, 300);
         assert_eq!(config.max_episode_anomalies, 50);
         assert_eq!(config.max_reported_items, 16);
+        assert_eq!(config.max_buckets, 0);
         assert!((config.effective_margin() - 0.08).abs() < 1e-12);
     }
 
