@@ -2,8 +2,9 @@
 //!
 //! This crate holds the reusable, runtime-agnostic parts of the anomaly detection pipeline: the shared
 //! data model ([`model`]), series identity and the Go-compatible hashing used by the historical store
-//! ([`identity`]), typed configuration with the Agent's defaults ([`config`]), and the small
-//! detector/extractor/scorer interfaces that the engine drives ([`traits`]).
+//! ([`identity`]), typed configuration with the Agent's defaults ([`config`]), the bounded bucket store
+//! that detectors read from ([`storage`]), and the small detector/extractor/scorer interfaces that the
+//! engine drives ([`traits`]).
 //!
 //! # Design
 //!
@@ -40,4 +41,5 @@
 pub mod config;
 pub mod identity;
 pub mod model;
+pub mod storage;
 pub mod traits;
