@@ -102,6 +102,14 @@ pub trait Extractor {
 
     /// Examines a log and returns any derived metrics plus any series removals.
     fn process_log(&mut self, log: &LogObservation) -> ExtractorOutput;
+
+    /// Clears any per-replay state.
+    ///
+    /// The engine calls this from [`crate::engine::Engine::reset`], which restarts a replay with fresh
+    /// storage. Implementations that keep no state can rely on the default no-op. A batch replay that
+    /// reuses retained extractor state ([`crate::engine::Engine::reset_analysis_state`]) deliberately does
+    /// not call this.
+    fn reset(&mut self) {}
 }
 
 /// A scorer consumes accepted anomalies and emits severity/episode output.
