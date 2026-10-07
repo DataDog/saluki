@@ -7,3 +7,17 @@ repository = { workspace = true }
 
 [lints]
 workspace = true
+
+[dependencies]
+arrow = { version = "60.0.0", default-features = false }
+parquet = { version = "60.0.0", default-features = false, features = [
+  "arrow",
+  "brotli",
+  "flate2-zlib-rs",
+  "lz4",
+  "snap",
+  "zstd",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
