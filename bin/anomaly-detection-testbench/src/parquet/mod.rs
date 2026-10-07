@@ -18,7 +18,7 @@ mod v1;
 mod v2;
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;

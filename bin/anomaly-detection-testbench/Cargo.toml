@@ -9,15 +9,11 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
-arrow = { version = "60.0.0", default-features = false }
-parquet = { version = "60.0.0", default-features = false, features = [
-  "arrow",
-  "brotli",
-  "flate2-zlib-rs",
-  "lz4",
-  "snap",
-  "zstd",
-] }
+arrow = { workspace = true }
+parquet = { workspace = true, features = ["arrow", "brotli", "flate2-zlib-rs", "lz4", "snap", "zstd"] }
+saluki-anomaly-detection = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
