@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
+  "bin/anomaly-detection-testbench",
   "bin/correctness/airlock",
   "bin/correctness/datadog-intake",
   "bin/correctness/millstone",
@@ -22,6 +23,7 @@ members = [
   "lib/protos/containerd",
   "lib/protos/datadog",
   "lib/protos/otlp",
+  "lib/saluki-anomaly-detection",
   "lib/saluki-antithesis",
   "lib/saluki-api",
   "lib/saluki-app",
@@ -64,6 +66,7 @@ ddsketch = { path = "lib/ddsketch" }
 go-duration = { path = "lib/go-duration" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
+saluki-anomaly-detection = { path = "lib/saluki-anomaly-detection" }
 saluki-antithesis = { path = "lib/saluki-antithesis" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
