@@ -399,6 +399,57 @@ mod tests {
     }
 
     #[test]
+    fn builtin_detectors_run_end_to_end() {
+        use crate::detector::BuiltinDetectorFactory;
+        use crate::parquet::fixtures::{v1_metric, write_v1_metrics, V1MetricFixt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let scenario_dir = root.join("scenario");
+        std::fs::create_dir_all(&scenario_dir).unwrap();
+        // 90 points: a flat baseline long enough for the testbench BOCPD warmup (40), then a step.
+        let mut rows: Vec<V1MetricFixt> = Vec::new();
+        for second in 1_000..1_090 {
+            let value = if second < 1_050 { 1.0 } else { 50.0 };
+            rows.push(v1_metric("run", second * 1_000, "system.cpu", Some(value)));
+        }
+        write_v1_metrics(&scenario_dir, "observer-metrics-0.parquet", &rows);
+        let output = root.join("out.json");
+
+        let code = run_cli(
+            &args(&[
+                "--headless",
+                "scenario",
+                "--scenarios-dir",
+                root.to_str().unwrap(),
+                "--only",
+                "bocpd,anomaly_scorer",
+                "--include-detector-anomalies",
+                "--baseline-duration",
+                "0",
+                "--output",
+                output.to_str().unwrap(),
+            ]),
+            &BuiltinDetectorFactory,
+        );
+        assert_eq!(code, 0);
+
+        let document = read_json(&output);
+        // Every configured detector is linked into this build, so nothing is reported as unlinked.
+        assert!(
+            document["metadata"]["unlinked_detectors"].is_null(),
+            "unexpected unlinked detectors: {document}"
+        );
+        let anomalies = document["detector_anomalies"].as_array().unwrap();
+        assert!(
+            !anomalies.is_empty(),
+            "the real BOCPD detector should fire after the step: {document}"
+        );
+        assert_eq!(anomalies[0]["detector"], "bocpd");
+        assert!(!document["score_timeline"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn v2_scenario_end_to_end() {
         use crate::parquet::fixtures::{context, v2_metric, write_contexts_v2, write_v2_metrics};
 

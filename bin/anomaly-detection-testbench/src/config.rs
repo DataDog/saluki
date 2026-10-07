@@ -576,6 +576,9 @@ pub fn build_scorer_config(value: &Value) -> AnomalyScorerConfig {
     if let Some(number) = object.get("max_reported_items").and_then(Value::as_u64) {
         config.max_reported_items = number as usize;
     }
+    if let Some(number) = object.get("max_buckets").and_then(Value::as_i64) {
+        config.max_buckets = number;
+    }
     config
 }
 
@@ -739,5 +742,13 @@ mod tests {
         assert_eq!(configs["bocpd"]["warmup_points"], json!(40));
         assert_eq!(configs["time_cluster"]["enabled"], json!(false));
         assert!(configs["time_cluster"].get("warmup_points").is_none());
+    }
+
+    #[test]
+    fn scorer_config_parses_max_buckets() {
+        let config = build_scorer_config(&json!({"max_buckets": 100_000_000}));
+        assert_eq!(config.max_buckets, 100_000_000);
+        // Absent means the live-Agent default (cap at window_secs).
+        assert_eq!(build_scorer_config(&json!({})).max_buckets, 0);
     }
 }
