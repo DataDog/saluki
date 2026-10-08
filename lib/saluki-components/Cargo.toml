@@ -25,6 +25,7 @@ chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
 datadog-protos = { workspace = true }
+datadog-checks-protocol = { workspace = true }
 ddsketch = { workspace = true }
 faster-hex = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
@@ -66,6 +67,7 @@ saluki-config = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
+saluki-fit = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }

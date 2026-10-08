@@ -3,6 +3,9 @@
 mod blackhole;
 pub use self::blackhole::BlackholeConfiguration;
 
+mod anomalydetection;
+pub use self::anomalydetection::AnomalyDetectionForwarderConfiguration;
+
 mod dsd_stats;
 pub use self::dsd_stats::{DogStatsDStatisticsConfiguration, DogStatsDStatsAPIHandler};
 
