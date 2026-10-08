@@ -135,9 +135,10 @@ templates:
   #
   # Count, rate, and gauge series go to ack-only stateful intakes that the wrapper script starts next to ADP; other
   # metric types stay on HTTP. The intakes run inside the target, so they count toward its total CPU and RSS; compare
-  # ADP's own per-component telemetry for a clean view. The baseline image has neither the intake binary nor the
-  # stateful path, so its ADP ignores these settings and sends every series over HTTP: each report compares stateful
-  # delivery against HTTP.
+  # ADP's own per-component telemetry for a clean view. On #2793 the baseline image (main) has neither the intake binary
+  # nor the stateful path, so its ADP ignores these settings and sends every series over HTTP: the report compares
+  # stateful delivery against HTTP. On #2794 the baseline is #2793's branch (see ci/tooling/compute-smp-sha.sh), so the
+  # report compares the two Foldspace designs head to head.
   stateful_dsd_base:
     extends: dsd_base
     target:
