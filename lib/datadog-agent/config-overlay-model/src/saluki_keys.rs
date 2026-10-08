@@ -909,17 +909,17 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
         yaml_path: "anomaly_detection_ipc_endpoint",
         description: "FIT setup endpoint of the isolated anomaly detection process",
-        default: "unix:/tmp/aad-isolated.sock",
+        default: "unix:/tmp/aad-isolated/aad.sock",
         documentation: Some(
             "### `anomaly_detection_ipc_endpoint`\n\nThe FIT setup address that ADP connects to \
              when `anomaly_detection_forwarding_enabled` is `true`. The anomaly detection process \
              listens on this endpoint and owns the shared-memory ring, including its capacity; ADP \
              connects as the producer and learns the capacity from the session. Accepted forms are \
              `unix:/absolute/path` and `tcp:127.0.0.1:5102`. The endpoint is validated at \
-             startup when forwarding is enabled. The default is `unix:/tmp/aad-isolated.sock`.",
+             startup when forwarding is enabled. The default is `unix:/tmp/aad-isolated/aad.sock`; the anomaly detection process creates the parent directory with owner-only permissions.",
         ),
         value_type: "ValueType::String",
-        schema_default: Some("unix:/tmp/aad-isolated.sock"),
+        schema_default: Some("unix:/tmp/aad-isolated/aad.sock"),
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],

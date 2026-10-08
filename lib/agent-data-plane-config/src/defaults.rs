@@ -26,7 +26,10 @@ pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
 pub const DEFAULT_ANOMALY_DETECTION_FORWARDING_ENABLED: bool = false;
 
 /// Default FIT endpoint of the isolated anomaly detection process.
-pub const DEFAULT_ANOMALY_DETECTION_IPC_ENDPOINT: &str = "unix:/tmp/aad-isolated.sock";
+///
+/// The FIT transport requires the socket's parent directory to be owner-only; the
+/// receiver creates `/tmp/aad-isolated` with mode `0700` before listening.
+pub const DEFAULT_ANOMALY_DETECTION_IPC_ENDPOINT: &str = "unix:/tmp/aad-isolated/aad.sock";
 
 /// Default length of an aggregation window.
 pub const DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();

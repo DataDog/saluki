@@ -19,7 +19,7 @@ pub struct Domain {
     ///
     /// The anomaly detection process owns the shared-memory ring and listens for this
     /// connection; ADP connects as the producer, so the process must be started first.
-    /// Defaults to `unix:/tmp/aad-isolated.sock`.
+    /// Defaults to `unix:/tmp/aad-isolated/aad.sock`.
     pub ipc_endpoint: String,
 }
 
