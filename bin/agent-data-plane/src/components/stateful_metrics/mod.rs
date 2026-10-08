@@ -68,7 +68,7 @@ mod transport;
 pub use self::router::StatefulMetricsRouterConfiguration;
 use self::{
     retry::{prepare_storage, LanedRetryQueue, RetryBatch},
-    telemetry::Telemetry,
+    telemetry::{elapsed_nanos, CoreTotals, DispatchProfile, PollTimer, Telemetry},
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
 
@@ -142,6 +142,7 @@ impl DestinationBuilder for StatefulMetricsConfiguration {
         }
         Ok(Box::new(StatefulMetrics {
             workers,
+            dispatch: DispatchProfile::new(&builder),
             api_key: self.api_key.clone(),
             delivery_shutdown_timeout: (self.stop_timeout / 2).min(SHUTDOWN_TIMEOUT),
         }))
@@ -159,6 +160,7 @@ impl MemoryBounds for StatefulMetricsConfiguration {
 
 struct StatefulMetrics {
     workers: Vec<StatefulMetricsWorker>,
+    dispatch: DispatchProfile,
     api_key: Live<String>,
     delivery_shutdown_timeout: Duration,
 }
@@ -167,14 +169,19 @@ struct StatefulMetrics {
 impl Destination for StatefulMetrics {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
+        let dispatch = self.dispatch;
         let mut tasks = JoinSet::new();
         let mut inputs = Vec::with_capacity(self.workers.len());
         for (worker_id, worker) in self.workers.into_iter().enumerate() {
             let (tx, rx) = mpsc::channel(WORKER_INPUT_CAPACITY);
             inputs.push(tx);
+            let busy_nanos = worker.telemetry.profile.busy_nanos.clone();
             tasks.spawn_traced_named(
                 format!("stateful-metrics-worker-{worker_id}"),
-                worker.run(rx, self.api_key.clone(), self.delivery_shutdown_timeout),
+                PollTimer::new(
+                    worker.run(rx, self.api_key.clone(), self.delivery_shutdown_timeout),
+                    busy_nanos,
+                ),
             );
         }
         health.mark_ready();
@@ -192,12 +199,18 @@ impl Destination for StatefulMetrics {
                 },
                 events = context.events().next() => {
                     let Some(events) = events else { break };
+                    let started = std::time::Instant::now();
                     let batches = sharding::partition(events, inputs.len());
+                    dispatch.partition_nanos.increment(elapsed_nanos(started));
+                    dispatch.series.increment(batches.iter().map(|batch| batch.series().len() as u64).sum());
                     // Poll all sends together so a busy worker does not delay dispatch to its peers.
                     let sends = inputs.iter().zip(batches)
                         .filter(|(_, batch)| !batch.is_empty())
                         .map(|(tx, batch)| tx.send(batch));
-                    if futures::future::join_all(sends).await.iter().any(Result::is_err) {
+                    let started = std::time::Instant::now();
+                    let sent = futures::future::join_all(sends).await;
+                    dispatch.blocked_nanos.increment(elapsed_nanos(started));
+                    if sent.iter().any(Result::is_err) {
                         result = Err(generic_error!("stateful metrics worker input closed"));
                         break;
                     }
@@ -225,6 +238,7 @@ struct StatefulMetricsWorker {
     flush_timeout: Duration,
     buffered_deadline: Option<Instant>,
     stream_lifetime: Duration,
+    burst_started: Option<std::time::Instant>,
     /// Per-endpoint state, indexed by `MetricEndpointId`.
     endpoints: Vec<EndpointState>,
     /// Kept apart from `endpoints` so one wait can borrow every transport at once.
@@ -237,6 +251,8 @@ struct EndpointState {
     stream_id: Option<StreamId>,
     timers: FuturesUnordered<BoxFuture<'static, (StreamId, TimerKind)>>,
     unacknowledged: usize,
+    /// Send times of unacknowledged payloads, oldest first; acknowledgements arrive in send order.
+    sent_at: VecDeque<std::time::Instant>,
     ack_deadline: Option<Instant>,
     backoff: Duration,
     suspended: bool,
@@ -249,6 +265,7 @@ impl EndpointState {
             stream_id: None,
             timers: FuturesUnordered::new(),
             unacknowledged: 0,
+            sent_at: VecDeque::new(),
             ack_deadline: None,
             backoff: INITIAL_BACKOFF,
             suspended: false,
@@ -258,6 +275,7 @@ impl EndpointState {
     fn stream_closed(&mut self) {
         self.timers.clear();
         self.unacknowledged = 0;
+        self.sent_at.clear();
         self.ack_deadline = None;
     }
 }
@@ -284,7 +302,7 @@ impl StatefulMetricsWorker {
         let stream_lifetime = config.sender.stream_lifetime;
         Self {
             core: StatefulMetricsClient::new(config, ZstdBatchCompressor::new(compression_level)),
-            telemetry: Telemetry::new(builder),
+            telemetry: Telemetry::new(builder, endpoints.len()),
             api_key,
             queue,
             flush_timeout: if flush_timeout.is_zero() {
@@ -294,6 +312,7 @@ impl StatefulMetricsWorker {
             },
             buffered_deadline: None,
             stream_lifetime,
+            burst_started: None,
             transports: endpoints.iter().map(|_| None).collect(),
             endpoints: endpoints.into_iter().map(EndpointState::new).collect(),
         }
@@ -322,6 +341,7 @@ impl StatefulMetricsWorker {
         let mut input_closed = false;
         let mut shutdown_deadline = None;
         loop {
+            self.record_profile();
             self.pump().await?;
             if input_closed {
                 if self.core.has_send_capacity() {
@@ -362,9 +382,32 @@ impl StatefulMetricsWorker {
 
     async fn enqueue(&mut self, batch: LogicalMetricBatch) {
         if !batch.is_empty() {
+            self.burst_started.get_or_insert_with(std::time::Instant::now);
             let points = batch.point_count() as u64;
             self.telemetry
                 .track_enqueue(self.queue.push_fresh(RetryBatch(batch)).await, points);
+        }
+    }
+
+    fn record_profile(&mut self) {
+        let drained_burst = if self.burst_started.is_some() && self.is_drained() {
+            self.burst_started.take()
+        } else {
+            None
+        };
+        let stats = self.core.dictionary_stats();
+        let profile = &mut self.telemetry.profile;
+        profile.record_totals(CoreTotals {
+            encodings: self.core.encoding_count(),
+            definitions_sent: self.core.definitions_sent(),
+            definition_bytes: self.core.definition_bytes_sent(),
+        });
+        profile.dictionary_entries.set(stats.entries as f64);
+        profile.dictionary_estimated_bytes.set(stats.estimated_bytes as f64);
+        profile.inflight_payloads.set(self.core.inflight_len() as f64);
+        profile.buffered_series.set(self.core.buffered_series_len() as f64);
+        if let Some(started) = drained_burst {
+            profile.burst_drain_seconds.record(started.elapsed().as_secs_f64());
         }
     }
 
@@ -456,7 +499,12 @@ impl StatefulMetricsWorker {
                             batch
                         }
                     };
+                    let started = std::time::Instant::now();
                     let result = self.core.push_batch(batch.0, now());
+                    self.telemetry
+                        .profile
+                        .push_batch_nanos
+                        .increment(elapsed_nanos(started));
                     self.buffered_deadline
                         .get_or_insert_with(|| Instant::now() + self.flush_timeout);
                     self.apply_result(result, None).await?;
@@ -471,7 +519,12 @@ impl StatefulMetricsWorker {
                 };
                 progressed = true;
                 self.telemetry.batches_retried.increment(1);
+                let started = std::time::Instant::now();
                 let result = self.core.send_batch_to(endpoint, batch.0, now());
+                self.telemetry
+                    .profile
+                    .send_batch_to_nanos
+                    .increment(elapsed_nanos(started));
                 self.apply_result(result, Some(endpoint)).await?;
             }
             if !progressed {
@@ -485,7 +538,9 @@ impl StatefulMetricsWorker {
     }
 
     async fn flush(&mut self) -> Result<(), GenericError> {
+        let started = std::time::Instant::now();
         let result = self.core.flush(now());
+        self.telemetry.profile.flush_nanos.increment(elapsed_nanos(started));
         self.apply_result(result, None).await
     }
 
@@ -543,6 +598,11 @@ impl StatefulMetricsWorker {
                     state.backoff = INITIAL_BACKOFF;
                     state.unacknowledged = state.unacknowledged.saturating_sub(1);
                     state.ack_deadline = (state.unacknowledged > 0).then(|| Instant::now() + ACK_TIMEOUT);
+                    if let Some(sent_at) = state.sent_at.pop_front() {
+                        self.telemetry.profile.endpoints[endpoint.get()]
+                            .ack_latency_seconds
+                            .record(sent_at.elapsed().as_secs_f64());
+                    }
                     self.telemetry.batches_acked.increment(1);
                 }
                 self.apply(effects).await?;
@@ -622,6 +682,7 @@ impl StatefulMetricsWorker {
                     if self.core.current_stream_id(endpoint) != Some(stream_id) {
                         continue;
                     }
+                    let payload_bytes = payload.data.len() as u64;
                     let sent = match &mut self.transports[endpoint.get()] {
                         Some(transport) if transport.stream_id == stream_id => transport.send(payload),
                         _ => Err(Status::unavailable("outbound stream missing")),
@@ -638,7 +699,11 @@ impl StatefulMetricsWorker {
                     }
                     let state = &mut self.endpoints[endpoint.get()];
                     state.unacknowledged += 1;
+                    state.sent_at.push_back(std::time::Instant::now());
                     state.ack_deadline.get_or_insert_with(|| Instant::now() + ACK_TIMEOUT);
+                    let profile = &self.telemetry.profile.endpoints[endpoint.get()];
+                    profile.payloads_sent.increment(1);
+                    profile.payload_bytes.increment(payload_bytes);
                 }
                 MetricClientEffect::CloseStream { stream_id } => {
                     if let Some(endpoint) = self.endpoint_for_stream(stream_id) {

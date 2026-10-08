@@ -10,6 +10,7 @@ FROM ${DD_AGENT_IMAGE}
 
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
+COPY --from=adp /usr/local/bin/stateful-metrics-blackhole /opt/datadog-agent/embedded/bin/stateful-metrics-blackhole
 COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 
 # Add the cont-init.d script for Agent Data Plane environment setup, and
