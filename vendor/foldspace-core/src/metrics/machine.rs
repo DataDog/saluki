@@ -4,6 +4,8 @@ use std::{
     time::Instant,
 };
 
+use prost::Message as _;
+
 use crate::{proto::stateful::MetricDatum, CoreConfig, PayloadId, StreamId, Timer, TimerKind};
 
 use super::{
@@ -321,6 +323,9 @@ pub struct StatefulMetricsCore {
     buffered: LogicalMetricBatch,
     // Number of logical batches actually encoded; used for diagnostics.
     encoding_count: u64,
+    // Definitions sent across every endpoint, and their protobuf-encoded size; used for diagnostics.
+    definitions_sent: u64,
+    definition_bytes_sent: u64,
 }
 
 impl Default for StatefulMetricsCore {
@@ -344,6 +349,8 @@ impl StatefulMetricsCore {
             endpoints,
             buffered: LogicalMetricBatch::default(),
             encoding_count: 0,
+            definitions_sent: 0,
+            definition_bytes_sent: 0,
         }
     }
 
@@ -393,6 +400,16 @@ impl StatefulMetricsCore {
     /// Returns the number of logical batches encoded by this core, including resubmissions.
     pub const fn encoding_count(&self) -> u64 {
         self.encoding_count
+    }
+
+    /// Returns the number of definitions sent across every endpoint, including re-sends on new streams.
+    pub const fn definitions_sent(&self) -> u64 {
+        self.definitions_sent
+    }
+
+    /// Returns the protobuf-encoded size, before compression, of every definition sent.
+    pub const fn definition_bytes_sent(&self) -> u64 {
+        self.definition_bytes_sent
     }
 
     /// Handles notification that a requested stream opened successfully.
@@ -770,6 +787,11 @@ impl StatefulMetricsCore {
             .definitions_for(encoded.references(), &endpoint.sent)
             .cloned()
             .collect();
+        self.definitions_sent += datums.len() as u64;
+        self.definition_bytes_sent += datums
+            .iter()
+            .map(|datum| datum.encoded_len() as u64)
+            .sum::<u64>();
         endpoint.sent.extend(datums.iter().map(DefinitionKey::of));
         datums.extend(encoded.series().cloned());
         let batch_id = endpoint.next_batch_id;
