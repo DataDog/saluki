@@ -129,23 +129,22 @@ impl Destination for AnomalyDetectionForwarder {
         let mut counters = ForwardingCounters::default();
         let mut last_log = Instant::now();
 
-        select! {
-            _ = health.live() => {
-                let _ = cancellation.cancel();
-                drop(sender);
-                let _ = sender_thread.join();
-                return Ok(());
-            },
-            result = &mut connected => match result {
-                Ok(()) => {},
-                Err(error) => {
-                    let _ = sender_thread.join();
-                    return Err(generic_error!(
-                        "Could not connect to the anomaly detection process at `{:?}`: {error}. Start the anomaly detection process before ADP.",
-                        self.setup_endpoint
-                    ));
+        // `health.live()` answers a liveness probe, it is not a shutdown signal: keep
+        // answering probes until the FIT session is up.
+        loop {
+            select! {
+                _ = health.live() => continue,
+                result = &mut connected => match result {
+                    Ok(()) => break,
+                    Err(error) => {
+                        let _ = sender_thread.join();
+                        return Err(generic_error!(
+                            "Could not connect to the anomaly detection process at `{:?}`: {error}. Start the anomaly detection process before ADP.",
+                            self.setup_endpoint
+                        ));
+                    },
                 },
-            },
+            }
         }
 
         health.mark_ready();
@@ -156,7 +155,7 @@ impl Destination for AnomalyDetectionForwarder {
 
         loop {
             select! {
-                _ = health.live() => break,
+                _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         let mut forwarded_any = false;
@@ -190,7 +189,7 @@ impl Destination for AnomalyDetectionForwarder {
         // Signal shutdown and let the sender thread flush its remaining batches.
         drop(sender);
         match sender_thread.join() {
-            Ok(()) => {},
+            Ok(()) => {}
             Err(_) => warn!("Anomaly detection FIT sender thread panicked while shutting down."),
         }
         let _ = cancellation.cancel();
@@ -212,11 +211,11 @@ fn fit_sender_thread(
         Ok(producer) => {
             let _ = connected_tx.send(Ok(()));
             producer
-        },
+        }
         Err(error) => {
             let _ = connected_tx.send(Err(error));
             return;
-        },
+        }
     };
 
     let mut batch = Vec::with_capacity(SEND_BATCH_MAX);
@@ -236,7 +235,7 @@ fn fit_sender_thread(
             Err(error) => {
                 warn!("Anomaly detection FIT send failed: {error}. Stopping forwarder thread.");
                 break;
-            },
+            }
         }
 
         batch.clear();
@@ -272,12 +271,7 @@ fn convert_metric(metric: Metric, counters: &mut ForwardingCounters) -> Vec<Mess
     let (context, values, _metadata) = metric.into_parts();
     let name = context.name().to_string();
     let hostname = context.host().unwrap_or_default().to_string();
-    let tags: Vec<String> = context
-        .tags()
-        .clone()
-        .into_iter()
-        .map(|tag| tag.to_string())
-        .collect();
+    let tags: Vec<String> = context.tags().clone().into_iter().map(|tag| tag.to_string()).collect();
 
     let (metric_type, points, interval_secs) = match values {
         MetricValues::Counter(points) => (MetricType::Counter as i32, points, 0),
@@ -286,7 +280,7 @@ fn convert_metric(metric: Metric, counters: &mut ForwardingCounters) -> Vec<Mess
         _ => {
             counters.non_scalar_skipped += 1;
             return Vec::new();
-        },
+        }
     };
 
     let now = unix_now_secs();
@@ -342,7 +336,10 @@ mod tests {
 
     #[test]
     fn gauge_conversion_carries_identity_and_timestamp() {
-        let metric = Metric::gauge(context_with_tags("kafka.lag", Some("host-1"), &["env:prod"]), (1776943265, 42.5));
+        let metric = Metric::gauge(
+            context_with_tags("kafka.lag", Some("host-1"), &["env:prod"]),
+            (1776943265, 42.5),
+        );
         let records = unwrap_metric(convert_metric(metric, &mut counters()));
 
         assert_eq!(records.len(), 1);
@@ -377,7 +374,11 @@ mod tests {
 
     #[test]
     fn rate_conversion_carries_the_interval() {
-        let metric = Metric::rate(context_with_tags("events", None, &[]), (5, 3.0), Duration::from_secs(15));
+        let metric = Metric::rate(
+            context_with_tags("events", None, &[]),
+            (5, 3.0),
+            Duration::from_secs(15),
+        );
         let records = unwrap_metric(convert_metric(metric, &mut counters()));
 
         assert_eq!(records.len(), 1);
