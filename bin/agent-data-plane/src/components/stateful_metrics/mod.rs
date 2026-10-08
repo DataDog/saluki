@@ -68,7 +68,7 @@ mod transport;
 pub use self::router::StatefulMetricsRouterConfiguration;
 use self::{
     retry::{prepare_storage, LanedRetryQueue, RetryBatch},
-    telemetry::{elapsed_nanos, DispatchProfile, PollTimer, Telemetry},
+    telemetry::{elapsed_nanos, CoreTotals, DispatchProfile, PollTimer, Telemetry},
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
 
@@ -239,7 +239,6 @@ struct StatefulMetricsWorker {
     buffered_deadline: Option<Instant>,
     stream_lifetime: Duration,
     burst_started: Option<std::time::Instant>,
-    reported_encodings: u64,
     /// Per-endpoint state, indexed by `MetricEndpointId`.
     endpoints: Vec<EndpointState>,
     /// Kept apart from `endpoints` so one wait can borrow every transport at once.
@@ -314,7 +313,6 @@ impl StatefulMetricsWorker {
             buffered_deadline: None,
             stream_lifetime,
             burst_started: None,
-            reported_encodings: 0,
             transports: endpoints.iter().map(|_| None).collect(),
             endpoints: endpoints.into_iter().map(EndpointState::new).collect(),
         }
@@ -392,17 +390,18 @@ impl StatefulMetricsWorker {
     }
 
     fn record_profile(&mut self) {
-        let encodings = self.core.encoding_count();
-        let new_encodings = encodings.saturating_sub(self.reported_encodings);
-        self.reported_encodings = encodings;
         let drained_burst = if self.burst_started.is_some() && self.is_drained() {
             self.burst_started.take()
         } else {
             None
         };
         let stats = self.core.dictionary_stats();
-        let profile = &self.telemetry.profile;
-        profile.encodings.increment(new_encodings);
+        let profile = &mut self.telemetry.profile;
+        profile.record_totals(CoreTotals {
+            encodings: self.core.encoding_count(),
+            definitions_sent: self.core.definitions_sent(),
+            definition_bytes: self.core.definition_bytes_sent(),
+        });
         profile.dictionary_entries.set(stats.entries as f64);
         profile.dictionary_estimated_bytes.set(stats.estimated_bytes as f64);
         profile.inflight_payloads.set(self.core.inflight_len() as f64);
