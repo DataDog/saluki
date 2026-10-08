@@ -55,6 +55,7 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
+ "saluki-fit",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",

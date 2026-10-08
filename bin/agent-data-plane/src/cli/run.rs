@@ -27,7 +27,8 @@ use saluki_components::{
     },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
-        DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
+        AnomalyDetectionForwarderConfiguration, DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration,
+        DogStatsDStatisticsConfiguration,
     },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
@@ -57,6 +58,7 @@ use saluki_core::{
 };
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_fit::SetupEndpoint;
 use saluki_io::net::ListenAddress;
 use stringtheory::MetaString;
 use tracing::{debug, info, warn};
@@ -1078,6 +1080,26 @@ async fn add_dsd_pipeline_to_blueprint(
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
+
+    // Anomaly detection forwarding: tap the raw DogStatsD metric stream, mirroring the
+    // statistics destination, and forward each scalar metric to the isolated anomaly
+    // detection process over FIT.
+    let anomalydetection = &typed.domains.anomalydetection;
+    if anomalydetection.forwarding_enabled {
+        let setup_endpoint = SetupEndpoint::parse(&anomalydetection.ipc_endpoint).map_err(|error| {
+            generic_error!(
+                "Invalid anomaly detection IPC endpoint `{}`: {error}",
+                anomalydetection.ipc_endpoint
+            )
+        })?;
+        blueprint
+            .add_destination(
+                "anomalydetection_out",
+                AnomalyDetectionForwarderConfiguration::new(setup_endpoint),
+            )?
+            .connect_components("dsd_in.metrics", "anomalydetection_out")?;
+    }
+
     Ok(DogStatsDControlSurface {
         stats_api_handler,
         capture_api_handler,
