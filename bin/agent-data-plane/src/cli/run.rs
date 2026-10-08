@@ -37,9 +37,9 @@ use saluki_components::{
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{
-        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
-        DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration, OriginEnrichmentConfiguration,
-        OtlpConfiguration,
+        ChecksIPCConfiguration, DatadogTracesConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl,
+        DogStatsDConfiguration, DogStatsDReplayAPIHandler, DogStatsDReplayControl, EnablePayloadsConfiguration,
+        OriginEnrichmentConfiguration, OtlpConfiguration,
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
@@ -718,11 +718,17 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             .with_environment_provider(env_provider.clone())
             .await?;
 
+    let dd_traces_receiver_endpoint = format!("tcp://{}", &config.domains.apm.receiver_endpoint);
+    let dd_traces_receiver_endpoint = ListenAddress::try_from(dd_traces_receiver_endpoint.as_str())
+        .map_err(|error| generic_error!("Invalid APM receiver endpoint `{dd_traces_receiver_endpoint}`: {error}"))?;
+    let dd_traces_endpoints = DatadogTracesConfiguration::from_configuration(dd_traces_receiver_endpoint);
+
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
+        .add_source("dd_traces_endpoints", dd_traces_endpoints)?
         .connect_components("traces_enrich", ["dd_apm_stats", "dd_traces_encode"])?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;

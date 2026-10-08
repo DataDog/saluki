@@ -3,6 +3,9 @@
 mod checks_ipc;
 pub use self::checks_ipc::ChecksIPCConfiguration;
 
+mod datadog;
+pub use datadog::{DatadogTracesAPIHandler, DatadogTracesConfiguration};
+
 mod dogstatsd;
 pub use self::dogstatsd::{
     DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration, DogStatsDReplayAPIHandler,
