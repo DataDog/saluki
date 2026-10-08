@@ -11,46 +11,46 @@ env:
 
 container:
   exposed_ports:
-    - "55100/tcp"
+    - "8126/tcp"
 
 procedure:
   - parallel:
       - assertion: process_stable_for
         duration: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/services"
+        endpoint: "http://localhost:8126/services"
         status:
           equal: 200
         body:
-          equal: "OK"
+          equal: "OK\n"
         timeout: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/v0.1/services"
+        endpoint: "http://localhost:8126/v0.1/services"
         status:
           equal: 200
         body:
-          equal: "OK"
+          equal: "OK\n"
         timeout: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/v0.2/services"
+        endpoint: "http://localhost:8126/v0.2/services"
         status:
           equal: 200
         body:
-          equal: "OK"
+          equal: "OK\n"
         timeout: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/v0.3/services"
+        endpoint: "http://localhost:8126/v0.3/services"
         status:
           equal: 200
         body:
-          equal: "OK"
+          equal: "OK\n"
         timeout: 60s
       - assertion: http_check
-        endpoint: "http://localhost:55100/v0.4/services"
+        endpoint: "http://localhost:8126/v0.4/services"
         status:
           equal: 200
         body:
-          equal: "OK"
+          equal: "OK\n"
         timeout: 60s
       - assertion: log_not_contains
         pattern: "panic|PANIC"
