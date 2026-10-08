@@ -349,3 +349,33 @@ The HTTP decoder's comparison model preserves host, tags, types, intervals, and 
 other resource and origin fields. Those fields have explicit expectations in `timer_and_metadata`.
 Retries can duplicate points after a lost ACK; the two ACK-failure cases check that behavior explicitly.
 The remaining stateful cases also check that series never reach the HTTP receiver.
+
+## Load and outage testing
+
+This tooling exists only on the vendored benchmarking branches and goes away with them.
+
+- **Telemetry.** At `metrics_level: debug`, the destination reports per-task busy time
+  (`stateful_metrics_task_busy_nanos_total`), dispatcher conversion and blocked time, time in each
+  Foldspace call (`stateful_metrics_core_nanos_total`), burst drain time, per-endpoint payloads,
+  bytes, and ack latency, definitions sent and their bytes, encodings, and dictionary gauges.
+- **Ack-only intake.** `stateful-metrics-blackhole` acknowledges every batch without decoding it.
+  `ACK_DELAY_MS`, `ACK_PAUSE_EVERY_SECS`/`ACK_PAUSE_FOR_SECS`, and
+  `OUTAGE_EVERY_SECS`/`OUTAGE_FOR_SECS` inject latency, stalled acknowledgements, and outages.
+- **SMP.** The `stateful_dsd_*` experiments in `test/smp/regression/adp/experiments.yaml` ramp
+  context count and packet rate under steady load.
+- **Local outages.** `ci/tooling/stateful-metrics-outages.py` runs ADP, the intakes, and lading from
+  a generated SMP case through outage, stall, and slow-endpoint scenarios, and writes lading's
+  capture (with ADP's telemetry once a second), RSS and CPU samples, and a summary per scenario:
+
+  ```sh
+  cargo build --release --bin agent-data-plane --bin stateful-metrics-blackhole
+  /tmp/foldspace-binary-venv/bin/python -m pip install PyYAML
+  /tmp/foldspace-binary-venv/bin/python ci/tooling/stateful-metrics-outages.py \
+    --adp target/release/agent-data-plane \
+    --intake target/release/stateful-metrics-blackhole \
+    --lading /path/to/lading
+  ```
+
+  Use the lading version in `test/smp/regression/adp/config.yaml`. Run on Linux for representative
+  memory: ADP uses jemalloc there and the system allocator on macOS, and lading only observes the
+  target process on Linux.

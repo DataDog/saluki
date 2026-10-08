@@ -89,7 +89,12 @@ pub(super) struct WorkerProfile {
     pub flush_nanos: Counter,
     pub send_batch_to_nanos: Counter,
     /// Logical batches the core encoded, including re-encoded retries.
-    pub encodings: Counter,
+    encodings: Counter,
+    /// Definitions sent across every endpoint, including re-sends on new streams.
+    definitions_sent: Counter,
+    /// Protobuf-encoded size of those definitions, before compression.
+    definition_bytes: Counter,
+    reported: CoreTotals,
     /// From the first batch received while idle until everything is acknowledged again.
     pub burst_drain_seconds: Histogram,
     pub dictionary_entries: Gauge,
@@ -98,6 +103,14 @@ pub(super) struct WorkerProfile {
     pub buffered_series: Gauge,
     /// Indexed by endpoint.
     pub endpoints: Vec<EndpointProfile>,
+}
+
+/// Cumulative counts the core keeps; the profile reports how much each grew since the last call.
+#[derive(Clone, Copy, Default)]
+pub(super) struct CoreTotals {
+    pub encodings: u64,
+    pub definitions_sent: u64,
+    pub definition_bytes: u64,
 }
 
 pub(super) struct EndpointProfile {
@@ -119,6 +132,9 @@ impl WorkerProfile {
             flush_nanos: core_nanos("flush"),
             send_batch_to_nanos: core_nanos("send_batch_to"),
             encodings: builder.register_debug_counter("stateful_metrics_encodings_total"),
+            definitions_sent: builder.register_debug_counter("stateful_metrics_definitions_sent_total"),
+            definition_bytes: builder.register_debug_counter("stateful_metrics_definition_bytes_total"),
+            reported: CoreTotals::default(),
             burst_drain_seconds: builder.register_debug_histogram("stateful_metrics_burst_drain_seconds"),
             dictionary_entries: builder.register_debug_gauge("stateful_metrics_dictionary_entries"),
             dictionary_estimated_bytes: builder.register_debug_gauge("stateful_metrics_dictionary_estimated_bytes"),
@@ -138,6 +154,17 @@ impl WorkerProfile {
                 })
                 .collect(),
         }
+    }
+
+    pub fn record_totals(&mut self, totals: CoreTotals) {
+        let reported = self.reported;
+        self.encodings
+            .increment(totals.encodings.saturating_sub(reported.encodings));
+        self.definitions_sent
+            .increment(totals.definitions_sent.saturating_sub(reported.definitions_sent));
+        self.definition_bytes
+            .increment(totals.definition_bytes.saturating_sub(reported.definition_bytes));
+        self.reported = totals;
     }
 }
 
