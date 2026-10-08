@@ -1,0 +1,59 @@
+type: integration
+name: "services-api-endpoints"
+description: "Verifies the /v0.*/services endpoints are accessible on the unprivileged API"
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-services"
+  DD_DATA_PLANE_ENABLED: "true"
+
+container:
+  exposed_ports:
+    - "8126/tcp"
+
+procedure:
+  - parallel:
+      - assertion: process_stable_for
+        duration: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:8126/services"
+        status:
+          equal: 200
+        body:
+          equal: "OK\n"
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:8126/v0.1/services"
+        status:
+          equal: 200
+        body:
+          equal: "OK\n"
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:8126/v0.2/services"
+        status:
+          equal: 200
+        body:
+          equal: "OK\n"
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:8126/v0.3/services"
+        status:
+          equal: 200
+        body:
+          equal: "OK\n"
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:8126/v0.4/services"
+        status:
+          equal: 200
+        body:
+          equal: "OK\n"
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 60s
+

@@ -252,11 +252,13 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
         AssertionConfig::HttpCheck {
             endpoint,
             status,
+            body,
             insecure_skip_verify,
             timeout,
         } => Ok(Box::new(HttpCheckAssertion::new(
             endpoint.clone(),
             status.clone(),
+            body.clone(),
             *insecure_skip_verify,
             timeout.0,
         ))),
