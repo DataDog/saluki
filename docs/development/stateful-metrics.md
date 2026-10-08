@@ -357,7 +357,8 @@ This tooling exists only on the vendored benchmarking branches and goes away wit
 - **Telemetry.** At `metrics_level: debug`, the destination reports per-task busy time
   (`stateful_metrics_task_busy_nanos_total`), dispatcher conversion and blocked time, time in each
   Foldspace call (`stateful_metrics_core_nanos_total`), burst drain time, per-endpoint payloads,
-  bytes, and ack latency, definitions sent and their bytes, encodings, and dictionary gauges.
+  bytes, and acknowledgement latency, definitions sent and their bytes, encodings, and dictionary
+  gauges.
 - **Ack-only intake.** `stateful-metrics-blackhole` acknowledges every batch without decoding it.
   `ACK_DELAY_MS`, `ACK_PAUSE_EVERY_SECS`/`ACK_PAUSE_FOR_SECS`, and
   `OUTAGE_EVERY_SECS`/`OUTAGE_FOR_SECS` inject latency, stalled acknowledgements, and outages.
@@ -377,5 +378,5 @@ This tooling exists only on the vendored benchmarking branches and goes away wit
   ```
 
   Use the lading version in `test/smp/regression/adp/config.yaml`. Run on Linux for representative
-  memory: ADP uses jemalloc there and the system allocator on macOS, and lading only observes the
+  memory: ADP uses `jemalloc` there and the system allocator on macOS, and lading only observes the
   target process on Linux.
