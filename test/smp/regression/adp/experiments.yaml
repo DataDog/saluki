@@ -131,6 +131,37 @@ templates:
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
 
+  # Base template for the stateful metrics experiments (testing only; see #2793).
+  #
+  # Count, rate, and gauge series go to ack-only stateful intakes that the wrapper script starts next to ADP; other
+  # metric types stay on HTTP. The intakes run inside the target, so they count toward its total CPU and RSS; compare
+  # ADP's own per-component telemetry for a clean view. On #2793 the baseline image (main) has neither the intake binary
+  # nor the stateful path, so its ADP ignores these settings and sends every series over HTTP: the report compares
+  # stateful delivery against HTTP. On #2794 the baseline is #2793's branch (see ci/tooling/compute-smp-sha.sh), so the
+  # report compares the two Foldspace designs head to head.
+  stateful_dsd_base:
+    extends: dsd_base
+    target:
+      command: /bin/sh /etc/agent-data-plane/stateful-run.sh
+
+      files:
+        stateful-run.sh:
+          content: |
+            #!/bin/sh
+            # Starts one ack-only stateful intake per port in STATEFUL_INTAKE_PORTS, then runs ADP. The intakes drop
+            # LD_PRELOAD so SMP's profiler only attaches to ADP.
+            intake=/opt/datadog-agent/embedded/bin/stateful-metrics-blackhole
+            if [ -x "$intake" ]; then
+              for port in $STATEFUL_INTAKE_PORTS; do
+                env -u LD_PRELOAD LISTEN_ADDR="127.0.0.1:$port" "$intake" &
+              done
+            fi
+            exec /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+
+      environment:
+        STATEFUL_INTAKE_PORTS: "9201"
+        DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT: http://127.0.0.1:9201
+
   # Base template for the tag filtering experiments.
   tagfilter_base:
     variables:
@@ -624,6 +655,258 @@ experiments:
                     max: 251000
             bytes_per_second: "100 MiB"
             maximum_prebuild_cache_size_bytes: "768 Mb"
+
+  # ============================================================================
+  # Stateful metrics: saturation ladders (testing only; see #2793)
+  # ============================================================================
+  #
+  # Two ladders find where ADP stops keeping up and which component gives out first. Context count (10K to 1M)
+  # stresses each 15-second aggregator flush, where the stateful path does its work; packet rate stresses DogStatsD
+  # decoding, context resolution, and aggregation, which every path shares. The checks are loose bounds that only place
+  # these experiments in the quality-gates suite, so they run on every push. Outages are tested locally instead, with
+  # ci/tooling/stateful-metrics-outages.py.
+
+  - name: stateful_dsd_10mb_10k_contexts
+    extends: stateful_dsd_base
+    optimization_goal: cpu
+
+    target:
+      environment:
+        DD_AGGREGATE_CONTEXT_LIMIT: "10100"
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "1.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 10000
+                    max: 10001
+            bytes_per_second: "10 MiB"
+
+  - name: stateful_dsd_50mb_100k_contexts
+    extends: stateful_dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+
+    target:
+      environment:
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+        DD_AGGREGATE_CONTEXT_LIMIT: "100100"
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "1.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 99000
+                    max: 101000
+            bytes_per_second: "50 MiB"
+            maximum_prebuild_cache_size_bytes: "512 Mb"
+
+  - name: stateful_dsd_100mb_250k_contexts
+    extends: stateful_dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+
+    target:
+      memory_allotment: 4GiB
+      environment:
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "64MiB"
+        DD_AGGREGATE_CONTEXT_LIMIT: "250100"
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "3.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 249000
+                    max: 251000
+            bytes_per_second: "100 MiB"
+            maximum_prebuild_cache_size_bytes: "768 Mb"
+
+  # The top two rungs need far more memory than any other experiment; SMP may cap the allotment.
+  - name: stateful_dsd_100mb_500k_contexts
+    extends: stateful_dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+
+    target:
+      memory_allotment: 8GiB
+      environment:
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "128MiB"
+        DD_AGGREGATE_CONTEXT_LIMIT: "500100"
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "7 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 498000
+                    max: 502000
+            bytes_per_second: "100 MiB"
+            maximum_prebuild_cache_size_bytes: "1536 Mb"
+
+  - name: stateful_dsd_200mb_1m_contexts
+    extends: stateful_dsd_base
+    optimization_goal: cpu
+
+    target:
+      memory_allotment: 12GiB
+      environment:
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "256MiB"
+        DD_AGGREGATE_CONTEXT_LIMIT: "1000100"
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "11 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 996000
+                    max: 1004000
+            bytes_per_second: "200 MiB"
+            maximum_prebuild_cache_size_bytes: "3072 Mb"
+
+  - name: stateful_dsd_100mb_3k_contexts
+    extends: stateful_dsd_base
+    optimization_goal: ingress_throughput
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "1.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "100 MiB"
+
+  - name: stateful_dsd_500mb_3k_contexts
+    extends: stateful_dsd_base
+    optimization_goal: ingress_throughput
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "1.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "500 MiB"
+
+  # Variants of the 100K-context rung: a second endpoint shows the per-endpoint cost (encoding and compression run once
+  # per endpoint), and one worker shows how much the default three workers parallelize.
+
+  - name: stateful_dsd_50mb_100k_contexts_2_endpoints
+    extends: stateful_dsd_base
+    optimization_goal: cpu
+
+    target:
+      environment:
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+        DD_AGGREGATE_CONTEXT_LIMIT: "100100"
+        STATEFUL_INTAKE_PORTS: "9201 9202"
+        DD_DATA_PLANE_STATEFUL_METRICS_ADDITIONAL_ENDPOINTS: http://127.0.0.1:9202
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "1.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 99000
+                    max: 101000
+            bytes_per_second: "50 MiB"
+            maximum_prebuild_cache_size_bytes: "512 Mb"
+
+  - name: stateful_dsd_50mb_100k_contexts_1_worker
+    extends: stateful_dsd_base
+    optimization_goal: cpu
+
+    target:
+      environment:
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+        DD_AGGREGATE_CONTEXT_LIMIT: "100100"
+        DD_DATA_PLANE_STATEFUL_METRICS_WORKERS: "1"
+
+    checks:
+      - name: memory_usage
+        description: "Loose bound so this experiment runs on PRs; not a quality gate."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "1.5 GiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 99000
+                    max: 101000
+            bytes_per_second: "50 MiB"
+            maximum_prebuild_cache_size_bytes: "512 Mb"
 
   # ============================================================================
   # OTLP Experiments

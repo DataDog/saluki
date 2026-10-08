@@ -1,0 +1,26 @@
+[package]
+name = "foldspace-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/DataDog/foldspace"
+publish = false
+
+[features]
+default = ["zstd"]
+zstd = ["dep:zstd"]
+
+[dependencies]
+prost = { version = "0.14" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+tonic = { version = "0.14" }
+tonic-prost = { version = "0.14" }
+zstd = { version = "0.13", default-features = false, optional = true }
+
+[build-dependencies]
+tonic-prost-build = { version = "0.14" }
+
+[package.metadata.cargo-machete]
+# Only the generated protobuf code references these.
+ignored = ["tonic", "tonic-prost"]
