@@ -15,3 +15,6 @@ cardinality, and analyze sensitive dump artifacts offline.
 
 Use [Inspect the supervision tree](supervision-tree.md) to see which processes ADP is running, how they're nested,
 which have restarted, and what each accounts for in memory and CPU.
+
+Use [Anomaly detection telemetry over FIT](anomalydetection-fit.md) for the contract of the isolated Agent Anomaly
+Detection flow: session ownership, configuration, the Checks record mapping, and delivery semantics.
