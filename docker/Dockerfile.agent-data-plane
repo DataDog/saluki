@@ -108,6 +108,7 @@ RUN --mount=type=bind,source=docker/scripts,target=/scripts \
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /rootfs/opt/datadog/agent-data-plane/
 COPY --chmod=755 docker/entrypoint.sh /rootfs/entrypoint.sh
 COPY --from=adp-builder /out/agent-data-plane /rootfs/usr/local/bin/agent-data-plane
+COPY --from=adp-builder /out/stateful-metrics-blackhole /rootfs/usr/local/bin/stateful-metrics-blackhole
 
 # Final stage: lay the assembled tree on top of the configured application base image.
 FROM ${APP_IMAGE} AS final
