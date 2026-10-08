@@ -12,7 +12,9 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_io::net::{server::http::HttpServer, ListenAddress};
+use tokio::{pin, select};
 use tonic::async_trait;
+use tracing::debug;
 
 /// TODO: doc
 pub struct DatadogTracesAPIHandler {}
@@ -36,7 +38,8 @@ impl DatadogTracesConfiguration {
 #[async_trait]
 impl SourceBuilder for DatadogTracesConfiguration {
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        &[]
+        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Trace)];
+        OUTPUTS
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
@@ -47,18 +50,35 @@ impl SourceBuilder for DatadogTracesConfiguration {
 }
 
 impl MemoryBounds for DatadogTracesConfiguration {
-    fn specify_bounds(&self, builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<DatadogTraces>("datadog_traces");
+    fn specify_bounds(&self, _builder: &mut saluki_core::accounting::MemoryBoundsBuilder) {
+        // builder.minimum().with_single_value::<DatadogTraces>("datadog_traces");
     }
 }
 
 #[async_trait]
 impl Source for DatadogTraces {
-    async fn run(self: Box<Self>, _context: SourceContext) -> Result<(), GenericError> {
+    async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        pin! {
+            let global_shutdown = context.take_shutdown_handle();
+        }
+
         let api_handler = DatadogTracesAPIHandler::new();
         let http_server =
             HttpServer::from_listen_address(self.receiver_endpoint).add_routes(api_handler.generate_routes());
         runtime::nested_supervisor(http_server.into_supervisor()).spawn();
+
+        health.mark_ready();
+
+        loop {
+            select! {
+                _ = &mut global_shutdown => {
+                    debug!("Received shutdown signal.");
+                    break;
+                },
+                _ = health.live() => continue,
+            }
+        }
         Ok(())
     }
 }
