@@ -22,9 +22,10 @@ import yaml
 
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_CASE = REPO / "test/smp/regression/adp/full/cases/stateful_dsd_50mb_100k_contexts"
+DEFAULT_CASE = REPO / "test/smp/regression/adp/full/cases/stateful_dsd_50mb_100k_contexts_cpu"
 FIRST_INTAKE_PORT = 9201
 TELEMETRY_URL = "http://127.0.0.1:5100/metrics"
+TELEMETRY_PREFIX = "adp__"
 STARTUP_TIMEOUT = 60
 
 OUTAGE = {"OUTAGE_EVERY_SECS": "180", "OUTAGE_FOR_SECS": "60"}
@@ -68,6 +69,8 @@ def adp_environment(case, endpoints):
     for key, value in experiment["target"]["environment"].items():
         env[key] = str(value).replace("/etc/agent-data-plane", target_dir)
     env.pop("STATEFUL_INTAKE_PORTS", None)
+    # Logs go to each scenario's adp.log; the default log file's directory may not exist here.
+    env["DD_DISABLE_FILE_LOGGING"] = "true"
     addresses = [f"http://127.0.0.1:{FIRST_INTAKE_PORT + index}" for index in range(endpoints)]
     env["DD_DATA_PLANE_STATEFUL_METRICS_ENDPOINT"] = addresses[0]
     env.pop("DD_DATA_PLANE_STATEFUL_METRICS_ADDITIONAL_ENDPOINTS", None)
@@ -86,6 +89,7 @@ def stateful_totals(telemetry):
     """Sums every `stateful_metrics_*` series across its labels; distributions keep only their sum and count."""
     totals = {}
     for line in telemetry.splitlines():
+        line = line.removeprefix(TELEMETRY_PREFIX)
         if not line.startswith("stateful_metrics_") or "quantile=" in line:
             continue
         name, value = line.split("{")[0].split()[0], line.rsplit(maxsplit=1)[-1]
@@ -105,7 +109,9 @@ def run_scenario(args, name, output):
     output.mkdir()
     processes = []
 
-    def spawn(label, command, env):
+    def spawn(label, command, env, cpus=None):
+        if cpus:
+            command = ["taskset", "-c", cpus, *command]
         log = (output / f"{label}.log").open("w")
         process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
         processes.append(process)
@@ -115,12 +121,13 @@ def run_scenario(args, name, output):
         for index, fault in enumerate(faults):
             env = {key: value for key, value in os.environ.items() if key != "LISTEN_ADDR"}
             env.update(fault, LISTEN_ADDR=f"127.0.0.1:{FIRST_INTAKE_PORT + index}")
-            spawn(f"intake-{index}", [str(args.intake)], env)
+            spawn(f"intake-{index}", [str(args.intake)], env, args.load_cpus)
 
         env, socket_path = adp_environment(args.case, len(faults))
         if socket_path:
             Path(socket_path).unlink(missing_ok=True)
-        adp = spawn("adp", [str(args.adp), "--config", str(args.case / "agent-data-plane/empty.yaml"), "run"], env)
+        adp = spawn("adp", [str(args.adp), "--config", str(args.case / "agent-data-plane/empty.yaml"), "run"], env,
+                    args.adp_cpus)
         wait_for(lambda: adp.poll() is None and "Topology healthy." in (output / "adp.log").read_text(), "ADP")
 
         target = ["--target-pid", str(adp.pid)] if sys.platform == "linux" else ["--no-target"]
@@ -128,7 +135,7 @@ def run_scenario(args, name, output):
             str(args.lading), "--config-path", str(args.case / "lading/lading.yaml"), *target,
             "--warmup-duration-seconds", "0", "--experiment-duration-seconds", str(args.duration),
             "--capture-path", str(output / "capture.jsonl"),
-        ], {key: value for key, value in os.environ.items() if not key.startswith("DD_")})
+        ], {key: value for key, value in os.environ.items() if not key.startswith("DD_")}, args.load_cpus)
 
         samples = []
         started = time.monotonic()
@@ -175,6 +182,8 @@ def main():
     parser.add_argument("--duration", type=int, default=600, help="Load duration per scenario, in seconds")
     parser.add_argument("--sample-seconds", type=float, default=5, help="ADP RSS and CPU sampling interval")
     parser.add_argument("--output", type=Path, help="New directory for logs, captures, and summaries")
+    parser.add_argument("--adp-cpus", help="taskset CPU list for ADP, e.g. 0-3 to match SMP's 4-CPU allotment")
+    parser.add_argument("--load-cpus", help="taskset CPU list for lading and the intakes, e.g. 4-9")
     args = parser.parse_args()
     args.case = args.case.resolve()
     args.output = args.output or Path(tempfile.mkdtemp(prefix="stateful-metrics-outages-"))

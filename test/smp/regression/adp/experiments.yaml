@@ -693,7 +693,9 @@ experiments:
 
   - name: stateful_dsd_50mb_100k_contexts
     extends: stateful_dsd_base
-    optimization_goal: cpu
+    optimization_goals:
+      - cpu
+      - memory
 
     target:
       environment:
@@ -721,7 +723,9 @@ experiments:
 
   - name: stateful_dsd_100mb_250k_contexts
     extends: stateful_dsd_base
-    optimization_goal: cpu
+    optimization_goals:
+      - cpu
+      - memory
 
     target:
       memory_allotment: 4GiB
@@ -751,7 +755,9 @@ experiments:
   # The top two rungs need far more memory than any other experiment; SMP may cap the allotment.
   - name: stateful_dsd_100mb_500k_contexts
     extends: stateful_dsd_base
-    optimization_goal: cpu
+    optimization_goals:
+      - cpu
+      - memory
 
     target:
       memory_allotment: 8GiB
