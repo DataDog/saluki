@@ -22,6 +22,12 @@ pub const DEFAULT_ENABLE_GLOBAL_LIMITER: bool = true;
 /// Default Checks IPC endpoint.
 pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
 
+/// Default anomaly detection forwarding state.
+pub const DEFAULT_ANOMALY_DETECTION_FORWARDING_ENABLED: bool = false;
+
+/// Default FIT endpoint of the isolated anomaly detection process.
+pub const DEFAULT_ANOMALY_DETECTION_IPC_ENDPOINT: &str = "unix:/tmp/aad-isolated.sock";
+
 /// Default length of an aggregation window.
 pub const DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();
 

@@ -155,6 +155,11 @@ pub struct SalukiOnly {
     pub remote_agent_string_interner_size_bytes: Option<NonZeroUsize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
     pub checks_ipc_endpoint: Option<String>,
+    /// Whether ADP forwards scalar metrics to the isolated anomaly detection process
+    /// (`anomaly_detection_forwarding_enabled`).
+    pub anomaly_detection_forwarding_enabled: Option<bool>,
+    /// Anomaly detection process FIT endpoint (`anomaly_detection_ipc_endpoint`).
+    pub anomaly_detection_ipc_endpoint: Option<String>,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
     /// byte-size string such as `512MB`. `ByteSize` accepts both forms, so a numeric value does not
     /// fail the load.
@@ -779,6 +784,14 @@ impl SalukiOnly {
         if let Some(v) = &self.checks_ipc_endpoint {
             config.domains.checks.ipc_endpoint = v.clone();
         }
+
+        // domains.anomalydetection
+        if let Some(v) = self.anomaly_detection_forwarding_enabled {
+            config.domains.anomalydetection.forwarding_enabled = v;
+        }
+        if let Some(v) = &self.anomaly_detection_ipc_endpoint {
+            config.domains.anomalydetection.ipc_endpoint = v.clone();
+        }
     }
 }
 
@@ -806,6 +819,8 @@ mod tests {
             "metrics_level": "debug",
             "remote_agent_string_interner_size_bytes": 4096,
             "checks_ipc_endpoint": "localhost:5006",
+            "anomaly_detection_forwarding_enabled": true,
+            "anomaly_detection_ipc_endpoint": "unix:/tmp/aad-fit-2.sock",
             "memory_limit": "512MB",
             "memory_slop_factor": 0.3,
             "enable_global_limiter": false,
@@ -999,6 +1014,8 @@ mod tests {
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
+        assert!(config.domains.anomalydetection.forwarding_enabled);
+        assert_eq!(config.domains.anomalydetection.ipc_endpoint, "unix:/tmp/aad-fit-2.sock");
     }
 
     /// `data_plane.apm.max_payload_size` is a byte size, but the equivalent Agent key

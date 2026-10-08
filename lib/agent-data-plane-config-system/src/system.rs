@@ -71,6 +71,13 @@ pub enum Error {
          be submitted without one"
     ))]
     MissingApiKey,
+
+    /// An anomaly detection FIT setup setting is invalid.
+    #[snafu(display("invalid anomaly detection FIT configuration: {message}"))]
+    AnomalyDetectionFit {
+        /// Actionable validation failure.
+        message: String,
+    },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -353,6 +360,14 @@ pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
     if config.shared.endpoints.api_key.trim().is_empty() {
         return Err(Error::MissingApiKey);
     }
+
+    // Invalid anomaly detection endpoints are named once here instead of as a producer
+    // connection failure at topology build time.
+    config
+        .domains
+        .anomalydetection
+        .validate()
+        .map_err(|message| Error::AnomalyDetectionFit { message })?;
 
     Ok(())
 }
@@ -949,6 +964,41 @@ mod tests {
 
         assert!(matches!(error, Error::MissingApiKey));
         assert!(error.to_string().contains("api_key"));
+    }
+
+    #[test]
+    fn invalid_anomaly_detection_fit_settings_are_rejected_at_the_configuration_boundary() {
+        for endpoint in [
+            "tcp://0.0.0.0:5102",
+            "unix:relative/path.sock",
+            "tcp:10.0.0.1:5102",
+            "tcp:127.0.0.1:0",
+        ] {
+            let sources = SourceTree::all_explicit(json!({
+                "api_key": TEST_API_KEY,
+                "anomaly_detection_forwarding_enabled": true,
+                "anomaly_detection_ipc_endpoint": endpoint,
+            }));
+            let error = translate_authoritative(&sources).expect_err("invalid FIT configuration must fail");
+            assert!(
+                matches!(&error, Error::AnomalyDetectionFit { .. }),
+                "{endpoint}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn anomaly_detection_forwarding_is_off_by_default_and_skips_endpoint_validation() {
+        let sources = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+        let config = translate_authoritative(&sources).expect("default configuration is valid");
+        assert!(!config.domains.anomalydetection.forwarding_enabled);
+
+        // With forwarding off, an unusable endpoint must not block the rest of ADP.
+        let sources = SourceTree::all_explicit(json!({
+            "api_key": TEST_API_KEY,
+            "anomaly_detection_ipc_endpoint": "not an endpoint",
+        }));
+        translate_authoritative(&sources).expect("disabled forwarding must not validate the endpoint");
     }
 
     #[test]

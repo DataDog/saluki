@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 
+pub mod anomalydetection;
 pub mod apm;
 pub mod checks;
 pub mod dogstatsd;
@@ -15,6 +16,7 @@ pub mod traces;
 /// Per-domain resolved configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DomainConfiguration {
+    pub anomalydetection: anomalydetection::Domain,
     pub apm: apm::Domain,
     pub dogstatsd: dogstatsd::Domain,
     pub otlp: otlp::Domain,

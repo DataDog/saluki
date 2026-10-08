@@ -883,4 +883,49 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "accounting.rs",
     },
+    // ── anomaly_detection.rs ─────────────────────────────────────────────────
+    SalukiKey {
+        yaml_path: "anomaly_detection_forwarding_enabled",
+        description: "Whether ADP forwards scalar metrics to the isolated anomaly detection process",
+        default: "false",
+        documentation: Some(
+            "### `anomaly_detection_forwarding_enabled`\n\nWhen `true`, ADP forwards every scalar \
+             metric it receives over the DogStatsD pipeline to the isolated Agent Anomaly Detection \
+             process over the FIT shared-memory transport. The anomaly detection process owns the \
+             ring and must be listening before ADP starts; otherwise ADP exits with a connection \
+             error at startup. Sets, histograms, and distributions have no scalar representation \
+             and are skipped. The default is `false`.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some("true"),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "anomaly_detection.rs",
+    },
+    SalukiKey {
+        yaml_path: "anomaly_detection_ipc_endpoint",
+        description: "FIT setup endpoint of the isolated anomaly detection process",
+        default: "unix:/tmp/aad-isolated.sock",
+        documentation: Some(
+            "### `anomaly_detection_ipc_endpoint`\n\nThe FIT setup address that ADP connects to \
+             when `anomaly_detection_forwarding_enabled` is `true`. The anomaly detection process \
+             listens on this endpoint and owns the shared-memory ring, including its capacity; ADP \
+             connects as the producer and learns the capacity from the session. Accepted forms are \
+             `unix:/absolute/path` and `tcp:127.0.0.1:5102`. The endpoint is validated at \
+             startup when forwarding is enabled. The default is `unix:/tmp/aad-isolated.sock`.",
+        ),
+        value_type: "ValueType::String",
+        schema_default: Some("unix:/tmp/aad-isolated.sock"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#""unix:/tmp/aad-fit-2.sock""#),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "anomaly_detection.rs",
+    },
 ];
