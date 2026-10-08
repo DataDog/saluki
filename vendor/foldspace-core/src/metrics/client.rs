@@ -149,6 +149,16 @@ where
         self.core.encoding_count()
     }
 
+    /// Returns the number of definitions sent across every endpoint, including re-sends on new streams.
+    pub const fn definitions_sent(&self) -> u64 {
+        self.core.definitions_sent()
+    }
+
+    /// Returns the protobuf-encoded size, before compression, of every definition sent.
+    pub const fn definition_bytes_sent(&self) -> u64 {
+        self.core.definition_bytes_sent()
+    }
+
     /// Starts the client by requesting a stream for every endpoint without one.
     pub fn start(&mut self) -> Vec<MetricClientEffect> {
         let effects = self.core.start();
