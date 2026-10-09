@@ -64,6 +64,11 @@ use stringtheory::MetaString;
 use tracing::{debug, info, warn};
 
 use crate::{
+    anomaly_events::AnomalyEventListener,
+    config::{remote_agent_client_configuration, DataPlaneConfiguration},
+    internal::env::ADPEnvironmentProvider,
+};
+use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
@@ -77,10 +82,6 @@ use crate::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
         ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
     },
-};
-use crate::{
-    config::{remote_agent_client_configuration, DataPlaneConfiguration},
-    internal::env::ADPEnvironmentProvider,
 };
 
 /// Runs the data plane.
@@ -301,8 +302,31 @@ pub async fn handle_run_command(
         }
     });
 
+    // Anomaly events: subscribe to the broadcast channel the isolated anomaly detection
+    // process publishes on, and log every event. The publisher owns that endpoint, so a
+    // missing AAD is retried instead of failing startup, and the listener joins no
+    // topology. Stopping it after the supervisor returns unblocks a parked receive.
+    let mut anomaly_events = {
+        let domain = &config_sys.config().domains.anomalydetection;
+        if domain.events_enabled {
+            let endpoint = SetupEndpoint::parse(&domain.events_endpoint).map_err(|error| {
+                generic_error!(
+                    "Invalid anomaly detection events endpoint `{}`: {error}",
+                    domain.events_endpoint
+                )
+            })?;
+            Some(AnomalyEventListener::start(endpoint))
+        } else {
+            None
+        }
+    };
+
     info!("Agent Data Plane running.");
-    match root_supervisor.run_with_shutdown(wait_for_shutdown_signal()).await {
+    let outcome = root_supervisor.run_with_shutdown(wait_for_shutdown_signal()).await;
+    if let Some(listener) = anomaly_events.as_mut() {
+        listener.stop();
+    }
+    match outcome {
         Ok(()) => {
             info!("Agent Data Plane shut down successfully.");
             Ok(())

@@ -25,6 +25,7 @@ mod cli;
 use self::cli::*;
 use crate::internal::logging::LoggingConfigurationTranslator;
 
+mod anomaly_events;
 mod components;
 mod config;
 mod dogstatsd_contexts;
