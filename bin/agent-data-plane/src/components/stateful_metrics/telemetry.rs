@@ -2,7 +2,6 @@
 
 use foldspace_core::MetricStreamFailureKind;
 use saluki_common::collections::FastHashMap;
-use saluki_error::GenericError;
 use saluki_io::net::util::retry::PushResult;
 use saluki_metrics::{Counter, MetricsBuilder};
 use tracing::warn;
@@ -56,18 +55,6 @@ impl Telemetry {
             );
             self.batches_abandoned.increment(result.items_dropped);
             self.points_dropped.increment(result.data_points_dropped);
-        }
-    }
-
-    // A queue rejection consumes the entry; account for it without terminating the sender.
-    pub fn track_enqueue(&self, result: Result<PushResult, GenericError>, points: u64) {
-        match result {
-            Ok(result) => self.track_drops(result),
-            Err(error) => {
-                warn!(%error, points, "Stateful metrics batch could not enter retry storage.");
-                self.batches_abandoned.increment(1);
-                self.points_dropped.increment(points);
-            }
         }
     }
 }

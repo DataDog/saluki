@@ -173,10 +173,24 @@ Fresh input, overflow, rejected `push_batch` submissions, and unsent partial bat
 which feeds every endpoint through `push_batch`. With one endpoint there are no lanes, and returned
 batches use the shared low-priority queue as before.
 
-Each lane is a `RetryQueue<T>` with the same spill-to-disk and drop-oldest policy. The worker's retry
-memory and disk budgets are split evenly between the shared queue and the lanes, so with two
-endpoints each of the three queues gets a third. A long outage on one endpoint evicts only that
-endpoint's oldest retries. The high-priority capacity stays with the shared queue.
+Each lane is a `RetryQueue<T>` with the same spill-to-disk and drop-oldest policy. The shared
+low-priority queue and every lane draw from one retry memory budget: any of them can use all of it
+while the others are empty. When an entry does not fit, the worker evicts the oldest in-memory entry
+across all of those queues, spilling it to disk when persistence is enabled and dropping it
+otherwise, until the entry fits. A long outage on one endpoint can therefore push out older retries
+for the others. The high-priority capacity stays with the shared queue and is bounded by count, not
+by this budget.
+
+The disk budget is still split evenly between the shared queue and the lanes, so with two endpoints
+each of the three queues gets a third. Each persisted queue enforces its own disk limit and evicts
+only its own files, so pooling disk would need shared accounting across their directories.
+
+Before a batch enters the memory budget, the worker splits it into consecutive batches estimated at
+no more than a quarter of the budget, preserving series order. A 10,000-series batch estimates about
+7 MB, so with the default 15 MiB budget it becomes two entries. A single series larger than a quarter
+of the budget stays whole, and an entry larger than the whole budget is dropped and counted. Each
+split entry counts separately in `stateful_metrics_batches_retried_total` and
+`stateful_metrics_batches_abandoned_total`; points are counted once.
 
 Telemetry includes `stateful_metrics_batches_acked_total`, `stateful_metrics_batches_retried_total`,
 `stateful_metrics_stream_failures_total`, `stateful_metrics_batches_abandoned_total`, and
