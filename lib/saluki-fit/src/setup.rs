@@ -11,53 +11,30 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-const MAX_FRAME: usize = 256;
-const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(50);
-static LAST_SESSION_ID: AtomicU64 = AtomicU64::new(0);
+pub(crate) const MAX_FRAME: usize = 256;
+pub(crate) const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
-fn next_session_id() -> io::Result<u64> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| invalid(error.to_string()))?;
-    let nanos = u64::try_from(now.as_nanos()).map_err(|_| invalid("session clock exceeds u64"))?;
-    let seed = nanos ^ (std::process::id() as u64).rotate_left(32);
-    loop {
-        let previous = LAST_SESSION_ID.load(Ordering::Relaxed);
-        let next = previous
-            .max(seed)
-            .checked_add(1)
-            .ok_or_else(|| invalid("session identifiers exhausted"))?;
-        if LAST_SESSION_ID
-            .compare_exchange_weak(previous, next, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            return Ok(next);
-        }
-    }
-}
-
-fn phase(name: &'static str, error: io::Error) -> io::Error {
+pub(crate) fn phase(name: &'static str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{name}: {error}"))
 }
 
-fn deadline_remaining(deadline: Instant) -> io::Result<Duration> {
+pub(crate) fn deadline_remaining(deadline: Instant) -> io::Result<Duration> {
     deadline
         .checked_duration_since(Instant::now())
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "setup deadline expired"))
 }
 
-fn check_cancel(cancellation: Option<&CancellationToken>) -> io::Result<()> {
+pub(crate) fn check_cancel(cancellation: Option<&CancellationToken>) -> io::Result<()> {
     if let Some(token) = cancellation {
         token.check()?;
     }
     Ok(())
 }
 
-fn sleep_until(duration: Duration, cancellation: Option<&CancellationToken>) -> io::Result<()> {
+pub(crate) fn sleep_until(duration: Duration, cancellation: Option<&CancellationToken>) -> io::Result<()> {
     if let Some(token) = cancellation {
         token.wait_for(duration)
     } else {
@@ -66,7 +43,7 @@ fn sleep_until(duration: Duration, cancellation: Option<&CancellationToken>) -> 
     }
 }
 
-fn wait_for(
+pub(crate) fn wait_for(
     fd: RawFd, events: libc::c_short, deadline: Instant, cancellation: Option<&CancellationToken>,
 ) -> io::Result<()> {
     loop {
@@ -93,7 +70,7 @@ fn wait_for(
     }
 }
 
-enum SetupStream {
+pub(crate) enum SetupStream {
     Unix(UnixStream),
     Tcp(TcpStream),
 }
@@ -131,7 +108,7 @@ impl AsRawFd for SetupStream {
     }
 }
 
-fn read_exact_until(
+pub(crate) fn read_exact_until(
     stream: &mut SetupStream, mut buf: &mut [u8], deadline: Instant, cancellation: Option<&CancellationToken>,
 ) -> io::Result<()> {
     while !buf.is_empty() {
@@ -150,7 +127,7 @@ fn read_exact_until(
     Ok(())
 }
 
-fn write_all_until(
+pub(crate) fn write_all_until(
     stream: &mut SetupStream, mut buf: &[u8], deadline: Instant, cancellation: Option<&CancellationToken>,
 ) -> io::Result<()> {
     while !buf.is_empty() {
@@ -169,7 +146,7 @@ fn write_all_until(
     Ok(())
 }
 
-fn send(
+pub(crate) fn send(
     stream: &mut SetupStream, body: &[u8], deadline: Instant, cancellation: Option<&CancellationToken>,
 ) -> io::Result<()> {
     check_cancel(cancellation)?;
@@ -180,7 +157,7 @@ fn send(
     write_all_until(stream, body, deadline, cancellation)
 }
 
-fn receive(
+pub(crate) fn receive(
     stream: &mut SetupStream, deadline: Instant, cancellation: Option<&CancellationToken>,
 ) -> io::Result<Vec<u8>> {
     let mut prefix = [0; 4];
@@ -194,7 +171,7 @@ fn receive(
     Ok(body)
 }
 
-fn reject(stream: &mut SetupStream, error: &io::Error, deadline: Instant) {
+pub(crate) fn reject(stream: &mut SetupStream, error: &io::Error, deadline: Instant) {
     let detail = error.to_string();
     let bytes = detail.as_bytes();
     let mut frame = vec![2];
@@ -202,7 +179,7 @@ fn reject(stream: &mut SetupStream, error: &io::Error, deadline: Instant) {
     let _ = send(stream, &frame, deadline, None);
 }
 
-fn expected_message(frame: &[u8], tag: u8) -> io::Result<&[u8]> {
+pub(crate) fn expected_message(frame: &[u8], tag: u8) -> io::Result<&[u8]> {
     if frame.first() == Some(&2) {
         return Err(invalid(format!(
             "peer rejected setup: {}",
@@ -231,7 +208,7 @@ fn offer_frame(id: u64, name: &str, capacity: usize, protocol: &ProtocolDescript
     offer
 }
 
-fn endpoint_parent(path: &Path) -> io::Result<()> {
+pub(crate) fn endpoint_parent(path: &Path) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -250,7 +227,7 @@ fn endpoint_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-struct UnixEndpoint(PathBuf);
+pub(crate) struct UnixEndpoint(pub(crate) PathBuf);
 impl Drop for UnixEndpoint {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -263,7 +240,7 @@ enum SetupListener {
 }
 
 #[cfg(target_os = "macos")]
-fn check_os_version() -> io::Result<()> {
+pub(crate) fn check_os_version() -> io::Result<()> {
     let mut bytes = [0u8; 32];
     let mut len = bytes.len();
     let name = b"kern.osproductversion\0";
@@ -338,7 +315,11 @@ fn open_inner(
         reject(&mut stream, &error, deadline);
         return Err(error);
     }
-    let id = next_session_id()?;
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| invalid(e.to_string()))?
+        .as_nanos() as u64
+        ^ (std::process::id() as u64);
     let (mut shared, name) =
         Shared::create(id, capacity, protocol.version).map_err(|e| phase("creating shared memory", e))?;
     let offer = offer_frame(id, &name, capacity, &protocol);
@@ -472,7 +453,9 @@ fn connect_inner(
     Ok(Producer { id, shared, protocol })
 }
 
-fn connect_until(path: &Path, deadline: Instant, cancellation: Option<&CancellationToken>) -> io::Result<SetupStream> {
+pub(crate) fn connect_until(
+    path: &Path, deadline: Instant, cancellation: Option<&CancellationToken>,
+) -> io::Result<SetupStream> {
     check_cancel(cancellation)?;
     let path_bytes = path.as_os_str().as_encoded_bytes();
     if path_bytes.len() >= 104 || path_bytes.contains(&0) {
@@ -569,7 +552,7 @@ fn connect_until(path: &Path, deadline: Instant, cancellation: Option<&Cancellat
     Ok(SetupStream::Unix(stream))
 }
 
-fn ensure_loopback(address: std::net::SocketAddr) -> io::Result<()> {
+pub(crate) fn ensure_loopback(address: std::net::SocketAddr) -> io::Result<()> {
     if address.ip().is_loopback() {
         Ok(())
     } else {
@@ -621,7 +604,7 @@ fn accept_tcp_until(
     }
 }
 
-fn connect_tcp_until(
+pub(crate) fn connect_tcp_until(
     address: std::net::SocketAddr, deadline: Instant, cancellation: Option<&CancellationToken>,
 ) -> io::Result<SetupStream> {
     loop {
@@ -658,18 +641,6 @@ mod tests {
         version: 2,
         message_types: &[1, 2],
     };
-
-    #[test]
-    fn concurrent_sessions_get_distinct_identifiers() {
-        let workers: Vec<_> = (0..32).map(|_| thread::spawn(next_session_id)).collect();
-        let mut ids: Vec<_> = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap().unwrap())
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), 32);
-    }
 
     fn unused_loopback_address() -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -741,7 +712,7 @@ mod tests {
 
     #[test]
     fn mismatched_protocol_is_rejected_during_setup() {
-        let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let id = crate::test_unique_id();
         let directory = PathBuf::from(format!("/tmp/mc-mismatch-{}-{id:x}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, Permissions::from_mode(0o700)).unwrap();
@@ -768,7 +739,7 @@ mod tests {
 
     #[test]
     fn configured_listener_timeout_is_honored() {
-        let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let id = crate::test_unique_id();
         let directory = PathBuf::from(format!("/tmp/mc-timeout-{}-{id:x}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, Permissions::from_mode(0o700)).unwrap();

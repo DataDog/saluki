@@ -20,8 +20,15 @@ pub(crate) fn wait(word: &AtomicU32, expected: u32) -> io::Result<()> {
         Err(error)
     }
 }
-pub(crate) fn wake(word: &AtomicU32) -> io::Result<()> {
-    let result = unsafe { libc::syscall(libc::SYS_futex, word as *const _ as *const u32, libc::FUTEX_WAKE, 1) };
+pub(crate) fn wake_all(word: &AtomicU32) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_futex,
+            word as *const _ as *const u32,
+            libc::FUTEX_WAKE,
+            libc::INT_MAX,
+        )
+    };
     if result >= 0 {
         Ok(())
     } else {

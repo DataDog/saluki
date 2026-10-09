@@ -33,3 +33,18 @@ pub(crate) fn wake(word: &AtomicU32) -> io::Result<()> {
         Err(error)
     }
 }
+
+pub(crate) fn wake_all(word: &AtomicU32) -> io::Result<()> {
+    let result = unsafe {
+        libc::os_sync_wake_by_address_all(word as *const _ as *mut _, 4, libc::OS_SYNC_WAKE_BY_ADDRESS_SHARED)
+    };
+    if result >= 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ENOENT) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}

@@ -8,6 +8,8 @@ pub const READ_OFFSET: usize = 256;
 pub const RING_OFFSET: usize = 384;
 const HEADER: usize = 8;
 const GAP: usize = 8;
+pub(crate) const RECORD_HEADER: usize = HEADER;
+pub(crate) const RESERVED_GAP: usize = GAP;
 
 pub struct Record<'a> {
     pub kind: u32,
@@ -27,13 +29,10 @@ pub struct SendResult {
 }
 
 impl Shared {
-    fn index(&self, offset: usize) -> &AtomicU32 {
+    pub(crate) fn index(&self, offset: usize) -> &AtomicU32 {
         // mmap and both fixed offsets meet 32-bit atomic alignment. x86_64/aarch64 use
         // native lock-free atomic words shared by the two processes.
         unsafe { &*self.ptr.as_ptr().add(offset).cast::<AtomicU32>() }
-    }
-    fn ring(&self) -> *mut u8 {
-        unsafe { self.ptr.as_ptr().add(RING_OFFSET) }
     }
     fn indexes(&self) -> io::Result<(usize, usize)> {
         let r = self.index(READ_OFFSET).load(Ordering::Acquire) as usize;
@@ -196,7 +195,6 @@ impl Shared {
 mod tests {
     use super::*;
     use crate::CancellationToken;
-    use std::time::{SystemTime, UNIX_EPOCH};
     const DEFAULT: ProtocolDescriptor = ProtocolDescriptor {
         id: *b"CORE0001",
         version: 2,
@@ -219,7 +217,7 @@ mod tests {
         let worker_cancellation = cancellation.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+            let id = crate::test_unique_id();
             let (mut consumer, _) = Shared::create(id, 64, DEFAULT.version).unwrap();
             let read_before = consumer.index(READ_OFFSET).load(Ordering::Acquire);
             ready_tx.send(()).unwrap();
@@ -245,9 +243,7 @@ mod tests {
     };
 
     fn pair(capacity: usize) -> (Shared, Shared) {
-        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64)
-            .wrapping_add(NEXT_ID.fetch_add(1, Ordering::Relaxed));
+        let id = crate::test_unique_id();
         let (mut consumer, name) = Shared::create(id, capacity, 2).unwrap();
         let producer = Shared::open(&name, id, capacity, 2).unwrap();
         consumer.unlink_name().unwrap();
@@ -446,7 +442,7 @@ mod tests {
     #[test]
     fn concurrent_small_ring_preserves_order_and_payload_across_wraps() {
         let capacity = 256;
-        let id = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64).wrapping_add(0x5000_0000);
+        let id = crate::test_unique_id();
         let (mut consumer, name) = Shared::create(id, capacity, 2).unwrap();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let producer = std::thread::spawn(move || {
