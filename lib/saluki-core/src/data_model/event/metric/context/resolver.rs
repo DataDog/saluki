@@ -1,13 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
+use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher, sync::shutdown::ShutdownHandle};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::{static_metrics, Counter, Gauge};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     CheapMetaString, MetaString,
 };
-use tokio::time::sleep;
+use tokio::{pin, select, time::sleep};
 use tracing::debug;
 
 use super::{
@@ -20,6 +20,7 @@ use crate::{
         origin::{OriginTagsResolver, RawOrigin},
         tags::{SharedTagSet, TagSet},
     },
+    runtime,
 };
 
 // SAFETY: We know, unquestionably, that this value is not zero.
@@ -284,8 +285,14 @@ impl ContextResolverBuilder {
                 .build(),
         };
 
+        // Report the usage of the interner while the owner of this resolver runs. If the resolver is built outside
+        // supervision, there is no owner to tie the task to, so the task runs detached.
         if self.telemetry_enabled {
-            tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
+            let (interner, telemetry) = (interner.clone(), telemetry.clone());
+            runtime::worker_with_shutdown("context_resolver_telemetry", move |shutdown| {
+                drive_telemetry(interner, telemetry, shutdown)
+            })
+            .spawn_child_or_detached();
         }
 
         ContextResolver {
@@ -592,9 +599,14 @@ impl Clone for ContextResolver {
     }
 }
 
-async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry, shutdown: ShutdownHandle) {
+    pin!(shutdown);
+
     loop {
-        sleep(Duration::from_secs(1)).await;
+        select! {
+            _ = &mut shutdown => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        }
 
         telemetry.interner_entries().set(interner.len() as f64);
         telemetry

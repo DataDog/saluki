@@ -2,12 +2,14 @@
 
 use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_common::{hash::FastBuildHasher, task::spawn_traced};
+use async_trait::async_trait;
+use saluki_common::{hash::FastBuildHasher, sync::shutdown::ShutdownHandle};
 use saluki_error::GenericError;
 use saluki_metrics::{static_metrics, Counter, Gauge, Histogram};
-use tokio::time::sleep;
-use tokio_util::sync::{CancellationToken, DropGuard};
+use tokio::{pin, select, time::sleep};
 use tracing::debug;
+
+use crate::runtime::{self, scope, InitializationError, ScopeGuard, Supervisable, SupervisorFuture};
 
 mod expiry;
 use self::expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle};
@@ -38,7 +40,13 @@ struct Telemetry {
 
 struct InnerCache<K, V, W, H> {
     cache: Arc<RawCache<K, V, W, H>>,
-    _task_shutdown_guard: DropGuard,
+
+    /// The background tasks of the cache, if it has any.
+    ///
+    /// The guard is kept here, next to the raw cache that the tasks serve. Thus, the tasks stop when the last copy of
+    /// the cache is dropped. They stop earlier if the process that owns them stops first. The tasks hold the raw cache
+    /// but never this guard, so when the cache is dropped, the guard is also dropped.
+    _drivers: Option<ScopeGuard>,
 }
 
 /// Builder for creating a [`Cache`].
@@ -220,9 +228,14 @@ where
     H: std::hash::BuildHasher + Clone + Default + Send + Sync + 'static,
 {
     /// Builds a [`Cache`] from the current configuration.
+    ///
+    /// Background tasks drive expiration and telemetry. If a supervised process builds the cache, the tasks run as
+    /// supervised children of that process, and they are restarted if they fail. If other code builds the cache, the
+    /// tasks run as detached tasks. In both cases, the tasks stop when the last copy of the cache is dropped.
     pub fn build(self) -> Cache<K, V, W, H> {
         let capacity = self.capacity.get();
 
+        let drivers_name = format!("cache_{}", self.identifier);
         let telemetry = Telemetry::new(self.identifier);
         telemetry.weight_limit().set(capacity as f64);
 
@@ -238,8 +251,7 @@ where
         }
         let (expiration, expiry_lifecycle) = expiration_builder.build();
 
-        // Create the underlying cache and shutdown signal.
-        let shutdown_token = CancellationToken::new();
+        // Create the underlying cache.
         let raw_cache = Arc::new(RawCache::with(
             capacity,
             capacity as u64,
@@ -248,34 +260,40 @@ where
             expiry_lifecycle,
         ));
 
-        let cache = Cache {
+        // Start the background tasks that the cache needs, in a scope that the cache owns.
+        let needs_drivers = self.expiration_interval.is_some() || self.telemetry_enabled;
+        let mut drivers = needs_drivers.then(|| scope::nested_or_detached(drivers_name));
+
+        if let (Some(drivers), Some(interval)) = (drivers.as_mut(), self.expiration_interval) {
+            drivers.spawn(
+                runtime::supervisable(ExpirationDriver {
+                    cache: Arc::clone(&raw_cache),
+                    telemetry: telemetry.clone(),
+                    expiration: expiration.clone(),
+                    interval,
+                })
+                .build(),
+            );
+        }
+
+        if let (Some(drivers), true) = (drivers.as_mut(), self.telemetry_enabled) {
+            drivers.spawn(
+                runtime::supervisable(TelemetryDriver {
+                    cache: Arc::clone(&raw_cache),
+                    telemetry: telemetry.clone(),
+                })
+                .build(),
+            );
+        }
+
+        Cache {
             inner: Arc::new(InnerCache {
-                cache: Arc::clone(&raw_cache),
-                _task_shutdown_guard: shutdown_token.clone().drop_guard(),
+                cache: raw_cache,
+                _drivers: drivers,
             }),
-            expiration: expiration.clone(),
-            telemetry: telemetry.clone(),
-        };
-
-        // If expiration is enabled, spawn a background task to actually drive expiration.
-        if let Some(expiration_interval) = self.expiration_interval {
-            let expiration = expiration.clone();
-
-            spawn_traced(drive_expiration(
-                Arc::clone(&raw_cache),
-                telemetry.clone(),
-                expiration,
-                expiration_interval,
-                shutdown_token.clone(),
-            ));
+            expiration,
+            telemetry,
         }
-
-        // If telemetry is enabled, spawn a background task to drive telemetry reporting.
-        if self.telemetry_enabled {
-            spawn_traced(drive_telemetry(Arc::clone(&raw_cache), telemetry, shutdown_token));
-        }
-
-        cache
     }
 }
 
@@ -342,9 +360,71 @@ where
     }
 }
 
+/// Drives expiration for a cache, and removes the entries that are idle.
+struct ExpirationDriver<K, V, W, H> {
+    cache: Arc<RawCache<K, V, W, H>>,
+    telemetry: Telemetry,
+    expiration: Expiration<K>,
+    interval: Duration,
+}
+
+#[async_trait]
+impl<K, V, W, H> Supervisable for ExpirationDriver<K, V, W, H>
+where
+    K: Eq + std::hash::Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+    W: Weighter<K, V> + Clone + Send + Sync + 'static,
+    H: std::hash::BuildHasher + Clone + Send + Sync + 'static,
+{
+    fn name(&self) -> &str {
+        "expiration"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let cache = Arc::clone(&self.cache);
+        let telemetry = self.telemetry.clone();
+        let expiration = self.expiration.clone();
+        let interval = self.interval;
+
+        Ok(Box::pin(async move {
+            drive_expiration(cache, telemetry, expiration, interval, process_shutdown).await;
+            Ok(())
+        }))
+    }
+}
+
+/// Drives the telemetry reports for a cache.
+struct TelemetryDriver<K, V, W, H> {
+    cache: Arc<RawCache<K, V, W, H>>,
+    telemetry: Telemetry,
+}
+
+#[async_trait]
+impl<K, V, W, H> Supervisable for TelemetryDriver<K, V, W, H>
+where
+    K: Eq + std::hash::Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+    W: Weighter<K, V> + Clone + Send + Sync + 'static,
+    H: std::hash::BuildHasher + Clone + Send + Sync + 'static,
+{
+    fn name(&self) -> &str {
+        "telemetry"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let cache = Arc::clone(&self.cache);
+        let telemetry = self.telemetry.clone();
+
+        Ok(Box::pin(async move {
+            drive_telemetry(cache, telemetry, process_shutdown).await;
+            Ok(())
+        }))
+    }
+}
+
 async fn drive_expiration<K, V, W, H>(
     cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, expiration: Expiration<K>, expiration_interval: Duration,
-    shutdown: CancellationToken,
+    shutdown: ShutdownHandle,
 ) where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
@@ -352,10 +432,11 @@ async fn drive_expiration<K, V, W, H>(
     H: std::hash::BuildHasher + Clone,
 {
     let mut expired_item_keys = Vec::new();
+    pin!(shutdown);
 
     loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => break,
+        select! {
+            _ = &mut shutdown => break,
             _ = sleep(expiration_interval) => {}
         }
 
@@ -380,17 +461,18 @@ async fn drive_expiration<K, V, W, H>(
     }
 }
 
-async fn drive_telemetry<K, V, W, H>(
-    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, shutdown: CancellationToken,
-) where
+async fn drive_telemetry<K, V, W, H>(cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, shutdown: ShutdownHandle)
+where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
     W: Weighter<K, V> + Clone,
     H: std::hash::BuildHasher + Clone,
 {
+    pin!(shutdown);
+
     loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => break,
+        select! {
+            _ = &mut shutdown => break,
             _ = sleep(Duration::from_secs(1)) => {}
         }
 
@@ -536,8 +618,9 @@ mod tests {
 
         drop(cache);
 
-        // When `InnerCache` is dropped, the cancellation token's drop guard is also dropped, which triggers
-        // cancellation, so both tasks should wake up immediately and exit, releasing their Arc<RawCache> references.
+        // The cache was built outside supervision, so the tasks run detached. When `InnerCache` is dropped, the guard
+        // that holds the tasks is also dropped, and this signals the tasks. Both tasks then wake immediately, exit, and
+        // release their Arc<RawCache> references.
         //
         // TODO: There's no good way to assert the tasks have shutdown besides sleeping and checking the weak cache is
         // gone. It would be nice if there was a way to asynchronously _and_ fallibly shutdown the runtime with a
@@ -548,5 +631,68 @@ mod tests {
             weak_cache.upgrade().is_none(),
             "raw cache should be released after background tasks exit"
         );
+    }
+
+    #[tokio::test]
+    async fn tasks_run_under_the_owning_process_and_stop_when_cache_dropped() {
+        use tokio::sync::oneshot;
+
+        use crate::runtime::{NodeSnapshot, Supervisor};
+        use crate::test_support::wait_until;
+
+        fn find<'a>(node: &'a NodeSnapshot, name: &str) -> Option<&'a NodeSnapshot> {
+            if node.name == name {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+
+        let (weak_tx, weak_rx) = oneshot::channel();
+        let (drop_tx, drop_rx) = oneshot::channel::<()>();
+
+        let mut supervisor = Supervisor::new("cache-test").expect("valid name");
+        let tree = supervisor.tree_handle();
+        supervisor.add_worker(
+            runtime::worker_with_shutdown("owner", move |shutdown| async move {
+                let cache = CacheBuilder::<u64, u64>::from_identifier("test-drop")
+                    .expect("valid identifier")
+                    .with_time_to_idle(Some(Duration::from_secs(60)))
+                    .with_expiration_interval(Duration::from_millis(50))
+                    .build();
+                let _ = weak_tx.send(Arc::downgrade(&cache.inner.cache));
+
+                let _ = drop_rx.await;
+                drop(cache);
+                shutdown.await;
+            })
+            .build(),
+        );
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let run = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+        let weak_cache = weak_rx.await.expect("owner should build the cache");
+
+        // The cache was built in a supervised process, so the tasks of the cache are children of that process. A scope
+        // that the cache owns holds these tasks.
+        wait_until("the cache's tasks run beneath the owner", || {
+            let root = tree.snapshot().root;
+            find(&root, "cache_test-drop")
+                .is_some_and(|drivers| find(drivers, "expiration").is_some() && find(drivers, "telemetry").is_some())
+        })
+        .await;
+
+        drop_tx.send(()).expect("owner should be waiting");
+        wait_until("dropping the cache stops its tasks", || {
+            find(&tree.snapshot().root, "cache_test-drop").is_none()
+        })
+        .await;
+        wait_until("the raw cache is released", || weak_cache.upgrade().is_none()).await;
+
+        shutdown_tx.send(()).expect("supervisor should be running");
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .expect("supervisor should stop")
+            .expect("supervisor task should not panic");
+        assert!(result.is_ok(), "the cache's tasks stopped on their own: {result:?}");
     }
 }
