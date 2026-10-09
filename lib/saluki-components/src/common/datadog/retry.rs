@@ -204,12 +204,11 @@ impl RetryConfiguration {
         }
     }
 
-    /// Returns a copy whose in-memory and on-disk retry budgets are an even share of these.
+    /// Returns a copy whose on-disk retry budget is an even share of this one.
     ///
     /// A nonzero disk budget stays nonzero so that sharing it never disables persistence.
-    pub(crate) fn with_budget_share(&self, parts: NonZeroU64) -> Self {
+    pub(crate) fn with_storage_budget_share(&self, parts: NonZeroU64) -> Self {
         let mut shared = self.clone();
-        shared.queue_max_size_bytes /= parts.get();
         if shared.storage_max_size_bytes > 0 {
             shared.storage_max_size_bytes = (shared.storage_max_size_bytes / parts.get()).max(1);
         }

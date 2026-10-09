@@ -36,14 +36,14 @@ impl DeliveryQueueConfiguration {
         (self.retry.storage_max_size_bytes() > 0).then(|| self.retry.storage_path())
     }
 
-    /// Returns settings whose retry memory and disk budgets are an even share across `parts` queues.
+    /// Returns settings whose retry disk budget is an even share across `parts` queues.
     ///
-    /// High-priority capacity is unchanged. Use this when one delivery worker splits its retry budget
-    /// across several queues so that their combined usage stays within the configured limits.
-    pub fn with_budget_share(&self, parts: NonZeroU64) -> Self {
+    /// High-priority capacity and the in-memory retry limit are unchanged. Use this when one delivery worker
+    /// persists retries in several queues and enforces their combined in-memory limit itself.
+    pub fn with_storage_budget_share(&self, parts: NonZeroU64) -> Self {
         Self {
             high_priority_capacity: self.high_priority_capacity,
-            retry: self.retry.with_budget_share(parts),
+            retry: self.retry.with_storage_budget_share(parts),
         }
     }
 

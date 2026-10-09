@@ -67,7 +67,7 @@ mod transport;
 
 pub use self::router::StatefulMetricsRouterConfiguration;
 use self::{
-    retry::{prepare_storage, LanedRetryQueue, RetryBatch},
+    retry::{prepare_storage, LanedRetryQueue},
     telemetry::Telemetry,
     transport::{next_transport_event, Transport, TransportEvent, TransportEventKind, TransportState},
 };
@@ -90,8 +90,8 @@ const DICTIONARY_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 pub struct StatefulMetricsConfiguration {
     /// Explicit plaintext test intake origins, primary first. There is no default endpoint.
     ///
-    /// Every payload goes to every endpoint. Retry storage is namespaced by the primary endpoint
-    /// and split evenly between the shared queue and one lane per endpoint.
+    /// Every payload goes to every endpoint. Retry storage is namespaced by the primary endpoint. The
+    /// shared queue and one lane per endpoint share the retry memory budget and split the disk budget evenly.
     pub endpoints: Vec<MetaString>,
     /// Independent sender tasks. Defaults to three; changing this requires a restart.
     pub workers: NonZeroUsize,
@@ -362,9 +362,7 @@ impl StatefulMetricsWorker {
 
     async fn enqueue(&mut self, batch: LogicalMetricBatch) {
         if !batch.is_empty() {
-            let points = batch.point_count() as u64;
-            self.telemetry
-                .track_enqueue(self.queue.push_fresh(RetryBatch(batch)).await, points);
+            self.telemetry.track_drops(self.queue.push_fresh(batch).await);
         }
     }
 
@@ -566,9 +564,7 @@ impl StatefulMetricsWorker {
 
     /// Queues a returned batch for `endpoint` alone, or for every endpoint when `None`.
     async fn requeue(&mut self, endpoint: Option<MetricEndpointId>, batch: LogicalMetricBatch) {
-        let points = batch.point_count() as u64;
-        self.telemetry
-            .track_enqueue(self.queue.push_retry(endpoint, RetryBatch(batch)).await, points);
+        self.telemetry.track_drops(self.queue.push_retry(endpoint, batch).await);
     }
 
     async fn requeue_returned(
