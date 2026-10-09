@@ -16,7 +16,7 @@ target:
     DD_DATA_PLANE_ENABLED: "false"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
     DD_OTELCOLLECTOR_ENABLED: "true"
-    DD_OTELCOLLECTOR_CONVERTER_FEATURES: infraattributes,prometheus,pprof,zpages,health_check,ddflare,cumulativetodelta
+    DD_OTELCOLLECTOR_CONVERTER_FEATURES: cumulativetodelta
   profiling_environment:
     DD_SERVICE: agent-data-plane
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap

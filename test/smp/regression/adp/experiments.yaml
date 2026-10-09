@@ -834,14 +834,13 @@ experiments:
         # Starts the otel-agent sidecar (it exits immediately when this is unset).
         DD_OTELCOLLECTOR_ENABLED: "true"
 
-        # Disable the auto-injected `datadog` (OSS Datadog extension) feature. That
-        # extension builds its own serializer + forwarder from only api.key + api.site
-        # and has no metrics endpoint field — it derives https://api.<site> from the site,
-        # which is DNS-dead in the sandbox and OOMs the otel-agent via unbounded retry.
-        # The remaining features are the default set minus `datadog` (billing/COAT
-        # telemetry only, irrelevant here). See comp/otelcol/converter/README.md in
-        # datadog-agent for the documented feature list.
-        DD_OTELCOLLECTOR_CONVERTER_FEATURES: "infraattributes,prometheus,pprof,zpages,health_check,ddflare,cumulativetodelta"
+        # Disable the otel-agent's config converter except cumulativetodelta, which
+        # the datadog exporter needs to convert cumulative OTLP metrics to delta before
+        # export. Everything else (prometheus self-scrape, infraattributes, zpages,
+        # ddflare, health_check, datadog extension) is production overhead that adds
+        # memory and a self-scrape feedback loop — irrelevant to the ingest benchmark.
+        # See comp/otelcol/converter/README.md in datadog-agent.
+        DD_OTELCOLLECTOR_CONVERTER_FEATURES: "cumulativetodelta"
       files:
         # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
         # All signal endpoints are set explicitly so nothing is derived from a site.
