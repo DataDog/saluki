@@ -15,3 +15,6 @@ cardinality, and analyze sensitive dump artifacts offline.
 
 Use [Inspect the supervision tree](supervision-tree.md) to see which processes ADP is running, how they're nested,
 which have restarted, and what each accounts for in memory and CPU.
+
+Use [Checks telemetry over FIT](checks-fit.md) to configure the ACR-to-ADP Checks link, understand its delivery and
+restart behavior, and measure it against the previous gRPC path.

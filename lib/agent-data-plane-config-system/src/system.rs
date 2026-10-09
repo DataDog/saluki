@@ -71,6 +71,12 @@ pub enum Error {
          be submitted without one"
     ))]
     MissingApiKey,
+    /// A Checks FIT setup setting is invalid.
+    #[snafu(display("invalid Checks FIT configuration: {message}"))]
+    ChecksFit {
+        /// Actionable validation failure.
+        message: String,
+    },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -348,6 +354,11 @@ pub(crate) fn translate_authoritative(merged: &SourceTree) -> Result<SalukiConfi
 /// forwarder then retries. Failing here names the cause once instead of leaving an operator to infer
 /// it from a stream of authentication failures.
 pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
+    config
+        .domains
+        .checks
+        .validate()
+        .map_err(|message| Error::ChecksFit { message })?;
     // A blank key is as unusable as an absent one, and a padded key is a typo we should name rather
     // than send.
     if config.shared.endpoints.api_key.trim().is_empty() {
@@ -949,6 +960,18 @@ mod tests {
 
         assert!(matches!(error, Error::MissingApiKey));
         assert!(error.to_string().contains("api_key"));
+    }
+
+    #[test]
+    fn invalid_checks_fit_settings_are_rejected_at_the_configuration_boundary() {
+        for (key, value) in [
+            ("checks_ipc_endpoint", json!("tcp://0.0.0.0:5105")),
+            ("checks_ipc_ring_capacity_bytes", json!(17)),
+        ] {
+            let sources = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY, (key): value }));
+            let error = translate_authoritative(&sources).expect_err("invalid FIT configuration must fail");
+            assert!(matches!(&error, Error::ChecksFit { .. }), "{key}: {error}");
+        }
     }
 
     #[test]

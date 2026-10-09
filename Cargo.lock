@@ -55,6 +55,7 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
+ "saluki-fit",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",
@@ -835,6 +836,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "checks-ipc-bench"
+version = "0.1.0"
+dependencies = [
+ "datadog-checks-protocol",
+ "datadog-protos",
+ "libc",
+ "process-memory",
+ "prost",
+ "saluki-fit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,6 +1412,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "datadog-checks-protocol"
+version = "0.1.0"
+dependencies = [
+ "saluki-fit",
+ "simdutf8",
 ]
 
 [[package]]
@@ -5557,6 +5584,7 @@ dependencies = [
  "chrono",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
+ "datadog-checks-protocol",
  "datadog-protos",
  "ddsketch",
  "faster-hex",
@@ -5596,6 +5624,7 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
+ "saluki-fit",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",
@@ -5719,6 +5748,14 @@ name = "saluki-error"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+]
+
+[[package]]
+name = "saluki-fit"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "simdutf8",
 ]
 
 [[package]]
