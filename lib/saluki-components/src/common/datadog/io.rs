@@ -1016,6 +1016,25 @@ impl<T: Retryable> PendingTransactions<T> {
         self.high_priority.is_empty() && self.low_priority.is_empty()
     }
 
+    /// Returns `true` if the high-priority queue is full, so the next high-priority push goes to the low-priority queue.
+    pub fn high_priority_is_full(&self) -> bool {
+        self.high_priority.len() >= self.high_priority.capacity()
+    }
+
+    /// Returns the low-priority retry queue.
+    pub fn retry_queue(&self) -> &RetryQueue<T> {
+        &self.low_priority
+    }
+
+    /// Evicts the oldest in-memory low-priority transaction, persisting it to disk when enabled.
+    ///
+    /// See [`RetryQueue::evict_oldest_in_memory`]. Returns `None` if no low-priority transaction is held in memory.
+    pub async fn evict_oldest_low_priority(&mut self) -> Option<PushResult> {
+        let push_result = self.low_priority.evict_oldest_in_memory().await;
+        self.record_retry_queue_size();
+        push_result
+    }
+
     /// Pushes a high-priority transaction into the queue.
     ///
     /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
@@ -1718,6 +1737,38 @@ mod tests {
             )),
             Some(1024.0)
         );
+    }
+
+    #[tokio::test]
+    async fn external_eviction_reports_overflow_and_drops_oldest_low_priority() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
+
+        assert!(!pending_txns.high_priority_is_full());
+        let _ = pending_txns.push_high_priority("fresh".to_string()).await.unwrap();
+        assert!(pending_txns.high_priority_is_full());
+        let _ = pending_txns.push_low_priority("old".to_string()).await.unwrap();
+        let _ = pending_txns.push_low_priority("new".to_string()).await.unwrap();
+        assert_eq!(pending_txns.retry_queue().in_memory_bytes(), 6);
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(2.0));
+
+        let evicted = pending_txns.evict_oldest_low_priority().await.expect("entry to evict");
+        assert_eq!(evicted.items_dropped, 1);
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+        assert_eq!(
+            pending_txns.retry_queue().oldest_in_memory().map(String::as_str),
+            Some("new")
+        );
+        assert!(pending_txns.evict_oldest_low_priority().await.is_some());
+        assert!(pending_txns.evict_oldest_low_priority().await.is_none());
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::HighPriority(transaction)) if transaction == "fresh"
+        ));
+        assert!(pending_txns.is_empty());
     }
 
     #[tokio::test]
