@@ -825,22 +825,20 @@ experiments:
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
 
   # Leg 2: DDOT (`otel-agent`, the otelcol-based collector shipped in the Agent image) handles
-  # ingest, supervised by s6 alongside the Core Agent.
+  # ingest. Runs the otel-agent binary directly (not via s6) to isolate the DDOT pipeline
+  # from Core Agent / s6 / converter overhead — the same shape as SMP's own pre-convergence
+  # ddot_metrics case that passed at 2 GiB.
   - name: otlp_ingest_metrics_ddot_5mb
     extends: otlp_ingest_converged_base
     optimization_goal: memory
     target:
+      # Run the otel-agent binary directly, skipping s6 and the Core Agent.
+      # This isolates the DDOT OTLP ingest pipeline for a fair comparison.
+      command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
       environment:
-        # Starts the otel-agent sidecar (it exits immediately when this is unset).
-        DD_OTELCOLLECTOR_ENABLED: "true"
-
-        # Disable the otel-agent's config converter except cumulativetodelta, which
-        # the datadog exporter needs to convert cumulative OTLP metrics to delta before
-        # export. Everything else (prometheus self-scrape, infraattributes, zpages,
-        # ddflare, health_check, datadog extension) is production overhead that adds
-        # memory and a self-scrape feedback loop — irrelevant to the ingest benchmark.
-        # See comp/otelcol/converter/README.md in datadog-agent.
-        DD_OTELCOLLECTOR_CONVERTER_FEATURES: "cumulativetodelta"
+        # NOTE: no DD_OTELCOLLECTOR_ENABLED or DD_OTELCOLLECTOR_CONVERTER_FEATURES here —
+        # we're running the binary directly, not through s6's service manager, so these
+        # env vars have no effect. The pipeline is purely what's in otel-config.yaml.
       files:
         # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
         # All signal endpoints are set explicitly so nothing is derived from a site.

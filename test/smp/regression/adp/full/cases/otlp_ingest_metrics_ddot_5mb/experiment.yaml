@@ -2,21 +2,9 @@ optimization_goal: memory
 erratic: false
 target:
   name: datadog-agent
-  command: /bin/entrypoint.sh
+  command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
   cpu_allotment: 4
   memory_allotment: 8GiB
-  environment:
-    DD_HOSTNAME: smp-regression
-    DD_API_KEY: foo00000001
-    DD_DD_URL: http://127.0.0.1:9091
-    DD_USE_V3_API_SERIES_ENDPOINTS: "{\"http://127.0.0.1:9091\":\"true\"}"
-    DD_LOG_FORMAT_JSON: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_METRICS_LEVEL: trace
-    DD_DATA_PLANE_ENABLED: "false"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
-    DD_OTELCOLLECTOR_ENABLED: "true"
-    DD_OTELCOLLECTOR_CONVERTER_FEATURES: cumulativetodelta
   profiling_environment:
     DD_SERVICE: agent-data-plane
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap
