@@ -2,8 +2,8 @@ explain_version 1
 
 plan
   ir_version 1
-  hash sha256:d02627aad65b539e5b4b1525226270c37237de4ead25839f000d1173439d101f
-  structural_hash sha256:69a850039369f84e68c9fc1790a652802aa53f691ca954aa3bac890fa4692d6a
+  hash sha256:0803dbedd60a7d16e40f51419e4399ce92797d2b0613e7db7ae0e85390d8f8f8
+  structural_hash sha256:97dbc94c8d3a6ad90066d4599fc042fadf8152b9770da6b678be54c4d05cc0f0
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -14,10 +14,10 @@ nodes (34)
   dsd_enrich: dogstatsd_mapper [synchronous, state none] native dsd_enrich
     param cache_size = {"config":"dogstatsd.mapper.cache_size","resolved":1000}
     param profiles = {"config":"dogstatsd.mapper.profiles","resolved":[{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]}
-    param string_interner_bytes = {"config":"dogstatsd.mapper.string_interner_bytes","resolved":65536}
+    param string_interner_bytes = {"config":"dogstatsd.mapper.string_interner_size_bytes","resolved":65536}
     binding profiles <- dogstatsd.mapper.profiles = [{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]
     binding cache_size <- dogstatsd.mapper.cache_size = 1000
-    binding string_interner_bytes <- dogstatsd.mapper.string_interner_bytes = 65536
+    binding string_interner_bytes <- dogstatsd.mapper.string_interner_size_bytes = 65536
     in in <- dsd_in.metrics, accepts every kind (mixed timestamps)
     out out -> dsd_prefix_filter.in, carries counter, gauge, set, histogram, distribution (mixed timestamps)
   dsd_prefix_filter: namespace_prefix [synchronous, state none] native dsd_prefix_filter
@@ -38,19 +38,19 @@ nodes (34)
     loss policy
     in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
   dsd_no_agg_split: timestamp_split [synchronous, state none] native dsd_no_agg_split
-    param window = {"config":"dogstatsd.aggregation.window_duration","resolved":"10s"}
-    binding window <- dogstatsd.aggregation.window_duration = "10s"
+    param window = {"config":"dogstatsd.aggregation.window_duration_seconds","resolved":"10s"}
+    binding window <- dogstatsd.aggregation.window_duration_seconds = "10s"
     in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
     out default -> dsd_tag_filterlist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
     out passthrough -> dsd_post_agg_filter_in.1, carries rate, gauge, set, histogram, distribution (timestamped)
   dsd_tag_filterlist: tag_projection [synchronous, state none] native dsd_tag_filterlist
     loss policy
-    param cache_capacity = {"config":"dogstatsd.aggregation.tag_filter_cache_capacity","resolved":100000}
+    param cache_capacity = {"config":"dogstatsd.aggregation.aggregator_tag_filter_cache_capacity","resolved":100000}
     param rules = {"config":"dogstatsd.tag_filterlist","resolved":[{"action":"exclude","metric_name":"tenant.checkout.latency","tags":["user_id"]}]}
     param value_rules = {"config":"dogstatsd.tag_value_allowlist","resolved":[{"metric_prefix":"tenant.checkout.","on_miss":"replace","replacement":"other","tag_name":"env","values":["prod","staging"]}]}
     binding rules <- dogstatsd.tag_filterlist = [{"action":"exclude","metric_name":"tenant.checkout.latency","tags":["user_id"]}]
     binding value_rules <- dogstatsd.tag_value_allowlist = [{"metric_prefix":"tenant.checkout.","on_miss":"replace","replacement":"other","tag_name":"env","values":["prod","staging"]}]
-    binding cache_capacity <- dogstatsd.aggregation.tag_filter_cache_capacity = 100000
+    binding cache_capacity <- dogstatsd.aggregation.aggregator_tag_filter_cache_capacity = 100000
     in in <- dsd_no_agg_split.default, accepts every kind (mixed timestamps)
     out out -> dsd_agg.in, carries counter, gauge, set, histogram, distribution (untimestamped)
   dsd_agg: aggregate [opaque_host, state keyed] native dsd_agg
@@ -58,16 +58,16 @@ nodes (34)
     param context_limit = {"config":"dogstatsd.aggregation.context_limit","resolved":1000000}
     param copy_to_distribution = {"config":"metrics_encoding.histogram.copy_to_distribution","resolved":false}
     param copy_to_distribution_prefix = {"config":"metrics_encoding.histogram.copy_to_distribution_prefix","resolved":""}
-    param counter_expiry = {"config":"dogstatsd.aggregation.counter_expiry","resolved":"5m"}
+    param counter_expiry = {"config":"dogstatsd.aggregation.counter_expiry_seconds","resolved":"5m"}
     param flush_interval = {"config":"dogstatsd.aggregation.flush_interval","resolved":"15s"}
     param flush_open_windows = {"config":"dogstatsd.aggregation.flush_open_windows","resolved":false}
     param histogram_aggregates = {"config":"metrics_encoding.histogram.aggregates","resolved":["max","median","avg","count"]}
     param histogram_percentiles = {"config":"metrics_encoding.histogram.percentiles","resolved":[95]}
-    param window = {"config":"dogstatsd.aggregation.window_duration","resolved":"10s"}
-    binding window <- dogstatsd.aggregation.window_duration = "10s"
+    param window = {"config":"dogstatsd.aggregation.window_duration_seconds","resolved":"10s"}
+    binding window <- dogstatsd.aggregation.window_duration_seconds = "10s"
     binding flush_interval <- dogstatsd.aggregation.flush_interval = "15s"
     binding context_limit <- dogstatsd.aggregation.context_limit = 1000000
-    binding counter_expiry <- dogstatsd.aggregation.counter_expiry = "5m"
+    binding counter_expiry <- dogstatsd.aggregation.counter_expiry_seconds = "5m"
     binding flush_open_windows <- dogstatsd.aggregation.flush_open_windows = false
     binding histogram_aggregates <- metrics_encoding.histogram.aggregates = ["max","median","avg","count"]
     binding histogram_percentiles <- metrics_encoding.histogram.percentiles = [95]
@@ -138,9 +138,9 @@ nodes (34)
     param output = "dd_metrics_encode"
     in in <- metrics_policy.0, accepts every kind (mixed timestamps)
   metrics_routing_filter_0: split [synchronous, state none] native metrics_routing_filter_0
-    param predicate = {"any":[{"intake_name":{"matches":{"prefix":false,"values":{"config":"endpoint_routing.group.a1b2c3d4.names","resolved":["checkout.requests"]}}}},{"intake_name":{"matches":{"prefix":true,"values":{"config":"endpoint_routing.group.a1b2c3d4.prefixes","resolved":["checkout."]}}}}]}
-    binding predicate.any[0].intake_name.values <- endpoint_routing.group.a1b2c3d4.names = ["checkout.requests"]
-    binding predicate.any[1].intake_name.values <- endpoint_routing.group.a1b2c3d4.prefixes = ["checkout."]
+    param predicate = {"any":[{"intake_name":{"matches":{"prefix":false,"values":{"config":"metrics_endpoint_routing.group.0123456789abcdef.names","resolved":["checkout.requests"]}}}},{"intake_name":{"matches":{"prefix":true,"values":{"config":"metrics_endpoint_routing.group.0123456789abcdef.prefixes","resolved":["checkout."]}}}}]}
+    binding predicate.any[0].intake_name.values <- metrics_endpoint_routing.group.0123456789abcdef.names = ["checkout.requests"]
+    binding predicate.any[1].intake_name.values <- metrics_endpoint_routing.group.0123456789abcdef.prefixes = ["checkout."]
     in in <- metrics_policy.1, accepts every kind (mixed timestamps)
     out true -> metrics_routing_filter_0_true.in, carries every kind (mixed timestamps)
     out false -> metrics_routing_filter_0_false.in, carries every kind (mixed timestamps)
@@ -151,9 +151,9 @@ nodes (34)
     loss policy
     in in <- metrics_routing_filter_0.false, accepts every kind (mixed timestamps)
   metrics_routing_filter_1: split [synchronous, state none] native metrics_routing_filter_1
-    param predicate = {"any":[{"intake_name":{"matches":{"prefix":false,"values":{"config":"endpoint_routing.group.e5f6a7b8.names","resolved":[]}}}},{"intake_name":{"matches":{"prefix":true,"values":{"config":"endpoint_routing.group.e5f6a7b8.prefixes","resolved":["catalog."]}}}}]}
-    binding predicate.any[0].intake_name.values <- endpoint_routing.group.e5f6a7b8.names = []
-    binding predicate.any[1].intake_name.values <- endpoint_routing.group.e5f6a7b8.prefixes = ["catalog."]
+    param predicate = {"any":[{"intake_name":{"matches":{"prefix":false,"values":{"config":"metrics_endpoint_routing.group.fedcba9876543210.names","resolved":[]}}}},{"intake_name":{"matches":{"prefix":true,"values":{"config":"metrics_endpoint_routing.group.fedcba9876543210.prefixes","resolved":["catalog."]}}}}]}
+    binding predicate.any[0].intake_name.values <- metrics_endpoint_routing.group.fedcba9876543210.names = []
+    binding predicate.any[1].intake_name.values <- metrics_endpoint_routing.group.fedcba9876543210.prefixes = ["catalog."]
     in in <- metrics_policy.2, accepts every kind (mixed timestamps)
     out true -> metrics_routing_filter_1_true.in, carries every kind (mixed timestamps)
     out false -> metrics_routing_filter_1_false.in, carries every kind (mixed timestamps)
@@ -179,8 +179,8 @@ nodes (34)
     loss policy
     in in <- mrf_metrics_gateway.false, accepts every kind (mixed timestamps)
   af_metrics_gateway: split [synchronous, state none] native af_metrics_gateway
-    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"name":{"matches":{"prefix":false,"values":{"config":"autoscaling.failover.metrics","resolved":["requests.count"]}}}}]}
-    binding predicate.all[1].name.values <- autoscaling.failover.metrics = ["requests.count"]
+    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"name":{"matches":{"prefix":false,"values":{"config":"autoscaling_failover.metrics","resolved":["requests.count"]}}}}]}
+    binding predicate.all[1].name.values <- autoscaling_failover.metrics = ["requests.count"]
     in in <- metrics_policy.4, accepts every kind (mixed timestamps)
     out true -> af_metrics_gateway_true.in, carries counter, rate, gauge, set (mixed timestamps)
     out false -> af_metrics_gateway_false.in, carries every kind (mixed timestamps)

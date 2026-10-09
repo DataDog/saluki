@@ -5,6 +5,9 @@
 //! batched, on the `"passthrough"` output; metrics with no timestamp are forwarded unchanged on the default output
 //! to continue through tag filtering and aggregation as normal.
 //!
+//! Splitting and the rate conversion are the timestamp split kernel's (`saluki_metric_kernels::timestamp_split`); this
+//! transform batches the passthrough metrics.
+//!
 //! Only wired into the topology when the Datadog `dogstatsd_no_aggregation_pipeline` key is enabled (the default).
 
 use std::{
@@ -20,20 +23,17 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{
-        metric::{Metric, MetricValues},
-        Event, EventType,
-    },
+    data_model::event::{metric::Metric, Event, EventType},
     observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, EventsDispatcher, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::timestamp_split::{
+    has_timestamped_metrics, split_metric, TimestampSplitTelemetry as Telemetry,
+};
 use saluki_metrics::MetricsBuilder;
 use tokio::{pin, select, time::interval};
 use tracing::{debug, error, trace};
-
-mod telemetry;
-use self::telemetry::Telemetry;
 
 const PASSTHROUGH_OUTPUT: &str = "passthrough";
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
@@ -89,13 +89,12 @@ impl TransformBuilder for DogStatsDNoAggSplitConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
 
-        let passthrough_batcher = PassthroughBatcher::new(
-            self.passthrough_idle_flush_timeout,
-            self.window_duration_seconds,
-            telemetry.clone(),
-        );
+        let passthrough_batcher = PassthroughBatcher::new(self.passthrough_idle_flush_timeout, telemetry.clone());
 
-        Ok(Box::new(DogStatsDNoAggSplit { passthrough_batcher }))
+        Ok(Box::new(DogStatsDNoAggSplit {
+            passthrough_batcher,
+            window_duration_seconds: self.window_duration_seconds,
+        }))
     }
 }
 
@@ -107,66 +106,27 @@ impl MemoryBounds for DogStatsDNoAggSplitConfiguration {
     }
 }
 
-fn has_timestamped_metrics(events: &EventsBuffer) -> bool {
-    events
-        .into_iter()
-        .filter_map(|event| event.try_as_metric())
-        .any(|metric| metric.values().any_timestamped())
-}
-
-fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<Metric>) {
-    if metric.values().all_timestamped() {
-        (Some(metric), None)
-    } else if metric.values().any_timestamped() {
-        // Only _some_ of the values are timestamped, so we'll split the timestamped values into a new metric.
-        let new_metric_values = metric.values_mut().split_timestamped();
-        let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
-
-        (Some(new_metric), Some(metric))
-    } else {
-        // No timestamped values, so this metric isn't part of the no-aggregation pipeline.
-        (None, Some(metric))
-    }
-}
-
-fn counter_values_to_rate(values: MetricValues, interval_secs: NonZeroU64) -> MetricValues {
-    match values {
-        MetricValues::Counter(points) => MetricValues::rate(points, Duration::from_secs(interval_secs.get())),
-        values => values,
-    }
-}
-
 struct PassthroughBatcher {
     active_buffer: EventsBuffer,
     active_buffer_start: Instant,
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
-    bucket_width_secs: NonZeroU64,
     telemetry: Telemetry,
 }
 
 impl PassthroughBatcher {
-    fn new(idle_flush_timeout: Duration, bucket_width_secs: NonZeroU64, telemetry: Telemetry) -> Self {
+    fn new(idle_flush_timeout: Duration, telemetry: Telemetry) -> Self {
         Self {
             active_buffer: EventsBuffer::default(),
             active_buffer_start: Instant::now(),
             last_processed_at: Instant::now(),
             idle_flush_timeout,
-            bucket_width_secs,
             telemetry,
         }
     }
 
+    /// Batches a passthrough metric, as the timestamp split prepared it: timestamped counters are already rates.
     async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
-        // Convert counters to rates before we batch them up.
-        //
-        // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
-        // you say it out loud is sort of confusing and nonsensical since the whole point is that these are
-        // _pre-aggregated_ metrics but we have to match the behavior of the Datadog Agent. ¯\_(ツ)_/¯
-        let (context, values, metadata) = metric.into_parts();
-        let adjusted_values = counter_values_to_rate(values, self.bucket_width_secs);
-        let metric = Metric::from_parts(context, adjusted_values, metadata);
-
         // Try pushing the metric into our active buffer.
         //
         // If our active buffer is full, then we'll flush the buffer, grab a new one, and push the metric into it.
@@ -189,7 +149,7 @@ impl PassthroughBatcher {
             self.active_buffer_start = Instant::now();
         }
 
-        self.telemetry.increment_passthrough_metrics();
+        self.telemetry.increment_passthrough_metrics(1);
     }
 
     fn update_last_processed_at(&mut self) {
@@ -232,6 +192,7 @@ impl PassthroughBatcher {
 
 struct DogStatsDNoAggSplit {
     passthrough_batcher: PassthroughBatcher,
+    window_duration_seconds: NonZeroU64,
 }
 
 #[async_trait]
@@ -270,7 +231,8 @@ impl Transform for DogStatsDNoAggSplit {
 
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
-                                let (maybe_timestamped, maybe_remainder) = try_split_timestamped_values(metric);
+                                let (maybe_timestamped, maybe_remainder) =
+                                    split_metric(metric, self.window_duration_seconds);
 
                                 if let Some(timestamped_metric) = maybe_timestamped {
                                     self.passthrough_batcher
@@ -315,7 +277,6 @@ impl Transform for DogStatsDNoAggSplit {
 mod tests {
     use saluki_core::{
         components::ComponentContext,
-        data_model::event::metric::{context::Context, ScalarPoints},
         topology::{interconnect::Dispatcher, OutputName},
     };
     use tokio::sync::mpsc;
@@ -354,18 +315,25 @@ mod tests {
     const BUCKET_WIDTH_SECS: NonZeroU64 = NonZeroU64::new(10).expect("not zero");
     const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS.get());
 
+    // The splitting itself, and the conversion of timestamped counters to rates, are tested with the timestamp split
+    // kernel in `saluki_metric_kernels::timestamp_split`.
+
     #[tokio::test]
-    async fn preaggregated_counters_to_rate() {
+    async fn preaggregated_counters_are_batched_as_rates() {
         let counter_value = 42.0;
         let timestamp = 123456;
 
         // Create a basic passthrough batcher and forwarder.
-        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), BUCKET_WIDTH_SECS, Telemetry::noop());
+        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), Telemetry::noop());
         let (dispatcher, mut dispatcher_receiver) = build_passthrough_dispatcher();
 
-        // Create a simple pre-aggregated counter, and batch it.
+        // Split a simple pre-aggregated counter, as the run loop does, and batch its passthrough half.
         let input_metric = Metric::counter("metric1", (timestamp, counter_value));
-        batcher.push_metric(input_metric.clone(), &dispatcher).await;
+        let (passthrough, remainder) = split_metric(input_metric, BUCKET_WIDTH_SECS);
+        assert_eq!(remainder, None);
+        batcher
+            .push_metric(passthrough.expect("a timestamped counter passes through"), &dispatcher)
+            .await;
 
         // Flush the batcher, and observe that we've emitted the expected counter and that it has the right
         // value, but specifically that it's a rate with an interval that matches our configured bucket width:
@@ -377,53 +345,5 @@ mod tests {
             Metric::rate("metric1", (timestamp, counter_value), BUCKET_WIDTH),
             flushed_metrics.remove(0)
         );
-    }
-
-    #[test]
-    fn has_timestamped_metrics_detects_any_timestamped_value() {
-        let mut buffer = EventsBuffer::default();
-        assert!(!has_timestamped_metrics(&buffer));
-
-        assert!(buffer.try_push(Event::Metric(Metric::gauge("metric1", 1.0))).is_none());
-        assert!(!has_timestamped_metrics(&buffer));
-
-        // A metric where only _some_ values are timestamped still has to take the splitting path.
-        let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(123), 3.0)]);
-        let mixed_metric = Metric::counter(Context::from_static_name("metric2"), mixed_values);
-        assert!(buffer.try_push(Event::Metric(mixed_metric)).is_none());
-        assert!(has_timestamped_metrics(&buffer));
-    }
-
-    #[test]
-    fn split_all_timestamped_values_go_to_passthrough() {
-        let metric = Metric::gauge("metric1", (123, 1.0));
-        let (timestamped, remainder) = try_split_timestamped_values(metric.clone());
-        assert_eq!(timestamped, Some(metric));
-        assert_eq!(remainder, None);
-    }
-
-    #[test]
-    fn split_non_timestamped_values_go_to_remainder() {
-        let metric = Metric::gauge("metric1", 1.0);
-        let (timestamped, remainder) = try_split_timestamped_values(metric.clone());
-        assert_eq!(timestamped, None);
-        assert_eq!(remainder, Some(metric));
-    }
-
-    #[test]
-    fn split_mixed_timestamped_values_go_to_both_outputs() {
-        let context = Context::from_static_name("metric1");
-        let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(123), 3.0)]);
-        let metric = Metric::counter(context.clone(), mixed_values);
-
-        let (timestamped, remainder) = try_split_timestamped_values(metric);
-
-        let timestamped = timestamped.expect("mixed metric should yield a timestamped half");
-        assert_eq!(timestamped.context(), &context);
-        assert!(timestamped.values().all_timestamped());
-
-        let remainder = remainder.expect("mixed metric should yield a non-timestamped remainder");
-        assert_eq!(remainder.context(), &context);
-        assert!(!remainder.values().any_timestamped());
     }
 }

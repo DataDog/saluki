@@ -2,7 +2,6 @@
 //! (some dynamic-capable), and debug logging.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -482,79 +481,6 @@ impl Default for MetricTagValueAllowlistEntry {
             replacement: default_tag_value_replacement(),
         }
     }
-}
-
-/// Reports why a metric tag value allow-list cannot be represented.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InvalidMetricTagValueAllowlist(String);
-
-impl fmt::Display for InvalidMetricTagValueAllowlist {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for InvalidMetricTagValueAllowlist {}
-
-/// Validates metric tag value allow-list entries.
-///
-/// # Errors
-///
-/// Returns an error for empty prefixes or tag names, tag names containing `:`, overlapping distinct prefixes, or a
-/// duplicate prefix and tag pair.
-pub fn validate_metric_tag_value_allowlists(
-    entries: &[MetricTagValueAllowlistEntry],
-) -> Result<(), InvalidMetricTagValueAllowlist> {
-    for (index, entry) in entries.iter().enumerate() {
-        let rule = index + 1;
-        if entry.metric_prefix.is_empty() {
-            return Err(InvalidMetricTagValueAllowlist(format!(
-                "metric tag value allow-list rule {rule} has an empty `metric_prefix`; configure a non-empty metric-name prefix"
-            )));
-        }
-        if entry.tag_name.is_empty() {
-            return Err(InvalidMetricTagValueAllowlist(format!(
-                "metric tag value allow-list rule {rule} for prefix '{}' has an empty `tag_name`; configure a non-empty tag name",
-                entry.metric_prefix
-            )));
-        }
-        if entry.tag_name.contains(':') {
-            return Err(InvalidMetricTagValueAllowlist(format!(
-                "metric tag value allow-list tag name '{}' contains ':'; configure only the tag key, without a colon or value",
-                entry.tag_name
-            )));
-        }
-    }
-
-    let mut sorted_entries = entries.iter().collect::<Vec<_>>();
-    sorted_entries.sort_unstable_by(|left, right| {
-        left.metric_prefix
-            .cmp(&right.metric_prefix)
-            .then_with(|| left.tag_name.cmp(&right.tag_name))
-    });
-
-    // After sorting by prefix and then tag, duplicate prefix/tag pairs are adjacent. Any distinct prefix that extends
-    // another prefix follows the complete group for the shorter prefix, so one adjacent pair also exposes that overlap.
-    for pair in sorted_entries.windows(2) {
-        let [left, right] = pair else {
-            unreachable!("a two-entry window must contain two entries");
-        };
-        if left.metric_prefix == right.metric_prefix {
-            if left.tag_name == right.tag_name {
-                return Err(InvalidMetricTagValueAllowlist(format!(
-                    "metric prefix '{}' is configured more than once for tag '{}'; configure each prefix and tag pair only once",
-                    left.metric_prefix, left.tag_name
-                )));
-            }
-        } else if right.metric_prefix.starts_with(&left.metric_prefix) {
-            return Err(InvalidMetricTagValueAllowlist(format!(
-                "overlapping metric prefixes '{}' and '{}' are configured; configure distinct prefixes that do not overlap",
-                left.metric_prefix, right.metric_prefix
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 /// Action applied when a tag value is absent from its allow-list.

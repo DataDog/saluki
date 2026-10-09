@@ -356,16 +356,12 @@ where
                 };
                 Exec::Kernel { spec, kernel }
             }
+            // Every synchronous native operator has a kernel, so only an operator registered for tests can lack one.
             None => {
-                return Err(PrepareError::Fatal(InterpretErrorKind::Unsupported {
-                    capability: format!(
-                        "running the `{}` operator of node `{}`, which has no kernel until native kernels are \
-                         extracted,",
-                        op.name(),
-                        id
-                    ),
-                    stage: 2,
-                }))
+                return Err(internal(
+                    id,
+                    &format!("a `{}` node, a synchronous operator without a kernel", op.name()),
+                ))
             }
         },
     };

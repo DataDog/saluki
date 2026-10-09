@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{error::Error, fmt};
 
 /// The largest percentile a histogram statistic can compute.
 pub const MAX_PERCENTILE: u8 = 100;
@@ -53,6 +53,31 @@ impl fmt::Display for HistogramAggregate {
     }
 }
 
+/// A histogram statistic that configuration names, but that is not one aggregation can compute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InvalidHistogramStatistic {
+    /// The aggregate name is not one of `count`, `sum`, `min`, `max`, `avg`, or `median`.
+    UnknownAggregate(String),
+
+    /// The percentile is not a number.
+    InvalidPercentile(String),
+
+    /// The percentile is a number outside `0.0` to `1.0`.
+    PercentileOutOfRange(String),
+}
+
+impl fmt::Display for InvalidHistogramStatistic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownAggregate(name) => write!(f, "Unknown histogram aggregate: {}", name),
+            Self::InvalidPercentile(percentile) => write!(f, "Invalid percentile: {}", percentile),
+            Self::PercentileOutOfRange(percentile) => write!(f, "Percentile out of range: {}", percentile),
+        }
+    }
+}
+
+impl Error for InvalidHistogramStatistic {}
+
 /// The statistics aggregation computes for each histogram, and whether it also emits each histogram as a distribution.
 ///
 /// When aggregation flushes a histogram named `<name>`, it emits one series per statistic, named
@@ -79,6 +104,53 @@ pub struct HistogramParams {
 }
 
 impl HistogramParams {
+    /// Creates histogram parameters from statistics as configuration spells them.
+    ///
+    /// `aggregates` are aggregate names (see [`HistogramAggregate::from_name`]). `quantiles` are percentiles in
+    /// quantile form, between `0.0` and `1.0` inclusive, such as `0.95` for the 95 percentile; each is rounded to the
+    /// nearest whole percentile, halves rounding up, so `0.955` becomes `96`. Statistics are kept in the order given,
+    /// including repeats, which these parameters otherwise rule out: the caller decides what to do with them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the first aggregate that names no statistic, and otherwise for the first quantile that is
+    /// not a number between `0.0` and `1.0`.
+    pub fn from_names<A, Q>(
+        aggregates: &[A], quantiles: &[Q], copy_to_distribution: bool, copy_to_distribution_prefix: String,
+    ) -> Result<Self, InvalidHistogramStatistic>
+    where
+        A: AsRef<str>,
+        Q: AsRef<str>,
+    {
+        let aggregates = aggregates
+            .iter()
+            .map(|name| {
+                HistogramAggregate::from_name(name.as_ref())
+                    .ok_or_else(|| InvalidHistogramStatistic::UnknownAggregate(name.as_ref().to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut percentiles = Vec::with_capacity(quantiles.len());
+        for quantile in quantiles {
+            let quantile = quantile.as_ref();
+            let value = quantile
+                .parse::<f64>()
+                .map_err(|_| InvalidHistogramStatistic::InvalidPercentile(quantile.to_string()))?;
+            if !(0.0..=1.0).contains(&value) {
+                return Err(InvalidHistogramStatistic::PercentileOutOfRange(quantile.to_string()));
+            }
+            // The quantile is at most 1.0, so the percentile is at most 100 and fits.
+            percentiles.push((value * 100.0 + 0.5) as u8);
+        }
+
+        Ok(Self {
+            aggregates,
+            percentiles,
+            copy_to_distribution,
+            copy_to_distribution_prefix,
+        })
+    }
+
     /// Returns the suffixes of the series emitted for each histogram, in emission order.
     pub fn suffixes(&self) -> impl Iterator<Item = String> + '_ {
         self.aggregates
@@ -126,6 +198,59 @@ mod tests {
             ..params
         };
         assert_eq!(copying.series_per_histogram(), 7);
+    }
+
+    #[test]
+    fn statistics_parse_from_their_configured_names() {
+        let params = HistogramParams::from_names(
+            &["max", "median", "max"],
+            &["0.95", "0.955", "0.299", "0", "1", "0.004", "0.005"],
+            true,
+            "dist.".to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            params,
+            HistogramParams {
+                aggregates: vec![
+                    HistogramAggregate::Max,
+                    HistogramAggregate::Median,
+                    HistogramAggregate::Max
+                ],
+                percentiles: vec![95, 96, 30, 0, 100, 0, 1],
+                copy_to_distribution: true,
+                copy_to_distribution_prefix: "dist.".to_string(),
+            }
+        );
+
+        let cases: [(&[&str], &[&str], InvalidHistogramStatistic); 4] = [
+            (
+                &["max", "p99"],
+                &["abc"],
+                InvalidHistogramStatistic::UnknownAggregate("p99".to_string()),
+            ),
+            (
+                &[],
+                &["0.5", "abc"],
+                InvalidHistogramStatistic::InvalidPercentile("abc".to_string()),
+            ),
+            (
+                &[],
+                &["1.1"],
+                InvalidHistogramStatistic::PercentileOutOfRange("1.1".to_string()),
+            ),
+            (
+                &[],
+                &["NaN"],
+                InvalidHistogramStatistic::PercentileOutOfRange("NaN".to_string()),
+            ),
+        ];
+        for (aggregates, quantiles, expected) in cases {
+            assert_eq!(
+                HistogramParams::from_names(aggregates, quantiles, false, String::new()),
+                Err(expected)
+            );
+        }
     }
 
     #[test]

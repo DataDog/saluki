@@ -6,8 +6,12 @@ use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use tracing::warn;
 
 use super::{
-    endpoints::{EndpointConfiguration, EndpointRoute, ResolvedEndpoint, RoutableEndpoint, SingleDestination},
-    protocol::{UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
+    endpoints::{
+        EndpointConfiguration, EndpointRoute, MetricsRecipient, MetricsRecipientRoute, ResolvedEndpoint,
+        RoutableEndpoint, SingleDestination,
+    },
+    io::should_route_to_endpoint,
+    protocol::{MetricsEndpointRouting, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
 };
@@ -462,6 +466,43 @@ impl ForwarderConfiguration {
         );
 
         Ok(endpoints)
+    }
+
+    /// Returns the endpoints that receive metrics payloads carrying the given endpoint routing, in the order the
+    /// forwarder's I/O loop sends to them.
+    ///
+    /// This applies the same decisions the I/O loop makes for each metrics request: the alternate metrics intake
+    /// replaces the primary endpoint when one is configured, and the routing, when present, selects endpoints by their
+    /// [policy identity][Self::metrics_policy_endpoint].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an endpoint cannot be resolved, as building the forwarder does.
+    pub(crate) fn metrics_recipients(
+        &self, routing: Option<&MetricsEndpointRouting>,
+    ) -> Result<Vec<MetricsRecipient>, GenericError> {
+        let endpoints = self.build_routable_endpoints()?;
+        let has_metrics_primary = endpoints
+            .iter()
+            .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
+        Ok(endpoints
+            .iter()
+            .filter(|endpoint| should_route_to_endpoint(true, has_metrics_primary, endpoint.route()))
+            .filter(|endpoint| {
+                routing.is_none_or(|routing| {
+                    routing.should_route_to(self.metrics_policy_endpoint(endpoint.route(), endpoint.endpoint()))
+                })
+            })
+            .map(|endpoint| MetricsRecipient {
+                route: match endpoint.route() {
+                    EndpointRoute::Primary => MetricsRecipientRoute::Primary,
+                    EndpointRoute::MetricsPrimary => MetricsRecipientRoute::MetricsOverride,
+                    EndpointRoute::Additional => MetricsRecipientRoute::Additional,
+                },
+                configured_endpoint: endpoint.endpoint().configured_endpoint().to_string(),
+                api_key_index: endpoint.endpoint().api_key_index(),
+            })
+            .collect())
     }
 
     /// Returns a reference to the retry configuration.

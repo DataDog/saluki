@@ -5,10 +5,21 @@
 //! `encode_*` functions turn those types into parameter values, as lowering writes them, and the `decode_*` functions
 //! turn decoded parameter values back into them.
 
+use std::num::{NonZeroU64, NonZeroUsize};
+
 use saluki_core::accounting::MemoryBoundsBuilder;
-use saluki_metric_kernels::params::{
-    validate_tag_value_rules, MapperProfile, MatchType, MetricMapping, NamespacePrefixParams, TagFilterAction,
-    TagFilterRule, TagValueMismatch, TagValueRule,
+use saluki_metric_kernels::{
+    mapper::{result_cache_usage, validate_profiles, MetricMapper},
+    params::{
+        validate_tag_value_rules, MapperProfile, MatchType, MetricMapping, NamespacePrefixParams, TagFilterAction,
+        TagFilterRule, TagValueMismatch, TagValueRule,
+    },
+    prefix::NamespacePrefix as NamespacePrefixKernel,
+    tag_projection::{
+        ContextMemo, TagProjection as TagProjectionKernel, TagProjectionRules, TagProjectionTelemetry, ValueRules,
+        CONTEXT_CACHE_ENTRY_BYTES, NATIVE_CONTEXT_CACHE_ID,
+    },
+    timestamp_split::{TimestampSplit as TimestampSplitKernel, TimestampSplitTelemetry},
 };
 use serde_json::{json, Map, Value};
 
@@ -16,8 +27,8 @@ use super::{
     contract::{Cardinality, EffectContract, Identity, Loss, LossClass, LossDecl, PerKind},
     names,
     ports::{InputPort, KindMap, OutputPort, PortMapping, Ports, TimestampMap, IN},
-    support::{check_whole_seconds, error},
-    OperatorDef,
+    support::{check_whole_seconds, error, error_chain, unresolved},
+    KernelBuildContext, KernelBuildError, KernelSpec, OperatorDef,
 };
 use crate::{
     canonical::MAX_SAFE_INTEGER,
@@ -164,8 +175,11 @@ pub fn decode_mapper_profiles(value: &ParamValue) -> Option<Vec<MapperProfile>> 
 ///
 /// Parameters: `profiles` (bindable; see [`MAPPER_PROFILES`]), `cache_size` (the number of mapping results cached by
 /// name; `0` disables the cache), and `string_interner_bytes` (the capacity of the interner for mapped names and tags).
-/// The caches are unobservable. A metric that no mapping matches passes unchanged. Validating patterns, including
-/// compiling regular expressions, belongs to the kernel.
+/// The caches are unobservable. A metric that no mapping matches passes unchanged. Known profiles are validated as the
+/// kernel compiles them, patterns included (see [`saluki_metric_kernels::mapper`]).
+///
+/// Its kernel is [`MetricMapper`], which maps each batch in place and names its caches after the component it is
+/// built for.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DogstatsdMapper;
 
@@ -182,6 +196,16 @@ impl OperatorDef for DogstatsdMapper {
         MAPPER_PARAMS
     }
 
+    fn check_params(&self, params: &DecodedParams) -> Vec<ParamError> {
+        let Some(profiles) = params.get("profiles").and_then(decode_mapper_profiles) else {
+            return Vec::new();
+        };
+        match validate_profiles(&profiles) {
+            Ok(()) => Vec::new(),
+            Err(problem) => vec![error("profiles", error_chain(&problem))],
+        }
+    }
+
     fn ports(&self, _params: &DecodedParams) -> Ports {
         Ports::single(PortType::ANY, PortMapping::IDENTITY)
     }
@@ -196,12 +220,33 @@ impl OperatorDef for DogstatsdMapper {
     }
 
     fn specify_bounds(&self, params: &DecodedParams, builder: &mut MemoryBoundsBuilder) {
-        // The interner's storage is allocated up front. The result cache's entries are sized by the kernel.
+        // The interner's storage is allocated up front, as is the result cache's when it is enabled.
+        let mut minimum = builder.minimum();
         if let Some(bytes) = params.integer("string_interner_bytes") {
-            builder
-                .minimum()
-                .with_fixed_amount("string interner", usize::try_from(bytes).unwrap_or(usize::MAX));
+            minimum.with_fixed_amount("string interner", usize::try_from(bytes).unwrap_or(usize::MAX));
         }
+        if let Some(cache_size) = params.integer("cache_size").filter(|size| *size > 0) {
+            minimum.with_expr(result_cache_usage(usize::try_from(cache_size).unwrap_or(usize::MAX)));
+        }
+    }
+
+    fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
+        let profiles = params.get("profiles").and_then(decode_mapper_profiles);
+        let cache_size = params.integer("cache_size").and_then(|size| usize::try_from(size).ok());
+        let interner_bytes = params
+            .integer("string_interner_bytes")
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .and_then(NonZeroUsize::new);
+        Some(KernelSpec::new(move |context| {
+            let profiles = profiles.as_deref().ok_or_else(|| unresolved("profiles"))?;
+            let cache_size = cache_size.ok_or_else(|| unresolved("cache_size"))?;
+            let interner_bytes = interner_bytes.ok_or_else(|| unresolved("string_interner_bytes"))?;
+            let mapper = MetricMapper::new(context.component().component_id(), profiles, cache_size, interner_bytes)
+                .map_err(|problem| KernelBuildError {
+                    message: error_chain(&problem),
+                })?;
+            Ok(Box::new(mapper))
+        }))
     }
 }
 
@@ -225,6 +270,8 @@ pub fn namespace_prefix_params(params: &DecodedParams) -> Option<NamespacePrefix
 /// Parameters: `namespace` (bindable; empty disables prefixing, and a `.` is added if it does not end with one) and
 /// `exclusions` (bindable; raw name prefixes, compared before prefixing, that are left as they are). Two names can map
 /// to one: an excluded name can equal another name's prefixed form.
+///
+/// Its kernel is [`NamespacePrefixKernel`], which prefixes each batch in place.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NamespacePrefix;
 
@@ -253,6 +300,18 @@ impl OperatorDef for NamespacePrefix {
             ..EffectContract::passthrough()
         }
     }
+
+    fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
+        let namespace = params.str("namespace").map(str::to_string);
+        let exclusions = params.list("exclusions").and_then(strings);
+        Some(KernelSpec::new(move |_context| {
+            let params = NamespacePrefixParams {
+                namespace: namespace.clone().ok_or_else(|| unresolved("namespace"))?,
+                exclusions: exclusions.clone().ok_or_else(|| unresolved("exclusions"))?,
+            };
+            Ok(Box::new(NamespacePrefixKernel::new(&params)))
+        }))
+    }
 }
 
 /// The output port of a `timestamp_split` for untimestamped points.
@@ -274,6 +333,9 @@ const RATE: KindSet = KindSet::of(&[Kind::Rate]);
 /// Untimestamped points leave on `default` and timestamped points on `passthrough`, so the ports are point-disjoint,
 /// and a metric with both kinds of point becomes two records. On `passthrough`, counters become rates over `window`;
 /// existing rates keep their own interval.
+///
+/// Its kernel is [`TimestampSplitKernel`], which sends a batch without timestamped points to `default` whole, and
+/// reports the native passthrough telemetry under the component it is built for.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TimestampSplit;
 
@@ -328,6 +390,18 @@ impl OperatorDef for TimestampSplit {
             cardinality: Cardinality::Expand { max: Some(2) },
             ..EffectContract::passthrough()
         }
+    }
+
+    fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
+        // `check_params` has made a known window a whole, positive number of seconds.
+        let window = params
+            .duration("window")
+            .and_then(|window| NonZeroU64::new(window.as_secs()));
+        Some(KernelSpec::new(move |context| {
+            let window = window.ok_or_else(|| unresolved("window"))?;
+            let telemetry = TimestampSplitTelemetry::for_kernel(context.component());
+            Ok(Box::new(TimestampSplitKernel::new(window, telemetry)))
+        }))
     }
 }
 
@@ -456,6 +530,11 @@ const PROJECTED: KindSet = KindSet::of(&[Kind::Counter, Kind::Distribution]);
 ///
 /// Only counters and distributions are rewritten; every other kind passes unchanged, even when a rule names it. Rules
 /// apply to tags and origin tags alike.
+///
+/// Its kernel is [`TagProjectionKernel`], with a context memo of `cache_capacity` entries and the native tag filterlist
+/// telemetry, reported under the component it is built for. The memo of a reserved node, which stands for the native
+/// component, reports under the native memo's identifier, `tag_filterlist/context_cache`; that of a policy node under
+/// `<component>/tag_filterlist/context_cache`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TagProjection;
 
@@ -491,7 +570,7 @@ impl OperatorDef for TagProjection {
         if errors.is_empty() {
             if let Some(rules) = params.get("value_rules").and_then(decode_tag_value_rules) {
                 if let Err(invalid) = validate_tag_value_rules(&rules) {
-                    errors.push(error("value_rules", invalid.message()));
+                    errors.push(error("value_rules", invalid.to_string()));
                 }
             }
         }
@@ -523,7 +602,40 @@ impl OperatorDef for TagProjection {
             let capacity = usize::try_from(capacity).unwrap_or(usize::MAX);
             builder
                 .firm()
-                .with_fixed_amount("context cache", capacity.saturating_mul(64));
+                .with_fixed_amount("context cache", capacity.saturating_mul(CONTEXT_CACHE_ENTRY_BYTES));
         }
+    }
+
+    fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
+        let rules = params.get("rules").and_then(decode_tag_filter_rules);
+        let value_rules = params.get("value_rules").and_then(decode_tag_value_rules);
+        let capacity = params
+            .integer("cache_capacity")
+            .and_then(|capacity| usize::try_from(capacity).ok());
+        Some(KernelSpec::new(move |context| {
+            let rules = rules.as_deref().ok_or_else(|| unresolved("rules"))?;
+            let value_rules = value_rules.as_deref().ok_or_else(|| unresolved("value_rules"))?;
+            let capacity = capacity.ok_or_else(|| unresolved("cache_capacity"))?;
+            let value_rules = ValueRules::new(value_rules).map_err(|problem| KernelBuildError {
+                message: problem.to_string(),
+            })?;
+            Ok(Box::new(TagProjectionKernel::new(
+                TagProjectionRules::new(rules, value_rules),
+                Some(ContextMemo::new(&tag_projection_memo_id(context), capacity)),
+                TagProjectionTelemetry::for_kernel(context.component()),
+            )))
+        }))
+    }
+}
+
+/// Returns the identifier the context memo of a `tag_projection` kernel reports under.
+///
+/// A reserved node stands for the native component, so its memo keeps the native memo's identifier, which is not
+/// scoped to a component. A node in the policy namespace has its own, named after the component it is built for.
+fn tag_projection_memo_id(context: &KernelBuildContext) -> String {
+    if context.node().is_reserved() {
+        NATIVE_CONTEXT_CACHE_ID.to_string()
+    } else {
+        format!("{}/tag_filterlist/context_cache", context.component().component_id())
     }
 }

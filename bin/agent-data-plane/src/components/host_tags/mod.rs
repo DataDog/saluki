@@ -15,12 +15,17 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::host_enrichment::apply_tags;
 use stringtheory::MetaString;
 
 /// Host Tags synchronous transform.
 ///
 /// Temporarily adds host tags to metrics to compensate for backend delays when a new host comes online,
 /// preventing gaps in queryability until the backend starts adding these tags automatically.
+///
+/// Tags are added by the host tags kernel (`saluki_metric_kernels::host_enrichment`). The deadline stays the native
+/// one: `expected_tags_duration` after the transform is built, on a monotonic clock, decided when each buffer is
+/// processed.
 pub struct HostTagsConfiguration {
     client_config: RemoteAgentClientConfiguration,
     expected_tags_duration: Duration,
@@ -46,6 +51,27 @@ impl HostTagsConfiguration {
     }
 }
 
+/// Fetches the host's tags from the Core Agent over the given IPC client configuration.
+///
+/// Only the `system` tags are kept: the `google_cloud_platform` tags are not relevant to metrics.
+///
+/// # Errors
+///
+/// Returns an error if the Core Agent cannot be reached or does not answer the request.
+pub(crate) async fn fetch_host_tags(
+    client_config: &RemoteAgentClientConfiguration,
+) -> Result<SharedTagSet, GenericError> {
+    let client = RemoteAgentClient::connect(client_config).await?;
+    let host_tags_reply = client.get_host_tags().await?.into_inner();
+    Ok(host_tags_reply
+        .system
+        .into_iter()
+        .map(|s| Arc::from(s.as_str()))
+        .map(MetaString::from)
+        .map(Tag::from)
+        .collect::<SharedTagSet>())
+}
+
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
@@ -53,17 +79,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         // Agent; at the default of 0 the tags are discarded immediately. Fetching always would block `build()`
         // on the Core Agent's slow `GetHostTags` RPC, delaying DogStatsD draining and starving origin detection.
         let host_tags = if self.enabled() {
-            // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
-            let client = RemoteAgentClient::connect(&self.client_config).await?;
-            let host_tags_reply = client.get_host_tags().await?.into_inner();
-            let host_tags = host_tags_reply
-                .system
-                .into_iter()
-                .map(|s| Arc::from(s.as_str()))
-                .map(MetaString::from)
-                .map(Tag::from)
-                .collect::<SharedTagSet>();
-            Some(host_tags)
+            Some(fetch_host_tags(&self.client_config).await?)
         } else {
             None
         };
@@ -97,7 +113,7 @@ impl HostTagsEnrichment {
             None => return,
         };
 
-        metric.context_mut().mutate_tags(|tags| tags.merge_shared(host_tags));
+        apply_tags(host_tags, metric);
     }
 }
 
@@ -121,9 +137,50 @@ impl SynchronousTransform for HostTagsEnrichment {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use saluki_core::data_model::event::metric::{context::Context, Metric};
+    use saluki_core::data_model::event::{
+        metric::{context::Context, Metric},
+        Event,
+    };
 
     use super::*;
+
+    #[test]
+    fn enrichment_stops_once_the_duration_has_elapsed() {
+        let host_tags = SharedTagSet::from_iter(vec![Tag::from("hosttag1")]);
+        let mut enrichment = HostTagsEnrichment {
+            start: Instant::now(),
+            expected_tags_duration: Duration::from_secs(3600),
+            host_tags: Some(host_tags.clone()),
+        };
+        let buffer = || {
+            let mut buffer = EventsBuffer::default();
+            let metric = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
+            assert!(buffer.try_push(Event::Metric(metric)).is_none());
+            buffer
+        };
+        let tag_count = |buffer: EventsBuffer| {
+            buffer
+                .into_iter()
+                .filter_map(|event| event.try_into_metric())
+                .map(|metric| metric.context().tags().len())
+                .collect::<Vec<_>>()
+        };
+
+        let mut before = buffer();
+        enrichment.transform_buffer(&mut before);
+        assert_eq!(tag_count(before), [1]);
+
+        // Once the duration has elapsed, nothing is added, and the tags are let go for good.
+        enrichment.expected_tags_duration = Duration::ZERO;
+        let mut after = buffer();
+        enrichment.transform_buffer(&mut after);
+        assert_eq!(tag_count(after), [0]);
+        assert!(enrichment.host_tags.is_none());
+        enrichment.expected_tags_duration = Duration::from_secs(3600);
+        let mut later = buffer();
+        enrichment.transform_buffer(&mut later);
+        assert_eq!(tag_count(later), [0]);
+    }
 
     #[test]
     fn basic() {

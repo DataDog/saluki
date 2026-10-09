@@ -11,7 +11,7 @@
          ]}
        ]},
        "cache_size": {"config": "dogstatsd.mapper.cache_size", "resolved": 1000},
-       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_bytes", "resolved": 65536}},
+       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes", "resolved": 65536}},
      "provenance": {"native": "dsd_enrich"}},
     {"id": "dsd_prefix_filter", "op": "namespace_prefix", "params": {
        "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace", "resolved": "tenant"},
@@ -24,7 +24,7 @@
      "provenance": {"native": "dsd_prefix_filter"}},
     {"id": "dsd_prefix_filter_blocklist_true", "op": "drop", "provenance": {"native": "dsd_prefix_filter"}},
     {"id": "dsd_no_agg_split", "op": "timestamp_split", "params": {
-       "window": {"config": "dogstatsd.aggregation.window_duration", "resolved": "10s"}},
+       "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"}},
      "provenance": {"native": "dsd_no_agg_split"}},
     {"id": "dsd_tag_filterlist", "op": "tag_projection", "params": {
        "rules": {"config": "dogstatsd.tag_filterlist", "resolved": [
@@ -34,13 +34,13 @@
          {"metric_prefix": "tenant.checkout.", "tag_name": "env", "values": ["prod", "staging"],
           "on_miss": "replace", "replacement": "other"}
        ]},
-       "cache_capacity": {"config": "dogstatsd.aggregation.tag_filter_cache_capacity", "resolved": 100000}},
+       "cache_capacity": {"config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity", "resolved": 100000}},
      "provenance": {"native": "dsd_tag_filterlist"}},
     {"id": "dsd_agg", "op": "aggregate", "params": {
-       "window": {"config": "dogstatsd.aggregation.window_duration", "resolved": "10s"},
+       "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"},
        "flush_interval": {"config": "dogstatsd.aggregation.flush_interval", "resolved": "15s"},
        "context_limit": {"config": "dogstatsd.aggregation.context_limit", "resolved": 1000000},
-       "counter_expiry": {"config": "dogstatsd.aggregation.counter_expiry", "resolved": "5m"},
+       "counter_expiry": {"config": "dogstatsd.aggregation.counter_expiry_seconds", "resolved": "5m"},
        "flush_open_windows": {"config": "dogstatsd.aggregation.flush_open_windows", "resolved": false},
        "histogram_aggregates": {"config": "metrics_encoding.histogram.aggregates",
                                 "resolved": ["max", "median", "avg", "count"]},
@@ -78,10 +78,10 @@
      "provenance": {"native": "dd_metrics_encode"}},
     {"id": "metrics_routing_filter_0", "op": "split", "params": {"predicate": {"any": [
        {"intake_name": {"matches": {
-         "values": {"config": "endpoint_routing.group.a1b2c3d4.names", "resolved": ["checkout.requests"]},
+         "values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.names", "resolved": ["checkout.requests"]},
          "prefix": false}}},
        {"intake_name": {"matches": {
-         "values": {"config": "endpoint_routing.group.a1b2c3d4.prefixes", "resolved": ["checkout."]},
+         "values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes", "resolved": ["checkout."]},
          "prefix": true}}}
      ]}},
      "provenance": {"native": "metrics_routing_filter_0"}},
@@ -90,10 +90,10 @@
     {"id": "metrics_routing_filter_0_false", "op": "drop", "provenance": {"native": "metrics_routing_filter_0"}},
     {"id": "metrics_routing_filter_1", "op": "split", "params": {"predicate": {"any": [
        {"intake_name": {"matches": {
-         "values": {"config": "endpoint_routing.group.e5f6a7b8.names", "resolved": []},
+         "values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.names", "resolved": []},
          "prefix": false}}},
        {"intake_name": {"matches": {
-         "values": {"config": "endpoint_routing.group.e5f6a7b8.prefixes", "resolved": ["catalog."]},
+         "values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes", "resolved": ["catalog."]},
          "prefix": true}}}
      ]}},
      "provenance": {"native": "metrics_routing_filter_1"}},
@@ -117,7 +117,7 @@
     {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
        {"kind_in": ["counter", "rate", "gauge", "set"]},
        {"name": {"matches": {
-         "values": {"config": "autoscaling.failover.metrics", "resolved": ["requests.count"]},
+         "values": {"config": "autoscaling_failover.metrics", "resolved": ["requests.count"]},
          "prefix": false}}}
      ]}},
      "provenance": {"native": "af_metrics_gateway"}},

@@ -20,7 +20,7 @@ use tracing::debug;
 use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
-    endpoints::SingleDestination,
+    endpoints::{MetricsRecipient, SingleDestination},
     io::{LiveForwarderConfiguration, TransactionForwarder},
     protocol::{MetricsEndpointRouting, MetricsPayloadInfo},
     telemetry::ComponentTelemetry,
@@ -92,6 +92,23 @@ impl DatadogForwarderConfiguration {
             },
             secrets,
         }
+    }
+}
+
+impl DatadogForwarderConfiguration {
+    /// Returns the endpoints that receive the metrics payloads an encoder marks with the given endpoint routing, or
+    /// that every metrics payload reaches when `routing` is `None`.
+    ///
+    /// Each recipient is one endpoint I/O loop of this forwarder. The alternate metrics intake, when configured,
+    /// replaces the primary endpoint for metrics and keeps its policy identity, as the forwarder's routing does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an endpoint cannot be resolved, which also fails building the forwarder.
+    pub fn metrics_recipients(
+        &self, routing: Option<&MetricsEndpointRouting>,
+    ) -> Result<Vec<MetricsRecipient>, GenericError> {
+        self.forwarder_config.metrics_recipients(routing)
     }
 }
 
@@ -230,10 +247,14 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::SalukiConfiguration;
+    use agent_data_plane_config::{
+        shared::{AltMetricsIntake, Endpoints},
+        ConfigValue, SalukiConfiguration,
+    };
     use saluki_core::components::test_util::TestComponentSupervisor;
 
     use super::*;
+    use crate::common::datadog::endpoints::MetricsRecipientRoute;
     use crate::common::datadog::{
         api_key::ApiKeyRefresher,
         test_util::{shared_configuration, LiveConfiguration},
@@ -301,6 +322,158 @@ mod tests {
             cloned_meta.metrics_endpoint_routing.as_ref().unwrap(),
             &endpoint_routing
         ));
+    }
+
+    /// Returns the forwarder for `endpoints`, as `dd_out` is configured from them.
+    fn forwarder_for(endpoints: Endpoints) -> DatadogForwarderConfiguration {
+        let shared = SharedConfiguration {
+            endpoints,
+            ..shared_configuration()
+        };
+        DatadogForwarderConfiguration::from_configuration(
+            &shared,
+            Live::new_fixed(shared.endpoints.api_key.clone()),
+            Live::new_fixed(shared.endpoints.additional_endpoints.clone()),
+            Live::new_fixed(shared.secrets.clone()),
+        )
+    }
+
+    fn recipient(route: MetricsRecipientRoute, endpoint: &str, api_key_index: Option<usize>) -> MetricsRecipient {
+        MetricsRecipient {
+            route,
+            configured_endpoint: endpoint.to_string(),
+            api_key_index,
+        }
+    }
+
+    #[test]
+    fn metrics_recipients_follow_the_io_loops_routing() {
+        use MetricsRecipientRoute::{Additional, MetricsOverride, Primary};
+
+        const PRIMARY: &str = "https://primary.example.com";
+        const SECONDARY: &str = "https://secondary.example.com";
+        let endpoints = || Endpoints {
+            dd_url: ConfigValue::explicit(PRIMARY.to_string()),
+            // A blank key and a repeated key create no recipient, but keep their positions.
+            additional_endpoints: HashMap::from([(
+                SECONDARY.to_string(),
+                vec![
+                    "key-a".to_string(),
+                    " ".to_string(),
+                    "key-a".to_string(),
+                    "key-b".to_string(),
+                ],
+            )]),
+            ..shared_configuration().endpoints
+        };
+        let with_override = || Endpoints {
+            opw_intake: AltMetricsIntake {
+                enabled: true,
+                url: "http://opw.example.com:8080".to_string(),
+                use_v3_series: false,
+            },
+            ..endpoints()
+        };
+        let all_except = |endpoints: &[&str]| {
+            MetricsEndpointRouting::AllExcept(endpoints.iter().map(|endpoint| endpoint.to_string()).collect())
+        };
+        let only = |endpoints: &[&str]| {
+            MetricsEndpointRouting::Only(endpoints.iter().map(|endpoint| endpoint.to_string()).collect())
+        };
+        let secondary = [
+            recipient(Additional, SECONDARY, Some(0)),
+            recipient(Additional, SECONDARY, Some(3)),
+        ];
+
+        let cases: Vec<(&str, Endpoints, Option<MetricsEndpointRouting>, Vec<MetricsRecipient>)> = vec![
+            (
+                "every endpoint without routing",
+                endpoints(),
+                None,
+                [vec![recipient(Primary, PRIMARY, None)], secondary.to_vec()].concat(),
+            ),
+            (
+                "every endpoint but the selected ones",
+                endpoints(),
+                Some(all_except(&[SECONDARY])),
+                vec![recipient(Primary, PRIMARY, None)],
+            ),
+            (
+                "only the selected ones",
+                endpoints(),
+                Some(only(&[SECONDARY])),
+                secondary.to_vec(),
+            ),
+            (
+                "no endpoint",
+                endpoints(),
+                Some(only(&["https://unknown.example.com"])),
+                vec![],
+            ),
+            (
+                "the metrics override in place of the primary endpoint",
+                with_override(),
+                None,
+                [
+                    vec![recipient(MetricsOverride, "http://opw.example.com:8080", None)],
+                    secondary.to_vec(),
+                ]
+                .concat(),
+            ),
+            (
+                "the metrics override under the primary endpoint's identity",
+                with_override(),
+                Some(only(&[PRIMARY])),
+                vec![recipient(MetricsOverride, "http://opw.example.com:8080", None)],
+            ),
+            (
+                "an additional endpoint repeating the primary one is a separate recipient",
+                Endpoints {
+                    additional_endpoints: HashMap::from([(PRIMARY.to_string(), vec!["key-a".to_string()])]),
+                    ..endpoints()
+                },
+                Some(only(&[PRIMARY])),
+                vec![
+                    recipient(Primary, PRIMARY, None),
+                    recipient(Additional, PRIMARY, Some(0)),
+                ],
+            ),
+        ];
+
+        for (name, endpoints, routing, expected) in cases {
+            let recipients = forwarder_for(endpoints)
+                .metrics_recipients(routing.as_ref())
+                .expect("endpoints resolve");
+            assert_eq!(recipients, expected, "{}", name);
+        }
+    }
+
+    #[test]
+    fn metrics_recipients_of_an_endpoint_override_are_its_destination() {
+        let config = DatadogForwarderConfiguration::for_endpoint_override(
+            &shared_configuration(),
+            "https://app.mrf.example.com".to_string(),
+            "mrf-api-key".to_string(),
+            Live::new_fixed(Some("mrf-api-key".to_string())),
+            Live::new_fixed(Default::default()),
+        );
+        assert_eq!(
+            config.metrics_recipients(None).expect("the destination resolves"),
+            vec![recipient(
+                MetricsRecipientRoute::Primary,
+                "https://app.mrf.example.com",
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn metrics_recipients_fail_as_building_the_forwarder_does() {
+        let config = forwarder_for(Endpoints {
+            dd_url: ConfigValue::explicit("https://bad host".to_string()),
+            ..shared_configuration().endpoints
+        });
+        assert!(config.metrics_recipients(None).is_err());
     }
 
     #[tokio::test]

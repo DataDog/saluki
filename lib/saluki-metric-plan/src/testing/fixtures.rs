@@ -1,7 +1,7 @@
 //! Hand-written default-program fixtures and the catalog they validate against.
 
 use crate::{
-    canonical::PlanHash,
+    canonical::{PlanHash, MAX_SAFE_INTEGER},
     ir::{BindingName, InputName, OutputId, ParamSpec, ParamType, RecipientId},
     model::{Kind, KindSet, PortType, TimestampForm},
     validate::{CatalogOutput, Liveness, MemoryCatalog},
@@ -58,6 +58,9 @@ fn hash(digit: char) -> PlanHash {
 /// Returns the catalog the host would declare for the default program: its outputs, the configuration bindings that
 /// lowering uses with their types and liveness, and the `post_enrich` scope.
 ///
+/// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
+/// Endpoint routing group keys are placeholders.
+///
 /// Output fingerprints are placeholder hashes whose digits are all the same: `1` for `dsd_client_telemetry` through
 /// `6` for `af_metrics_encode`, in the order the fixtures declare the outputs.
 pub fn default_program_catalog() -> MemoryCatalog {
@@ -80,6 +83,7 @@ pub fn default_program_catalog() -> MemoryCatalog {
         ("af_metrics_encode", counters, '6', &["cluster_agent_out/primary/0"]),
     ];
 
+    // Counts are integers within the plan's integer range, as the host declares them.
     let count = |max| ParamType::Integer { min: 0, max };
     let bindings: Vec<(&str, ParamType, Liveness)> = vec![
         (
@@ -87,10 +91,17 @@ pub fn default_program_catalog() -> MemoryCatalog {
             ParamType::List(&ParamType::Record(PROFILE)),
             Liveness::Startup,
         ),
-        ("dogstatsd.mapper.cache_size", count(1 << 32), Liveness::Startup),
         (
-            "dogstatsd.mapper.string_interner_bytes",
-            ParamType::Integer { min: 1, max: 1 << 40 },
+            "dogstatsd.mapper.cache_size",
+            count(MAX_SAFE_INTEGER),
+            Liveness::Startup,
+        ),
+        (
+            "dogstatsd.mapper.string_interner_size_bytes",
+            ParamType::Integer {
+                min: 1,
+                max: MAX_SAFE_INTEGER,
+            },
             Liveness::Startup,
         ),
         (
@@ -117,7 +128,7 @@ pub fn default_program_catalog() -> MemoryCatalog {
             Liveness::Startup,
         ),
         (
-            "dogstatsd.aggregation.window_duration",
+            "dogstatsd.aggregation.window_duration_seconds",
             ParamType::Duration,
             Liveness::Startup,
         ),
@@ -126,9 +137,13 @@ pub fn default_program_catalog() -> MemoryCatalog {
             ParamType::Duration,
             Liveness::Startup,
         ),
-        ("dogstatsd.aggregation.context_limit", count(1 << 40), Liveness::Startup),
         (
-            "dogstatsd.aggregation.counter_expiry",
+            "dogstatsd.aggregation.context_limit",
+            count(MAX_SAFE_INTEGER),
+            Liveness::Startup,
+        ),
+        (
+            "dogstatsd.aggregation.counter_expiry_seconds",
             ParamType::Duration,
             Liveness::Startup,
         ),
@@ -138,8 +153,8 @@ pub fn default_program_catalog() -> MemoryCatalog {
             Liveness::Startup,
         ),
         (
-            "dogstatsd.aggregation.tag_filter_cache_capacity",
-            count(1 << 32),
+            "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
+            count(MAX_SAFE_INTEGER),
             Liveness::Startup,
         ),
         (
@@ -162,10 +177,26 @@ pub fn default_program_catalog() -> MemoryCatalog {
             ParamType::String,
             Liveness::Startup,
         ),
-        ("endpoint_routing.group.a1b2c3d4.names", STRINGS, Liveness::Startup),
-        ("endpoint_routing.group.a1b2c3d4.prefixes", STRINGS, Liveness::Startup),
-        ("endpoint_routing.group.e5f6a7b8.names", STRINGS, Liveness::Startup),
-        ("endpoint_routing.group.e5f6a7b8.prefixes", STRINGS, Liveness::Startup),
+        (
+            "metrics_endpoint_routing.group.0123456789abcdef.names",
+            STRINGS,
+            Liveness::Startup,
+        ),
+        (
+            "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
+            STRINGS,
+            Liveness::Startup,
+        ),
+        (
+            "metrics_endpoint_routing.group.fedcba9876543210.names",
+            STRINGS,
+            Liveness::Startup,
+        ),
+        (
+            "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
+            STRINGS,
+            Liveness::Startup,
+        ),
         ("multi_region_failover.enabled", ParamType::Bool, Liveness::Startup),
         (
             "multi_region_failover.metric_mirroring.enabled",
@@ -177,7 +208,7 @@ pub fn default_program_catalog() -> MemoryCatalog {
             STRINGS,
             Liveness::Live,
         ),
-        ("autoscaling.failover.metrics", STRINGS, Liveness::Startup),
+        ("autoscaling_failover.metrics", STRINGS, Liveness::Startup),
     ];
 
     let mut catalog = MemoryCatalog::new();

@@ -1,7 +1,5 @@
 //! Autoscaling failover metrics gateway transform.
 
-use std::collections::HashSet;
-
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -9,10 +7,12 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         BuildContext,
     },
-    data_model::event::{metric::MetricValues, Event, EventType},
+    data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::selection::{is_scalar_series, RawNameSet};
+use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
@@ -39,7 +39,7 @@ enum GatewayMode {
     /// Autoscaling failover is disabled or has no allowed metrics; drop all events.
     Inactive,
     /// Autoscaling failover is active; forward only matching series metrics.
-    FilteredForward { allowlist: HashSet<String> },
+    FilteredForward { allowlist: RawNameSet },
 }
 
 /// Autoscaling failover metrics gateway transform.
@@ -59,7 +59,7 @@ impl AutoscalingFailoverGateway {
             GatewayMode::Inactive
         } else {
             GatewayMode::FilteredForward {
-                allowlist: failover_config.metrics().iter().cloned().collect(),
+                allowlist: RawNameSet::new(failover_config.metrics()),
             }
         }
     }
@@ -71,14 +71,8 @@ impl AutoscalingFailoverGateway {
         let Event::Metric(metric) = event else {
             return false;
         };
-        if !matches!(
-            metric.values(),
-            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..)
-        ) {
-            return false;
-        }
 
-        allowlist.contains(metric.context().name().as_ref())
+        is_scalar_series(metric.values()) && allowlist.contains(metric.context().name())
     }
 
     async fn process_event_batch(
@@ -120,17 +114,12 @@ impl MemoryBounds for AutoscalingFailoverGatewayConfiguration {
         builder
             .minimum()
             .with_single_value::<AutoscalingFailoverGateway>("component struct")
-            .with_fixed_amount("hashset overhead", std::mem::size_of::<HashSet<String>>())
             .with_fixed_amount(
-                "allowlist strings",
+                "allowlist entries",
                 metrics
                     .iter()
-                    .map(|name| name.len() + std::mem::size_of::<String>())
+                    .map(|name| name.len() + std::mem::size_of::<MetaString>())
                     .sum::<usize>(),
-            )
-            .with_fixed_amount(
-                "hashset buckets",
-                metrics.len() * std::mem::size_of::<Option<String>>() * 2,
             );
     }
 }

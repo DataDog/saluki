@@ -51,7 +51,7 @@ mod ports;
 pub use self::ports::{union_of, InputPort, KindMap, OutputPort, PortMapping, Ports, TimestampMap, IN, OUT};
 
 mod aggregate;
-pub use self::aggregate::{histogram_params, Aggregate, HISTOGRAM_AGGREGATES};
+pub use self::aggregate::{aggregate_params, histogram_params, Aggregate, HISTOGRAM_AGGREGATES};
 
 mod dogstatsd;
 pub use self::dogstatsd::{
@@ -159,8 +159,10 @@ pub trait OperatorDef: Send + Sync {
     /// Returns how to build the operator's kernel, or `None` if it has none.
     ///
     /// The spec captures the parameters; the host supplies the rest when it builds the kernel, in a
-    /// [`KernelBuildContext`]. Sources and opaque hosts never have kernels. No native operator has one yet: kernels
-    /// are extracted from native components in a later stage.
+    /// [`KernelBuildContext`]. Sources and opaque hosts never have kernels, and the routing operators (`split`, `tee`,
+    /// `merge`, `emit`, `drop`) need none, since hosts run them themselves. Every other native operator has a kernel,
+    /// extracted from its native component. A kernel whose parameters are bound to configuration and not resolved
+    /// fails to build.
     fn kernel(&self, _params: &DecodedParams) -> Option<KernelSpec> {
         None
     }
@@ -475,9 +477,33 @@ impl Default for OperatorRegistry {
 
 /// Helpers shared by the operator definitions.
 mod support {
-    use std::time::Duration;
+    use std::{error::Error, time::Duration};
 
+    use super::KernelBuildError;
     use crate::ir::ParamError;
+
+    /// Returns an error's message followed by the messages of its sources, separated by `: `.
+    pub(super) fn error_chain(error: &dyn Error) -> String {
+        let mut message = error.to_string();
+        let mut source = error.source();
+        while let Some(cause) = source {
+            message.push_str(": ");
+            message.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        message
+    }
+
+    /// Returns the error of a kernel built from a parameter that is bound to configuration and has no resolved value.
+    pub(super) fn unresolved(param: &str) -> KernelBuildError {
+        KernelBuildError {
+            message: format!(
+                "the `{}` parameter is bound to configuration and has no resolved value; resolve the plan's bindings \
+                 before building its kernels",
+                param
+            ),
+        }
+    }
 
     /// Returns an error at `path` with `message`.
     pub(super) fn error(path: &str, message: impl Into<String>) -> ParamError {

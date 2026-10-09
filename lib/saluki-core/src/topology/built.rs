@@ -2,7 +2,7 @@ use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{runtime::Handle, sync::mpsc};
+use tokio::{runtime::Handle, select, sync::mpsc};
 use tracing::debug;
 
 use crate::accounting::{ComponentRegistry, MemoryLimiter};
@@ -41,7 +41,10 @@ use super::component_worker::{
     ComponentWorker, DecoderRunnable, DestinationRunnable, EncoderRunnable, ForwarderRunnable, RelayRunnable,
     RunnableComponent, SourceRunnable, TransformRunnable,
 };
-use super::{graph::Graph, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId};
+use super::{
+    graph::Graph, ComponentOutputId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId,
+};
+use crate::execution::{AdmissionPoint, AdmissionPointConfig};
 use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::DataspaceRegistry;
 use crate::runtime::{self, AutoShutdown, RestartMode, RestartStrategy, Supervisor};
@@ -62,6 +65,19 @@ use crate::{
     topology::{context::TopologyContext, EventsDispatcher, PayloadsBuffer, PayloadsDispatcher},
 };
 
+/// A component output marked as an admission point, with the configuration of its point.
+#[derive(Clone, Debug)]
+pub(crate) struct AdmissionPointBinding {
+    /// The output that is the admission point.
+    pub(crate) output: ComponentOutputId,
+
+    /// The type of the component that owns the output.
+    pub(crate) component_type: ComponentType,
+
+    /// The configuration of the admission point.
+    pub(crate) config: AdmissionPointConfig,
+}
+
 /// A built topology.
 ///
 /// Built topologies represent a topology blueprint where each configured component, along with their associated
@@ -80,6 +96,7 @@ pub(crate) struct BuiltTopology {
     destinations: HashMap<ComponentContext, (Box<dyn Destination + Send>, ComponentRegistry)>,
     encoders: HashMap<ComponentContext, (Box<dyn Encoder + Send>, ComponentRegistry)>,
     forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
+    admission_points: Vec<AdmissionPointBinding>,
     component_token: ResourceGroupToken,
     interconnect_capacity: NonZeroUsize,
     worker_pool_config: WorkerPoolConfiguration,
@@ -96,8 +113,8 @@ impl BuiltTopology {
         destinations: HashMap<ComponentContext, (Box<dyn Destination + Send>, ComponentRegistry)>,
         encoders: HashMap<ComponentContext, (Box<dyn Encoder + Send>, ComponentRegistry)>,
         forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
-        component_token: ResourceGroupToken, interconnect_capacity: NonZeroUsize,
-        worker_pool_config: WorkerPoolConfiguration,
+        admission_points: Vec<AdmissionPointBinding>, component_token: ResourceGroupToken,
+        interconnect_capacity: NonZeroUsize, worker_pool_config: WorkerPoolConfiguration,
     ) -> Self {
         Self {
             name,
@@ -110,6 +127,7 @@ impl BuiltTopology {
             destinations,
             encoders,
             forwarders,
+            admission_points,
             component_token,
             interconnect_capacity,
             worker_pool_config,
@@ -168,9 +186,13 @@ impl BuiltTopology {
         );
 
         // Build our interconnects, which we'll grab from piecemeal as we build our components.
-        let mut interconnects =
-            ComponentInterconnects::from_graph(self.interconnect_capacity, &self.topology_id, &self.graph)
-                .error_context("Failed to build component interconnects.")?;
+        let mut interconnects = ComponentInterconnects::from_graph(
+            self.interconnect_capacity,
+            &self.topology_id,
+            &self.graph,
+            &self.admission_points,
+        )
+        .error_context("Failed to build component interconnects.")?;
 
         // The topology supervisor parents one dedicated supervisor per component. Shutdown signals every
         // component at once, so sources stop immediately and the downstream cascade drains in parallel
@@ -186,16 +208,21 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup = build_component_supervisor(&component_context, shutdown_timeout, || SourceRunnable {
-                component,
-                context: SourceContext::new(
-                    &topology_context,
-                    &component_context,
-                    component_registry,
-                    health_handle,
-                    dispatcher,
-                ),
-            })?;
+            let mut component_sup =
+                build_component_supervisor(&component_context, shutdown_timeout, || SourceRunnable {
+                    component,
+                    context: SourceContext::new(
+                        &topology_context,
+                        &component_context,
+                        component_registry,
+                        health_handle,
+                        dispatcher,
+                    ),
+                })?;
+            add_heartbeat_drivers(
+                &mut component_sup,
+                interconnects.take_heartbeat_drivers(&component_context),
+            );
             topology_sup.add_worker(component_sup);
         }
 
@@ -223,17 +250,22 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup = build_component_supervisor(&component_context, shutdown_timeout, || DecoderRunnable {
-                component,
-                context: DecoderContext::new(
-                    &topology_context,
-                    &component_context,
-                    component_registry,
-                    health_handle,
-                    dispatcher,
-                    consumer,
-                ),
-            })?;
+            let mut component_sup =
+                build_component_supervisor(&component_context, shutdown_timeout, || DecoderRunnable {
+                    component,
+                    context: DecoderContext::new(
+                        &topology_context,
+                        &component_context,
+                        component_registry,
+                        health_handle,
+                        dispatcher,
+                        consumer,
+                    ),
+                })?;
+            add_heartbeat_drivers(
+                &mut component_sup,
+                interconnects.take_heartbeat_drivers(&component_context),
+            );
             topology_sup.add_worker(component_sup);
         }
 
@@ -243,7 +275,7 @@ impl BuiltTopology {
             let dispatcher = interconnects.take_events_dispatcher(&component_context)?;
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
-            let component_sup =
+            let mut component_sup =
                 build_component_supervisor(&component_context, shutdown_timeout, || TransformRunnable {
                     component,
                     context: TransformContext::new(
@@ -255,6 +287,10 @@ impl BuiltTopology {
                         consumer,
                     ),
                 })?;
+            add_heartbeat_drivers(
+                &mut component_sup,
+                interconnects.take_heartbeat_drivers(&component_context),
+            );
             topology_sup.add_worker(component_sup);
         }
 
@@ -327,11 +363,13 @@ struct ComponentInterconnects {
     payloads_dispatchers: HashMap<ComponentContext, PayloadsDispatcher>,
     events_consumers: HashMap<ComponentContext, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
     payloads_consumers: HashMap<ComponentContext, (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer)>,
+    heartbeat_drivers: HashMap<ComponentContext, Vec<Arc<AdmissionPoint>>>,
 }
 
 impl ComponentInterconnects {
     fn from_graph(
         interconnect_capacity: NonZeroUsize, topology_id: &SubsystemIdentifier, graph: &Graph,
+        admission_points: &[AdmissionPointBinding],
     ) -> Result<Self, GenericError> {
         let mut interconnects = Self {
             interconnect_capacity,
@@ -340,10 +378,43 @@ impl ComponentInterconnects {
             payloads_dispatchers: HashMap::new(),
             events_consumers: HashMap::new(),
             payloads_consumers: HashMap::new(),
+            heartbeat_drivers: HashMap::new(),
         };
 
         interconnects.generate_interconnects(graph)?;
+        interconnects.set_admission_points(admission_points)?;
         Ok(interconnects)
+    }
+
+    /// Creates the admission point of every marked output and attaches it to the output's dispatcher.
+    ///
+    /// This runs after every sender is attached, since each point captures its output's senders for heartbeats.
+    fn set_admission_points(&mut self, admission_points: &[AdmissionPointBinding]) -> Result<(), GenericError> {
+        for binding in admission_points {
+            let component_context =
+                ComponentContext::new(&self.topology_id, binding.output.component_id(), binding.component_type);
+            let dispatcher = self.events_dispatchers.get_mut(&component_context).ok_or_else(|| {
+                generic_error!(
+                    "No events dispatcher found for admission point output '{}'.",
+                    binding.output
+                )
+            })?;
+
+            let point = Arc::new(AdmissionPoint::new(binding.config.clone()));
+            dispatcher
+                .set_admission_point(&binding.output.output(), Arc::clone(&point))
+                .with_error_context(|| format!("Failed to set the admission point of output '{}'.", binding.output))?;
+
+            if point.heartbeat_period().is_some() {
+                self.heartbeat_drivers.entry(component_context).or_default().push(point);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn take_heartbeat_drivers(&mut self, component_context: &ComponentContext) -> Vec<Arc<AdmissionPoint>> {
+        self.heartbeat_drivers.remove(component_context).unwrap_or_default()
     }
 
     fn take_events_dispatcher(
@@ -567,6 +638,24 @@ where
     Ok(component_sup)
 }
 
+/// Adds a heartbeat driver for each of the given admission points to a component's supervisor.
+///
+/// Each driver runs beside the component and stops when the component's supervisor shuts down, or earlier, once the
+/// component's senders are gone. Drivers are neither restarted nor significant: one stopping never stops the component.
+fn add_heartbeat_drivers(component_sup: &mut Supervisor, points: Vec<Arc<AdmissionPoint>>) {
+    for point in points {
+        component_sup.add_worker(
+            runtime::worker_with_shutdown("admission_heartbeat", move |shutdown| async move {
+                select! {
+                    _ = shutdown => {},
+                    _ = point.run_heartbeats() => {},
+                }
+            })
+            .build(),
+        );
+    }
+}
+
 fn build_health_handle(
     health_registry: &HealthRegistry, component_context: &ComponentContext,
 ) -> Result<Health, GenericError> {
@@ -614,7 +703,7 @@ mod tests {
         // Ensure we can properly build the interconnects for them, which requires adding the outputs
         // before attaching senders to them:
         let interconnect_capacity = NonZeroUsize::new(10).unwrap();
-        let _ = ComponentInterconnects::from_graph(interconnect_capacity, &topology_id, &graph)
+        let _ = ComponentInterconnects::from_graph(interconnect_capacity, &topology_id, &graph, &[])
             .expect("should build interconnects successfully");
     }
 
@@ -632,6 +721,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            Vec::new(),
             ResourceGroupToken::root(),
             NonZeroUsize::new(128).unwrap(),
             worker_pool_config,

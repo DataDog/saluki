@@ -1,31 +1,23 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::LazyLock;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use regex::Regex;
-use saluki_core::cache::{Cache, CacheBuilder};
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
         BuildContext,
     },
-    data_model::{
-        event::metric::context::{Context, ContextResolver, ContextResolverBuilder},
-        tags::{SharedTagSet, TagSet},
-    },
     topology::EventsBuffer,
 };
-use saluki_error::{generic_error, ErrorContext, GenericError};
-use stringtheory::MetaString;
+use saluki_error::{generic_error, GenericError};
+use saluki_metric_kernels::{
+    mapper::{result_cache_usage, validate_profiles, MetricMapper},
+    params::{MapperProfile, MatchType, MetricMapping},
+};
 
 const MATCH_TYPE_WILDCARD: &str = "wildcard";
 const MATCH_TYPE_REGEX: &str = "regex";
-
-static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9\-_*.]+$").expect("Invalid regex in ALLOWED_WILDCARD_MATCH_PATTERN"));
 
 /// DogStatsD mapper transform.
 pub struct DogStatsDMapperConfiguration {
@@ -80,240 +72,84 @@ impl DogStatsDMapperConfiguration {
         }
     }
 
+    /// Returns the profiles the mapper kernel is built from, converted as building the mapper converts them.
+    ///
+    /// An empty match type means wildcard. Building the mapper checks the profiles further (see
+    /// [`validate_profiles`]); this conversion only reports an unknown match type, and the problems that come before
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a match type is neither empty, `wildcard`, nor `regex`, or if a problem the kernel finds
+    /// comes before it.
+    pub fn profiles(&self) -> Result<Vec<MapperProfile>, GenericError> {
+        mapper_profiles(&self.profiles)
+    }
+
     fn build_mapper(&self, context: BuildContext) -> Result<MetricMapper, GenericError> {
-        let mut profiles = Vec::with_capacity(self.profiles.len());
-        for config_profile in &self.profiles {
-            if config_profile.name.is_empty() {
-                return Err(generic_error!("missing profile name"));
-            }
-            if config_profile.prefix.is_empty() {
-                return Err(generic_error!("missing prefix for profile: {}", config_profile.name));
-            }
+        let profiles = self.profiles()?;
+        Ok(MetricMapper::new(
+            context.component_id(),
+            &profiles,
+            self.cache_size,
+            self.context_string_interner_bytes,
+        )?)
+    }
+}
 
-            let mut profile = MappingProfile {
-                prefix: config_profile.prefix.clone(),
-                mappings: Vec::with_capacity(config_profile.mappings.len()),
+/// Converts the configured profiles into the mapper kernel's parameters.
+///
+/// An empty match type means wildcard. The kernel checks everything else: profile by profile, its name and prefix, then
+/// each mapping's name, match, and pattern, where a mapping's match type was checked first. So when a match type is
+/// invalid, the profiles before it are checked first, and their first problem is reported instead, as it was before
+/// the kernel was extracted.
+///
+/// # Errors
+///
+/// Returns an error if a match type is neither empty, `wildcard`, nor `regex`, or if a problem the kernel finds comes
+/// before it.
+fn mapper_profiles(profiles: &[DogStatsDMapperProfile]) -> Result<Vec<MapperProfile>, GenericError> {
+    let mut converted = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let mut mappings = Vec::with_capacity(profile.mappings.len());
+        for (mapping_index, mapping) in profile.mappings.iter().enumerate() {
+            let match_type = match mapping.match_type.as_str() {
+                // Default to wildcard when not set.
+                "" | MATCH_TYPE_WILDCARD => MatchType::Wildcard,
+                MATCH_TYPE_REGEX => MatchType::Regex,
+                unknown => {
+                    converted.push(MapperProfile {
+                        name: profile.name.clone(),
+                        prefix: profile.prefix.clone(),
+                        mappings,
+                    });
+                    validate_profiles(&converted)?;
+                    return Err(generic_error!(
+                        "profile: {}, mapping num {}: invalid match type `{}`, expected `wildcard` or `regex`",
+                        profile.name,
+                        mapping_index,
+                        unknown,
+                    ));
+                }
             };
-
-            for (mapping_index, mapping) in config_profile.mappings.iter().enumerate() {
-                let match_type = match mapping.match_type.as_str() {
-                    // Default to wildcard when not set.
-                    "" => MATCH_TYPE_WILDCARD,
-                    MATCH_TYPE_WILDCARD => MATCH_TYPE_WILDCARD,
-                    MATCH_TYPE_REGEX => MATCH_TYPE_REGEX,
-                    unknown => {
-                        return Err(generic_error!(
-                            "profile: {}, mapping num {}: invalid match type `{}`, expected `wildcard` or `regex`",
-                            config_profile.name,
-                            mapping_index,
-                            unknown,
-                        ))
-                    }
-                };
-                if mapping.name.is_empty() {
-                    return Err(generic_error!(
-                        "profile: {}, mapping num {}: name is required",
-                        config_profile.name,
-                        mapping_index
-                    ));
-                }
-                if mapping.metric_match.is_empty() {
-                    return Err(generic_error!(
-                        "profile: {}, mapping num {}: match is required",
-                        config_profile.name,
-                        mapping_index
-                    ));
-                }
-                let regex = build_regex(&mapping.metric_match, match_type)?;
-                profile.mappings.push(MetricMapping {
-                    name: mapping.name.clone(),
-                    tags: mapping.tags.clone(),
-                    regex,
-                });
-            }
-            profiles.push(profile);
+            mappings.push(MetricMapping {
+                metric_match: mapping.metric_match.clone(),
+                match_type,
+                name: mapping.name.clone(),
+                tags: mapping
+                    .tags
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            });
         }
-
-        let context_resolver =
-            ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
-                .expect("resolver name is not empty")
-                .with_interner_capacity_bytes(self.context_string_interner_bytes)
-                .with_idle_context_expiration(Duration::from_secs(30))
-                .build();
-
-        let cache = match NonZeroUsize::new(self.cache_size) {
-            Some(capacity) => Some(
-                CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
-                    .with_capacity(capacity)
-                    .build(),
-            ),
-            None => None,
-        };
-
-        Ok(MetricMapper {
-            context_resolver,
-            profiles,
-            cache,
-        })
+        converted.push(MapperProfile {
+            name: profile.name.clone(),
+            prefix: profile.prefix.clone(),
+            mappings,
+        });
     }
-}
-
-fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> {
-    let mut pattern = match_re.to_owned();
-    if match_type == MATCH_TYPE_WILDCARD {
-        // Check it against the allowed wildcard pattern
-        if !ALLOWED_WILDCARD_MATCH_PATTERN.is_match(&pattern) {
-            return Err(generic_error!(
-                "invalid wildcard match pattern `{}`, it does not match allowed match regex `{}`",
-                pattern,
-                ALLOWED_WILDCARD_MATCH_PATTERN.as_str()
-            ));
-        }
-        if pattern.contains("**") {
-            return Err(generic_error!(
-                "invalid wildcard match pattern `{}`, it should not contain consecutive `*`",
-                pattern
-            ));
-        }
-        pattern = pattern.replace(".", "\\.");
-        pattern = pattern.replace("*", "([^.]*)");
-    }
-
-    let final_pattern = format!("^{}$", pattern);
-
-    Regex::new(&final_pattern).with_error_context(|| {
-        format!(
-            "Failed to compile regular expression `{}` for `{}` match type",
-            final_pattern, match_type
-        )
-    })
-}
-
-struct MappingProfile {
-    prefix: String,
-    mappings: Vec<MetricMapping>,
-}
-
-struct MetricMapping {
-    name: String,
-    tags: HashMap<String, String>,
-    regex: Regex,
-}
-
-#[derive(Clone)]
-struct CachedMapResult {
-    name: MetaString,
-    extra_tags: SharedTagSet,
-}
-
-struct MetricMapper {
-    profiles: Vec<MappingProfile>,
-    context_resolver: ContextResolver,
-    cache: Option<Cache<MetaString, Option<CachedMapResult>>>,
-}
-
-impl MetricMapper {
-    fn try_map(&mut self, context: &Context) -> Option<Context> {
-        // TODO: We should really be able to immutably borrow both the incoming tag set and the cached extra tags and
-        // chain them together for our call into `resolve_with_origin_tags`, avoiding any allocations... but we need
-        // some supporting work on the `TagSet` side to make it possible.
-
-        let metric_name = context.name();
-        let tags = context.tags();
-        let origin_tags = context.origin_tags();
-        // TODO: If host-bearing remaps show measurable allocation overhead, preserve the context's underlying host
-        // representation through the resolver instead of rematerializing it from `&str`.
-        let host = context.host();
-
-        // See if we have a cached result for this metric name.
-        if let Some(cache) = &self.cache {
-            if let Some(cached) = cache.get(metric_name) {
-                return match cached {
-                    None => None,
-                    Some(result) => {
-                        let mut merged_tags = tags.clone();
-                        merged_tags.merge_shared(&result.extra_tags);
-
-                        self.context_resolver.resolve_with_optional_host_and_origin_tags(
-                            result.name.clone(),
-                            host,
-                            merged_tags,
-                            origin_tags.clone(),
-                        )
-                    }
-                };
-            }
-        }
-
-        // Slow path: iterate profiles and run regexes.
-        let mut new_name = String::new();
-        let mut expanded_tag_value = String::new();
-
-        for profile in &self.profiles {
-            if !metric_name.starts_with(&profile.prefix) && profile.prefix != "*" {
-                continue;
-            }
-
-            for mapping in &profile.mappings {
-                if let Some(captures) = mapping.regex.captures(metric_name) {
-                    new_name.clear();
-                    captures.expand(&mapping.name, &mut new_name);
-
-                    let mut extra_tags = TagSet::with_capacity(mapping.tags.len());
-                    for (tag_key, tag_value_expr) in &mapping.tags {
-                        expanded_tag_value.clear();
-                        expanded_tag_value.push_str(tag_key);
-                        expanded_tag_value.push(':');
-                        captures.expand(tag_value_expr, &mut expanded_tag_value);
-
-                        extra_tags.insert_tag(expanded_tag_value.as_str());
-                    }
-
-                    // Freeze the tags here so they can be shared / cached.
-                    let extra_tags = extra_tags.into_shared();
-
-                    let mut merged_tags = tags.clone();
-                    merged_tags.merge_shared(&extra_tags);
-
-                    let resolved = self.context_resolver.resolve_with_optional_host_and_origin_tags(
-                        new_name.as_str(),
-                        host,
-                        merged_tags,
-                        origin_tags.clone(),
-                    )?;
-
-                    if let Some(cache) = &self.cache {
-                        cache.insert(
-                            metric_name.clone(),
-                            Some(CachedMapResult {
-                                name: resolved.name().clone(),
-                                extra_tags,
-                            }),
-                        );
-                    }
-                    return Some(resolved);
-                }
-            }
-        }
-
-        // We also cache "negative" results -- no match for this metric in the configured profiles -- to save ourselves some work.
-        if let Some(cache) = &self.cache {
-            cache.insert(metric_name.clone(), None);
-        }
-        None
-    }
-
-    #[cfg(test)]
-    fn cache_len(&self) -> Option<usize> {
-        self.cache.as_ref().map(|c| c.len())
-    }
-
-    #[cfg(test)]
-    fn cache_contains(&self, metric_name: &str) -> bool {
-        self.cache
-            .as_ref()
-            .is_some_and(|c| c.get(&MetaString::from(metric_name)).is_some())
-    }
+    Ok(converted)
 }
 
 #[async_trait]
@@ -336,24 +172,19 @@ impl MemoryBounds for DogStatsDMapperConfiguration {
 
         // Account for the per-name result cache when enabled.
         if self.cache_size > 0 {
-            min.with_array::<(MetaString, Option<CachedMapResult>)>("mapper result cache", self.cache_size);
+            min.with_expr(result_cache_usage(self.cache_size));
         }
     }
 }
 
+/// The DogStatsD mapper: maps the metrics of each buffer with the mapper kernel.
 pub struct DogStatsDMapper {
     metric_mapper: MetricMapper,
 }
 
 impl SynchronousTransform for DogStatsDMapper {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
-        for event in event_buffer {
-            if let Some(metric) = event.try_as_metric_mut() {
-                if let Some(new_context) = self.metric_mapper.try_map(metric.context()) {
-                    *metric.context_mut() = new_context;
-                }
-            }
-        }
+        self.metric_mapper.map_buffer(event_buffer);
     }
 }
 
@@ -375,10 +206,9 @@ mod tests {
         topology::EventsBuffer,
     };
     use saluki_error::GenericError;
+    use saluki_metric_kernels::mapper::MetricMapper;
 
-    use super::{
-        DogStatsDMapper, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, MetricMapper,
-    };
+    use super::{DogStatsDMapper, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping};
 
     macro_rules! metric_mapping {
         (@match_type) => {
@@ -860,6 +690,52 @@ mod tests {
                 mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration", "match_type": "invalid", "name": "test.job.duration" }] }]),
                 "invalid match type",
             ),
+            // A mapping's match type is checked before its name, and every earlier check before either.
+            (
+                "unknown match type on a mapping with an empty name",
+                mapper_profiles!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [{ "match": "test.invalid", "match_type": "invalid", "name": "" }]
+                }]),
+                "profile: test, mapping num 0: invalid match type `invalid`",
+            ),
+            (
+                "earlier mapping with an empty name before an unknown match type",
+                mapper_profiles!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.valid", "name": "" },
+                        { "match": "test.invalid", "match_type": "invalid", "name": "mapped" }
+                    ]
+                }]),
+                "profile: test, mapping num 0: name is required",
+            ),
+            (
+                "earlier profile with an empty prefix before an unknown match type",
+                mapper_profiles!([
+                    { "name": "first", "prefix": "", "mappings": [] },
+                    {
+                        "name": "second",
+                        "prefix": "test.",
+                        "mappings": [{ "match": "test.invalid", "match_type": "invalid", "name": "mapped" }]
+                    }
+                ]),
+                "missing prefix for profile: first",
+            ),
+            (
+                "unknown match type before a later invalid pattern",
+                mapper_profiles!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.invalid", "match_type": "invalid", "name": "mapped" },
+                        { "match": "test.**", "name": "mapped" }
+                    ]
+                }]),
+                "profile: test, mapping num 0: invalid match type `invalid`",
+            ),
         ];
 
         for (description, config, expected_substring) in cases {
@@ -938,127 +814,5 @@ mod tests {
         assert_eq!(mapped_a.name(), "test.job.duration");
         assert_tags(&mapped_a, &["job_name:worker"]);
         assert_tags(&mapped_b, &["job_name:worker"]);
-    }
-
-    #[tokio::test]
-    async fn cache_hit_returns_same_result_as_miss() {
-        let mut mapper = mapper_with_cache(simple_mapping_profile(), 1000).expect("should have parsed mapping config");
-        assert_eq!(mapper.cache_len(), Some(0));
-
-        let metric = counter_metric("test.job.duration.my_type.my_name", &[]);
-        let first = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(mapper.cache_len(), Some(1));
-
-        let metric = counter_metric("test.job.duration.my_type.my_name", &[]);
-        let second = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(mapper.cache_len(), Some(1));
-
-        assert_eq!(first.name(), second.name());
-        assert_eq!(first.name(), "test.job.duration");
-        assert_tags(&first, &["job_type:my_type", "job_name:my_name"]);
-        assert_tags(&second, &["job_type:my_type", "job_name:my_name"]);
-    }
-
-    #[tokio::test]
-    async fn negative_results_are_cached() {
-        let mut mapper = mapper_with_cache(simple_mapping_profile(), 1000).expect("should have parsed mapping config");
-
-        let metric = counter_metric("unrelated.metric.name", &[]);
-        assert!(mapper.try_map(metric.context()).is_none());
-        assert_eq!(mapper.cache_len(), Some(1));
-
-        let metric = counter_metric("unrelated.metric.name", &[]);
-        assert!(mapper.try_map(metric.context()).is_none());
-        assert_eq!(mapper.cache_len(), Some(1));
-    }
-
-    #[tokio::test]
-    async fn cache_disabled_when_size_is_zero() {
-        let mut mapper = mapper_with_cache(simple_mapping_profile(), 0).expect("should have parsed mapping config");
-        assert_eq!(mapper.cache_len(), None);
-
-        let metric = counter_metric("test.job.duration.my_type.my_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.duration");
-        assert_tags(&context, &["job_type:my_type", "job_name:my_name"]);
-
-        assert!(mapper
-            .try_map(counter_metric("unrelated.metric", &[]).context())
-            .is_none());
-        assert_eq!(mapper.cache_len(), None);
-    }
-
-    #[tokio::test]
-    async fn cache_evicts_older_entry_and_retains_newest_within_capacity() {
-        let mut mapper = mapper_with_cache(simple_mapping_profile(), 2).expect("should have parsed mapping config");
-
-        // Insert three distinct metric names into a capacity-2 result cache, in order a, b, then c.
-        for suffix in ["a", "b", "c"] {
-            let name = format!("test.job.duration.t.{}", suffix);
-            let metric = counter_metric(Box::leak(name.into_boxed_str()), &[]);
-            mapper.try_map(metric.context()).expect("should have remapped");
-        }
-
-        let a = mapper.cache_contains("test.job.duration.t.a");
-        let b = mapper.cache_contains("test.job.duration.t.b");
-        let c = mapper.cache_contains("test.job.duration.t.c");
-
-        // The cache must respect its configured capacity...
-        assert!(
-            mapper.cache_len().unwrap() <= 2,
-            "cache should not exceed configured capacity (got {})",
-            mapper.cache_len().unwrap()
-        );
-        // ...eviction must actually have happened (three distinct names cannot all fit in a capacity-2 cache)...
-        assert!(!(a && b && c), "at least one older entry must have been evicted");
-        // ...the most-recently-inserted name ("c") must be the entry that survives eviction...
-        assert!(c, "the most-recently-inserted metric name should survive eviction");
-        // ...and with "c" retained at capacity 2, at most one of the two older names may remain.
-        assert!(
-            !(a && b),
-            "only one older entry may coexist with the newest entry at capacity 2"
-        );
-    }
-
-    #[tokio::test]
-    async fn flood_of_identical_names_populates_single_cache_entry() {
-        // Many profiles, only the last one matches the test metric. A flood of identical
-        // names should be served from the cache after the first call.
-        let mut profiles: Vec<DogStatsDMapperProfile> = (0..50)
-            .map(|i| DogStatsDMapperProfile {
-                name: format!("noise-{i}"),
-                prefix: format!("noise{i}."),
-                mappings: vec![DogStatsDMetricMapping {
-                    metric_match: format!("noise{i}.*"),
-                    match_type: String::new(),
-                    name: "noise.mapped".to_string(),
-                    tags: HashMap::new(),
-                }],
-            })
-            .collect();
-        profiles.push(DogStatsDMapperProfile {
-            name: "real".to_string(),
-            prefix: "real.".to_string(),
-            mappings: vec![DogStatsDMetricMapping {
-                metric_match: "real.metric.*".to_string(),
-                match_type: String::new(),
-                name: "real.mapped".to_string(),
-                tags: [("x".to_string(), "$1".to_string())].into(),
-            }],
-        });
-
-        let mut mapper = mapper_with_cache(profiles, 16).expect("should have built mapper");
-
-        for _ in 0..10_000 {
-            let metric = counter_metric("real.metric.flood", &[]);
-            let context = mapper.try_map(metric.context()).expect("should have remapped");
-            assert_eq!(context.name(), "real.mapped");
-        }
-
-        assert_eq!(
-            mapper.cache_len(),
-            Some(1),
-            "flood of identical names should populate exactly one cache entry"
-        );
     }
 }

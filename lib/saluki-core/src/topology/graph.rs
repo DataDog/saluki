@@ -1,13 +1,16 @@
 #![allow(dead_code)]
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fmt,
 };
 
 use indexmap::IndexSet;
 use snafu::Snafu;
 
-use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
+use super::{
+    snapshot::{ComponentSnapshot, EdgeSnapshot, OutputSnapshot},
+    ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId,
+};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
@@ -49,7 +52,16 @@ pub enum GraphError {
         to_component_id: ComponentId,
         to_ty: DataType,
     },
-    #[snafu(display("cycle detected: {:?}", path))]
+    #[snafu(display(
+        "duplicate connection from '{}' to '{}': connect each component output to a given component at most once",
+        from,
+        to
+    ))]
+    DuplicateEdge { from: ComponentOutputId, to: ComponentId },
+    #[snafu(display(
+        "cycle detected: {}; components must be connected without cycles",
+        path.iter().map(|id| id.as_ref()).collect::<Vec<&str>>().join(" -> ")
+    ))]
     Cycle { path: Vec<ComponentId> },
     #[snafu(display("disconnected components: {:?}", component_ids))]
     DisconnectedComponents { component_ids: Vec<ComponentId> },
@@ -128,6 +140,20 @@ enum Node {
     Destination {
         input_ty: EventType,
     },
+}
+
+impl Node {
+    fn component_type(&self) -> ComponentType {
+        match self {
+            Node::Source { .. } => ComponentType::Source,
+            Node::Relay { .. } => ComponentType::Relay,
+            Node::Decoder { .. } => ComponentType::Decoder,
+            Node::Transform { .. } => ComponentType::Transform,
+            Node::Encoder { .. } => ComponentType::Encoder,
+            Node::Forwarder { .. } => ComponentType::Forwarder,
+            Node::Destination { .. } => ComponentType::Destination,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -377,11 +403,96 @@ impl Graph {
             }
         }
 
+        // A repeated edge would give the upstream output a second sender to the same component, which would then
+        // receive every item twice.
+        if self
+            .edges
+            .iter()
+            .any(|edge| edge.from == component_output_id && edge.to == component_id)
+        {
+            return Err(GraphError::DuplicateEdge {
+                from: component_output_id,
+                to: component_id,
+            });
+        }
+
         self.edges.push(Edge {
             from: component_output_id,
             to: component_id,
         });
         Ok(())
+    }
+
+    /// Returns the component type and data type of the given component output.
+    ///
+    /// # Errors
+    ///
+    /// If the component doesn't exist, or doesn't declare the given output, an error is returned.
+    pub fn get_output(&self, output_id: &ComponentOutputId) -> Result<(ComponentType, DataType), GraphError> {
+        let component_id = output_id.component_id();
+        let node = self
+            .nodes
+            .get(&component_id)
+            .ok_or_else(|| GraphError::NonexistentComponentId {
+                component_id: component_id.clone(),
+            })?;
+
+        let data_ty = match node {
+            Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
+                .iter()
+                .find(|output| output.component_output() == output_id)
+                .map(|output| output.output_ty()),
+            Node::Decoder { output_ty, .. } => output_id.is_default().then_some(DataType::Event(*output_ty)),
+            Node::Encoder { output_ty, .. } => output_id.is_default().then_some(DataType::Payload(*output_ty)),
+            Node::Destination { .. } | Node::Forwarder { .. } => None,
+        };
+
+        data_ty.map(|data_ty| (node.component_type(), data_ty)).ok_or_else(|| {
+            GraphError::NonexistentComponentOutputId {
+                component_output_id: output_id.clone(),
+            }
+        })
+    }
+
+    /// Returns a description of every component, sorted by component ID, and every edge, sorted by output and then by
+    /// downstream component.
+    pub fn snapshot(&self) -> (Vec<ComponentSnapshot>, Vec<EdgeSnapshot>) {
+        let mut components = self
+            .nodes
+            .iter()
+            .map(|(id, node)| {
+                let input = match node {
+                    Node::Source { .. } | Node::Relay { .. } => None,
+                    _ => Some(self.get_input_type(id)),
+                };
+                let outputs = match node {
+                    Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
+                        .iter()
+                        .map(|output| OutputSnapshot::new(output.component_output().clone(), output.output_ty()))
+                        .collect(),
+                    Node::Decoder { output_ty, .. } => vec![OutputSnapshot::new(
+                        ComponentOutputId::from(id.clone()),
+                        DataType::Event(*output_ty),
+                    )],
+                    Node::Encoder { output_ty, .. } => vec![OutputSnapshot::new(
+                        ComponentOutputId::from(id.clone()),
+                        DataType::Payload(*output_ty),
+                    )],
+                    Node::Destination { .. } | Node::Forwarder { .. } => Vec::new(),
+                };
+                ComponentSnapshot::new(id.clone(), node.component_type(), input, outputs)
+            })
+            .collect::<Vec<_>>();
+        components.sort_by(|a, b| a.id().cmp(b.id()));
+
+        let mut edges = self
+            .edges
+            .iter()
+            .map(|edge| EdgeSnapshot::new(edge.from.clone(), edge.to.clone()))
+            .collect::<Vec<_>>();
+        edges.sort();
+
+        (components, edges)
     }
 
     fn get_input_type(&self, id: &ComponentId) -> DataType {
@@ -476,45 +587,53 @@ impl Graph {
     }
 
     fn check_for_cycles(&self) -> Result<(), GraphError> {
-        let destinations = self.nodes.iter().filter_map(|(id, node)| match node {
-            Node::Destination { .. } => Some(id.clone()),
-            _ => None,
-        });
+        // The components each component sends to, in the order the edges were added.
+        let mut downstream: HashMap<ComponentId, Vec<&ComponentId>> = HashMap::new();
+        for edge in &self.edges {
+            downstream.entry(edge.from.component_id()).or_default().push(&edge.to);
+        }
 
-        // Run a depth-first search from each destination while keep tracking the current stack to detect cycles.
-        for d in destinations {
-            let mut traversal = VecDeque::new();
-            let mut visited = HashSet::new();
-            let mut stack = IndexSet::new();
+        // Run a depth-first search from every component that no earlier search reached, in component ID order so that
+        // the reported cycle is deterministic. A component is on the current path while it is in `path`, and finished
+        // once it is in `finished`; reaching a component that is on the current path closes a cycle.
+        let mut component_ids = self.nodes.keys().collect::<Vec<_>>();
+        component_ids.sort();
 
-            traversal.push_back(d);
-            while !traversal.is_empty() {
-                let n = traversal.back().cloned().expect("can't be empty");
-                if !visited.contains(&n) {
-                    visited.insert(n.clone());
-                    stack.insert(n.clone());
-                } else {
-                    // We came back to the node after exploring all its children: remove it from the stack and
-                    // traversal.
-                    stack.shift_remove(&n);
-                    traversal.pop_back();
-                }
-                let inputs = self.edges.iter().filter(|e| e.to == n).map(|e| &e.from);
-                for input in inputs {
-                    let input_component_id = input.component_id();
-                    if !visited.contains(&input_component_id) {
-                        traversal.push_back(input_component_id);
-                    } else if stack.contains(&input_component_id) {
-                        // We reached the node while it is on the current stack: it's a cycle.
-                        let mut path = stack
-                            .iter()
-                            .skip(1) // skip the sink
-                            .rev()
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        path.insert(0, input_component_id.clone());
+        let mut finished = HashSet::new();
+        for start in component_ids {
+            if finished.contains(start) {
+                continue;
+            }
 
-                        return Err(GraphError::Cycle { path });
+            let mut path: IndexSet<&ComponentId> = IndexSet::new();
+            let mut cursors = vec![0usize];
+            path.insert(start);
+
+            while let Some(cursor) = cursors.last_mut() {
+                let current = *path.last().expect("path and cursors have the same length");
+                let next = downstream
+                    .get(current)
+                    .and_then(|targets| targets.get(*cursor))
+                    .copied();
+                *cursor += 1;
+
+                match next {
+                    Some(next) if path.contains(next) => {
+                        let start_of_cycle = path.get_index_of(next).expect("component is on the path");
+                        let cycle = path.iter().skip(start_of_cycle).map(|id| (*id).clone()).collect();
+                        return Err(GraphError::Cycle {
+                            path: canonical_cycle(cycle),
+                        });
+                    }
+                    Some(next) if !finished.contains(next) => {
+                        path.insert(next);
+                        cursors.push(0);
+                    }
+                    Some(_) => {}
+                    None => {
+                        finished.insert(current);
+                        path.pop();
+                        cursors.pop();
                     }
                 }
             }
@@ -542,18 +661,7 @@ impl Graph {
     }
 
     fn get_component_type(&self, id: &ComponentId) -> Option<ComponentType> {
-        match self.nodes.get(id) {
-            Some(node) => match node {
-                Node::Source { .. } => Some(ComponentType::Source),
-                Node::Relay { .. } => Some(ComponentType::Relay),
-                Node::Decoder { .. } => Some(ComponentType::Decoder),
-                Node::Transform { .. } => Some(ComponentType::Transform),
-                Node::Encoder { .. } => Some(ComponentType::Encoder),
-                Node::Forwarder { .. } => Some(ComponentType::Forwarder),
-                Node::Destination { .. } => Some(ComponentType::Destination),
-            },
-            None => None,
-        }
+        self.nodes.get(id).map(Node::component_type)
     }
 
     /// Returns a mapping of component IDs to their outputs and the component IDs that are connected to them.
@@ -601,6 +709,23 @@ impl Graph {
 
         mappings
     }
+}
+
+/// Rotates a cycle so that it starts at its smallest component ID, and closes it by repeating that ID at the end.
+///
+/// `cycle` lists each component of the cycle once, in edge order.
+fn canonical_cycle(mut cycle: Vec<ComponentId>) -> Vec<ComponentId> {
+    let smallest = cycle
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.cmp(b))
+        .map(|(index, _)| index)
+        .unwrap_or_default();
+    cycle.rotate_left(smallest);
+    if let Some(first) = cycle.first().cloned() {
+        cycle.push(first);
+    }
+    cycle
 }
 
 fn try_into_component_id<I>(component_id: I) -> Result<ComponentId, GraphError>
@@ -873,9 +998,10 @@ mod tests {
             .with_edge("two", "three")
             .with_edge("three", "out");
 
+        // Cycles are reported in edge order, starting and ending at their smallest component ID.
         assert_eq!(
             Err(GraphError::Cycle {
-                path: into_component_ids(&["three", "one", "two", "three"]),
+                path: into_component_ids(&["one", "two", "three", "one"]),
             }),
             graph.validate()
         );
@@ -894,10 +1020,168 @@ mod tests {
 
         assert_eq!(
             Err(GraphError::Cycle {
-                path: into_component_ids(&["two", "three", "one", "two"]),
+                path: into_component_ids(&["one", "two", "three", "one"]),
             }),
             graph.validate()
         );
+    }
+
+    #[test]
+    fn cycles_are_detected_without_a_destination() {
+        // Paths that end in encoders and forwarders have no destination at all, which is where cycle detection used to
+        // start its searches, so a cycle on such a path went unnoticed.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_transform("first", EventType::Metric, EventType::Metric)
+            .with_transform("second", EventType::Metric, EventType::Metric)
+            .with_encoder("encode", EventType::Metric, PayloadType::Http)
+            .with_forwarder("out", PayloadType::Http)
+            .with_multi_edge(&["in", "second"], "first")
+            .with_edge("first", "second")
+            .with_edge("second", "encode")
+            .with_edge("encode", "out");
+
+        assert_eq!(
+            Err(GraphError::Cycle {
+                path: into_component_ids(&["first", "second", "first"]),
+            }),
+            graph.validate()
+        );
+    }
+
+    #[test]
+    fn cycles_are_detected_through_named_outputs_and_self_loops() {
+        // A named output feeding back into its own component is a cycle of one.
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_transform_multiple_outputs(
+                "loop",
+                EventType::Metric,
+                &[(None, EventType::Metric), (Some("again"), EventType::Metric)],
+            )
+            .with_destination("out", EventType::Metric)
+            .with_edge("in", "loop")
+            .with_edge("loop.again", "loop")
+            .with_edge("loop", "out");
+
+        assert_eq!(
+            Err(GraphError::Cycle {
+                path: into_component_ids(&["loop", "loop"]),
+            }),
+            graph.validate()
+        );
+
+        // The message lists the cycle in edge order.
+        let error = graph.validate().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cycle detected: loop -> loop; components must be connected without cycles"
+        );
+    }
+
+    #[test]
+    fn shared_downstream_components_are_not_cycles() {
+        // Two paths that reconverge, reached from several starting points, never close a cycle.
+        let mut graph = Graph::default();
+        graph
+            .with_source("a_in", EventType::Metric)
+            .with_source("b_in", EventType::Metric)
+            .with_transform("left", EventType::Metric, EventType::Metric)
+            .with_transform("right", EventType::Metric, EventType::Metric)
+            .with_transform("join", EventType::Metric, EventType::Metric)
+            .with_encoder("encode", EventType::Metric, PayloadType::Http)
+            .with_forwarder("out", PayloadType::Http)
+            .with_multi_edge(&["a_in", "b_in"], "left")
+            .with_edge("a_in", "right")
+            .with_multi_edge(&["left", "right"], "join")
+            .with_edge("join", "encode")
+            .with_edge("encode", "out");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn duplicate_edges_are_rejected() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_transform_multiple_outputs(
+                "split",
+                EventType::Metric,
+                &[(None, EventType::Metric), (Some("other"), EventType::Metric)],
+            )
+            .with_destination("out", EventType::Metric)
+            .with_edge("in", "split")
+            .with_edge("split", "out");
+
+        // Connecting the same output to the same component again is an error, and leaves the graph unchanged.
+        let result = graph.with_edge_fallible("split", "out").map(|_| ());
+        assert_eq!(
+            result,
+            Err(GraphError::DuplicateEdge {
+                from: try_into_component_output_id("split").unwrap(),
+                to: try_into_component_id("out").unwrap(),
+            })
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "duplicate connection from 'split' to 'out': connect each component output to a given component at most \
+             once"
+        );
+        assert_eq!(graph.edges.len(), 2);
+
+        // A different output of the same component may connect to the same downstream component.
+        graph.with_edge("split.other", "out");
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn outputs_report_their_component_and_data_types() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_transform_multiple_outputs(
+                "split",
+                EventType::Metric,
+                &[(None, EventType::Metric), (Some("logs"), EventType::Log)],
+            )
+            .with_relay("relay", PayloadType::Raw)
+            .with_decoder("decode", PayloadType::Raw, EventType::EventD)
+            .with_encoder("encode", EventType::Metric, PayloadType::Http)
+            .with_forwarder("forward", PayloadType::Http)
+            .with_destination("out", EventType::Metric);
+
+        let cases = [
+            ("in", Ok((ComponentType::Source, DataType::Event(EventType::Metric)))),
+            (
+                "split",
+                Ok((ComponentType::Transform, DataType::Event(EventType::Metric))),
+            ),
+            (
+                "split.logs",
+                Ok((ComponentType::Transform, DataType::Event(EventType::Log))),
+            ),
+            ("relay", Ok((ComponentType::Relay, DataType::Payload(PayloadType::Raw)))),
+            (
+                "decode",
+                Ok((ComponentType::Decoder, DataType::Event(EventType::EventD))),
+            ),
+            (
+                "encode",
+                Ok((ComponentType::Encoder, DataType::Payload(PayloadType::Http))),
+            ),
+            ("split.missing", Err(output_id_doesnt_exist("split.missing"))),
+            ("decode.named", Err(output_id_doesnt_exist("decode.named"))),
+            ("forward", Err(output_id_doesnt_exist("forward"))),
+            ("out", Err(output_id_doesnt_exist("out"))),
+            ("absent", Err(component_id_doesnt_exist("absent"))),
+        ];
+        for (output, expected) in cases {
+            let output_id = try_into_component_output_id(output).unwrap();
+            assert_eq!(graph.get_output(&output_id), expected, "output {output}");
+        }
     }
 
     #[test]

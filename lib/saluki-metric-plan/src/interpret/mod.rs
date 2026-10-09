@@ -8,11 +8,12 @@
 //!   [compiled predicates][crate::predicate::CompiledPredicate] whose operands come from the plan's resolved values,
 //!   or, for a binding the plan leaves unresolved, from the value the catalog carries for it. A catalog exported by a
 //!   host carries its bindings' values, so an exported program, whose bindings are unresolved, can be previewed.
-//! - Operators with a [kernel][crate::operators::KernelSpec] run it, with an unlimited budget.
+//! - Operators with a [kernel][crate::operators::KernelSpec] run it, with an unlimited budget. Every synchronous native
+//!   operator other than the routing operators has one, extracted from its native component.
 //! - Opaque hosts run through an [`OpaqueHostAdapter`] registered per node, whose output is **re-admitted** downstream.
+//!   `aggregate` nodes run through [`AggregateAdapter`], over native aggregation's own state machine, unless an adapter
+//!   is registered for them.
 //! - Sources are where `admit` events enter.
-//!
-//! Every other operator has no kernel yet, so a plan using one is not supported until kernels are extracted.
 //!
 //! # Trace events
 //!
@@ -93,10 +94,13 @@ use crate::{
     ir::{NodeId, OutputId, Plan, PortName, SignalName},
     limits,
     model::{EventView, Kind, TimestampForm},
-    operators::{ConfiguredOperator, KernelBuildError, OperatorRegistry},
+    operators::{names, ConfiguredOperator, KernelBuildError, OperatorRegistry},
     predicate::PredicateError,
     validate::{describe_port_type, Catalog, ValidationReport, Validator},
 };
+
+pub mod adapters;
+use self::adapters::AggregateAdapter;
 
 mod host;
 pub use self::host::{AdapterError, HostBatch, HostFactory, HostFinish, HostOutput, HostTick, OpaqueHostAdapter};
@@ -469,7 +473,8 @@ impl<'a> Interpreter<'a> {
     /// Registers how to build the adapter for the opaque host node `node`.
     ///
     /// The factory is called when a plan containing the node is first installed in a run. A later installation that
-    /// keeps the node unchanged keeps its adapter, and its state.
+    /// keeps the node unchanged keeps its adapter, and its state. An `aggregate` node without a registered factory runs
+    /// through [`AggregateAdapter`]; registering one replaces it.
     pub fn with_opaque_host<F>(mut self, node: NodeId, factory: F) -> Self
     where
         F: Fn(&ConfiguredOperator) -> Result<Box<dyn OpaqueHostAdapter>, AdapterError> + 'a,
@@ -911,12 +916,18 @@ impl<'r, 'a> Run<'r, 'a> {
                     kernel: kernel @ None,
                 } => *kernel = Some(build_kernel(&node.id, spec)?),
                 Exec::Host(adapter @ None) => {
-                    let Some(factory) = self.interpreter.hosts.get(&node.id) else {
-                        return Err(PrepareError::Fatal(InterpretErrorKind::MissingAdapter {
-                            node: node.id.clone(),
-                        }));
+                    let built = match self.interpreter.hosts.get(&node.id) {
+                        Some(factory) => factory(&node.op),
+                        // Native aggregation runs through its own adapter unless one is injected.
+                        None if node.op.name() == names::AGGREGATE => AggregateAdapter::from_operator(&node.op)
+                            .map(|adapter| Box::new(adapter) as Box<dyn OpaqueHostAdapter>),
+                        None => {
+                            return Err(PrepareError::Fatal(InterpretErrorKind::MissingAdapter {
+                                node: node.id.clone(),
+                            }))
+                        }
                     };
-                    let built = factory(&node.op).map_err(|source| {
+                    let built = built.map_err(|source| {
                         PrepareError::Rejected(InstallRejection::HostBuild {
                             node: node.id.clone(),
                             source,
@@ -1298,6 +1309,8 @@ impl<'h> KernelCall<'h> {
     }
 }
 
+#[cfg(test)]
+mod default_program_tests;
 #[cfg(test)]
 mod test_operators;
 #[cfg(test)]

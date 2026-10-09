@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Instant};
+use std::{borrow::Cow, sync::Arc, time::Instant};
 
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
@@ -6,7 +6,11 @@ use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
-use crate::{components::ComponentContext, topology::OutputName};
+use crate::{
+    components::ComponentContext,
+    execution::{AdmissionPoint, OwnerToken},
+    topology::{EventsBuffer, OutputName},
+};
 
 // TODO: When we have support for additional static labels on a per-metric basis, add `discard_reason` to
 // `events_discarded_total` metric to indicate that it's due to the destination component being disconnected.
@@ -53,6 +57,10 @@ pub trait DispatchBuffer: Dispatchable + Default {
 struct DispatchTarget<T> {
     metrics: DispatcherMetrics,
     senders: Vec<mpsc::Sender<T>>,
+    admission: Option<Arc<AdmissionPoint>>,
+
+    // Held while the dispatcher lives, so that the admission point sends no heartbeat once the component stops.
+    _admission_owner: Option<OwnerToken>,
 }
 
 impl<T> DispatchTarget<T>
@@ -63,6 +71,8 @@ where
         Self {
             metrics: DispatcherMetrics::default_output(context),
             senders: Vec::new(),
+            admission: None,
+            _admission_owner: None,
         }
     }
 
@@ -70,6 +80,8 @@ where
         Self {
             metrics: DispatcherMetrics::named_output(context, output_name),
             senders: Vec::new(),
+            admission: None,
+            _admission_owner: None,
         }
     }
 
@@ -77,7 +89,21 @@ where
         self.senders.push(sender);
     }
 
-    async fn send(&self, item: T) -> Result<(), GenericError> {
+    async fn send(&self, mut item: T) -> Result<(), GenericError> {
+        // On an admission point, stamp the item and keep the point locked until the item has been sent to every
+        // sender: every downstream channel then receives the point's items in stamp order, even when several tasks
+        // share this dispatcher.
+        let _admission = match &self.admission {
+            Some(point) => {
+                let mut guard = point.lock().await;
+                if let Some(header) = item.header_mut() {
+                    guard.stamp(header);
+                }
+                Some(guard)
+            }
+            None => None,
+        };
+
         if self.senders.is_empty() {
             // Track discarded events when no senders are attached to this output
             let item_count = item.item_count() as u64;
@@ -285,23 +311,35 @@ where
     ///
     /// # Errors
     ///
-    /// If the output doesn't exist, an error is returned.
+    /// If the output doesn't exist, or already has an admission point, an error is returned.
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
-        let target = match output_name {
-            OutputName::Default => self
-                .default
-                .as_mut()
-                .ok_or_else(|| generic_error!("No default output declared."))?,
-            OutputName::Given(name) => self
-                .targets
-                .get_mut(name)
-                .ok_or_else(|| generic_error!("Output '{}' does not exist.", name))?,
-        };
+        let target = self.get_output_mut(output_name)?;
+        if target.admission.is_some() {
+            // The admission point captured the output's senders for its heartbeats, so a later sender would miss them.
+            return Err(generic_error!(
+                "Cannot attach a sender to output '{}' after it became an admission point. Attach every sender \
+                 before setting the admission point.",
+                output_name
+            ));
+        }
         target.add_sender(sender);
 
         Ok(())
+    }
+
+    fn get_output_mut(&mut self, output_name: &OutputName) -> Result<&mut DispatchTarget<T>, GenericError> {
+        match output_name {
+            OutputName::Default => self
+                .default
+                .as_mut()
+                .ok_or_else(|| generic_error!("No default output declared.")),
+            OutputName::Given(name) => self
+                .targets
+                .get_mut(name)
+                .ok_or_else(|| generic_error!("Output '{}' does not exist.", name)),
+        }
     }
 
     fn get_default_output(&self) -> Result<&DispatchTarget<T>, GenericError> {
@@ -354,6 +392,39 @@ where
         };
 
         target.send(item).await?;
+
+        Ok(())
+    }
+}
+
+impl Dispatcher<EventsBuffer> {
+    /// Makes the given output an admission point.
+    ///
+    /// From then on, every buffer sent on the output, including the buffers of buffered dispatchers, is stamped by
+    /// `point` before it is sent, and the point can send heartbeats through the output's senders. Outputs without an
+    /// admission point send buffers unchanged.
+    ///
+    /// Call this after attaching every sender to the output: the point captures the output's senders, holding them
+    /// weakly.
+    ///
+    /// # Errors
+    ///
+    /// If the output doesn't exist, if it already has an admission point, or if `point` is already attached to an
+    /// output, an error is returned.
+    pub fn set_admission_point(
+        &mut self, output_name: &OutputName, point: Arc<AdmissionPoint>,
+    ) -> Result<(), GenericError> {
+        let target = self.get_output_mut(output_name)?;
+        if target.admission.is_some() {
+            return Err(generic_error!(
+                "Output '{}' already has an admission point. Each output can have at most one.",
+                output_name
+            ));
+        }
+
+        let owner = point.attach_senders(target.senders.iter().map(mpsc::Sender::downgrade).collect())?;
+        target.admission = Some(point);
+        target._admission_owner = Some(owner);
 
         Ok(())
     }
@@ -431,7 +502,7 @@ where
 mod tests {
     // TODO: Tests asserting we emit metrics, and the right metrics.
 
-    use std::ops::Deref;
+    use std::{ops::Deref, time::Duration};
 
     use metrics::{Key, Label};
     use metrics_util::{
@@ -441,6 +512,10 @@ mod tests {
     use ordered_float::OrderedFloat;
 
     use super::*;
+    use crate::execution::{
+        AdmissionMode, AdmissionPointConfig, AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, EntryId,
+        GenerationId, GenerationToken,
+    };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct SingleEvent<T>(T);
@@ -941,6 +1016,106 @@ mod tests {
                 OutputName::Given(_) => assert!(msg.contains("does not exist"), "got: {msg}"),
             }
         }
+    }
+
+    fn admission_point(id: u32) -> Arc<AdmissionPoint> {
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(1)));
+        let schedule = AdmissionSchedule::Steady(generation).into_handle();
+        Arc::new(AdmissionPoint::new(AdmissionPointConfig::new(
+            AdmissionPointId::new(id),
+            AdmissionMode::Admit,
+            schedule,
+            Duration::from_secs(600),
+        )))
+    }
+
+    #[tokio::test]
+    async fn fan_out_copies_the_header_to_every_sender() {
+        // Without an admission point, buffers keep whatever header they carry: every copy of a stamped buffer carries
+        // the same stamp, and unstamped buffers stay unstamped.
+        let mut dispatcher = unbuffered_dispatcher::<EventsBuffer>();
+        let (tx1, mut rx1) = mpsc::channel(2);
+        let (tx2, mut rx2) = mpsc::channel(2);
+        let (tx3, mut rx3) = mpsc::channel(2);
+        add_output_with_senders(&mut dispatcher, &OutputName::Default, [tx1, tx2, tx3]);
+
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(4)));
+        let header = BatchHeader {
+            admitted_at: Some(AdmissionTime::from_unix_secs(30)),
+            admission_point: Some(AdmissionPointId::new(2)),
+            epoch: 1,
+            generation: Some(Arc::clone(&generation)),
+            entry: Some(EntryId::new(6)),
+        };
+        dispatcher
+            .dispatch(EventsBuffer::with_capacity(0).with_header(header))
+            .await
+            .unwrap();
+        dispatcher.dispatch(EventsBuffer::with_capacity(0)).await.unwrap();
+
+        let mut stamped = Vec::new();
+        for rx in [&mut rx1, &mut rx2, &mut rx3] {
+            let copy = rx.try_recv().expect("every sender should receive the stamped buffer");
+            assert_eq!(copy.header().admitted_at, Some(AdmissionTime::from_unix_secs(30)));
+            assert_eq!(copy.header().admission_point, Some(AdmissionPointId::new(2)));
+            assert_eq!(copy.header().epoch, 1);
+            assert_eq!(copy.header().generation_id(), Some(GenerationId::new(4)));
+            assert_eq!(copy.header().entry, Some(EntryId::new(6)));
+            stamped.push(copy);
+
+            let unstamped = rx.try_recv().expect("every sender should receive the unstamped buffer");
+            assert!(!unstamped.header().is_stamped());
+            assert_eq!(unstamped.header().generation_id(), None);
+        }
+        assert_eq!(Arc::strong_count(&generation), 4);
+    }
+
+    #[test]
+    fn admission_points_attach_only_to_declared_outputs_without_one() {
+        let mut dispatcher = unbuffered_dispatcher::<EventsBuffer>();
+
+        let error = dispatcher
+            .set_admission_point(&OutputName::Default, admission_point(1))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "No default output declared.");
+
+        let error = dispatcher
+            .set_admission_point(&OutputName::Given("metrics".into()), admission_point(1))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Output 'metrics' does not exist.");
+
+        dispatcher.add_output(OutputName::Given("metrics".into())).unwrap();
+        dispatcher
+            .set_admission_point(&OutputName::Given("metrics".into()), admission_point(1))
+            .unwrap();
+        let error = dispatcher
+            .set_admission_point(&OutputName::Given("metrics".into()), admission_point(2))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Output 'metrics' already has an admission point. Each output can have at most one."
+        );
+    }
+
+    #[test]
+    fn senders_cannot_be_attached_after_the_admission_point() {
+        // The admission point captures the output's senders for its heartbeats, so a later sender would miss them.
+        let mut dispatcher = unbuffered_dispatcher::<EventsBuffer>();
+        let (tx1, _rx1) = mpsc::channel(1);
+        add_output_with_senders(&mut dispatcher, &OutputName::Default, [tx1]);
+        dispatcher
+            .set_admission_point(&OutputName::Default, admission_point(1))
+            .unwrap();
+
+        let (tx2, _rx2) = mpsc::channel(1);
+        let error = dispatcher
+            .attach_sender_to_output(&OutputName::Default, tx2)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot attach a sender to output '_default' after it became an admission point. Attach every sender \
+             before setting the admission point."
+        );
     }
 
     #[tokio::test]

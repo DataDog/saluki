@@ -47,13 +47,22 @@ lib/saluki-core/src/execution/        generic execution contracts (no metric or 
 
 lib/saluki-metric-kernels/            native metric semantics, extracted once          [1: names, matcher; 2]
   intake_name.rs   moved from bin/agent-data-plane/src/components/metric_name.rs
-  matcher.rs       SortedSetMatcher, the sorted string-set matcher (exact and prefix; raw bytes or intake names)
-  mapper/          DogStatsD MetricMapper core (from saluki-components)
-  prefix.rs, timestamp_split.rs, tag_projection/, host_tags.rs, histogram_suffixes.rs
-  aggregate/       aggregation state machine (moved unchanged in 2, t_a and watermarks in 6)
+  matcher.rs       SortedSetMatcher, the sorted string-set matcher (exact and prefix; raw bytes or intake names),
+                   and compact_prefixes, the one prefix compaction
+  mapper/          DogStatsD MetricMapper core (from saluki-components), also the mapper's kernel           [2]
+  prefix/          NamespacePrefix (from ADP's dogstatsd_prefix_filter)                                     [2]
+  timestamp_split/ TimestampSplit and its functions (from dogstatsd_no_agg_split), with its native telemetry   [2]
+  tag_projection/  TagProjection, its rules and context memo (from tag_filterlist), with its native telemetry [2]
+  host_enrichment/ HostEnrichment (metrics unchanged) and HostTags (from host_tags)                       [2]
+  selection/       name sets for gateways and post-aggregation filtering: RawNameSet, IntakeNameAllowlist,
+                   histogram_statistic_entries, is_scalar_series (from metric_filter, the autoscaling gateway,
+                   and dogstatsd_post_aggregate_filter)                                                     [2]
+  aggregate/       AggregateCore: the state machine and its run-loop decisions, with a resumable flush
+                   (moved unchanged in 2, t_a and watermarks in 6)
   params/          plan-owned parameter types (no agent-data-plane-config types): mapper profiles, namespace prefix,
                    tag rules and value rules (with their validation), histogram statistics                      [1]
-  telemetry/       native telemetry structs that move with their kernels
+  testing.rs       `test-util`: metric strategies, shared with the plan crate's `testing`                  [2]
+  <kernel>/reference.rs, <kernel>/tests.rs   frozen pre-extraction copies and kernel-vs-copy property tests  [2]
 
 lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, installer core
   model/ ir/ canonical.rs predicate/ operators/ validate/ interpret/ equivalence.rs explain/ limits.rs extension/
@@ -67,8 +76,11 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
 
 lib/saluki-metric-plan-syntax/        surface syntax: parser, printer, spans                    [demo]
 
-bin/agent-data-plane/src/programmable_metrics/
-  host_facts.rs bindings.rs telemetry_profiles.rs lowering/ outputs.rs     [2, 4]
+bin/agent-data-plane/src/programmable_metrics/   (compiled only for tests until stage 3 runs it)
+  host_facts.rs bindings.rs catalog.rs outputs.rs telemetry_profiles.rs    [2, 4]
+  lowering/        Lowering::{new, lower}, and its tests: the configuration matrix, a hand-written
+                   every-branch fixture, the structural comparison with the legacy blueprint, and a
+                   run of the lowered program through the reference interpreter                         [2, 4]
   topology.rs installer.rs                                                  [3, 5]
   channel_stub.rs api.rs                                                    [5]
 
@@ -79,14 +91,21 @@ Dependency direction:
 
 ```text
 saluki-core <- saluki-metric-kernels <- saluki-metric-plan <- saluki-metric-plan-syntax <- programmable-metrics-demo
-                      ^                         ^
-                saluki-components  <-  agent-data-plane
+                      ^      ^                  ^
+                      |   saluki-components  <-  agent-data-plane
+                      |                             |
+                agent-data-plane-config-system  <---+
 ```
 
-- `saluki-metric-kernels` depends on `saluki-core`, `saluki-common`, `saluki-metrics`, `stringtheory`, `regex`,
-  `smallvec`, `ddsketch`, `foldhash`, `hashbrown`, and `tracing`. `saluki-components` depends on it, so the legacy
-  mapper and aggregation transforms call the extracted cores instead of keeping copies. It stays light so that
-  `saluki-components` does not rebuild on compiler edits.
+- `saluki-metric-kernels` depends on `saluki-core`, `saluki-common` (the native fast hash collections),
+  `saluki-metrics`, `metrics`, `saluki-antithesis` (the moved state machine keeps its assertions), `stringtheory`,
+  `regex`, `smallvec`, `ddsketch`, `foldhash`, `hashbrown`, `snafu`, and `tracing`, and on `proptest` under its
+  `test-util` feature. `saluki-components` depends on it, so the legacy mapper, aggregation, and autoscaling gateway
+  transforms call the extracted cores instead of keeping copies; so does ADP for its own transforms. It stays light so
+  that `saluki-components` does not rebuild on compiler edits.
+- `agent-data-plane-config-system` depends on it for one function: it validates `metric_tag_value_allowlist` at load
+  with the kernels crate's `params::validate_tag_value_rule_keys`, the one implementation of that rule, and words the
+  errors in terms of its keys. The configuration model (`agent-data-plane-config`) depends on neither.
 - `saluki-metric-plan` adds `serde`, `serde_json`, `schemars` (with `derive`), `tokio` (`sync`), and `saluki-tls` (for
   FIPS-consistent SHA-256). It does not depend on `saluki-components` or `agent-data-plane-config`. Operators never read
   configuration; ADP converts typed configuration into the kernels crate's parameter types.
@@ -120,30 +139,53 @@ pub struct AdmissionPointId(u32);
 pub struct EntryId(u16);
 ```
 
-- `FixedSizeEventBuffer` gains `header` with `header()`, `header_mut()`, `set_header()`, `with_header()`, and
-  `take_header()`. `Clone` copies it. `Default` is unstamped. `clear()` also resets the header, so a recycled buffer
-  never keeps a generation alive.
+- `FixedSizeEventBuffer` carries `header` with `header()`, `header_mut()`, `set_header()`, `with_header()`, and
+  `take_header()` (stage 2). `Clone` copies it, sharing the generation. `Default` and `with_capacity` are unstamped.
+  `clear()` also resets the header, so a recycled buffer never keeps a generation alive. The header (40 bytes) is
+  stored inline, so `size_of::<EventsBuffer>()` grows from 40 to 80 bytes; the interconnect bounds already count one
+  struct per channel slot plus `N` events per in-flight buffer, and heartbeats allocate no event storage.
 - **On the kernel path the header travels beside the buffer, never inside it.** A host takes the header out of the
   input buffer (`take_header()`) before calling a kernel, passes it to `Turn::new`, and stamps every buffer it drains
   from `PortOutputs` with the header that output carries (buffers created for pushed events start unstamped). Kernels
   read the header only through `Turn::header()`; `input.header()` is unstamped during the call, so a kernel that
   clears and refills its input cannot unstamp anything.
 - `FixedSizeEventBuffer::with_capacity(n)` (n ≤ N) for exits sized to their contents (landed in stage 1, because
-  kernel port buffers use it), and an order-preserving `retain(FnMut(&mut Event) -> bool)` for kernels. `remove_if` keeps `swap_remove_back`, because legacy references use it.
+  kernel port buffers use it), and an order-preserving `retain(FnMut(&mut Event) -> bool)` for kernels (stage 2).
+  `remove_if` and `extract` keep `swap_remove_back`, because legacy references use it.
 - An empty, stamped buffer is header-only: a **heartbeat** from a source or a **progress** batch from a region.
 - `Dispatchable` gains `fn header_mut(&mut self) -> Option<&mut BatchHeader> { None }`; event buffers implement it.
 
 ### Admission points and schedules
 
 - An **admission point** is a component **output**. The blueprint marks it:
-  `TopologyBlueprint::with_admission_point(ComponentOutputId, AdmissionPointConfig { id, mode, heartbeat })`. The
-  configuration flows through the build state into `ComponentInterconnects`, which calls
-  `Dispatcher<EventsBuffer>::set_admission_point(&OutputName, Arc<AdmissionPoint>)` at setup.
-- `mode = Admit` (sources) stamps buffers and expects them unstamped. `mode = Readmit` (opaque hosts) always overwrites
-  `admitted_at`, `admission_point`, `epoch`, and `generation`, and clears `entry`, so nothing crosses an opaque host.
+  `TopologyBlueprint::with_admission_point(output: impl AsRef<str>, AdmissionPointConfig)`, where `output` is a
+  component output ID (`"dsd_in.metrics"`, or `"src"` for a default output) and
+  `AdmissionPointConfig::new(id, mode, schedule: ScheduleHandle, clock_reset_threshold)` takes optional
+  `.with_heartbeat(period)` and `.with_wall_clock(W: WallClock)` (default `SystemWallClock`; `ManualWallClock` under
+  `test-util`). The threshold is a parameter, not a `saluki-core` constant, because the plan crate's limits table owns
+  its value (`limits::values::CLOCK_RESET_THRESHOLD`). The blueprint rejects, with actionable errors, an invalid output
+  ID, a missing component or output, a payload output (only event outputs of sources, decoders, and transforms
+  qualify), an output marked twice, a reused admission point ID, and a heartbeat period outside `MIN_HEARTBEAT_PERIOD`
+  (1 ms) through `MAX_HEARTBEAT_PERIOD` (1 hour): a shorter one sends a heartbeat on every timer tick while idle, and a
+  much longer one overflows the driver's deadline. The bindings flow
+  through the build state and `BuiltTopology` into `ComponentInterconnects`, which, after attaching every edge's sender,
+  creates one `Arc<AdmissionPoint>` per marked output and calls
+  `Dispatcher<EventsBuffer>::set_admission_point(&OutputName, Arc<AdmissionPoint>)`. That call captures the output's
+  senders as `WeakSender`s and returns an owner token that the output's dispatcher keeps for as long as it lives.
+  Attaching a sender to the output afterwards, or attaching one point to two outputs, is an error, so the heartbeat
+  sender list cannot drift from the data path's.
+- `mode = Admit` (sources) stamps unstamped buffers and sends already stamped ones as they are. `mode = Readmit`
+  (opaque hosts) always overwrites `admitted_at`, `admission_point`, `epoch`, and `generation`, and clears `entry`, so
+  nothing crosses an opaque host.
+- **Clock** (`AdmissionClock`, `execution/clock.rs`): `t_a = max(previous t_a, wall clock)`. A backward jump larger
+  than the threshold, measured from the latched `t_a`, is a reset: the epoch increments (wrapping, so epochs compare for
+  equality) and `t_a` restarts from the wall clock. `stamp() -> ClockStamp { admitted_at, epoch, reset }`. A point logs
+  a warning on every reset.
 - Stamping happens in `DispatchTarget::send`, under one `tokio::sync::Mutex` per admission point held across stamp and
   the sequential fan-out. Every downstream channel of that output therefore sees `t_a` in FIFO order, even when several
   tasks share one dispatcher (the DogStatsD decoder pool). The graph is acyclic, so the mutex cannot deadlock.
+  `BufferedDispatcher` flushes and `dispatch_one` go through the same path. Outputs without an admission point send
+  buffers unchanged; ADP marks no output in stage 2, so the legacy topology runs exactly as before.
 - Under the same mutex the point loads the shared `AdmissionSchedule` and chooses the batch's generation:
 
   ```rust
@@ -152,15 +194,53 @@ pub struct EntryId(u16);
       /// Stage 6: batches with t_a >= at, or stamped after this point's epoch advanced, get `new`.
       Cut { old: GenerationRef, new: GenerationRef, at: AdmissionTime },
   }
+  impl AdmissionSchedule {
+      pub fn generation_for(&self, t_a: AdmissionTime, epoch: u32, epoch_at_publish: u32) -> &GenerationRef;
+      pub fn into_handle(self) -> ScheduleHandle;
+  }
   pub type ScheduleHandle = Arc<ArcSwap<AdmissionSchedule>>;
   ```
 
-  One schedule handle exists per topology through stage 6. A commit is one store into it. Regions never assign
-  generations; a batch without one is a wiring fault, counted and dropped as `invalid`.
-- **Heartbeats** are a method on the shared admission-point state, using that output's own senders as `WeakSender`s and
-  the same mutex, so their order relative to data is guaranteed. The periodic driver sends one whenever the point stamped
-  nothing during the last period. Heartbeats carry `t_a`, `epoch`, and `admission_point`, never a generation. They are
-  disabled until stage 6; the period is `min(limit, smallest flush interval of state owners downstream)`.
+  `generation_for` is the pure rule (`Cut`: `new` if `t_a >= at` or `epoch != epoch_at_publish`). Each point remembers
+  the cut it last read by the `GenerationId` of its `new` generation (identifiers are never reused, so nothing is kept
+  alive), together with its clock's epoch when it first read a cut to that generation and whether it has stamped a
+  batch with it. Publishing a cut again, as a new value or with another `at`, keeps the record while `new` is the same
+  generation, so a point that a reset moved to `new` stays there and the same stamp always gets the same generation;
+  only a cut to another generation starts a new record. It reads the schedule before its clock, so a reset detected by
+  that very stamp counts as after publication; heartbeats read it the same way, so a reset that a heartbeat finds moves
+  later batches to `new`. One schedule handle exists per topology through stage 6. A commit is one store into it.
+  Regions never assign generations; a batch without one is a wiring fault, counted and dropped as `invalid`.
+- `AdmissionPoint::status() -> AdmissionPointStatus { last_admitted_at, epoch, admitted_to_new }` is what the stage 6
+  installer reads to compute `T` and to detect a conflict: `admitted_to_new` is set once the point stamped a batch
+  with the current cut's `new` generation, whether time reached the cut or a clock reset did (amendment 42).
+- **Heartbeats** are a method on the shared admission-point state: `AdmissionPoint::heartbeat() -> HeartbeatOutcome
+  { Sent, Closed }` sends a header-only `EventsBuffer::with_capacity(0)` stamped with `t_a`, `epoch`, and
+  `admission_point` (never a generation or entry) through the output's `WeakSender`s, upgraded one at a time, under the
+  same mutex, so their order relative to data is guaranteed. Before stamping, a heartbeat checks the owner token: once
+  the output's dispatcher is dropped it reports `Closed` without stamping, even if sibling components keep the
+  downstream channels open (every upstream of a fan-in holds a clone of the downstream component's one sender).
+  `run_heartbeats()` sleeps until one period after the last stamp (on the Tokio timer, a deadline that saturates rather
+  than overflowing), sends only if nothing was stamped for a full period, and returns once a heartbeat reaches no
+  channel: the owner's dispatcher is gone, every receiver is gone, or the output has no channels. The topology runs one
+  driver per point that has a period, as a temporary, non-significant worker in the component's own supervisor that
+  also stops on its shutdown signal; the driver stops by itself too, within a period of its component stopping, so it
+  never outlives its component for long and never keeps a channel open.
+  Heartbeats are disabled by default and until stage 6; the period is `min(limit, smallest flush interval of state
+  owners downstream)`.
+- Stage 6 uses `status()` for what the cut protocol needs beyond the rule: a point's last `t_a` for computing `T`, and
+  the conflict raised by a point that already admitted to `new` (outline item 4).
+
+### Blueprint introspection and graph checks
+
+- `TopologyBlueprint::snapshot() -> Option<BlueprintSnapshot>` (`None` once initialized) describes the blueprint's
+  structure: `components()` sorted by ID (`ComponentSnapshot { id, component_type, input: Option<DataType>, outputs:
+  [OutputSnapshot { id, data_type }] }`, plus `component(id)`), `edges()` sorted (`EdgeSnapshot { from:
+  ComponentOutputId, to: ComponentId }`), and `admission_points()` (`AdmissionPointSnapshot { output, id, mode,
+  heartbeat }`). Equal structures have equal snapshots whatever the assembly order. `DataType` is exported from
+  `saluki_core::topology`. Lowering compares a lowered plan with this snapshot of the legacy blueprint.
+- The graph rejects a repeated edge (`GraphError::DuplicateEdge`), which would deliver every buffer twice, and its
+  cycle check runs a depth-first search from every component, so cycles on paths that end in encoders and forwarders
+  (no destination) are found. A cycle is reported in edge order, starting and ending at its smallest component ID.
 
 ### Generations
 
@@ -419,8 +499,9 @@ const(bool) | flag(Operand<bool>) | is_empty(Operand<list>)
 `OperatorRegistry::native()` is the closed set. Each `OperatorDef` provides its parameter schema (`&[ParamSpec]`),
 `check_params` for rules between decoded values that types alone cannot express, `ports(params)`, its effect contract,
 `output_types(params, ports, inputs)`, `transition(old, new)`, `specify_bounds(params, &mut MemoryBoundsBuilder)`, and
-`kernel(params) -> Option<KernelSpec>`, which is `None` for every native operator in stage 1 (stage 2 adds factories;
-I/O and opaque hosts never have one). `OperatorRegistry::configure(op, &Params)` decodes and checks the parameters,
+`kernel(params) -> Option<KernelSpec>`, which every synchronous native operator other than the routing operators has
+from stage 2 (`dogstatsd_mapper`, `namespace_prefix`, `timestamp_split`, `tag_projection`, `host_enrichment`, and
+`host_tags`); I/O and opaque hosts never have one, and hosts run `split`, `tee`, `merge`, `emit`, and `drop` themselves. `OperatorRegistry::configure(op, &Params)` decodes and checks the parameters,
 reporting every problem, and returns a `ConfiguredOperator` with its ports and contract.
 `OperatorRegistry::with_operators` (behind `test-util`) builds registries of test operators for tests in any crate.
 
@@ -463,13 +544,13 @@ reporting every problem, and returns a `ConfiguredOperator` with its ports and c
 | Operator | Boundary | Parameters | Contract notes |
 |---|---|---|---|
 | `source` | `io_host` | `binding` (`dogstatsd`, `otlp`, `checks`, `liveness`, `trace_sampler`); `timestamps` for `dogstatsd` only (`mixed` with the no-aggregation pipeline, else `untimestamped`) | Output `metrics`. Kinds per binding: DogStatsD `{Counter, Gauge, Set, Histogram, Distribution}`; OTLP `{Counter, Rate, Gauge, Distribution}` mixed; checks `{Counter, Rate, Gauge, Histogram}` mixed; liveness `{Gauge}` timestamped; trace sampler `{Counter, Gauge}` untimestamped. Writes every field. |
-| `dogstatsd_mapper` | sync | `profiles` (list of `{name, prefix, mappings: [{match, match_type, name, tags: [{name, value}]}]}`), `cache_size`, `string_interner_bytes` | `reads {name}`, `writes {name, tags}`, `quotient`, lossless. Pattern validation and regex compilation belong to the stage 2 kernel. |
-| `namespace_prefix` | sync | `namespace`, `exclusions` | Map. `reads {name}`, `writes {name}`, `quotient`. |
-| `timestamp_split` | sync | `window` (whole seconds, at least 1) | Ports `default` (`select(untimestamped)`) and `passthrough` (`select(timestamped)`, `Counter` to `Rate`), point-disjoint, `expand { max: 2 }`; writes `kind` for counters only. |
-| `tag_projection` | sync | `rules` (`{metric_name, action, tags}`), `value_rules` (`{metric_prefix, tag_name, values, on_miss, replacement}`, replacement exactly when `on_miss` is `replace`, validated as natively), `cache_capacity` | Reads `kind` always; reads `name`, tags, origin tags and writes `tags`, `origin_tags` for `{Counter, Distribution}` only; `quotient` for those kinds; `lossy(policy)`. Firm bounds: 64 bytes per cache entry, as native. |
+| `dogstatsd_mapper` | sync | `profiles` (list of `{name, prefix, mappings: [{match, match_type, name, tags: [{name, value}]}]}`), `cache_size`, `string_interner_bytes` | `reads {name}`, `writes {name, tags}`, `quotient`, lossless. `check_params` validates known profiles as the kernel compiles them (`mapper::validate_profiles`: empty names, prefixes, and matches, the wildcard grammar, regex compilation), with native messages. Kernel: `MetricMapper`, mapping in place, its caches named after the component it is built for (`<component>/dsd_mapper/primary` and `.../result_cache`). Bounds: the interner and the result cache, as native. |
+| `namespace_prefix` | sync | `namespace`, `exclusions` | Map. `reads {name}`, `writes {name}`, `quotient`. Kernel: `NamespacePrefix`, in place. |
+| `timestamp_split` | sync | `window` (whole seconds, at least 1) | Ports `default` (`select(untimestamped)`) and `passthrough` (`select(timestamped)`, `Counter` to `Rate`), point-disjoint, `expand { max: 2 }`; writes `kind` for counters only. Kernel: `TimestampSplit`, sending a batch without timestamped points to `default` whole (`route_all`), counting non-metric events as `invalid`, and reporting the native passthrough metrics and one passthrough flush per batch under the component it is built for. |
+| `tag_projection` | sync | `rules` (`{metric_name, action, tags}`), `value_rules` (`{metric_prefix, tag_name, values, on_miss, replacement}`, replacement exactly when `on_miss` is `replace`, validated as natively), `cache_capacity` | Reads `kind` always; reads `name`, tags, origin tags and writes `tags`, `origin_tags` for `{Counter, Distribution}` only; `quotient` for those kinds; `lossy(policy)`. Firm bounds: 64 bytes per cache entry, as native. Kernel: `TagProjection`, with the kind guard inside it, the native `tag_filterlist_*` telemetry, and a context memo named `tag_filterlist/context_cache` for a reserved node (the native, unscoped identifier) and `<component>/tag_filterlist/context_cache` for a policy node. |
 | `aggregate` | `opaque_host` until stage 6 | `window`, `flush_interval`, `context_limit`, `counter_expiry` (`0s` never expires), `flush_open_windows`, `histogram_aggregates`, `histogram_percentiles` (whole percents, each statistic once), `copy_to_distribution`, `copy_to_distribution_prefix` | Output `{Rate, Gauge, Set, Distribution}`, timestamped. Writes `points` for every kind, plus `kind` for counters and `name`, `kind`, `metadata` for histograms; `opaque` identity for histograms; keyed state with the window as its time contract (the kernel's admission-time bucketing, from stage 6), so a window change is a `Cut`; lossy (policy: untimestamped gauges reduce to the latest and kind or rate-interval conflicts replace values; capacity: context limit; shutdown: open buckets). Declared precisely although an opaque host (amendment 32). Only its expansion maximum applies. |
-| `host_enrichment` | sync | none | Passthrough. |
-| `host_tags` | sync | `tags`, `deadline` (an instant, as a duration since the Unix epoch) | Reads `t_a`; writes `tags`; `quotient`. |
+| `host_enrichment` | sync | none | Passthrough. Kernel: `HostEnrichment`, which leaves batches as they are. |
+| `host_tags` | sync | `tags`, `deadline` (an instant, as a duration since the Unix epoch) | Reads `t_a`; writes `tags`; `quotient`. Kernel: `HostTags`, adding the tags (`merge_shared`, as native) to batches with `t_a < deadline`; an unstamped batch passes unchanged. |
 | `opaque_host` | `opaque_host` | `component`, `input` (accepted type), `outputs` (port name to type) | Reads and writes everything, copies, undeclared expansion, opaque state; `transition` rejects any change. |
 | `split`, `tee`, `merge`, `emit`, `drop` | sync | `predicate`; `ports` (1 to 10,000); `inputs` (1 to 10,000); `output`; none | `split` is a point-disjoint map reading its predicate's fields; `tee` copies; `drop` is `lossy(policy)`. |
 
@@ -538,19 +619,23 @@ never driven; their effects are unobservable). Each node runs one of four ways:
   and `PortOutputs`; after `consume`, `complete(input)` moves the leftover to the remainder port, and each drained buffer
   becomes one downstream batch with the input's header. `Yielded` is resumed at once (at most 100,000 times in a row,
   then `KernelStalled`); `WaitUntil` is only a scheduling hint, since ticks come from the trace. Stateless kernels are
-  rebuilt for every generation, which is unobservable. No native operator has a kernel yet, so the path is tested with
-  test-only operators registered through `OperatorRegistry::with_operators`. Kernels are built with
-  `KernelBuildContext::detached(node)`; time-driven turns carry the state owner's watermark.
+  rebuilt for every generation, which is unobservable. Every synchronous native operator other than the routing
+  operators has a kernel from stage 2; the stateful paths are tested with test-only operators registered through
+  `OperatorRegistry::with_operators`, and a synchronous test operator without a kernel is an internal error. Kernels are built with `KernelBuildContext::detached(node)`; time-driven turns
+  carry the state owner's watermark. A kernel whose parameters are bound and unresolved fails to build, which rejects
+  the installation.
 - **Opaque hosts** (boundary `opaque_host`, including `aggregate` before stage 6) run through an `OpaqueHostAdapter`
   (`admit(HostBatch { admitted_at, arrived_at, events }, &mut HostOutput)`, `tick(HostTick { now, watermark }, ..)`,
   `finish(HostFinish { now, policy }, ..)`) built per node by a registered factory from its `ConfiguredOperator`. A
   host without a factory is an error; a factory that fails rejects the installation. Adapters report what they lose
   with `HostOutput::record_loss(class, events, points)` (aggregation's context-limit and shutdown loss), which the
-  interpreter adds to the node's `RunOutput::loss`. Stage 2 implements the adapter
-  for aggregation over the moved state machine's synchronous core, outside this crate: native aggregation buckets by
-  the arrival time, so it reads `arrived_at`, and it ignores watermarks until stage 6.
-- **Sources** are where `admit` events enter. Any other operator has no kernel until stage 2, and installing a plan
-  that uses one is an explicit `Unsupported` error naming stage 2.
+  interpreter adds to the node's `RunOutput::loss`. `aggregate` nodes without a registered factory run through
+  `interpret::adapters::AggregateAdapter`, over the kernels crate's `AggregateCore`, the same core the native transform
+  runs: it admits each batch at `arrived_at` floored to seconds, because native aggregation buckets by the arrival
+  time; flushes at each tick's `now`, doing nothing while empty; ignores watermarks until stage 6; and at `finish`
+  runs the final flush and reports what is still held as shutdown loss (events are contexts, points their points).
+  Context-limit drops are capacity loss. Registering a factory for the node replaces it.
+- **Sources** are where `admit` events enter.
 
 Time and admission:
 
@@ -632,6 +717,103 @@ parameter (`aggregate.context_limit`, which the default program binds to native 
 so the plan crate names no configuration path. The bucket-width restriction is described but not enforced until stage
 6 (see the stage 6 outline).
 
+### Extracted kernels
+
+Native behavior moves into `saluki-metric-kernels` once, and the legacy components become thin hosts over it. Every
+kernel whose logic was restructured keeps a frozen `#[cfg(test)]` copy of its pre-extraction code next to its tests
+(imports and visibility adjusted only), and `property_test_*` tests compare the kernel with that copy over generated
+inputs, so that rewiring the legacy component cannot make the comparison tautological.
+
+- **Mapper** (`mapper::MetricMapper`): `new(identity, &[MapperProfile], cache_size, interner_bytes)` compiles the
+  profiles (`validate_profiles` checks them alone, without a Tokio runtime), and `try_map(&Context)`, `map_buffer`, and
+  its `Kernel` implementation map contexts. The resolver and result cache are named `<identity>/dsd_mapper/primary` and
+  `<identity>/dsd_mapper/result_cache`, so the legacy `dsd_enrich` keeps its native telemetry IDs. The legacy
+  `DogStatsDMapperConfiguration` keeps its configuration types and converts them: an empty match type is wildcard, and
+  an unknown one is reported only after any problem the kernel would have found earlier, which keeps the native order of
+  errors.
+- **Aggregation** (`aggregate::AggregateCore`): `new(AggregateParams, AggregateTelemetry)`; `admit(now, metrics) ->
+  AdmitOutcome` (accepted, dropped, dropped points, and whether the limit was first reached); `flush(now, last) ->
+  Option<Flush>`, which is `None` while nothing is held, so an empty tick leaves the last flush time stale as natively;
+  `Flush::emit_next(sink)` visits one context per call, `finish()` removes what the flush emptied or expired and reports
+  a recovery from the context limit, and `abandon()` reproduces the native early return after a failed delivery;
+  `flush_into(now, last, sink)` runs a whole flush; `snapshot_contexts()` and `held_points()`. The state is a
+  `hashbrown::HashTable` with the native hasher, so a flush resumes by bucket position with no allocation and never
+  holds more than one context's expansion: the legacy transform delivers each context's metrics before visiting the
+  next, and stage 6's bounded drain yields between the same steps. A context's removal is queued only once its metrics
+  were delivered, as natively. `HistogramConfiguration::from_params(&HistogramParams)` builds the statistics, and
+  `HistogramParams::from_names` parses configured statistic names with the native rounding. Memory bounds come from
+  `state_usage` and `snapshot_usage`. The legacy `Aggregate` keeps its timer, liveness, snapshot channel, and logging.
+- **Namespace prefix** (`prefix::NamespacePrefix`): `new(&NamespacePrefixParams)` appends the `.`;
+  `prefixed_name(&MetaString) -> Option<MetaString>` is `None` when disabled, the name itself when an exclusion (a raw
+  `starts_with` of the name before prefixing) matches, and otherwise a new string, as natively; `rename` always
+  replaces the context, as natively even for excluded names; `apply`, `apply_buffer`, and the `Kernel` map in place.
+  The listener filterlist is not part of the kernel: the plan splits on the intake name after prefixing, and the
+  legacy `dsd_prefix_filter` calls `prefixed_name`, matches the new name with `SortedSetMatcher`, and renames only
+  metrics it keeps, so its allocations are the native ones. Its telemetry (`metric_filterlist_*`,
+  `dogstatsd_listener_filtered_points_total`) stays in the component: in a plan it belongs to the `split`.
+- **Timestamp split** (`timestamp_split`): `has_timestamped_metrics`, `split_timestamped`, `counter_values_to_rate`
+  (moved), `to_passthrough`, and `split_metric(metric, window) -> (passthrough, default)`, which converts passthrough
+  counters, so the legacy `PassthroughBatcher` no longer does; `TimestampSplit` is the two-port kernel (`DEFAULT_PORT` 0,
+  `PASSTHROUGH_PORT` 1) with the `route_all` fast path. `TimestampSplitTelemetry` (moved, names unchanged) serves both
+  the legacy batcher (`new`, every metric) and the kernel (`for_kernel`, only `aggregate_passthrough_metrics_total` and
+  `aggregate_passthrough_flushes_total`: the buffer-full drop counter and the batch duration histogram describe the
+  batcher, so a plan publishes no permanently zero series for them), which counts passthrough metrics and one flush per
+  batch with any (amendment 12).
+- **Tag projection** (`tag_projection`): `ValueRules::new(&[TagValueRule])` validates and compiles value rules once;
+  `TagProjectionRules::new(&[TagFilterRule], ValueRules)` compiles tag rules with them (empty names ignored, same
+  action unions, `exclude` wins); `filter_metric_tags` (moved); `is_projected` (the counter and distribution guard,
+  moved into the kernel from the run loop); `ContextMemo::new(identifier, capacity)` (the native memo: capacity `0`
+  holds one, 30-second idle expiry, misses not kept; needs a Tokio runtime); `TagProjection::new(rules, memo,
+  telemetry)` records the rule count, `replace_rules` swaps rules and memo and counts an update, `apply` returns the
+  outcome or `None` for other kinds. `TagProjectionTelemetry` moved with it, names unchanged; its `for_kernel`
+  constructor, which the plan's factory uses, leaves out `tag_filterlist_updates_total`, which the installer records
+  (see the telemetry profiles). The legacy
+  `tag_filterlist` converts its configuration (`tag_filter_rules`, `tag_value_rules`, crate-visible for lowering) and
+  keeps only its live-update loop.
+- **One tag value rule validator.** `params::validate_tag_value_rule_keys` (over `(prefix, tag)` pairs) is the only
+  implementation; `validate_tag_value_rules` and the plan's `tag_projection` check delegate to it, and
+  `InvalidTagValueRules` is a structured enum (`EmptyMetricPrefix`, `EmptyTagName`, `TagNameContainsColon`,
+  `DuplicateRule`, `OverlappingPrefixes`) so that `agent-data-plane-config-system` words the native messages from it.
+  `agent-data-plane-config` no longer has a validator.
+- **Host enrichment and host tags** (`host_enrichment`): `HostEnrichment` leaves metrics unchanged; `HostTags::new(tags,
+  deadline)` with `applies_to(t_a)` (strictly before the deadline; unstamped never) and `apply`/`apply_buffer`, and
+  `apply_tags(&SharedTagSet, &mut Metric)`, the native `merge_shared`, which the legacy `host_tags` calls while keeping
+  its own `Instant` deadline and latch (amendment 9 applies only to the plan-driven topology).
+- **Selection** (`selection`): `RawNameSet` (exact raw names: the multi-region failover and autoscaling failover
+  allowlists), `IntakeNameAllowlist` (exact intake names plus compacted literal prefixes, normalizing each name at most
+  once; `name_count` and `prefix_count` are what `metrics_endpoint_allowlist_size` reports), `is_scalar_series`, and
+  `histogram_statistic_entries(values, &HistogramParams)`, the post-aggregation filter's derived entries, which lowering
+  binds (`dogstatsd.post_aggregate_filter.values`) over `is_histogram_statistic_entry(entry, suffixes)`. The legacy
+  filter keeps its native constructor contract: aggregate names are suffixes as written (it does not reject an unknown
+  one, which aggregation's configuration rejects first in ADP), percentiles parse with the native messages, and it
+  matches `is_histogram_statistic_entry` over those suffixes with `SortedSetMatcher`.
+  `metric_filter`, the autoscaling gateway, and the post-aggregation filter call them; in plans they are predicates
+  (stage 4). `matcher::compact_prefixes` is the one prefix compaction (`SortedSetMatcher` and endpoint routing groups
+  use it), and `SortedSetMatcher` now keeps exact entries once and reports `len()`.
+- **Memory bounds of the legacy components** follow their new structures; every change is a few bytes of the
+  `minimum` amount, and firm bounds are unchanged. `Aggregate` no longer holds a telemetry clone beside its state or
+  `flush_open_windows` (both live in `AggregateCore`), so its "component struct" shrinks by one `AggregateTelemetry`
+  (16 metric handles, about 256 bytes). `TagFilterlist` holds a `TagProjection`, which embeds the
+  `TagSetMutViewState` that used to be a run-loop local and an `Option` around the memo, so its "component struct"
+  grows by those. `metric_filter`'s former hash set bucket term is "matcher entries" (`len + size_of::<MetaString>()`
+  per entry), and `size_of::<Filter>()` changed with its variants. The autoscaling gateway's three former hash set
+  terms are one "allowlist entries" term.
+- **Errors keep their native wording.** `TagFilterlistConfiguration::new` reports an invalid value rule with
+  `agent_data_plane_config_system::describe_invalid_tag_value_allowlist`, the message configuration loading gives, in
+  terms of the configuration keys (unreachable from ADP, where loading rejects the rules first).
+- **Frozen references and strategies.** `prefix`, `timestamp_split`, `tag_projection`, `host_enrichment`, and
+  `selection` each have a `reference.rs` (the native code, with the configuration types it read reduced to their
+  fields) and `property_test_*` tests against it; the inputs come from `saluki_metric_kernels::testing` (`test-util`),
+  the metric strategies stage 1 wrote for the plan crate, moved so both crates draw from one set. Comparisons are by
+  complete descriptions (name, host, tags and origin tags in order, values, metadata), as multisets where native
+  filters reorder.
+- **Compatibility fixtures.** Hand-written expected results pin every aggregation row of the specification's
+  compatibility matrix and the recorded native quirks (amendment 11): as interpreter traces through the default
+  aggregation adapter (`interpret/adapters/compatibility_tests.rs`), and directly against the core for what a trace
+  cannot express, such as a wall clock moving back (`aggregate/compatibility_tests.rs` in the kernels crate). With all
+  kernels, `interpret/default_program_tests.rs` runs the whole default-program fixture over a DogStatsD and OTLP trace
+  against hand-derived outputs for all six outputs and the policy loss of each drop.
+
 ## Installation
 
 ### Lowering inputs and generations
@@ -707,15 +889,74 @@ mark. Candidate errors are reported, never fatal to the worker.
 
 ### Host facts, bindings, telemetry profiles
 
-- `HostFacts { process_start, hostname, standalone, host_tags: Option<SharedTagSet>, .. }` is captured once before
-  lowering. The host-tags RPC runs once at boot with native failure behavior.
-- `bindings.rs` is a closed table of `BindingSpec { name, key: Option<pattern>, ty, liveness: Live | Startup, resolve }`.
-  Names are typed-model paths, never Datadog keys; credentials are never bindable. Parameterized entries cover derived
-  values such as `endpoint_routing.group.<fingerprint>.names`. `Live` entries are exactly the natively live inputs:
-  `dogstatsd.metric_filter.*`, `dogstatsd.tag_filterlist`, and `multi_region_failover.metric_mirroring.*`.
-- `telemetry_profiles.rs` maps reserved node IDs and operators to native telemetry (component ID label and profile),
-  outside the IR. A reserved node keeps its native metric names while its operator matches the profile, whatever its
-  provenance.
+Stage 2 compiles `programmable_metrics` only for its tests (`#[cfg(test)]` in `main.rs`, the plan crate a
+dev-dependency): nothing runs it until stage 3 builds the topology from the lowered program, so it would be dead code
+in the binary. Stage 3 removes the gate and moves the dependency.
+
+- `HostFacts { process_start: SystemTime, hostname, standalone, host_tags: Option<SharedTagSet>,
+  cluster_agent_endpoint: Option<String> }` is captured once before lowering by `HostFacts::capture(process_start,
+  &config, &env_provider, client_config)`, which `run.rs` calls in stage 3. The host-tags RPC runs once at boot, only
+  when connected with a non-zero `expected_tags_duration`, with native failure behavior (it shares
+  `components::host_tags::fetch_host_tags` with the native transform). The Cluster Agent endpoint is a host fact
+  because Kubernetes service discovery reads the process environment; it is the endpoint that
+  `ClusterAgentConfiguration::endpoint_and_token` resolves, without the token. `host_tags_deadline(expected)` is process
+  start plus the duration, rounded up to a whole second and capped at 2^53 − 1 seconds, so a plan duration always
+  represents it: a wall clock reads the process start to the nanosecond, and a nanosecond count since the epoch is
+  beyond a plan's integers (amendment 9).
+- `bindings.rs` is a closed table of `BindingSpec { name, key: Option<BindingKey>, ty: ParamType, liveness, resolve }`.
+  Names are typed-model paths below the model's top-level section (`domains.dogstatsd.metric_filter.values` is
+  `dogstatsd.metric_filter.values`, `shared.autoscaling_failover.metrics` is `autoscaling_failover.metrics`), never
+  Datadog keys, so translation's precedence (`metric_filterlist` over the legacy `statsd_metric_blocklist`) is
+  inherited.
+  `resolve` is `Value(fn(&SalukiConfiguration))`, read from the startup snapshot for `Startup` bindings and the current
+  one for `Live` bindings; `Derived(fn(live, startup))` for `dogstatsd.post_aggregate_filter.values` (the filterlist
+  entries naming a histogram statistic's series: live filterlist, startup statistics); and `Keyed(fn(startup, key))` for
+  `metrics_endpoint_routing.group.{key}.names` and `.prefixes`, keyed by the group's 16-hexadecimal-digit fingerprint
+  (`routing_group_key`, a digest of its sorted endpoints, so it survives renumbering and list edits). Values are written
+  as plan parameters (durations canonical, `None`/`0` expiry as `0s`, percentiles in whole percents, an empty mapper
+  match type as `wildcard`, mapper profiles through the native `DogStatsDMapperConfiguration::profiles`), then
+  normalized by decoding and encoding with the binding's type; a value outside the type (an integer beyond ±(2^53−1)) is
+  kept as it is, so that validation reports it. `Live` entries are exactly the natively live inputs:
+  `dogstatsd.metric_filter.{values,match_prefix}`, the derived post-aggregation values, `dogstatsd.tag_filterlist`, and
+  `multi_region_failover.metric_mirroring.{enabled,allowlist}`. No binding reads a key, token, or secret (tested with
+  distinctive credentials). The plan crate's hand-written fixture catalog uses the same names, types, and liveness,
+  which an ADP test checks.
+- `catalog.rs`: `AdpCatalog::new(&NativeOutputs, Snapshots)` implements the plan crate's `Catalog` over the outputs,
+  every registry binding with its type, liveness, and current value (keyed bindings for every key of the startup
+  configuration), and `post_enrich` with input `metrics` of any type; `to_document()` is the `MemoryCatalog` an export
+  carries.
+- `outputs.rs`: `NativeOutputs::from_configuration(&startup, &facts)` declares `dsd_client_telemetry` (with DogStatsD),
+  `dd_metrics_encode`, `metrics_routing_encode_{i}` (one per `MetricsEndpointRoutingConfiguration` group),
+  `mrf_metrics_encode` (when `MrfConfiguration::metrics_endpoint_override` resolves), and `af_metrics_encode` (when
+  `AutoscalingFailoverConfiguration::is_branch_requested` and the Cluster Agent endpoint resolved; accepts `{Counter,
+  Rate, Gauge, Set}`), each with its encoder or destination component and forwarder. Recipients come from the native
+  forwarder configurations (`DatadogForwarderConfiguration::metrics_recipients(routing)` and
+  `ClusterAgentForwarderConfiguration::metrics_recipients()`, added to `saluki-components` over the forwarder's own
+  `build_routable_endpoints` and I/O-loop routing), so presence and recipients match native exactly. A recipient ID is
+  `<forwarder>/<route>/<key index>/<configured endpoint>` (`route` is `primary`, `metrics_override`, or `additional`);
+  an endpoint that is not plain printable ASCII, contains `@`, or is longer than 400 bytes is written `sha256:<16 hex>`
+  (amendment 13). A fingerprint is the digest of `{"encoder": .., "forwarder": .., "recipients": [..]}`, where the
+  encoder part names the encoder variant and its endpoint routing (`all_except`, `only`, the failover override, or
+  `v2_series_only`); encoder tuning is not part of it.
+- `telemetry_profiles.rs` maps (reserved node ID, operator) to `NativeTelemetry { component_id, component_type,
+  profile }`, outside the IR; `{i}` patterns cover routing groups. Profiles list the native metrics a node keeps
+  (`ListenerFilterlist`, `TimestampSplit`, `TagFilterlist`, `PostAggregateFilter`, `EndpointAllowlist`), or are `Host`
+  (the component reports its own, for sources and opaque hosts), `Mapper` (caches named after the component), or
+  `Silent`. Both gateway forms are listed: opaque hosts through stage 3, `split` with `_true`/`_false` terminals from
+  stage 4. A reserved node keeps its native metric names while its operator matches the profile, whatever its
+  provenance. Each kept metric has a `MetricSource`, which says who records it in the plan-driven topology: `Kernel`
+  (the kernel's telemetry, registered by its factory for the node's identity), `PortEvents(port)` (events leaving a
+  `split`'s port, which the region host counts: the listener filterlist's and post-aggregation filter's drops on `true`,
+  an endpoint allowlist's on `false`), `BindingLength(binding)` (`metric_filterlist_size`, the configured list's length),
+  `MatcherEntries { binding, prefixes }` (`metrics_endpoint_allowlist_size{match_type}`, the distinct names or
+  compacted prefixes), and `BindingChanges(bindings)` (`metric_filterlist_updates_total`,
+  `tag_filterlist_updates_total`: configuration changes that changed those live bindings). The installer records the
+  binding-derived values at each installation; `KernelBuildContext` needs no replacement flag, since a rule change
+  builds a new kernel that the installer counts. Tests check that every lowered node's profile names its provenance
+  component, that the names equal the native components' constants, that kernels built with a profile's identity
+  register exactly its `Kernel` metrics (no other metric under the node's labels), and that every other source names a
+  port or bindings of the node it is kept on, in the lowered program and in the plan crate's stage 4 fixture, with
+  `BindingChanges` naming only live bindings.
 
 ### Default program shape
 
@@ -748,13 +989,55 @@ metrics_enrich_in (merge) -> metrics_enrich (host_enrichment) -> metrics_enrich_
 Frame for that program: slots `dsd_pre_aggregation` (mapper through tag filterlist) and `metrics_enrich` (post-aggregation
 filter through the policy region); fixed components `dsd_in`, `dsd_agg` (opaque, readmit), the other sources, and the
 encoders. The `metrics_enrich` slot keeps the native ID that upstream wiring uses. Before stage 4 the three gateways lower
-to `opaque_host` nodes backed by today's components, with direct edges to their encoders. A branch exists only when
-native wiring builds it. `dsd_stats_out` and `dsd_debug_log_out` stay host edges on `dsd_in.metrics`, outside the plan.
+to `opaque_host` nodes backed by today's components (`{component, input: any, outputs: {out: <the output's accepted
+type>}}`), each with a direct edge from its `out` port to an `emit` named `<gateway>_out` by `derived_terminal_id`. A
+branch exists only when native wiring builds it, decided from the startup configuration by the predicates `run.rs` uses
+(`DataPlaneConfiguration`'s pipeline gates, `no_aggregation_pipeline`, connected mode for `liveness_in` and, with a
+non-zero `expected_tags_duration`, host tags, and the output gates above). `metrics_enrich_in` and the tees are present
+even with one input or port, so their IDs never depend on which other branches exist; `dsd_post_agg_filter_in` exists
+only with the no-aggregation pipeline, whose passthrough is its second input. `dsd_stats_out` and `dsd_debug_log_out`
+stay host edges on `dsd_in.metrics`, outside the plan.
+
+`programmable_metrics::lowering::Lowering::new(startup: Arc<SalukiConfiguration>, facts: HostFacts) ->
+Result<Option<Lowering>, GenericError>` runs once at boot (`None` when no metrics pipeline is required): it checks the
+startup configuration as native construction of the metrics path does, in the native order, and resolves the
+`NativeOutputs` once, since they depend only on the startup configuration and the facts (resolving them runs the
+forwarders' endpoint resolution, which logs warnings for an unusable override URL or key). `Lowering::lower(&current) ->
+Result<Lowered, GenericError>` produces this program on every configuration change, with `Lowered { plan, catalog,
+notes }` and `Lowering::outputs()`. Structure and `Startup` bindings come from the startup configuration, `Live` bindings
+from `current`, and every bound operand carries its resolved value; host facts and structural parameters are literals.
+Preparation fails where native construction of the metrics path fails, with the native error and, with several
+problems, the one native construction meets first: blueprint assembly checks endpoint routing, the Cluster Agent
+forwarder's token, then the DogStatsD tag value rules and histogram statistics; component construction then checks
+mapper profiles (transforms build before forwarders) and forwarder endpoints (between two forwarders native has no fixed
+order). A test checks the order against `create_topology` for the assembly errors. A configuration that runs natively
+lowers, except that a duration no plan duration represents, or host tags enrichment without host tags in the facts,
+fails `lower` (amendment 38); if its plan does not validate, the default program runs degraded (amendment 14). A
+`LoweringNote` records where lowering departs from the configuration as written: only repeated histogram statistics,
+which lowering lists once, an approximation of native aggregation, which emits them once per listing (amendment 26).
 
 The shape is checked in as hand-written plans, `lib/saluki-metric-plan/fixtures/default-program.json` (every optional
-branch wired, the no-aggregation pipeline on) and `default-program-no-aggregation-pipeline-off.json`, which validate
-with no findings against a hand-written catalog. Inline terminals are named by `derived_terminal_id`, and a test checks
-that the IR represents every row of the specification's default lowering coverage table.
+branch wired, the no-aggregation pipeline on, stage 4 gateways) and `default-program-no-aggregation-pipeline-off.json`,
+which validate with no findings against a hand-written catalog. Inline terminals are named by `derived_terminal_id`, and
+a test checks that the IR represents every row of the specification's default lowering coverage table. In ADP, a
+hand-written `lowering/fixtures/every-branch.json` pins the stage 2 lowering of one every-branch configuration exactly,
+with fingerprints checked against hand-written binding documents, and the same lowered program runs through the
+reference interpreter (every native kernel, the default aggregation adapter, and gateway adapters applying their native
+components' selections) over the plan crate's default-program trace, against hand-derived outputs and policy loss. A
+configuration matrix (24 configurations: the no-aggregation pipeline on and off, every source alone and together,
+including checks without DogStatsD and the trace sampler without the OTLP source (proxy mode with traces not proxied),
+connected and standalone, host tags, zero, one, and two routing groups
+including a shared group, an endpoint with empty lists, and a policy on the primary endpoint, both failover branches
+wired or not, mapper profiles, namespace prefix, filterlists including the legacy blocklist, a metrics override intake,
+the primary endpoint repeated as an additional endpoint, repeated histogram statistics, and aggregation settings) lowers
+to plans that validate with zero findings, and each is compared structurally with the blueprint `run.rs`'s
+`create_topology` builds for it (in standalone mode, or with standalone mode off and a fixed host provider for the
+connected entries): every lowered node maps by a documented table onto a legacy component, a fan-in, or a fan-out
+(emits through the output they name, opaque hosts through their `component` parameter), and the legacy edges leaving
+the mapped outputs and entering the mapped components are exactly the plan's, plus the host taps on `dsd_in.metrics`.
+What runs inside a chained component (the mapper in `dsd_enrich`, host tags in `metrics_enrich`) is outside the
+comparison; the presence table pins whether host tags are lowered. Re-lowering tests check that a change to a `Live` input changes only the parameters bound to
+it, and that a change to a `Startup` input changes nothing.
 
 ### Topology construction, installer, stub, control surface
 
@@ -840,7 +1123,8 @@ throughput, multiple platforms) are recorded as open, with the closest local evi
 
 1. Aggregation becomes a stateful kernel in the `dsd_agg` slot behind a declared isolation fence, keeping component ID
    `dsd_agg`, its telemetry, and the context-snapshot control (through `Kernel::control`). Buckets by `t_a`; resumable,
-   bounded flush drain with `Yielded`; the region stops reading input while a drain is pending, as native does.
+   bounded flush drain with `Yielded`, yielding between the `Flush::emit_next` steps stage 2 introduced; the region
+   stops reading input while a drain is pending, as native does.
 2. Watermarks per (admission point, epoch), heartbeats enabled with the derived period, progress batches on exits to
    state owners, clock resets closing buckets on a new epoch.
 3. `aggregate_window_duration_seconds` restricted to allowed widths at configuration deserialization, with an
@@ -849,8 +1133,9 @@ throughput, multiple platforms) are recorded as open, with the closest local evi
    and a `timestamp_split`'s window equals its aggregation's window.
 4. State lineages keyed by contract; `transition()` classification; `retain` shares the instance; `cut` computes `T` as
    the first common boundary at or after `max(last t_a over affected points) + margin` and publishes
-   `AdmissionSchedule::Cut`; a point that already stamped `t_a >= T` raises a conflict, and the installer cancels and
-   recomputes.
+   `AdmissionSchedule::Cut`; a point whose `AdmissionPoint::status()` shows `admitted_to_new` before `T` (it stamped
+   `t_a >= T`, or a clock reset moved it to `new`) raises a conflict, and the installer cancels and recomputes. A
+   reset-switched point raises it like one that reached `T` by time (amendment 42).
 5. Time-driven output is stamped at the state owner's output with its own admission point ID, its watermark as `t_a`,
    and the generation from the schedule.
 6. Credits: one `StateBudget` per state owner node, shared by all its lineages, so both generations count against one
@@ -882,18 +1167,42 @@ native behavior. Nothing in the specification is edited without the author.
    shared schedule.
 8. **Progress**: starved branches carry header-only progress to state owners, not only idle sources (stage 6).
 9. **Host-tags deadline** is process start plus `expected_tags_duration`, compared with `t_a` (native: transform build
-   time, monotonic, at processing). Intentional change, in the plan-driven topology only.
+   time, monotonic, at processing). Intentional change, in the plan-driven topology only. Lowering rounds it up to a
+   whole second (and caps it at 2^53 − 1 seconds), so that the deadline is always a plan duration; rounding up keeps
+   host tags at least as long as configured, as the native deadline, which starts after the process does.
 10. **`dsd_client_telemetry_out` taps the post-aggregation filter's output**: `tee` plus `emit` to an internal output.
 11. **Aggregation**: counters leave as `Rate(width)` (so `kind` is written for counters); `flush_open_windows` has no
     observable effect; new counters receive back-filled zeros from the previous flush; a first insert can emit
     duplicate timestamps; `dogstatsd_no_aggregation_pipeline` defaults to true. Fixtures pin these; quirks are tracked
-    separately.
+    separately. Stage 2's fixtures also pin these refinements of the matrix rows: the previous flush is the last one
+    that ran, since a tick while nothing is held is not a flush, so zeros reach back across idle periods; the first
+    flush emits no zeros, which leaves a bucket without one when the first flush closes two; the last zero is at the
+    last bucket starting before `last seen + expiry`; with no expiry, a counter still gains zeros before its last update
+    and holds its context forever; a late point in a mixed metric's first insertion waits until the collapsed bucket
+    closes; a backward wall-clock jump makes a later flush emit zeros for buckets already flushed; drops at the context
+    limit count metrics, not points, and a limit of zero drops everything with the breach flag never clearing; the
+    distribution copy keeps the unit and truncates sample weights while `.count` rounds them.
 12. **Passthrough batching** is not kernel behavior. Regions emit passthrough per input batch, which removes the native
     shutdown loss of the last idle window; `aggregate_passthrough_flushes_total` counts passthrough exit buffers.
 13. **Recipient identity in the default program** is native (forwarder, raw configured endpoint, key index). A
     configuration repeating the primary as an additional endpoint stays valid and keeps native duplicate delivery.
+    Stage 2 writes it `<forwarder>/<route>/<key index>/<configured endpoint>`, with `route` one of `primary`,
+    `metrics_override` (the Observability Pipelines Worker or Vector intake, which takes the primary's place for
+    metrics and keeps its policy identity), and `additional`, and the endpoint replaced by `sha256:<16 hex>` when it is
+    not plain printable ASCII, contains `@`, or is longer than 400 bytes. Recorded behavior for the compatibility
+    matrix's default-program validation row: `dd_url: X` with `additional_endpoints: {X: [k]}`, or with another spelling
+    of X, is two recipients of `dd_out` (natively two I/O loops, each receiving every payload), the default program
+    validates, and a routing policy on `X` selects both.
 14. **A default program that fails validation still runs** and is reported degraded; artifacts derived from it are
     rejected. Limits apply to artifact-provenance nodes.
+    Stage 2 records, for the compatibility matrix's default-program validation row, the configurations that run
+    natively but whose default program does not validate: integers beyond ±(2^53−1) (such as
+    `aggregate_context_limit` or `dogstatsd_mapper_cache_size`) are written as they are and fail `valid_parameters`.
+    `aggregate_flush_interval: 0s` fails `valid_parameters` too, and natively stops the process when aggregation
+    starts (Tokio's interval timer panics on a zero period). Configurations the native topology fails to build for
+    fail lowering with the native error instead, so they fail the boot as today. A duration no plan duration
+    represents (more than 2^53−1 of the largest unit dividing it) fails lowering, a gap left open; the host-tags
+    deadline is rounded to whole seconds so it is never such a duration (amendment 9).
 15. **Gateways**: MRF and autoscaling branches exist only when native wiring builds them; the MRF predicate keeps the
     static `multi_region_failover.enabled` as a startup-bound conjunct; the autoscaling output accepts only
     `{Counter, Rate, Gauge, Set}`.
@@ -920,8 +1229,10 @@ native behavior. Nothing in the specification is edited without the author.
     writes are judged over the kinds that can reach each operator.
 26. **Repeated histogram statistics are rejected**: native configuration accepts `histogram_aggregates` or
     `histogram_percentiles` with repeats (including percentiles that round to the same whole percent), which emits the
-    same series twice per flush. Stage 2 decides whether lowering de-duplicates them or the default program reports
-    degraded; the compatibility matrix's default-program validation row should record it.
+    same series twice per flush. Stage 2 decides that lowering lists each statistic once, keeping the first, and records
+    a lowering note naming the repeats; the default program validates. While aggregation runs as its native component
+    (through stage 5) the repeats are still emitted natively; from stage 6, when aggregation is built from the plan's
+    parameters, each statistic is emitted once per flush, an intentional change (the repeated points are identical).
 27. **Split port typing**: the ports of a `split` carry the input narrowed by the kinds for which the predicate can
     take each value, so an `emit` to an output that accepts only some kinds is valid behind a `kind_in` split, as the
     autoscaling gateway requires.
@@ -957,6 +1268,34 @@ native behavior. Nothing in the specification is edited without the author.
 36. **Traces are well typed**: the reference interpreter rejects a trace that admits a record outside its source's
     port type, or an adapter that emits one outside an opaque host's declared output types, rather than executing a
     trace no host can produce.
+37. **Binding names are typed-model paths**, below the model's top-level section, never configuration keys:
+    `dogstatsd.metric_filter.values`, `autoscaling_failover.metrics`. Values that combine settings have derived bindings
+    (`dogstatsd.post_aggregate_filter.values`, live because the filterlist is), and endpoint routing groups have keyed
+    ones, `metrics_endpoint_routing.group.<key>.names` and `.prefixes`, keyed by a digest of the group's endpoints so
+    that a key survives renumbering. Credentials are never bindable.
+38. **Lowering fails where native construction fails**, with the native error and in the native order (blueprint
+    assembly before component construction), so a configuration the native topology rejects fails the boot as today
+    with the error it reports today. A configuration that runs natively lowers, and validation reports what the plan
+    cannot express (amendment 14), with two known exceptions where lowering fails instead: a duration no plan duration
+    represents, and host tags enrichment without host tags in the host facts. Lowering approximates in one recorded
+    place: it lists a repeated histogram statistic once (amendment 26), while native aggregation, which runs as an
+    opaque host until stage 6, still emits it once per listing.
+39. **Host facts include the Cluster Agent endpoint**, which Kubernetes service discovery reads from the process
+    environment at boot, so that lowering stays a pure function of configuration and host facts.
+40. **Before stage 4, gateway emits are named `<gateway>_out`**, by `derived_terminal_id` from the opaque host's
+    output port `out`; from stage 4 the gateway is a `split` with `<gateway>_true` and `<gateway>_false` terminals. The
+    stage 4 default program therefore changes those nodes, which correspondence reports.
+41. **Output fingerprints cover where an output delivers**: the encoder variant and its endpoint routing, the
+    forwarder, and the recipient identities. Encoder tuning (compression, payload limits) and API keys are not part of
+    them, so neither a tuning change nor a key rotation makes an artifact's output invalid.
+
+42. **A clock reset admits to the cut's new generation as reaching `T` does.** Transition protocol item 5 says that
+    before `T`, cancellation discards the new generation because nothing was admitted to it. A point whose clock
+    resets after it first saw the cut stamps later batches with `new` (item 2), possibly well before `T`, so something
+    was admitted to `new`. The installer treats such a point like one that stamped `t_a >= T`: a conflict
+    (`AdmissionPoint::status().admitted_to_new`), so the cut is completed or recomputed rather than cancelled. A point
+    keeps the epoch it first saw a cut to `new` with for as long as the schedule's cut has that `new` generation, so
+    republishing the cut, even with another `T`, never moves a reset-switched point back to `old`.
 
 ## Risks
 

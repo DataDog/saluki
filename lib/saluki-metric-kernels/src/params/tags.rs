@@ -67,20 +67,91 @@ pub struct TagValueRule {
     pub on_miss: TagValueMismatch,
 }
 
-/// An error describing why a set of [`TagValueRule`]s cannot be used.
+/// Why a set of [`TagValueRule`]s cannot be applied unambiguously.
+///
+/// Rules are numbered from 1, in the order given. The variants carry what an error message needs, so that a host's
+/// configuration layer can describe the problem in terms of its own configuration keys; [`Display`][fmt::Display]
+/// describes it in terms of the rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InvalidTagValueRules(String);
+pub enum InvalidTagValueRules {
+    /// A rule's metric prefix is empty.
+    EmptyMetricPrefix {
+        /// The rule's number.
+        rule: usize,
+    },
 
-impl InvalidTagValueRules {
-    /// Returns the description of the problem.
-    pub fn message(&self) -> &str {
-        &self.0
-    }
+    /// A rule's tag name is empty.
+    EmptyTagName {
+        /// The rule's number.
+        rule: usize,
+
+        /// The rule's metric prefix.
+        metric_prefix: String,
+    },
+
+    /// A rule's tag name contains `:`, so it names a tag and value rather than a tag key.
+    TagNameContainsColon {
+        /// The rule's number.
+        rule: usize,
+
+        /// The rule's tag name.
+        tag_name: String,
+    },
+
+    /// Two rules restrict the same tag for the same metric prefix.
+    DuplicateRule {
+        /// The metric prefix.
+        metric_prefix: String,
+
+        /// The tag name.
+        tag_name: String,
+    },
+
+    /// Two distinct metric prefixes overlap: the longer one starts with the shorter one, so a metric could match both.
+    OverlappingPrefixes {
+        /// The shorter prefix.
+        shorter: String,
+
+        /// The longer prefix, which starts with the shorter one.
+        longer: String,
+    },
 }
 
 impl fmt::Display for InvalidTagValueRules {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        match self {
+            Self::EmptyMetricPrefix { rule } => write!(
+                f,
+                "tag value rule {} has an empty metric prefix; give each rule a non-empty metric name prefix",
+                rule
+            ),
+            Self::EmptyTagName { rule, metric_prefix } => write!(
+                f,
+                "tag value rule {} for prefix '{}' has an empty tag name; give each rule a non-empty tag name",
+                rule, metric_prefix
+            ),
+            Self::TagNameContainsColon { rule, tag_name } => write!(
+                f,
+                "tag value rule {} names the tag '{}', which contains ':'; name only the tag key, without a colon or \
+                 value",
+                rule, tag_name
+            ),
+            Self::DuplicateRule {
+                metric_prefix,
+                tag_name,
+            } => write!(
+                f,
+                "metric prefix '{}' has more than one tag value rule for tag '{}'; give each prefix and tag pair one \
+                 rule",
+                metric_prefix, tag_name
+            ),
+            Self::OverlappingPrefixes { shorter, longer } => write!(
+                f,
+                "the tag value rule prefixes '{}' and '{}' overlap; use distinct prefixes where neither starts with \
+                 the other",
+                shorter, longer
+            ),
+        }
     }
 }
 
@@ -88,64 +159,74 @@ impl Error for InvalidTagValueRules {}
 
 /// Checks that a set of tag value rules can be applied unambiguously.
 ///
-/// The host's configuration layer validates its own tag value allowlists by the same rules, with messages in terms of
-/// its configuration keys. Until the tag projection kernel is extracted and one of the two delegates to the other, a
-/// differential test in the host checks that both accept and reject the same rule lists.
+/// This is [`validate_tag_value_rule_keys`] over each rule's metric prefix and tag name.
 ///
 /// # Errors
 ///
-/// Returns an error describing the first problem found: a rule with an empty prefix or tag name, a tag name containing
-/// `:`, two rules for the same prefix and tag, or two distinct prefixes where one starts with the other. Rules with the
-/// same prefix may restrict different tags.
+/// Returns an error describing the first problem found; see [`validate_tag_value_rule_keys`].
 pub fn validate_tag_value_rules(rules: &[TagValueRule]) -> Result<(), InvalidTagValueRules> {
-    for (index, rule) in rules.iter().enumerate() {
-        let number = index + 1;
-        if rule.metric_prefix.is_empty() {
-            return Err(InvalidTagValueRules(format!(
-                "tag value rule {} has an empty metric prefix; give each rule a non-empty metric name prefix",
-                number
-            )));
+    validate_tag_value_rule_keys(
+        rules
+            .iter()
+            .map(|rule| (rule.metric_prefix.as_str(), rule.tag_name.as_str())),
+    )
+}
+
+/// Checks that tag value rules, given by their metric prefix and tag name in order, can be applied unambiguously.
+///
+/// This is the one implementation of the rule: tag projection relies on it to find at most one rule per metric and
+/// tag, and a host's configuration layer applies it to its own tag value allowlists, so that both accept and reject
+/// the same rules.
+///
+/// # Errors
+///
+/// Returns an error describing the first problem found. Every rule is first checked on its own, in order: an empty
+/// prefix, then an empty tag name, then a tag name containing `:`. Then, among the rules sorted by prefix and tag name,
+/// the first two adjacent rules with the same prefix and tag, or with distinct prefixes where one starts with the
+/// other, are reported. Rules with the same prefix may restrict different tags.
+pub fn validate_tag_value_rule_keys<'a, I>(keys: I) -> Result<(), InvalidTagValueRules>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let keys = keys.into_iter().collect::<Vec<_>>();
+    for (index, (metric_prefix, tag_name)) in keys.iter().enumerate() {
+        let rule = index + 1;
+        if metric_prefix.is_empty() {
+            return Err(InvalidTagValueRules::EmptyMetricPrefix { rule });
         }
-        if rule.tag_name.is_empty() {
-            return Err(InvalidTagValueRules(format!(
-                "tag value rule {} for prefix '{}' has an empty tag name; give each rule a non-empty tag name",
-                number, rule.metric_prefix
-            )));
+        if tag_name.is_empty() {
+            return Err(InvalidTagValueRules::EmptyTagName {
+                rule,
+                metric_prefix: metric_prefix.to_string(),
+            });
         }
-        if rule.tag_name.contains(':') {
-            return Err(InvalidTagValueRules(format!(
-                "tag value rule {} names the tag '{}', which contains ':'; name only the tag key, without a colon or \
-                 value",
-                number, rule.tag_name
-            )));
+        if tag_name.contains(':') {
+            return Err(InvalidTagValueRules::TagNameContainsColon {
+                rule,
+                tag_name: tag_name.to_string(),
+            });
         }
     }
 
-    let mut sorted = rules.iter().collect::<Vec<_>>();
-    sorted.sort_unstable_by(|left, right| {
-        left.metric_prefix
-            .cmp(&right.metric_prefix)
-            .then_with(|| left.tag_name.cmp(&right.tag_name))
-    });
+    let mut sorted = keys;
+    sorted.sort_unstable();
 
     // After sorting by prefix and then tag, duplicate prefix and tag pairs are adjacent, and any distinct prefix that
     // extends another follows the whole group of the shorter prefix, so checking adjacent pairs finds both problems.
     for pair in sorted.windows(2) {
-        let (left, right) = (pair[0], pair[1]);
-        if left.metric_prefix == right.metric_prefix {
-            if left.tag_name == right.tag_name {
-                return Err(InvalidTagValueRules(format!(
-                    "metric prefix '{}' has more than one tag value rule for tag '{}'; give each prefix and tag pair \
-                     one rule",
-                    left.metric_prefix, left.tag_name
-                )));
+        let ((left_prefix, left_tag), (right_prefix, right_tag)) = (pair[0], pair[1]);
+        if left_prefix == right_prefix {
+            if left_tag == right_tag {
+                return Err(InvalidTagValueRules::DuplicateRule {
+                    metric_prefix: left_prefix.to_string(),
+                    tag_name: left_tag.to_string(),
+                });
             }
-        } else if right.metric_prefix.starts_with(&left.metric_prefix) {
-            return Err(InvalidTagValueRules(format!(
-                "the tag value rule prefixes '{}' and '{}' overlap; use distinct prefixes where neither starts with \
-                 the other",
-                left.metric_prefix, right.metric_prefix
-            )));
+        } else if right_prefix.starts_with(left_prefix) {
+            return Err(InvalidTagValueRules::OverlappingPrefixes {
+                shorter: left_prefix.to_string(),
+                longer: right_prefix.to_string(),
+            });
         }
     }
 
@@ -178,34 +259,85 @@ mod tests {
 
     #[test]
     fn invalid_rules_are_rejected_with_the_reason() {
-        // (rules, expected message fragment)
-        let cases: Vec<(Vec<TagValueRule>, &str)> = vec![
-            (vec![rule("", "env")], "rule 1 has an empty metric prefix"),
+        let owned = |value: &str| value.to_string();
+        // (rules, expected error, expected message fragment)
+        let cases: Vec<(Vec<TagValueRule>, InvalidTagValueRules, &str)> = vec![
+            (
+                vec![rule("", "env")],
+                InvalidTagValueRules::EmptyMetricPrefix { rule: 1 },
+                "rule 1 has an empty metric prefix",
+            ),
             (
                 vec![rule("a.", "env"), rule("b.", "")],
+                InvalidTagValueRules::EmptyTagName {
+                    rule: 2,
+                    metric_prefix: owned("b."),
+                },
                 "rule 2 for prefix 'b.' has an empty tag name",
             ),
             (
                 vec![rule("a.", "env:prod")],
+                InvalidTagValueRules::TagNameContainsColon {
+                    rule: 1,
+                    tag_name: owned("env:prod"),
+                },
                 "names the tag 'env:prod', which contains ':'",
+            ),
+            // Every rule is checked on its own before rules are compared, so a later empty tag name is reported
+            // rather than an earlier overlap.
+            (
+                vec![rule("a", "env"), rule("ab", "env"), rule("c", "")],
+                InvalidTagValueRules::EmptyTagName {
+                    rule: 3,
+                    metric_prefix: owned("c"),
+                },
+                "rule 3 for prefix 'c' has an empty tag name",
             ),
             (
                 vec![rule("a.", "env"), rule("b.", "env"), rule("a.", "env")],
+                InvalidTagValueRules::DuplicateRule {
+                    metric_prefix: owned("a."),
+                    tag_name: owned("env"),
+                },
                 "metric prefix 'a.' has more than one tag value rule for tag 'env'",
             ),
             (
-                vec![rule("checkout.", "env"), rule("checkout.api.", "region")],
+                vec![rule("checkout.api.", "region"), rule("checkout.", "env")],
+                InvalidTagValueRules::OverlappingPrefixes {
+                    shorter: owned("checkout."),
+                    longer: owned("checkout.api."),
+                },
                 "prefixes 'checkout.' and 'checkout.api.' overlap",
             ),
             // Overlap is detected even when a different tag of the shorter prefix sorts in between.
             (
                 vec![rule("a", "z"), rule("a", "b"), rule("ab", "c")],
+                InvalidTagValueRules::OverlappingPrefixes {
+                    shorter: owned("a"),
+                    longer: owned("ab"),
+                },
                 "prefixes 'a' and 'ab' overlap",
             ),
         ];
-        for (rules, fragment) in cases {
+        for (rules, expected, fragment) in cases {
             let error = validate_tag_value_rules(&rules).unwrap_err();
-            assert!(error.message().contains(fragment), "{:?}: {}", rules, error);
+            assert_eq!(error, expected, "{:?}", rules);
+            assert!(error.to_string().contains(fragment), "{:?}: {}", rules, error);
         }
+    }
+
+    #[test]
+    fn rule_keys_are_validated_without_rules() {
+        assert_eq!(
+            validate_tag_value_rule_keys([("checkout.", "env"), ("catalog.", "env")]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_tag_value_rule_keys([("checkout.", "env"), ("checkout.", "env")]),
+            Err(InvalidTagValueRules::DuplicateRule {
+                metric_prefix: "checkout.".to_string(),
+                tag_name: "env".to_string(),
+            })
+        );
     }
 }

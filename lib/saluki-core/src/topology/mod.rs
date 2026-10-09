@@ -17,6 +17,7 @@ mod context;
 pub use self::context::TopologyContext;
 
 mod graph;
+pub use self::graph::DataType;
 
 pub mod ids;
 pub use self::ids::{
@@ -25,6 +26,9 @@ pub use self::ids::{
 
 pub mod interconnect;
 use self::interconnect::{Consumer, Dispatcher};
+
+mod snapshot;
+pub use self::snapshot::{AdmissionPointSnapshot, BlueprintSnapshot, ComponentSnapshot, EdgeSnapshot, OutputSnapshot};
 
 #[cfg(test)]
 pub(super) mod test_util;

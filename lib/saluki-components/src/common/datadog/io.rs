@@ -616,7 +616,11 @@ fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
     METRIC_INTAKE_PATHS.contains(&uri.path()) || uri.path() == v3_beta_series_route
 }
 
-fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
+/// Returns whether a request goes to an endpoint of the given route: metrics requests go to the alternate metrics
+/// intake in place of the primary endpoint when there is one, and other requests never go to it.
+pub(crate) fn should_route_to_endpoint(
+    is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute,
+) -> bool {
     match (is_metrics_request, has_metrics_primary, route) {
         (true, true, EndpointRoute::Primary) => false,
         (true, true, EndpointRoute::MetricsPrimary) => true,

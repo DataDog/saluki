@@ -2,14 +2,19 @@ use std::{collections::VecDeque, fmt};
 
 use crate::{
     data_model::event::{Event, EventType},
+    execution::BatchHeader,
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
 
 /// A fixed-size event buffer.
+///
+/// Besides its events, a buffer carries a [`BatchHeader`]. A new buffer's header is unstamped. Cloning a buffer copies
+/// its header, so every copy of a fanned-out buffer carries the same stamp.
 #[derive(Clone)]
 pub struct FixedSizeEventBuffer<const N: usize> {
     events: VecDeque<Event>,
     seen_event_types: EventType,
+    header: BatchHeader,
 }
 
 impl<const N: usize> FixedSizeEventBuffer<N> {
@@ -21,7 +26,34 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         Self {
             events: VecDeque::with_capacity(capacity.min(N)),
             seen_event_types: EventType::none(),
+            header: BatchHeader::default(),
         }
+    }
+
+    /// Returns this buffer with the given header.
+    pub fn with_header(mut self, header: BatchHeader) -> Self {
+        self.header = header;
+        self
+    }
+
+    /// Returns the batch header.
+    pub fn header(&self) -> &BatchHeader {
+        &self.header
+    }
+
+    /// Returns a mutable reference to the batch header.
+    pub fn header_mut(&mut self) -> &mut BatchHeader {
+        &mut self.header
+    }
+
+    /// Replaces the batch header.
+    pub fn set_header(&mut self, header: BatchHeader) {
+        self.header = header;
+    }
+
+    /// Takes the batch header out of the buffer, leaving it unstamped.
+    pub fn take_header(&mut self) -> BatchHeader {
+        std::mem::take(&mut self.header)
     }
 
     /// Returns the total number of events the event buffer can hold.
@@ -49,10 +81,13 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         self.seen_event_types.contains(event_type)
     }
 
-    /// Clears the event buffer, removing all events and resetting the seen event types.
+    /// Clears the event buffer, removing all events, resetting the seen event types, and resetting the header.
+    ///
+    /// Resetting the header means a reused buffer never keeps the generation of the batch it last carried alive.
     pub fn clear(&mut self) {
         self.events.clear();
         self.seen_event_types = EventType::none();
+        self.header = BatchHeader::default();
     }
 
     /// Attempts to append an event to the back of the event buffer.
@@ -69,6 +104,9 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
     }
 
     /// Extract events from the event buffer given a predicate function.
+    ///
+    /// Neither the extracted events nor the events left in the buffer keep their relative order. Use
+    /// [`retain`][Self::retain] when order matters.
     pub fn extract<F>(&mut self, predicate: F) -> impl Iterator<Item = Event>
     where
         F: Fn(&Event) -> bool,
@@ -99,6 +137,9 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
     }
 
     /// Removes events from the event buffer if they match the given predicate.
+    ///
+    /// Each removed event's slot is filled with the buffer's last event, so the remaining events do not keep their
+    /// relative order. Use [`retain`][Self::retain] when order matters.
     pub fn remove_if<F>(&mut self, mut predicate: F)
     where
         F: FnMut(&mut Event) -> bool,
@@ -120,6 +161,26 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         // Update the seen event types to reflect what's left over.
         self.seen_event_types = seen_event_types;
     }
+
+    /// Keeps only the events for which `keep` returns `true`, preserving their order.
+    ///
+    /// `keep` may modify each event before deciding.
+    pub fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&mut Event) -> bool,
+    {
+        let mut seen_event_types = EventType::none();
+        self.events.retain_mut(|event| {
+            let kept = keep(event);
+            if kept {
+                seen_event_types |= event.event_type();
+            }
+            kept
+        });
+
+        // Update the seen event types to reflect what's left over.
+        self.seen_event_types = seen_event_types;
+    }
 }
 
 impl<const N: usize> Default for FixedSizeEventBuffer<N> {
@@ -127,6 +188,7 @@ impl<const N: usize> Default for FixedSizeEventBuffer<N> {
         Self {
             events: VecDeque::with_capacity(N),
             seen_event_types: EventType::none(),
+            header: BatchHeader::default(),
         }
     }
 }
@@ -134,6 +196,10 @@ impl<const N: usize> Default for FixedSizeEventBuffer<N> {
 impl<const N: usize> Dispatchable for FixedSizeEventBuffer<N> {
     fn item_count(&self) -> usize {
         self.len()
+    }
+
+    fn header_mut(&mut self) -> Option<&mut BatchHeader> {
+        Some(&mut self.header)
     }
 }
 
@@ -158,6 +224,7 @@ impl<const N: usize> fmt::Debug for FixedSizeEventBuffer<N> {
         f.debug_struct("FixedSizeEventBuffer")
             .field("cap", &N)
             .field("len", &self.len())
+            .field("header", &self.header)
             .finish()
     }
 }
@@ -237,7 +304,7 @@ impl<const N: usize> EventBufferManager<N> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, sync::Arc};
 
     use super::*;
     use crate::data_model::event::{
@@ -246,6 +313,7 @@ mod tests {
         service_check::{CheckStatus, ServiceCheck},
         Event, EventType,
     };
+    use crate::execution::{AdmissionPointId, AdmissionTime, EntryId, GenerationId, GenerationRef, GenerationToken};
 
     #[test]
     fn capacity() {
@@ -454,6 +522,158 @@ mod tests {
             .into_iter();
         assert_eq!(Some(event4), buffered_events2.next());
         assert_eq!(None, buffered_events2.next());
+    }
+
+    fn stamped_header(generation: &GenerationRef) -> BatchHeader {
+        BatchHeader {
+            admitted_at: Some(AdmissionTime::from_unix_secs(100)),
+            admission_point: Some(AdmissionPointId::new(4)),
+            epoch: 2,
+            generation: Some(Arc::clone(generation)),
+            entry: Some(EntryId::new(1)),
+        }
+    }
+
+    fn metric(name: &'static str) -> Event {
+        Event::Metric(Metric::counter(name, 1.0))
+    }
+
+    fn names(buffer: &FixedSizeEventBuffer<10>) -> Vec<String> {
+        buffer
+            .into_iter()
+            .map(|event| event.try_as_metric().unwrap().context().name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn new_buffers_are_unstamped() {
+        assert!(!FixedSizeEventBuffer::<4>::default().header().is_stamped());
+        assert!(!FixedSizeEventBuffer::<4>::with_capacity(1).header().is_stamped());
+
+        let mut manager = EventBufferManager::<4>::default();
+        assert!(manager.try_push(metric("a")).is_none());
+        let buffer = manager.consume().expect("manager should have a buffer");
+        assert!(!buffer.header().is_stamped());
+    }
+
+    #[test]
+    fn the_header_can_be_set_changed_and_taken() {
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(3)));
+
+        let buffer = FixedSizeEventBuffer::<4>::with_capacity(0).with_header(stamped_header(&generation));
+        assert_eq!(buffer.header().admitted_at, Some(AdmissionTime::from_unix_secs(100)));
+        assert_eq!(buffer.header().generation_id(), Some(GenerationId::new(3)));
+
+        let mut buffer = FixedSizeEventBuffer::<4>::default();
+        buffer.set_header(stamped_header(&generation));
+        buffer.header_mut().entry = None;
+        assert_eq!(buffer.header().entry, None);
+        assert_eq!(buffer.header().epoch, 2);
+
+        // Taking the header leaves the buffer unstamped.
+        let taken = buffer.take_header();
+        assert_eq!(taken.admission_point, Some(AdmissionPointId::new(4)));
+        assert!(!buffer.header().is_stamped());
+        assert_eq!(buffer.header().generation_id(), None);
+
+        // The dispatch path reaches the same header.
+        let mut buffer = FixedSizeEventBuffer::<4>::default();
+        Dispatchable::header_mut(&mut buffer)
+            .expect("event buffers carry a header")
+            .admitted_at = Some(AdmissionTime::from_unix_secs(7));
+        assert_eq!(buffer.header().admitted_at, Some(AdmissionTime::from_unix_secs(7)));
+    }
+
+    #[test]
+    fn clones_carry_the_same_header() {
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(5)));
+        let mut buffer = FixedSizeEventBuffer::<4>::default().with_header(stamped_header(&generation));
+        assert!(buffer.try_push(metric("a")).is_none());
+
+        let copy = buffer.clone();
+        assert_eq!(copy.header().admitted_at, buffer.header().admitted_at);
+        assert_eq!(copy.header().admission_point, buffer.header().admission_point);
+        assert_eq!(copy.header().epoch, buffer.header().epoch);
+        assert_eq!(copy.header().entry, buffer.header().entry);
+        assert_eq!(copy.header().generation_id(), Some(GenerationId::new(5)));
+
+        // The copies share the generation, so each keeps it alive.
+        assert_eq!(Arc::strong_count(&generation), 3);
+    }
+
+    #[test]
+    fn clearing_a_buffer_unstamps_it_and_releases_its_generation() {
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(8)));
+        let mut buffer = FixedSizeEventBuffer::<4>::default().with_header(stamped_header(&generation));
+        assert!(buffer.try_push(metric("a")).is_none());
+        assert_eq!(Arc::strong_count(&generation), 2);
+
+        buffer.clear();
+        assert!(buffer.is_empty());
+        assert!(!buffer.header().is_stamped());
+        assert_eq!(buffer.header().entry, None);
+        assert_eq!(Arc::strong_count(&generation), 1);
+    }
+
+    #[test]
+    fn retain_keeps_survivors_in_order() {
+        let mut buffer = FixedSizeEventBuffer::<10>::default();
+        for name in ["a", "drop_b", "c", "drop_d", "e", "f"] {
+            assert!(buffer.try_push(metric(name)).is_none());
+        }
+        assert!(buffer
+            .try_push(Event::EventD(EventD::new("drop_event", "text")))
+            .is_none());
+
+        buffer.retain(|event| match event {
+            Event::Metric(metric) => !metric.context().name().starts_with("drop_"),
+            _ => false,
+        });
+        assert_eq!(names(&buffer), vec!["a", "c", "e", "f"]);
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+
+        // For comparison, `remove_if` moves the last survivor into each removed slot.
+        let mut buffer = FixedSizeEventBuffer::<10>::default();
+        for name in ["a", "drop_b", "c", "drop_d", "e", "f"] {
+            assert!(buffer.try_push(metric(name)).is_none());
+        }
+        buffer.remove_if(|event| event.try_as_metric().unwrap().context().name().starts_with("drop_"));
+        assert_eq!(names(&buffer), vec!["a", "f", "c", "e"]);
+    }
+
+    #[test]
+    fn retain_can_modify_the_events_it_keeps_and_leaves_the_header() {
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(2)));
+        let mut buffer = FixedSizeEventBuffer::<10>::default().with_header(stamped_header(&generation));
+        for name in ["a", "b", "c"] {
+            assert!(buffer.try_push(metric(name)).is_none());
+        }
+
+        buffer.retain(|event| {
+            let metric = event.try_as_metric_mut().unwrap();
+            if metric.context().name() == "b" {
+                return false;
+            }
+            *metric.context_mut() = metric.context().with_name(format!("{}_kept", metric.context().name()));
+            true
+        });
+        assert_eq!(names(&buffer), vec!["a_kept", "c_kept"]);
+        assert_eq!(buffer.header().generation_id(), Some(GenerationId::new(2)));
+
+        // Retaining nothing empties the buffer, including its seen event types.
+        buffer.retain(|_| false);
+        assert!(buffer.is_empty());
+        assert!(!buffer.has_event_type(EventType::Metric));
+    }
+
+    #[test]
+    fn events_buffers_stay_within_their_size_budget() {
+        // An events buffer is a deque, the seen event types, and the batch header stored inline: 40 bytes without the
+        // header, 80 with it. Interconnect memory bounds count one struct per channel slot, so growth here grows every
+        // topology's minimum bound.
+        assert!(std::mem::size_of::<BatchHeader>() <= 40);
+        assert!(std::mem::size_of::<crate::topology::EventsBuffer>() <= 80);
     }
 
     #[test]

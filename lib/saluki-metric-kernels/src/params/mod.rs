@@ -10,7 +10,7 @@
 //! - [`HistogramParams`]: the statistics that aggregation computes for each histogram, and its distribution copies.
 
 mod histogram;
-pub use self::histogram::{HistogramAggregate, HistogramParams, MAX_PERCENTILE};
+pub use self::histogram::{HistogramAggregate, HistogramParams, InvalidHistogramStatistic, MAX_PERCENTILE};
 
 mod mapper;
 pub use self::mapper::{MapperProfile, MatchType, MetricMapping};
@@ -20,5 +20,6 @@ pub use self::prefix::NamespacePrefixParams;
 
 mod tags;
 pub use self::tags::{
-    validate_tag_value_rules, InvalidTagValueRules, TagFilterAction, TagFilterRule, TagValueMismatch, TagValueRule,
+    validate_tag_value_rule_keys, validate_tag_value_rules, InvalidTagValueRules, TagFilterAction, TagFilterRule,
+    TagValueMismatch, TagValueRule,
 };

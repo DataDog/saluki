@@ -33,6 +33,11 @@ mod config;
 mod dogstatsd_contexts;
 mod internal;
 
+// Lowering native configuration into the default program is described and tested here, but nothing runs it until the
+// plan-driven topology (stage 3) does, so it is compiled only for its tests.
+#[cfg(test)]
+mod programmable_metrics;
+
 pub(crate) mod state;
 
 #[cfg(all(target_os = "linux", not(system_allocator)))]

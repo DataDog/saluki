@@ -1,11 +1,11 @@
 //! Metric filtering shared by MRF and endpoint allow lists.
-
-use std::collections::HashSet;
+//!
+//! Names are matched by the selections in `saluki_metric_kernels::selection`: an exact raw-name set for MRF, and an
+//! intake-name allowlist of exact names and literal prefixes for endpoints.
 
 use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
-use saluki_components::config::metrics_endpoint_routing::compact_metric_prefixes;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
@@ -17,13 +17,14 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
-use saluki_metric_kernels::intake_name::{is_normalized, normalize_into, NameBuf};
+use saluki_metric_kernels::selection::{IntakeNameAllowlist, RawNameSet};
 use saluki_metrics::MetricsBuilder;
+use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
-const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
+pub(crate) const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
+pub(crate) const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";
 
 /// Configuration for a metric filter between enrichment and encoding.
 ///
@@ -101,22 +102,14 @@ impl FilterSource {
 enum Filter {
     DropAll,
     All,
-    MrfAllowlist(HashSet<String>),
-    Allowlist {
-        names: HashSet<Vec<u8>>,
-        prefixes: Vec<String>,
-    },
+    MrfAllowlist(RawNameSet),
+    Allowlist(IntakeNameAllowlist),
 }
 
 impl Filter {
     fn for_allowlist(names: &[String], prefixes: &[String]) -> Self {
-        let mut prefixes = prefixes.to_vec();
-        // Remove covered prefixes so a binary search only needs to check its predecessor.
-        compact_metric_prefixes(&mut prefixes);
-        Self::Allowlist {
-            names: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
-            prefixes,
-        }
+        // Covered prefixes are removed, so a lookup only needs to check one prefix.
+        Self::Allowlist(IntakeNameAllowlist::new(names, prefixes))
     }
 
     fn for_mrf(enabled: bool, routing: &MetricMirroring) -> Self {
@@ -125,7 +118,7 @@ impl Filter {
         } else if routing.allowlist.is_empty() {
             Self::All
         } else {
-            Self::MrfAllowlist(routing.allowlist.iter().cloned().collect())
+            Self::MrfAllowlist(RawNameSet::new(&routing.allowlist))
         }
     }
 
@@ -136,28 +129,8 @@ impl Filter {
         match self {
             Self::DropAll => false,
             Self::All => true,
-            Self::MrfAllowlist(names) => names.contains(metric.context().name().as_ref()),
-            Self::Allowlist { names, prefixes } => {
-                let name = metric.context().name().as_ref();
-                if is_normalized(name) {
-                    return Self::matches_allowlist(name.as_bytes(), names, prefixes);
-                }
-                let mut buf = NameBuf::new();
-                match normalize_into(&mut buf, name) {
-                    Some(normalized) => Self::matches_allowlist(normalized, names, prefixes),
-                    None => false,
-                }
-            }
-        }
-    }
-
-    fn matches_allowlist(name: &[u8], names: &HashSet<Vec<u8>>, prefixes: &[String]) -> bool {
-        if names.contains(name) {
-            return true;
-        }
-        match prefixes.binary_search_by(|prefix| prefix.as_bytes().cmp(name)) {
-            Ok(_) => true,
-            Err(index) => index > 0 && name.starts_with(prefixes[index - 1].as_bytes()),
+            Self::MrfAllowlist(names) => names.contains(metric.context().name()),
+            Self::Allowlist(allowlist) => allowlist.matches(metric.context().name()),
         }
     }
 
@@ -208,10 +181,10 @@ impl Telemetry {
 
     fn set_allowlist_sizes(&self, filter: &Filter) {
         match filter {
-            Filter::Allowlist { names, prefixes } => {
+            Filter::Allowlist(allowlist) => {
                 // Report stored matcher entries, after exact-name deduplication and prefix compaction.
-                self.exact_size.set(names.len() as f64);
-                self.prefix_size.set(prefixes.len() as f64);
+                self.exact_size.set(allowlist.name_count() as f64);
+                self.prefix_size.set(allowlist.prefix_count() as f64);
             }
             Filter::DropAll | Filter::All | Filter::MrfAllowlist(_) => {}
         }
@@ -258,18 +231,22 @@ impl MemoryBounds for MetricFilterConfiguration {
             .with_single_value::<MetricFilter>("component struct")
             .with_single_value::<Filter>("matching rule")
             .with_fixed_amount(
-                // Two copies: the source's snapshot and the matching set.
+                // The source's snapshot.
                 "allowlist strings",
                 allowlist
                     .iter()
                     .chain(prefixes)
                     .map(|name| name.len() + std::mem::size_of::<String>())
-                    .sum::<usize>()
-                    * 2,
+                    .sum::<usize>(),
             )
             .with_fixed_amount(
-                "hashset buckets",
-                allowlist.len() * std::mem::size_of::<Option<String>>() * 2,
+                // The matching rule's copy.
+                "matcher entries",
+                allowlist
+                    .iter()
+                    .chain(prefixes)
+                    .map(|name| name.len() + std::mem::size_of::<MetaString>())
+                    .sum::<usize>(),
             );
     }
 }
@@ -486,10 +463,11 @@ mod tests {
             .iter()
             .map(|name| name.len() + size_of::<String>())
             .sum::<usize>();
-        let expected = size_of::<MetricFilter>()
-            + size_of::<Filter>()
-            + allowlist_strings * 2
-            + allowlist.len() * size_of::<Option<String>>() * 2;
+        let matcher_entries = allowlist
+            .iter()
+            .map(|name| name.len() + size_of::<MetaString>())
+            .sum::<usize>();
+        let expected = size_of::<MetricFilter>() + size_of::<Filter>() + allowlist_strings + matcher_entries;
 
         assert_eq!(bounds.total_minimum_required_bytes(), expected);
         assert_eq!(bounds.total_firm_limit_bytes(), expected);

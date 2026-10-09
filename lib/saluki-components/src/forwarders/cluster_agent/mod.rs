@@ -22,7 +22,7 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
-    endpoints::{ResolvedEndpoint, SingleDestination},
+    endpoints::{MetricsRecipient, ResolvedEndpoint, SingleDestination},
     io::{EndpointRequestMapper, EndpointRequestMapperFactory, LiveForwarderConfiguration, TransactionForwarder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
@@ -69,6 +69,16 @@ impl ClusterAgentForwarderConfiguration {
             forwarder_config,
             auth_header_value,
         })
+    }
+
+    /// Returns the endpoints this forwarder sends metrics payloads to: the Cluster Agent alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Cluster Agent endpoint cannot be resolved, which also fails building the forwarder.
+    pub fn metrics_recipients(&self) -> Result<Vec<MetricsRecipient>, GenericError> {
+        // The Cluster Agent forwarder does not carry endpoint routing into its transactions.
+        self.forwarder_config.metrics_recipients(None)
     }
 }
 
@@ -222,6 +232,28 @@ mod tests {
 
     use super::*;
     use crate::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
+
+    #[test]
+    fn metrics_recipients_are_the_cluster_agent_alone() {
+        let mut shared = shared_configuration();
+        // The configured Datadog endpoints do not apply to the Cluster Agent forwarder.
+        shared.endpoints.additional_endpoints =
+            HashMap::from([("https://secondary.example.com".to_string(), vec!["key-a".to_string()])]);
+        let config = ClusterAgentForwarderConfiguration::from_configuration(
+            &shared,
+            "https://cluster-agent.example.com:5005".to_string(),
+            "secret-token".to_string(),
+        )
+        .expect("the configuration is valid");
+        assert_eq!(
+            config.metrics_recipients().expect("the endpoint resolves"),
+            vec![MetricsRecipient {
+                route: crate::common::datadog::endpoints::MetricsRecipientRoute::Primary,
+                configured_endpoint: "https://cluster-agent.example.com:5005".to_string(),
+                api_key_index: None,
+            }]
+        );
+    }
 
     #[test]
     fn request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {

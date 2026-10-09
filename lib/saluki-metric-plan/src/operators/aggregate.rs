@@ -1,8 +1,11 @@
 //! The `aggregate` operator.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, num::NonZeroU64};
 
-use saluki_metric_kernels::params::{HistogramAggregate, HistogramParams, MAX_PERCENTILE};
+use saluki_metric_kernels::{
+    aggregate::{AggregateParams, HistogramConfiguration},
+    params::{HistogramAggregate, HistogramParams, MAX_PERCENTILE},
+};
 
 use super::{
     contract::{
@@ -80,6 +83,21 @@ pub fn histogram_params(params: &DecodedParams) -> Option<HistogramParams> {
         percentiles,
         copy_to_distribution: params.bool("copy_to_distribution")?,
         copy_to_distribution_prefix: params.str("copy_to_distribution_prefix")?.to_string(),
+    })
+}
+
+/// Decodes the known parameters of an `aggregate` node into the parameters of native aggregation.
+///
+/// Returns `None` if any of them is an unresolved binding. The flush interval is not among them: it schedules flushes,
+/// which is the host's job. A counter expiry of `0s` keeps counters forever.
+pub fn aggregate_params(params: &DecodedParams) -> Option<AggregateParams> {
+    let histograms = histogram_params(params)?;
+    Some(AggregateParams {
+        window: NonZeroU64::new(params.duration("window")?.as_secs())?,
+        context_limit: usize::try_from(params.integer("context_limit")?).ok()?,
+        counter_expiry: NonZeroU64::new(params.duration("counter_expiry")?.as_secs()),
+        flush_open_windows: params.bool("flush_open_windows")?,
+        histograms: HistogramConfiguration::from_params(&histograms),
     })
 }
 

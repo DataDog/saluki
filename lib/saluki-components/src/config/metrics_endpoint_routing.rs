@@ -4,21 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use agent_data_plane_config::shared;
 use saluki_error::{generic_error, GenericError};
-
-/// Sorts literal prefixes and removes duplicates and prefixes covered by another prefix.
-pub fn compact_metric_prefixes(prefixes: &mut Vec<String>) {
-    prefixes.sort_unstable();
-    if !prefixes.is_empty() {
-        let mut retained = 0;
-        for next in 1..prefixes.len() {
-            if !prefixes[next].starts_with(&prefixes[retained]) {
-                retained += 1;
-                prefixes.swap(retained, next);
-            }
-        }
-        prefixes.truncate(retained + 1);
-    }
-}
+use saluki_metric_kernels::matcher::compact_prefixes;
 
 /// A group of configured endpoints that share exact-name and prefix metric allowlists.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,7 +67,7 @@ impl MetricsEndpointRoutingConfiguration {
             canonical_allowlist.sort_unstable();
             canonical_allowlist.dedup();
             let mut canonical_prefixes = metric_prefix_allowlists.get(endpoint).cloned().unwrap_or_default();
-            compact_metric_prefixes(&mut canonical_prefixes);
+            compact_prefixes(&mut canonical_prefixes);
             // Exact names covered by a prefix do not change the policy's matching behavior.
             canonical_allowlist.retain(|name| {
                 let index = canonical_prefixes.partition_point(|prefix| prefix <= name);

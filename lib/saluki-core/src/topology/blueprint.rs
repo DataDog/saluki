@@ -9,9 +9,10 @@ use tokio::{pin, runtime::Handle, select, sync::oneshot};
 use tracing::info;
 
 use super::{
-    built::{BuiltTopology, WorkerPoolConfiguration},
-    graph::{Graph, GraphError},
-    ComponentId,
+    built::{AdmissionPointBinding, BuiltTopology, WorkerPoolConfiguration},
+    graph::{DataType, Graph, GraphError},
+    snapshot::{AdmissionPointSnapshot, BlueprintSnapshot},
+    ComponentId, ComponentOutputId,
 };
 use crate::accounting::{ComponentRegistry, MemoryLimiter, UsageExpr};
 use crate::{
@@ -21,6 +22,7 @@ use crate::{
         BuildContext, ComponentContext, ComponentType,
     },
     data_model::event::Event,
+    execution::{AdmissionPointConfig, MAX_HEARTBEAT_PERIOD, MIN_HEARTBEAT_PERIOD},
     health::HealthRegistry,
     runtime::{
         state::{DataspaceRegistry, ResourceRegistry},
@@ -80,6 +82,7 @@ struct TopologyBuildState {
     destinations: HashMap<ComponentId, Box<dyn DestinationBuilder + Send>>,
     encoders: HashMap<ComponentId, Box<dyn EncoderBuilder + Send>>,
     forwarders: HashMap<ComponentId, Box<dyn ForwarderBuilder + Send>>,
+    admission_points: Vec<AdmissionPointBinding>,
     component_registry: ComponentRegistry,
     interconnect_capacity: NonZeroUsize,
     shutdown_timeout: Duration,
@@ -104,6 +107,7 @@ impl TopologyBlueprint {
             destinations: HashMap::new(),
             encoders: HashMap::new(),
             forwarders: HashMap::new(),
+            admission_points: Vec::new(),
             component_registry,
             interconnect_capacity: super::DEFAULT_INTERCONNECT_CAPACITY,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
@@ -390,6 +394,46 @@ impl TopologyBlueprint {
         self.state_mut().connect_components_in_order(ordered_component_ids)?;
         Ok(self)
     }
+
+    /// Marks a component output as an admission point.
+    ///
+    /// `output` is a component output ID: `"<component>"` for a component's default output, or
+    /// `"<component>.<output>"` for a named output. The component must already be in the blueprint.
+    ///
+    /// When the topology runs, every buffer the component sends on that output is stamped with an admission time, the
+    /// point's identifier and clock epoch, and a generation from the point's schedule, according to the point's
+    /// [mode][crate::execution::AdmissionMode]. If the configuration enables heartbeats, a heartbeat driver runs
+    /// beside the component for as long as the component runs. Outputs that are not admission points send buffers
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// If `output` is not a valid component output ID, if the component or output does not exist, if the output emits
+    /// payloads rather than events, if the output is already an admission point, if another output already uses the
+    /// configuration's admission point ID, or if the heartbeat period is shorter than
+    /// [`MIN_HEARTBEAT_PERIOD`][crate::execution::MIN_HEARTBEAT_PERIOD] (1 ms) or longer than
+    /// [`MAX_HEARTBEAT_PERIOD`][crate::execution::MAX_HEARTBEAT_PERIOD] (1 hour), an error is returned.
+    pub fn with_admission_point<O>(
+        &mut self, output: O, config: AdmissionPointConfig,
+    ) -> Result<&mut Self, GenericError>
+    where
+        O: AsRef<str>,
+    {
+        self.state_mut().add_admission_point(output.as_ref(), config)?;
+        Ok(self)
+    }
+
+    /// Returns a read-only description of the blueprint's structure.
+    ///
+    /// The snapshot lists every component with its type and declared outputs, every connection, and every output
+    /// marked as an admission point. It allows comparing the structure of a blueprint with another description of a
+    /// topology, such as a processing plan, without building or running it.
+    ///
+    /// Returns `None` once the blueprint has been initialized, since initialization consumes its structure.
+    pub fn snapshot(&self) -> Option<BlueprintSnapshot> {
+        let guard = self.build_state.lock().expect("topology blueprint mutex poisoned");
+        guard.as_ref().map(TopologyBuildState::snapshot)
+    }
 }
 
 /// A handle for awaiting the readiness of a running topology.
@@ -447,6 +491,9 @@ impl TopologyBuildState {
 
         // Adjust the bounds related to event buffers themselves.
         //
+        // The struct size of an events buffer includes its batch header, which is stored inline. Heartbeats are empty
+        // buffers that allocate no event storage, so they occupy only interconnect slots, which the minimum covers.
+        //
         // We calculate the maximum number of event buffers by adding up the total capacity of all non-source components, plus the count
         // of non-destination components. This is the effective upper bound because once all component channels are full, sending
         // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
@@ -474,6 +521,86 @@ impl TopologyBuildState {
                     ),
                 ),
             ));
+    }
+
+    fn add_admission_point(&mut self, output: &str, config: AdmissionPointConfig) -> Result<(), GenericError> {
+        let output_id = ComponentOutputId::try_from(output)
+            .map_err(|reason| generic_error!("Invalid admission point output '{}': {}.", output, reason))?;
+
+        let (component_type, data_type) = self.graph.get_output(&output_id).map_err(|e| {
+            generic_error!(
+                "Cannot mark '{}' as an admission point: {}. Add the component, declaring this output, before marking \
+                 the output.",
+                output_id,
+                e
+            )
+        })?;
+        if !matches!(data_type, DataType::Event(_)) {
+            return Err(generic_error!(
+                "Cannot mark '{}' as an admission point: it is a {} output. Admission points stamp event buffers, so \
+                 only event outputs of sources, decoders, and transforms can be admission points.",
+                output_id,
+                data_type
+            ));
+        }
+
+        if self.admission_points.iter().any(|binding| binding.output == output_id) {
+            return Err(generic_error!(
+                "Output '{}' is already an admission point. Each output can have at most one.",
+                output_id
+            ));
+        }
+        if let Some(existing) = self
+            .admission_points
+            .iter()
+            .find(|binding| binding.config.id() == config.id())
+        {
+            return Err(generic_error!(
+                "Cannot mark '{}' as an admission point: admission point ID {} is already used by output '{}'. Give \
+                 every admission point a unique ID.",
+                output_id,
+                config.id().get(),
+                existing.output
+            ));
+        }
+        if let Some(period) = config
+            .heartbeat()
+            .filter(|period| !(MIN_HEARTBEAT_PERIOD..=MAX_HEARTBEAT_PERIOD).contains(period))
+        {
+            return Err(generic_error!(
+                "The heartbeat period of admission point '{}' is {:?}, outside the allowed range of {:?} through {:?}. \
+                 Use a period within that range, or leave heartbeats disabled.",
+                output_id,
+                period,
+                MIN_HEARTBEAT_PERIOD,
+                MAX_HEARTBEAT_PERIOD
+            ));
+        }
+
+        self.admission_points.push(AdmissionPointBinding {
+            output: output_id,
+            component_type,
+            config,
+        });
+
+        Ok(())
+    }
+
+    fn snapshot(&self) -> BlueprintSnapshot {
+        let (components, edges) = self.graph.snapshot();
+        let admission_points = self
+            .admission_points
+            .iter()
+            .map(|binding| {
+                AdmissionPointSnapshot::new(
+                    binding.output.clone(),
+                    binding.config.id(),
+                    binding.config.mode(),
+                    binding.config.heartbeat(),
+                )
+            })
+            .collect();
+        BlueprintSnapshot::new(components, edges, admission_points)
     }
 
     fn component_identity(&self, component_type: ComponentType, component_id: &ComponentId) -> SubsystemIdentifier {
@@ -795,6 +922,7 @@ impl TopologyBuildState {
             destinations,
             encoders,
             forwarders,
+            self.admission_points,
             topology_token,
             self.interconnect_capacity,
             self.worker_pool_config,
@@ -907,7 +1035,7 @@ impl Supervisable for TopologyBlueprint {
 mod tests {
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -918,16 +1046,22 @@ mod tests {
     use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration};
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use crate::components::BuildContext;
-    use crate::data_model::event::Event;
+    use crate::data_model::event::{metric::Metric, Event};
+    use crate::data_model::payload::PayloadType;
+    use crate::execution::{
+        AdmissionMode, AdmissionPointConfig, AdmissionPointId, AdmissionSchedule, AdmissionTime, GenerationId,
+        GenerationToken, ManualWallClock, ScheduleHandle,
+    };
     use crate::runtime::{self, state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
-    use crate::topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY};
+    use crate::topology::{DataType, EventsBuffer, OutputName, DEFAULT_EVENTS_BUFFER_CAPACITY};
     use crate::{
         components::{
             destinations::{Destination, DestinationBuilder, DestinationContext},
             sources::{Source, SourceBuilder, SourceContext},
-            ComponentContext,
+            transforms::{Transform, TransformBuilder, TransformContext},
+            ComponentContext, ComponentType,
         },
         data_model::event::EventType,
         health::HealthRegistry,
@@ -937,7 +1071,10 @@ mod tests {
         },
         support::SubsystemIdentifier,
         topology::{
-            test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+            test_util::{
+                TestDecoderBuilder, TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestRelayBuilder,
+                TestSourceBuilder, TestTransformBuilder,
+            },
             OutputDefinition,
         },
     };
@@ -1712,6 +1849,670 @@ mod tests {
             .expect("topology blueprint already initialized")
             .worker_pool_config;
         assert!(matches!(config, WorkerPoolConfiguration::Ambient));
+    }
+
+    /// One batch a [`ScriptedSource`] sends: `events` metrics on `output` (the default output if `None`), with the
+    /// source's wall clock set to `at` first.
+    #[derive(Clone)]
+    struct ScriptStep {
+        output: Option<&'static str>,
+        events: usize,
+        at: AdmissionTime,
+    }
+
+    /// A source that sends a scripted sequence of batches, then runs until shutdown.
+    struct ScriptedSource {
+        script: Vec<ScriptStep>,
+        wall: ManualWallClock,
+    }
+
+    #[async_trait]
+    impl Source for ScriptedSource {
+        async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            for step in &self.script {
+                self.wall.set(step.at);
+                let mut buffer = EventsBuffer::with_capacity(step.events);
+                for value in 0..step.events {
+                    assert!(buffer
+                        .try_push(Event::Metric(Metric::gauge("m", value as f64)))
+                        .is_none());
+                }
+                match step.output {
+                    None => context.dispatcher().dispatch(buffer).await?,
+                    Some(name) => context.dispatcher().dispatch_named(name, buffer).await?,
+                }
+            }
+            shutdown.await;
+            Ok(())
+        }
+    }
+
+    /// Builds a [`ScriptedSource`] with a default metrics output and a named `other` metrics output.
+    struct ScriptedSourceBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+        script: Vec<ScriptStep>,
+        wall: ManualWallClock,
+    }
+
+    impl ScriptedSourceBuilder {
+        fn new(script: Vec<ScriptStep>, wall: ManualWallClock) -> Self {
+            Self {
+                outputs: vec![
+                    OutputDefinition::default_output(EventType::Metric),
+                    OutputDefinition::named_output("other", EventType::Metric),
+                ],
+                script,
+                wall,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ScriptedSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            Ok(Box::new(ScriptedSource {
+                script: self.script.clone(),
+                wall: self.wall.clone(),
+            }))
+        }
+    }
+
+    impl MemoryBounds for ScriptedSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A transform that forwards every buffer it receives, unchanged, until its input closes.
+    struct ForwardingTransform;
+
+    #[async_trait]
+    impl Transform for ForwardingTransform {
+        async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+            while let Some(buffer) = context.events().next().await {
+                context.dispatcher().dispatch(buffer).await?;
+            }
+            Ok(())
+        }
+    }
+
+    struct ForwardingTransformBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+    }
+
+    impl ForwardingTransformBuilder {
+        fn new() -> Self {
+            Self {
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TransformBuilder for ForwardingTransformBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+            Ok(Box::new(ForwardingTransform))
+        }
+    }
+
+    impl MemoryBounds for ForwardingTransformBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A destination that records every buffer it receives, until its input closes.
+    struct CollectingDestination {
+        received: Arc<StdMutex<Vec<EventsBuffer>>>,
+    }
+
+    #[async_trait]
+    impl Destination for CollectingDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while let Some(buffer) = context.events().next().await {
+                self.received.lock().unwrap().push(buffer);
+            }
+            Ok(())
+        }
+    }
+
+    struct CollectingDestinationBuilder {
+        received: Arc<StdMutex<Vec<EventsBuffer>>>,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for CollectingDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(CollectingDestination {
+                received: Arc::clone(&self.received),
+            }))
+        }
+    }
+
+    impl MemoryBounds for CollectingDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// Adds a collecting destination to `blueprint` and returns what it will record.
+    fn add_collector(blueprint: &mut TopologyBlueprint, id: &str) -> Arc<StdMutex<Vec<EventsBuffer>>> {
+        let received = Arc::new(StdMutex::new(Vec::new()));
+        blueprint
+            .add_destination(
+                id,
+                CollectingDestinationBuilder {
+                    received: Arc::clone(&received),
+                },
+            )
+            .expect("should not fail to add destination");
+        received
+    }
+
+    /// A received buffer's `(t_a in seconds, admission point, generation, event count)`.
+    type Summary = (Option<u64>, Option<u32>, Option<u64>, usize);
+
+    /// Summarizes received buffers.
+    fn summarize(received: &StdMutex<Vec<EventsBuffer>>) -> Vec<Summary> {
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|buffer| {
+                let header = buffer.header();
+                (
+                    header.admitted_at.map(AdmissionTime::as_unix_secs),
+                    header.admission_point.map(AdmissionPointId::get),
+                    header.generation_id().map(GenerationId::get),
+                    buffer.len(),
+                )
+            })
+            .collect()
+    }
+
+    fn steady_schedule(generation: u64) -> ScheduleHandle {
+        AdmissionSchedule::Steady(Arc::new(GenerationToken::new(GenerationId::new(generation)))).into_handle()
+    }
+
+    fn admission_config(id: u32, mode: AdmissionMode, schedule: &ScheduleHandle) -> AdmissionPointConfig {
+        AdmissionPointConfig::new(
+            AdmissionPointId::new(id),
+            mode,
+            Arc::clone(schedule),
+            Duration::from_secs(600),
+        )
+    }
+
+    /// Builds a blueprint holding one component of every type, connected to nothing.
+    fn blueprint_with_every_component_type() -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "src",
+                ScriptedSourceBuilder::new(Vec::new(), ManualWallClock::default()),
+            )
+            .unwrap()
+            .add_relay("relay", TestRelayBuilder::default_output(PayloadType::Raw))
+            .unwrap()
+            .add_decoder(
+                "dec",
+                TestDecoderBuilder::with_input_and_output_type(PayloadType::Raw, EventType::Metric),
+            )
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_transform("fwd_two", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_encoder(
+                "enc",
+                TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Http),
+            )
+            .unwrap()
+            .add_forwarder("fwdr", TestForwarderBuilder::with_input_type(PayloadType::Http))
+            .unwrap()
+            .add_destination("out", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .unwrap();
+        blueprint
+    }
+
+    #[test]
+    fn admission_points_must_be_event_outputs_of_existing_components() {
+        let schedule = steady_schedule(1);
+        let mut blueprint = blueprint_with_every_component_type();
+
+        // Event outputs of sources, decoders, and transforms can be admission points.
+        for (id, output) in [(1, "src"), (2, "src.other"), (3, "dec"), (4, "fwd")] {
+            blueprint
+                .with_admission_point(output, admission_config(id, AdmissionMode::Admit, &schedule))
+                .unwrap_or_else(|e| panic!("{output} should be accepted: {e}"));
+        }
+
+        let rejected = [
+            (
+                "not an id",
+                5,
+                "Invalid admission point output 'not an id': component output IDs may only contain",
+            ),
+            (
+                "missing",
+                5,
+                "Cannot mark 'missing' as an admission point: nonexistent component ID 'missing'.",
+            ),
+            (
+                "src.absent",
+                5,
+                "Cannot mark 'src.absent' as an admission point: nonexistent component output ID 'src.absent'.",
+            ),
+            (
+                "out",
+                5,
+                "Cannot mark 'out' as an admission point: nonexistent component output ID 'out'.",
+            ),
+            (
+                "fwdr",
+                5,
+                "Cannot mark 'fwdr' as an admission point: nonexistent component output ID 'fwdr'.",
+            ),
+            (
+                "relay",
+                5,
+                "Cannot mark 'relay' as an admission point: it is a payload(Raw) output.",
+            ),
+            (
+                "enc",
+                5,
+                "Cannot mark 'enc' as an admission point: it is a payload(HTTP) output.",
+            ),
+            (
+                "src",
+                5,
+                "Output 'src' is already an admission point. Each output can have at most one.",
+            ),
+            (
+                "fwd_two",
+                1,
+                "Cannot mark 'fwd_two' as an admission point: admission point ID 1 is already used by output 'src'.",
+            ),
+        ];
+        for (output, id, expected) in rejected {
+            let error = blueprint
+                .with_admission_point(output, admission_config(id, AdmissionMode::Readmit, &schedule))
+                .map(|_| ())
+                .expect_err(output);
+            assert!(
+                error.to_string().starts_with(expected),
+                "{output}: expected '{expected}', got '{error}'"
+            );
+        }
+
+        // Heartbeat periods from 1 ms through 1 hour are accepted; a zero period would send a heartbeat on every
+        // timer tick, and a huge one would overflow the driver's deadline.
+        for period in [
+            Duration::ZERO,
+            Duration::from_micros(999),
+            Duration::from_secs(3_600) + Duration::from_nanos(1),
+            Duration::from_secs(u64::MAX),
+        ] {
+            let error = blueprint
+                .with_admission_point(
+                    "fwd_two",
+                    admission_config(5, AdmissionMode::Readmit, &schedule).with_heartbeat(period),
+                )
+                .map(|_| ())
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "The heartbeat period of admission point 'fwd_two' is {:?}, outside the allowed range of 1ms \
+                     through 3600s. Use a period within that range, or leave heartbeats disabled.",
+                    period
+                )
+            );
+        }
+
+        // Rejected calls change nothing.
+        let marked = blueprint
+            .snapshot()
+            .unwrap()
+            .admission_points()
+            .iter()
+            .map(|point| (point.output().to_string(), point.id().get()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            marked,
+            vec![
+                ("dec".to_string(), 3),
+                ("fwd".to_string(), 4),
+                ("src".to_string(), 1),
+                ("src.other".to_string(), 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_snapshot_describes_components_outputs_connections_and_admission_points() {
+        let schedule = steady_schedule(1);
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_forwarder("fwdr", TestForwarderBuilder::with_input_type(PayloadType::Http))
+            .unwrap()
+            .add_source(
+                "src",
+                ScriptedSourceBuilder::new(Vec::new(), ManualWallClock::default()),
+            )
+            .unwrap()
+            .add_destination("out", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_encoder(
+                "enc",
+                TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Http),
+            )
+            .unwrap()
+            .connect_components("src.other", "enc")
+            .unwrap()
+            .connect_components_in_order(["src", "fwd", "out"])
+            .unwrap()
+            .connect_components("enc", "fwdr")
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(1, AdmissionMode::Admit, &schedule).with_heartbeat(Duration::from_secs(5)),
+            )
+            .unwrap()
+            .with_admission_point("fwd", admission_config(2, AdmissionMode::Readmit, &schedule))
+            .unwrap();
+
+        let snapshot = blueprint.snapshot().expect("the blueprint is not initialized");
+
+        let metrics = DataType::Event(EventType::Metric);
+        let http = DataType::Payload(PayloadType::Http);
+        let components = snapshot
+            .components()
+            .iter()
+            .map(|component| {
+                (
+                    component.id().to_string(),
+                    component.component_type(),
+                    component.input(),
+                    component
+                        .outputs()
+                        .iter()
+                        .map(|output| (output.id().to_string(), output.data_type()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            components,
+            vec![
+                (
+                    "enc".to_string(),
+                    ComponentType::Encoder,
+                    Some(metrics),
+                    vec![("enc".to_string(), http)]
+                ),
+                (
+                    "fwd".to_string(),
+                    ComponentType::Transform,
+                    Some(metrics),
+                    vec![("fwd".to_string(), metrics)]
+                ),
+                ("fwdr".to_string(), ComponentType::Forwarder, Some(http), vec![]),
+                ("out".to_string(), ComponentType::Destination, Some(metrics), vec![]),
+                (
+                    "src".to_string(),
+                    ComponentType::Source,
+                    None,
+                    vec![("src".to_string(), metrics), ("src.other".to_string(), metrics)]
+                ),
+            ]
+        );
+
+        let edges = snapshot
+            .edges()
+            .iter()
+            .map(|edge| (edge.from().to_string(), edge.to().to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edges,
+            vec![
+                ("enc".to_string(), "fwdr".to_string()),
+                ("fwd".to_string(), "out".to_string()),
+                ("src".to_string(), "fwd".to_string()),
+                ("src.other".to_string(), "enc".to_string()),
+            ]
+        );
+
+        let points = snapshot
+            .admission_points()
+            .iter()
+            .map(|point| {
+                (
+                    point.output().to_string(),
+                    point.id().get(),
+                    point.mode(),
+                    point.heartbeat(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            points,
+            vec![
+                ("fwd".to_string(), 2, AdmissionMode::Readmit, None),
+                ("src".to_string(), 1, AdmissionMode::Admit, Some(Duration::from_secs(5))),
+            ]
+        );
+
+        let source = snapshot.component("src").expect("the source is in the snapshot");
+        assert_eq!(source.outputs()[1].name(), OutputName::Given("other".into()));
+        assert!(snapshot.component("absent").is_none());
+
+        // Assembling the same structure in another order gives an equal snapshot.
+        let mut reordered = TopologyBlueprint::new("test", &component_registry);
+        reordered
+            .add_encoder(
+                "enc",
+                TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Http),
+            )
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_destination("out", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .unwrap()
+            .add_source(
+                "src",
+                ScriptedSourceBuilder::new(Vec::new(), ManualWallClock::default()),
+            )
+            .unwrap()
+            .add_forwarder("fwdr", TestForwarderBuilder::with_input_type(PayloadType::Http))
+            .unwrap()
+            .connect_components("enc", "fwdr")
+            .unwrap()
+            .connect_components("fwd", "out")
+            .unwrap()
+            .connect_components("src", "fwd")
+            .unwrap()
+            .connect_components("src.other", "enc")
+            .unwrap()
+            .with_admission_point("fwd", admission_config(2, AdmissionMode::Readmit, &schedule))
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(1, AdmissionMode::Admit, &schedule).with_heartbeat(Duration::from_secs(5)),
+            )
+            .unwrap();
+        assert_eq!(reordered.snapshot(), Some(snapshot));
+    }
+
+    #[test]
+    fn the_snapshot_is_unavailable_once_the_blueprint_is_initialized() {
+        let blueprint = blueprint_with_components();
+        assert!(blueprint.snapshot().is_some());
+
+        // Initialization takes the build state.
+        let _ = blueprint.build_state.lock().unwrap().take();
+        assert!(blueprint.snapshot().is_none());
+    }
+
+    #[test]
+    fn connecting_the_same_components_twice_is_rejected() {
+        let mut blueprint = blueprint_with_sources_and_destinations(&["source"], &["dest"]);
+        blueprint.connect_components("source", "dest").unwrap();
+
+        let error = blueprint
+            .connect_components("source", ["dest"])
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("duplicate connection from 'source' to 'dest'"),
+            "got: {error:#}"
+        );
+        assert_eq!(
+            connected_pairs(&blueprint),
+            vec![("source".to_string(), "dest".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_running_topology_stamps_buffers_at_its_admission_points() {
+        // src (admit, point 1) -> direct
+        //     ................ -> fwd (readmit, point 2) -> readmitted
+        // src.other (no admission point) -> plain
+        let schedule = steady_schedule(7);
+        let source_wall = ManualWallClock::default();
+        let script = vec![
+            ScriptStep {
+                output: None,
+                events: 2,
+                at: AdmissionTime::from_unix_secs(100),
+            },
+            ScriptStep {
+                output: None,
+                events: 1,
+                at: AdmissionTime::from_unix_secs(101),
+            },
+            ScriptStep {
+                output: Some("other"),
+                events: 3,
+                at: AdmissionTime::from_unix_secs(102),
+            },
+        ];
+
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("src", ScriptedSourceBuilder::new(script, source_wall.clone()))
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap();
+        let direct = add_collector(&mut blueprint, "direct");
+        let readmitted = add_collector(&mut blueprint, "readmitted");
+        let plain = add_collector(&mut blueprint, "plain");
+        blueprint
+            .connect_components("src", ["direct", "fwd"])
+            .unwrap()
+            .connect_components("fwd", "readmitted")
+            .unwrap()
+            .connect_components("src.other", "plain")
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(1, AdmissionMode::Admit, &schedule).with_wall_clock(source_wall),
+            )
+            .unwrap()
+            .with_admission_point(
+                "fwd",
+                admission_config(2, AdmissionMode::Readmit, &schedule)
+                    .with_wall_clock(ManualWallClock::new(AdmissionTime::from_unix_secs(500))),
+            )
+            .unwrap()
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+        wait_until("every destination received its batches", || {
+            direct.lock().unwrap().len() == 2
+                && readmitted.lock().unwrap().len() == 2
+                && plain.lock().unwrap().len() == 1
+        })
+        .await;
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+
+        assert_eq!(
+            summarize(&direct),
+            vec![(Some(100), Some(1), Some(7), 2), (Some(101), Some(1), Some(7), 1)]
+        );
+        assert_eq!(
+            summarize(&readmitted),
+            vec![(Some(500), Some(2), Some(7), 2), (Some(500), Some(2), Some(7), 1)]
+        );
+        // Outputs that are not admission points leave buffers as they are.
+        assert_eq!(summarize(&plain), vec![(None, None, None, 3)]);
+    }
+
+    #[tokio::test]
+    async fn a_running_topology_sends_heartbeats_from_idle_admission_points() {
+        let schedule = steady_schedule(1);
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "src",
+                ScriptedSourceBuilder::new(Vec::new(), ManualWallClock::default()),
+            )
+            .unwrap();
+        let received = add_collector(&mut blueprint, "out");
+        let other = add_collector(&mut blueprint, "other_out");
+        blueprint
+            .connect_components("src", "out")
+            .unwrap()
+            .connect_components("src.other", "other_out")
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(3, AdmissionMode::Admit, &schedule)
+                    .with_heartbeat(Duration::from_millis(10))
+                    .with_wall_clock(ManualWallClock::new(AdmissionTime::from_unix_secs(1_000))),
+            )
+            .unwrap()
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+        wait_until("the destination received heartbeats", || {
+            received.lock().unwrap().len() >= 2
+        })
+        .await;
+
+        // The driver stops with the component, so it never holds up shutdown.
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+
+        for heartbeat in summarize(&received) {
+            assert_eq!(heartbeat, (Some(1_000), Some(3), None, 0));
+        }
+        // Heartbeats only travel on the admission point's own output.
+        assert!(other.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

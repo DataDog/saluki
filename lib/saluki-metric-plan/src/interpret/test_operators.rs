@@ -24,7 +24,7 @@ use crate::{
 pub(super) fn test_registry() -> OperatorRegistry {
     static REGISTRY: OnceLock<OperatorRegistry> = OnceLock::new();
     *REGISTRY.get_or_init(|| {
-        let tests: [&'static dyn OperatorDef; 7] = [
+        let tests: [&'static dyn OperatorDef; 8] = [
             &TestPrefix,
             &TestRoute,
             &TestHold,
@@ -32,6 +32,7 @@ pub(super) fn test_registry() -> OperatorRegistry {
             &TestSignalReader,
             &TestNeedsRuntime,
             &TestFinishMarker,
+            &TestKernelless,
         ];
         let operators = OperatorRegistry::native().iter().chain(tests).collect::<Vec<_>>();
         OperatorRegistry::with_operators(Box::leak(operators.into_boxed_slice()))
@@ -347,6 +348,31 @@ impl OperatorDef for TestSignalReader {
             cardinality: Cardinality::Map,
             ..EffectContract::passthrough()
         }
+    }
+}
+
+/// `test_kernelless`: a synchronous passthrough without a kernel, which no native operator is.
+pub(super) struct TestKernelless;
+
+impl OperatorDef for TestKernelless {
+    fn name(&self) -> &'static str {
+        "test_kernelless"
+    }
+
+    fn summary(&self) -> &'static str {
+        "Declares no kernel."
+    }
+
+    fn params(&self) -> &'static [ParamSpec] {
+        &[]
+    }
+
+    fn ports(&self, _params: &DecodedParams) -> Ports {
+        Ports::single(PortType::ANY, PortMapping::IDENTITY)
+    }
+
+    fn contract(&self, _params: &DecodedParams) -> EffectContract {
+        EffectContract::passthrough()
     }
 }
 

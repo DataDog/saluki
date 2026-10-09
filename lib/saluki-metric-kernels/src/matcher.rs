@@ -9,13 +9,41 @@ use stringtheory::MetaString;
 
 use crate::intake_name::{is_normalized, normalize_into, NameBuf};
 
+/// Sorts a list of literal prefixes and removes the redundant ones: duplicates, and every prefix that starts with
+/// another prefix of the list.
+///
+/// What is left matches exactly the values the whole list matches by prefix, and no retained prefix starts with
+/// another, so a value can only start with the greatest retained prefix not greater than it. Prefixes are compared
+/// verbatim, byte by byte.
+pub fn compact_prefixes<T>(prefixes: &mut Vec<T>)
+where
+    T: AsRef<str>,
+{
+    prefixes.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    if prefixes.is_empty() {
+        return;
+    }
+
+    // After sorting, every prefix that starts with another follows it, possibly after others that also start with
+    // it, so comparing each prefix with the last one retained finds them all.
+    let mut retained = 0;
+    for next in 1..prefixes.len() {
+        if !prefixes[next].as_ref().starts_with(prefixes[retained].as_ref()) {
+            retained += 1;
+            prefixes.swap(retained, next);
+        }
+    }
+    prefixes.truncate(retained + 1);
+}
+
 /// A compiled set of strings matched exactly or by prefix.
 ///
 /// Entries are taken verbatim: they are never normalized or otherwise rewritten. In exact mode a value matches when it
 /// equals an entry. In prefix mode a value matches when it starts with an entry, so the empty entry matches everything.
 ///
-/// Entries are kept sorted, and in prefix mode an entry that another entry is a prefix of is dropped as redundant, so a
-/// lookup is a single binary search followed, in prefix mode, by one comparison against its predecessor.
+/// Entries are kept sorted and without duplicates, and in prefix mode an entry that another entry is a prefix of is
+/// dropped as redundant (see [`compact_prefixes`]), so a lookup is a single binary search followed, in prefix mode, by
+/// one comparison against its predecessor.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SortedSetMatcher {
     data: Vec<MetaString>,
@@ -35,17 +63,12 @@ impl SortedSetMatcher {
             .into_iter()
             .map(|value| MetaString::from(value.as_ref()))
             .collect::<Vec<_>>();
-        data.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
 
-        if match_prefix && !data.is_empty() {
-            let mut i = 0;
-            for j in 1..data.len() {
-                if !data[j].as_ref().starts_with(data[i].as_ref()) {
-                    i += 1;
-                    data[i] = data[j].clone();
-                }
-            }
-            data.truncate(i + 1);
+        if match_prefix {
+            compact_prefixes(&mut data);
+        } else {
+            data.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+            data.dedup();
         }
 
         Self { data, match_prefix }
@@ -59,6 +82,12 @@ impl SortedSetMatcher {
     /// Returns `true` if this matcher has no entries, and therefore matches nothing.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// Returns the number of entries the matcher keeps: the distinct entries, without the redundant ones in prefix
+    /// mode.
+    pub fn len(&self) -> usize {
+        self.data.len()
     }
 
     /// Returns whether `value` matches an entry, comparing it verbatim.
@@ -277,6 +306,45 @@ mod tests {
                 entries,
                 match_prefix
             );
+        }
+    }
+
+    #[test]
+    fn keeps_distinct_entries_in_both_modes() {
+        // (entries, match_prefix, kept entries)
+        let cases: &[(&[&str], bool, &[&str])] = &[
+            (&[], false, &[]),
+            (&["b", "a", "b", "ab"], false, &["a", "ab", "b"]),
+            (&["b", "a", "b", "ab"], true, &["a", "b"]),
+            (&["", "a"], true, &[""]),
+            (&["", "a"], false, &["", "a"]),
+        ];
+        for (entries, match_prefix, kept) in cases {
+            let matcher = SortedSetMatcher::new(entries.iter().copied(), *match_prefix);
+            let data = matcher.data.iter().map(|entry| entry.as_ref()).collect::<Vec<_>>();
+            assert_eq!(&data, kept, "{:?}, {}", entries, match_prefix);
+            assert_eq!(matcher.len(), kept.len());
+        }
+    }
+
+    #[test]
+    fn compacting_prefixes_removes_duplicates_and_covered_prefixes() {
+        // (prefixes, compacted)
+        let cases: &[(&[&str], &[&str])] = &[
+            (&[], &[]),
+            (&["b."], &["b."]),
+            (&["b.", "a.", "b."], &["a.", "b."]),
+            (&["billing.latency.", "billing.", "billing.requests."], &["billing."]),
+            // A prefix covered by an earlier one is removed even when an uncovered prefix sorts between them.
+            (&["a", "a.b", "ab", "a.c"], &["a"]),
+            (&["a.", "a.b", "ab", "abc", "b"], &["a.", "ab", "b"]),
+            (&["", "anything"], &[""]),
+            (&["🍣.roll", "🍣"], &["🍣"]),
+        ];
+        for (prefixes, compacted) in cases {
+            let mut values = prefixes.iter().map(|prefix| prefix.to_string()).collect::<Vec<_>>();
+            compact_prefixes(&mut values);
+            assert_eq!(&values, compacted, "{:?}", prefixes);
         }
     }
 

@@ -115,8 +115,8 @@ impl HostOutput {
 /// A synchronous adapter over a native component that has no kernel, for the reference interpreter.
 ///
 /// The interpreter runs every node with the `opaque_host` boundary through an adapter, which drives the component's
-/// state machine directly, without its task, timers, or channels. Native aggregation runs this way until it is
-/// extracted as a kernel.
+/// state machine directly, without its task, timers, or channels. Native aggregation runs this way, through
+/// [`AggregateAdapter`][super::adapters::AggregateAdapter], until it is a kernel.
 ///
 /// Each method receives the host time explicitly and emits into a [`HostOutput`]. What it emits is **re-admitted**
 /// downstream at the host's output: stamped with the host admission clock's time, which is the arrival time for output

@@ -11,7 +11,7 @@ workspace = true
 [features]
 # Exposes shared test helpers (proptest strategies and fixtures) as plain `pub` items so that other crates can use them
 # in their own tests. Not enabled in normal builds.
-test-util = ["dep:proptest", "dep:stringtheory"]
+test-util = ["dep:proptest", "saluki-metric-kernels/test-util"]
 
 [dependencies]
 proptest = { workspace = true, optional = true }
@@ -22,9 +22,11 @@ schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 snafu = { workspace = true }
-stringtheory = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
+metrics = { workspace = true }
 proptest = { workspace = true }
+saluki-metric-kernels = { workspace = true, features = ["test-util"] }
+saluki-metrics = { workspace = true, features = ["test"] }
 stringtheory = { workspace = true }

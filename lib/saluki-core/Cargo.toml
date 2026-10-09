@@ -16,6 +16,7 @@ test-util = []
 
 [dependencies]
 anymap3 = { workspace = true }
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytesize = { workspace = true }
@@ -60,6 +61,7 @@ criterion = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
+tokio = { workspace = true, features = ["test-util"] }
 tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["ansi", "fmt"] }

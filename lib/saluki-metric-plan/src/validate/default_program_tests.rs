@@ -239,8 +239,9 @@ fn changes_that_break_the_default_program_are_rejected() {
     );
 }
 
-/// Before stage 4, the policy gateways lower to opaque hosts backed by the native components, with direct edges to
-/// their encoders.
+/// Before stage 4, the policy gateways lower to opaque hosts backed by the native components, with direct edges from
+/// their `out` ports to `emit` nodes named `<gateway>_out` by `derived_terminal_id`, as the host's lowering writes
+/// them.
 fn with_opaque_gateways() -> Value {
     let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
     let all = json!({"kinds": "all", "timestamps": "mixed"});
@@ -259,12 +260,16 @@ fn with_opaque_gateways() -> Value {
             node["op"] = json!("opaque_host");
             node["params"] = json!({"component": id, "input": all, "outputs": {"out": output}});
         }
+        if let Some((id, _)) = gateways.iter().find(|(id, _)| node["id"] == format!("{}_true", id)) {
+            node["id"] = json!(format!("{}_out", id));
+        }
     }
     let edges = value["edges"].as_array_mut().unwrap();
     edges.retain(|edge| !gateways.iter().any(|(id, _)| edge["from"] == format!("{}.false", id)));
     for edge in edges.iter_mut() {
         if let Some((id, _)) = gateways.iter().find(|(id, _)| edge["from"] == format!("{}.true", id)) {
             edge["from"] = json!(format!("{}.out", id));
+            edge["to"] = json!(format!("{}_out.in", id));
         }
     }
     value
@@ -442,11 +447,11 @@ const COVERAGE: &[CoverageCheck] = &[
     }),
     ("Autoscaling failover gateway", |f| {
         // Bound to a startup list of raw names; an empty list forwards nothing, and only scalar series pass.
-        let empty = gateway("af_metrics_gateway", &[("autoscaling.failover.metrics", json!([]))]);
+        let empty = gateway("af_metrics_gateway", &[("autoscaling_failover.metrics", json!([]))]);
         assert!(!empty.forwards(&counter("requests.count")));
         let listed = gateway(
             "af_metrics_gateway",
-            &[("autoscaling.failover.metrics", json!(["requests.count"]))],
+            &[("autoscaling_failover.metrics", json!(["requests.count"]))],
         );
         for metric in [
             counter("requests.count"),
@@ -605,8 +610,8 @@ fn the_gateways_forward_what_native_configuration_selects() {
         gateway(
             "metrics_routing_filter_0",
             &[
-                ("endpoint_routing.group.a1b2c3d4.names", names),
-                ("endpoint_routing.group.a1b2c3d4.prefixes", prefixes),
+                ("metrics_endpoint_routing.group.0123456789abcdef.names", names),
+                ("metrics_endpoint_routing.group.0123456789abcdef.prefixes", prefixes),
             ],
         )
     };

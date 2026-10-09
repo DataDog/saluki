@@ -1,20 +1,27 @@
 //! Operators for host enrichment: `host_enrichment` and `host_tags`.
 
+use saluki_core::{
+    data_model::tags::{SharedTagSet, Tag},
+    execution::AdmissionTime,
+};
+use saluki_metric_kernels::host_enrichment::{HostEnrichment as HostEnrichmentKernel, HostTags as HostTagsKernel};
+
 use super::{
     contract::{EffectContract, Identity, PerKind, TimeContract},
     names,
     ports::{PortMapping, Ports},
-    OperatorDef,
+    support::unresolved,
+    KernelSpec, OperatorDef,
 };
 use crate::{
-    ir::{DecodedParams, ParamSpec, ParamType},
+    ir::{DecodedParams, ParamSpec, ParamType, ParamValue},
     model::{Field, FieldSet, PortType},
 };
 
 /// The `host_enrichment` operator: the metric part of native host enrichment, which leaves metrics unchanged.
 ///
 /// It takes no parameters. Native host enrichment only sets the host of events and service checks, which are outside
-/// the plan.
+/// the plan. Its kernel is [`HostEnrichmentKernel`], which leaves each batch as it is.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostEnrichment;
 
@@ -38,6 +45,10 @@ impl OperatorDef for HostEnrichment {
     fn contract(&self, _params: &DecodedParams) -> EffectContract {
         EffectContract::passthrough()
     }
+
+    fn kernel(&self, _params: &DecodedParams) -> Option<KernelSpec> {
+        Some(KernelSpec::new(|_context| Ok(Box::new(HostEnrichmentKernel))))
+    }
 }
 
 const HOST_TAGS_PARAMS: &[ParamSpec] = &[
@@ -52,6 +63,8 @@ const HOST_TAGS_PARAMS: &[ParamSpec] = &[
 /// plus the configured duration for which host tags are expected. A batch whose admission time is before the deadline
 /// gains the tags; later batches pass unchanged. The tags are appended to the instrumented tags as they are, without
 /// removing values the metric already has.
+///
+/// Its kernel is [`HostTagsKernel`], which decides per batch by the batch's admission time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostTags;
 
@@ -81,5 +94,25 @@ impl OperatorDef for HostTags {
             },
             ..EffectContract::passthrough()
         }
+    }
+
+    fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
+        let tags = params.list("tags").and_then(|tags| {
+            tags.iter()
+                .map(|tag| match tag {
+                    ParamValue::String(tag) => Some(Tag::from(tag.as_str())),
+                    _ => None,
+                })
+                .collect::<Option<SharedTagSet>>()
+        });
+        // A deadline beyond what admission times can represent is never reached.
+        let deadline = params
+            .duration("deadline")
+            .map(|deadline| AdmissionTime::from_unix_nanos(u64::try_from(deadline.as_nanos()).unwrap_or(u64::MAX)));
+        Some(KernelSpec::new(move |_context| {
+            let tags = tags.clone().ok_or_else(|| unresolved("tags"))?;
+            let deadline = deadline.ok_or_else(|| unresolved("deadline"))?;
+            Ok(Box::new(HostTagsKernel::new(tags, deadline)))
+        }))
     }
 }

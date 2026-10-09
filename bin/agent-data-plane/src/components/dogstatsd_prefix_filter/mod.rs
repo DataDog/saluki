@@ -14,20 +14,19 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_metric_kernels::matcher::SortedSetMatcher;
+use saluki_metric_kernels::{matcher::SortedSetMatcher, params::NamespacePrefixParams, prefix::NamespacePrefix};
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
 
-const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
-const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
-const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_points_total";
+pub(crate) const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
+pub(crate) const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
+pub(crate) const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_points_total";
 
 /// DogStatsD prefix filter transform.
 ///
-/// Appends a prefix to every metric if specified.
-///
-/// Checks if a metric name should be allowed.
+/// Appends a prefix to every metric if specified, through the namespace prefix kernel, and drops metrics whose intake
+/// name, after prefixing, is on the metric filterlist.
 pub struct DogStatsDPrefixFilterConfiguration {
     metric_prefix: String,
     metric_prefix_blocklist: Vec<String>,
@@ -57,17 +56,13 @@ impl TransformBuilder for DogStatsDPrefixFilterConfiguration {
     }
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        // Ensure our metric prefix has a trailing period so that we don't have to check for, and possibly add it, when we're
-        // actually processing metrics.
-        let mut metric_prefix = self.metric_prefix.clone();
-        if !metric_prefix.is_empty() && !metric_prefix.ends_with(".") {
-            metric_prefix.push('.');
-        }
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = FilterlistTelemetry::new(&metrics_builder);
         let mut filter = DogStatsDPrefixFilter {
-            metric_prefix,
-            metric_prefix_blocklist: self.metric_prefix_blocklist.clone(),
+            namespace: NamespacePrefix::new(&NamespacePrefixParams {
+                namespace: self.metric_prefix.clone(),
+                exclusions: self.metric_prefix_blocklist.clone(),
+            }),
             matcher: SortedSetMatcher::default(),
             metric_filter: self.metric_filter.clone(),
             telemetry,
@@ -126,8 +121,7 @@ impl FilterlistTelemetry {
 }
 
 struct DogStatsDPrefixFilter {
-    metric_prefix: String,
-    metric_prefix_blocklist: Vec<String>,
+    namespace: NamespacePrefix,
     matcher: SortedSetMatcher,
     metric_filter: Live<MetricFilter>,
     telemetry: FilterlistTelemetry,
@@ -146,46 +140,29 @@ impl DogStatsDPrefixFilter {
     }
 
     fn process_metric(&self, metric: &mut Metric) -> bool {
-        let metric_name = metric.context().name().as_ref();
-
-        if self.metric_prefix.is_empty() {
-            if self.matcher.matches_intake_name(metric_name) {
-                self.telemetry.increment_listener_filtered_points();
-                debug!("Metric {} excluded due to blocklist.", metric_name);
-                return false;
+        // The filterlist is matched against the name after prefixing, so a prefixed metric is only renamed once it is
+        // known to be kept.
+        match self.namespace.prefixed_name(metric.context().name()) {
+            None => {
+                let metric_name = metric.context().name();
+                if self.matcher.matches_intake_name(metric_name) {
+                    self.telemetry.increment_listener_filtered_points();
+                    debug!("Metric {} excluded due to blocklist.", metric_name);
+                    return false;
+                }
             }
-        } else {
-            // We don't want to prefix the metric if it has a prefix that is on our _prefix_ blocklist,
-            // which ensures we don't prefix metrics that are already prefixed.
-            let new_metric_name = if self.has_excluded_prefix(metric_name) {
-                metric.context().name().clone()
-            } else {
-                let mut prefixed_metric_name = self.metric_prefix.clone();
-                prefixed_metric_name.push_str(metric_name);
-                prefixed_metric_name.into()
-            };
+            Some(new_metric_name) => {
+                if self.matcher.matches_intake_name(&new_metric_name) {
+                    self.telemetry.increment_listener_filtered_points();
+                    debug!("Metric {} excluded due to blocklist.", new_metric_name);
+                    return false;
+                }
 
-            if self.matcher.matches_intake_name(&new_metric_name) {
-                self.telemetry.increment_listener_filtered_points();
-                debug!("Metric {} excluded due to blocklist.", new_metric_name);
-                return false;
+                NamespacePrefix::rename(metric, new_metric_name);
             }
-
-            // Update metric with new name.
-            let new_context = metric.context().with_name(new_metric_name);
-            let existing_context = metric.context_mut();
-            *existing_context = new_context;
         }
 
         true
-    }
-
-    fn has_excluded_prefix(&self, metric_name: &str) -> bool {
-        !self.metric_prefix.is_empty()
-            && self
-                .metric_prefix_blocklist
-                .iter()
-                .any(|prefix| metric_name.starts_with(prefix))
     }
 }
 
@@ -284,8 +261,10 @@ mod tests {
 
         fn build(self) -> DogStatsDPrefixFilter {
             DogStatsDPrefixFilter {
-                metric_prefix: self.metric_prefix,
-                metric_prefix_blocklist: self.metric_prefix_blocklist,
+                namespace: NamespacePrefix::new(&NamespacePrefixParams {
+                    namespace: self.metric_prefix,
+                    exclusions: self.metric_prefix_blocklist,
+                }),
                 matcher: self.matcher,
                 metric_filter: self.metric_filter,
                 telemetry: self.telemetry,

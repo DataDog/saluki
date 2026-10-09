@@ -8,5 +8,33 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+# Exposes constructors that only tests need, such as histogram statistics with arbitrary suffixes and context snapshot
+# entries, and the property-testing strategies for metrics, as plain `pub` items so that other crates can use them in
+# their own tests. Not enabled in normal builds.
+test-util = ["dep:proptest"]
+
 [dependencies]
+ddsketch = { workspace = true }
+foldhash = { workspace = true }
+hashbrown = { workspace = true }
+metrics = { workspace = true }
+proptest = { workspace = true, optional = true }
+regex = { workspace = true, features = ["std", "unicode-perl"] }
+saluki-antithesis = { workspace = true }
+saluki-common = { workspace = true }
+saluki-core = { workspace = true }
+saluki-metrics = { workspace = true }
+smallvec = { workspace = true }
+snafu = { workspace = true }
 stringtheory = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+float-cmp = { workspace = true, features = ["ratio"] }
+proptest = { workspace = true }
+saluki-core = { workspace = true, features = ["test-util"] }
+saluki-error = { workspace = true }
+saluki-metrics = { workspace = true, features = ["test"] }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -43,15 +43,21 @@ fn fingerprint(output: &str) -> PlanHash {
 /// The outputs the test catalog declares, besides `o0` to `o127` for generated plans. Each has its own recipient.
 const OUTPUTS: &[&str] = &["a", "b", "c", "prod_counts", "other_counts", "named", "hostless"];
 
-/// The catalog the test plans validate against: the outputs above, and the binding `test.names`, a live list of
-/// strings.
+/// The catalog the test plans validate against: the outputs above, the binding `test.names`, a live list of
+/// strings, and the binding `test.profiles`, startup-only mapper profiles.
 fn test_catalog() -> MemoryCatalog {
     let generated = (0..128).map(|i| format!("o{}", i)).collect::<Vec<_>>();
-    let mut catalog = MemoryCatalog::new().with_binding(
-        "test.names".parse().unwrap(),
-        crate::ir::ParamType::List(&crate::ir::ParamType::String),
-        crate::validate::Liveness::Live,
-    );
+    let mut catalog = MemoryCatalog::new()
+        .with_binding(
+            "test.names".parse().unwrap(),
+            crate::ir::ParamType::List(&crate::ir::ParamType::String),
+            crate::validate::Liveness::Live,
+        )
+        .with_binding(
+            "test.profiles".parse().unwrap(),
+            crate::operators::MAPPER_PROFILES,
+            crate::validate::Liveness::Startup,
+        );
     for output in OUTPUTS.iter().copied().chain(generated.iter().map(String::as_str)) {
         catalog = catalog.with_output(
             out(output),
@@ -1098,24 +1104,23 @@ fn plans_the_interpreter_cannot_run_yet_are_explicit_errors() {
     let catalog = test_catalog();
     let interpreter = Interpreter::new(&registry, &catalog);
 
-    // A native operator without a kernel.
-    let enrichment = plan(
+    // A synchronous operator without a kernel, which only a test registry can have: every native one has a kernel.
+    let kernelless = plan(
         vec![
             source("src", "otlp"),
-            node("x", "host_enrichment", json!({})),
+            node("x", "test_kernelless", json!({})),
             emit("e", "a"),
         ],
         &["src.metrics -> x.in", "x.out -> e.in"],
         &["a"],
     );
-    let (event, message) = run_error(&interpreter, Trace::new().install(enrichment));
+    let (event, message) = run_error(&interpreter, Trace::new().install(kernelless));
     assert_eq!(event, Some(0));
     assert!(
-        message.contains("the `host_enrichment` operator of node `x`"),
+        message.contains("validated node `x` is a `test_kernelless` node, a synchronous operator without a kernel"),
         "{}",
         message
     );
-    assert!(message.contains("stage 2"), "{}", message);
 
     // An operator that reads a signal.
     let reader = plan(
@@ -1203,6 +1208,114 @@ fn kernels_transform_their_input_in_place() {
             assert_eq!(node, &id("p"));
             assert!(
                 rejection.to_string().contains("the prefix must not be empty"),
+                "{}",
+                rejection
+            );
+        }
+        other => panic!("expected a rejection, got {:?}", other),
+    }
+}
+
+#[test]
+fn the_mapper_kernel_maps_records_in_place() {
+    // The `dogstatsd_mapper` operator runs the native mapper: the profiles whose prefixes match are tried in order,
+    // each trying its mappings in order, and the first matching mapping renames the metric and adds its tags with
+    // captures expanded; the host and existing tags stay, and a metric no mapping matches passes unchanged.
+    let mapper = |profiles: Value| {
+        node(
+            "dsd_enrich",
+            "dogstatsd_mapper",
+            json!({"profiles": profiles, "cache_size": 16, "string_interner_bytes": 65536}),
+        )
+    };
+    let profiles = json!([
+        {"name": "jobs", "prefix": "job.", "mappings": [
+            {"match": "job.*.duration", "match_type": "wildcard", "name": "job.duration",
+             "tags": [{"name": "job", "value": "$1"}]},
+            {"match": "job\\.(\\w+)\\.(\\w+)", "match_type": "regex", "name": "job.$2",
+             "tags": [{"name": "kind", "value": "${1}_x"}]}
+        ]},
+        {"name": "late", "prefix": "*", "mappings": [
+            {"match": "job.*.duration", "match_type": "wildcard", "name": "never"},
+            {"match": "job.*.*.*", "match_type": "wildcard", "name": "job.deep"}
+        ]}
+    ]);
+    let plan = plan(
+        vec![
+            node(
+                "src",
+                "source",
+                json!({"binding": "dogstatsd", "timestamps": "untimestamped"}),
+            ),
+            mapper(profiles),
+            emit("e", "a"),
+        ],
+        &["src.metrics -> dsd_enrich.in", "dsd_enrich.out -> e.in"],
+        &["a"],
+    );
+    let batch = || {
+        vec![
+            with_host(with_tags(counter("job.build.duration"), &["env:prod"]), "h"),
+            gauge("job.deploy.count"),
+            counter("other.metric"),
+            counter("job.a.b.c"),
+        ]
+    };
+    let run = execute(
+        Trace::new()
+            .install(plan)
+            .admit(id("src"), t(1), batch())
+            // The second batch is mapped from the result cache.
+            .admit(id("src"), t(2), batch()),
+    );
+
+    let records = run.output(&out("a"));
+    assert_eq!(records.len(), 8);
+    for batch in records.chunks(4) {
+        let contexts = batch.iter().map(|record| record.metric.context()).collect::<Vec<_>>();
+        assert_eq!(contexts[0].name(), "job.duration");
+        assert_eq!(contexts[0].host(), Some("h"));
+        assert!(contexts[0].tags().has_tag("env:prod") && contexts[0].tags().has_tag("job:build"));
+        assert_eq!(contexts[0].tags().len(), 2);
+        assert_eq!(contexts[1].name(), "job.count");
+        assert!(contexts[1].tags().has_tag("kind:deploy_x"));
+        assert_eq!(contexts[1].tags().len(), 1);
+        assert_eq!(contexts[2].name(), "other.metric");
+        assert!(contexts[2].tags().is_empty());
+        // No mapping of the first profile matches, so the second profile's applies.
+        assert_eq!(contexts[3].name(), "job.deep");
+        // Mapping changes only the context: values pass unchanged.
+        assert_eq!(batch[1].metric.values(), &MetricValues::gauge(1.0));
+    }
+}
+
+#[test]
+fn the_mapper_kernel_needs_resolved_parameters() {
+    let plan = plan(
+        vec![
+            node(
+                "src",
+                "source",
+                json!({"binding": "dogstatsd", "timestamps": "untimestamped"}),
+            ),
+            node(
+                "dsd_enrich",
+                "dogstatsd_mapper",
+                json!({"profiles": {"config": "test.profiles"}, "cache_size": 16, "string_interner_bytes": 65536}),
+            ),
+            emit("e", "a"),
+        ],
+        &["src.metrics -> dsd_enrich.in", "dsd_enrich.out -> e.in"],
+        &["a"],
+    );
+    let run = execute(Trace::new().install(plan));
+    match &run.installs()[0].outcome {
+        InstallOutcome::Rejected(rejection @ InstallRejection::KernelBuild { node, .. }) => {
+            assert_eq!(node, &id("dsd_enrich"));
+            assert!(
+                rejection
+                    .to_string()
+                    .contains("the `profiles` parameter is bound to configuration and has no resolved value"),
                 "{}",
                 rejection
             );

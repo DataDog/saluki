@@ -343,6 +343,50 @@ pub struct ResolvedEndpoint {
     traces_authority: Option<Authority>,
 }
 
+/// How a forwarder came to send to one of its metrics recipients.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MetricsRecipientRoute {
+    /// The primary endpoint, or the single destination of a forwarder that has one.
+    Primary,
+
+    /// The alternate metrics intake (the Observability Pipelines Worker, or Vector) that replaces the primary endpoint
+    /// for metrics.
+    MetricsOverride,
+
+    /// An additional endpoint that payloads are dual-shipped to.
+    Additional,
+}
+
+impl MetricsRecipientRoute {
+    /// Returns the route's name: `primary`, `metrics_override`, or `additional`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::MetricsOverride => "metrics_override",
+            Self::Additional => "additional",
+        }
+    }
+}
+
+/// One endpoint that a forwarder sends metrics payloads to: one endpoint I/O loop, with its own retry queue.
+///
+/// A forwarder has one recipient for its primary endpoint (or its alternate metrics intake, which replaces the primary
+/// endpoint for metrics), and one for each distinct, non-empty, usable API key of each additional endpoint. Recipients
+/// are identified as configured: two additional endpoints whose URLs normalize to the same host are two recipients, and
+/// so is an additional endpoint that repeats the primary endpoint.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct MetricsRecipient {
+    /// How the forwarder came to send to the endpoint.
+    pub route: MetricsRecipientRoute,
+
+    /// The endpoint as configured, before normalization.
+    pub configured_endpoint: String,
+
+    /// The position of the endpoint's API key in the configured key list of its additional endpoint, or `None` for a
+    /// primary endpoint or alternate metrics intake, which have one key.
+    pub api_key_index: Option<usize>,
+}
+
 /// Routing role for a resolved endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EndpointRoute {
@@ -434,7 +478,6 @@ impl ResolvedEndpoint {
 
     /// Returns the position of this endpoint's API key in the `additional_endpoints` config list for
     /// its URL. `None` for primary and OPW endpoints.
-    #[cfg(test)]
     pub(crate) fn api_key_index(&self) -> Option<usize> {
         self.api_key_index
     }

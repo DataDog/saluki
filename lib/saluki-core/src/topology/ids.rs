@@ -95,6 +95,13 @@ impl ComponentOutputId {
     }
 }
 
+impl From<ComponentId> for ComponentOutputId {
+    /// Returns the identifier of the component's default output.
+    fn from(component_id: ComponentId) -> Self {
+        Self(component_id.0)
+    }
+}
+
 impl TryFrom<&str> for ComponentOutputId {
     type Error = &'static str;
 

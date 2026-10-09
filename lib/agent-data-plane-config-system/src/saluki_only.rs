@@ -79,11 +79,12 @@ use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
     DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
 };
-use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
+use agent_data_plane_config::domains::dogstatsd::MetricTagValueAllowlistEntry;
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
+use saluki_metric_kernels::params::{validate_tag_value_rule_keys, InvalidTagValueRules};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
 
@@ -134,7 +135,54 @@ trait ValidateJsonSequence: Sized {
 
 impl ValidateJsonSequence for MetricTagValueAllowlistEntry {
     fn validate_sequence(entries: &[Self]) -> Result<(), String> {
-        validate_metric_tag_value_allowlists(entries).map_err(|error| error.to_string())
+        validate_metric_tag_value_allowlists(entries)
+    }
+}
+
+/// Validates metric tag value allow-list entries, with the tag projection kernel's own rule
+/// (`saluki_metric_kernels::params::validate_tag_value_rule_keys`), so that configuration accepts exactly the rules
+/// tag projection can apply.
+///
+/// # Errors
+///
+/// Returns a description of the first problem, in terms of the allow-list's keys: an empty prefix or tag name, a tag
+/// name containing `:`, a duplicate prefix and tag pair, or overlapping distinct prefixes.
+fn validate_metric_tag_value_allowlists(entries: &[MetricTagValueAllowlistEntry]) -> Result<(), String> {
+    let keys = entries
+        .iter()
+        .map(|entry| (entry.metric_prefix.as_str(), entry.tag_name.as_str()));
+    validate_tag_value_rule_keys(keys).map_err(|problem| describe_invalid_tag_value_allowlist(&problem))
+}
+
+/// Describes a problem with `metric_tag_value_allowlist` in terms of the allow-list's configuration keys.
+///
+/// This is the message configuration loading reports for an invalid allow-list. Anything else that validates
+/// allow-list entries with the tag projection kernel reports the same message through this function.
+pub fn describe_invalid_tag_value_allowlist(problem: &InvalidTagValueRules) -> String {
+    match problem {
+        InvalidTagValueRules::EmptyMetricPrefix { rule } => format!(
+            "metric tag value allow-list rule {rule} has an empty `metric_prefix`; configure a non-empty metric-name \
+             prefix"
+        ),
+        InvalidTagValueRules::EmptyTagName { rule, metric_prefix } => format!(
+            "metric tag value allow-list rule {rule} for prefix '{metric_prefix}' has an empty `tag_name`; configure \
+             a non-empty tag name"
+        ),
+        InvalidTagValueRules::TagNameContainsColon { tag_name, .. } => format!(
+            "metric tag value allow-list tag name '{tag_name}' contains ':'; configure only the tag key, without a \
+             colon or value"
+        ),
+        InvalidTagValueRules::DuplicateRule {
+            metric_prefix,
+            tag_name,
+        } => format!(
+            "metric prefix '{metric_prefix}' is configured more than once for tag '{tag_name}'; configure each prefix \
+             and tag pair only once"
+        ),
+        InvalidTagValueRules::OverlappingPrefixes { shorter, longer } => format!(
+            "overlapping metric prefixes '{shorter}' and '{longer}' are configured; configure distinct prefixes that \
+             do not overlap"
+        ),
     }
 }
 
@@ -1098,6 +1146,57 @@ mod tests {
                 "an unrecognized error_mode value must be a deserialization error, not a silent default"
             );
         }
+    }
+
+    #[test]
+    fn invalid_tag_value_allowlists_are_described_by_their_keys() {
+        let entry = |metric_prefix: &str, tag_name: &str| MetricTagValueAllowlistEntry {
+            metric_prefix: metric_prefix.to_string(),
+            tag_name: tag_name.to_string(),
+            ..Default::default()
+        };
+        // (entries, expected message)
+        let cases = [
+            (
+                vec![entry("", "customer_id")],
+                "metric tag value allow-list rule 1 has an empty `metric_prefix`; configure a non-empty metric-name \
+                 prefix",
+            ),
+            (
+                vec![entry("a.", "env"), entry("my.", "")],
+                "metric tag value allow-list rule 2 for prefix 'my.' has an empty `tag_name`; configure a non-empty \
+                 tag name",
+            ),
+            (
+                vec![entry("my.", "customer:id")],
+                "metric tag value allow-list tag name 'customer:id' contains ':'; configure only the tag key, without \
+                 a colon or value",
+            ),
+            (
+                vec![
+                    entry("my.", "customer_id"),
+                    entry("my.", "region"),
+                    entry("my.", "customer_id"),
+                ],
+                "metric prefix 'my.' is configured more than once for tag 'customer_id'; configure each prefix and \
+                 tag pair only once",
+            ),
+            (
+                vec![entry("my.metric", "region"), entry("my.", "customer_id")],
+                "overlapping metric prefixes 'my.' and 'my.metric' are configured; configure distinct prefixes that \
+                 do not overlap",
+            ),
+        ];
+        for (entries, expected) in cases {
+            assert_eq!(
+                validate_metric_tag_value_allowlists(&entries),
+                Err(expected.to_string())
+            );
+        }
+        assert_eq!(
+            validate_metric_tag_value_allowlists(&[entry("my.", "customer_id"), entry("my.", "region")]),
+            Ok(())
+        );
     }
 
     /// Nothing can be aggregated into a zero-length window, so the source rejects `0` rather than

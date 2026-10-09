@@ -1,7 +1,7 @@
 use metrics::Counter;
 use saluki_metrics::MetricsBuilder;
 
-pub(super) const FILTERED_METRICS_METRIC: &str = "dogstatsd_post_aggregate_filtered_metrics_total";
+pub(crate) const FILTERED_METRICS_METRIC: &str = "dogstatsd_post_aggregate_filtered_metrics_total";
 
 #[derive(Clone)]
 pub(super) struct Telemetry {

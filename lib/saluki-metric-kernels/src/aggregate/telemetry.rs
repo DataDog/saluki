@@ -1,3 +1,5 @@
+//! Aggregation telemetry.
+
 use metrics::{Counter, Gauge};
 use saluki_core::data_model::event::metric::{context::Context, MetricValues};
 use saluki_metrics::MetricsBuilder;
@@ -13,7 +15,7 @@ struct MetricTypedGauge {
 }
 
 impl MetricTypedGauge {
-    pub fn new(builder: &MetricsBuilder, name: &'static str) -> Self {
+    fn new(builder: &MetricsBuilder, name: &'static str) -> Self {
         Self {
             for_counter: builder.register_gauge_with_tags(name, ["metric_type:counter"]),
             for_gauge: builder.register_gauge_with_tags(name, ["metric_type:gauge"]),
@@ -24,8 +26,7 @@ impl MetricTypedGauge {
         }
     }
 
-    #[cfg(test)]
-    pub fn noop() -> Self {
+    fn noop() -> Self {
         Self {
             for_counter: Gauge::noop(),
             for_gauge: Gauge::noop(),
@@ -36,7 +37,7 @@ impl MetricTypedGauge {
         }
     }
 
-    pub fn for_values(&self, values: &MetricValues) -> &Gauge {
+    fn for_values(&self, values: &MetricValues) -> &Gauge {
         match values {
             MetricValues::Counter(_) => &self.for_counter,
             MetricValues::Gauge(_) => &self.for_gauge,
@@ -48,8 +49,21 @@ impl MetricTypedGauge {
     }
 }
 
+/// The telemetry native aggregation reports.
+///
+/// Every metric is registered through the given [`MetricsBuilder`], so a host that builds it from its component's
+/// context reports them with that component's labels:
+///
+/// - `aggregate_active_contexts` (debug level): the contexts held.
+/// - `aggregate_active_contexts_by_type` and `aggregate_active_contexts_bytes_by_type`, tagged `metric_type`: the
+///   contexts held and the memory their contexts take, by the kind of their first value. A context whose kind changes
+///   is added under its first kind and removed under its last.
+/// - `component_events_dropped_total`, tagged `intentional:true`: the metrics dropped at the context limit.
+/// - `aggregate_flushes_total`: the flushes run.
+/// - `aggregate_flushed_total`, tagged `data_type:series` or `data_type:sketches`: the contexts whose closed buckets a
+///   flush emitted, before histograms expand.
 #[derive(Clone)]
-pub struct Telemetry {
+pub struct AggregateTelemetry {
     active_contexts: Gauge,
     active_contexts_by_type: MetricTypedGauge,
     active_contexts_bytes_by_type: MetricTypedGauge,
@@ -59,7 +73,8 @@ pub struct Telemetry {
     sketches_flushed: Counter,
 }
 
-impl Telemetry {
+impl AggregateTelemetry {
+    /// Registers aggregation telemetry with `builder`.
     pub fn new(builder: &MetricsBuilder) -> Self {
         Self {
             active_contexts: builder.register_debug_gauge("aggregate_active_contexts"),
@@ -72,7 +87,7 @@ impl Telemetry {
         }
     }
 
-    #[cfg(test)]
+    /// Returns telemetry that records nothing, for hosts outside a topology, such as the reference interpreter.
     pub fn noop() -> Self {
         Self {
             active_contexts: Gauge::noop(),
@@ -85,7 +100,7 @@ impl Telemetry {
         }
     }
 
-    pub fn increment_contexts(&self, context: &Context, values: &MetricValues) {
+    pub(super) fn increment_contexts(&self, context: &Context, values: &MetricValues) {
         self.active_contexts.increment(1);
         self.active_contexts_by_type.for_values(values).increment(1);
         self.active_contexts_bytes_by_type
@@ -93,7 +108,7 @@ impl Telemetry {
             .increment(context.size_of() as f64);
     }
 
-    pub fn decrement_contexts(&self, context: &Context, values: &MetricValues) {
+    pub(super) fn decrement_contexts(&self, context: &Context, values: &MetricValues) {
         self.active_contexts.decrement(1);
         self.active_contexts_by_type.for_values(values).decrement(1);
         self.active_contexts_bytes_by_type
@@ -101,15 +116,15 @@ impl Telemetry {
             .decrement(context.size_of() as f64);
     }
 
-    pub fn increment_events_dropped(&self) {
+    pub(super) fn increment_events_dropped(&self) {
         self.events_dropped.increment(1);
     }
 
-    pub fn increment_flushes(&self) {
+    pub(super) fn increment_flushes(&self) {
         self.flushes.increment(1);
     }
 
-    pub fn increment_flushed(&self, values: &MetricValues) {
+    pub(super) fn increment_flushed(&self, values: &MetricValues) {
         if values.is_serie() {
             self.series_flushed.increment(1);
         } else if values.is_sketch() {

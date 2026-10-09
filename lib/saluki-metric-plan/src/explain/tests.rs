@@ -109,7 +109,7 @@ fn the_default_programs_explain_describes_its_graph() {
     assert_eq!(aggregate.bindings[0].param, "window");
     assert_eq!(
         aggregate.bindings[0].binding.to_string(),
-        "dogstatsd.aggregation.window_duration"
+        "dogstatsd.aggregation.window_duration_seconds"
     );
     assert_eq!(aggregate.bindings[0].resolved, Some(json!("10s")));
 

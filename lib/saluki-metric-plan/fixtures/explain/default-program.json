@@ -2,8 +2,8 @@
   "explain_version": 1,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:d02627aad65b539e5b4b1525226270c37237de4ead25839f000d1173439d101f",
-    "structural_hash": "sha256:69a850039369f84e68c9fc1790a652802aa53f691ca954aa3bac890fa4692d6a",
+    "hash": "sha256:0803dbedd60a7d16e40f51419e4399ce92797d2b0613e7db7ae0e85390d8f8f8",
+    "structural_hash": "sha256:97dbc94c8d3a6ad90066d4599fc042fadf8152b9770da6b678be54c4d05cc0f0",
     "valid": true
   },
   "graph": {
@@ -77,7 +77,7 @@
             ]
           },
           "string_interner_bytes": {
-            "config": "dogstatsd.mapper.string_interner_bytes",
+            "config": "dogstatsd.mapper.string_interner_size_bytes",
             "resolved": 65536
           }
         },
@@ -112,7 +112,7 @@
           },
           {
             "param": "string_interner_bytes",
-            "binding": "dogstatsd.mapper.string_interner_bytes",
+            "binding": "dogstatsd.mapper.string_interner_size_bytes",
             "resolved": 65536
           }
         ],
@@ -325,14 +325,14 @@
         },
         "params": {
           "window": {
-            "config": "dogstatsd.aggregation.window_duration",
+            "config": "dogstatsd.aggregation.window_duration_seconds",
             "resolved": "10s"
           }
         },
         "bindings": [
           {
             "param": "window",
-            "binding": "dogstatsd.aggregation.window_duration",
+            "binding": "dogstatsd.aggregation.window_duration_seconds",
             "resolved": "10s"
           }
         ],
@@ -390,7 +390,7 @@
         },
         "params": {
           "cache_capacity": {
-            "config": "dogstatsd.aggregation.tag_filter_cache_capacity",
+            "config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
             "resolved": 100000
           },
           "rules": {
@@ -453,7 +453,7 @@
           },
           {
             "param": "cache_capacity",
-            "binding": "dogstatsd.aggregation.tag_filter_cache_capacity",
+            "binding": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
             "resolved": 100000
           }
         ],
@@ -511,7 +511,7 @@
             "resolved": ""
           },
           "counter_expiry": {
-            "config": "dogstatsd.aggregation.counter_expiry",
+            "config": "dogstatsd.aggregation.counter_expiry_seconds",
             "resolved": "5m"
           },
           "flush_interval": {
@@ -538,14 +538,14 @@
             ]
           },
           "window": {
-            "config": "dogstatsd.aggregation.window_duration",
+            "config": "dogstatsd.aggregation.window_duration_seconds",
             "resolved": "10s"
           }
         },
         "bindings": [
           {
             "param": "window",
-            "binding": "dogstatsd.aggregation.window_duration",
+            "binding": "dogstatsd.aggregation.window_duration_seconds",
             "resolved": "10s"
           },
           {
@@ -560,7 +560,7 @@
           },
           {
             "param": "counter_expiry",
-            "binding": "dogstatsd.aggregation.counter_expiry",
+            "binding": "dogstatsd.aggregation.counter_expiry_seconds",
             "resolved": "5m"
           },
           {
@@ -1225,7 +1225,7 @@
                   "matches": {
                     "prefix": false,
                     "values": {
-                      "config": "endpoint_routing.group.a1b2c3d4.names",
+                      "config": "metrics_endpoint_routing.group.0123456789abcdef.names",
                       "resolved": [
                         "checkout.requests"
                       ]
@@ -1238,7 +1238,7 @@
                   "matches": {
                     "prefix": true,
                     "values": {
-                      "config": "endpoint_routing.group.a1b2c3d4.prefixes",
+                      "config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
                       "resolved": [
                         "checkout."
                       ]
@@ -1252,14 +1252,14 @@
         "bindings": [
           {
             "param": "predicate.any[0].intake_name.values",
-            "binding": "endpoint_routing.group.a1b2c3d4.names",
+            "binding": "metrics_endpoint_routing.group.0123456789abcdef.names",
             "resolved": [
               "checkout.requests"
             ]
           },
           {
             "param": "predicate.any[1].intake_name.values",
-            "binding": "endpoint_routing.group.a1b2c3d4.prefixes",
+            "binding": "metrics_endpoint_routing.group.0123456789abcdef.prefixes",
             "resolved": [
               "checkout."
             ]
@@ -1361,7 +1361,7 @@
                   "matches": {
                     "prefix": false,
                     "values": {
-                      "config": "endpoint_routing.group.e5f6a7b8.names",
+                      "config": "metrics_endpoint_routing.group.fedcba9876543210.names",
                       "resolved": []
                     }
                   }
@@ -1372,7 +1372,7 @@
                   "matches": {
                     "prefix": true,
                     "values": {
-                      "config": "endpoint_routing.group.e5f6a7b8.prefixes",
+                      "config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
                       "resolved": [
                         "catalog."
                       ]
@@ -1386,12 +1386,12 @@
         "bindings": [
           {
             "param": "predicate.any[0].intake_name.values",
-            "binding": "endpoint_routing.group.e5f6a7b8.names",
+            "binding": "metrics_endpoint_routing.group.fedcba9876543210.names",
             "resolved": []
           },
           {
             "param": "predicate.any[1].intake_name.values",
-            "binding": "endpoint_routing.group.e5f6a7b8.prefixes",
+            "binding": "metrics_endpoint_routing.group.fedcba9876543210.prefixes",
             "resolved": [
               "catalog."
             ]
@@ -1650,7 +1650,7 @@
                   "matches": {
                     "prefix": false,
                     "values": {
-                      "config": "autoscaling.failover.metrics",
+                      "config": "autoscaling_failover.metrics",
                       "resolved": [
                         "requests.count"
                       ]
@@ -1664,7 +1664,7 @@
         "bindings": [
           {
             "param": "predicate.all[1].name.values",
-            "binding": "autoscaling.failover.metrics",
+            "binding": "autoscaling_failover.metrics",
             "resolved": [
               "requests.count"
             ]

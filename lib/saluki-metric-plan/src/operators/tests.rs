@@ -3,7 +3,11 @@ use std::sync::{Arc, Mutex};
 use saluki_core::{
     accounting::ComponentRegistry,
     components::{ComponentContext, ComponentType},
-    execution::{Kernel, Progress, Turn},
+    data_model::event::{
+        metric::{context::Context, Metric},
+        Event,
+    },
+    execution::{Budget, Kernel, PortIndex, PortOutputs, Progress, Turn, TurnCounters},
     support::SubsystemIdentifier,
     topology::{ComponentId, EventsBuffer},
 };
@@ -38,6 +42,17 @@ const DESIGN_OPERATORS: &[&str] = &[
     "merge",
     "emit",
     "drop",
+];
+
+/// The operators whose kernels have been extracted from native components: every synchronous native operator except
+/// the routing operators, which the host runs itself.
+const OPERATORS_WITH_KERNELS: &[&str] = &[
+    "dogstatsd_mapper",
+    "namespace_prefix",
+    "timestamp_split",
+    "tag_projection",
+    "host_enrichment",
+    "host_tags",
 ];
 
 fn params(value: Value) -> Params {
@@ -273,8 +288,13 @@ fn every_operator_contract_satisfies_the_contract_rules() {
             "{}",
             op
         );
-        // No operator has a kernel in this stage.
-        assert!(configured.kernel().is_none(), "{}", op);
+        // Only operators whose kernels have been extracted have one.
+        assert_eq!(
+            configured.kernel().is_some(),
+            OPERATORS_WITH_KERNELS.contains(&op),
+            "{}",
+            op
+        );
     }
 }
 
@@ -309,7 +329,7 @@ fn stateful_transitions_depend_on_the_state_contract() {
         ("window", json!("30s"), TransitionClass::Cut),
         (
             "window",
-            json!({"config": "dogstatsd.aggregation.window_duration"}),
+            json!({"config": "dogstatsd.aggregation.window_duration_seconds"}),
             TransitionClass::Cut,
         ),
         ("window", json!("10s"), TransitionClass::Retain),
@@ -914,6 +934,32 @@ fn invalid_parameters_are_rejected_with_every_problem() {
             ],
         ),
         (
+            "dogstatsd_mapper",
+            json!({"profiles": [{"name": "a", "prefix": "a.", "mappings": [
+                       {"match": "a.**", "match_type": "wildcard", "name": "b"}]}],
+                   "cache_size": 0, "string_interner_bytes": 1}),
+            vec![(
+                "profiles",
+                "invalid wildcard match pattern `a.**`, it should not contain consecutive `*`",
+            )],
+        ),
+        (
+            "dogstatsd_mapper",
+            json!({"profiles": [{"name": "a", "prefix": "a.", "mappings": [
+                       {"match": "a.(", "match_type": "regex", "name": "b"}]}],
+                   "cache_size": 0, "string_interner_bytes": 1}),
+            vec![(
+                "profiles",
+                "Failed to compile regular expression `^a.($` for `regex` match type: regex parse error",
+            )],
+        ),
+        (
+            "dogstatsd_mapper",
+            json!({"profiles": [{"name": "", "prefix": "a.", "mappings": []}],
+                   "cache_size": 0, "string_interner_bytes": 1}),
+            vec![("profiles", "missing profile name")],
+        ),
+        (
             "opaque_host",
             json!({"component": "_bad", "input": {"kinds": "all", "timestamps": "mixed"}, "outputs": {}}),
             vec![
@@ -949,7 +995,7 @@ fn invalid_parameters_are_rejected_with_every_problem() {
     }
 
     // Values bound to configuration and not yet resolved are not checked.
-    let unresolved = json!({"window": {"config": "dogstatsd.aggregation.window_duration"}});
+    let unresolved = json!({"window": {"config": "dogstatsd.aggregation.window_duration_seconds"}});
     assert!(OperatorRegistry::native()
         .configure("timestamp_split", &params(unresolved))
         .is_ok());
@@ -969,8 +1015,15 @@ fn memory_bounds_mirror_native_accounting() {
     assert_eq!(minimum, 0);
     assert_eq!(firm, 1000 * 64);
 
-    // The mapper's interner storage is allocated up front.
+    // The mapper's interner storage is allocated up front, as is its result cache of 1,000 entries.
     let (minimum, _) = bounds(&configure("dogstatsd_mapper", mapper_params()));
+    assert_eq!(
+        minimum,
+        65536 + 1000 * saluki_metric_kernels::mapper::RESULT_CACHE_ENTRY_BYTES
+    );
+    let mut uncached = mapper_params();
+    uncached["cache_size"] = json!(0);
+    let (minimum, _) = bounds(&configure("dogstatsd_mapper", uncached));
     assert_eq!(minimum, 65536);
 
     // Opaque hosts declare their own bounds as host components.
@@ -1134,6 +1187,277 @@ fn kernel_specs_build_kernels() {
         "Failed to build the kernel: the pattern `(` does not compile"
     );
     assert_eq!(format!("{:?}", spec), "KernelSpec { .. }");
+}
+
+/// Returns a current-thread Tokio runtime with timers, as hosts build kernels in.
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("the test runtime builds")
+}
+
+#[test]
+fn every_kernel_factory_builds_inside_a_current_thread_tokio_context() {
+    let runtime = runtime();
+    let _context = runtime.enter();
+    let mut built = Vec::new();
+    for (op, value) in samples() {
+        let configured = configure(op, value.clone());
+        let Some(spec) = configured.kernel() else { continue };
+        for node in ["dsd_node", "policy/node"] {
+            let context = KernelBuildContext::detached(&node.parse().unwrap());
+            if let Err(error) = spec.build(&context) {
+                panic!("{} {} built for {}: {}", op, value, node, error);
+            }
+        }
+        built.push(op);
+    }
+    built.dedup();
+    assert_eq!(built, OPERATORS_WITH_KERNELS);
+}
+
+#[test]
+fn kernel_factories_need_resolved_parameters() {
+    // (operator, parameters with one binding left unresolved, the parameter named)
+    let cases = [
+        (
+            "namespace_prefix",
+            json!({"namespace": {"config": "test.namespace"}, "exclusions": ["internal."]}),
+            "namespace",
+        ),
+        (
+            "namespace_prefix",
+            json!({"namespace": "tenant", "exclusions": {"config": "test.exclusions"}}),
+            "exclusions",
+        ),
+        (
+            "timestamp_split",
+            json!({"window": {"config": "test.window"}}),
+            "window",
+        ),
+        (
+            "tag_projection",
+            json!({"rules": {"config": "test.rules"}, "value_rules": [], "cache_capacity": 10}),
+            "rules",
+        ),
+        (
+            "tag_projection",
+            json!({"rules": [], "value_rules": {"config": "test.value_rules"}, "cache_capacity": 10}),
+            "value_rules",
+        ),
+        (
+            "tag_projection",
+            json!({"rules": [], "value_rules": [], "cache_capacity": {"config": "test.capacity"}}),
+            "cache_capacity",
+        ),
+    ];
+    let runtime = runtime();
+    let _context = runtime.enter();
+    for (op, value, param) in cases {
+        let spec = configure(op, value.clone())
+            .kernel()
+            .expect("the operator has a kernel");
+        let error = spec
+            .build(&KernelBuildContext::detached(&"node".parse().unwrap()))
+            .err()
+            .unwrap_or_else(|| panic!("{} {} built", op, value));
+        assert!(
+            error
+                .message
+                .contains(&format!("the `{}` parameter is bound to configuration", param)),
+            "{} {}: {}",
+            op,
+            value,
+            error
+        );
+    }
+}
+
+/// Runs one batch through a kernel built from a node's operator, as a host does, and returns the metrics on each
+/// port.
+fn run_kernel(
+    op: &str, params: Value, node: &str, admitted_at: Option<saluki_core::execution::AdmissionTime>,
+    metrics: Vec<Metric>,
+) -> Vec<Vec<Metric>> {
+    let configured = configure(op, params);
+    let ports = configured.ports().outputs.len();
+    let mut kernel = configured
+        .kernel()
+        .expect("the operator has a kernel")
+        .build(&KernelBuildContext::detached(&node.parse().unwrap()))
+        .expect("the kernel builds");
+    let header = saluki_core::execution::BatchHeader {
+        admitted_at,
+        ..Default::default()
+    };
+    let mut input = EventsBuffer::default();
+    for metric in metrics {
+        assert!(input.try_push(Event::Metric(metric)).is_none());
+    }
+    let mut budget = Budget::unlimited();
+    let mut outputs = PortOutputs::new(ports);
+    let mut counters = TurnCounters::default();
+    {
+        let mut turn = Turn::new(
+            &header,
+            std::time::Instant::now(),
+            &mut budget,
+            &mut outputs,
+            &mut counters,
+        );
+        assert!(matches!(kernel.consume(&mut turn, &mut input), Progress::Done));
+    }
+    outputs.complete(input);
+    (0..ports)
+        .map(|port| {
+            outputs
+                .drain(PortIndex::new(port as u16))
+                .flat_map(|buffer| buffer.into_iter().filter_map(Event::try_into_metric))
+                .collect()
+        })
+        .collect()
+}
+
+fn names_of(metrics: &[Metric]) -> Vec<&str> {
+    metrics.iter().map(|metric| metric.context().name().as_ref()).collect()
+}
+
+#[test]
+fn kernels_are_built_from_their_nodes_parameters() {
+    let runtime = runtime();
+    let _context = runtime.enter();
+
+    // `namespace_prefix` prefixes everything but the exclusions.
+    let ports = run_kernel(
+        "namespace_prefix",
+        json!({"namespace": "tenant", "exclusions": ["internal."]}),
+        "dsd_prefix_filter",
+        None,
+        vec![Metric::gauge("app.requests", 1.0), Metric::gauge("internal.x", 1.0)],
+    );
+    assert_eq!(names_of(&ports[0]), ["tenant.app.requests", "internal.x"]);
+
+    // `timestamp_split` sends timestamped points to `passthrough`, counters there becoming rates over the window.
+    let ports = run_kernel(
+        "timestamp_split",
+        json!({"window": "15s"}),
+        "dsd_no_agg_split",
+        None,
+        vec![Metric::counter("a", 1.0), Metric::counter("b", (100, 2.0))],
+    );
+    assert_eq!(ports[0], [Metric::counter("a", 1.0)]);
+    assert_eq!(
+        ports[1],
+        [Metric::rate("b", (100, 2.0), std::time::Duration::from_secs(15))]
+    );
+
+    // `tag_projection` applies its rules to counters and distributions only.
+    let context = || Context::from_static_parts("checkout.latency", &["user_id:1", "env:dev"]);
+    let ports = run_kernel(
+        "tag_projection",
+        tag_projection_params(),
+        "dsd_tag_filterlist",
+        None,
+        vec![Metric::counter(context(), 1.0), Metric::gauge(context(), 1.0)],
+    );
+    let tags = |metric: &Metric| {
+        let mut tags = metric
+            .context()
+            .tags()
+            .into_iter()
+            .map(|tag| tag.as_str().to_string())
+            .collect::<Vec<_>>();
+        tags.sort();
+        tags
+    };
+    assert_eq!(tags(&ports[0][0]), ["env:other"]);
+    assert_eq!(tags(&ports[0][1]), ["env:dev", "user_id:1"]);
+
+    // `host_tags` adds its tags to batches admitted before the deadline, and `host_enrichment` changes nothing.
+    let host_tags = json!({"tags": ["zone:a"], "deadline": "1700000300s"});
+    for (secs, expected) in [(1_700_000_299, vec!["zone:a"]), (1_700_000_300, vec![])] {
+        let ports = run_kernel(
+            "host_tags",
+            host_tags.clone(),
+            "metrics_enrich_host_tags",
+            Some(saluki_core::execution::AdmissionTime::from_unix_secs(secs)),
+            vec![Metric::gauge("a", 1.0)],
+        );
+        assert_eq!(tags(&ports[0][0]), expected, "{}", secs);
+    }
+    let ports = run_kernel(
+        "host_enrichment",
+        json!({}),
+        "metrics_enrich",
+        None,
+        vec![Metric::gauge("a", 1.0)],
+    );
+    assert_eq!(ports[0], [Metric::gauge("a", 1.0)]);
+}
+
+#[test]
+fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
+    let runtime = runtime();
+    let _context = runtime.enter();
+    let recorder = saluki_metrics::test::TestRecorder::default();
+    let _local = metrics::set_default_local_recorder(&recorder);
+    let labels = |component: &'static str| [("component_id", component), ("component_type", "transform")];
+
+    // The timestamp split's passthrough telemetry.
+    run_kernel(
+        "timestamp_split",
+        json!({"window": "10s"}),
+        "dsd_no_agg_split",
+        None,
+        vec![Metric::counter("a", (100, 1.0))],
+    );
+    assert_eq!(
+        recorder.counter(("aggregate_passthrough_metrics_total", &labels("dsd_no_agg_split")[..])),
+        Some(1)
+    );
+
+    // Tag projection's rule telemetry, and its memo: a reserved node's memo keeps the native identifier, and a policy
+    // node's is named after its component.
+    for (node, component, memo) in [
+        (
+            "dsd_tag_filterlist",
+            "dsd_tag_filterlist",
+            "tag_filterlist/context_cache",
+        ),
+        (
+            "policy/projection",
+            "policy_projection",
+            "policy_projection/tag_filterlist/context_cache",
+        ),
+    ] {
+        run_kernel(
+            "tag_projection",
+            tag_projection_params(),
+            node,
+            None,
+            vec![Metric::counter(
+                Context::from_static_parts("checkout.latency", &["user_id:1"]),
+                1.0,
+            )],
+        );
+        assert_eq!(
+            recorder.counter(("tag_filterlist_metrics_modified_total", &labels(component)[..])),
+            Some(1),
+            "{}",
+            node
+        );
+        assert_eq!(
+            recorder.gauge(("tag_filterlist_size", &labels(component)[..])),
+            Some(2.0)
+        );
+        assert_eq!(
+            recorder.gauge(("cache_weight_limit", &[("cache_id", memo)][..])),
+            Some(1000.0),
+            "{}",
+            node
+        );
+    }
 }
 
 mod properties {

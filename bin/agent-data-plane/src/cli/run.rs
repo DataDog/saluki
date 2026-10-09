@@ -321,7 +321,7 @@ pub async fn handle_run_command(
     }
 }
 
-async fn create_topology(
+pub(crate) async fn create_topology(
     config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
     env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
@@ -859,6 +859,29 @@ fn dogstatsd_source_configuration(
     }
 }
 
+/// Builds the DogStatsD mapper configuration from the typed model.
+pub(crate) fn dogstatsd_mapper_configuration(mapper: &dogstatsd::Mapper) -> DogStatsDMapperConfiguration {
+    let profiles = mapper
+        .profiles
+        .iter()
+        .map(|profile| DogStatsDMapperProfile {
+            name: profile.name.clone(),
+            prefix: profile.prefix.clone(),
+            mappings: profile
+                .mappings
+                .iter()
+                .map(|mapping| DogStatsDMetricMapping {
+                    metric_match: mapping.metric_match.clone(),
+                    match_type: mapping.match_type.clone(),
+                    name: mapping.name.clone(),
+                    tags: mapping.tags.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    DogStatsDMapperConfiguration::new(mapper.string_interner_size_bytes, mapper.cache_size, profiles)
+}
+
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
@@ -918,27 +941,7 @@ async fn add_dsd_pipeline_to_blueprint(
         prefix_filter.metric_namespace_blocklist.clone(),
         config_system.live(|config| &config.domains.dogstatsd.metric_filter),
     );
-    let mapper = &typed.domains.dogstatsd.mapper;
-    let mapper_profiles = mapper
-        .profiles
-        .iter()
-        .map(|profile| DogStatsDMapperProfile {
-            name: profile.name.clone(),
-            prefix: profile.prefix.clone(),
-            mappings: profile
-                .mappings
-                .iter()
-                .map(|mapping| DogStatsDMetricMapping {
-                    metric_match: mapping.metric_match.clone(),
-                    match_type: mapping.match_type.clone(),
-                    name: mapping.name.clone(),
-                    tags: mapping.tags.clone(),
-                })
-                .collect(),
-        })
-        .collect();
-    let dsd_mapper_config =
-        DogStatsDMapperConfiguration::new(mapper.string_interner_size_bytes, mapper.cache_size, mapper_profiles);
+    let dsd_mapper_config = dogstatsd_mapper_configuration(&typed.domains.dogstatsd.mapper);
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_tag_filterlist_config = TagFilterlistConfiguration::new(

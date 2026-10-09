@@ -31,4 +31,5 @@ mod system;
 mod translators;
 
 pub use loaded::{EnvPrecedence, LoadedConfiguration};
+pub use saluki_only::describe_invalid_tag_value_allowlist;
 pub use system::{ConfigurationSystem, ConfigurationUpdates, Error};

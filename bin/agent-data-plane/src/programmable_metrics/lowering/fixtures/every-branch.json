@@ -1,0 +1,162 @@
+{
+  "ir_version": 1,
+  "nodes": [
+    {"id": "dsd_in", "op": "source", "params": {"binding": "dogstatsd", "timestamps": "mixed"},
+     "provenance": {"native": "dsd_in"}},
+    {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {
+       "profiles": {"config": "dogstatsd.mapper.profiles", "resolved": [
+         {"name": "checkout", "prefix": "raw.", "mappings": [
+           {"match": "raw.requests.*", "match_type": "wildcard", "name": "mapped.requests",
+            "tags": [{"name": "route", "value": "$1"}]}
+         ]}
+       ]},
+       "cache_size": {"config": "dogstatsd.mapper.cache_size", "resolved": 1000},
+       "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes", "resolved": 65536}},
+     "provenance": {"native": "dsd_enrich"}},
+    {"id": "dsd_prefix_filter", "op": "namespace_prefix", "params": {
+       "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace", "resolved": "tenant"},
+       "exclusions": {"config": "dogstatsd.prefix_filter.metric_namespace_blocklist",
+                      "resolved": ["internal.", "system."]}},
+     "provenance": {"native": "dsd_prefix_filter"}},
+    {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"intake_name": {"matches": {
+       "values": {"config": "dogstatsd.metric_filter.values",
+                  "resolved": ["tenant.raw.blocked", "tenant.checkout.latency.max"]},
+       "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}},
+     "provenance": {"native": "dsd_prefix_filter"}},
+    {"id": "dsd_prefix_filter_blocklist_true", "op": "drop", "provenance": {"native": "dsd_prefix_filter"}},
+    {"id": "dsd_no_agg_split", "op": "timestamp_split", "params": {
+       "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"}},
+     "provenance": {"native": "dsd_no_agg_split"}},
+    {"id": "dsd_tag_filterlist", "op": "tag_projection", "params": {
+       "rules": {"config": "dogstatsd.tag_filterlist", "resolved": [
+         {"metric_name": "tenant.checkout.latency", "action": "exclude", "tags": ["user_id"]}
+       ]},
+       "value_rules": {"config": "dogstatsd.tag_value_allowlist", "resolved": [
+         {"metric_prefix": "tenant.checkout.", "tag_name": "env", "values": ["prod", "staging"],
+          "on_miss": "replace", "replacement": "other"}
+       ]},
+       "cache_capacity": {"config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity",
+                          "resolved": 100000}},
+     "provenance": {"native": "dsd_tag_filterlist"}},
+    {"id": "dsd_agg", "op": "aggregate", "params": {
+       "window": {"config": "dogstatsd.aggregation.window_duration_seconds", "resolved": "10s"},
+       "flush_interval": {"config": "dogstatsd.aggregation.flush_interval", "resolved": "15s"},
+       "context_limit": {"config": "dogstatsd.aggregation.context_limit", "resolved": 1000000},
+       "counter_expiry": {"config": "dogstatsd.aggregation.counter_expiry_seconds", "resolved": "5m"},
+       "flush_open_windows": {"config": "dogstatsd.aggregation.flush_open_windows", "resolved": false},
+       "histogram_aggregates": {"config": "metrics_encoding.histogram.aggregates",
+                                "resolved": ["max", "median", "avg", "count"]},
+       "histogram_percentiles": {"config": "metrics_encoding.histogram.percentiles", "resolved": [95]},
+       "copy_to_distribution": {"config": "metrics_encoding.histogram.copy_to_distribution", "resolved": false},
+       "copy_to_distribution_prefix": {"config": "metrics_encoding.histogram.copy_to_distribution_prefix",
+                                       "resolved": ""}},
+     "provenance": {"native": "dsd_agg"}},
+    {"id": "dsd_post_agg_filter_in", "op": "merge", "params": {"inputs": 2},
+     "provenance": {"native": "dsd_post_agg_filter"}},
+    {"id": "dsd_post_agg_filter", "op": "split", "params": {"predicate": {"all": [
+       {"kind_in": ["counter", "rate", "gauge", "set"]},
+       {"intake_name": {"matches": {
+         "values": {"config": "dogstatsd.post_aggregate_filter.values", "resolved": ["tenant.checkout.latency.max"]},
+         "prefix": {"config": "dogstatsd.metric_filter.match_prefix", "resolved": false}}}}
+     ]}},
+     "provenance": {"native": "dsd_post_agg_filter"}},
+    {"id": "dsd_post_agg_filter_true", "op": "drop", "provenance": {"native": "dsd_post_agg_filter"}},
+    {"id": "dsd_post_agg_filter_fanout", "op": "tee", "params": {"ports": 2},
+     "provenance": {"native": "dsd_client_telemetry_out"}},
+    {"id": "dsd_post_agg_filter_fanout_0", "op": "emit", "params": {"output": "dsd_client_telemetry"},
+     "provenance": {"native": "dsd_client_telemetry_out"}},
+    {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "otlp_in"}},
+    {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"}, "provenance": {"native": "checks_ipc_in"}},
+    {"id": "liveness_in", "op": "source", "params": {"binding": "liveness"}, "provenance": {"native": "liveness_in"}},
+    {"id": "trace_sampler", "op": "source", "params": {"binding": "trace_sampler"},
+     "provenance": {"native": "trace_sampler"}},
+    {"id": "metrics_enrich_in", "op": "merge", "params": {"inputs": 5}, "provenance": {"native": "metrics_enrich"}},
+    {"id": "metrics_enrich", "op": "host_enrichment", "provenance": {"native": "metrics_enrich"}},
+    {"id": "metrics_enrich_host_tags", "op": "host_tags", "params": {
+       "tags": ["cloud_provider:example", "zone:a"], "deadline": "1700000300s"},
+     "provenance": {"native": "metrics_enrich"}},
+    {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}, "provenance": {"native": "metrics_enrich"}},
+    {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"},
+     "provenance": {"native": "dd_metrics_encode"}},
+    {"id": "metrics_routing_filter_0", "op": "opaque_host", "params": {
+       "component": "metrics_routing_filter_0",
+       "input": {"kinds": "all", "timestamps": "mixed"},
+       "outputs": {"out": {"kinds": "all", "timestamps": "mixed"}}},
+     "provenance": {"native": "metrics_routing_filter_0"}},
+    {"id": "metrics_routing_filter_0_out", "op": "emit", "params": {"output": "metrics_routing_encode_0"},
+     "provenance": {"native": "metrics_routing_encode_0"}},
+    {"id": "metrics_routing_filter_1", "op": "opaque_host", "params": {
+       "component": "metrics_routing_filter_1",
+       "input": {"kinds": "all", "timestamps": "mixed"},
+       "outputs": {"out": {"kinds": "all", "timestamps": "mixed"}}},
+     "provenance": {"native": "metrics_routing_filter_1"}},
+    {"id": "metrics_routing_filter_1_out", "op": "emit", "params": {"output": "metrics_routing_encode_1"},
+     "provenance": {"native": "metrics_routing_encode_1"}},
+    {"id": "mrf_metrics_gateway", "op": "opaque_host", "params": {
+       "component": "mrf_metrics_gateway",
+       "input": {"kinds": "all", "timestamps": "mixed"},
+       "outputs": {"out": {"kinds": "all", "timestamps": "mixed"}}},
+     "provenance": {"native": "mrf_metrics_gateway"}},
+    {"id": "mrf_metrics_gateway_out", "op": "emit", "params": {"output": "mrf_metrics_encode"},
+     "provenance": {"native": "mrf_metrics_encode"}},
+    {"id": "af_metrics_gateway", "op": "opaque_host", "params": {
+       "component": "af_metrics_gateway",
+       "input": {"kinds": "all", "timestamps": "mixed"},
+       "outputs": {"out": {"kinds": ["counter", "rate", "gauge", "set"], "timestamps": "mixed"}}},
+     "provenance": {"native": "af_metrics_gateway"}},
+    {"id": "af_metrics_gateway_out", "op": "emit", "params": {"output": "af_metrics_encode"},
+     "provenance": {"native": "af_metrics_encode"}}
+  ],
+  "edges": [
+    {"from": "dsd_in.metrics", "to": "dsd_enrich.in"},
+    {"from": "dsd_enrich.out", "to": "dsd_prefix_filter.in"},
+    {"from": "dsd_prefix_filter.out", "to": "dsd_prefix_filter_blocklist.in"},
+    {"from": "dsd_prefix_filter_blocklist.true", "to": "dsd_prefix_filter_blocklist_true.in"},
+    {"from": "dsd_prefix_filter_blocklist.false", "to": "dsd_no_agg_split.in"},
+    {"from": "dsd_no_agg_split.default", "to": "dsd_tag_filterlist.in"},
+    {"from": "dsd_tag_filterlist.out", "to": "dsd_agg.in"},
+    {"from": "dsd_agg.out", "to": "dsd_post_agg_filter_in.0"},
+    {"from": "dsd_no_agg_split.passthrough", "to": "dsd_post_agg_filter_in.1"},
+    {"from": "dsd_post_agg_filter_in.out", "to": "dsd_post_agg_filter.in"},
+    {"from": "dsd_post_agg_filter.true", "to": "dsd_post_agg_filter_true.in"},
+    {"from": "dsd_post_agg_filter.false", "to": "dsd_post_agg_filter_fanout.in"},
+    {"from": "dsd_post_agg_filter_fanout.0", "to": "dsd_post_agg_filter_fanout_0.in"},
+    {"from": "dsd_post_agg_filter_fanout.1", "to": "metrics_enrich_in.0"},
+    {"from": "otlp_in.metrics", "to": "metrics_enrich_in.1"},
+    {"from": "checks_ipc_in.metrics", "to": "metrics_enrich_in.2"},
+    {"from": "liveness_in.metrics", "to": "metrics_enrich_in.3"},
+    {"from": "trace_sampler.metrics", "to": "metrics_enrich_in.4"},
+    {"from": "metrics_enrich_in.out", "to": "metrics_enrich.in"},
+    {"from": "metrics_enrich.out", "to": "metrics_enrich_host_tags.in"},
+    {"from": "metrics_enrich_host_tags.out", "to": "metrics_policy.in"},
+    {"from": "metrics_policy.0", "to": "metrics_policy_0.in"},
+    {"from": "metrics_policy.1", "to": "metrics_routing_filter_0.in"},
+    {"from": "metrics_routing_filter_0.out", "to": "metrics_routing_filter_0_out.in"},
+    {"from": "metrics_policy.2", "to": "metrics_routing_filter_1.in"},
+    {"from": "metrics_routing_filter_1.out", "to": "metrics_routing_filter_1_out.in"},
+    {"from": "metrics_policy.3", "to": "mrf_metrics_gateway.in"},
+    {"from": "mrf_metrics_gateway.out", "to": "mrf_metrics_gateway_out.in"},
+    {"from": "metrics_policy.4", "to": "af_metrics_gateway.in"},
+    {"from": "af_metrics_gateway.out", "to": "af_metrics_gateway_out.in"}
+  ],
+  "outputs": [
+    {"id": "dsd_client_telemetry", "accepts": {"kinds": "all", "timestamps": "mixed"},
+     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+    {"id": "dd_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
+     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "recipients": ["dd_out/primary/0/https://primary.example.com"]},
+    {"id": "metrics_routing_encode_0", "accepts": {"kinds": "all", "timestamps": "mixed"},
+     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "recipients": ["dd_out/additional/0/https://c.example.com"]},
+    {"id": "metrics_routing_encode_1", "accepts": {"kinds": "all", "timestamps": "mixed"},
+     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "recipients": ["dd_out/additional/0/https://b.example.com", "dd_out/additional/1/https://b.example.com"]},
+    {"id": "mrf_metrics_encode", "accepts": {"kinds": "all", "timestamps": "mixed"},
+     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "recipients": ["mrf_dd_out/primary/0/https://mrf.example.com"]},
+    {"id": "af_metrics_encode", "accepts": {"kinds": ["counter", "rate", "gauge", "set"], "timestamps": "mixed"},
+     "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "recipients": ["cluster_agent_out/primary/0/https://cluster-agent.example.com:5005"]}
+  ],
+  "scopes": {"post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}}
+}
