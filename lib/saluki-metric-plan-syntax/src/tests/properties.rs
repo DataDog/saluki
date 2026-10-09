@@ -1,6 +1,9 @@
 //! Property tests: printing and parsing are inverse over generated artifacts, and no input makes parsing panic.
 
-use proptest::{collection::vec, option, prelude::*, sample::select, sample::Index};
+use proptest::{
+    collection::vec, option, prelude::*, sample::select, sample::Index, strategy::ValueTree as _,
+    test_runner::TestRunner,
+};
 use saluki_metric_plan::{
     canonical::{strip_resolved_values, PlanHash},
     ir::{derived_terminal_id, Blobs, LocalId, NodeId, PolicyArtifact, PortName},
@@ -81,11 +84,13 @@ enum Inputs {
 }
 
 fn arb_string() -> impl Strategy<Value = String> {
+    // Boxed, since parameters hold many strings: see `arb_chain`.
     prop_oneof![
         select(TRICKY_STRINGS).prop_map(str::to_string),
         "[a-z.]{0,12}",
         any::<String>(),
     ]
+    .boxed()
 }
 
 fn arb_strings() -> impl Strategy<Value = Value> {
@@ -98,7 +103,7 @@ where
     S: Strategy<Value = Value> + 'static,
 {
     prop_oneof![
-        3 => literal,
+        3 => literal.boxed(),
         1 => select(BINDINGS).prop_map(|binding| json!({"config": binding})),
     ]
 }
@@ -117,6 +122,11 @@ fn arb_predicate_value() -> impl Strategy<Value = Value> {
 }
 
 /// Returns a strategy for a node with one input and one output, with parameters that its operator's schema accepts.
+///
+/// Its arms are boxed, as are those of the other unions of large strategies here: proptest keeps a union's value trees
+/// inline, so in a debug build an unboxed union takes a stack frame several times the size of all its arms' trees, and
+/// a recursive strategy takes such a frame at each level. Unboxed, generating a deep shape took more than the 2 MiB
+/// stack of a test thread.
 fn arb_chain() -> impl Strategy<Value = (&'static str, Value)> {
     let count = || (0..100_000i64).prop_map(Value::from);
     let tag_rule = (arb_string(), select(&["include", "exclude"][..]), arb_strings())
@@ -141,16 +151,19 @@ fn arb_chain() -> impl Strategy<Value = (&'static str, Value)> {
     let profile = (arb_string(), arb_string(), vec(mapping, 0..2))
         .prop_map(|(name, prefix, mappings)| json!({"name": name, "prefix": prefix, "mappings": mappings}));
     prop_oneof![
-        Just(("host_enrichment", json!({}))),
-        (bindable(arb_string().prop_map(Value::from)), bindable(arb_strings())).prop_map(|(namespace, exclusions)| (
-            "namespace_prefix",
-            json!({
-                "namespace": namespace,
-                "exclusions": exclusions,
-            })
-        )),
+        Just(("host_enrichment", json!({}))).boxed(),
+        (bindable(arb_string().prop_map(Value::from)), bindable(arb_strings()))
+            .prop_map(|(namespace, exclusions)| (
+                "namespace_prefix",
+                json!({
+                    "namespace": namespace,
+                    "exclusions": exclusions,
+                })
+            ))
+            .boxed(),
         (arb_strings(), arb_duration())
-            .prop_map(|(tags, deadline)| ("host_tags", json!({"tags": tags, "deadline": deadline}))),
+            .prop_map(|(tags, deadline)| ("host_tags", json!({"tags": tags, "deadline": deadline})))
+            .boxed(),
         (
             bindable(vec(tag_rule, 0..2).prop_map(Value::from)),
             bindable(vec(value_rule, 0..2).prop_map(Value::from)),
@@ -163,7 +176,8 @@ fn arb_chain() -> impl Strategy<Value = (&'static str, Value)> {
                     "value_rules": value_rules,
                     "cache_capacity": cache_capacity,
                 })
-            )),
+            ))
+            .boxed(),
         (
             bindable(arb_duration().prop_map(Value::from)),
             bindable(arb_duration().prop_map(Value::from)),
@@ -184,17 +198,18 @@ fn arb_chain() -> impl Strategy<Value = (&'static str, Value)> {
                     "copy_to_distribution": !flag,
                     "copy_to_distribution_prefix": "dist.",
                 })
-            )),
-        (bindable(vec(profile, 0..2).prop_map(Value::from)), count(), count()).prop_map(
-            |(profiles, cache_size, interner)| (
+            ))
+            .boxed(),
+        (bindable(vec(profile, 0..2).prop_map(Value::from)), count(), count())
+            .prop_map(|(profiles, cache_size, interner)| (
                 "dogstatsd_mapper",
                 json!({
                     "profiles": profiles,
                     "cache_size": cache_size,
                     "string_interner_bytes": interner,
                 })
-            )
-        ),
+            ))
+            .boxed(),
     ]
 }
 
@@ -204,34 +219,44 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
         any::<bool>().prop_map(|inline| Shape::Drop { inline }),
     ];
     leaf.prop_recursive(4, 24, 3, |inner| {
+        // Each arm is boxed, as `arb_chain` explains, or every level of a deep shape takes a frame of hundreds of
+        // kilobytes in a debug build.
         prop_oneof![
-            (arb_predicate_value(), inner.clone(), inner.clone()).prop_map(|(predicate, on_true, on_false)| {
-                Shape::Split {
-                    predicate,
-                    on_true: Box::new(on_true),
-                    on_false: Box::new(on_false),
-                }
-            }),
-            vec(inner.clone(), 1..4).prop_map(Shape::Tee),
-            (arb_duration(), inner.clone(), inner.clone()).prop_map(|(window, default, passthrough)| {
-                Shape::TimestampSplit {
-                    window,
-                    default: Box::new(default),
-                    passthrough: Box::new(passthrough),
-                }
-            }),
-            (arb_chain(), inner.clone()).prop_map(|((op, params), next)| Shape::Chain {
-                op,
-                params,
-                next: Box::new(next),
-            }),
-            (arb_predicate_value(), option::of(arb_chain()), inner).prop_map(|(predicate, via, next)| {
-                Shape::Diamond {
-                    predicate,
-                    via,
+            (arb_predicate_value(), inner.clone(), inner.clone())
+                .prop_map(|(predicate, on_true, on_false)| {
+                    Shape::Split {
+                        predicate,
+                        on_true: Box::new(on_true),
+                        on_false: Box::new(on_false),
+                    }
+                })
+                .boxed(),
+            vec(inner.clone(), 1..4).prop_map(Shape::Tee).boxed(),
+            (arb_duration(), inner.clone(), inner.clone())
+                .prop_map(|(window, default, passthrough)| {
+                    Shape::TimestampSplit {
+                        window,
+                        default: Box::new(default),
+                        passthrough: Box::new(passthrough),
+                    }
+                })
+                .boxed(),
+            (arb_chain(), inner.clone())
+                .prop_map(|((op, params), next)| Shape::Chain {
+                    op,
+                    params,
                     next: Box::new(next),
-                }
-            }),
+                })
+                .boxed(),
+            (arb_predicate_value(), option::of(arb_chain()), inner)
+                .prop_map(|(predicate, via, next)| {
+                    Shape::Diamond {
+                        predicate,
+                        via,
+                        next: Box::new(next),
+                    }
+                })
+                .boxed(),
         ]
     })
 }
@@ -524,6 +549,32 @@ fn line_and_column(source: &str, offset: usize) -> (usize, usize) {
     let line = before.matches('\n').count() + 1;
     let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
     (line, source[line_start..offset].chars().count() + 1)
+}
+
+/// Generating the property tests' inputs and checking them fits in a small stack.
+///
+/// In a debug build, generating a value moves proptest's value trees through a stack frame at every level of its
+/// strategy, and an unboxed union of large strategies takes hundreds of kilobytes at each level of `arb_shape`: that
+/// took more than a test thread's 2 MiB, and aborted the property tests now and then. Unlike them, this draws the same
+/// inputs on every run.
+#[test]
+fn generating_and_checking_property_inputs_fits_in_a_small_stack() {
+    on_small_stack(|| {
+        let mut runner = TestRunner::deterministic();
+        let artifacts = arb_artifact();
+        let sources = prop_oneof![any::<String>(), arb_token_soup(), arb_damaged_source()];
+        for _ in 0..256 {
+            let artifact = artifacts.new_tree(&mut runner).expect("artifacts generate").current();
+            let printed = print_default(&artifact);
+            assert_eq!(parse_ok(&printed).artifact, artifact, "{}", printed);
+
+            let source = sources.new_tree(&mut runner).expect("sources generate").current();
+            if let Ok(parsed) = parse(&source) {
+                let printed = print_default(&parsed.artifact);
+                assert_eq!(parse_ok(&printed).artifact, parsed.artifact, "{}", printed);
+            }
+        }
+    });
 }
 
 proptest! {

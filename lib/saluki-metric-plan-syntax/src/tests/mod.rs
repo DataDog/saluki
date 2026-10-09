@@ -71,3 +71,23 @@ fn assert_round_trip(source: &str, expected: &PolicyArtifact) {
 fn text(source: &str, span: crate::Span) -> &str {
     &source[span.range()]
 }
+
+/// The stack that tests of stack use run on: half of what spawned threads get by default, so that what they check keeps
+/// a margin on any thread.
+///
+/// A debug build needs the most. In one, parsing and printing the deepest inputs uses about 700 KB, and generating and
+/// checking the property tests' inputs about 600 KB.
+const SMALL_STACK: usize = 1024 * 1024;
+
+/// Runs `test` on a thread with a [`SMALL_STACK`], failing if it fails.
+fn on_small_stack<F>(test: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(test)
+        .expect("the test thread starts")
+        .join()
+        .expect("the test passes");
+}

@@ -146,6 +146,9 @@ pub const MAX_SOURCE_SIZE: usize = 8 * ARTIFACT_SIZE as usize;
 pub const MAX_TOKENS: usize = lexer::MAX_TOKENS;
 
 /// The deepest that lists, records, predicates, and parenthesized expressions may nest in a source.
+///
+/// Parsing and printing a source nested this deeply uses about 700 KB of stack in a debug build, and about 220 KB in an
+/// optimized one, well within the 2 MiB that spawned threads get by default.
 pub const MAX_DEPTH: usize = parser::MAX_DEPTH;
 
 /// A parsed artifact, with the source spans of its parts.

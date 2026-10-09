@@ -726,58 +726,95 @@ fn sources_with_too_many_tokens_are_rejected() {
     );
 }
 
-/// The stack the nesting test runs on: half of what spawned threads get by default, so parsing and printing the
-/// deepest inputs keep a margin on any thread. A debug build, which needs the most, uses about 700 KB.
-const SMALL_STACK: usize = 1024 * 1024;
-
-fn on_small_stack<F>(test: F)
-where
-    F: FnOnce() + Send + 'static,
-{
-    std::thread::Builder::new()
-        .stack_size(SMALL_STACK)
-        .spawn(test)
-        .expect("the test thread starts")
-        .join()
-        .expect("the test passes");
+/// Returns `open` repeated `levels` times, then `inner`, then `close` as many times.
+fn nest(levels: usize, open: &str, inner: &str, close: &str) -> String {
+    format!("{}{}{}", open.repeat(levels), inner, close.repeat(levels))
 }
+
+/// Returns a policy whose `split` predicate nests `levels` deep: the predicate is one level, and each of the
+/// repetitions of `open` in it one more.
+fn nested_predicate(levels: usize, open: &str, inner: &str, close: &str) -> String {
+    policy(&format!("  node s = split({})", nest(levels - 1, open, inner, close)))
+}
+
+/// A form of nesting, with a policy that nests it a given number of levels deep, as the depth limit counts them.
+type NestingForm = (&'static str, fn(usize) -> String);
+
+/// Every form of nesting.
+const NESTING_FORMS: &[NestingForm] = &[
+    ("lists", |levels| {
+        policy(&format!("  node n = host_tags(tags: {})", nest(levels, "[", "", "]")))
+    }),
+    ("records", |levels| {
+        policy(&format!(
+            "  node n = host_tags(tags: {})",
+            nest(levels, "{ a: ", "1", " }")
+        ))
+    }),
+    ("an unregistered operator's parameter", |levels| {
+        policy(&format!("  node n = frobnicate(v: {})", nest(levels, "[", "", "]")))
+    }),
+    ("a blob", |levels| {
+        policy(&format!("  blobs {{ \"{}\" = {} }}", BASE, nest(levels, "[", "", "]")))
+    }),
+    ("parentheses", |levels| nested_predicate(levels, "(", "true", ")")),
+    ("`not`", |levels| nested_predicate(levels, "not ", "true", "")),
+    ("`and`", |levels| nested_predicate(levels, "(true and ", "true", ")")),
+    ("`or`", |levels| nested_predicate(levels, "(true or ", "true", ")")),
+    ("`all`", |levels| nested_predicate(levels, "all(", "true", ")")),
+    ("`any` of several operands", |levels| {
+        nested_predicate(levels, "any(true, ", "false", ")")
+    }),
+    ("`not` of `and`", |levels| {
+        // Each repetition is two levels, `not` and the parenthesis; a leading `not` makes up an odd remainder.
+        let not = "not ".repeat((levels - 1) % 2);
+        policy(&format!(
+            "  node s = split({}{})",
+            not,
+            nest((levels - 1) / 2, "not (true and ", "true", ")")
+        ))
+    }),
+    ("raw records in a predicate", |levels| {
+        nested_predicate(levels, "{ not: ", "true", " }")
+    }),
+    ("raw lists in a predicate", |levels| {
+        nested_predicate(levels, "[", "", "]")
+    }),
+    ("a named predicate parameter", |levels| {
+        policy(&format!(
+            "  node s = split(predicate: {})",
+            nest(levels - 1, "(", "true", ")")
+        ))
+    }),
+];
 
 #[test]
 fn nesting_is_bounded_without_exhausting_the_stack() {
     on_small_stack(|| {
         let too_deep = |diagnostic: &Diagnostic| diagnostic.message.starts_with("This nests more than 128 levels deep");
 
-        // A parameter value nested exactly as deep as allowed parses and prints back.
-        let deepest = policy(&format!(
-            "  node n = host_tags(tags: {}{})",
-            "[".repeat(MAX_DEPTH),
-            "]".repeat(MAX_DEPTH)
-        ));
-        let parsed = parse_ok(&deepest);
-        assert_eq!(parse_ok(&print_default(&parsed.artifact)).artifact, parsed.artifact);
+        // Every form nested exactly as deep as allowed parses and prints back, and one level deeper is too deep. This
+        // is where parsing and printing use the most stack.
+        for (form, nested) in NESTING_FORMS {
+            let parsed = parse_ok(&nested(MAX_DEPTH));
+            let printed = print_default(&parsed.artifact);
+            let reparsed = parse_ok(&printed);
+            assert_eq!(reparsed.artifact, parsed.artifact, "{} print and parse back", form);
+            assert_eq!(
+                print_default(&reparsed.artifact),
+                printed,
+                "{} print to a fixed point",
+                form
+            );
 
-        // One level deeper is reported at the bracket that goes too deep.
-        let deeper = policy(&format!(
-            "  node n = host_tags(tags: {}{})",
-            "[".repeat(MAX_DEPTH + 1),
-            "]".repeat(MAX_DEPTH + 1)
-        ));
-        let diagnostics = parse_err(&deeper);
+            // An unregistered operator's error follows a note naming the operator.
+            let diagnostics = parse_err(&nested(MAX_DEPTH + 1));
+            assert!(diagnostics.iter().any(too_deep), "{}: {:?}", form, diagnostics);
+        }
+
+        // The error is reported at the bracket that goes too deep.
+        let diagnostics = parse_err(&NESTING_FORMS[0].1(MAX_DEPTH + 1));
         assert_eq!(diagnostics[0].column, 28 + MAX_DEPTH);
-        assert!(too_deep(&diagnostics[0]), "{}", diagnostics[0].message);
-
-        // So does a predicate: the predicate is one level, and each parenthesized junction in it one more.
-        let nested = |levels: usize| {
-            policy(&format!(
-                "  node s = split({}true{})",
-                "(true and ".repeat(levels),
-                ")".repeat(levels)
-            ))
-        };
-        let parsed = parse_ok(&nested(MAX_DEPTH - 1));
-        assert_eq!(parse_ok(&print_default(&parsed.artifact)).artifact, parsed.artifact);
-        let diagnostics = parse_err(&nested(MAX_DEPTH));
-        assert!(too_deep(&diagnostics[0]), "{}", diagnostics[0].message);
 
         // Far deeper inputs of every nesting form are rejected the same way.
         let depth = 30_000;
