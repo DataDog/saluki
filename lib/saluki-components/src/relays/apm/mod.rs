@@ -124,7 +124,7 @@ impl MemoryBounds for ApmRelayConfiguration {
 impl RelayBuilder for ApmRelayConfiguration {
     fn outputs(&self) -> &[OutputDefinition<PayloadType>] {
         static OUTPUTS: LazyLock<Vec<OutputDefinition<PayloadType>>> =
-            LazyLock::new(|| vec![OutputDefinition::named_output("traces", PayloadType::Http)]);
+            LazyLock::new(|| vec![OutputDefinition::default_output(PayloadType::Http)]);
         &OUTPUTS
     }
 
@@ -214,7 +214,6 @@ impl Relay for ApmRelay {
             }
         }
 
-        debug!("Stopping APM relay...");
         debug!("APM relay stopped.");
 
         Ok(())
