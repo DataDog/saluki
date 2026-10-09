@@ -13,6 +13,17 @@ pub struct FixedSizeEventBuffer<const N: usize> {
 }
 
 impl<const N: usize> FixedSizeEventBuffer<N> {
+    /// Creates an empty event buffer that allocates room for `capacity` events up front.
+    ///
+    /// The buffer can still hold up to `N` events, growing as needed: `capacity` only sizes the initial allocation, and
+    /// is clamped to `N`. This suits buffers sized to their contents, which would otherwise pay for `N` slots.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.min(N)),
+            seen_event_types: EventType::none(),
+        }
+    }
+
     /// Returns the total number of events the event buffer can hold.
     pub fn capacity(&self) -> usize {
         N
@@ -244,6 +255,26 @@ mod tests {
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 43.0))).is_none());
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 44.0))).is_some());
+    }
+
+    #[test]
+    fn with_capacity_sizes_the_allocation_but_not_the_limit() {
+        // A small initial allocation still grows up to the buffer's fixed capacity, and no further.
+        let mut buffer = FixedSizeEventBuffer::<4>::with_capacity(1);
+        assert_eq!(buffer.capacity(), 4);
+        assert!(buffer.is_empty());
+        for value in 0..4 {
+            assert!(buffer
+                .try_push(Event::Metric(Metric::counter("foo", value as f64)))
+                .is_none());
+        }
+        assert!(buffer.is_full());
+        assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 4.0))).is_some());
+        assert!(buffer.has_event_type(EventType::Metric));
+
+        // The requested allocation is clamped to the fixed capacity.
+        let buffer = FixedSizeEventBuffer::<4>::with_capacity(1_000_000);
+        assert!(buffer.events.capacity() < 1_000_000);
     }
 
     #[test]

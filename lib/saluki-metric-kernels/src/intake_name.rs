@@ -1,29 +1,30 @@
-//! Metric-name normalization, in the name space the Datadog metrics intake stores names in.
+//! Metric-name normalization, in the name space the metrics intake stores names in.
 //!
-//! Metric names are submitted verbatim, but the intake rewrites them on ingest. Any decision made here that has to
-//! agree with what the intake stores -- matching a metric filterlist, for example -- must therefore compare normalized
-//! names rather than the raw names seen on the wire.
+//! Metric names are submitted verbatim, but the intake rewrites them on ingest. Any decision that has to agree with
+//! what the intake stores -- matching a metric filterlist, for example -- must therefore compare normalized names
+//! rather than the raw names seen on the wire. The normalized name is the **intake name**; a name the intake rejects
+//! outright has none.
 //!
 //! Normalization never allocates. [`is_normalized`] is a single pass that lets callers skip the rewrite entirely for
 //! the overwhelmingly common case of an already-normalized name, and [`normalize_into`] rewrites into a caller-provided
-//! [`NameBuf`], which is small enough to live on the stack.
+//! [`NameBuf`], which is small enough to live on the stack. [`intake_name`] combines the two.
 
 /// Maximum allowed length of a metric name, in bytes. Names longer than this are rejected outright by the intake: they
 /// are not truncated.
-pub(super) const MAX_LENGTH: usize = 350;
+pub const MAX_LENGTH: usize = 350;
 
 /// Fixed-capacity scratch buffer for a normalized metric name.
 ///
 /// A normalized name is never longer than the name it came from, and a name longer than [`MAX_LENGTH`] is rejected
 /// outright, so this capacity is always enough. That is what lets [`normalize_into`] rewrite a name without allocating.
-pub(super) struct NameBuf {
+pub struct NameBuf {
     buf: [u8; MAX_LENGTH],
     len: usize,
 }
 
 impl NameBuf {
     /// Creates an empty buffer.
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             buf: [0; MAX_LENGTH],
             len: 0,
@@ -34,7 +35,7 @@ impl NameBuf {
     ///
     /// This is a byte slice rather than a `&str` so that no UTF-8 validation pass is needed. The contents are always
     /// valid UTF-8, since only ASCII bytes are ever written, but callers only ever compare them.
-    fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
     }
 
@@ -115,7 +116,7 @@ fn first_alpha(name: &str) -> Option<usize> {
 ///
 /// The predicate is exact: `is_normalized(s)` is true if and only if normalizing `s` yields `s` unchanged. The tests in
 /// this module pin that equivalence.
-pub(super) fn is_normalized(name: &str) -> bool {
+pub fn is_normalized(name: &str) -> bool {
     if name.is_empty() || name.len() > MAX_LENGTH {
         return false;
     }
@@ -152,7 +153,7 @@ pub(super) fn is_normalized(name: &str) -> bool {
     true
 }
 
-/// Writes `name` into `buf` as the Datadog intake stores it, and returns the normalized name as ASCII bytes.
+/// Writes `name` into `buf` as the metrics intake stores it, and returns the normalized name as ASCII bytes.
 ///
 /// Returns `None` when the intake would reject the name outright rather than rewrite it, which happens when the name is
 /// empty, longer than [`MAX_LENGTH`] bytes, or contains no ASCII letter. Callers should treat such a name as one the
@@ -176,7 +177,7 @@ pub(super) fn is_normalized(name: &str) -> bool {
 ///
 /// This writes into a caller-provided buffer rather than returning an owned string so that no caller is forced to pay
 /// for the rewrite allocation. `buf` is reset first, so a single buffer can be reused across calls.
-pub(super) fn normalize_into<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option<&'buf [u8]> {
+pub fn normalize_into<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option<&'buf [u8]> {
     let start = first_alpha(name)?;
     buf.clear();
 
@@ -205,6 +206,22 @@ pub(super) fn normalize_into<'buf>(buf: &'buf mut NameBuf, name: &str) -> Option
     }
 
     Some(buf.as_bytes())
+}
+
+/// Returns the intake name of `name`: the name as the metrics intake stores it, or `None` if the intake rejects it.
+///
+/// A name that is already normalized, which is the overwhelmingly common case, is returned as given without being
+/// copied. Any other name is normalized into `scratch`. This never allocates. Creating a [`NameBuf`] costs a 350-byte
+/// initialization, so callers on a hot path keep one and reuse it, or check [`is_normalized`] first and only create one
+/// when it is needed.
+///
+/// The result is ASCII bytes rather than a `&str` for the same reason as [`normalize_into`]: callers only compare it.
+pub fn intake_name<'a>(name: &'a str, scratch: &'a mut NameBuf) -> Option<&'a [u8]> {
+    if is_normalized(name) {
+        return Some(name.as_bytes());
+    }
+
+    normalize_into(scratch, name)
 }
 
 #[cfg(test)]
@@ -323,7 +340,7 @@ mod tests {
 
     #[test]
     fn is_normalized_agrees_with_normalize() {
-        // These cover the boundary cases the fast path in `Blocklist::contains` relies on: is_normalized(s) is true
+        // These cover the boundary cases the fast path in `intake_name` relies on: is_normalized(s) is true
         // exactly when normalizing `s` returns `s` unchanged.
         let inputs = [
             "",
@@ -367,5 +384,43 @@ mod tests {
                 input
             );
         }
+    }
+
+    #[test]
+    fn intake_name_matches_the_name_tables() {
+        let mut scratch = NameBuf::new();
+
+        for (input, expected) in NORMALIZED_NAMES {
+            assert_eq!(
+                intake_name(input, &mut scratch),
+                Some(expected.as_bytes()),
+                "input: {:?}",
+                input
+            );
+        }
+
+        for input in UNSTORABLE_NAMES {
+            assert_eq!(intake_name(input, &mut scratch), None, "input: {:?}", input);
+        }
+
+        let over_limit = "a".repeat(MAX_LENGTH + 1);
+        assert_eq!(intake_name(&over_limit, &mut scratch), None);
+    }
+
+    #[test]
+    fn intake_name_borrows_already_normalized_names() {
+        // The fast path returns the input itself rather than a copy in the scratch buffer, which is what keeps the
+        // common case free of any rewrite work.
+        let mut scratch = NameBuf::new();
+        let name = "already.normalized_name";
+        let result = intake_name(name, &mut scratch).expect("name is storable");
+        assert_eq!(result.as_ptr(), name.as_ptr());
+        assert_eq!(result.len(), name.len());
+
+        // A name that needs rewriting comes back from the scratch buffer instead.
+        let name = "needs rewriting";
+        let result = intake_name(name, &mut scratch).expect("name is storable");
+        assert_eq!(result, b"needs_rewriting");
+        assert_ne!(result.as_ptr(), name.as_ptr());
     }
 }

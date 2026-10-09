@@ -17,11 +17,10 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::intake_name::{is_normalized, normalize_into, NameBuf};
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
-
-use super::metric_name::{is_normalized, normalize_into, NameBuf};
 
 const ALLOWLIST_METRICS_FILTERED_METRIC: &str = "metrics_endpoint_allowlist_metrics_filtered_total";
 const ALLOWLIST_SIZE_METRIC: &str = "metrics_endpoint_allowlist_size";

@@ -17,12 +17,11 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
+use saluki_metric_kernels::matcher::SortedSetMatcher;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
-
-use crate::components::dogstatsd_filterlist::Blocklist;
 
 mod telemetry;
 
@@ -67,7 +66,7 @@ impl TransformBuilder for DogStatsDPostAggregateFilterConfiguration {
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let mut filter = DogStatsDPostAggregateFilter {
-            matcher: Blocklist::default(),
+            matcher: SortedSetMatcher::default(),
             metric_filter: self.metric_filter.clone(),
             histogram_suffixes: self.histogram_suffixes.clone(),
             telemetry: Telemetry::new(&metrics_builder),
@@ -139,7 +138,7 @@ fn is_scalar_series_metric(metric: &Metric) -> bool {
 }
 
 struct DogStatsDPostAggregateFilter {
-    matcher: Blocklist,
+    matcher: SortedSetMatcher,
     metric_filter: Live<MetricFilter>,
     histogram_suffixes: HistogramSuffixes,
     telemetry: Telemetry,
@@ -155,14 +154,14 @@ impl DogStatsDPostAggregateFilter {
             .cloned()
             .collect::<Vec<_>>();
 
-        self.matcher = Blocklist::new(
+        self.matcher = SortedSetMatcher::new(
             histogram_values.iter().map(String::as_str),
             self.metric_filter.match_prefix,
         );
     }
 
     fn should_filter_metric(&self, metric: &Metric) -> bool {
-        is_scalar_series_metric(metric) && self.matcher.contains(metric.context().name())
+        is_scalar_series_metric(metric) && self.matcher.matches_intake_name(metric.context().name())
     }
 
     fn transform_buffer(&self, buffer: &mut EventsBuffer) {
@@ -251,7 +250,7 @@ mod tests {
         };
 
         let mut filter = DogStatsDPostAggregateFilter {
-            matcher: Blocklist::default(),
+            matcher: SortedSetMatcher::default(),
             metric_filter: Live::new_fixed(metric_filter),
             histogram_suffixes,
             telemetry,

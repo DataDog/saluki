@@ -1,0 +1,665 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Predicate",
+  "description": "A predicate over one metric.\n\nSee the [module documentation](self) for the serialized form and the semantics of each predicate.",
+  "oneOf": [
+    {
+      "description": "Always true or always false.",
+      "type": "object",
+      "required": [
+        "const"
+      ],
+      "properties": {
+        "const": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if the flag is set.",
+      "type": "object",
+      "required": [
+        "flag"
+      ],
+      "properties": {
+        "flag": {
+          "$ref": "#/definitions/Operand_for_Boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if the list is empty.",
+      "type": "object",
+      "required": [
+        "is_empty"
+      ],
+      "properties": {
+        "is_empty": {
+          "$ref": "#/definitions/Operand_for_Array_of_String"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Matches the raw name.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/StringMatch"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Matches the intake name. False when the metric has no intake name.",
+      "type": "object",
+      "required": [
+        "intake_name"
+      ],
+      "properties": {
+        "intake_name": {
+          "$ref": "#/definitions/StringMatch"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "Matches the host. False when the host is unset.",
+      "type": "object",
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "$ref": "#/definitions/StringMatch"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True when the host is unset.",
+      "type": "object",
+      "required": [
+        "host_unset"
+      ],
+      "properties": {
+        "host_unset": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if any tag has the key, with or without a value.",
+      "type": "object",
+      "required": [
+        "has_tag"
+      ],
+      "properties": {
+        "has_tag": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if any tag with the key has a value that matches.",
+      "type": "object",
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "$ref": "#/definitions/TagMatch"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if any origin tag has the key, with or without a value.",
+      "type": "object",
+      "required": [
+        "has_origin_tag"
+      ],
+      "properties": {
+        "has_origin_tag": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if any origin tag with the key has a value that matches.",
+      "type": "object",
+      "required": [
+        "origin_tag"
+      ],
+      "properties": {
+        "origin_tag": {
+          "$ref": "#/definitions/TagMatch"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if the metric's kind is in the set.",
+      "type": "object",
+      "required": [
+        "kind_in"
+      ],
+      "properties": {
+        "kind_in": {
+          "$ref": "#/definitions/KindSet"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if every operand is true. True when there are no operands.",
+      "type": "object",
+      "required": [
+        "all"
+      ],
+      "properties": {
+        "all": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Predicate"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if any operand is true. False when there are no operands.",
+      "type": "object",
+      "required": [
+        "any"
+      ],
+      "properties": {
+        "any": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Predicate"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "True if the operand is false.",
+      "type": "object",
+      "required": [
+        "not"
+      ],
+      "properties": {
+        "not": {
+          "$ref": "#/definitions/Predicate"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "BindingName": {
+      "description": "The name of a configuration binding: period-separated segments of lowercase letters, digits, and underscores.",
+      "type": "string",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[a-z0-9_]+(?:\\.[a-z0-9_]+)*$"
+    },
+    "Kind": {
+      "description": "The kind of a metric.\n\nEach kind corresponds to one variant of [`MetricValues`]. A rate's interval is part of its values, not of its kind: predicates and port types never distinguish rates by interval.",
+      "oneOf": [
+        {
+          "description": "A sum of deltas.",
+          "type": "string",
+          "enum": [
+            "counter"
+          ]
+        },
+        {
+          "description": "A total change over an interval.",
+          "type": "string",
+          "enum": [
+            "rate"
+          ]
+        },
+        {
+          "description": "A latest value.",
+          "type": "string",
+          "enum": [
+            "gauge"
+          ]
+        },
+        {
+          "description": "A set of distinct members.",
+          "type": "string",
+          "enum": [
+            "set"
+          ]
+        },
+        {
+          "description": "A collection of samples, aggregated on the client side.",
+          "type": "string",
+          "enum": [
+            "histogram"
+          ]
+        },
+        {
+          "description": "A sketch of samples, mergeable on the server side.",
+          "type": "string",
+          "enum": [
+            "distribution"
+          ]
+        }
+      ]
+    },
+    "KindSet": {
+      "description": "A set of metric kinds: `\"all\"`, or a list of distinct kinds.",
+      "anyOf": [
+        {
+          "const": "all"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Kind"
+          },
+          "uniqueItems": true
+        }
+      ]
+    },
+    "Operand_for_Array_of_String": {
+      "description": "A literal value, or a configuration binding `{\"config\": \"<binding>\"}` with an optional resolved value.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "config"
+          ],
+          "properties": {
+            "config": {
+              "$ref": "#/definitions/BindingName"
+            },
+            "resolved": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Operand_for_Boolean": {
+      "description": "A literal value, or a configuration binding `{\"config\": \"<binding>\"}` with an optional resolved value.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "required": [
+            "config"
+          ],
+          "properties": {
+            "config": {
+              "$ref": "#/definitions/BindingName"
+            },
+            "resolved": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Predicate": {
+      "description": "A predicate over one metric.\n\nSee the [module documentation](self) for the serialized form and the semantics of each predicate.",
+      "oneOf": [
+        {
+          "description": "Always true or always false.",
+          "type": "object",
+          "required": [
+            "const"
+          ],
+          "properties": {
+            "const": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if the flag is set.",
+          "type": "object",
+          "required": [
+            "flag"
+          ],
+          "properties": {
+            "flag": {
+              "$ref": "#/definitions/Operand_for_Boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if the list is empty.",
+          "type": "object",
+          "required": [
+            "is_empty"
+          ],
+          "properties": {
+            "is_empty": {
+              "$ref": "#/definitions/Operand_for_Array_of_String"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Matches the raw name.",
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/definitions/StringMatch"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Matches the intake name. False when the metric has no intake name.",
+          "type": "object",
+          "required": [
+            "intake_name"
+          ],
+          "properties": {
+            "intake_name": {
+              "$ref": "#/definitions/StringMatch"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Matches the host. False when the host is unset.",
+          "type": "object",
+          "required": [
+            "host"
+          ],
+          "properties": {
+            "host": {
+              "$ref": "#/definitions/StringMatch"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True when the host is unset.",
+          "type": "object",
+          "required": [
+            "host_unset"
+          ],
+          "properties": {
+            "host_unset": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if any tag has the key, with or without a value.",
+          "type": "object",
+          "required": [
+            "has_tag"
+          ],
+          "properties": {
+            "has_tag": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if any tag with the key has a value that matches.",
+          "type": "object",
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "$ref": "#/definitions/TagMatch"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if any origin tag has the key, with or without a value.",
+          "type": "object",
+          "required": [
+            "has_origin_tag"
+          ],
+          "properties": {
+            "has_origin_tag": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if any origin tag with the key has a value that matches.",
+          "type": "object",
+          "required": [
+            "origin_tag"
+          ],
+          "properties": {
+            "origin_tag": {
+              "$ref": "#/definitions/TagMatch"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if the metric's kind is in the set.",
+          "type": "object",
+          "required": [
+            "kind_in"
+          ],
+          "properties": {
+            "kind_in": {
+              "$ref": "#/definitions/KindSet"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if every operand is true. True when there are no operands.",
+          "type": "object",
+          "required": [
+            "all"
+          ],
+          "properties": {
+            "all": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Predicate"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if any operand is true. False when there are no operands.",
+          "type": "object",
+          "required": [
+            "any"
+          ],
+          "properties": {
+            "any": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Predicate"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "True if the operand is false.",
+          "type": "object",
+          "required": [
+            "not"
+          ],
+          "properties": {
+            "not": {
+              "$ref": "#/definitions/Predicate"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SetMatch": {
+      "description": "A match against a list of strings, either of which may be bound to configuration.\n\nThis is the form native filterlists and allowlists lower to.",
+      "type": "object",
+      "required": [
+        "prefix",
+        "values"
+      ],
+      "properties": {
+        "prefix": {
+          "description": "Whether values match by prefix rather than exactly.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Operand_for_Boolean"
+            }
+          ]
+        },
+        "values": {
+          "description": "The strings to match. Entries are compared verbatim, never normalized.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Operand_for_Array_of_String"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "StringMatch": {
+      "description": "How a string field is matched.",
+      "oneOf": [
+        {
+          "description": "The value equals the string.",
+          "type": "object",
+          "required": [
+            "eq"
+          ],
+          "properties": {
+            "eq": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "The value starts with the string.",
+          "type": "object",
+          "required": [
+            "prefix"
+          ],
+          "properties": {
+            "prefix": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "The value equals one of the strings.",
+          "type": "object",
+          "required": [
+            "in"
+          ],
+          "properties": {
+            "in": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "The value starts with one of the strings.",
+          "type": "object",
+          "required": [
+            "prefix_in"
+          ],
+          "properties": {
+            "prefix_in": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "The value matches one of the strings, exactly or by prefix.",
+          "type": "object",
+          "required": [
+            "matches"
+          ],
+          "properties": {
+            "matches": {
+              "$ref": "#/definitions/SetMatch"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TagMatch": {
+      "description": "A match against the values of the tags with one key.",
+      "type": "object",
+      "required": [
+        "key",
+        "value"
+      ],
+      "properties": {
+        "key": {
+          "description": "The tag key.",
+          "type": "string"
+        },
+        "value": {
+          "description": "How the tag's value is matched.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/StringMatch"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

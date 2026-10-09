@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1f929f572d5e5e65463619cd2ed5ba9c8ff2818ad571b4ab9ad452a6a1fcdf5f # shrinks to shape = Emit, metrics = [Metric { context: Context { inner: ContextInner { name: "app.requests", host: None, tags: TagSet { base: SharedTagSet([]), overlay: None }, key: ContextKey { hash: 1986637253652976070 } } }, values: Set(SetPoints(TimestampedValues { values: [TimestampedValue { timestamp: None, value: {"prod"} }] })), metadata: MetricMetadata { origin: None, unit: "" } }], cuts = []

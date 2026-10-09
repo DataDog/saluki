@@ -57,6 +57,7 @@ dependencies = [
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
+ "saluki-metric-kernels",
  "saluki-metrics",
  "saluki-tls",
  "serde",
@@ -5782,6 +5783,29 @@ name = "saluki-metadata"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "saluki-metric-kernels"
+version = "0.1.0"
+dependencies = [
+ "stringtheory",
+]
+
+[[package]]
+name = "saluki-metric-plan"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "saluki-core",
+ "saluki-metric-kernels",
+ "saluki-tls",
+ "schemars",
+ "serde",
+ "serde_json",
+ "snafu",
+ "stringtheory",
+ "tokio",
 ]
 
 [[package]]

@@ -1,0 +1,193 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PolicyArtifact",
+  "description": "A policy artifact: a replacement for one scope of a plan, written against a recorded base.\n\nAn artifact is typically derived by editing the export of the default program's scope. It records the hash of that base program and the fingerprints of the outputs it refers to, so that a structural change to the default program or to an output is detected rather than silently merged. One artifact replaces exactly one scope.\n\nArtifact nodes have local identifiers and no provenance: composing the artifact into a plan assigns both. Artifact edges refer to the scope's inputs as `input.<name>`. Artifacts refer to configuration by binding only, never with resolved values, and may write any parameter value as a reference to a blob in their blob table, which composition replaces with the blob's content (see [`Blobs::inline`]).\n\nSerializing an artifact writes its normalized form, as for a [plan](Plan#normalized-form). Approval binds to the hash of the document as it was received, which [`ReceivedArtifact`] keeps.",
+  "type": "object",
+  "required": [
+    "base",
+    "edges",
+    "ir_version",
+    "nodes",
+    "scope"
+  ],
+  "properties": {
+    "base": {
+      "description": "What the artifact was written against.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ArtifactBase"
+        }
+      ]
+    },
+    "blobs": {
+      "description": "Content-addressed values that parameters refer to.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "edges": {
+      "description": "The edges between the scope's inputs and the artifact's node ports.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ArtifactEdge"
+      }
+    },
+    "ir_version": {
+      "description": "The IR version the artifact is written in.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "nodes": {
+      "description": "The artifact's nodes.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ArtifactNode"
+      }
+    },
+    "scope": {
+      "description": "The scope the artifact replaces.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ScopeName"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ArtifactBase": {
+      "description": "What a policy artifact was written against.",
+      "type": "object",
+      "required": [
+        "program_hash"
+      ],
+      "properties": {
+        "outputs": {
+          "description": "The fingerprint of every output the artifact refers to, as of its base.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/PlanHash"
+          }
+        },
+        "program_hash": {
+          "description": "The hash of the exported program the artifact was derived from, without resolved values.\n\nWhen the current default program's export has a different hash, the artifact is reported as stale.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PlanHash"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ArtifactEdge": {
+      "description": "An edge within a policy artifact.",
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "description": "The port the edge leaves: a scope input, or an output port of an artifact node.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ArtifactPortRef"
+            }
+          ]
+        },
+        "to": {
+          "description": "The input port the edge enters.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ArtifactPortRef"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ArtifactNode": {
+      "description": "One node of a policy artifact.",
+      "type": "object",
+      "required": [
+        "id",
+        "op"
+      ],
+      "properties": {
+        "id": {
+          "description": "The node's local identifier.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ArtifactNodeId"
+            }
+          ]
+        },
+        "op": {
+          "description": "The registered operator the node runs.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OperatorName"
+            }
+          ]
+        },
+        "params": {
+          "description": "The operator's parameters.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Params"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ArtifactNodeId": {
+      "description": "An artifact node ID.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "ArtifactPortRef": {
+      "description": "A port reference within a policy artifact: `input.<name>` or `<node>.<port>`.",
+      "type": "string",
+      "maxLength": 127,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$"
+    },
+    "OperatorName": {
+      "description": "An operator name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "ParamName": {
+      "description": "A parameter name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "Params": {
+      "description": "Operator parameters, keyed by parameter name. Each operator's parameter schema defines their types.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/definitions/ParamName"
+      }
+    },
+    "PlanHash": {
+      "description": "A SHA-256 digest: `sha256:` followed by 64 lowercase hexadecimal digits.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ScopeName": {
+      "description": "A scope name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    }
+  }
+}

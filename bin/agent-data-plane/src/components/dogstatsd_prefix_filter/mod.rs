@@ -14,11 +14,10 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
+use saluki_metric_kernels::matcher::SortedSetMatcher;
 use saluki_metrics::MetricsBuilder;
 use tokio::select;
 use tracing::{debug, error};
-
-use crate::components::dogstatsd_filterlist::Blocklist;
 
 const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
 const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
@@ -69,7 +68,7 @@ impl TransformBuilder for DogStatsDPrefixFilterConfiguration {
         let mut filter = DogStatsDPrefixFilter {
             metric_prefix,
             metric_prefix_blocklist: self.metric_prefix_blocklist.clone(),
-            matcher: Blocklist::default(),
+            matcher: SortedSetMatcher::default(),
             metric_filter: self.metric_filter.clone(),
             telemetry,
         };
@@ -129,14 +128,14 @@ impl FilterlistTelemetry {
 struct DogStatsDPrefixFilter {
     metric_prefix: String,
     metric_prefix_blocklist: Vec<String>,
-    matcher: Blocklist,
+    matcher: SortedSetMatcher,
     metric_filter: Live<MetricFilter>,
     telemetry: FilterlistTelemetry,
 }
 
 impl DogStatsDPrefixFilter {
     fn sync_matcher(&mut self, count_update: bool) {
-        self.matcher = Blocklist::new(
+        self.matcher = SortedSetMatcher::new(
             self.metric_filter.values.iter().map(String::as_str),
             self.metric_filter.match_prefix,
         );
@@ -150,7 +149,7 @@ impl DogStatsDPrefixFilter {
         let metric_name = metric.context().name().as_ref();
 
         if self.metric_prefix.is_empty() {
-            if self.matcher.contains(metric_name) {
+            if self.matcher.matches_intake_name(metric_name) {
                 self.telemetry.increment_listener_filtered_points();
                 debug!("Metric {} excluded due to blocklist.", metric_name);
                 return false;
@@ -166,7 +165,7 @@ impl DogStatsDPrefixFilter {
                 prefixed_metric_name.into()
             };
 
-            if self.matcher.contains(&new_metric_name) {
+            if self.matcher.matches_intake_name(&new_metric_name) {
                 self.telemetry.increment_listener_filtered_points();
                 debug!("Metric {} excluded due to blocklist.", new_metric_name);
                 return false;
@@ -242,7 +241,7 @@ mod tests {
     struct FilterBuilder {
         metric_prefix: String,
         metric_prefix_blocklist: Vec<String>,
-        matcher: Blocklist,
+        matcher: SortedSetMatcher,
         metric_filter: Live<MetricFilter>,
         telemetry: FilterlistTelemetry,
     }
@@ -252,7 +251,7 @@ mod tests {
             Self {
                 metric_prefix: String::new(),
                 metric_prefix_blocklist: Vec::new(),
-                matcher: Blocklist::default(),
+                matcher: SortedSetMatcher::default(),
                 metric_filter: Live::new_fixed(MetricFilter::default()),
                 telemetry: FilterlistTelemetry::noop(),
             }
@@ -268,7 +267,7 @@ mod tests {
             self
         }
 
-        fn matcher(mut self, matcher: Blocklist) -> Self {
+        fn matcher(mut self, matcher: SortedSetMatcher) -> Self {
             self.matcher = matcher;
             self
         }
@@ -318,7 +317,7 @@ mod tests {
     #[test]
     fn metric_on_blocklist_is_dropped_and_others_pass() {
         let filter = FilterBuilder::new()
-            .matcher(Blocklist::new(["foobar", "test"], false))
+            .matcher(SortedSetMatcher::new(["foobar", "test"], false))
             .build();
 
         let mut metric = Metric::gauge("foobar", 1.0);
@@ -333,7 +332,7 @@ mod tests {
     fn blocklist_matches_against_the_prefixed_name() {
         let filter = FilterBuilder::new()
             .prefix("foo.")
-            .matcher(Blocklist::new(["foo.bar", "test"], false))
+            .matcher(SortedSetMatcher::new(["foo.bar", "test"], false))
             .build();
 
         // "bar" is prefixed to "foo.bar", which the blocklist matches.
@@ -351,7 +350,7 @@ mod tests {
     #[test]
     fn prefix_matching_blocklist_drops_metrics_by_prefix() {
         let filter = FilterBuilder::new()
-            .matcher(Blocklist::new(["b", "test"], true))
+            .matcher(SortedSetMatcher::new(["b", "test"], true))
             .build();
 
         // match prefix is true, "bar" has prefix "b"
@@ -367,7 +366,7 @@ mod tests {
     fn prefix_matching_blocklist_applies_after_prefixing() {
         let filter = FilterBuilder::new()
             .prefix("foo")
-            .matcher(Blocklist::new(["fo", "test"], true))
+            .matcher(SortedSetMatcher::new(["fo", "test"], true))
             .build();
 
         // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
@@ -411,7 +410,7 @@ mod tests {
 
         let mut metric = Metric::gauge("foobar", 1.0);
         assert!(!filter.process_metric(&mut metric));
-        assert_eq!(filter.matcher, Blocklist::new(["foo"], true));
+        assert_eq!(filter.matcher, SortedSetMatcher::new(["foo"], true));
     }
 
     #[test]
@@ -453,7 +452,7 @@ mod tests {
 
         let telemetry = FilterlistTelemetry::new(&MetricsBuilder::default());
         let filter = FilterBuilder::new()
-            .matcher(Blocklist::new(["foo", "bar"], true))
+            .matcher(SortedSetMatcher::new(["foo", "bar"], true))
             .telemetry(telemetry)
             .build();
 

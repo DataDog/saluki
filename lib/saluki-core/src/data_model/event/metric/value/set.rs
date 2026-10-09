@@ -42,6 +42,15 @@ impl SetPoints {
         self.0.values.len()
     }
 
+    /// Returns an iterator over each point's timestamp and its members.
+    ///
+    /// Points are yielded in timestamp order, with any untimestamped point first. This exposes what iterating over the
+    /// points by reference does not: that iteration yields each point's member count, as the value the point is
+    /// eventually reported as, rather than the members themselves.
+    pub fn members(&self) -> impl Iterator<Item = (Option<NonZeroU64>, &HashSet<String>)> + '_ {
+        self.0.values.iter().map(|point| (point.timestamp, &point.value))
+    }
+
     /// Merges another set of points into this one.
     ///
     /// If a point with the same timestamp exists in both sets, the sets will be merged together. Otherwise, the points
@@ -157,5 +166,44 @@ impl fmt::Display for SetPoints {
             write!(f, "])")?;
         }
         write!(f, "]")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU64;
+
+    use super::SetPoints;
+
+    fn members_of(points: &SetPoints) -> Vec<(Option<u64>, Vec<&str>)> {
+        points
+            .members()
+            .map(|(timestamp, members)| {
+                let mut members = members.iter().map(String::as_str).collect::<Vec<_>>();
+                members.sort();
+                (timestamp.map(NonZeroU64::get), members)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn members_yields_each_points_timestamp_and_members() {
+        let points = SetPoints::from([(20, &["c"][..]), (10, &["b", "a", "b"][..])]);
+        assert_eq!(
+            members_of(&points),
+            vec![(Some(10), vec!["a", "b"]), (Some(20), vec!["c"])],
+            "points are in timestamp order and members are distinct"
+        );
+
+        // The by-reference point iterator reports each point as its member count instead.
+        let counts = (&points).into_iter().map(|(_, count)| count).collect::<Vec<_>>();
+        assert_eq!(counts, vec![2.0, 1.0]);
+    }
+
+    #[test]
+    fn members_reports_untimestamped_points_without_a_timestamp() {
+        let mut points = SetPoints::from(["x", "y"]);
+        points.merge(SetPoints::from((5, "z")));
+        assert_eq!(members_of(&points), vec![(None, vec!["x", "y"]), (Some(5), vec!["z"])]);
     }
 }

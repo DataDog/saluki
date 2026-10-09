@@ -1,0 +1,476 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Plan",
+  "description": "A logical plan: a directed acyclic graph of operator nodes connected by edges between their ports.\n\nEvery input and output port of every node has exactly one edge; fan-out and fan-in exist only through the routing operators `tee` and `merge`, and every path ends in an `emit` to a declared output or in a `drop`. Validation checks these rules and more; deserializing a plan checks only its shape.\n\nA plan's nodes and edges are kept in the order they are written, and are hashed in that order. Producers of plans, such as lowering, emit them in a deterministic order.\n\n# Normalized form\n\nSerializing a plan writes its **normalized form**: members whose value is their default, such as an empty list of outputs or recipients and the native delivery policy, are left out. A plan read from its normalized form writes the same document back, and its [hash][Self::hash] is the RFC 8785 digest of that document. A document that writes a default explicitly reads as the same plan, and has the same hash, although its own digest differs.",
+  "type": "object",
+  "required": [
+    "edges",
+    "ir_version",
+    "nodes"
+  ],
+  "properties": {
+    "edges": {
+      "description": "The edges between node ports.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Edge"
+      }
+    },
+    "ir_version": {
+      "description": "The IR version the plan is written in.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "nodes": {
+      "description": "The operator nodes.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Node"
+      }
+    },
+    "outputs": {
+      "description": "The declared outputs that `emit` nodes deliver to.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/OutputDecl"
+      }
+    },
+    "provenance": {
+      "description": "Where the plan as a whole came from.\n\nPlan-level provenance describes the plan's origin, not what it does, so it is not part of the plan's [hash][Self::hash].",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PlanProvenance"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scopes": {
+      "description": "The replaceable regions of the plan, by name.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/ScopeDecl"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ArtifactRevision": {
+      "description": "One revision of an approved artifact.",
+      "type": "object",
+      "required": [
+        "hash",
+        "revision"
+      ],
+      "properties": {
+        "hash": {
+          "description": "The hash of the artifact.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PlanHash"
+            }
+          ]
+        },
+        "revision": {
+          "description": "The artifact's revision number. Revisions strictly increase.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeliveryPolicy": {
+      "description": "What an output or recipient does when it is full, and when it closes.\n\nOnly the native policy exists until the slot opens to artifacts.",
+      "oneOf": [
+        {
+          "description": "The native behavior.\n\nAn output waits for its downstream to accept more. A recipient queues requests in a byte-bounded retry queue that evicts the oldest entries, or spills them to disk where configured, and sends fresh requests before retries. On close, in-flight requests finish within the shutdown timeout, and queued work is persisted where configured and otherwise dropped.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        }
+      ]
+    },
+    "Edge": {
+      "description": "An edge from one node's output port to another node's input port.",
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "description": "The output port the edge leaves.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PortRef"
+            }
+          ]
+        },
+        "to": {
+          "description": "The input port the edge enters.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PortRef"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Kind": {
+      "description": "The kind of a metric.\n\nEach kind corresponds to one variant of [`MetricValues`]. A rate's interval is part of its values, not of its kind: predicates and port types never distinguish rates by interval.",
+      "oneOf": [
+        {
+          "description": "A sum of deltas.",
+          "type": "string",
+          "enum": [
+            "counter"
+          ]
+        },
+        {
+          "description": "A total change over an interval.",
+          "type": "string",
+          "enum": [
+            "rate"
+          ]
+        },
+        {
+          "description": "A latest value.",
+          "type": "string",
+          "enum": [
+            "gauge"
+          ]
+        },
+        {
+          "description": "A set of distinct members.",
+          "type": "string",
+          "enum": [
+            "set"
+          ]
+        },
+        {
+          "description": "A collection of samples, aggregated on the client side.",
+          "type": "string",
+          "enum": [
+            "histogram"
+          ]
+        },
+        {
+          "description": "A sketch of samples, mergeable on the server side.",
+          "type": "string",
+          "enum": [
+            "distribution"
+          ]
+        }
+      ]
+    },
+    "KindSet": {
+      "description": "A set of metric kinds: `\"all\"`, or a list of distinct kinds.",
+      "anyOf": [
+        {
+          "const": "all"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Kind"
+          },
+          "uniqueItems": true
+        }
+      ]
+    },
+    "NativeComponentId": {
+      "description": "The identifier of a native component.",
+      "type": "string",
+      "maxLength": 1024,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9_]*[A-Za-z0-9])?$"
+    },
+    "Node": {
+      "description": "One operator node.\n\nA node's ports follow from its operator and parameters: for example, a `split` has the output ports `true` and `false`, and a `tee` has as many numbered output ports as its parameters say.",
+      "type": "object",
+      "required": [
+        "id",
+        "op"
+      ],
+      "properties": {
+        "id": {
+          "description": "The node's identifier, stable across generations.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NodeId"
+            }
+          ]
+        },
+        "op": {
+          "description": "The registered operator the node runs.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OperatorName"
+            }
+          ]
+        },
+        "params": {
+          "description": "The operator's parameters.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Params"
+            }
+          ]
+        },
+        "provenance": {
+          "description": "Where the node came from.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NodeId": {
+      "description": "A node ID: an identifier, prefixed with `policy/` for nodes in the policy namespace.",
+      "type": "string",
+      "maxLength": 70,
+      "minLength": 1,
+      "pattern": "^(?:policy/)?[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "OperatorName": {
+      "description": "An operator name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "OutputDecl": {
+      "description": "A declared output: a destination that `emit` nodes deliver to, bound to one encoder stream and its recipients.",
+      "type": "object",
+      "required": [
+        "accepts",
+        "fingerprint",
+        "id"
+      ],
+      "properties": {
+        "accepts": {
+          "description": "The type of the records the output accepts.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PortType"
+            }
+          ]
+        },
+        "delivery": {
+          "description": "What the output does when it cannot keep up or when it closes. Defaults to the native policy.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeliveryPolicy"
+            }
+          ]
+        },
+        "fingerprint": {
+          "description": "A digest of the output's resolved binding: its encoder, recipient set, and forwarder.\n\nAn artifact records the fingerprint of every output it was written against, so that it is never silently applied to an output whose binding has changed.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/PlanHash"
+            }
+          ]
+        },
+        "id": {
+          "description": "The output's identifier.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OutputId"
+            }
+          ]
+        },
+        "recipients": {
+          "description": "The physical recipients the output delivers to. Outputs that share a recipient feed the same delivery queue.\n\nAn output without recipients, such as an internal tap, delivers to no endpoint.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RecipientId"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "OutputId": {
+      "description": "An output ID.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "ParamName": {
+      "description": "A parameter name.",
+      "type": "string",
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
+    },
+    "Params": {
+      "description": "Operator parameters, keyed by parameter name. Each operator's parameter schema defines their types.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/definitions/ParamName"
+      }
+    },
+    "PlanHash": {
+      "description": "A SHA-256 digest: `sha256:` followed by 64 lowercase hexadecimal digits.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "PlanProvenance": {
+      "description": "Where a plan as a whole came from.",
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "description": "The artifact revisions composed into the plan.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ArtifactRevision"
+          }
+        },
+        "config_change": {
+          "description": "The number of the configuration change the plan was lowered from, counted per process.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "PortRef": {
+      "description": "A port reference: `<node>.<port>`.",
+      "type": "string",
+      "maxLength": 134,
+      "minLength": 1,
+      "pattern": "^(?:policy/)?[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$"
+    },
+    "PortType": {
+      "description": "The type of the records a port carries: their kinds and their timestamp form.",
+      "type": "object",
+      "required": [
+        "kinds",
+        "timestamps"
+      ],
+      "properties": {
+        "kinds": {
+          "description": "The kinds of metric the port carries.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KindSet"
+            }
+          ]
+        },
+        "timestamps": {
+          "description": "Which of the port's points carry a timestamp.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/TimestampForm"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Provenance": {
+      "description": "Where a node came from, which is also the authority for any loss it causes.",
+      "oneOf": [
+        {
+          "description": "Lowered from native configuration of the named component, serialized as `{\"native\": \"<component>\"}`.",
+          "type": "object",
+          "required": [
+            "native"
+          ],
+          "properties": {
+            "native": {
+              "$ref": "#/definitions/NativeComponentId"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Added or changed by an approved artifact, serialized as `{\"artifact\": {\"revision\": <n>, \"hash\": \"<hash>\"}}`.",
+          "type": "object",
+          "required": [
+            "artifact"
+          ],
+          "properties": {
+            "artifact": {
+              "$ref": "#/definitions/ArtifactRevision"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RecipientId": {
+      "description": "A recipient ID.",
+      "type": "string",
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[!-~]{1,512}$"
+    },
+    "ScopeDecl": {
+      "description": "A replaceable region of a plan.\n\nA scope is the region between its inputs and its exits: every node reachable from the ports its inputs name, without entering one of the ports its exits name. A policy artifact replaces that region. A scope without exits, such as `post_enrich`, extends to the `emit` and `drop` nodes that end its paths.\n\nValidation checks that a scope is closed, so that replacing it changes nothing outside it: nothing outside the region feeds a node inside it except through the scope's inputs, each exit is fed from inside the region and leads out of it, and no two scopes share a node.",
+      "type": "object",
+      "required": [
+        "inputs"
+      ],
+      "properties": {
+        "exits": {
+          "description": "The scope's named exits, each mapped to the input port outside the scope that it feeds.\n\nExits let a scope end before the end of its paths, such as a region of processing before aggregation. Artifact edges will reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/PortRef"
+          }
+        },
+        "inputs": {
+          "description": "The scope's named inputs, each mapped to the output port that feeds it.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/PortRef"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "TimestampForm": {
+      "description": "Which points on a port carry a timestamp.",
+      "oneOf": [
+        {
+          "description": "Every point carries a timestamp.",
+          "type": "string",
+          "enum": [
+            "timestamped"
+          ]
+        },
+        {
+          "description": "No point carries a timestamp.",
+          "type": "string",
+          "enum": [
+            "untimestamped"
+          ]
+        },
+        {
+          "description": "Points may or may not carry a timestamp.",
+          "type": "string",
+          "enum": [
+            "mixed"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1508,4 +1508,53 @@ mod tests {
         assert!(dispatched[3].values().is_sketch());
         assert_eq!(sorted_tags(&dispatched[3]), vec!["customer_id:other", "env:prod"]);
     }
+
+    #[test]
+    fn value_allowlist_validation_agrees_with_the_kernels_crate() {
+        // `saluki_metric_kernels::params::validate_tag_value_rules` is a copy of `validate_metric_tag_value_allowlists`
+        // for the plan's tag value rules, until the native kernel is extracted and one delegates to the other. Until
+        // then, both must accept and reject the same rule lists.
+        use saluki_metric_kernels::params::{validate_tag_value_rules, TagValueMismatch, TagValueRule};
+
+        let rule =
+            |prefix: &str, tag: &str| value_allowlist(prefix, tag, &["prod"], TagValueMismatchAction::Replace, "other");
+        let cases: Vec<Vec<MetricTagValueAllowlistEntry>> = vec![
+            vec![],
+            vec![rule("checkout.", "env")],
+            vec![
+                rule("checkout.", "env"),
+                rule("checkout.", "region"),
+                rule("catalog.", "env"),
+            ],
+            vec![rule("", "env")],
+            vec![rule("a.", "")],
+            vec![rule("a.", "env:prod")],
+            vec![rule("a.", "env"), rule("b.", "env"), rule("a.", "env")],
+            vec![rule("checkout.", "env"), rule("checkout.api.", "region")],
+            vec![rule("a", "z"), rule("a", "b"), rule("ab", "c")],
+            vec![rule("ab", "c"), rule("a", "z")],
+            vec![rule("a.", " env")],
+            vec![rule(" a.", "env"), rule("a.", "env")],
+        ];
+        for entries in cases {
+            let rules = entries
+                .iter()
+                .map(|entry| TagValueRule {
+                    metric_prefix: entry.metric_prefix.clone(),
+                    tag_name: entry.tag_name.clone(),
+                    values: entry.values.clone(),
+                    on_miss: match entry.on_miss {
+                        TagValueMismatchAction::Remove => TagValueMismatch::Remove,
+                        TagValueMismatchAction::Replace => TagValueMismatch::Replace(entry.replacement.clone()),
+                    },
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                validate_metric_tag_value_allowlists(&entries).is_ok(),
+                validate_tag_value_rules(&rules).is_ok(),
+                "{:?}",
+                entries
+            );
+        }
+    }
 }
