@@ -76,7 +76,9 @@ use std::{
 use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
     DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
-    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+    DEFAULT_STATEFUL_METRICS_WORKERS, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+    MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::{validate_metric_tag_value_allowlists, MetricTagValueAllowlistEntry};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -245,6 +247,12 @@ pub struct DataPlane {
     pub stateful_metrics_additional_endpoints: Vec<String>,
     /// Independent stateful sender tasks; defaults to three and rejects zero.
     pub stateful_metrics_workers: NonZeroUsize,
+    /// Per-worker stateful metrics dictionary entry cap; defaults to 20000 and rejects zero.
+    pub stateful_metrics_dictionary_max_entries: NonZeroUsize,
+    /// Per-worker estimated stateful metrics dictionary byte cap, as a bare byte count or a byte-size string such
+    /// as `16MiB`; defaults to 16 MiB and rejects zero.
+    #[serde(deserialize_with = "deserialize_stateful_metrics_dictionary_max_bytes")]
+    pub stateful_metrics_dictionary_max_bytes: NonZeroU64,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
@@ -259,6 +267,8 @@ impl Default for DataPlane {
             stateful_metrics_endpoint: None,
             stateful_metrics_additional_endpoints: Vec::new(),
             stateful_metrics_workers: DEFAULT_STATEFUL_METRICS_WORKERS,
+            stateful_metrics_dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+            stateful_metrics_dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
             standalone_mode: None,
             checks: DataPlaneChecks::default(),
             otlp: DataPlaneOtlp::default(),
@@ -413,6 +423,20 @@ where
         .transpose()
 }
 
+fn deserialize_stateful_metrics_dictionary_max_bytes<'de, D>(deserializer: D) -> Result<NonZeroU64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let bytes = NonZeroU64::new(ByteSize::deserialize(deserializer)?.as_u64())
+        .ok_or_else(|| serde::de::Error::custom("value of bytes must be greater than zero"))?;
+    if bytes.get() > MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES {
+        return Err(serde::de::Error::custom(format!(
+            "value of bytes must not exceed {MAX_STATEFUL_METRICS_DICTIONARY_MAX_BYTES} bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
 fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
 where
     D: Deserializer<'de>,
@@ -537,6 +561,9 @@ impl SalukiOnly {
         config.domains.stateful_metrics.additional_endpoints =
             self.data_plane.stateful_metrics_additional_endpoints.clone();
         config.domains.stateful_metrics.workers = self.data_plane.stateful_metrics_workers;
+        config.domains.stateful_metrics.dictionary_max_entries =
+            self.data_plane.stateful_metrics_dictionary_max_entries;
+        config.domains.stateful_metrics.dictionary_max_bytes = self.data_plane.stateful_metrics_dictionary_max_bytes;
         // control
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
