@@ -41,12 +41,12 @@ Consequences:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `anomaly_detection_forwarding_enabled` | `false` | Builds the forwarder destination on the DogStatsD pipeline. |
-| `anomaly_detection_ipc_endpoint` | `unix:/tmp/aad-isolated/aad.sock` | FIT setup endpoint the AAD process listens on. |
+| `anomaly_detection_ipc_endpoint` | `unix:/tmp/ipc-aad/aad.sock` | FIT setup endpoint the AAD process listens on. |
 
 The endpoint accepts `unix:/absolute/path` or `tcp:127.0.0.1:5102` and is validated at
 startup when forwarding is enabled. The Unix socket's parent directory must be owned
 by the running user with no group or other access; the AAD process creates
-`/tmp/aad-isolated` with mode `0700` before listening.
+`/tmp/ipc-aad` with mode `0700` before listening. Every AAD socket, including the anomaly event endpoint and the producer configuration files, lives in that one directory.
 
 ## What is sent
 

@@ -909,17 +909,17 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
         yaml_path: "anomaly_detection_ipc_endpoint",
         description: "FIT setup endpoint of the isolated anomaly detection process",
-        default: "unix:/tmp/aad-isolated/aad.sock",
+        default: "unix:/tmp/ipc-aad/aad.sock",
         documentation: Some(
             "### `anomaly_detection_ipc_endpoint`\n\nThe FIT setup address that ADP connects to \
              when `anomaly_detection_forwarding_enabled` is `true`. The anomaly detection process \
              listens on this endpoint and owns the shared-memory ring, including its capacity; ADP \
              connects as the producer and learns the capacity from the session. Accepted forms are \
              `unix:/absolute/path` and `tcp:127.0.0.1:5102`. The endpoint is validated at \
-             startup when forwarding is enabled. The default is `unix:/tmp/aad-isolated/aad.sock`; the anomaly detection process creates the parent directory with owner-only permissions.",
+             startup when forwarding is enabled. The default is `unix:/tmp/ipc-aad/aad.sock`; every AAD socket and producer configuration file lives in `/tmp/ipc-aad`, which the anomaly detection process creates with owner-only permissions.",
         ),
         value_type: "ValueType::String",
-        schema_default: Some("unix:/tmp/aad-isolated/aad.sock"),
+        schema_default: Some("unix:/tmp/ipc-aad/aad.sock"),
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
@@ -952,7 +952,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     SalukiKey {
         yaml_path: "anomaly_detection_events_endpoint",
         description: "FIT broadcast endpoint the isolated anomaly detection process publishes anomaly events on",
-        default: "unix:/tmp/aad-isolated/events.sock",
+        default: "unix:/tmp/ipc-aad/events.sock",
         documentation: Some(
             "### `anomaly_detection_events_endpoint`\n\nThe FIT broadcast address ADP subscribes \
              to when `anomaly_detection_events_enabled` is `true`. The anomaly detection process \
@@ -960,10 +960,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              subscribers may join after publication has begun and receive subsequent events only. \
              Accepted forms are `unix:/absolute/path` and `tcp:127.0.0.1:5103`. The endpoint is \
              validated at startup when the subscription is enabled. The default is \
-             `unix:/tmp/aad-isolated/events.sock`.",
+             `unix:/tmp/ipc-aad/events.sock`.",
         ),
         value_type: "ValueType::String",
-        schema_default: Some("unix:/tmp/aad-isolated/events.sock"),
+        schema_default: Some("unix:/tmp/ipc-aad/events.sock"),
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],

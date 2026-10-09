@@ -27,9 +27,10 @@ pub const DEFAULT_ANOMALY_DETECTION_FORWARDING_ENABLED: bool = false;
 
 /// Default FIT endpoint of the isolated anomaly detection process.
 ///
-/// The FIT transport requires the socket's parent directory to be owner-only; the
-/// receiver creates `/tmp/aad-isolated` with mode `0700` before listening.
-pub const DEFAULT_ANOMALY_DETECTION_IPC_ENDPOINT: &str = "unix:/tmp/aad-isolated/aad.sock";
+/// Every AAD socket and producer configuration file lives in `/tmp/ipc-aad`, so one
+/// directory holds the whole setup. The FIT transport requires that directory to be
+/// owner-only; the receiver creates it with mode `0700` before listening.
+pub const DEFAULT_ANOMALY_DETECTION_IPC_ENDPOINT: &str = "unix:/tmp/ipc-aad/aad.sock";
 
 /// Default anomaly detection event subscription state.
 pub const DEFAULT_ANOMALY_DETECTION_EVENTS_ENABLED: bool = false;
@@ -39,7 +40,8 @@ pub const DEFAULT_ANOMALY_DETECTION_EVENTS_ENABLED: bool = false;
 ///
 /// The anomaly detection process owns this endpoint as the publisher; subscribers
 /// connect to it, so the process must be running for a subscription to be established.
-pub const DEFAULT_ANOMALY_DETECTION_EVENTS_ENDPOINT: &str = "unix:/tmp/aad-isolated/events.sock";
+/// It sits next to the metrics endpoint in `/tmp/ipc-aad`.
+pub const DEFAULT_ANOMALY_DETECTION_EVENTS_ENDPOINT: &str = "unix:/tmp/ipc-aad/events.sock";
 
 /// Default length of an aggregation window.
 pub const DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();

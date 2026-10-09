@@ -23,7 +23,7 @@ pub struct Domain {
     ///
     /// The anomaly detection process owns the shared-memory ring and listens for this
     /// connection; ADP connects as the producer, so the process must be started first.
-    /// Defaults to `unix:/tmp/aad-isolated/aad.sock`.
+    /// Defaults to `unix:/tmp/ipc-aad/aad.sock`.
     pub ipc_endpoint: String,
     /// Whether ADP subscribes to the anomaly events the isolated process publishes.
     ///
@@ -34,7 +34,7 @@ pub struct Domain {
     ///
     /// The anomaly detection process owns this endpoint as the publisher and keeps it open
     /// for late subscribers; ADP connects as a subscriber, and can start before the process
-    /// exists because it keeps retrying. Defaults to `unix:/tmp/aad-isolated/events.sock`.
+    /// exists because it keeps retrying. Defaults to `unix:/tmp/ipc-aad/events.sock`.
     pub events_endpoint: String,
 }
 
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn valid_endpoints_are_accepted() {
-        for endpoint in ["unix:/tmp/aad-isolated.sock", "tcp:127.0.0.1:5102"] {
+        for endpoint in ["unix:/tmp/ipc-aad/other.sock", "tcp:127.0.0.1:5102"] {
             let domain = Domain {
                 forwarding_enabled: true,
                 ipc_endpoint: endpoint.to_string(),
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn valid_event_endpoints_are_accepted() {
-        for endpoint in ["unix:/tmp/aad-isolated/events.sock", "tcp:127.0.0.1:5103"] {
+        for endpoint in ["unix:/tmp/ipc-aad/events.sock", "tcp:127.0.0.1:5103"] {
             let domain = Domain {
                 events_enabled: true,
                 events_endpoint: endpoint.to_string(),

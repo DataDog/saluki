@@ -1036,7 +1036,7 @@ mod tests {
         assert!(!config.domains.anomalydetection.events_enabled);
         assert_eq!(
             config.domains.anomalydetection.events_endpoint,
-            "unix:/tmp/aad-isolated/events.sock"
+            "unix:/tmp/ipc-aad/events.sock"
         );
 
         // With the subscription off, an unusable endpoint must not block the rest of ADP.
