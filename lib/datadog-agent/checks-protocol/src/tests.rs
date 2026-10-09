@@ -4,6 +4,8 @@ use std::thread;
 use std::time::Duration;
 
 use super::*;
+use crate::anomaly_events::decode_event;
+use saluki_fit::{BroadcastPublisher, BroadcastPublisherConfig, Rejection, SubscriberConfig};
 
 fn metric() -> Metric {
     Metric {
@@ -520,4 +522,175 @@ fn malformed_anomaly_event_payloads_are_rejected() {
     // A title length prefix that overruns the payload.
     let error = AnomalyEvent::decode_payload(&[255, 255, 255, 255, b'a']).expect_err("bad length");
     assert!(error.to_string().contains("truncated"), "{error}");
+}
+
+fn event_with_title(title: &str) -> AnomalyEvent {
+    AnomalyEvent {
+        title: title.to_owned(),
+        description: format!("description of {title}"),
+        timestamp: 1_791_536_046,
+    }
+}
+
+/// Returns a loopback TCP endpoint with nothing listening, plus its address.
+///
+/// The broadcast publisher owns the endpoint, so the address only has to be free.
+fn free_loopback() -> std::net::SocketAddr {
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = probe.local_addr().unwrap();
+    drop(probe);
+    address
+}
+
+/// Short connect deadline, so a missing publisher fails a test quickly instead of
+/// waiting out the 60-second default.
+fn subscriber_config(address: std::net::SocketAddr) -> SubscriberConfig {
+    let mut config = SubscriberConfig::tcp(address);
+    config.setup_timeout = Duration::from_secs(5);
+    config
+}
+
+/// Returns a token that cancels itself after `timeout`.
+///
+/// Broadcast publication blocks until a subscriber exists and receive blocks until an
+/// event exists, so every blocking call in these tests carries a watchdog: a broken
+/// expectation fails the test instead of hanging the suite.
+fn watchdog(timeout: Duration) -> CancellationToken {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(timeout);
+        let _ = cancel.cancel();
+    });
+    token
+}
+
+fn next_event(subscriber: &mut EventSubscriber, token: &CancellationToken) -> AnomalyEvent {
+    match subscriber.receive_with_cancel(token) {
+        Ok(Some(event)) => event,
+        Ok(None) => panic!("no event arrived before the watchdog fired"),
+        Err(error) => panic!("receive failed: {error}"),
+    }
+}
+
+#[test]
+fn anomaly_events_reach_every_subscriber_in_publication_order() {
+    let address = free_loopback();
+    let mut publisher = EventPublisher::open(BroadcastPublisherConfig::tcp(address)).unwrap();
+    let token = watchdog(Duration::from_secs(10));
+
+    let first = std::thread::spawn({
+        let token = token.clone();
+        move || {
+            let mut subscriber = EventSubscriber::subscribe_with_cancel(subscriber_config(address), &token)
+                .expect("first subscriber activates");
+            vec![next_event(&mut subscriber, &token), next_event(&mut subscriber, &token)]
+        }
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while publisher.subscriber_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "first subscriber never activated");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let mut second = EventSubscriber::subscribe(subscriber_config(address)).unwrap();
+
+    let outcome = publisher.send_batch(&[event_with_title("e1"), event_with_title("e2")], &token);
+    assert_eq!(outcome.accepted, 2);
+    assert!(outcome.encoding_error.is_none());
+    assert!(outcome.failure.is_none());
+    assert!(!outcome.cancelled);
+
+    let late = vec![next_event(&mut second, &token), next_event(&mut second, &token)];
+    assert_eq!(late, vec![event_with_title("e1"), event_with_title("e2")]);
+    assert_eq!(first.join().expect("the first subscriber thread must not panic"), late);
+    second.unsubscribe().unwrap();
+}
+
+#[test]
+fn a_late_subscriber_receives_only_subsequent_events() {
+    let address = free_loopback();
+    let mut publisher = EventPublisher::open(BroadcastPublisherConfig::tcp(address)).unwrap();
+    let token = watchdog(Duration::from_secs(10));
+    let mut early = EventSubscriber::subscribe(subscriber_config(address)).unwrap();
+
+    let published = publisher.send_batch(&[event_with_title("before-the-join")], &token);
+    assert_eq!(published.accepted, 1);
+    assert_eq!(next_event(&mut early, &token), event_with_title("before-the-join"));
+
+    let mut late = EventSubscriber::subscribe(subscriber_config(address)).unwrap();
+    let published = publisher.send_batch(&[event_with_title("after-the-join")], &token);
+    assert_eq!(published.accepted, 1);
+    assert_eq!(next_event(&mut early, &token), event_with_title("after-the-join"));
+    assert_eq!(next_event(&mut late, &token), event_with_title("after-the-join"));
+}
+
+#[test]
+fn a_blocked_publish_stops_on_cancellation_without_publishing() {
+    let address = free_loopback();
+    let mut publisher = EventPublisher::open(BroadcastPublisherConfig::tcp(address)).unwrap();
+    let cancellation = CancellationToken::new();
+    let worker = std::thread::spawn({
+        let cancellation = cancellation.clone();
+        move || publisher.send_batch(&[event_with_title("no-subscriber")], &cancellation)
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    cancellation.cancel().unwrap();
+    let outcome = worker.join().expect("publish thread must not panic");
+    assert!(outcome.cancelled, "cancellation ends the subscriber wait");
+    assert_eq!(outcome.accepted, 0);
+    assert!(outcome.failure.is_none());
+}
+
+#[test]
+fn an_oversized_event_is_reported_before_publication() {
+    let address = free_loopback();
+    let mut publisher = EventPublisher::open(BroadcastPublisherConfig::tcp(address)).unwrap();
+    let token = watchdog(Duration::from_secs(10));
+    let mut subscriber = EventSubscriber::subscribe(subscriber_config(address)).unwrap();
+    let huge = AnomalyEvent {
+        title: "t".to_owned(),
+        description: "x".repeat(MAX_EVENT_PAYLOAD),
+        timestamp: 1,
+    };
+    let outcome = publisher.send_batch(&[event_with_title("fits"), huge], &token);
+    assert_eq!(outcome.accepted, 1, "only the fitting prefix is published");
+    assert!(outcome.encoding_error.is_some());
+    assert_eq!(next_event(&mut subscriber, &token), event_with_title("fits"));
+}
+
+#[test]
+fn the_publisher_rejects_a_record_type_outside_the_descriptor() {
+    let address = free_loopback();
+    let mut publisher =
+        BroadcastPublisher::open(BroadcastPublisherConfig::tcp(address), ANOMALY_EVENTS_DESCRIPTOR).unwrap();
+    let token = watchdog(Duration::from_secs(10));
+    let mut subscriber = EventSubscriber::subscribe(subscriber_config(address)).unwrap();
+    let known = event_with_title("known").encode_payload().unwrap();
+    let outcome = publisher.send_batch_with_cancel(
+        &[
+            Record {
+                kind: ANOMALY_EVENT_TYPE_ID,
+                payload: &known,
+            },
+            Record {
+                kind: 7,
+                payload: b"unknown",
+            },
+        ],
+        &token,
+    );
+    assert_eq!(outcome.accepted, 1, "only the declared record type is published");
+    assert!(
+        matches!(outcome.rejection, Some(Rejection::InvalidType)),
+        "rejection = {:?}",
+        outcome.rejection
+    );
+    assert_eq!(next_event(&mut subscriber, &token), event_with_title("known"));
+}
+
+#[test]
+fn the_subscriber_guard_rejects_a_record_type_it_does_not_know() {
+    let error = decode_event(7, b"unknown").expect_err("unknown type is rejected");
+    assert!(error.to_string().contains("unknown AAD-EVNT record type 7"), "{error}");
 }

@@ -19,7 +19,10 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use anomaly_events::{AnomalyEvent, ANOMALY_EVENTS_DESCRIPTOR, ANOMALY_EVENT_TYPE_ID, MAX_EVENT_PAYLOAD};
+pub use anomaly_events::{
+    AnomalyEvent, EventBatchOutcome, EventPublisher, EventSubscriber, ANOMALY_EVENTS_DESCRIPTOR, ANOMALY_EVENT_TYPE_ID,
+    MAX_EVENT_PAYLOAD,
+};
 pub use model::{Event, Log, Metric, Payload, ServiceCheck};
 
 use std::io;
