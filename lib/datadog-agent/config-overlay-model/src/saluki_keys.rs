@@ -928,4 +928,48 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
         filename: "anomaly_detection.rs",
     },
+    SalukiKey {
+        yaml_path: "anomaly_detection_events_enabled",
+        description: "Whether ADP subscribes to anomaly events published by the isolated anomaly detection process",
+        default: "false",
+        documentation: Some(
+            "### `anomaly_detection_events_enabled`\n\nWhen `true`, ADP subscribes to the anomaly \
+             events the isolated Agent Anomaly Detection process publishes over the FIT broadcast \
+             shared-memory transport, and logs each event. Unlike forwarding, the anomaly detection \
+             process owns this endpoint as the publisher, so ADP may start before it: the \
+             subscription is retried until the process appears. Off by default.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some("true"),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "anomaly_detection.rs",
+    },
+    SalukiKey {
+        yaml_path: "anomaly_detection_events_endpoint",
+        description: "FIT broadcast endpoint the isolated anomaly detection process publishes anomaly events on",
+        default: "unix:/tmp/aad-isolated/events.sock",
+        documentation: Some(
+            "### `anomaly_detection_events_endpoint`\n\nThe FIT broadcast address ADP subscribes \
+             to when `anomaly_detection_events_enabled` is `true`. The anomaly detection process \
+             owns this endpoint as the publisher and keeps it open for late subscribers, so \
+             subscribers may join after publication has begun and receive subsequent events only. \
+             Accepted forms are `unix:/absolute/path` and `tcp:127.0.0.1:5103`. The endpoint is \
+             validated at startup when the subscription is enabled. The default is \
+             `unix:/tmp/aad-isolated/events.sock`.",
+        ),
+        value_type: "ValueType::String",
+        schema_default: Some("unix:/tmp/aad-isolated/events.sock"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#""unix:/tmp/aad-events-fit.sock""#),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "anomaly_detection.rs",
+    },
 ];

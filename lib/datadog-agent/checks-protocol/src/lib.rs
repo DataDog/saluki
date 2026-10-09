@@ -1,7 +1,10 @@
-//! Checks telemetry over FIT shared memory, with a custom versioned byte layout.
+//! Checks telemetry and anomaly detection events over FIT shared memory, with custom
+//! versioned byte layouts.
 //!
-//! Payload semantics come from the existing Checks proto definitions. This crate
-//! does not use protobuf serialization or depend on either application's event model.
+//! Payload semantics for the Checks records come from the existing Checks proto
+//! definitions; [`anomaly_events`] carries the isolated anomaly detection process's own
+//! event protocol instead. This crate does not use protobuf serialization or depend on
+//! either application's event model.
 #![cfg(all(
     any(target_arch = "x86_64", target_arch = "aarch64"),
     target_endian = "little",
@@ -9,12 +12,14 @@
     any(target_os = "linux", target_os = "macos")
 ))]
 
+mod anomaly_events;
 mod model;
 mod wire;
 
 #[cfg(test)]
 mod tests;
 
+pub use anomaly_events::{AnomalyEvent, ANOMALY_EVENTS_DESCRIPTOR, ANOMALY_EVENT_TYPE_ID, MAX_EVENT_PAYLOAD};
 pub use model::{Event, Log, Metric, Payload, ServiceCheck};
 
 use std::io;

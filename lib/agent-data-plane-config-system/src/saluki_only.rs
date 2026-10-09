@@ -160,6 +160,11 @@ pub struct SalukiOnly {
     pub anomaly_detection_forwarding_enabled: Option<bool>,
     /// Anomaly detection process FIT endpoint (`anomaly_detection_ipc_endpoint`).
     pub anomaly_detection_ipc_endpoint: Option<String>,
+    /// Whether ADP subscribes to anomaly events published by the isolated anomaly detection
+    /// process (`anomaly_detection_events_enabled`).
+    pub anomaly_detection_events_enabled: Option<bool>,
+    /// Anomaly detection events FIT broadcast endpoint (`anomaly_detection_events_endpoint`).
+    pub anomaly_detection_events_endpoint: Option<String>,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
     /// byte-size string such as `512MB`. `ByteSize` accepts both forms, so a numeric value does not
     /// fail the load.
@@ -792,6 +797,12 @@ impl SalukiOnly {
         if let Some(v) = &self.anomaly_detection_ipc_endpoint {
             config.domains.anomalydetection.ipc_endpoint = v.clone();
         }
+        if let Some(v) = self.anomaly_detection_events_enabled {
+            config.domains.anomalydetection.events_enabled = v;
+        }
+        if let Some(v) = &self.anomaly_detection_events_endpoint {
+            config.domains.anomalydetection.events_endpoint = v.clone();
+        }
     }
 }
 
@@ -821,6 +832,8 @@ mod tests {
             "checks_ipc_endpoint": "localhost:5006",
             "anomaly_detection_forwarding_enabled": true,
             "anomaly_detection_ipc_endpoint": "unix:/tmp/aad-fit-2.sock",
+            "anomaly_detection_events_enabled": true,
+            "anomaly_detection_events_endpoint": "unix:/tmp/aad-events-fit.sock",
             "memory_limit": "512MB",
             "memory_slop_factor": 0.3,
             "enable_global_limiter": false,
@@ -1016,6 +1029,11 @@ mod tests {
         assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
         assert!(config.domains.anomalydetection.forwarding_enabled);
         assert_eq!(config.domains.anomalydetection.ipc_endpoint, "unix:/tmp/aad-fit-2.sock");
+        assert!(config.domains.anomalydetection.events_enabled);
+        assert_eq!(
+            config.domains.anomalydetection.events_endpoint,
+            "unix:/tmp/aad-events-fit.sock"
+        );
     }
 
     /// `data_plane.apm.max_payload_size` is a byte size, but the equivalent Agent key

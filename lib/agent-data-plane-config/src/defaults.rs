@@ -31,6 +31,16 @@ pub const DEFAULT_ANOMALY_DETECTION_FORWARDING_ENABLED: bool = false;
 /// receiver creates `/tmp/aad-isolated` with mode `0700` before listening.
 pub const DEFAULT_ANOMALY_DETECTION_IPC_ENDPOINT: &str = "unix:/tmp/aad-isolated/aad.sock";
 
+/// Default anomaly detection event subscription state.
+pub const DEFAULT_ANOMALY_DETECTION_EVENTS_ENABLED: bool = false;
+
+/// Default FIT broadcast endpoint the isolated anomaly detection process publishes
+/// anomaly events on.
+///
+/// The anomaly detection process owns this endpoint as the publisher; subscribers
+/// connect to it, so the process must be running for a subscription to be established.
+pub const DEFAULT_ANOMALY_DETECTION_EVENTS_ENDPOINT: &str = "unix:/tmp/aad-isolated/events.sock";
+
 /// Default length of an aggregation window.
 pub const DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();
 

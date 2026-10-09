@@ -1002,6 +1002,52 @@ mod tests {
     }
 
     #[test]
+    fn anomaly_detection_event_settings_are_seeded_and_validated() {
+        let sources = SourceTree::all_explicit(json!({
+            "api_key": TEST_API_KEY,
+            "anomaly_detection_events_enabled": true,
+            "anomaly_detection_events_endpoint": "unix:/tmp/aad-events-fit.sock",
+        }));
+        let config = translate_authoritative(&sources).expect("valid event settings must translate");
+        assert!(config.domains.anomalydetection.events_enabled);
+        assert_eq!(
+            config.domains.anomalydetection.events_endpoint,
+            "unix:/tmp/aad-events-fit.sock"
+        );
+
+        for endpoint in ["tcp://0.0.0.0:5103", "unix:relative/path.sock", "not an endpoint"] {
+            let sources = SourceTree::all_explicit(json!({
+                "api_key": TEST_API_KEY,
+                "anomaly_detection_events_enabled": true,
+                "anomaly_detection_events_endpoint": endpoint,
+            }));
+            let error = translate_authoritative(&sources).expect_err("invalid FIT configuration must fail");
+            assert!(
+                matches!(&error, Error::AnomalyDetectionFit { .. }),
+                "{endpoint}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn anomaly_detection_event_subscription_is_off_by_default_and_skips_endpoint_validation() {
+        let sources = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+        let config = translate_authoritative(&sources).expect("default configuration is valid");
+        assert!(!config.domains.anomalydetection.events_enabled);
+        assert_eq!(
+            config.domains.anomalydetection.events_endpoint,
+            "unix:/tmp/aad-isolated/events.sock"
+        );
+
+        // With the subscription off, an unusable endpoint must not block the rest of ADP.
+        let sources = SourceTree::all_explicit(json!({
+            "api_key": TEST_API_KEY,
+            "anomaly_detection_events_endpoint": "not an endpoint",
+        }));
+        translate_authoritative(&sources).expect("disabled events must not validate the endpoint");
+    }
+
+    #[test]
     fn a_blank_api_key_is_rejected() {
         // An explicitly blank key is as unusable as an absent one, and whitespace is a typo worth
         // reporting rather than submitting.

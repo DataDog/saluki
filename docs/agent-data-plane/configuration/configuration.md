@@ -711,55 +711,57 @@ ways that are not yet fully characterized.
 
 The following settings are specific to ADP and have no equivalent in the core agent.
 
-| Config Key                                                      | Description                                                                   | Default                         |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------- |
-| `aggregate_context_limit`                                       | Max contexts per aggregation window                                           |                                 |
-| `aggregate_flush_interval`                                      | Aggregator flush period                                                       |                                 |
-| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay                                                |                                 |
-| `aggregate_window_duration_seconds`                             | Aggregation window size                                                       |                                 |
-| `anomaly_detection_forwarding_enabled`                          | Whether ADP forwards scalar metrics to the isolated anomaly detection process | false                           |
-| `anomaly_detection_ipc_endpoint`                                | FIT setup endpoint of the isolated anomaly detection process                  | unix:/tmp/aad-isolated/aad.sock |
-| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect                                                  |                                 |
-| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions                                          |                                 |
-| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation                                           |                                 |
-| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation                                             |                                 |
-| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                                        |                                 |
-| `data_plane.apm.dispatch_timeout`                               | How long the v1.0 trace receiver waits for the pipeline to accept a payload   | 1 second                        |
-| `data_plane.apm.enabled`                                        | Enable the ADP v1.0 APM trace pipeline                                        | false                           |
-| `data_plane.apm.max_payload_size`                               | Maximum accepted v1.0 trace request body size                                 | 26214400                        |
-| `data_plane.apm.non_local_traffic`                              | Allow the v1.0 trace receiver to bind a non-loopback address                  | false                           |
-| `data_plane.apm.receiver_endpoint`                              | ADP v1.0 trace receiver TCP endpoint                                          | localhost:8127                  |
-| `data_plane.apm.receiver_socket`                                | ADP v1.0 trace receiver Unix domain socket path                               |                                 |
-| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                                                 | localhost:6317                  |
-| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                                                 | localhost:6318                  |
-| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                                           | true                            |
-| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT                                    | false                           |
-| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                                                  | 32768                           |
-| `dogstatsd_buffer_count`                                        | Baseline receive buffers                                                      | 128                             |
-| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                                                    | 500000                          |
-| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                                                            | 500000                          |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity                                          | 64KiB                           |
-| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates                                                 | 0.000000003845                  |
-| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                                                    | true                            |
-| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner                                     |                                 |
-| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP                                     | 0                               |
-| `enable_global_limiter`                                         | Global memory limiter toggle                                                  | true                            |
-| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                                               | {}                              |
-| `experimental.metrics_endpoint_routing.metric_prefix_allowlist` | Per-endpoint literal metric-prefix allow lists                                | {}                              |
-| `flush_timeout_secs`                                            | Encoder flush timeout (secs)                                                  |                                 |
-| `memory_limit`                                                  | Process memory limit                                                          |                                 |
-| `memory_mode`                                                   | Memory bounds validation mode                                                 | disabled                        |
-| `memory_slop_factor`                                            | Memory accounting slop fraction                                               | 0.25                            |
-| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list                                               | []                              |
-| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts                                      |                                 |
-| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts                                               |                                 |
-| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                                                       |                                 |
-| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport                                                  |                                 |
-| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind                                            |                                 |
-| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP                                         |                                 |
-| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                                           |                                 |
-| `otlp_string_interner_size`                                     | OTLP context interner capacity                                                |                                 |
-| `serializer_max_metrics_per_payload`                            | Max metrics per payload                                                       |                                 |
+| Config Key                                                      | Description                                                                                  | Default                            |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `aggregate_context_limit`                                       | Max contexts per aggregation window                                                          |                                    |
+| `aggregate_flush_interval`                                      | Aggregator flush period                                                                      |                                    |
+| `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay                                                               |                                    |
+| `aggregate_window_duration_seconds`                             | Aggregation window size                                                                      |                                    |
+| `anomaly_detection_events_enabled`                              | Whether ADP subscribes to anomaly events published by the isolated anomaly detection process | false                              |
+| `anomaly_detection_events_endpoint`                             | FIT broadcast endpoint the isolated anomaly detection process publishes anomaly events on    | unix:/tmp/aad-isolated/events.sock |
+| `anomaly_detection_forwarding_enabled`                          | Whether ADP forwards scalar metrics to the isolated anomaly detection process                | false                              |
+| `anomaly_detection_ipc_endpoint`                                | FIT setup endpoint of the isolated anomaly detection process                                 | unix:/tmp/aad-isolated/aad.sock    |
+| `apm_config.obfuscation.sql.dbms`                               | SQL obfuscation DBMS dialect                                                                 |                                    |
+| `apm_config.obfuscation.sql.dollar_quoted_func`                 | Preserve dollar-quoted SQL functions                                                         |                                    |
+| `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation                                                          |                                    |
+| `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation                                                            |                                    |
+| `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation                                                       |                                    |
+| `data_plane.apm.dispatch_timeout`                               | How long the v1.0 trace receiver waits for the pipeline to accept a payload                  | 1 second                           |
+| `data_plane.apm.enabled`                                        | Enable the ADP v1.0 APM trace pipeline                                                       | false                              |
+| `data_plane.apm.max_payload_size`                               | Maximum accepted v1.0 trace request body size                                                | 26214400                           |
+| `data_plane.apm.non_local_traffic`                              | Allow the v1.0 trace receiver to bind a non-loopback address                                 | false                              |
+| `data_plane.apm.receiver_endpoint`                              | ADP v1.0 trace receiver TCP endpoint                                                         | localhost:8127                     |
+| `data_plane.apm.receiver_socket`                                | ADP v1.0 trace receiver Unix domain socket path                                              |                                    |
+| `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint                                                                | localhost:6317                     |
+| `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint                                                                | localhost:6318                     |
+| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts                                                          | true                               |
+| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT                                                   | false                              |
+| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count                                                                 | 32768                              |
+| `dogstatsd_buffer_count`                                        | Baseline receive buffers                                                                     | 128                                |
+| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                                                                   | 500000                             |
+| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                                                                           | 500000                             |
+| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity                                                         | 64KiB                              |
+| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates                                                                | 0.000000003845                     |
+| `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                                                                   | true                               |
+| `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner                                                    |                                    |
+| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP                                                    | 0                                  |
+| `enable_global_limiter`                                         | Global memory limiter toggle                                                                 | true                               |
+| `experimental.metrics_endpoint_routing.metric_allowlist`        | Per-endpoint metric allow lists                                                              | {}                                 |
+| `experimental.metrics_endpoint_routing.metric_prefix_allowlist` | Per-endpoint literal metric-prefix allow lists                                               | {}                                 |
+| `flush_timeout_secs`                                            | Encoder flush timeout (secs)                                                                 |                                    |
+| `memory_limit`                                                  | Process memory limit                                                                         |                                    |
+| `memory_mode`                                                   | Memory bounds validation mode                                                                | disabled                           |
+| `memory_slop_factor`                                            | Memory accounting slop fraction                                                              | 0.25                               |
+| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list                                                              | []                                 |
+| `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts                                                     |                                    |
+| `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts                                                              |                                    |
+| `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                                                                      |                                    |
+| `otlp_config.receiver.protocols.http.transport`                 | OTLP HTTP receiver transport                                                                 |                                    |
+| `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` | Enable OTLP top-level-by-span-kind                                                           |                                    |
+| `otlp_config.traces.ignore_missing_datadog_fields`              | Ignore missing Datadog fields in OTLP                                                        |                                    |
+| `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity                                                          |                                    |
+| `otlp_string_interner_size`                                     | OTLP context interner capacity                                                               |                                    |
+| `serializer_max_metrics_per_payload`                            | Max metrics per payload                                                                      |                                    |
 
 ### `experimental.metrics_endpoint_routing.metric_allowlist`
 
@@ -904,6 +906,14 @@ When `true`, ADP forwards every scalar metric it receives over the DogStatsD pip
 ### `anomaly_detection_ipc_endpoint`
 
 The FIT setup address that ADP connects to when `anomaly_detection_forwarding_enabled` is `true`. The anomaly detection process listens on this endpoint and owns the shared-memory ring, including its capacity; ADP connects as the producer and learns the capacity from the session. Accepted forms are `unix:/absolute/path` and `tcp:127.0.0.1:5102`. The endpoint is validated at startup when forwarding is enabled. The default is `unix:/tmp/aad-isolated/aad.sock`; the anomaly detection process creates the parent directory with owner-only permissions.
+
+### `anomaly_detection_events_enabled`
+
+When `true`, ADP subscribes to the anomaly events the isolated Agent Anomaly Detection process publishes over the FIT broadcast shared-memory transport, and logs each event. Unlike forwarding, the anomaly detection process owns this endpoint as the publisher, so ADP may start before it: the subscription is retried until the process appears. Off by default.
+
+### `anomaly_detection_events_endpoint`
+
+The FIT broadcast address ADP subscribes to when `anomaly_detection_events_enabled` is `true`. The anomaly detection process owns this endpoint as the publisher and keeps it open for late subscribers, so subscribers may join after publication has begun and receive subsequent events only. Accepted forms are `unix:/absolute/path` and `tcp:127.0.0.1:5103`. The endpoint is validated at startup when the subscription is enabled. The default is `unix:/tmp/aad-isolated/events.sock`.
 
 
 

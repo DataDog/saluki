@@ -440,3 +440,84 @@ fn full_ring_reports_the_published_prefix_of_an_explicit_batch() {
     release_tx.send(()).unwrap();
     assert_eq!(consumer.join().unwrap(), messages[..2]);
 }
+
+fn anomaly_event() -> AnomalyEvent {
+    AnomalyEvent {
+        title: "AAD anomaly: system.load.1".into(),
+        description: "severity=medium score=0.87 host=my-host".into(),
+        timestamp: 0x0102_0304_0506_0708,
+    }
+}
+
+/// These bytes are the cross-language pin: the Go copy of this protocol in the Agent
+/// repository asserts the same literal, so any divergence in field order, prefixes, or
+/// endianness fails on one side or the other.
+#[test]
+fn anomaly_event_bytes_are_the_documented_golden_vector() {
+    let expected = [
+        26, 0, 0, 0, // title length
+        b'A', b'A', b'D', b' ', b'a', b'n', b'o', b'm', b'a', b'l', b'y', b':', b' ', b's', b'y', b's', b't', b'e',
+        b'm', b'.', b'l', b'o', b'a', b'd', b'.', b'1', // "AAD anomaly: system.load.1"
+        39, 0, 0, 0, // description length
+        b's', b'e', b'v', b'e', b'r', b'i', b't', b'y', b'=', b'm', b'e', b'd', b'i', b'u', b'm', b' ', b's', b'c',
+        b'o', b'r', b'e', b'=', b'0', b'.', b'8', b'7', b' ', b'h', b'o', b's', b't', b'=', b'm', b'y', b'-', b'h',
+        b'o', b's', b't', // "severity=medium score=0.87 host=my-host"
+        8, 7, 6, 5, 4, 3, 2, 1, // timestamp
+    ];
+    assert_eq!(anomaly_event().encode_payload().unwrap(), expected);
+    assert_eq!(AnomalyEvent::decode_payload(&expected).unwrap(), anomaly_event());
+    assert_eq!(anomaly_event().encoded_len().unwrap(), expected.len());
+}
+
+#[test]
+fn anomaly_event_descriptor_names_the_event_protocol() {
+    assert_eq!(&ANOMALY_EVENTS_DESCRIPTOR.id, b"AAD-EVNT");
+    assert_eq!(ANOMALY_EVENTS_DESCRIPTOR.version, 1);
+    assert_eq!(ANOMALY_EVENTS_DESCRIPTOR.message_types, &[ANOMALY_EVENT_TYPE_ID]);
+    assert_eq!(ANOMALY_EVENT_TYPE_ID, 1);
+}
+
+#[test]
+fn anomaly_events_round_trip_unicode_and_an_empty_description() {
+    let event = AnomalyEvent {
+        title: "AAD debug trigger: debug.trigger-anomaly.café".into(),
+        description: String::new(),
+        timestamp: 1_791_536_046,
+    };
+    let bytes = event.encode_payload().unwrap();
+    assert_eq!(bytes.len(), event.encoded_len().unwrap());
+    assert_eq!(AnomalyEvent::decode_payload(&bytes).unwrap(), event);
+}
+
+#[test]
+fn oversized_anomaly_events_are_rejected_before_encoding() {
+    let event = AnomalyEvent {
+        title: "t".into(),
+        description: "x".repeat(MAX_EVENT_PAYLOAD),
+        timestamp: 1,
+    };
+    let error = event.encode_payload().expect_err("payload cap applies");
+    assert!(error.to_string().contains("64 KiB"), "{error}");
+    assert!(event.encoded_len().is_err());
+
+    let oversized = vec![0u8; MAX_EVENT_PAYLOAD + 1];
+    assert!(AnomalyEvent::decode_payload(&oversized).is_err());
+}
+
+#[test]
+fn malformed_anomaly_event_payloads_are_rejected() {
+    let golden = anomaly_event().encode_payload().unwrap();
+
+    let truncated = &golden[..golden.len() - 1];
+    let error = AnomalyEvent::decode_payload(truncated).expect_err("truncated payload");
+    assert!(error.to_string().contains("truncated"), "{error}");
+
+    let mut trailing = golden.clone();
+    trailing.push(0);
+    let error = AnomalyEvent::decode_payload(&trailing).expect_err("trailing bytes");
+    assert!(error.to_string().contains("trailing"), "{error}");
+
+    // A title length prefix that overruns the payload.
+    let error = AnomalyEvent::decode_payload(&[255, 255, 255, 255, b'a']).expect_err("bad length");
+    assert!(error.to_string().contains("truncated"), "{error}");
+}
