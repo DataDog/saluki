@@ -21,4 +21,6 @@
 //!   anywhere else fails the build. Enable it only for targets that meet both requirements.
 #![deny(missing_docs)]
 
+pub mod logging;
+
 pub mod remote_agent;

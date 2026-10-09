@@ -73,8 +73,9 @@ use crate::{
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, ConfigUpdatesWorker,
-        DogStatsDControlSurface, TopologyControlSurfaces,
+        create_internal_supervisor,
+        logging::{adp_logging_translator, logging_settings},
+        ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
 use crate::{
@@ -149,7 +150,7 @@ pub async fn handle_run_command(
     // config, so reload logging to match. Standalone resolves the same local sources seen at
     // bootstrap, making a reload redundant.
     if !standalone {
-        match LoggingConfigurationTranslator::translate(&config_sys.config().control.logging) {
+        match adp_logging_translator().translate(&logging_settings(&config_sys.config().control.logging)) {
             Ok(logging_config) => {
                 if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                     warn!(

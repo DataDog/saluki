@@ -46,7 +46,7 @@ to the pull request), or merged.
   - Adds `RemoteAgentClientConfiguration::from_parts` to `datadog-agent-commons` for the vsock name mapping.
   - Moves ADP's DogStatsD status fields into `DogStatsDStatusSection` and adds `datadog_agent_runtime` to ADP's
     first-party log targets.
-- [ ] **2. Logging.** Status: not started.
+- [ ] **2. Logging.** Status: in review (pull request not opened yet).
   - Moves the logging translator, the log level parsing, and `DynamicLogLevelWorker`.
   - Adds `LoggingSettings`, `LoggingTranslator`, and `LiveValue`. The base first-party target list moves into the
     runtime.
@@ -91,7 +91,8 @@ Every pull request in the stack checks its changes against these.
 ### Log targets
 
 Moved code logs under the `datadog_agent_runtime` target. A plain `log_level` only applies to first-party targets, so
-that target must stay in ADP's first-party list. The `adp-rar-registration`, `adp-rar-disabled`, and `adp-cmd-port`
+that target must stay in `FIRST_PARTY_LOG_TARGETS` in `lib/datadog-agent/runtime/src/logging.rs`, which every
+subagent's `LoggingTranslator` starts from. The `adp-rar-registration`, `adp-rar-disabled`, and `adp-cmd-port`
 integration tests look for registration log lines, so they catch a missing target.
 
 ## Follow-ups
@@ -110,13 +111,14 @@ its item when it merges.
    different `data_plane.secure_api_listen_address`, the two disagree. Deferred because fixing it changes which value
    wins.
 3. **Add `datadog_agent_remote_config` to the base first-party log targets.** The list is `FIRST_PARTY_LOG_TARGETS` in
-   `bin/agent-data-plane/src/internal/logging.rs`. Deferred because it changes which logs a plain `log_level` shows.
+   `lib/datadog-agent/runtime/src/logging.rs`. Deferred because it changes which logs a plain `log_level` shows.
 4. **Gate autodiscovery on its first subscriber.** The autodiscovery broadcaster in
    `bin/agent-data-plane/src/internal/env/autodiscovery.rs` starts streaming as soon as its worker starts, and drops
    events while nothing has subscribed, so a late subscriber can miss the initial snapshot. ACR found this. Deferred
    because it changes when events are delivered.
 5. **Make the default log file per binary.** `PlatformSettings::get_default_log_file_path` in
-   `lib/datadog-agent/commons/src/platform/mod.rs` hard-codes `agent-data-plane.log`. Deferred because it changes a
+   `lib/datadog-agent/commons/src/platform/mod.rs` hard-codes `agent-data-plane.log`. Until then, `LoggingTranslator::new`
+   takes the default log file from the binary, and ADP passes that function's result. Deferred because it changes a
    public API that other crates use.
 6. **Add the hooks ACR needs.** None of these exist yet, and ADP doesn't need them:
    - host tags
@@ -127,7 +129,7 @@ its item when it merges.
    - a process start time for the status `Started` field, which today records when the status service was created
    - extra workers in the `ctrl-pln` supervisor
 7. **Make the configuration system generic.** This gets its own plan. Once it lands, `Live<T>` implements `LiveValue`
-   directly and ADP's `LiveLogLevel` newtype goes away.
+   directly and ADP's `LiveLogLevel` newtype in `bin/agent-data-plane/src/internal/logging.rs` goes away.
 8. **Split `remote_agent/mod.rs` into submodules.** Registration, the configuration stream, the services, flare
    collection, and event reporting can each have their own module. Deferred so that the first pull request keeps rename
    detection in Git for the moved file.
