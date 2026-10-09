@@ -1,6 +1,12 @@
+//! Remote agent registration and the services that the Datadog Agent queries.
+//!
+//! [`RemoteAgentBootstrap`] registers the process with the Datadog Agent over the Remote Agent Registry, keeps that
+//! registration alive, and creates everything that depends on it: the configuration stream, the status, flare, and
+//! telemetry services, and the workers that report diagnostic events back to the Datadog Agent.
+
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -28,14 +34,17 @@ use saluki_common::task::spawn_traced_named;
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
 use saluki_core::{
     diagnostic::{subscribe_events, DiagnosticCollector, DiagnosticDetails, DiagnosticEvent},
-    observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
+    observability::metrics::{
+        get_shared_metrics_state, AggregatedMetricsProcessor, AggregatedMetricsState, Reflector, RemapperRule,
+        TelemetryProcessor,
+    },
     runtime::{
         state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter, Subscription},
         InitializationError, Supervisable, SupervisorFuture,
     },
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::GrpcTargetAddress;
+use saluki_io::net::{GrpcTargetAddress, ListenAddress};
 use serde_json::{Map, Value};
 use tokio::task::spawn_blocking;
 use tokio::time::{timeout, Instant};
@@ -47,31 +56,18 @@ use tokio::{
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
-use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::get_datadog_agent_remappings;
+mod status;
+pub use self::status::{StatusBuilder, StatusSectionProvider, StatusSectionWriter};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
-const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
-const PACKETS_RECEIVED: &str = "adp.component_packets_received_total";
-const BYTES_RECEIVED: &str = "adp.component_bytes_received_total";
-const ERRORS: &str = "adp.component_errors_total";
-const DSD_COMP_ID: &str = "component_id:dsd_in";
-const ERROR_DECODE: &str = "error_type:decode";
-const ERROR_FRAMING: &str = "error_type:framing";
-const TYPE_EVENTS: &str = "message_type:events";
-const TYPE_METRICS: &str = "message_type:metrics";
-const TYPE_SERVICE_CHECKS: &str = "message_type:service_checks";
-const LISTENER_UDP: &str = "listener_type:udp";
-const LISTENER_UNIX: &str = "listener_type:unix";
-const LISTENER_UNIXGRAM: &str = "listener_type:unixgram";
 const SESSION_ID_METADATA_KEY: &str = "session_id";
 
 /// Remote agent initialization.
 ///
 /// This helper type is used to coordinate the initialization of remote agent state by registering to the Core Agent and
-/// acquiring the necessary information to allow initialization of ADP itself to proceed.
+/// acquiring the necessary information to allow initialization of the subagent itself to proceed.
 pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
@@ -82,17 +78,17 @@ pub struct RemoteAgentBootstrap {
 impl RemoteAgentBootstrap {
     /// Creates a new `RemoteAgentBootstrap` from the given configurations.
     ///
-    /// A remote agent client is created and immediately attempts to register with the Core Agent. This function does
-    /// not return until registration finishes, whether successful or not.
+    /// A remote agent client is created and immediately attempts to register with the Core Agent, advertising
+    /// `secure_api_listen_address` as the address where the Core Agent reaches the status, flare, and telemetry
+    /// services. This function does not return until registration finishes, whether successful or not.
     ///
     /// # Errors
     ///
     /// If the configuration is invalid, an error is returned.
-    pub async fn new<'a>(
-        client_config: &RemoteAgentClientConfiguration, dp_config: &DataPlaneConfiguration<'a>,
+    pub async fn new(
+        client_config: &RemoteAgentClientConfiguration, secure_api_listen_address: &ListenAddress,
     ) -> Result<Self, GenericError> {
-        let secure_api_listen_address = dp_config.secure_api_listen_address()?;
-        let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(&secure_api_listen_address)
+        let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(secure_api_listen_address)
             .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
 
         // Generate our remote agent state, which is mostly fixed but has a few dynamic bits.
@@ -109,10 +105,8 @@ impl RemoteAgentBootstrap {
         //
         // Wait for the result of the initial registration attempt before proceeding.
         let client = RemoteAgentClient::connect(client_config).await?;
-        spawn_traced_named(
-            "adp-remote-agent-task",
-            run_remote_agent_registration_loop(client.clone(), state),
-        );
+        let task_name = format!("{}-remote-agent-task", saluki_metadata::get_app_details().identifier());
+        spawn_traced_named(task_name, run_remote_agent_registration_loop(client.clone(), state));
 
         match init_reg_rx.await {
             Ok(Ok(())) => (),
@@ -132,11 +126,14 @@ impl RemoteAgentBootstrap {
         })
     }
 
-    fn build_impl(&self) -> RemoteAgentImpl {
+    fn build_impl(
+        &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>, remapper_rules: Vec<RemapperRule>,
+    ) -> RemoteAgentImpl {
         RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
-            processor: Mutex::new(TelemetryProcessor::new().with_remapper_rules(get_datadog_agent_remappings())),
+            processor: telemetry_processor(remapper_rules),
+            status_sections,
             session_id: self.session_id.clone(),
             dataspace: Arc::clone(&self.dataspace),
         }
@@ -164,18 +161,30 @@ impl RemoteAgentBootstrap {
     }
 
     /// Creates a new `StatusProviderServer` tied to this remote agent.
-    pub fn create_status_service(&self) -> StatusProviderServer<RemoteAgentImpl> {
-        StatusProviderServer::new(self.build_impl())
+    ///
+    /// The service always reports the built-in main section fields (version, Git commit, architecture, start time, and
+    /// the Agent version this build was compiled against), followed by the fields written by each of the given
+    /// `status_sections`, in order.
+    pub fn create_status_service(
+        &self, status_sections: Vec<Arc<dyn StatusSectionProvider>>,
+    ) -> StatusProviderServer<RemoteAgentImpl> {
+        StatusProviderServer::new(self.build_impl(status_sections, Vec::new()))
     }
 
     /// Creates a new `TelemetryProviderServer` tied to this remote agent.
-    pub fn create_telemetry_service(&self) -> TelemetryProviderServer<RemoteAgentImpl> {
-        TelemetryProviderServer::new(self.build_impl())
+    ///
+    /// The service reports the internal metrics that match the given `remapper_rules`, renamed to the names the
+    /// Datadog Agent expects. Metrics that match no rule are not reported, so if `remapper_rules` is empty, the service
+    /// reports no metrics at all.
+    pub fn create_telemetry_service(
+        &self, remapper_rules: Vec<RemapperRule>,
+    ) -> TelemetryProviderServer<RemoteAgentImpl> {
+        TelemetryProviderServer::new(self.build_impl(Vec::new(), remapper_rules))
     }
 
     /// Creates a new `FlareProviderServer` tied to this remote agent.
     pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
-        FlareProviderServer::new(self.build_impl())
+        FlareProviderServer::new(self.build_impl(Vec::new(), Vec::new()))
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
@@ -400,64 +409,38 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
     }
 }
 
+/// The implementation behind the status, flare, and telemetry services that the Datadog Agent queries.
+///
+/// Created through [`RemoteAgentBootstrap::create_status_service`], [`RemoteAgentBootstrap::create_flare_service`],
+/// and [`RemoteAgentBootstrap::create_telemetry_service`].
 pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    processor: Mutex<TelemetryProcessor>,
+    processor: Option<Mutex<TelemetryProcessor>>,
+    status_sections: Vec<Arc<dyn StatusSectionProvider>>,
     session_id: SessionIdHandle,
     dataspace: Arc<OnceLock<DataspaceRegistry>>,
 }
 
-impl RemoteAgentImpl {
-    fn write_dsd_metrics(&self, builder: &mut StatusBuilder) {
-        // Grab some simple metrics from the DogStatsD source.
-        let metrics = self.internal_metrics.state();
+/// Creates the processor behind the telemetry service, or `None` if there are no remapper rules.
+///
+/// A `TelemetryProcessor` without rules renders every metric under its raw name, so we skip it entirely rather than
+/// report metrics that no rule selected.
+fn telemetry_processor(remapper_rules: Vec<RemapperRule>) -> Option<Mutex<TelemetryProcessor>> {
+    (!remapper_rules.is_empty()).then(|| Mutex::new(TelemetryProcessor::new().with_remapper_rules(remapper_rules)))
+}
 
-        let event_packets = metrics.get_aggregated_with_tags(EVENTS_RECEIVED, &[DSD_COMP_ID, TYPE_EVENTS]);
-        let metric_packets = metrics.get_aggregated_with_tags(EVENTS_RECEIVED, &[DSD_COMP_ID, TYPE_METRICS]);
-        let scheck_packets = metrics.get_aggregated_with_tags(EVENTS_RECEIVED, &[DSD_COMP_ID, TYPE_SERVICE_CHECKS]);
-
-        let event_parse_errors = metrics.get_aggregated_with_tags(ERRORS, &[DSD_COMP_ID, ERROR_DECODE, TYPE_EVENTS]);
-        let metric_parse_errors = metrics.get_aggregated_with_tags(ERRORS, &[DSD_COMP_ID, ERROR_DECODE, TYPE_METRICS]);
-        let scheck_parse_errors =
-            metrics.get_aggregated_with_tags(ERRORS, &[DSD_COMP_ID, ERROR_DECODE, TYPE_SERVICE_CHECKS]);
-
-        let get_listener_metrics = |listener_type: &str| {
-            (
-                metrics.get_aggregated_with_tags(BYTES_RECEIVED, &[DSD_COMP_ID, listener_type]),
-                metrics
-                    .find_single_with_tags(ERRORS, &[DSD_COMP_ID, listener_type, ERROR_FRAMING])
-                    .unwrap_or(0.0),
-                metrics
-                    .find_single_with_tags(PACKETS_RECEIVED, &[DSD_COMP_ID, listener_type, "state:ok"])
-                    .unwrap_or(0.0),
-            )
-        };
-
-        let (udp_bytes, udp_errors, udp_packets) = get_listener_metrics(LISTENER_UDP);
-        let (unix_bytes, unix_errors, unix_packets) = get_listener_metrics(LISTENER_UNIX);
-        let (unixgram_bytes, unixgram_errors, unixgram_packets) = get_listener_metrics(LISTENER_UNIXGRAM);
-
-        let uds_bytes = unix_bytes + unixgram_bytes;
-        let uds_errors = unix_errors + unixgram_errors;
-        let uds_packets = unix_packets + unixgram_packets;
-
-        builder
-            .named_section("DogStatsD")
-            .set_field("Event Packets", event_packets.to_string())
-            .set_field("Event Parse Errors", event_parse_errors.to_string())
-            .set_field("Metric Packets", metric_packets.to_string())
-            .set_field("Metric Parse Errors", metric_parse_errors.to_string())
-            .set_field("Service Check Packets", scheck_packets.to_string())
-            .set_field("Service Check Parse Errors", scheck_parse_errors.to_string())
-            .set_field("Udp Bytes", udp_bytes.to_string())
-            .set_field("Udp Packet Reading Errors", udp_errors.to_string())
-            .set_field("Udp Packets", udp_packets.to_string())
-            .set_field("Uds Bytes", uds_bytes.to_string())
-            .set_field("Uds Packet Reading Errors", uds_errors.to_string())
-            .set_field("Uds Packets", uds_packets.to_string());
+/// Renders the telemetry payload for the given internal metrics.
+///
+/// Without a processor, the payload is empty.
+async fn render_telemetry(processor: Option<&Mutex<TelemetryProcessor>>, state: &AggregatedMetricsState) -> String {
+    match processor {
+        Some(processor) => processor.lock().await.process(state),
+        None => String::new(),
     }
+}
 
+impl RemoteAgentImpl {
     async fn session_id_middleware<Resp, Next>(&self, next: Next) -> Result<tonic::Response<Resp>, Status>
     where
         Next: AsyncFnOnce() -> Result<tonic::Response<Resp>, Status>,
@@ -501,7 +484,9 @@ impl StatusProvider for RemoteAgentImpl {
                         .set_field("Built Against Agent Version", agent_version);
                 }
 
-                self.write_dsd_metrics(&mut builder);
+                for section in &self.status_sections {
+                    section.write_status(&mut builder);
+                }
 
                 Ok(tonic::Response::new(builder.into_response()))
             })
@@ -516,9 +501,7 @@ impl TelemetryProvider for RemoteAgentImpl {
     ) -> Result<tonic::Response<GetTelemetryResponse>, Status> {
         return self
             .session_id_middleware(async || {
-                let state = self.internal_metrics.state();
-                let mut processor = self.processor.lock().await;
-                let prom_text = processor.process(state);
+                let prom_text = render_telemetry(self.processor.as_ref(), self.internal_metrics.state()).await;
 
                 Ok(tonic::Response::new(GetTelemetryResponse {
                     payload: Some(Payload::PromText(prom_text)),
@@ -533,7 +516,7 @@ impl TelemetryProvider for RemoteAgentImpl {
 /// `Handle::dump()` may never resolve if a runtime worker is blocked for more than 250 ms. We use
 /// a conservative 5-second budget so that a hung runtime still allows the other diagnostic artifacts
 /// to be collected and returned.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "taskdump"))]
 const TASK_DUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Timeout for collecting all component-owned diagnostic artifacts.
@@ -641,7 +624,7 @@ impl FlareProvider for RemoteAgentImpl {
 
                 // Process-level artifacts.
                 //
-                // These don't belong to any individual component — they describe the ADP process
+                // These don't belong to any individual component — they describe the process
                 // itself. They stay hardwired here since there is no natural component owner to
                 // assert a handle for them.
 
@@ -661,12 +644,12 @@ impl FlareProvider for RemoteAgentImpl {
                 );
                 files.insert("runtime_debug_info.log".to_string(), cap_artifact_data(process_info.into_bytes()));
 
-                // Tokio task dump (Linux-only).
+                // Tokio task dump (Linux-only, and only with the `taskdump` feature enabled).
                 //
                 // Wrapped in an explicit timeout because `Handle::dump()`
                 // may never resolve if a runtime worker is blocked for
                 // more than 250ms
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", feature = "taskdump"))]
                 {
                     let task_dump = match timeout(
                         TASK_DUMP_TIMEOUT,
@@ -806,60 +789,16 @@ fn diagnostic_to_remote_agent_event(event: &DiagnosticEvent) -> Option<RemoteAge
     })
 }
 
-struct StatusBuilder {
-    main_section: StatusSection,
-    named_sections: HashMap<String, StatusSection>,
-}
-
-impl StatusBuilder {
-    fn new() -> Self {
-        Self {
-            main_section: StatusSection { fields: HashMap::new() },
-            named_sections: HashMap::new(),
-        }
-    }
-
-    fn main_section(&mut self) -> StatusSectionWriter<'_> {
-        StatusSectionWriter {
-            section: &mut self.main_section,
-        }
-    }
-
-    fn named_section<S: AsRef<str>>(&mut self, name: S) -> StatusSectionWriter<'_> {
-        match self.named_sections.entry(name.as_ref().to_string()) {
-            Entry::Occupied(entry) => StatusSectionWriter {
-                section: entry.into_mut(),
-            },
-            Entry::Vacant(entry) => {
-                let section = entry.insert(StatusSection { fields: HashMap::new() });
-                StatusSectionWriter { section }
-            }
-        }
-    }
-
-    fn into_response(self) -> GetStatusDetailsResponse {
-        GetStatusDetailsResponse {
-            main_section: Some(self.main_section),
-            named_sections: self.named_sections,
-        }
-    }
-}
-
-struct StatusSectionWriter<'a> {
-    section: &'a mut StatusSection,
-}
-
-impl StatusSectionWriter<'_> {
-    fn set_field<S: AsRef<str>, V: AsRef<str>>(&mut self, name: S, value: V) -> &mut Self {
-        self.section
-            .fields
-            .insert(name.as_ref().to_string(), value.as_ref().to_string());
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use saluki_core::{
+        data_model::event::{
+            metric::{context::Context, Metric},
+            Event,
+        },
+        observability::metrics::{MetricsSnapshot, Processor as _},
+    };
+
     use super::*;
 
     #[test]
@@ -892,6 +831,44 @@ mod tests {
         let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
         let output = cap_artifact_data(input.clone());
         assert_eq!(output, input);
+    }
+
+    fn metrics_state(names: &[&'static str]) -> AggregatedMetricsState {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+        let upserts = names
+            .iter()
+            .map(|name| Event::Metric(Metric::counter(Context::from_static_parts(name, &[]), 1.0)))
+            .collect();
+        processor.process(
+            MetricsSnapshot {
+                upserts,
+                evictions: Vec::new(),
+            },
+            &state,
+        );
+        state
+    }
+
+    #[tokio::test]
+    async fn telemetry_without_remapper_rules_is_empty() {
+        let state = metrics_state(&["test.events_received_total"]);
+        let processor = telemetry_processor(Vec::new());
+
+        assert_eq!(render_telemetry(processor.as_ref(), &state).await, "");
+    }
+
+    #[tokio::test]
+    async fn telemetry_only_reports_metrics_matched_by_remapper_rules() {
+        let state = metrics_state(&["test.events_received_total", "test.unmatched_total"]);
+        let processor = telemetry_processor(vec![RemapperRule::by_name(
+            "test.events_received_total",
+            "events_received",
+        )]);
+
+        let prom_text = render_telemetry(processor.as_ref(), &state).await;
+        assert!(prom_text.contains("events_received 1"), "{prom_text}");
+        assert!(!prom_text.contains("unmatched"), "{prom_text}");
     }
 
     fn agent_setting(source: &str, key: &str, value: &str) -> AgentConfigSetting {

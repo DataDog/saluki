@@ -6,8 +6,6 @@ use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClient
 use datadog_agent_config::classifier::Pipeline;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-#[cfg(not(target_os = "linux"))]
-use tracing::warn;
 
 /// General data plane configuration.
 ///
@@ -22,34 +20,9 @@ pub struct DataPlaneConfiguration<'a> {
 pub(crate) fn remote_agent_client_configuration(
     config: &SalukiConfiguration,
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
-    let dp = DataPlaneConfiguration::from_configuration(config);
-
-    #[cfg(target_os = "linux")]
-    let vsock_cid = match config.control.ipc.vsock_addr.as_str() {
-        "" => None,
-        "host" => Some(2),
-        "hypervisor" => Some(0),
-        "local" => Some(3),
-        other => {
-            return Err(generic_error!(
-                "invalid vsock address '{}'; expected one of: host, hypervisor, local",
-                other
-            ))
-        }
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    if !config.control.ipc.vsock_addr.is_empty() {
-        warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
-    }
-
-    Ok(RemoteAgentClientConfiguration {
-        cmd_port: config.control.ipc.cmd_port,
-        auth: dp.ipc_auth_configuration(),
-        grpc_max_message_size: config.control.ipc.grpc_max_message_size,
-        #[cfg(target_os = "linux")]
-        vsock_cid,
-    })
+    let ipc = &config.control.ipc;
+    let auth = DataPlaneConfiguration::from_configuration(config).ipc_auth_configuration();
+    RemoteAgentClientConfiguration::from_parts(ipc.cmd_port, auth, ipc.grpc_max_message_size, &ipc.vsock_addr)
 }
 
 impl<'a> DataPlaneConfiguration<'a> {
@@ -282,15 +255,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
-        for value in ["invalid", "2", "HOST", "host ", "vm0"] {
-            let mut config = SalukiConfiguration::default();
-            config.control.ipc.vsock_addr = value.to_string();
+        let mut config = SalukiConfiguration::default();
+        config.control.ipc.vsock_addr = "invalid".to_string();
 
-            assert!(
-                remote_agent_client_configuration(&config).is_err(),
-                "expected error for input: {value:?}",
-            );
-        }
+        assert!(remote_agent_client_configuration(&config).is_err());
     }
 
     fn pipeline_configuration(

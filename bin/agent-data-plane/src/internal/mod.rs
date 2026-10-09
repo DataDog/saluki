@@ -3,6 +3,7 @@ use std::sync::Arc;
 use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
+use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
 use saluki_app::logging::LoggingOverrideController;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
@@ -24,8 +25,8 @@ pub mod env;
 
 pub mod logging;
 
-pub mod remote_agent;
-use self::remote_agent::RemoteAgentBootstrap;
+mod status;
+pub use self::status::DogStatsDStatusSection;
 
 mod telemetry;
 

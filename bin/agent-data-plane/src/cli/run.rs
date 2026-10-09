@@ -14,6 +14,7 @@ use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
 use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
+use datadog_agent_runtime::remote_agent::RemoteAgentBootstrap;
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
@@ -72,8 +73,8 @@ use crate::{
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
-        ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, ConfigUpdatesWorker,
+        DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
 use crate::{
@@ -122,9 +123,12 @@ pub async fn handle_run_command(
     } else {
         // Blocks until the Core Agent acknowledges registration.
         let client_config = remote_agent_client_configuration(local_config.local())?;
-        let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
-            .await
-            .error_context("Failed to bootstrap remote agent state.")?;
+        let ra_bootstrap = async {
+            let secure_api_listen_address = bootstrap_dp_config.secure_api_listen_address()?;
+            RemoteAgentBootstrap::new(&client_config, &secure_api_listen_address).await
+        }
+        .await
+        .error_context("Failed to bootstrap remote agent state.")?;
 
         // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
         // build the typed model. `create_config_stream` stays on `ra_bootstrap`, which we keep to

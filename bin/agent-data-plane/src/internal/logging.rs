@@ -21,6 +21,7 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "containerd_protos",
     "datadog_protos",
     "datadog_agent_commons",
+    "datadog_agent_runtime",
     "ddsketch",
     "otlp_protos",
     "ottl",
@@ -235,6 +236,15 @@ mod tests {
         assert!(!directives.contains(&"tokio=warn".to_string()));
         assert!(!directives.contains(&"tonic=warn".to_string()));
         assert!(!directives.contains(&"warn".to_string()));
+    }
+
+    #[test]
+    fn plain_log_level_covers_the_subagent_runtime() {
+        // Registration, the configuration stream, and the status, flare, and telemetry services live in the subagent
+        // runtime crate, so a plain level must reach its logs too.
+        let directives = translate_level("debug").expect("translate logging config");
+
+        assert!(directives.contains(&"datadog_agent_runtime=debug".to_string()));
     }
 
     #[test]
