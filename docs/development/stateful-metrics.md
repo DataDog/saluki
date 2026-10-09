@@ -242,14 +242,35 @@ dictionaries, a partial batch, and a two-batch input queue. Series distribution 
 reuse affect actual memory; these limits do not bound total process memory.
 The configured series threshold and flush timeout apply independently to each worker.
 
-Each worker's dictionary uses Foldspace local eviction with ADP's defaults: 20,000 entries,
-16 MiB of Foldspace-estimated bytes, and removal of entries no payload has referenced for 30
-minutes. The entry and byte caps sit well above the live working set (about 7,000 entries per
-worker for a 110-pod node), so in normal operation eviction only removes definitions for series
-that stopped reporting, such as departed pods. Real heap is about 1.5 times the estimate, because
-the estimate excludes the rule store's copy of each definition and per-endpoint sent sets. The caps
-cannot shrink the dictionary below the live working set: recently created definitions are protected
-by Foldspace's 30-second grace period. The aggregator's context limit bounds the live set instead.
+Each worker's dictionary uses Foldspace local eviction, capped by two startup-only settings that
+apply **per worker**, so the process-wide totals are each value times
+`data_plane.stateful_metrics_workers`:
+
+| Setting | Environment variable | Default |
+| --- | --- | --- |
+| `data_plane.stateful_metrics_dictionary_max_entries` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES` | `20000` |
+| `data_plane.stateful_metrics_dictionary_max_bytes` | `DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES` | `16MiB` (16777216) |
+
+Both must be positive; zero, negative, and non-numeric values fail startup. The byte cap accepts a
+bare byte count or a byte-size string such as `128MiB`, up to `i64::MAX`. Entries no payload has
+referenced for 30 minutes are removed regardless of the caps; that interval is not configurable.
+
+The default caps sit well above a typical live working set (about 7,000 entries per worker for a
+110-pod node), so in normal operation eviction only removes definitions for series that stopped
+reporting, such as departed pods. High-cardinality workloads can exceed them: a cap below the live
+working set evicts definitions that are still in use and re-sends them on later flushes, which
+slows draining under load. To raise the caps for a load test, set for example:
+
+```yaml
+data_plane:
+  stateful_metrics_dictionary_max_entries: 100000
+  stateful_metrics_dictionary_max_bytes: 128MiB
+```
+
+Real heap is about 1.5 times the estimate, because the estimate excludes the rule store's copy of
+each definition and per-endpoint sent sets. The caps cannot shrink the dictionary below the live
+working set: recently created definitions are protected by Foldspace's 30-second grace period. The
+aggregator's context limit bounds the live set instead.
 
 Closing destination input closes all worker input queues before waiting for completion. Workers drain
 accepted input, run their delivery budgets concurrently, recover remaining logical data, and flush

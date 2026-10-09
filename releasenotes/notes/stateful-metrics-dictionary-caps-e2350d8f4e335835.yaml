@@ -1,0 +1,9 @@
+enhancements:
+  - |
+    Add ``data_plane.stateful_metrics_dictionary_max_entries`` (default
+    ``20000``) and ``data_plane.stateful_metrics_dictionary_max_bytes``
+    (default ``16MiB``) to the experimental stateful metrics path. They cap
+    each sender worker's metrics dictionary, so the process-wide totals are
+    each value times ``data_plane.stateful_metrics_workers``. Raise them for
+    high-cardinality workloads whose live series exceed the defaults. Both
+    require a restart and reject zero.

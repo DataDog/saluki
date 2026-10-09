@@ -1,6 +1,10 @@
 use std::{mem::replace, pin::Pin, sync::Arc};
 
-use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue, SalukiConfiguration};
+use agent_data_plane_config::{
+    defaults::{DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES, DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES},
+    shared::SharedConfiguration,
+    ConfigValue, SalukiConfiguration,
+};
 use arc_swap::ArcSwap;
 use foldspace_core::{
     proto::stateful::{
@@ -76,6 +80,25 @@ async fn queue_for(settings: &SharedConfiguration, endpoints: &[MetaString], wor
     .unwrap()
 }
 
+fn configuration(endpoints: usize, batch_capacity: usize) -> StatefulMetricsConfiguration {
+    StatefulMetricsConfiguration {
+        endpoints: test_endpoints(endpoints),
+        workers: NonZeroUsize::new(1).unwrap(),
+        api_key: Live::new_fixed("test-key".to_string()),
+        compression_level: 3,
+        flush_timeout: Duration::from_secs(2),
+        batch_capacity,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
+        queue: DeliveryQueueConfiguration::from_configuration(&shared()),
+        stop_timeout: TEST_TIMEOUT,
+    }
+}
+
+fn core_config(endpoints: usize, batch_capacity: usize) -> CoreConfig {
+    configuration(endpoints, batch_capacity).core_config()
+}
+
 async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetricsWorker {
     let addresses = test_endpoints(endpoints);
     StatefulMetricsWorker::new(
@@ -84,9 +107,9 @@ async fn worker_with(endpoints: usize, batch_capacity: usize) -> StatefulMetrics
             .map(|endpoint| Endpoint::from_shared(endpoint.to_string()).unwrap())
             .collect(),
         parse_api_key("test-key").unwrap(),
+        core_config(endpoints, batch_capacity),
         3,
         Duration::from_secs(2),
-        batch_capacity,
         queue_for(&shared(), &addresses, 0).await,
         MetricsBuilder::default(),
     )
@@ -307,9 +330,9 @@ impl Harness {
         let mut worker = StatefulMetricsWorker::new(
             vec![endpoint],
             parse_api_key("test-key").unwrap(),
+            core_config(1, 512),
             3,
             Duration::from_secs(2),
-            512,
             queue_for(&shared(), &test_endpoints(1), 0).await,
             MetricsBuilder::default(),
         );
@@ -758,6 +781,8 @@ async fn start_destination(
         compression_level: 3,
         flush_timeout,
         batch_capacity: 512,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
         queue: DeliveryQueueConfiguration::from_configuration(settings),
         stop_timeout: TEST_TIMEOUT,
     };
@@ -1240,6 +1265,8 @@ impl ShardedHarness {
             compression_level: 3,
             flush_timeout: Duration::from_millis(10),
             batch_capacity: 512,
+            dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+            dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
             queue: DeliveryQueueConfiguration::from_configuration(settings),
             stop_timeout: Duration::from_millis(200),
         })
@@ -1526,6 +1553,8 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
         compression_level: 3,
         flush_timeout: Duration::from_millis(10),
         batch_capacity: 512,
+        dictionary_max_entries: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES,
+        dictionary_max_bytes: DEFAULT_STATEFUL_METRICS_DICTIONARY_MAX_BYTES,
         queue: DeliveryQueueConfiguration::from_configuration(&shared()),
         stop_timeout: TEST_TIMEOUT,
     })
@@ -1551,4 +1580,38 @@ async fn destination_sends_every_payload_to_every_endpoint_and_replays_only_to_t
     drop(input);
     timeout(TEST_TIMEOUT, task).await.unwrap().unwrap().unwrap();
     assert!(healthy_session.received.try_recv().is_err());
+}
+
+#[test]
+fn core_config_uses_default_dictionary_caps() {
+    let config = core_config(2, 256);
+    assert_eq!(config.batch_capacity, 256);
+    assert_eq!(config.metrics_endpoints, 2);
+    assert_eq!(config.sender.max_inflight_payloads, MAX_INFLIGHT_BATCHES);
+    assert_eq!(
+        config.metrics_dictionary_eviction,
+        Some(MetricDictionaryEvictionConfig {
+            max_item_count: 20_000,
+            max_memory_bytes: 16 * 1024 * 1024,
+            stale_after: Duration::from_secs(30 * 60),
+            ..MetricDictionaryEvictionConfig::default()
+        })
+    );
+}
+
+#[test]
+fn core_config_applies_configured_dictionary_caps_to_each_worker_unchanged() {
+    let mut configuration = configuration(1, 512);
+    // The caps are per worker: raising the worker count does not divide them.
+    configuration.workers = NonZeroUsize::new(3).unwrap();
+    configuration.dictionary_max_entries = NonZeroUsize::new(100_000).unwrap();
+    configuration.dictionary_max_bytes = NonZeroU64::new(128 * 1024 * 1024).unwrap();
+    let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
+    assert_eq!(eviction.max_item_count, 100_000);
+    assert_eq!(eviction.max_memory_bytes, 128 * 1024 * 1024);
+    assert_eq!(eviction.stale_after, DICTIONARY_STALE_AFTER);
+
+    configuration.dictionary_max_bytes = NonZeroU64::MAX;
+    let eviction = configuration.core_config().metrics_dictionary_eviction.unwrap();
+    assert_eq!(eviction.max_memory_bytes, i64::MAX);
 }

@@ -478,6 +478,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateful_metrics_dictionary_caps_load_from_file_and_environment() {
+        const MIB_128: u64 = 128 * 1024 * 1024;
+
+        let default = standalone_system(None, None).await.unwrap();
+        let stateful = &default.config().domains.stateful_metrics;
+        assert_eq!(stateful.dictionary_max_entries.get(), 20_000);
+        assert_eq!(stateful.dictionary_max_bytes.get(), 16 * 1024 * 1024);
+
+        for max_bytes in [json!(MIB_128), json!("128MiB")] {
+            let from_file = standalone_system(
+                Some(json!({
+                    "api_key": TEST_API_KEY,
+                    "data_plane": {
+                        "stateful_metrics_dictionary_max_entries": 100_000,
+                        "stateful_metrics_dictionary_max_bytes": max_bytes,
+                    },
+                })),
+                None,
+            )
+            .await
+            .unwrap();
+            let stateful = &from_file.config().domains.stateful_metrics;
+            assert_eq!(stateful.dictionary_max_entries.get(), 100_000, "{max_bytes}");
+            assert_eq!(stateful.dictionary_max_bytes.get(), MIB_128, "{max_bytes}");
+            assert_eq!(stateful.workers.get(), 3);
+        }
+
+        for max_bytes in [MIB_128.to_string(), "128MiB".to_string()] {
+            let (map, _) = ConfigurationLoader::for_tests_with_provider_factory(
+                None,
+                Some(&[
+                    ("DD_API_KEY".to_string(), TEST_API_KEY.to_string()),
+                    (
+                        "DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_ENTRIES".to_string(),
+                        "100000".to_string(),
+                    ),
+                    (
+                        "DD_DATA_PLANE_STATEFUL_METRICS_DICTIONARY_MAX_BYTES".to_string(),
+                        max_bytes.clone(),
+                    ),
+                ]),
+                false,
+                |_| crate::env_provider::EnvironmentProvider::new().unwrap(),
+            )
+            .await;
+            let from_env = translate_strict(&SourceTree::all_explicit(map.as_typed::<Value>().unwrap())).unwrap();
+            let stateful = &from_env.domains.stateful_metrics;
+            assert_eq!(stateful.dictionary_max_entries.get(), 100_000, "{max_bytes}");
+            assert_eq!(stateful.dictionary_max_bytes.get(), MIB_128, "{max_bytes}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stateful_metrics_rejects_invalid_dictionary_caps() {
+        let invalid_entries = [json!(0), json!(-1), json!(1.5), json!("invalid")];
+        let invalid_bytes = [
+            json!(0),
+            json!(-1),
+            json!("0B"),
+            json!("invalid"),
+            json!(i64::MAX as u64 + 1),
+        ];
+        let cases = invalid_entries
+            .into_iter()
+            .map(|value| ("stateful_metrics_dictionary_max_entries", value))
+            .chain(
+                invalid_bytes
+                    .into_iter()
+                    .map(|value| ("stateful_metrics_dictionary_max_bytes", value)),
+            );
+        for (key, value) in cases {
+            assert!(
+                standalone_system(
+                    Some(json!({ "api_key": TEST_API_KEY, "data_plane": { key: value.clone() } })),
+                    None,
+                )
+                .await
+                .is_err(),
+                "{key}: {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn stateful_metrics_rejects_unsupported_endpoint_forms() {
         for endpoint in [
             "",
