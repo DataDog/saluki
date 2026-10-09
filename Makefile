@@ -383,6 +383,14 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
+.PHONY: demo-programmable-metrics
+demo-programmable-metrics: build-adp
+demo-programmable-metrics: ## Runs the programmable metrics demo: ADP on the default program, a live editor, and a telemetry viewer (extra flags: DEMO_ARGS)
+	@echo "[*] Building the programmable metrics demo..."
+	@cargo build --profile devel --package programmable-metrics-demo
+	@echo "[*] Running the programmable metrics demo (UI at http://127.0.0.1:17080 unless --ui-port is in DEMO_ARGS)..."
+	@target/devel/programmable-metrics-demo run --adp-bin target/devel/agent-data-plane $(DEMO_ARGS)
+
 ##@ Kubernetes
 
 .PHONY: k8s-create-cluster

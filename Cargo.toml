@@ -6,6 +6,7 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "bin/programmable-metrics-demo",
   "lib/agent-data-plane-config",
   "lib/agent-data-plane-config-system",
   "lib/datadog-agent/commons",
@@ -35,6 +36,7 @@ members = [
   "lib/saluki-metadata",
   "lib/saluki-metric-kernels",
   "lib/saluki-metric-plan",
+  "lib/saluki-metric-plan-syntax",
   "lib/saluki-metrics",
   "lib/saluki-metrics-macros",
   "lib/saluki-tls",
@@ -79,6 +81,7 @@ saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metric-kernels = { path = "lib/saluki-metric-kernels" }
 saluki-metric-plan = { path = "lib/saluki-metric-plan" }
+saluki-metric-plan-syntax = { path = "lib/saluki-metric-plan-syntax" }
 saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-metrics-macros = { path = "lib/saluki-metrics-macros" }
 saluki-tls = { path = "lib/saluki-tls" }

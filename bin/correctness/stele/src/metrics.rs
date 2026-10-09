@@ -503,7 +503,9 @@ impl Metric {
                 }
             }
 
-            let mut values = Vec::with_capacity(num_points);
+            // `numPoints` comes from the payload: every point takes one timestamp, so never reserve more than the
+            // timestamps that remain.
+            let mut values = Vec::with_capacity(num_points.min(timestamps.len().saturating_sub(cursors.timestamp)));
 
             if metric_type == V3_METRIC_TYPE_SKETCH {
                 for _ in 0..num_points {
@@ -553,10 +555,10 @@ impl Metric {
                     cursors.sketch_point += 1;
 
                     let bin_key_start = cursors.sketch_bin_key;
-                    let bin_key_end = bin_key_start + num_bins;
-                    if bin_key_end > sketch_bin_keys.len() {
-                        return Err(generic_error!("Ran out of sketch bin keys"));
-                    }
+                    let bin_key_end = bin_key_start
+                        .checked_add(num_bins)
+                        .filter(|end| *end <= sketch_bin_keys.len())
+                        .ok_or_else(|| generic_error!("Ran out of sketch bin keys"))?;
 
                     // Delta-decode this sketch's bin keys.
                     delta_decode_i32(&mut sketch_bin_keys[bin_key_start..bin_key_end]);
@@ -565,10 +567,10 @@ impl Metric {
                     cursors.sketch_bin_key = bin_key_end;
 
                     let bin_cnt_start = cursors.sketch_bin_cnt;
-                    let bin_cnt_end = bin_cnt_start + num_bins;
-                    if bin_cnt_end > data.sketchBinCnts.len() {
-                        return Err(generic_error!("Ran out of sketch bin counts"));
-                    }
+                    let bin_cnt_end = bin_cnt_start
+                        .checked_add(num_bins)
+                        .filter(|end| *end <= data.sketchBinCnts.len())
+                        .ok_or_else(|| generic_error!("Ran out of sketch bin counts"))?;
                     let n: Vec<u32> = data.sketchBinCnts[bin_cnt_start..bin_cnt_end].to_vec();
                     cursors.sketch_bin_cnt = bin_cnt_end;
 
@@ -634,16 +636,19 @@ impl Metric {
 }
 
 /// Delta-decode in place: convert deltas to absolute values (prefix sum).
+///
+/// The sums wrap on overflow, as the encoder's two's complement arithmetic does, so a malformed payload decodes to
+/// out-of-range values (which the callers reject) rather than panicking.
 fn delta_decode(s: &mut [i64]) {
     for i in 1..s.len() {
-        s[i] += s[i - 1];
+        s[i] = s[i].wrapping_add(s[i - 1]);
     }
 }
 
-/// Delta-decode i32 values in place.
+/// Delta-decode i32 values in place, wrapping on overflow as [`delta_decode`] does.
 fn delta_decode_i32(s: &mut [i32]) {
     for i in 1..s.len() {
-        s[i] += s[i - 1];
+        s[i] = s[i].wrapping_add(s[i - 1]);
     }
 }
 
@@ -667,18 +672,18 @@ fn read_varint(data: &[u8]) -> Result<(u64, usize), GenericError> {
 /// Parse varint-length-prefixed strings from a byte buffer.
 fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
     let mut strings = Vec::new();
-    let mut offset = 0;
+    let mut offset = 0_usize;
     while offset < data.len() {
         let (len, varint_size) = read_varint(&data[offset..])?;
         offset += varint_size;
-        let len = len as usize;
-        if offset + len > data.len() {
-            return Err(generic_error!("Dictionary string extends past end of buffer"));
-        }
-        let s = simdutf8::basic::from_utf8(&data[offset..offset + len])
+        let end = u64_to_usize(len, "dictionary string length")?
+            .checked_add(offset)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| generic_error!("Dictionary string extends past end of buffer"))?;
+        let s = simdutf8::basic::from_utf8(&data[offset..end])
             .map_err(|e| generic_error!("Invalid UTF-8 in dictionary string: {}", e))?;
         strings.push(s.to_string());
-        offset += len;
+        offset = end;
     }
     Ok(strings)
 }
@@ -697,16 +702,17 @@ fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
 ///   pass can resolve the reference against the tagsets parsed so far.
 fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<String>>, GenericError> {
     let mut tagsets: Vec<Vec<String>> = Vec::new();
-    let mut offset = 0;
+    let mut offset = 0_usize;
     while offset < dict_tagsets.len() {
         let count = i64_to_usize(dict_tagsets[offset], "tagset length")?;
         offset += 1;
-        if offset + count > dict_tagsets.len() {
-            return Err(generic_error!("Tagset extends past end of dictTagsets array"));
-        }
+        let end = offset
+            .checked_add(count)
+            .filter(|end| *end <= dict_tagsets.len())
+            .ok_or_else(|| generic_error!("Tagset extends past end of dictTagsets array"))?;
 
         // Delta-decode the entries within this tagset.
-        let mut entries: Vec<i64> = dict_tagsets[offset..offset + count].to_vec();
+        let mut entries: Vec<i64> = dict_tagsets[offset..end].to_vec();
         delta_decode(&mut entries);
 
         let mut tags = Vec::with_capacity(count);
@@ -714,7 +720,7 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
             match entry.cmp(&0) {
                 std::cmp::Ordering::Less => {
                     // Prefix reference to a previously interned tagset (1-based ID = -entry).
-                    let prefix_id = i64_to_usize(-entry, "tagset prefix reference")?;
+                    let prefix_id = u64_to_usize(entry.unsigned_abs(), "tagset prefix reference")?;
                     let prefix_idx = prefix_id
                         .checked_sub(1)
                         .ok_or_else(|| generic_error!("Invalid zero tagset prefix reference"))?;
@@ -738,7 +744,7 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
             }
         }
         tagsets.push(tags);
-        offset += count;
+        offset = end;
     }
     Ok(tagsets)
 }
@@ -758,16 +764,17 @@ fn parse_resources(
     dict_resource_len: &[i64], dict_resource_type: &[i64], dict_resource_name: &[i64], resource_strings: &[String],
 ) -> Result<Vec<Vec<(String, String)>>, GenericError> {
     let mut resources = Vec::with_capacity(dict_resource_len.len());
-    let mut offset = 0;
+    let mut offset = 0_usize;
 
     for &count in dict_resource_len {
         let count = usize::try_from(count).map_err(|_| generic_error!("Invalid negative resource count: {}", count))?;
-        if offset + count > dict_resource_type.len() || offset + count > dict_resource_name.len() {
-            return Err(generic_error!("Resource set extends past resource dictionary arrays"));
-        }
+        let end = offset
+            .checked_add(count)
+            .filter(|end| *end <= dict_resource_type.len() && *end <= dict_resource_name.len())
+            .ok_or_else(|| generic_error!("Resource set extends past resource dictionary arrays"))?;
 
-        let mut type_indices = dict_resource_type[offset..offset + count].to_vec();
-        let mut name_indices = dict_resource_name[offset..offset + count].to_vec();
+        let mut type_indices = dict_resource_type[offset..end].to_vec();
+        let mut name_indices = dict_resource_name[offset..end].to_vec();
         delta_decode(&mut type_indices);
         delta_decode(&mut name_indices);
 
@@ -785,7 +792,7 @@ fn parse_resources(
         }
 
         resources.push(resource_set);
-        offset += count;
+        offset = end;
     }
 
     Ok(resources)
@@ -1349,6 +1356,79 @@ mod tests {
         assert_ne!(
             MetricValue::Gauge { value: base },
             MetricValue::Gauge { value: outside }
+        );
+    }
+
+    /// A valid single-count v3 payload that the malformed cases below each break in one place.
+    fn one_count_v3_data() -> datadog_protos::metrics::v3::MetricData {
+        let mut data = datadog_protos::metrics::v3::MetricData::new();
+        data.dictNameStr = length_prefixed_strings(["my.metric"]);
+        data.types = vec![V3_METRIC_TYPE_COUNT | V3_VALUE_TYPE_SINT64];
+        data.nameRefs = vec![1];
+        data.tagsetRefs = vec![0];
+        data.intervals = vec![0];
+        data.numPoints = vec![1];
+        data.timestamps = vec![1_700_000_000];
+        data.valsSint64 = vec![3];
+        data
+    }
+
+    #[test]
+    fn try_from_v3_refuses_malformed_payloads_without_panicking_or_overallocating() {
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        type Mutation = fn(&mut MetricData);
+        let cases: [(&str, Mutation); 8] = [
+            // A point count far beyond the timestamps present: must not reserve memory for it up front.
+            ("numPoints of 2^44", |data| data.numPoints = vec![1 << 44]),
+            ("numPoints of u64::MAX", |data| data.numPoints = vec![u64::MAX]),
+            // Deltas whose prefix sums overflow i64.
+            ("overflowing timestamp deltas", |data| {
+                data.numPoints = vec![2];
+                data.timestamps = vec![i64::MAX, i64::MAX];
+                data.valsSint64 = vec![1, 2];
+            }),
+            ("overflowing name ref deltas", |data| {
+                data.types = vec![data.types[0]; 2];
+                data.nameRefs = vec![i64::MAX, i64::MAX];
+            }),
+            // A dictionary string whose length runs past the end of the buffer, or overflows when added to it.
+            ("dictionary string length u64::MAX", |data| {
+                data.dictNameStr = vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
+            }),
+            // A tagset backreference to tagset `-i64::MIN`, whose negation overflows.
+            ("tagset reference i64::MIN", |data| {
+                data.dictTagsets = vec![1, i64::MIN];
+                data.tagsetRefs = vec![1];
+            }),
+            // A tagset or resource set longer than the arrays holding it.
+            ("tagset length past the end", |data| {
+                data.dictTagsets = vec![i64::MAX, 1]
+            }),
+            // A sketch with more bins than the address space.
+            ("sketch bin count u64::MAX", |data| {
+                data.types = vec![V3_METRIC_TYPE_SKETCH | V3_VALUE_TYPE_SINT64];
+                data.valsSint64 = vec![3, 1, 1, 1];
+                data.sketchNumBins = vec![u64::MAX];
+                data.sketchBinKeys = vec![1];
+                data.sketchBinCnts = vec![1];
+            }),
+        ];
+        for (name, mutate) in cases {
+            let mut data = one_count_v3_data();
+            mutate(&mut data);
+            let mut payload = Payload::new();
+            payload.metricData = Some(data).into();
+            assert!(Metric::try_from_v3(payload).is_err(), "{}: decoded", name);
+        }
+
+        // The unbroken payload decodes, so each case above fails for the reason it names.
+        let mut payload = Payload::new();
+        payload.metricData = Some(one_count_v3_data()).into();
+        let metrics = Metric::try_from_v3(payload).expect("the base payload decodes");
+        assert_eq!(
+            metrics[0].values,
+            vec![(1_700_000_000, MetricValue::Count { value: 3.0 })]
         );
     }
 }

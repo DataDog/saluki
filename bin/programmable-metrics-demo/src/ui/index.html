@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Programmable metrics demo</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Programmable metrics</h1>
+      <span class="brand-sub">ADP live policy demo</span>
+    </div>
+    <div class="badges" aria-live="polite">
+      <span class="badge" id="badge-adp" title="ADP process">ADP</span>
+      <span class="badge" id="badge-surface" title="Programmable-metrics control surface">Control surface</span>
+      <span class="badge badge-program" id="badge-program" title="What ADP runs">Program</span>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="status" hidden></div>
+
+  <main class="layout">
+    <section class="pane editor-pane" aria-labelledby="editor-title">
+      <div class="pane-head">
+        <h2 id="editor-title">Program</h2>
+        <div class="actions">
+          <button type="button" id="btn-load">Load default program</button>
+          <button type="button" id="btn-compile" class="primary" title="Ctrl+Enter or Cmd+Enter">Compile</button>
+        </div>
+      </div>
+
+      <div class="editor" id="editor">
+        <div class="gutter" id="gutter" aria-hidden="true"></div>
+        <div class="code">
+          <div class="highlights" id="highlights" aria-hidden="true"></div>
+          <textarea id="source" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"
+                    aria-label="Program source"></textarea>
+        </div>
+      </div>
+
+      <div class="compile-status" id="compile-status">Load the default program, edit it, then compile.</div>
+      <ul class="diagnostics" id="diagnostics"></ul>
+
+      <div class="publish-row">
+        <button type="button" id="btn-publish" class="approve" disabled>Publish</button>
+        <button type="button" id="btn-format" class="quiet" hidden
+                title="Replace the text with its canonical form, which has the same hash">Format</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-revoke" class="danger" disabled>Revoke</button>
+      </div>
+      <div class="publish-outcome" id="publish-outcome" aria-live="polite" hidden></div>
+
+      <div class="confirm" id="confirm" hidden>
+        <p>Approve and publish this artifact as revision <strong id="confirm-revision">?</strong>?</p>
+        <p class="hash-line"><code id="confirm-hash"></code></p>
+        <ul class="confirm-warnings" id="confirm-warnings" hidden></ul>
+        <div class="confirm-actions">
+          <button type="button" id="btn-confirm" class="approve">Approve and publish</button>
+          <button type="button" id="btn-cancel" class="quiet">Cancel</button>
+        </div>
+      </div>
+
+      <details class="bindings" id="bindings" hidden>
+        <summary>Configuration bindings <span class="hint" id="bindings-count"></span></summary>
+        <table>
+          <thead><tr><th>Binding</th><th>Current value</th></tr></thead>
+          <tbody id="bindings-rows"></tbody>
+        </table>
+      </details>
+    </section>
+
+    <section class="pane viewer-pane" aria-label="Telemetry viewer">
+      <div class="section-head">
+        <h2>What each endpoint receives</h2>
+        <span class="hint">families seen in the last 5 s · events per second (points for gauges), last 30 s</span>
+      </div>
+      <div class="intakes" id="intakes"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h3>Acknowledgments</h3>
+            <span class="hint" id="ack-summary"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="acks">
+              <thead>
+                <tr><th>When</th><th>Rev</th><th>Hash</th><th>State</th><th>Gen</th></tr>
+              </thead>
+              <tbody id="acks"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Traffic</h3>
+            <span class="hint" id="traffic-target"></span>
+          </div>
+          <div class="traffic-controls">
+            <button type="button" id="btn-traffic">Pause</button>
+            <label class="rate" title="Datagrams per second">
+              <input type="number" id="traffic-rate" min="0.1" max="1000" step="1" value="20"
+                     aria-label="Datagrams per second">
+              <span>/s</span>
+            </label>
+            <button type="button" id="btn-rate" class="quiet">Set</button>
+          </div>
+          <div class="stats" id="traffic-stats"></div>
+          <div class="canary" id="canary"></div>
+        </div>
+      </div>
+
+      <div class="card" id="nodes-card">
+        <div class="card-head">
+          <h3 id="nodes-title">Per-node rates</h3>
+          <span class="hint" id="nodes-hint"></span>
+        </div>
+        <div class="plan-stats" id="plan-stats"></div>
+        <div class="table-wrap">
+          <table class="nodes">
+            <thead id="nodes-head"></thead>
+            <tbody id="nodes"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <footer class="foot" id="foot"></footer>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

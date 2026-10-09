@@ -4793,6 +4793,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "programmable-metrics-demo"
+version = "0.1.0"
+dependencies = [
+ "argh",
+ "axum",
+ "bytes",
+ "datadog-agent-commons",
+ "datadog-protos",
+ "http",
+ "http-body-util",
+ "prometheus-exposition",
+ "protobuf",
+ "rcgen",
+ "rustls",
+ "saluki-common",
+ "saluki-error",
+ "saluki-io",
+ "saluki-metric-plan",
+ "saluki-metric-plan-syntax",
+ "saluki-tls",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "stele",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-subscriber",
+ "zstd",
+]
+
+[[package]]
 name = "prometheus-exposition"
 version = "0.1.0"
 
@@ -5826,6 +5860,15 @@ dependencies = [
  "snafu",
  "stringtheory",
  "tokio",
+]
+
+[[package]]
+name = "saluki-metric-plan-syntax"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "saluki-metric-plan",
+ "serde_json",
 ]
 
 [[package]]

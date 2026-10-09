@@ -1,0 +1,156 @@
+{
+  "export_version": 1,
+  "scope": "post_enrich",
+  "artifact": {
+    "ir_version": 1,
+    "scope": "post_enrich",
+    "base": {
+      "program_hash": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "outputs": {
+        "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "metrics_routing_encode_0": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "metrics_routing_encode_1": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "mrf_metrics_encode": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    },
+    "nodes": [
+      { "id": "metrics_policy", "op": "tee", "params": { "ports": 4 } },
+      { "id": "metrics_policy_0", "op": "emit", "params": { "output": "dd_metrics_encode" } },
+      {
+        "id": "metrics_routing_filter_0",
+        "op": "split",
+        "params": {
+          "predicate": {
+            "any": [
+              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.b0b0b0b0.names" }, "prefix": false } } },
+              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.b0b0b0b0.prefixes" }, "prefix": true } } }
+            ]
+          }
+        }
+      },
+      { "id": "metrics_routing_filter_0_true", "op": "emit", "params": { "output": "metrics_routing_encode_0" } },
+      { "id": "metrics_routing_filter_0_false", "op": "drop" },
+      {
+        "id": "metrics_routing_filter_1",
+        "op": "split",
+        "params": {
+          "predicate": {
+            "any": [
+              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.c0c0c0c0.names" }, "prefix": false } } },
+              { "intake_name": { "matches": { "values": { "config": "endpoint_routing.group.c0c0c0c0.prefixes" }, "prefix": true } } }
+            ]
+          }
+        }
+      },
+      { "id": "metrics_routing_filter_1_true", "op": "emit", "params": { "output": "metrics_routing_encode_1" } },
+      { "id": "metrics_routing_filter_1_false", "op": "drop" },
+      {
+        "id": "mrf_metrics_gateway",
+        "op": "split",
+        "params": {
+          "predicate": {
+            "all": [
+              { "flag": { "config": "multi_region_failover.enabled" } },
+              { "flag": { "config": "multi_region_failover.metric_mirroring.enabled" } },
+              {
+                "any": [
+                  { "is_empty": { "config": "multi_region_failover.metric_mirroring.allowlist" } },
+                  { "name": { "matches": { "values": { "config": "multi_region_failover.metric_mirroring.allowlist" }, "prefix": false } } }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      { "id": "mrf_metrics_gateway_true", "op": "emit", "params": { "output": "mrf_metrics_encode" } },
+      { "id": "mrf_metrics_gateway_false", "op": "drop" }
+    ],
+    "edges": [
+      { "from": "input.metrics", "to": "metrics_policy.in" },
+      { "from": "metrics_policy.0", "to": "metrics_policy_0.in" },
+      { "from": "metrics_policy.1", "to": "metrics_routing_filter_0.in" },
+      { "from": "metrics_routing_filter_0.true", "to": "metrics_routing_filter_0_true.in" },
+      { "from": "metrics_routing_filter_0.false", "to": "metrics_routing_filter_0_false.in" },
+      { "from": "metrics_policy.2", "to": "metrics_routing_filter_1.in" },
+      { "from": "metrics_routing_filter_1.true", "to": "metrics_routing_filter_1_true.in" },
+      { "from": "metrics_routing_filter_1.false", "to": "metrics_routing_filter_1_false.in" },
+      { "from": "metrics_policy.3", "to": "mrf_metrics_gateway.in" },
+      { "from": "mrf_metrics_gateway.true", "to": "mrf_metrics_gateway_true.in" },
+      { "from": "mrf_metrics_gateway.false", "to": "mrf_metrics_gateway_false.in" }
+    ]
+  },
+  "ir_versions": { "current": 1, "accepted": [1, 1] },
+  "catalog": {
+    "outputs": {
+      "dd_metrics_encode": {
+        "accepts": { "kinds": "all", "timestamps": "mixed" },
+        "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "recipients": ["dd_out/primary/0"]
+      },
+      "metrics_routing_encode_0": {
+        "accepts": { "kinds": "all", "timestamps": "mixed" },
+        "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "recipients": ["dd_out/additional_0/0"]
+      },
+      "metrics_routing_encode_1": {
+        "accepts": { "kinds": "all", "timestamps": "mixed" },
+        "fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "recipients": ["dd_out/additional_1/0"]
+      },
+      "mrf_metrics_encode": {
+        "accepts": { "kinds": "all", "timestamps": "mixed" },
+        "fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "recipients": ["mrf_dd_out/primary/0"],
+        "label": "Multi-region failover"
+      }
+    },
+    "bindings": {
+      "endpoint_routing.group.b0b0b0b0.names": {
+        "type": { "type": "list", "element": { "type": "string" } },
+        "liveness": "startup",
+        "value": []
+      },
+      "endpoint_routing.group.b0b0b0b0.prefixes": {
+        "type": { "type": "list", "element": { "type": "string" } },
+        "liveness": "startup",
+        "value": ["demo.checkout."]
+      },
+      "endpoint_routing.group.c0c0c0c0.names": {
+        "type": { "type": "list", "element": { "type": "string" } },
+        "liveness": "startup",
+        "value": []
+      },
+      "endpoint_routing.group.c0c0c0c0.prefixes": {
+        "type": { "type": "list", "element": { "type": "string" } },
+        "liveness": "startup",
+        "value": ["demo.catalog."]
+      },
+      "multi_region_failover.enabled": {
+        "type": { "type": "bool" },
+        "liveness": "startup",
+        "value": true
+      },
+      "multi_region_failover.metric_mirroring.enabled": {
+        "type": { "type": "bool" },
+        "liveness": "live",
+        "value": false
+      },
+      "multi_region_failover.metric_mirroring.allowlist": {
+        "type": { "type": "list", "element": { "type": "string" } },
+        "liveness": "live",
+        "value": []
+      }
+    },
+    "scopes": {
+      "post_enrich": {
+        "metrics": { "kinds": "all", "timestamps": "mixed" }
+      }
+    },
+    "future_member": "ignored"
+  },
+  "labels": {
+    "dd_metrics_encode": "Primary",
+    "metrics_routing_encode_0": "Team B",
+    "metrics_routing_encode_1": "Team C"
+  }
+}

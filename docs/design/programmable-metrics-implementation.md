@@ -31,8 +31,8 @@ Remote Config, stage 9 partitioning, stage 10 extensions. The extension-point **
 stage 1, and only native defaults are accepted.
 
 Easily changed layers get first-pass implementations behind narrow interfaces: the surface syntax
-(`parse(&str) -> Result<Parsed, Diagnostics>`, `print(&PolicyArtifact) -> String`) and the demo UI (an HTTP/JSON API to
-the demo server). Neither is linked into ADP.
+(`parse(&str) -> Result<Parsed, Diagnostics>`, `print(&PolicyArtifact, &PrintOptions) -> String`) and the demo UI (an
+HTTP/JSON API to the demo server). Neither is linked into ADP.
 
 ## Code layout
 
@@ -75,6 +75,7 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
   testing/  `test-util`: metric strategies, fixtures, harnesses                               [1+]
 
 lib/saluki-metric-plan-syntax/        surface syntax: parser, printer, spans                    [demo]
+                                      for tools only: no crate that runs plans may depend on it
 
 bin/agent-data-plane/src/programmable_metrics/   (compiled only for tests until stage 3 runs it)
   host_facts.rs bindings.rs catalog.rs outputs.rs telemetry_profiles.rs    [2, 4]
@@ -1056,24 +1057,55 @@ it, and that a change to a `Startup` input changes nothing.
   values), and `/export?scope=post_enrich`. The export is a versioned bundle: `{artifact, ir_versions, catalog,
   labels}`, where `artifact` carries its base, `catalog` is the `MemoryCatalog` document (outputs, bindings with their
   types, liveness, and current values, and the scope's inputs), and `labels` maps output IDs to display labels. The
-  payload envelope's `artifact_hash` is checked against `ReceivedArtifact::hash` of its `artifact` document.
+  payload envelope's `artifact_hash` is checked against `ReceivedArtifact::hash` of its `artifact` document. The
+  `artifact` lists its nodes and edges in the surface syntax's canonical order (see Demo), the order lowering writes
+  plans in, so printing an export and parsing the text gives back the same document and hash; stage 5 tests
+  `parse(print(export)) == export` for every scope in the lowering test matrix (the syntax crate may be a
+  dev-dependency there, never a runtime one).
 
 ## Demo
 
-- **`saluki-metric-plan-syntax`**: a generic form driven by the registry's parameter schemas, `node <id> =
-  <op>(<param>: <value>, ...) { <port> -> <target> }`, with routing sugar (`split(<predicate>)`, inline `emit <output>`
-  and `drop`, `->` chains). Explicit node IDs keep diffs and kernel reuse meaningful; inline terminals use
-  `derived_terminal_id`. `parse` returns spans per node and parameter path, so validator errors land in the editor.
-  Bounded tokens and nesting; `property_test_*` for robustness and `parse(print(a)) == a` over every export in the
-  lowering test matrix.
+- **`saluki-metric-plan-syntax`** (built; depends only on `saluki-metric-plan` and `serde_json`, the type of IR
+  parameter values; nothing in the runtime depends on it): `parse(&str) -> Result<Parsed { artifact, spans },
+  Diagnostics>` and `print(&PolicyArtifact, &PrintOptions) -> String`. One generic form for every operator, `node <id>
+  = <op>(<param>: <value>, ...) { <port> -> <target> ... }`, with no reserved words: the registry's parameter schemas
+  say only where a predicate is expected, so a new operator or parameter needs no grammar change. Sugar: an operator
+  whose only parameter is a predicate takes it positionally (`split(<predicate>)`); `tee` without parentheses numbers
+  its ports by its edge lines; a node with one output port omits the port (`-> <target>`); targets are `<node>`,
+  `<node>.<port>` (required for a `merge`), or inline `emit <output>` and `drop`, which create nodes named by
+  `derived_terminal_id(parent, port)` (parent `input` for a scope input). Values are strings, numbers, durations kept
+  as written (`10s`), `true`, `false`, `null`, lists, records, `config("<binding>")`, and `blob("<hash>")`; predicates
+  combine the leaves of the predicate table with `and`, `or`, `not`, parentheses, `all(...)`, and `any(...)`, and a
+  predicate value the leaf syntax cannot write exactly (a blob reference inside a leaf, kinds out of declared order) is
+  written raw as a record. Optional `ir_version <n>` and `blobs { "<hash>" = <value> }`. Parsing and printing share
+  one **canonical order** of nodes and edges, a depth-first traversal from the scope inputs in which a node follows the
+  edge that completes its inputs and a node's edges follow its operator's port order; it is the order lowering writes
+  plans in, so `parse(print(a)) == a` for exports, `print(parse(s))` is a fixed point, and an artifact's hash depends
+  only on its graph, never on how its text is arranged. `SpanMap` maps node IDs, parameter paths (the `ParamError` path
+  form, falling back to the enclosing value), and edge indices to source spans. Bounds: sources up to eight times the
+  artifact size limit, 262,144 tokens (one per byte of the limit; printed text has fewer tokens than its JSON has
+  bytes), nesting 128 deep, the built artifact's JSON within the artifact size limit, and time proportional to the
+  source apart from sorting each node's edges. Printing writes every value on one line when breaking lines would make
+  the text longer than that (deeply indented lists of short values), so the text of every artifact within the size
+  limit parses back. Reference problems (undefined node, unknown port, missing port on a multi-port node, an inline
+  terminal whose derived ID is taken) are all reported, a syntax error alone, after a note naming the operator when it
+  is in the arguments of an operator that is not registered. `->` chains are not implemented.
 
   ```text
-  policy post_enrich base "sha256:…" {
+  policy post_enrich {
+    base "sha256:…"
+    outputs {
+      dd_metrics_encode = "sha256:…",
+      metrics_routing_encode_0 = "sha256:…",
+    }
+
     input.metrics -> metrics_policy
+
     node metrics_policy = tee {
       -> emit dd_metrics_encode
       -> metrics_routing_filter_0
     }
+
     node metrics_routing_filter_0 = split(intake_name prefix_in ["demo.checkout."]) {
       true  -> emit metrics_routing_encode_0
       false -> drop
@@ -1081,27 +1113,91 @@ it, and that a change to a `Startup` input changes nothing.
   }
   ```
 
-- **`programmable-metrics-demo`** (axum): the stub channel side (durable on disk; next revision is
-  `max(local, ADP's high-water) + 1`), syntax → IR, compose/validate/diff/preview with the plan crate against ADP's export
-  bundle, approval by hash, recording intakes on several loopback ports (decoding with `stele` and `datadog-protos`,
-  `tower-http` decompression, recording API key, path, and receive time; `/api/v1/validate` → 200, other paths → 202),
-  DogStatsD UDP traffic to `127.0.0.1`, scraping ADP's `/metrics`, and mTLS to the privileged API with
-  `datadog_agent_commons::ipc::tls::build_ipc_client_ipc_tls_config`.
-- **UI**: editor with diagnostics, diff, approve; acknowledgment timeline; plan graph with derived per-node rates and
-  policy loss; one column per intake listing metric families seen in the last 5 s with points-per-second sparklines,
-  fading after 3 s of absence; a canary conservation tile.
-- **Launcher** `make demo-programmable-metrics`: per-run directory, generated IPC cert, ADP config with
-  `api_key: demo-primary`, `hostname: adp-demo`, `dd_url: http://127.0.0.1:17101`, `additional_endpoints`
-  `{17102: [demo-team-b], 17103: [demo-team-c]}`, `metric_prefix_allowlist` `{17102: [demo.checkout.], 17103:
-  [demo.catalog.]}`, MRF `{enabled, api_key: demo-mrf, dd_url: http://127.0.0.1:17104}`, stub URL
-  `http://127.0.0.1:17100`, API ports 17110/17111, `dogstatsd_port: 17125`, a run-local log file,
-  `aggregate_flush_interval: 1s`, `flush_timeout_secs: 1`. Waits for `/ready`, tears down on exit.
-- **Scenarios**: S0 baseline export; S1 drop `demo.debug.*`; S2 widen the checkout route with `tag(team) eq
-  "platform"`; S3 exclusive tag routing; S4 mirroring via `const(true)` and a literal allowlist; S5 guardrails (duplicate
-  branch, undeclared output, stateful node) shown in the UI and once sent past the UI so ADP's rejection appears; S6
-  revoke with an empty snapshot; S7 optional restart and redelivery.
-- **`make demo-programmable-metrics-check`** runs S0–S6 headless and asserts intake contents and canary conservation. It
-  runs at every stage gate from the demo through stage 6.
+- **`programmable-metrics-demo`** (built; `bin/programmable-metrics-demo`, one Tokio process with axum, nothing
+  depends on it): `programmable-metrics-demo run --adp-bin <path> [--run-dir <dir>] [--no-launch]`, every port a flag.
+  Each component is a module with a small interface. The **stub** (`stub/`) serves `POST /v1/artifacts/poll`: a complete
+  `policy` snapshot of at most one config (`demo`, version = revision), whose `payload` is the envelope as a JSON
+  string with its SHA-256; the store is durable in the run directory (`store.json`, written to a temporary file,
+  flushed, and renamed over the old one, so a failed write changes nothing; `history.jsonl`, a best-effort log whose
+  highest revision also seeds the counter), the next revision is `max(local, ADP's high-water) + 1` (high-water from
+  the latest poll and the privileged status route, for the preview in the UI as for the publish), revoke empties the
+  snapshot (revoking an empty one changes nothing), and every poll is recorded, consecutive identical polls folding into
+  one acknowledgment timeline entry. Only `protocol_version` decides whether a poll is answered: every other field is
+  read on its own, and one ADP gets wrong is noted in the timeline rather than refusing the poll, since a refusal keeps
+  ADP on its current feed; unreadable bodies are recorded too. `stub/protocol.rs` documents the messages; ADP's
+  `channel_stub.rs` is the other side. The **control surface client** (`adp_api.rs`, `control.rs`) uses
+  `build_ipc_client_ipc_tls_config` over the `saluki-io` HTTP client, polls `/programmable-metrics/status` every
+  second (read field by field like a poll, and kept with its receive time, so the UI shows a status that stopped
+  arriving as last known), and fetches the export when the default program hash the status reports changes or every
+  30 s; a `404`, which is what ADP answers until stage 5, is reported as ADP not exposing the programmable-metrics
+  control surface yet. The export reader ignores catalog members the plan crate's `MemoryCatalog` does not know, and
+  takes output labels from `labels` or an output's `label`. **Compile** parses with the syntax crate, reads the
+  document back with `ReceivedArtifact` (the hash approval binds to), and, with an export in hand, runs structural
+  checks against it (`checks.rs`): scope, accepted IR versions, stale base, output fingerprints, emits to undeclared or
+  unlisted outputs (the message gives the line to add), operator parameters through `OperatorRegistry::configure`,
+  stateful operators (rejected through stage 5), bindings, and scope inputs, each placed in the source through
+  `SpanMap`. Findings never block publishing, so a guardrail can be sent past the UI to show ADP's rejection.
+  Composition, validation of the composed plan, and the plan diff preview are the stage 5 integration point marked in
+  `checks.rs`. The editor shows programs printed 64 columns wide without output fingerprints; a source that lists none
+  gets the export's fingerprint of each output it emits to when it is compiled. **Publish** takes the hash the user
+  approved and refuses anything but the last compiled artifact's, and uses the approval up, so a repeated or concurrent
+  approval publishes one revision; `approved_against` is ADP's active plan hash at compile time. **Recording intakes**
+  (one listener per recipient) decode v1, v2, sketch, and v3 payloads with `stele` after `tower-http` decompression
+  (on a blocking thread, so a decoder panic is a refused request), record name, tags, kind, points, API key (header,
+  or the `api_key` query parameter of the forwarder's validation), path, and receive time in bounded rings, and
+  summarize metric families per second as events (counted values, sketch samples; points for gauges), in bounded
+  maps; `GET /api/v1/validate` → 200, anything else → 202, and every refusal (a body that cannot be decoded, an
+  unsupported encoding, a body too large) is recorded with its reason. The **traffic generator** sends one datagram
+  per tick with the whole metric set and counts the canaries it sends per second. The **canary check** compares those
+  with the canaries the primary intake received by point timestamp over a recent 10-second range that every flush has
+  had time to deliver, and waits while ADP is not up for the whole range, so it follows the present rather than
+  accumulating since the demo started.
+  The **telemetry scraper** reads `/metrics` every second, turns counters into rates averaged over 5 scrapes (`plan_*`,
+  `component_events_*`, `component_errors_total`), and drops series 10 s after they were last seen, also while ADP
+  does not answer.
+- **UI** (built; one page, embedded with `include_str!`, no build step or CDN): a sticky header with the badges (ADP,
+  control surface, active program, greyed as last known when ADP's status stops arriving), and on wide screens two
+  panes of equal width that scroll on their own, so the editor and the intake columns stay on screen together. The
+  editor (line numbers, diagnostics listed and highlighted by line, a click selects the span; Load default program,
+  Compile with Ctrl+Enter, Format, Publish showing the hash and asking for approval with the revision it will get and
+  warnings such as ADP never having polled, Revoke while something is published), the published revision's outcome
+  from ADP's acknowledgments under the Publish button, the compile status worded as what ran ("structural checks
+  passed; ADP validates the composed plan"), and the configuration bindings with their current values. Drafts are
+  kept per default program hash and only for what the user types; the editor loads the default program as soon as ADP
+  serves its export. The viewer: one column per intake, headed by the outputs that feed it and by any unexpected API
+  key or refused request, listing metric families seen in the last 5 s, fading after 3 s, with sparklines of events
+  per second over 30 s (numbered names fold into one family such as `demo.debug.*`; payloads arrive per flush, so
+  sparklines average over 4 s, and rates over the seconds a family has been arriving, from 2 to 12), the
+  acknowledgment timeline, per-node rates from `plan_node_events_total` (native per-component rates until the
+  plan-driven topology, labelled as delivered per consumer), greyed while ADP does not answer, plan telemetry, traffic
+  controls, and the canary check. Light and dark themes follow `prefers-color-scheme`; nothing scrolls sideways at
+  1280 pixels. Not built yet: the plan diff and the plan graph, which need stage 5's routes.
+- **Launcher** `make demo-programmable-metrics` (built): a run directory (default
+  `target/programmable-metrics-demo/run-<unix seconds>`; reuse one with `--run-dir` to keep the published artifact,
+  which is S7), an IPC certificate generated with `rcgen` (written readable only by its owner and renamed into place,
+  and generated anew if it does not parse), and an ADP config with `api_key: demo-primary`, `hostname: adp-demo`,
+  `dd_url: http://127.0.0.1:17101`, `additional_endpoints` `{17102: [demo-team-b], 17103: [demo-team-c]}`,
+  `metric_prefix_allowlist` `{17102: [demo.checkout.], 17103: [demo.catalog.]}`, MRF `{enabled, api_key: demo-mrf,
+  dd_url: http://127.0.0.1:17104}` (mirroring off), stub URL `http://127.0.0.1:17100` with `poll_interval: 1s` (keys
+  ADP reads from stage 5), API ports 17110/17111, `dogstatsd_port: 17125` with both Unix sockets disabled, a run-local
+  log file, `aggregate_flush_interval: 1s`, `flush_timeout_secs: 1`, and two keys not in the original list, both so
+  that the intake columns follow what is sent within seconds: `aggregate_window_duration_seconds: 1` (with the native
+  10-second window each context reaches the intakes once per 10 s, too slow for 5-second columns) and
+  `dogstatsd_expiry_seconds: 0` (natively an idle counter keeps sending zeros for 300 s, so a paused or rerouted
+  counter would stay listed for five minutes). Before starting ADP the launcher checks that ADP's API and DogStatsD
+  ports are free, naming the one that is not (often an ADP left over from an earlier run). ADP runs in its own
+  process group with inherited `DD_*` variables removed, so the file is the whole configuration; the launcher waits
+  for `/ready`, and Ctrl-C, `SIGTERM`, or `SIGHUP` at any point, the ready wait included, sends `SIGTERM` to the group
+  and `SIGKILL` after 10 s or on a second Ctrl-C. A `SIGKILL` or abort of the demo itself cannot stop ADP. The UI is on
+  `http://127.0.0.1:17080`. `--no-launch` serves the demo for an ADP started separately, with the command line to
+  start it.
+- **Scenarios**: S0 baseline export; S1 drop `demo.debug.*`; S2 widen the checkout route with `or tag("team") ==
+  "platform"` after its prefix match; S3 exclusive tag routing; S4 mirroring via `const(true)` and a literal allowlist;
+  S5 guardrails (duplicate branch, undeclared output, stateful node) shown in the UI and once sent past the UI so ADP's
+  rejection appears; S6 revoke with an empty snapshot; S7 optional restart and redelivery.
+- **`make demo-programmable-metrics-check`** (not built yet: it needs stage 5) runs S0–S6 headless and asserts intake
+  contents and canary conservation. It runs at every stage gate from the demo through stage 6. The demo server's API
+  (`/api/compile`, `/api/publish`, `/api/revoke`, `/api/state`, `/api/intakes/{name}/recent`) is what it drives.
 
 ## Stage plan
 
