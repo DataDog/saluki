@@ -26,7 +26,7 @@ use tracing::{error, info, warn};
 
 mod cli;
 use self::cli::*;
-use crate::internal::logging::LoggingConfigurationTranslator;
+use crate::internal::logging::{adp_logging_translator, logging_settings};
 
 mod components;
 mod config;
@@ -92,7 +92,8 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
-    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.local().control.logging)
+    let mut bootstrap_logging_config = adp_logging_translator()
+        .translate(&logging_settings(&local_config.local().control.logging))
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
     if matches!(&cli.action, Action::Config(command) if command.json) {
         bootstrap_logging_config.log_to_console = false;

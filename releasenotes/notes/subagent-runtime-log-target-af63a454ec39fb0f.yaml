@@ -1,7 +1,8 @@
 ---
 other:
   - |
-    Logs from registration with the Datadog Agent, configuration streaming, and the status, flare, and
-    telemetry services now use the ``datadog_agent_runtime`` log target instead of ``agent_data_plane``. A
-    plain ``log_level``, such as ``debug``, covers the new target. If you use targeted directives such as
-    ``agent_data_plane=debug``, add ``datadog_agent_runtime=debug`` to keep seeing these logs.
+    Logs from registration with the Datadog Agent, configuration streaming, runtime log level changes, and
+    the status, flare, and telemetry services now use the ``datadog_agent_runtime`` log target instead of
+    ``agent_data_plane``. A plain ``log_level``, such as ``debug``, covers the new target. If you use
+    targeted directives such as ``agent_data_plane=debug``, add ``datadog_agent_runtime=debug`` to keep
+    seeing these logs.

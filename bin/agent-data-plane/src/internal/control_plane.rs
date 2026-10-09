@@ -4,7 +4,10 @@ use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
 use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
-use datadog_agent_runtime::remote_agent::{RemoteAgentBootstrap, StatusSectionProvider};
+use datadog_agent_runtime::{
+    logging::DynamicLogLevelWorker,
+    remote_agent::{RemoteAgentBootstrap, StatusSectionProvider},
+};
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker, api::APIBuilder, config::ConfigWorker, logging::LoggingOverrideController,
@@ -19,7 +22,9 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        config_runtime::ConfigRuntimeWorker, logging::DynamicLogLevelWorker, telemetry::InternalTelemetryAPIWorker,
+        config_runtime::ConfigRuntimeWorker,
+        logging::{adp_logging_translator, LiveLogLevel},
+        telemetry::InternalTelemetryAPIWorker,
         DogStatsDStatusSection, TopologyControlSurfaces,
     },
     state::metrics::get_datadog_agent_remappings,
@@ -51,7 +56,8 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
     supervisor.add_worker(InternalTelemetryAPIWorker::new());
     supervisor.add_worker(DynamicLogLevelWorker::new(
-        config_system.live(|config| &config.control.logging.level),
+        LiveLogLevel(config_system.live(|config| &config.control.logging.level)),
+        adp_logging_translator(),
         logging_controller,
     ));
     supervisor.add_worker(ConfigWorker::new(config_system.raw_snapshot()));
