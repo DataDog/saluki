@@ -34,7 +34,7 @@ pub use self::snapshot::{AdmissionPointSnapshot, BlueprintSnapshot, ComponentSna
 pub(super) mod test_util;
 
 // SAFETY: These are obviously non-zero.
-const DEFAULT_EVENTS_BUFFER_CAPACITY: usize = 1024;
+pub(crate) const DEFAULT_EVENTS_BUFFER_CAPACITY: usize = 1024;
 const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(128).unwrap();
 
 // Topology-wide defaults.
@@ -57,6 +57,11 @@ pub type PayloadsDispatcher = Dispatcher<PayloadsBuffer>;
 /// Default consumer for payload-based components.
 pub type PayloadsConsumer = Consumer<PayloadsBuffer>;
 
-pub(crate) fn topology_identifier(name: &str) -> SubsystemIdentifier {
+/// Returns the identifier of the topology named `name`, which the identities of its components start with.
+///
+/// A component of the topology built by `TopologyBlueprint::new(name, ..)` has the context
+/// `ComponentContext::new(&topology_identifier(name), id, type)`, so code that reports telemetry or accounts memory on
+/// behalf of one of its components, outside the component's own build context, can name it as the topology does.
+pub fn topology_identifier(name: &str) -> SubsystemIdentifier {
     SubsystemIdentifier::from_segments(["topology", name])
 }

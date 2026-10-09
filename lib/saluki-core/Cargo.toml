@@ -67,5 +67,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["ansi", "fmt"] }
 
 [[bench]]
+name = "region_host"
+harness = false
+
+[[bench]]
 name = "tagset"
 harness = false

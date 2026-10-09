@@ -36,10 +36,12 @@ impl TagProjectionTelemetry {
     }
 
     /// Registers only the telemetry a [`TagProjection`][super::TagProjection] kernel records over its life, for the
-    /// component `component`: everything but the update count.
+    /// component `component`: everything but the rule count and the update count.
     ///
-    /// A kernel's rules never change: a change of rules builds a new kernel, so whatever installs it counts the update
-    /// instead. [`increment_updates`][Self::increment_updates] records nothing on this telemetry.
+    /// A kernel's rules never change: a change of rules builds a new kernel, so whatever installs it records the rule
+    /// count and counts the update instead, once the kernel's rules are in effect rather than when it is built.
+    /// [`set_size`][Self::set_size] and [`increment_updates`][Self::increment_updates] record nothing on this
+    /// telemetry.
     pub fn for_kernel(component: &ComponentContext) -> Self {
         let builder = MetricsBuilder::from_component_context(component);
         Self {
@@ -48,7 +50,7 @@ impl TagProjectionTelemetry {
             noop_hits: builder.register_counter("tag_filterlist_noop_hits_total"),
             metrics_modified: builder.register_counter("tag_filterlist_metrics_modified_total"),
             tags_filtered: builder.register_counter("tag_filterlist_tags_filtered_total"),
-            size: builder.register_gauge("tag_filterlist_size"),
+            size: Gauge::noop(),
             updates: Counter::noop(),
         }
     }

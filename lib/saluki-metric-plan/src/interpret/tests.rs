@@ -18,7 +18,7 @@ use crate::{
     ir::RecipientId,
     model::{Kind, PortType},
     predicate::Predicate,
-    testing::{arb_metric, arb_predicate},
+    testing::{arb_metric, arb_predicate, predicate_json},
     validate::{CatalogOutput, MemoryCatalog},
 };
 
@@ -1616,32 +1616,6 @@ impl Builder {
             }
         }
     }
-}
-
-/// Replaces every configuration binding in a JSON value with its resolved value.
-///
-/// Generated predicates bind one test binding to different values, which a plan could not do consistently; the
-/// interpreter resolves a binding exactly as it uses a literal, so literals keep their semantics.
-fn literal_operands(value: &mut Value) {
-    match value {
-        Value::Object(members) => {
-            if members.contains_key("config") {
-                if let Some(resolved) = members.get("resolved").cloned() {
-                    *value = resolved;
-                    return;
-                }
-            }
-            members.values_mut().for_each(literal_operands);
-        }
-        Value::Array(values) => values.iter_mut().for_each(literal_operands),
-        _ => {}
-    }
-}
-
-fn predicate_json(predicate: &Predicate) -> Value {
-    let mut value = serde_json::to_value(predicate).unwrap();
-    literal_operands(&mut value);
-    value
 }
 
 /// Builds a routing plan of the given shape, fed by two sources that together admit every kind: DogStatsD, with client

@@ -1,0 +1,66 @@
+upgrade:
+  - |
+    Agent Data Plane now processes metrics through a plan-driven metrics path. The DogStatsD mapper,
+    namespace prefix, listener filterlist, no-aggregation split, and tag filterlist run together in one
+    ``dsd_pre_aggregation`` component, and the post-aggregation filter runs with host enrichment in
+    ``metrics_enrich``. When their work per metric is large enough that running them one after another
+    is faster, for example with mapper profiles, a namespace prefix, or host tags, some of them run in
+    the further components ``dsd_prefix_filter_region``, ``dsd_no_agg_split_region``, and
+    ``dsd_post_agg_filter_region``. The metrics these components report about their work keep their
+    names and ``component_id`` tags, including those forwarded to the Datadog Agent, such as
+    ``dogstatsd_listener_filtered_points_total``, ``metric_filterlist_size``,
+    ``tag_filterlist_tags_filtered_total``, and ``aggregate_passthrough_metrics_total``.
+  - |
+    The metrics Agent Data Plane reports about ``dsd_enrich``, ``dsd_prefix_filter``,
+    ``dsd_no_agg_split``, ``dsd_tag_filterlist``, and ``dsd_post_agg_filter`` as components are no
+    longer reported, since they no longer run as separate components:
+    ``component_events_received_total``, ``component_events_sent_total``,
+    ``component_events_discarded_total``, ``component_events_received_size``,
+    ``component_send_latency_seconds``, ``health_component_ready``, ``health_component_live``,
+    ``health_component_liveness_latency_seconds``, ``runtime_task_poll_count``, and
+    ``runtime_task_poll_duration_seconds``. The components that now run their work report them instead.
+    The ``metrics_enrich`` component reports ``component_events_sent_total``,
+    ``component_events_discarded_total``, and ``component_send_latency_seconds`` once per destination,
+    with the destination's name as the ``output`` tag instead of ``_default``, and its
+    ``component_events_received_total`` now also counts the metrics the post-aggregation filter drops,
+    unless the post-aggregation filter runs in ``dsd_post_agg_filter_region``.
+  - |
+    The memory and CPU time of the components that now run together are reported under the component
+    that runs them: ``/memory/status`` and the ``group_*`` metrics report, for example, the tag
+    filterlist as ``topology.primary.transforms.dsd_pre_aggregation.dsd_tag_filterlist`` instead of
+    ``topology.primary.transforms.dsd_tag_filterlist``. The listener filterlist and the post-aggregation
+    filter have no entries of their own any more: their work is reported with the component that runs
+    them.
+  - |
+    There are fewer queues between the DogStatsD source and aggregation (two instead of five with the
+    default configuration) and after aggregation, so during a burst of metrics, or while a large
+    aggregation flush is sent, DogStatsD stops reading its socket, and the socket drops packets, sooner
+    than before.
+  - |
+    Timestamped metrics that the no-aggregation pipeline sends past aggregation are now forwarded with
+    the batch they arrive in, instead of being held until a buffer of them fills or
+    ``aggregate_passthrough_idle_flush_timeout`` passes. They reach the encoders sooner, and they are no
+    longer lost when Agent Data Plane stops within that timeout of receiving them.
+    ``aggregate_passthrough_idle_flush_timeout`` no longer has an effect.
+    ``aggregate_passthrough_flushes_total`` now counts each incoming batch that holds timestamped
+    metrics, and ``aggregate_passthrough_batch_duration_secs`` and the
+    ``component_events_dropped_total`` series of ``dsd_no_agg_split`` tagged ``drop_reason:buffer_full``
+    are no longer reported.
+  - |
+    When ``expected_tags_duration`` is set, host tags are now added to metrics until
+    ``expected_tags_duration`` after the process started, rounded up to a whole second, instead of after
+    the host tags component was created, which happens later during startup. The duration now includes
+    the time Agent Data Plane spends waiting for the Datadog Agent at startup, which can use all of it:
+    if the Datadog Agent takes longer than ``expected_tags_duration`` to answer, host tags are not added
+    at all.
+  - |
+    A live configuration change to the metric filterlist or the tag filterlist is installed as a new
+    generation of the plan: batches already being processed finish under the configuration they were
+    received with, and later batches use the new one. The new ``plan_active_generation``,
+    ``plan_live_generations``, ``plan_installs_total``, ``plan_node_events_total``, and
+    ``plan_loss_total`` metrics report the plan's state and work. Configuring
+    ``aggregate_context_limit`` or ``dogstatsd_mapper_cache_size`` above 2^53 - 1 now fails at startup
+    with an error naming the setting's parameter. Likewise, some values of
+    ``aggregate_window_duration_seconds``, ``aggregate_flush_interval``, or ``dogstatsd_expiry_seconds``
+    above 2^53 - 1 seconds now fail at startup, with an error naming the setting and saying to set it to
+    at most 2^53 - 1 seconds.

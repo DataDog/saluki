@@ -1,4 +1,4 @@
-//! Metric Tag Filterlist transform.
+//! Metric Tag Filterlist: configuration conversion for the tag projection kernel, and the legacy transform.
 //!
 //! Removes or retains specific tags from distribution and count metrics based on per-metric
 //! configuration. Supports whole-tag filtering and value allow-listing.
@@ -8,18 +8,24 @@
 //! `metric_tag_value_allowlist` key.
 //!
 //! Both forms of filtering exist to merge samples that differ only in a filtered tag into a single aggregated
-//! context, so they only apply to metrics that are aggregated. The `dogstatsd_no_agg_split` transform routes
-//! timestamped metrics around this transform, leaving their tags untouched.
+//! context, so they only apply to metrics that are aggregated. The `dogstatsd_no_agg_split` timestamp split routes
+//! timestamped metrics around it, leaving their tags untouched.
 //!
-//! The filtering itself is the tag projection kernel's (`saluki_metric_kernels::tag_projection`); this transform
-//! converts its configuration into the kernel's rules and replaces them when the whole-tag configuration changes.
+//! The filtering itself is the tag projection kernel's (`saluki_metric_kernels::tag_projection`), which the
+//! plan-driven topology runs in a region. This module converts configuration into the kernel's rules
+//! ([`tag_filter_rules`], [`tag_value_rules`], [`value_rules`]). The legacy transform, `TagFilterlistConfiguration`,
+//! which replaced its rules when the whole-tag configuration changed, is compiled only for tests, as a differential
+//! reference.
 
-use agent_data_plane_config::{
-    domains::dogstatsd::{FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction},
-    Live,
+use agent_data_plane_config::domains::dogstatsd::{
+    FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction,
 };
+#[cfg(test)]
+use agent_data_plane_config::Live;
 use agent_data_plane_config_system::describe_invalid_tag_value_allowlist;
+#[cfg(test)]
 use async_trait::async_trait;
+#[cfg(test)]
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{
@@ -31,15 +37,20 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::{generic_error, GenericError};
+#[cfg(test)]
+use saluki_metric_kernels::tag_projection::{
+    ContextMemo, TagProjection, TagProjectionRules, TagProjectionTelemetry, CONTEXT_CACHE_ENTRY_BYTES,
+    NATIVE_CONTEXT_CACHE_ID,
+};
 use saluki_metric_kernels::{
     params::{TagFilterAction, TagFilterRule, TagValueMismatch, TagValueRule},
-    tag_projection::{
-        ContextMemo, TagProjection, TagProjectionRules, TagProjectionTelemetry, ValueRules, CONTEXT_CACHE_ENTRY_BYTES,
-        NATIVE_CONTEXT_CACHE_ID,
-    },
+    tag_projection::ValueRules,
 };
+#[cfg(test)]
 use saluki_metrics::MetricsBuilder;
+#[cfg(test)]
 use tokio::select;
+#[cfg(test)]
 use tracing::{debug, error};
 
 /// Converts whole-tag filter entries into tag projection rules.
@@ -75,16 +86,29 @@ pub(crate) fn tag_value_rules(entries: &[MetricTagValueAllowlistEntry]) -> Vec<T
         .collect()
 }
 
+/// Compiles tag value allow-list entries into the tag projection kernel's value rules.
+///
+/// # Errors
+///
+/// Returns an error, worded in terms of the `metric_tag_value_allowlist` configuration key, when the rules are
+/// invalid. Configuration loading rejects such rules first, with the same message.
+pub(crate) fn value_rules(entries: &[MetricTagValueAllowlistEntry]) -> Result<ValueRules, GenericError> {
+    ValueRules::new(&tag_value_rules(entries))
+        .map_err(|problem| generic_error!("{}", describe_invalid_tag_value_allowlist(&problem)))
+}
+
+#[cfg(test)]
 fn compile_filters(entries: &[MetricTagFilterEntry], value_rules: &ValueRules) -> TagProjectionRules {
     TagProjectionRules::new(&tag_filter_rules(entries), value_rules.clone())
 }
 
-/// Metric Tag Filterlist transform.
+/// Metric Tag Filterlist transform: the legacy component, a differential reference for tests.
 ///
 /// Removes, retains, or replaces tags on counter and sketch-backed metrics based on per-metric configuration. Gauges
 /// and other metric types pass through unchanged. Whole-tag rules are read from `metric_tag_filterlist` and support
 /// runtime updates via Remote Config. Value rules are read from the static `metric_tag_value_allowlist` key and match
 /// metric names after DogStatsD mapper rewrites and metric namespace prefixing.
+#[cfg(test)]
 pub struct TagFilterlistConfiguration {
     entries: Live<Vec<MetricTagFilterEntry>>,
 
@@ -106,6 +130,7 @@ pub struct TagFilterlistConfiguration {
     context_cache_capacity: usize,
 }
 
+#[cfg(test)]
 impl TagFilterlistConfiguration {
     /// Creates a new `TagFilterlistConfiguration`.
     ///
@@ -116,9 +141,7 @@ impl TagFilterlistConfiguration {
         entries: Live<Vec<MetricTagFilterEntry>>, value_allowlists: &[MetricTagValueAllowlistEntry],
         context_cache_capacity: usize,
     ) -> Result<Self, GenericError> {
-        // Configuration loading rejects these rules first, with the same message.
-        let value_rules = ValueRules::new(&tag_value_rules(value_allowlists))
-            .map_err(|problem| generic_error!("{}", describe_invalid_tag_value_allowlist(&problem)))?;
+        let value_rules = value_rules(value_allowlists)?;
         Ok(Self {
             entries,
             value_rules,
@@ -127,6 +150,7 @@ impl TagFilterlistConfiguration {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl TransformBuilder for TagFilterlistConfiguration {
     fn input_event_type(&self) -> EventType {
@@ -155,6 +179,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
     }
 }
 
+#[cfg(test)]
 impl MemoryBounds for TagFilterlistConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<TagFilterlist>("component struct");
@@ -165,6 +190,7 @@ impl MemoryBounds for TagFilterlistConfiguration {
     }
 }
 
+#[cfg(test)]
 struct TagFilterlist {
     projection: TagProjection,
     entries: Live<Vec<MetricTagFilterEntry>>,
@@ -172,6 +198,7 @@ struct TagFilterlist {
     context_cache_capacity: usize,
 }
 
+#[cfg(test)]
 #[async_trait]
 impl Transform for TagFilterlist {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {

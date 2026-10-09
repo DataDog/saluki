@@ -14,8 +14,8 @@ use saluki_core::{
 use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
 use super::{
-    has_timestamped_metrics, reference, split_metric, split_timestamped, to_passthrough, TimestampSplit,
-    TimestampSplitTelemetry,
+    has_timestamped_metrics, prepare_passthrough, reference, split_metric, split_timestamped, to_passthrough,
+    TimestampSplit, TimestampSplitTelemetry,
 };
 use crate::{
     test_support::{buffer_of, consume, describe, metrics_of},
@@ -108,6 +108,59 @@ fn preaggregated_counters_become_rates_over_the_window() {
         ))
     );
     assert_eq!(default, Some(Metric::counter("metric1", 2.0)));
+}
+
+#[test]
+fn preparing_in_place_matches_preparing_by_value() {
+    let metrics = [
+        Metric::counter("metric1", (123456, 42.0)),
+        Metric::rate("metric1", (123456, 42.0), Duration::from_secs(60)),
+        Metric::gauge("metric1", (123456, 42.0)),
+    ];
+    for metric in metrics {
+        let mut prepared = metric.clone();
+        prepare_passthrough(&mut prepared, WINDOW_SECS);
+        assert_eq!(prepared, to_passthrough(metric, WINDOW_SECS));
+    }
+}
+
+#[test]
+fn a_batch_whose_metrics_go_one_way_leaves_in_one_buffer_per_port() {
+    // (input, what each port receives, in buffers): without mixed metrics, nothing is split, so the untimestamped
+    // metrics leave in the input buffer and the timestamped ones in one buffer of their own; with only timestamped
+    // metrics, the input buffer itself leaves on the passthrough port.
+    let cases = [
+        (
+            vec![
+                Metric::gauge("untimestamped", 1.0),
+                Metric::counter("timestamped", (100, 2.0)),
+                Metric::gauge("also untimestamped", 3.0),
+            ],
+            [1, 1],
+        ),
+        (
+            vec![
+                Metric::counter("timestamped", (100, 2.0)),
+                Metric::gauge("also timestamped", (101, 3.0)),
+            ],
+            [0, 1],
+        ),
+    ];
+    for (metrics, buffers) in cases {
+        let mut kernel = TimestampSplit::new(WINDOW_SECS, TimestampSplitTelemetry::noop());
+        let consumed = consume(&mut kernel, &BatchHeader::default(), 2, buffer_of(metrics.clone()));
+        assert_eq!(consumed.buffers, buffers);
+        let (passthrough, default): (Vec<_>, Vec<_>) = metrics
+            .into_iter()
+            .partition(|metric| metric.values().any_timestamped());
+        assert_eq!(consumed.ports[0], default);
+        let passthrough = passthrough
+            .into_iter()
+            .map(|metric| to_passthrough(metric, WINDOW_SECS))
+            .collect::<Vec<_>>();
+        assert_eq!(consumed.ports[1], passthrough);
+        assert!(consumed.counters.is_empty());
+    }
 }
 
 #[test]

@@ -1,0 +1,477 @@
+explain_version 1
+
+plan
+  ir_version 1
+  hash sha256:757f28f8e36159318e96fe7ad7ce595319ecf24d4a1d5ea3ae242b63b12c98b0
+  structural_hash sha256:05e0c822c717f029e41be6f96d818dfd765fe3a66273e37a5221f405b3aaf8d6
+  valid: 0 errors, 0 warnings
+
+nodes (28)
+  dsd_in: source [io_host, state none] native dsd_in
+    param binding = "dogstatsd"
+    param timestamps = "untimestamped"
+    out metrics -> dsd_enrich.in, carries counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_enrich: dogstatsd_mapper [synchronous, state none] native dsd_enrich
+    param cache_size = {"config":"dogstatsd.mapper.cache_size","resolved":1000}
+    param profiles = {"config":"dogstatsd.mapper.profiles","resolved":[{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]}
+    param string_interner_bytes = {"config":"dogstatsd.mapper.string_interner_size_bytes","resolved":65536}
+    binding profiles <- dogstatsd.mapper.profiles = [{"mappings":[{"match":"raw.requests.*","match_type":"wildcard","name":"mapped.requests","tags":[{"name":"route","value":"$1"}]}],"name":"checkout","prefix":"raw."}]
+    binding cache_size <- dogstatsd.mapper.cache_size = 1000
+    binding string_interner_bytes <- dogstatsd.mapper.string_interner_size_bytes = 65536
+    in in <- dsd_in.metrics, accepts every kind (mixed timestamps)
+    out out -> dsd_prefix_filter.in, carries counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_prefix_filter: namespace_prefix [synchronous, state none] native dsd_prefix_filter
+    param exclusions = {"config":"dogstatsd.prefix_filter.metric_namespace_blocklist","resolved":["internal.","system."]}
+    param namespace = {"config":"dogstatsd.prefix_filter.metric_namespace","resolved":"tenant"}
+    binding namespace <- dogstatsd.prefix_filter.metric_namespace = "tenant"
+    binding exclusions <- dogstatsd.prefix_filter.metric_namespace_blocklist = ["internal.","system."]
+    in in <- dsd_enrich.out, accepts every kind (mixed timestamps)
+    out out -> dsd_prefix_filter_blocklist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_prefix_filter_blocklist: split [synchronous, state none] native dsd_prefix_filter
+    param predicate = {"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.metric_filter.values","resolved":["tenant.raw.blocked"]}}}}
+    binding predicate.intake_name.values <- dogstatsd.metric_filter.values = ["tenant.raw.blocked"]
+    binding predicate.intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
+    in in <- dsd_prefix_filter.out, accepts every kind (mixed timestamps)
+    out true -> dsd_prefix_filter_blocklist_true.in, carries counter, gauge, set, histogram, distribution (untimestamped)
+    out false -> dsd_tag_filterlist.in, carries counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_prefix_filter_blocklist_true: drop [synchronous, state none] native dsd_prefix_filter
+    loss policy
+    in in <- dsd_prefix_filter_blocklist.true, accepts every kind (mixed timestamps)
+  dsd_tag_filterlist: tag_projection [synchronous, state none] native dsd_tag_filterlist
+    loss policy
+    param cache_capacity = {"config":"dogstatsd.aggregation.aggregator_tag_filter_cache_capacity","resolved":100000}
+    param rules = {"config":"dogstatsd.tag_filterlist","resolved":[{"action":"exclude","metric_name":"tenant.checkout.latency","tags":["user_id"]}]}
+    param value_rules = {"config":"dogstatsd.tag_value_allowlist","resolved":[{"metric_prefix":"tenant.checkout.","on_miss":"replace","replacement":"other","tag_name":"env","values":["prod","staging"]}]}
+    binding rules <- dogstatsd.tag_filterlist = [{"action":"exclude","metric_name":"tenant.checkout.latency","tags":["user_id"]}]
+    binding value_rules <- dogstatsd.tag_value_allowlist = [{"metric_prefix":"tenant.checkout.","on_miss":"replace","replacement":"other","tag_name":"env","values":["prod","staging"]}]
+    binding cache_capacity <- dogstatsd.aggregation.aggregator_tag_filter_cache_capacity = 100000
+    in in <- dsd_prefix_filter_blocklist.false, accepts every kind (mixed timestamps)
+    out out -> dsd_agg.in, carries counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_agg: aggregate [opaque_host, state keyed] native dsd_agg
+    loss policy, capacity, shutdown
+    param context_limit = {"config":"dogstatsd.aggregation.context_limit","resolved":1000000}
+    param copy_to_distribution = {"config":"metrics_encoding.histogram.copy_to_distribution","resolved":false}
+    param copy_to_distribution_prefix = {"config":"metrics_encoding.histogram.copy_to_distribution_prefix","resolved":""}
+    param counter_expiry = {"config":"dogstatsd.aggregation.counter_expiry_seconds","resolved":"5m"}
+    param flush_interval = {"config":"dogstatsd.aggregation.flush_interval","resolved":"15s"}
+    param flush_open_windows = {"config":"dogstatsd.aggregation.flush_open_windows","resolved":false}
+    param histogram_aggregates = {"config":"metrics_encoding.histogram.aggregates","resolved":["max","median","avg","count"]}
+    param histogram_percentiles = {"config":"metrics_encoding.histogram.percentiles","resolved":[95]}
+    param window = {"config":"dogstatsd.aggregation.window_duration_seconds","resolved":"10s"}
+    binding window <- dogstatsd.aggregation.window_duration_seconds = "10s"
+    binding flush_interval <- dogstatsd.aggregation.flush_interval = "15s"
+    binding context_limit <- dogstatsd.aggregation.context_limit = 1000000
+    binding counter_expiry <- dogstatsd.aggregation.counter_expiry_seconds = "5m"
+    binding flush_open_windows <- dogstatsd.aggregation.flush_open_windows = false
+    binding histogram_aggregates <- metrics_encoding.histogram.aggregates = ["max","median","avg","count"]
+    binding histogram_percentiles <- metrics_encoding.histogram.percentiles = [95]
+    binding copy_to_distribution <- metrics_encoding.histogram.copy_to_distribution = false
+    binding copy_to_distribution_prefix <- metrics_encoding.histogram.copy_to_distribution_prefix = ""
+    in in <- dsd_tag_filterlist.out, accepts every kind (mixed timestamps)
+    out out -> dsd_post_agg_filter.in, carries rate, gauge, set, distribution (timestamped)
+  dsd_post_agg_filter: split [synchronous, state none] native dsd_post_agg_filter
+    param predicate = {"all":[{"kind_in":["counter","rate","gauge","set"]},{"intake_name":{"matches":{"prefix":{"config":"dogstatsd.metric_filter.match_prefix","resolved":false},"values":{"config":"dogstatsd.post_aggregate_filter.values","resolved":["tenant.checkout.latency.max"]}}}}]}
+    binding predicate.all[1].intake_name.values <- dogstatsd.post_aggregate_filter.values = ["tenant.checkout.latency.max"]
+    binding predicate.all[1].intake_name.prefix <- dogstatsd.metric_filter.match_prefix = false
+    in in <- dsd_agg.out, accepts every kind (mixed timestamps)
+    out true -> dsd_post_agg_filter_true.in, carries rate, gauge, set (timestamped)
+    out false -> dsd_post_agg_filter_fanout.in, carries rate, gauge, set, distribution (timestamped)
+  dsd_post_agg_filter_true: drop [synchronous, state none] native dsd_post_agg_filter
+    loss policy
+    in in <- dsd_post_agg_filter.true, accepts every kind (mixed timestamps)
+  dsd_post_agg_filter_fanout: tee [synchronous, state none] native dsd_client_telemetry_out
+    param ports = 2
+    in in <- dsd_post_agg_filter.false, accepts every kind (mixed timestamps)
+    out 0 -> dsd_post_agg_filter_fanout_0.in, carries rate, gauge, set, distribution (timestamped)
+    out 1 -> metrics_enrich_in.0, carries rate, gauge, set, distribution (timestamped)
+  dsd_post_agg_filter_fanout_0: emit [synchronous, state none] native dsd_client_telemetry_out
+    param output = "dsd_client_telemetry"
+    in in <- dsd_post_agg_filter_fanout.0, accepts every kind (mixed timestamps)
+  otlp_in: source [io_host, state none] native otlp_in
+    param binding = "otlp"
+    out metrics -> metrics_enrich_in.1, carries counter, rate, gauge, distribution (mixed timestamps)
+  checks_ipc_in: source [io_host, state none] native checks_ipc_in
+    param binding = "checks"
+    out metrics -> metrics_enrich_in.2, carries counter, rate, gauge, histogram (mixed timestamps)
+  liveness_in: source [io_host, state none] native liveness_in
+    param binding = "liveness"
+    out metrics -> metrics_enrich_in.3, carries gauge (timestamped)
+  trace_sampler: source [io_host, state none] native trace_sampler
+    param binding = "trace_sampler"
+    out metrics -> metrics_enrich_in.4, carries counter, gauge (untimestamped)
+  metrics_enrich_in: merge [synchronous, state none] native metrics_enrich
+    param inputs = 5
+    in 0 <- dsd_post_agg_filter_fanout.1, accepts every kind (mixed timestamps)
+    in 1 <- otlp_in.metrics, accepts every kind (mixed timestamps)
+    in 2 <- checks_ipc_in.metrics, accepts every kind (mixed timestamps)
+    in 3 <- liveness_in.metrics, accepts every kind (mixed timestamps)
+    in 4 <- trace_sampler.metrics, accepts every kind (mixed timestamps)
+    out out -> metrics_enrich.in, carries every kind (mixed timestamps)
+  metrics_enrich: host_enrichment [synchronous, state none] native metrics_enrich
+    in in <- metrics_enrich_in.out, accepts every kind (mixed timestamps)
+    out out -> metrics_enrich_host_tags.in, carries every kind (mixed timestamps)
+  metrics_enrich_host_tags: host_tags [synchronous, state none] native metrics_enrich
+    param deadline = "1700000300s"
+    param tags = ["cloud_provider:example","zone:a"]
+    in in <- metrics_enrich.out, accepts every kind (mixed timestamps)
+    out out -> metrics_policy.in, carries every kind (mixed timestamps)
+  metrics_policy: tee [synchronous, state none] native metrics_enrich
+    param ports = 5
+    in in <- metrics_enrich_host_tags.out, accepts every kind (mixed timestamps)
+    out 0 -> metrics_policy_0.in, carries every kind (mixed timestamps)
+    out 1 -> metrics_routing_filter_0.in, carries every kind (mixed timestamps)
+    out 2 -> metrics_routing_filter_1.in, carries every kind (mixed timestamps)
+    out 3 -> mrf_metrics_gateway.in, carries every kind (mixed timestamps)
+    out 4 -> af_metrics_gateway.in, carries every kind (mixed timestamps)
+  metrics_policy_0: emit [synchronous, state none] native dd_metrics_encode
+    param output = "dd_metrics_encode"
+    in in <- metrics_policy.0, accepts every kind (mixed timestamps)
+  metrics_routing_filter_0: opaque_host [opaque_host, state opaque] native metrics_routing_filter_0
+    loss policy
+    param component = "metrics_routing_filter_0"
+    param input = {"kinds":"all","timestamps":"mixed"}
+    param outputs = {"out":{"kinds":"all","timestamps":"mixed"}}
+    in in <- metrics_policy.1, accepts every kind (mixed timestamps)
+    out out -> metrics_routing_filter_0_out.in, carries every kind (mixed timestamps)
+  metrics_routing_filter_0_out: emit [synchronous, state none] native metrics_routing_encode_0
+    param output = "metrics_routing_encode_0"
+    in in <- metrics_routing_filter_0.out, accepts every kind (mixed timestamps)
+  metrics_routing_filter_1: opaque_host [opaque_host, state opaque] native metrics_routing_filter_1
+    loss policy
+    param component = "metrics_routing_filter_1"
+    param input = {"kinds":"all","timestamps":"mixed"}
+    param outputs = {"out":{"kinds":"all","timestamps":"mixed"}}
+    in in <- metrics_policy.2, accepts every kind (mixed timestamps)
+    out out -> metrics_routing_filter_1_out.in, carries every kind (mixed timestamps)
+  metrics_routing_filter_1_out: emit [synchronous, state none] native metrics_routing_encode_1
+    param output = "metrics_routing_encode_1"
+    in in <- metrics_routing_filter_1.out, accepts every kind (mixed timestamps)
+  mrf_metrics_gateway: opaque_host [opaque_host, state opaque] native mrf_metrics_gateway
+    loss policy
+    param component = "mrf_metrics_gateway"
+    param input = {"kinds":"all","timestamps":"mixed"}
+    param outputs = {"out":{"kinds":"all","timestamps":"mixed"}}
+    in in <- metrics_policy.3, accepts every kind (mixed timestamps)
+    out out -> mrf_metrics_gateway_out.in, carries every kind (mixed timestamps)
+  mrf_metrics_gateway_out: emit [synchronous, state none] native mrf_metrics_encode
+    param output = "mrf_metrics_encode"
+    in in <- mrf_metrics_gateway.out, accepts every kind (mixed timestamps)
+  af_metrics_gateway: opaque_host [opaque_host, state opaque] native af_metrics_gateway
+    loss policy
+    param component = "af_metrics_gateway"
+    param input = {"kinds":"all","timestamps":"mixed"}
+    param outputs = {"out":{"kinds":["counter","rate","gauge","set"],"timestamps":"mixed"}}
+    in in <- metrics_policy.4, accepts every kind (mixed timestamps)
+    out out -> af_metrics_gateway_out.in, carries counter, rate, gauge, set (mixed timestamps)
+  af_metrics_gateway_out: emit [synchronous, state none] native af_metrics_encode
+    param output = "af_metrics_encode"
+    in in <- af_metrics_gateway.out, accepts every kind (mixed timestamps)
+
+edges (27)
+  dsd_in.metrics -> dsd_enrich.in: counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_enrich.out -> dsd_prefix_filter.in: counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in: counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in: counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_prefix_filter_blocklist.false -> dsd_tag_filterlist.in: counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_tag_filterlist.out -> dsd_agg.in: counter, gauge, set, histogram, distribution (untimestamped)
+  dsd_agg.out -> dsd_post_agg_filter.in: rate, gauge, set, distribution (timestamped)
+  dsd_post_agg_filter.true -> dsd_post_agg_filter_true.in: rate, gauge, set (timestamped)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_fanout.in: rate, gauge, set, distribution (timestamped)
+  dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: rate, gauge, set, distribution (timestamped)
+  dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0: rate, gauge, set, distribution (timestamped)
+  otlp_in.metrics -> metrics_enrich_in.1: counter, rate, gauge, distribution (mixed timestamps)
+  checks_ipc_in.metrics -> metrics_enrich_in.2: counter, rate, gauge, histogram (mixed timestamps)
+  liveness_in.metrics -> metrics_enrich_in.3: gauge (timestamped)
+  trace_sampler.metrics -> metrics_enrich_in.4: counter, gauge (untimestamped)
+  metrics_enrich_in.out -> metrics_enrich.in: every kind (mixed timestamps)
+  metrics_enrich.out -> metrics_enrich_host_tags.in: every kind (mixed timestamps)
+  metrics_enrich_host_tags.out -> metrics_policy.in: every kind (mixed timestamps)
+  metrics_policy.0 -> metrics_policy_0.in: every kind (mixed timestamps)
+  metrics_policy.1 -> metrics_routing_filter_0.in: every kind (mixed timestamps)
+  metrics_routing_filter_0.out -> metrics_routing_filter_0_out.in: every kind (mixed timestamps)
+  metrics_policy.2 -> metrics_routing_filter_1.in: every kind (mixed timestamps)
+  metrics_routing_filter_1.out -> metrics_routing_filter_1_out.in: every kind (mixed timestamps)
+  metrics_policy.3 -> mrf_metrics_gateway.in: every kind (mixed timestamps)
+  mrf_metrics_gateway.out -> mrf_metrics_gateway_out.in: every kind (mixed timestamps)
+  metrics_policy.4 -> af_metrics_gateway.in: every kind (mixed timestamps)
+  af_metrics_gateway.out -> af_metrics_gateway_out.in: counter, rate, gauge, set (mixed timestamps)
+
+outputs (6)
+  dsd_client_telemetry
+    accepts every kind (mixed timestamps)
+    fingerprint sha256:1111111111111111111111111111111111111111111111111111111111111111
+    recipients none
+    delivery native
+    emitted by dsd_post_agg_filter_fanout_0
+  dd_metrics_encode
+    accepts every kind (mixed timestamps)
+    fingerprint sha256:2222222222222222222222222222222222222222222222222222222222222222
+    recipients dd_out/primary/0
+    delivery native
+    emitted by metrics_policy_0
+  metrics_routing_encode_0
+    accepts every kind (mixed timestamps)
+    fingerprint sha256:3333333333333333333333333333333333333333333333333333333333333333
+    recipients dd_out/additional_0/0
+    delivery native
+    emitted by metrics_routing_filter_0_out
+  metrics_routing_encode_1
+    accepts every kind (mixed timestamps)
+    fingerprint sha256:4444444444444444444444444444444444444444444444444444444444444444
+    recipients dd_out/additional_1/0, dd_out/additional_1/1
+    delivery native
+    emitted by metrics_routing_filter_1_out
+  mrf_metrics_encode
+    accepts every kind (mixed timestamps)
+    fingerprint sha256:5555555555555555555555555555555555555555555555555555555555555555
+    recipients mrf_dd_out/primary/0
+    delivery native
+    emitted by mrf_metrics_gateway_out
+  af_metrics_encode
+    accepts counter, rate, gauge, set (mixed timestamps)
+    fingerprint sha256:6666666666666666666666666666666666666666666666666666666666666666
+    recipients cluster_agent_out/primary/0
+    delivery native
+    emitted by af_metrics_gateway_out
+
+scopes (1)
+  post_enrich: metrics = metrics_enrich_host_tags.out
+
+bounds (4)
+  plan artifact_nodes: 28 of 256 (within the limit, not enforced)
+  plan predicate_leaves: 3 of 1024 (within the limit, not enforced)
+  plan tee_fan_out: 5 of 32 (within the limit, not enforced)
+  plan work_per_input: unbounded of 4096 (beyond the limit, not enforced)
+
+findings (0)
+
+frame
+  fixed (10)
+    dsd_in: source [io_host]
+      admission point 0 metrics (admit) -> dsd_pre_aggregation
+    dsd_agg: aggregate [opaque_host], fed by dsd_tag_filterlist_region.dsd_agg
+      admission point 1 out (readmit) -> dsd_post_agg_filter_region
+    otlp_in: source [io_host]
+      admission point 2 metrics (admit) -> metrics_enrich
+    checks_ipc_in: source [io_host]
+      admission point 3 metrics (admit) -> metrics_enrich
+    liveness_in: source [io_host]
+      admission point 4 metrics (admit) -> metrics_enrich
+    trace_sampler: source [io_host]
+      admission point 5 metrics (admit) -> metrics_enrich
+    metrics_routing_filter_0: opaque_host [opaque_host], fed by metrics_enrich.metrics_routing_filter_0
+      admission point 6 out (readmit) -> output metrics_routing_encode_0
+    metrics_routing_filter_1: opaque_host [opaque_host], fed by metrics_enrich.metrics_routing_filter_1
+      admission point 7 out (readmit) -> output metrics_routing_encode_1
+    mrf_metrics_gateway: opaque_host [opaque_host], fed by metrics_enrich.mrf_metrics_gateway
+      admission point 8 out (readmit) -> output mrf_metrics_encode
+    af_metrics_gateway: opaque_host [opaque_host], fed by metrics_enrich.af_metrics_gateway
+      admission point 9 out (readmit) -> output af_metrics_encode
+  slots (5)
+    dsd_pre_aggregation (estimated 65 ns per event)
+      nodes dsd_enrich
+      admission point 0: dsd_in.metrics -> dsd_enrich.in
+      exit 0 dsd_prefix_filter_region -> dsd_prefix_filter_region
+      exit 1 dsd_client_telemetry -> output dsd_client_telemetry, idle
+      exit 2 dd_metrics_encode -> output dd_metrics_encode, idle
+      exit 3 metrics_routing_encode_0 -> output metrics_routing_encode_0, idle
+      exit 4 metrics_routing_encode_1 -> output metrics_routing_encode_1, idle
+      exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
+      exit 6 af_metrics_encode -> output af_metrics_encode, idle
+    dsd_prefix_filter_region (estimated 110 ns per event)
+      nodes dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_true
+      entry 0: dsd_enrich.out -> dsd_prefix_filter.in
+      exit 0 dsd_tag_filterlist_region -> dsd_tag_filterlist_region
+      exit 1 dsd_client_telemetry -> output dsd_client_telemetry, idle
+      exit 2 dd_metrics_encode -> output dd_metrics_encode, idle
+      exit 3 metrics_routing_encode_0 -> output metrics_routing_encode_0, idle
+      exit 4 metrics_routing_encode_1 -> output metrics_routing_encode_1, idle
+      exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
+      exit 6 af_metrics_encode -> output af_metrics_encode, idle
+    dsd_tag_filterlist_region (estimated 15 ns per event)
+      nodes dsd_tag_filterlist
+      entry 0: dsd_prefix_filter_blocklist.false -> dsd_tag_filterlist.in
+      exit 0 dsd_agg -> dsd_agg
+      exit 1 dsd_client_telemetry -> output dsd_client_telemetry, idle
+      exit 2 dd_metrics_encode -> output dd_metrics_encode, idle
+      exit 3 metrics_routing_encode_0 -> output metrics_routing_encode_0, idle
+      exit 4 metrics_routing_encode_1 -> output metrics_routing_encode_1, idle
+      exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
+      exit 6 af_metrics_encode -> output af_metrics_encode, idle
+    dsd_post_agg_filter_region (estimated 36 ns per event)
+      nodes dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0
+      admission point 1: dsd_agg.out -> dsd_post_agg_filter.in
+      exit 0 dsd_client_telemetry -> output dsd_client_telemetry
+      exit 1 metrics_enrich -> metrics_enrich
+      exit 2 dd_metrics_encode -> output dd_metrics_encode, idle
+      exit 3 metrics_routing_encode_0 -> output metrics_routing_encode_0, idle
+      exit 4 metrics_routing_encode_1 -> output metrics_routing_encode_1, idle
+      exit 5 mrf_metrics_encode -> output mrf_metrics_encode, idle
+      exit 6 af_metrics_encode -> output af_metrics_encode, idle
+    metrics_enrich (estimated 90 ns per event)
+      nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0
+      admission point 2: otlp_in.metrics -> metrics_enrich_in.1
+      admission point 3: checks_ipc_in.metrics -> metrics_enrich_in.2
+      admission point 4: liveness_in.metrics -> metrics_enrich_in.3
+      admission point 5: trace_sampler.metrics -> metrics_enrich_in.4
+      entry 0: dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0
+      exit 0 dd_metrics_encode -> output dd_metrics_encode
+      exit 1 metrics_routing_filter_0 -> metrics_routing_filter_0
+      exit 2 metrics_routing_filter_1 -> metrics_routing_filter_1
+      exit 3 mrf_metrics_gateway -> mrf_metrics_gateway
+      exit 4 af_metrics_gateway -> af_metrics_gateway
+      exit 5 metrics_routing_encode_0 -> output metrics_routing_encode_0, idle
+      exit 6 metrics_routing_encode_1 -> output metrics_routing_encode_1, idle
+      exit 7 mrf_metrics_encode -> output mrf_metrics_encode, idle
+      exit 8 af_metrics_encode -> output af_metrics_encode, idle
+  edges (47)
+    dsd_in.metrics -> dsd_pre_aggregation (admission)
+    dsd_agg.out -> dsd_post_agg_filter_region (admission)
+    otlp_in.metrics -> metrics_enrich (admission)
+    checks_ipc_in.metrics -> metrics_enrich (admission)
+    liveness_in.metrics -> metrics_enrich (admission)
+    trace_sampler.metrics -> metrics_enrich (admission)
+    metrics_routing_filter_0.out -> output metrics_routing_encode_0 (direct)
+    metrics_routing_filter_1.out -> output metrics_routing_encode_1 (direct)
+    mrf_metrics_gateway.out -> output mrf_metrics_encode (direct)
+    af_metrics_gateway.out -> output af_metrics_encode (direct)
+    dsd_pre_aggregation.dsd_prefix_filter_region -> dsd_prefix_filter_region (exit)
+    dsd_pre_aggregation.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    dsd_pre_aggregation.dd_metrics_encode -> output dd_metrics_encode (exit)
+    dsd_pre_aggregation.metrics_routing_encode_0 -> output metrics_routing_encode_0 (exit)
+    dsd_pre_aggregation.metrics_routing_encode_1 -> output metrics_routing_encode_1 (exit)
+    dsd_pre_aggregation.mrf_metrics_encode -> output mrf_metrics_encode (exit)
+    dsd_pre_aggregation.af_metrics_encode -> output af_metrics_encode (exit)
+    dsd_prefix_filter_region.dsd_tag_filterlist_region -> dsd_tag_filterlist_region (exit)
+    dsd_prefix_filter_region.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    dsd_prefix_filter_region.dd_metrics_encode -> output dd_metrics_encode (exit)
+    dsd_prefix_filter_region.metrics_routing_encode_0 -> output metrics_routing_encode_0 (exit)
+    dsd_prefix_filter_region.metrics_routing_encode_1 -> output metrics_routing_encode_1 (exit)
+    dsd_prefix_filter_region.mrf_metrics_encode -> output mrf_metrics_encode (exit)
+    dsd_prefix_filter_region.af_metrics_encode -> output af_metrics_encode (exit)
+    dsd_tag_filterlist_region.dsd_agg -> dsd_agg (exit)
+    dsd_tag_filterlist_region.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    dsd_tag_filterlist_region.dd_metrics_encode -> output dd_metrics_encode (exit)
+    dsd_tag_filterlist_region.metrics_routing_encode_0 -> output metrics_routing_encode_0 (exit)
+    dsd_tag_filterlist_region.metrics_routing_encode_1 -> output metrics_routing_encode_1 (exit)
+    dsd_tag_filterlist_region.mrf_metrics_encode -> output mrf_metrics_encode (exit)
+    dsd_tag_filterlist_region.af_metrics_encode -> output af_metrics_encode (exit)
+    dsd_post_agg_filter_region.dsd_client_telemetry -> output dsd_client_telemetry (exit)
+    dsd_post_agg_filter_region.metrics_enrich -> metrics_enrich (exit)
+    dsd_post_agg_filter_region.dd_metrics_encode -> output dd_metrics_encode (exit)
+    dsd_post_agg_filter_region.metrics_routing_encode_0 -> output metrics_routing_encode_0 (exit)
+    dsd_post_agg_filter_region.metrics_routing_encode_1 -> output metrics_routing_encode_1 (exit)
+    dsd_post_agg_filter_region.mrf_metrics_encode -> output mrf_metrics_encode (exit)
+    dsd_post_agg_filter_region.af_metrics_encode -> output af_metrics_encode (exit)
+    metrics_enrich.dd_metrics_encode -> output dd_metrics_encode (exit)
+    metrics_enrich.metrics_routing_filter_0 -> metrics_routing_filter_0 (exit)
+    metrics_enrich.metrics_routing_filter_1 -> metrics_routing_filter_1 (exit)
+    metrics_enrich.mrf_metrics_gateway -> mrf_metrics_gateway (exit)
+    metrics_enrich.af_metrics_gateway -> af_metrics_gateway (exit)
+    metrics_enrich.metrics_routing_encode_0 -> output metrics_routing_encode_0 (exit)
+    metrics_enrich.metrics_routing_encode_1 -> output metrics_routing_encode_1 (exit)
+    metrics_enrich.mrf_metrics_encode -> output mrf_metrics_encode (exit)
+    metrics_enrich.af_metrics_encode -> output af_metrics_encode (exit)
+
+fusion (27)
+  dsd_in.metrics -> dsd_enrich.in: fence (`dsd_in` is an io_host, a fence that fusion never crosses)
+  dsd_enrich.out -> dsd_prefix_filter.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline)
+  dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
+  dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_prefix_filter_region`)
+  dsd_prefix_filter_blocklist.false -> dsd_tag_filterlist.in: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_prefix_filter_region` and `dsd_tag_filterlist_region` pipeline)
+  dsd_tag_filterlist.out -> dsd_agg.in: fence (`dsd_agg` is an opaque_host, a fence that fusion never crosses)
+  dsd_agg.out -> dsd_post_agg_filter.in: fence (`dsd_agg` is an opaque_host, a fence that fusion never crosses)
+  dsd_post_agg_filter.true -> dsd_post_agg_filter_true.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
+  dsd_post_agg_filter.false -> dsd_post_agg_filter_fanout.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
+  dsd_post_agg_filter_fanout.0 -> dsd_post_agg_filter_fanout_0.in: fused (both nodes are synchronous and nothing separates them: slot `dsd_post_agg_filter_region`)
+  dsd_post_agg_filter_fanout.1 -> metrics_enrich_in.0: pipelined (fusing would make one region cost more than 110 ns per event, the cost model's budget: slots `dsd_post_agg_filter_region` and `metrics_enrich` pipeline)
+  otlp_in.metrics -> metrics_enrich_in.1: fence (`otlp_in` is an io_host, a fence that fusion never crosses)
+  checks_ipc_in.metrics -> metrics_enrich_in.2: fence (`checks_ipc_in` is an io_host, a fence that fusion never crosses)
+  liveness_in.metrics -> metrics_enrich_in.3: fence (`liveness_in` is an io_host, a fence that fusion never crosses)
+  trace_sampler.metrics -> metrics_enrich_in.4: fence (`trace_sampler` is an io_host, a fence that fusion never crosses)
+  metrics_enrich_in.out -> metrics_enrich.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_enrich.out -> metrics_enrich_host_tags.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_enrich_host_tags.out -> metrics_policy.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.0 -> metrics_policy_0.in: fused (both nodes are synchronous and nothing separates them: slot `metrics_enrich`)
+  metrics_policy.1 -> metrics_routing_filter_0.in: fence (`metrics_routing_filter_0` is an opaque_host, a fence that fusion never crosses)
+  metrics_routing_filter_0.out -> metrics_routing_filter_0_out.in: direct (an `emit` or `drop` right after `metrics_routing_filter_0` runs in no slot: a direct edge)
+  metrics_policy.2 -> metrics_routing_filter_1.in: fence (`metrics_routing_filter_1` is an opaque_host, a fence that fusion never crosses)
+  metrics_routing_filter_1.out -> metrics_routing_filter_1_out.in: direct (an `emit` or `drop` right after `metrics_routing_filter_1` runs in no slot: a direct edge)
+  metrics_policy.3 -> mrf_metrics_gateway.in: fence (`mrf_metrics_gateway` is an opaque_host, a fence that fusion never crosses)
+  mrf_metrics_gateway.out -> mrf_metrics_gateway_out.in: direct (an `emit` or `drop` right after `mrf_metrics_gateway` runs in no slot: a direct edge)
+  metrics_policy.4 -> af_metrics_gateway.in: fence (`af_metrics_gateway` is an opaque_host, a fence that fusion never crosses)
+  af_metrics_gateway.out -> af_metrics_gateway_out.in: direct (an `emit` or `drop` right after `af_metrics_gateway` runs in no slot: a direct edge)
+
+segments (10)
+  admission point 0 dsd_in.metrics (admit)
+    slots dsd_pre_aggregation, dsd_prefix_filter_region, dsd_tag_filterlist_region
+    nodes dsd_enrich, dsd_prefix_filter, dsd_prefix_filter_blocklist, dsd_prefix_filter_blocklist_true, dsd_tag_filterlist
+    ends dsd_agg
+  admission point 1 dsd_agg.out (readmit)
+    slots dsd_post_agg_filter_region, metrics_enrich
+    nodes dsd_post_agg_filter, dsd_post_agg_filter_true, dsd_post_agg_filter_fanout, dsd_post_agg_filter_fanout_0, metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0
+    ends af_metrics_gateway, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, output dd_metrics_encode, output dsd_client_telemetry
+  admission point 2 otlp_in.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0
+    ends af_metrics_gateway, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, output dd_metrics_encode
+  admission point 3 checks_ipc_in.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0
+    ends af_metrics_gateway, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, output dd_metrics_encode
+  admission point 4 liveness_in.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0
+    ends af_metrics_gateway, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, output dd_metrics_encode
+  admission point 5 trace_sampler.metrics (admit)
+    slots metrics_enrich
+    nodes metrics_enrich_in, metrics_enrich, metrics_enrich_host_tags, metrics_policy, metrics_policy_0
+    ends af_metrics_gateway, metrics_routing_filter_0, metrics_routing_filter_1, mrf_metrics_gateway, output dd_metrics_encode
+  admission point 6 metrics_routing_filter_0.out (readmit)
+    slots none
+    nodes metrics_routing_filter_0_out
+    ends output metrics_routing_encode_0
+  admission point 7 metrics_routing_filter_1.out (readmit)
+    slots none
+    nodes metrics_routing_filter_1_out
+    ends output metrics_routing_encode_1
+  admission point 8 mrf_metrics_gateway.out (readmit)
+    slots none
+    nodes mrf_metrics_gateway_out
+    ends output mrf_metrics_encode
+  admission point 9 af_metrics_gateway.out (readmit)
+    slots none
+    nodes af_metrics_gateway_out
+    ends output af_metrics_encode
+
+output bindings (6)
+  dsd_client_telemetry
+    recipients none
+    delivery native (overflow wait, closure native)
+    fed by dsd_post_agg_filter_region.dsd_client_telemetry
+    idle dsd_pre_aggregation.dsd_client_telemetry, dsd_prefix_filter_region.dsd_client_telemetry, dsd_tag_filterlist_region.dsd_client_telemetry
+  dd_metrics_encode
+    recipients dd_out/primary/0
+    delivery native (overflow wait, closure native)
+    fed by metrics_enrich.dd_metrics_encode
+    idle dsd_pre_aggregation.dd_metrics_encode, dsd_prefix_filter_region.dd_metrics_encode, dsd_tag_filterlist_region.dd_metrics_encode, dsd_post_agg_filter_region.dd_metrics_encode
+  metrics_routing_encode_0
+    recipients dd_out/additional_0/0
+    delivery native (overflow wait, closure native)
+    fed by metrics_routing_filter_0.out
+    idle dsd_pre_aggregation.metrics_routing_encode_0, dsd_prefix_filter_region.metrics_routing_encode_0, dsd_tag_filterlist_region.metrics_routing_encode_0, dsd_post_agg_filter_region.metrics_routing_encode_0, metrics_enrich.metrics_routing_encode_0
+  metrics_routing_encode_1
+    recipients dd_out/additional_1/0, dd_out/additional_1/1
+    delivery native (overflow wait, closure native)
+    fed by metrics_routing_filter_1.out
+    idle dsd_pre_aggregation.metrics_routing_encode_1, dsd_prefix_filter_region.metrics_routing_encode_1, dsd_tag_filterlist_region.metrics_routing_encode_1, dsd_post_agg_filter_region.metrics_routing_encode_1, metrics_enrich.metrics_routing_encode_1
+  mrf_metrics_encode
+    recipients mrf_dd_out/primary/0
+    delivery native (overflow wait, closure native)
+    fed by mrf_metrics_gateway.out
+    idle dsd_pre_aggregation.mrf_metrics_encode, dsd_prefix_filter_region.mrf_metrics_encode, dsd_tag_filterlist_region.mrf_metrics_encode, dsd_post_agg_filter_region.mrf_metrics_encode, metrics_enrich.mrf_metrics_encode
+  af_metrics_encode
+    recipients cluster_agent_out/primary/0
+    delivery native (overflow wait, closure native)
+    fed by af_metrics_gateway.out
+    idle dsd_pre_aggregation.af_metrics_encode, dsd_prefix_filter_region.af_metrics_encode, dsd_tag_filterlist_region.af_metrics_encode, dsd_post_agg_filter_region.af_metrics_encode, metrics_enrich.af_metrics_encode

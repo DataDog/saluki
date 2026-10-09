@@ -14,6 +14,8 @@ use super::{
     snapshot::{AdmissionPointSnapshot, BlueprintSnapshot},
     ComponentId, ComponentOutputId,
 };
+#[cfg(any(test, feature = "test-util"))]
+use crate::accounting::MemoryBounds;
 use crate::accounting::{ComponentRegistry, MemoryLimiter, UsageExpr};
 use crate::{
     components::{
@@ -423,6 +425,112 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Replaces the builder of the source `component_id` with `builder`, keeping the source's place in the blueprint.
+    ///
+    /// The replacement keeps every connection and admission point of the component it replaces, and its memory bounds
+    /// replace the replaced builder's. This lets a test run a blueprint that a builder function assembled, with some
+    /// components swapped for test doubles, such as a scripted source in place of one that listens on a socket.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no source `component_id`, or if `builder` declares other outputs than the source it
+    /// replaces, an error is returned and the blueprint is unchanged.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn replace_source<B>(&mut self, component_id: &str, builder: B) -> Result<&mut Self, GenericError>
+    where
+        B: SourceBuilder + Send + 'static,
+    {
+        let state = self.state_mut();
+        let id = state.check_replacement(ComponentType::Source, |graph| graph.add_source(component_id, &builder))?;
+        state.replace_bounds(ComponentType::Source, &id, &builder);
+        state.sources.insert(id, Box::new(builder));
+        Ok(self)
+    }
+
+    /// Replaces the builder of the transform `component_id` with `builder`, keeping the transform's place in the
+    /// blueprint, as [`replace_source`][Self::replace_source] does for a source.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no transform `component_id`, or if `builder` declares another input or other outputs than
+    /// the transform it replaces, an error is returned and the blueprint is unchanged.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn replace_transform<B>(&mut self, component_id: &str, builder: B) -> Result<&mut Self, GenericError>
+    where
+        B: TransformBuilder + Send + 'static,
+    {
+        let state = self.state_mut();
+        let id = state.check_replacement(ComponentType::Transform, |graph| {
+            graph.add_transform(component_id, &builder)
+        })?;
+        state.replace_bounds(ComponentType::Transform, &id, &builder);
+        state.transforms.insert(id, Box::new(builder));
+        Ok(self)
+    }
+
+    /// Replaces the builder of the destination `component_id` with `builder`, keeping the destination's place in the
+    /// blueprint, as [`replace_source`][Self::replace_source] does for a source.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no destination `component_id`, or if `builder` declares another input than the
+    /// destination it replaces, an error is returned and the blueprint is unchanged.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn replace_destination<B>(&mut self, component_id: &str, builder: B) -> Result<&mut Self, GenericError>
+    where
+        B: DestinationBuilder + Send + 'static,
+    {
+        let state = self.state_mut();
+        let id = state.check_replacement(ComponentType::Destination, |graph| {
+            graph.add_destination(component_id, &builder)
+        })?;
+        state.replace_bounds(ComponentType::Destination, &id, &builder);
+        state.destinations.insert(id, Box::new(builder));
+        Ok(self)
+    }
+
+    /// Replaces the builder of the encoder `component_id` with `builder`, keeping the encoder's place in the
+    /// blueprint, as [`replace_source`][Self::replace_source] does for a source.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no encoder `component_id`, or if `builder` declares another input or output than the
+    /// encoder it replaces, an error is returned and the blueprint is unchanged.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn replace_encoder<B>(&mut self, component_id: &str, builder: B) -> Result<&mut Self, GenericError>
+    where
+        B: EncoderBuilder + Send + 'static,
+    {
+        let state = self.state_mut();
+        let id = state.check_replacement(ComponentType::Encoder, |graph| {
+            graph.add_encoder(component_id, &builder)
+        })?;
+        state.replace_bounds(ComponentType::Encoder, &id, &builder);
+        state.encoders.insert(id, Box::new(builder));
+        Ok(self)
+    }
+
+    /// Replaces the builder of the forwarder `component_id` with `builder`, keeping the forwarder's place in the
+    /// blueprint, as [`replace_source`][Self::replace_source] does for a source.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no forwarder `component_id`, or if `builder` declares another input than the forwarder it
+    /// replaces, an error is returned and the blueprint is unchanged.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn replace_forwarder<B>(&mut self, component_id: &str, builder: B) -> Result<&mut Self, GenericError>
+    where
+        B: ForwarderBuilder + Send + 'static,
+    {
+        let state = self.state_mut();
+        let id = state.check_replacement(ComponentType::Forwarder, |graph| {
+            graph.add_forwarder(component_id, &builder)
+        })?;
+        state.replace_bounds(ComponentType::Forwarder, &id, &builder);
+        state.forwarders.insert(id, Box::new(builder));
+        Ok(self)
+    }
+
     /// Returns a read-only description of the blueprint's structure.
     ///
     /// The snapshot lists every component with its type and declared outputs, every connection, and every output
@@ -607,6 +715,52 @@ impl TopologyBuildState {
         ComponentContext::new(&self.topology_id, component_id.clone(), component_type).identity()
     }
 
+    /// Checks that a replacement, which `add` adds to an empty graph, has the shape of the component it replaces:
+    /// the same type, input, and outputs. Returns the component's ID.
+    #[cfg(any(test, feature = "test-util"))]
+    fn check_replacement<F>(&self, component_type: ComponentType, add: F) -> Result<ComponentId, GenericError>
+    where
+        F: FnOnce(&mut Graph) -> Result<ComponentId, GraphError>,
+    {
+        let mut scratch = Graph::default();
+        let id = add(&mut scratch).error_context("Failed to describe the replacement component.")?;
+        let (replacement, _) = scratch.snapshot();
+        let (components, _) = self.graph.snapshot();
+        let existing = components
+            .iter()
+            .find(|component| component.id() == &id && component.component_type() == component_type)
+            .ok_or_else(|| {
+                generic_error!(
+                    "Cannot replace {} '{}': the blueprint has no such {}. Add it before replacing it.",
+                    component_type.as_str(),
+                    id,
+                    component_type.as_str()
+                )
+            })?;
+        match replacement.first() {
+            Some(replacement) if replacement == existing => Ok(id),
+            replacement => Err(generic_error!(
+                "Cannot replace {} '{}': the replacement declares {}, but the component it replaces declares {}. A \
+                 replacement must declare what it replaces, so that every connection stays valid.",
+                component_type.as_str(),
+                id,
+                replacement.map_or_else(|| "nothing".to_string(), describe_shape),
+                describe_shape(existing)
+            )),
+        }
+    }
+
+    /// Replaces the memory bounds of a component with those of its replacement builder.
+    #[cfg(any(test, feature = "test-util"))]
+    fn replace_bounds(
+        &mut self, component_type: ComponentType, component_id: &ComponentId, builder: &dyn MemoryBounds,
+    ) {
+        let identity = self.component_identity(component_type, component_id);
+        let mut bounds_builder = self.component_registry.bounds_builder(&identity);
+        bounds_builder.reset();
+        builder.specify_bounds(&mut bounds_builder);
+    }
+
     fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<(), GenericError>
     where
         I: AsRef<str>,
@@ -620,9 +774,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Source, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.sources.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -640,9 +795,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Relay, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.relays.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -660,9 +816,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Decoder, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.decoders.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -680,9 +837,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Transform, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.transforms.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -700,9 +858,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Destination, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.destinations.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -720,9 +879,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Encoder, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.encoders.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -740,9 +900,10 @@ impl TopologyBuildState {
         let identity = self.component_identity(ComponentType::Forwarder, &component_id);
         builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
-        self.recalculate_bounds();
-
         let _ = self.forwarders.insert(component_id, Box::new(builder));
+
+        // Only once the component is counted do the topology's bounds include its interconnect and buffers.
+        self.recalculate_bounds();
 
         Ok(())
     }
@@ -1028,6 +1189,24 @@ impl Supervisable for TopologyBlueprint {
                 }
             }
         }))
+    }
+}
+
+/// Describes a component's input and outputs, for errors about replacing it.
+#[cfg(any(test, feature = "test-util"))]
+fn describe_shape(component: &super::ComponentSnapshot) -> String {
+    let input = component
+        .input()
+        .map_or_else(|| "no input".to_string(), |input| format!("input {}", input));
+    let outputs = component
+        .outputs()
+        .iter()
+        .map(|output| format!("'{}' ({})", output.id(), output.data_type()))
+        .collect::<Vec<_>>();
+    if outputs.is_empty() {
+        format!("{} and no outputs", input)
+    } else {
+        format!("{} and outputs {}", input, outputs.join(", "))
     }
 }
 
@@ -1825,6 +2004,40 @@ mod tests {
     }
 
     #[test]
+    fn the_topology_bounds_count_every_component_including_the_last_one_added() {
+        // Bounds are recalculated as each component is added, so a blueprint whose interconnect capacity is set before
+        // its components are added must count all of them, the last one too.
+        let interconnect_capacity = 4usize;
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint.with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap());
+        blueprint
+            .add_source("source", TestSourceBuilder::default_output(EventType::EventD))
+            .unwrap()
+            .add_transform(
+                "transform",
+                TestTransformBuilder::default_output(EventType::EventD, EventType::EventD),
+            )
+            .unwrap()
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::EventD),
+            )
+            .unwrap();
+
+        // One interconnect for the transform and one for the destination, and the in-flight buffers of a source and a
+        // transform besides those the interconnects hold.
+        let expected_min = 2 * interconnect_capacity * std::mem::size_of::<EventsBuffer>();
+        let per_buffer =
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Event>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let expected_firm = expected_min + ((2 * interconnect_capacity + 2) * per_buffer);
+
+        let bounds = component_registry.as_bounds();
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_min);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected_firm);
+    }
+
+    #[test]
     fn worker_pool_configuration_defaults_to_dedicated() {
         let blueprint = blueprint_with_components();
         let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
@@ -2513,6 +2726,224 @@ mod tests {
         }
         // Heartbeats only travel on the admission point's own output.
         assert!(other.lock().unwrap().is_empty());
+    }
+
+    /// A destination builder that declares `bytes` of minimum memory and builds a destination that drains its input.
+    struct SizedDestinationBuilder {
+        bytes: usize,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for SizedDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingDestination))
+        }
+    }
+
+    impl MemoryBounds for SizedDestinationBuilder {
+        fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+            builder.minimum().with_array::<u8>("buffer", self.bytes);
+        }
+    }
+
+    /// Returns the minimum memory every component of `blueprint` declares, with the interconnects.
+    fn total_minimum_bytes(blueprint: &TopologyBlueprint) -> usize {
+        let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+        guard
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .component_registry
+            .as_bounds()
+            .total_minimum_required_bytes()
+    }
+
+    #[tokio::test]
+    async fn a_replaced_component_keeps_its_connections_admission_points_and_takes_over_its_bounds() {
+        // src (admit, point 1) -> fwd -> out, then `src` and `out` are replaced.
+        let schedule = steady_schedule(3);
+        let source_wall = ManualWallClock::default();
+        let step = |events| ScriptStep {
+            output: None,
+            events,
+            at: AdmissionTime::from_unix_secs(100),
+        };
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("src", ScriptedSourceBuilder::new(vec![step(5)], source_wall.clone()))
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_destination("out", SizedDestinationBuilder { bytes: 4096 })
+            .unwrap()
+            .connect_components_in_order(["src", "fwd", "out"])
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(1, AdmissionMode::Admit, &schedule).with_wall_clock(source_wall.clone()),
+            )
+            .unwrap();
+        let before = blueprint.snapshot().unwrap();
+        let minimum_before = total_minimum_bytes(&blueprint);
+
+        // The replacements declare what they replace, so the structure is unchanged, and the replaced destination's
+        // bounds are gone with it.
+        let received = Arc::new(StdMutex::new(Vec::new()));
+        blueprint
+            .replace_source("src", ScriptedSourceBuilder::new(vec![step(2), step(1)], source_wall))
+            .unwrap()
+            .replace_destination(
+                "out",
+                CollectingDestinationBuilder {
+                    received: Arc::clone(&received),
+                },
+            )
+            .unwrap();
+        assert_eq!(blueprint.snapshot().unwrap(), before);
+        assert_eq!(total_minimum_bytes(&blueprint), minimum_before - 4096);
+
+        // The topology runs the replacements: the replacement source's batches reach the replacement destination
+        // through the transform, stamped by the source's admission point.
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+        wait_until("the replacement destination received both batches", || {
+            received.lock().unwrap().len() == 2
+        })
+        .await;
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+        assert_eq!(
+            summarize(&received),
+            vec![(Some(100), Some(1), Some(3), 2), (Some(100), Some(1), Some(3), 1)]
+        );
+    }
+
+    #[test]
+    fn a_replacement_must_declare_what_it_replaces() {
+        let mut blueprint = blueprint_with_every_component_type();
+        let before = blueprint.snapshot().unwrap();
+
+        // A source with fewer outputs, a destination of another input type, an encoder of another payload type, a
+        // forwarder of another payload type, and a transform with another input type.
+        let source = blueprint
+            .replace_source("src", TestSourceBuilder::default_output(EventType::Metric))
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            source,
+            "Cannot replace source 'src': the replacement declares no input and outputs 'src' (event(Metric)), but the \
+             component it replaces declares no input and outputs 'src' (event(Metric)), 'src.other' (event(Metric)). \
+             A replacement must declare what it replaces, so that every connection stays valid."
+        );
+        let rejected = |error: Option<GenericError>| error.expect("the replacement is rejected").to_string();
+        let shapes = |what: &str, id: &str, replacement: &str, existing: &str| {
+            format!(
+                "Cannot replace {} '{}': the replacement declares {}, but the component it replaces declares {}. A \
+                 replacement must declare what it replaces, so that every connection stays valid.",
+                what, id, replacement, existing
+            )
+        };
+        assert_eq!(
+            rejected(
+                blueprint
+                    .replace_destination("out", TestDestinationBuilder::with_input_type(EventType::Log))
+                    .err()
+            ),
+            shapes(
+                "destination",
+                "out",
+                "input event(Log) and no outputs",
+                "input event(Metric) and no outputs"
+            )
+        );
+        assert_eq!(
+            rejected(
+                blueprint
+                    .replace_encoder(
+                        "enc",
+                        TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Raw),
+                    )
+                    .err()
+            ),
+            shapes(
+                "encoder",
+                "enc",
+                "input event(Metric) and outputs 'enc' (payload(Raw))",
+                "input event(Metric) and outputs 'enc' (payload(HTTP))"
+            )
+        );
+        assert_eq!(
+            rejected(
+                blueprint
+                    .replace_forwarder("fwdr", TestForwarderBuilder::with_input_type(PayloadType::Raw))
+                    .err()
+            ),
+            shapes(
+                "forwarder",
+                "fwdr",
+                "input payload(Raw) and no outputs",
+                "input payload(HTTP) and no outputs"
+            )
+        );
+        assert_eq!(
+            rejected(
+                blueprint
+                    .replace_transform(
+                        "fwd",
+                        TestTransformBuilder::default_output(EventType::Log, EventType::Metric),
+                    )
+                    .err()
+            ),
+            shapes(
+                "transform",
+                "fwd",
+                "input event(Log) and outputs 'fwd' (event(Metric))",
+                "input event(Metric) and outputs 'fwd' (event(Metric))"
+            )
+        );
+
+        // A component that is not there, or not of the replaced type, cannot be replaced.
+        let missing = blueprint
+            .replace_destination("nowhere", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            missing,
+            "Cannot replace destination 'nowhere': the blueprint has no such destination. Add it before replacing it."
+        );
+        let wrong_type = blueprint
+            .replace_destination("fwd", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            wrong_type,
+            "Cannot replace destination 'fwd': the blueprint has no such destination. Add it before replacing it."
+        );
+
+        // Nothing changed, and a replacement that declares what it replaces is accepted.
+        assert_eq!(blueprint.snapshot().unwrap(), before);
+        blueprint
+            .replace_encoder(
+                "enc",
+                TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Http),
+            )
+            .unwrap()
+            .replace_forwarder("fwdr", TestForwarderBuilder::with_input_type(PayloadType::Http))
+            .unwrap()
+            .replace_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap();
+        assert_eq!(blueprint.snapshot().unwrap(), before);
     }
 
     #[tokio::test]

@@ -243,36 +243,7 @@ fn changes_that_break_the_default_program_are_rejected() {
 /// their `out` ports to `emit` nodes named `<gateway>_out` by `derived_terminal_id`, as the host's lowering writes
 /// them.
 fn with_opaque_gateways() -> Value {
-    let mut value = serde_json::from_str::<Value>(DEFAULT_PROGRAM_JSON).unwrap();
-    let all = json!({"kinds": "all", "timestamps": "mixed"});
-    let counters = json!({"kinds": ["counter", "rate", "gauge", "set"], "timestamps": "mixed"});
-    let gateways = [
-        ("metrics_routing_filter_0", all.clone()),
-        ("metrics_routing_filter_1", all.clone()),
-        ("mrf_metrics_gateway", all.clone()),
-        ("af_metrics_gateway", counters),
-    ];
-
-    let nodes = value["nodes"].as_array_mut().unwrap();
-    nodes.retain(|node| !gateways.iter().any(|(id, _)| node["id"] == format!("{}_false", id)));
-    for node in nodes.iter_mut() {
-        if let Some((id, output)) = gateways.iter().find(|(id, _)| node["id"] == *id) {
-            node["op"] = json!("opaque_host");
-            node["params"] = json!({"component": id, "input": all, "outputs": {"out": output}});
-        }
-        if let Some((id, _)) = gateways.iter().find(|(id, _)| node["id"] == format!("{}_true", id)) {
-            node["id"] = json!(format!("{}_out", id));
-        }
-    }
-    let edges = value["edges"].as_array_mut().unwrap();
-    edges.retain(|edge| !gateways.iter().any(|(id, _)| edge["from"] == format!("{}.false", id)));
-    for edge in edges.iter_mut() {
-        if let Some((id, _)) = gateways.iter().find(|(id, _)| edge["from"] == format!("{}.true", id)) {
-            edge["from"] = json!(format!("{}.out", id));
-            edge["to"] = json!(format!("{}_out.in", id));
-        }
-    }
-    value
+    crate::testing::with_opaque_gateways(DEFAULT_PROGRAM_JSON)
 }
 
 #[test]

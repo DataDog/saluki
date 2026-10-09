@@ -342,6 +342,14 @@ async fn metrics_recorded_outside_kernels_name_ports_and_bindings_of_their_nodes
                     MetricSource::BindingLength(binding) | MetricSource::MatcherEntries { binding, .. } => {
                         assert!(has_binding(binding), "{}: not bound to `{}`", what, binding)
                     }
+                    MetricSource::TagProjectionRules => {
+                        assert_eq!(node.op.as_str(), names::TAG_PROJECTION, "{}", what);
+                        assert!(
+                            has_binding("dogstatsd.tag_filterlist") && has_binding("dogstatsd.tag_value_allowlist"),
+                            "{}: the rules are not bound",
+                            what
+                        );
+                    }
                     MetricSource::BindingChanges(changed) => {
                         assert!(!changed.is_empty(), "{}", what);
                         for binding in changed {

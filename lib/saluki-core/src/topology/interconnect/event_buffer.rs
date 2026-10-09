@@ -90,6 +90,12 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         self.header = BatchHeader::default();
     }
 
+    /// Makes room for `additional` more events, up to the buffer's fixed capacity, so that pushing them allocates at
+    /// most once.
+    pub fn reserve(&mut self, additional: usize) {
+        self.events.reserve(additional.min(N - self.len()));
+    }
+
     /// Attempts to append an event to the back of the event buffer.
     ///
     /// If the event buffer is full, `Some` is returned with the original event.
@@ -170,16 +176,53 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
         F: FnMut(&mut Event) -> bool,
     {
         let mut seen_event_types = EventType::none();
-        self.events.retain_mut(|event| {
+        // A `Vec` keeps an event by moving it once, where a `VecDeque` swaps it into place. Converting between the two
+        // keeps the storage, and moves nothing for a buffer filled from its front, as buffers almost always are.
+        let mut events = Vec::from(std::mem::take(&mut self.events));
+        events.retain_mut(|event| {
             let kept = keep(event);
             if kept {
                 seen_event_types |= event.event_type();
             }
             kept
         });
+        self.events = VecDeque::from(events);
 
         // Update the seen event types to reflect what's left over.
         self.seen_event_types = seen_event_types;
+    }
+
+    /// Moves the events for which `take` returns `true` to the back of `other`, preserving the order of both the moved
+    /// events and the events that stay.
+    ///
+    /// `take` is called once for each event, from front to back. No event is cloned, and this buffer reuses its own
+    /// storage for the events that stay. An event `other` has no room for stays in this buffer. Neither buffer's
+    /// header changes.
+    pub fn move_into<F>(&mut self, other: &mut Self, mut take: F)
+    where
+        F: FnMut(&Event) -> bool,
+    {
+        let mut room = other.capacity() - other.len();
+        // Events that stay move at most once, toward the front, into the storage this buffer already has; see
+        // `retain` for the conversions.
+        let mut events = Vec::from(std::mem::take(&mut self.events));
+        let moved = events.extract_if(.., |event| {
+            let taken = take(event) && room > 0;
+            room -= usize::from(taken);
+            taken
+        });
+        for event in moved {
+            other.seen_event_types |= event.event_type();
+            other.events.push_back(event);
+        }
+
+        // Update the seen event types to reflect what's left over.
+        let mut seen_event_types = EventType::none();
+        for event in &events {
+            seen_event_types |= event.event_type();
+        }
+        self.seen_event_types = seen_event_types;
+        self.events = VecDeque::from(events);
     }
 }
 
@@ -538,7 +581,7 @@ mod tests {
         Event::Metric(Metric::counter(name, 1.0))
     }
 
-    fn names(buffer: &FixedSizeEventBuffer<10>) -> Vec<String> {
+    fn names<const N: usize>(buffer: &FixedSizeEventBuffer<N>) -> Vec<String> {
         buffer
             .into_iter()
             .map(|event| event.try_as_metric().unwrap().context().name().to_string())
@@ -665,6 +708,68 @@ mod tests {
         buffer.retain(|_| false);
         assert!(buffer.is_empty());
         assert!(!buffer.has_event_type(EventType::Metric));
+    }
+
+    #[test]
+    fn move_into_moves_matching_events_keeping_the_order_of_both_buffers() {
+        let generation = Arc::new(GenerationToken::new(GenerationId::new(3)));
+        let mut buffer = FixedSizeEventBuffer::<10>::default().with_header(stamped_header(&generation));
+        for name in ["a", "move_b", "c", "move_d", "e"] {
+            assert!(buffer.try_push(metric(name)).is_none());
+        }
+        assert!(buffer
+            .try_push(Event::EventD(EventD::new("move_event", "text")))
+            .is_none());
+        let mut other = FixedSizeEventBuffer::<10>::with_capacity(3);
+        assert!(other.try_push(metric("already_there")).is_none());
+
+        let mut calls = Vec::new();
+        buffer.move_into(&mut other, |event| {
+            let name = match event {
+                Event::Metric(metric) => metric.context().name().to_string(),
+                _ => "event".to_string(),
+            };
+            calls.push(name.clone());
+            name.starts_with("move_") || name == "event"
+        });
+
+        // `take` sees every event once, front to back.
+        assert_eq!(calls, vec!["a", "move_b", "c", "move_d", "e", "event"]);
+        assert_eq!(names(&buffer), vec!["a", "c", "e"]);
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert_eq!(buffer.len(), 3);
+        // Moved events follow what `other` already held, in their original order.
+        assert_eq!(other.len(), 4);
+        assert!(other.has_event_type(EventType::Metric));
+        assert!(other.has_event_type(EventType::EventD));
+        let moved = (&other)
+            .into_iter()
+            .map(|event| match event {
+                Event::Metric(metric) => metric.context().name().to_string(),
+                _ => "event".to_string(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(moved, vec!["already_there", "move_b", "move_d", "event"]);
+        // Headers stay where they were.
+        assert_eq!(buffer.header().generation_id(), Some(GenerationId::new(3)));
+        assert!(!other.header().is_stamped());
+    }
+
+    #[test]
+    fn move_into_keeps_the_events_a_full_buffer_cannot_take() {
+        let mut buffer = FixedSizeEventBuffer::<4>::default();
+        for name in ["a", "b", "c"] {
+            assert!(buffer.try_push(metric(name)).is_none());
+        }
+        let mut other = FixedSizeEventBuffer::<4>::default();
+        for name in ["x", "y", "z"] {
+            assert!(other.try_push(metric(name)).is_none());
+        }
+
+        buffer.move_into(&mut other, |_| true);
+        assert_eq!(names(&other), vec!["x", "y", "z", "a"]);
+        assert_eq!(names(&buffer), vec!["b", "c"]);
     }
 
     #[test]

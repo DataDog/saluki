@@ -1,6 +1,6 @@
 //! Structural comparison of lowered plans with the legacy topology blueprint.
 //!
-//! For every configuration of the matrix, the legacy topology is built by `run.rs`'s own `create_topology`, with the
+//! For every configuration of the matrix, the legacy topology is built by `run.rs`'s `create_legacy_topology`, with the
 //! local configuration as the authority and an environment provider that needs no Core Agent, and its blueprint
 //! snapshot is compared with the lowered plan through the mapping below.
 //!
@@ -57,7 +57,7 @@ use super::{
     Lowering,
 };
 use crate::{
-    cli::run::create_topology,
+    cli::run::create_legacy_topology,
     config::remote_agent_client_configuration,
     programmable_metrics::{
         outputs::{NativeOutputs, OutputKind},
@@ -213,7 +213,7 @@ async fn legacy_and_lowered(yaml: &str) -> (BlueprintSnapshot, Plan, NativeOutpu
     let env = environment_provider(&config).await;
     let client = (!config.control.standalone_mode).then(|| remote_agent_client_configuration(&config).unwrap());
     let registry = ComponentRegistry::default();
-    let (blueprint, _) = create_topology(&system, client.as_ref(), &env, &registry)
+    let (blueprint, _) = create_legacy_topology(&system, client.as_ref(), &env, &registry)
         .await
         .expect("the legacy topology builds");
     let snapshot = blueprint.snapshot().expect("the blueprint is not initialized");

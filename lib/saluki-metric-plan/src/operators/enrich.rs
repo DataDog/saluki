@@ -96,6 +96,11 @@ impl OperatorDef for HostTags {
         }
     }
 
+    fn cost(&self, _params: &DecodedParams) -> u32 {
+        // Until its deadline, every metric's tags are extended.
+        30
+    }
+
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
         let tags = params.list("tags").and_then(|tags| {
             tags.iter()

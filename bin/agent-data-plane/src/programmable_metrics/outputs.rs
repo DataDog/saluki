@@ -262,6 +262,7 @@ impl NativeOutputs {
     }
 
     /// Returns the endpoint routing groups, in order.
+    #[cfg(test)]
     pub fn routing_groups(&self) -> impl Iterator<Item = &RoutingGroup> {
         self.outputs.iter().filter_map(|output| match &output.kind {
             OutputKind::RoutingGroup(group) => Some(group),

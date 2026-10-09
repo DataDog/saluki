@@ -1,7 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use agent_data_plane_config::{
@@ -13,7 +13,9 @@ use agent_data_plane_config::{
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
-use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
+#[cfg(test)]
+use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
+use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration, MemoryMode as AppMemoryMode},
     bootstrap::BootstrapGuard,
@@ -22,13 +24,11 @@ use saluki_app::{
 };
 use saluki_components::{
     config::{
-        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
-        MrfConfiguration,
+        metrics_endpoint_routing::EndpointAllowlistGroup, AutoscalingFailoverConfiguration,
+        MetricsEndpointRoutingConfiguration, MrfConfiguration,
     },
     decoders::otlp::OtlpDecoderConfiguration,
-    destinations::{
-        DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
-    },
+    destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
@@ -42,10 +42,11 @@ use saluki_components::{
         OtlpConfiguration,
     },
     transforms::{
-        aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
-        AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
+        ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
+        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
+        HostEnrichmentConfiguration, ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        TraceTagReplacerConfiguration,
     },
 };
 use saluki_core::{
@@ -63,23 +64,28 @@ use tracing::{debug, info, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration, dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
-        dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        liveness::LivenessConfiguration, metric_filter::MetricFilterConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        static_tags::resolve_static_tags, tag_filterlist::TagFilterlistConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration, liveness::LivenessConfiguration,
+        metric_filter::MetricFilterConfiguration, ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, static_tags::resolve_static_tags,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
         ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
     },
+    programmable_metrics::{installer::ProgrammableMetrics, topology::PlanTopology},
 };
 use crate::{
     config::{remote_agent_client_configuration, DataPlaneConfiguration},
     internal::env::ADPEnvironmentProvider,
 };
+
+// The legacy metrics path, built from native components: a differential reference for the plan-driven one.
+#[cfg(test)]
+mod legacy;
+
+/// The name of the primary topology, which every component's identity starts with.
+pub(crate) const PRIMARY_TOPOLOGY: &str = "primary";
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -91,8 +97,10 @@ pub struct RunCommand {
 }
 
 /// Entrypoint for the `run` commands.
+///
+/// `started` and `started_at` are the monotonic and the wall-clock time at which the process started.
 pub async fn handle_run_command(
-    started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    started: Instant, started_at: SystemTime, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
@@ -196,12 +204,23 @@ pub async fn handle_run_command(
     )
     .await?;
 
+    // Lower the metrics configuration into the default program, which the metrics path of the topology is built from,
+    // and prepare the installer that keeps it current as the configuration changes.
+    let mut programmable_metrics = ProgrammableMetrics::boot(
+        started_at,
+        &config_sys,
+        &env_provider,
+        remote_agent_client_config.as_ref(),
+        &component_registry,
+    )
+    .await?;
+
     // Create the blueprint for our primary topology.
     let (mut blueprint, control_surfaces) = create_topology(
         &config_sys,
-        remote_agent_client_config.as_ref(),
         &env_provider,
         &component_registry,
+        programmable_metrics.as_mut(),
     )
     .await?;
 
@@ -279,6 +298,12 @@ pub async fn handle_run_command(
         internal_supervisor.add_worker(ConfigUpdatesWorker::new(config_updates));
     }
 
+    // Install a new generation of the metrics plan whenever a configuration change changes it. The installer's state
+    // lives outside the worker, so a restart of the worker continues where it stopped.
+    if let Some(programmable_metrics) = programmable_metrics {
+        internal_supervisor.add_worker(programmable_metrics.into_installer());
+    }
+
     if let Some(env_supervisor) = maybe_env_supervisor {
         internal_supervisor.add_worker(env_supervisor);
     }
@@ -321,13 +346,135 @@ pub async fn handle_run_command(
     }
 }
 
+/// Creates the blueprint of the primary topology.
+///
+/// When the configuration requires a metrics pipeline, `programmable_metrics` is what [`ProgrammableMetrics::boot`]
+/// prepared for it: the metrics path is built from the default program's physical frame. Everything else is built
+/// from native components.
+///
+/// # Errors
+///
+/// Returns an error if a component cannot be configured, or if the metrics pipeline is required and no metrics path
+/// was prepared.
 pub(crate) async fn create_topology(
+    config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    programmable_metrics: Option<&mut ProgrammableMetrics>,
+) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+    let metrics = match programmable_metrics {
+        Some(programmable_metrics) => MetricsWiring::Plan(PlanTopology::new(programmable_metrics)),
+        None => MetricsWiring::None,
+    };
+    assemble_topology(config_system, env_provider, component_registry, metrics).await
+}
+
+/// Creates the blueprint of the primary topology with the legacy metrics path, built from native components as before
+/// the plan-driven topology: a differential reference for tests.
+#[cfg(test)]
+pub(crate) async fn create_legacy_topology(
     config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
     env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+    let metrics = legacy::LegacyMetrics::new(config_system, remote_agent_client_config, env_provider);
+    assemble_topology(
+        config_system,
+        env_provider,
+        component_registry,
+        MetricsWiring::Legacy(metrics),
+    )
+    .await
+}
+
+/// How the metrics path of the topology is built.
+///
+/// The pipelines that feed the metrics path, and the parts of the DogStatsD pipeline outside it, are built the same
+/// way whatever builds the metrics path, through these hooks.
+enum MetricsWiring<'a> {
+    /// No metrics path was prepared: the configuration requires no metrics pipeline.
+    None,
+
+    /// The plan-driven metrics path, built from the default program's physical frame.
+    Plan(PlanTopology<'a>),
+
+    /// The legacy metrics path, built from native components: a differential reference for tests.
+    #[cfg(test)]
+    Legacy(legacy::LegacyMetrics<'a>),
+}
+
+impl MetricsWiring<'_> {
+    /// Adds the metrics outputs, before the pipelines that feed the metrics path are added.
+    async fn add_baseline(
+        &mut self, blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
+    ) -> Result<(), GenericError> {
+        match self {
+            Self::None => Err(generic_error!(
+                "The metrics pipeline is required, but no metrics path was prepared for it; this is a bug."
+            )),
+            Self::Plan(plan) => plan.add_outputs(blueprint, config_system, shared),
+            #[cfg(test)]
+            Self::Legacy(legacy) => legacy.add_baseline(blueprint, config_system, shared).await,
+        }
+    }
+
+    /// Registers a component output that carries metrics into the metrics path, returning the component to connect it
+    /// to, if the metrics path does not connect it itself.
+    ///
+    /// The plan-driven metrics path connects every output its frame reads itself, and checks that the frame reads
+    /// every output registered here.
+    fn metrics_source(&mut self, output: &str) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Plan(plan) => {
+                plan.add_source(output);
+                None
+            }
+            #[cfg(test)]
+            Self::Legacy(_) => Some(legacy::METRICS_DESTINATION),
+        }
+    }
+
+    /// Adds the DogStatsD part of the metrics path, once the DogStatsD source exists, and returns the handle of
+    /// DogStatsD aggregation's context snapshots.
+    fn add_dogstatsd(
+        &mut self, blueprint: &mut TopologyBlueprint, typed: &SalukiConfiguration,
+    ) -> Result<AggregateContextSnapshotHandle, GenericError> {
+        match self {
+            Self::None => Err(generic_error!(
+                "The DogStatsD pipeline is enabled, but no metrics path was prepared for it; this is a bug."
+            )),
+            Self::Plan(plan) => plan.add_dogstatsd(blueprint, typed),
+            #[cfg(test)]
+            Self::Legacy(legacy) => legacy.add_dogstatsd(blueprint, typed),
+        }
+    }
+
+    /// Completes the metrics path, once every component feeding it exists.
+    fn finish(self, blueprint: &mut TopologyBlueprint) -> Result<(), GenericError> {
+        match self {
+            Self::None => Ok(()),
+            Self::Plan(plan) => plan.finish(blueprint),
+            #[cfg(test)]
+            Self::Legacy(_) => Ok(()),
+        }
+    }
+}
+
+/// Connects `output`, which carries metrics, into the metrics path.
+fn connect_metrics_source(
+    blueprint: &mut TopologyBlueprint, metrics: &mut MetricsWiring<'_>, output: &str,
+) -> Result<(), GenericError> {
+    if let Some(destination) = metrics.metrics_source(output) {
+        blueprint.connect_components(output, destination)?;
+    }
+    Ok(())
+}
+
+async fn assemble_topology(
+    config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    mut metrics: MetricsWiring<'_>,
+) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
-    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    let mut blueprint = TopologyBlueprint::new(PRIMARY_TOPOLOGY, component_registry);
     blueprint.with_shutdown_timeout(dp.stop_timeout());
     let shared = config.shared.clone();
 
@@ -364,14 +511,7 @@ pub(crate) async fn create_topology(
     }
 
     if dp.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(
-            &mut blueprint,
-            config_system,
-            remote_agent_client_config,
-            &shared,
-            env_provider,
-        )
-        .await?;
+        metrics.add_baseline(&mut blueprint, config_system, &shared).await?;
     }
 
     if dp.logs_pipeline_required() {
@@ -387,50 +527,61 @@ pub(crate) async fn create_topology(
     }
 
     if dp.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, &mut metrics).await?;
     }
 
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
     // OTLP proxy mode must not construct liveness or output paths that it does not otherwise need.
     if !dp.standalone_mode() {
         let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
-        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
+        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags, &mut metrics).await?;
     }
 
     // Now we move on to our actual data pipelines.
     if dp.checks_enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, &config.domains.checks.ipc_endpoint, env_provider).await?;
+        add_checks_pipeline_to_blueprint(
+            &mut blueprint,
+            &config.domains.checks.ipc_endpoint,
+            env_provider,
+            &mut metrics,
+        )
+        .await?;
     }
 
     if dp.dogstatsd_enabled() {
-        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        let dsd_control_surface =
+            add_dsd_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, &mut metrics).await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
     if dp.otlp_enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider, &mut metrics).await?;
+    }
+
+    if dp.metrics_pipeline_required() {
+        metrics.finish(&mut blueprint)?;
     }
 
     Ok((blueprint, control_surfaces))
 }
 
-const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
-
 async fn add_liveness_source_to_blueprint(
     blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
+    metrics: &mut MetricsWiring<'_>,
 ) -> Result<(), GenericError> {
     let liveness_config = LivenessConfiguration::from_environment_provider(env_provider, add_container_tags).await?;
 
     blueprint
         .add_source("liveness_in", liveness_config)?
-        .connect_components("liveness_in.metrics", LIVENESS_METRICS_DESTINATION)?
         .connect_components("liveness_in.service_checks", "dd_service_checks_encode")?;
+    connect_metrics_source(blueprint, metrics, "liveness_in.metrics")?;
 
     Ok(())
 }
 
 async fn add_checks_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, checks_ipc_endpoint: &str, env_provider: &ADPEnvironmentProvider,
+    metrics: &mut MetricsWiring<'_>,
 ) -> Result<(), GenericError> {
     let grpc_endpoint = ListenAddress::try_from(checks_ipc_endpoint)
         .map_err(|error| generic_error!("Invalid checks IPC endpoint `{checks_ipc_endpoint}`: {error}"))?;
@@ -443,53 +594,59 @@ async fn add_checks_pipeline_to_blueprint(
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
-        .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
         .connect_components("checks_ipc_in.logs", "dd_logs_encode")?
         .connect_components("checks_ipc_in.events", "dd_events_encode")?
         .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
+    connect_metrics_source(blueprint, metrics, "checks_ipc_in.metrics")?;
 
     Ok(())
 }
 
-async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
-    remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
-    env_provider: &ADPEnvironmentProvider,
-) -> Result<(), GenericError> {
-    // Create the back half of the metrics processing pipeline.
-    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let mut metrics_enrich_config =
-        ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
-
-    let config = config_system.config();
-    let dp = DataPlaneConfiguration::from_configuration(&config);
-    if !dp.standalone_mode() {
-        let client_config = remote_agent_client_config
-            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
-        let host_tags_config = HostTagsConfiguration::new(client_config.clone(), shared.tags.expected_tags_duration);
-        if host_tags_config.enabled() {
-            metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
-        }
+/// Returns the encoder of the main metrics output: every endpoint except those an endpoint routing policy selects.
+pub(crate) fn main_metrics_encoder(
+    shared: &SharedConfiguration, routing: &MetricsEndpointRoutingConfiguration,
+) -> DatadogMetricsConfiguration {
+    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
+    if !routing.selected_endpoints().is_empty() {
+        dd_metrics_config = dd_metrics_config.with_endpoint_routing(MetricsEndpointRouting::AllExcept(
+            routing.selected_endpoints().iter().cloned().collect(),
+        ));
     }
-
-    let endpoint_routing = MetricsEndpointRoutingConfiguration::from_configuration(
-        &config.domains.metrics_endpoint_routing.metric_allowlists,
-        &config.domains.metrics_endpoint_routing.metric_prefix_allowlists,
-        &shared.endpoints,
-    )?;
-    blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
-
-    add_metrics_output_pipelines_to_blueprint(blueprint, shared, &endpoint_routing)?;
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
-
-    Ok(())
+    dd_metrics_config
 }
 
-fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
-    mrf: &multi_region_failover::Domain,
-) -> Result<(), GenericError> {
+/// Returns the filter and the encoder of an endpoint routing group's branch, which sends what the group's policy
+/// allows to the group's endpoints only.
+pub(crate) fn routing_group_branch(
+    shared: &SharedConfiguration, policy: &EndpointAllowlistGroup,
+) -> (MetricFilterConfiguration, DatadogMetricsConfiguration) {
+    let filter_config = MetricFilterConfiguration::for_allowlist(
+        policy.metric_allowlist.clone(),
+        policy.metric_prefix_allowlist.clone(),
+    );
+    let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
+        .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
+    (filter_config, metrics_config)
+}
+
+/// The native components of a metrics branch behind a gateway: the gateway, the branch's encoder, and its forwarder.
+pub(crate) struct MetricsBranch<G, F> {
+    /// The gateway, which selects what reaches the branch.
+    pub(crate) gateway: G,
+
+    /// The branch's encoder.
+    pub(crate) encoder: DatadogMetricsConfiguration,
+
+    /// The branch's forwarder.
+    pub(crate) forwarder: F,
+}
+
+/// Returns the Multi-Region Failover metrics branch, if it is wired: when its static endpoint override resolves.
+///
+/// Logs a warning when Multi-Region Failover is enabled but the branch cannot be wired.
+pub(crate) fn mrf_metrics_branch(
+    config_system: &ConfigurationSystem, shared: &SharedConfiguration, mrf: &multi_region_failover::Domain,
+) -> Option<MetricsBranch<MetricFilterConfiguration, DatadogForwarderConfiguration>> {
     let mrf_config = MrfConfiguration::from_configuration(mrf);
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
@@ -502,17 +659,16 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             );
         }
 
-        return Ok(());
+        return None;
     };
 
-    let mrf_gateway_config = MetricFilterConfiguration::for_mrf(
+    let gateway = MetricFilterConfiguration::for_mrf(
         mrf_config.is_enabled(),
         config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
     );
-    let mrf_metrics_config =
+    let encoder =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
-
-    let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
+    let forwarder = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
         mrf_dd_url,
         mrf_api_key,
@@ -520,71 +676,33 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         config_system.live(|config| &config.shared.secrets),
     );
 
-    blueprint
-        .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
-        .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
-        .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
-        .connect_components_in_order([
-            "metrics_enrich",
-            "mrf_metrics_gateway",
-            "mrf_metrics_encode",
-            "mrf_dd_out",
-        ])?;
-
-    Ok(())
+    Some(MetricsBranch {
+        gateway,
+        encoder,
+        forwarder,
+    })
 }
 
-// Build both sides of metric filtering together: the ordinary stream excludes selected endpoints, and each
-// filtered stream targets only its policy's endpoints. This applies to both series and sketches.
-fn add_metrics_output_pipelines_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, routing: &MetricsEndpointRoutingConfiguration,
-) -> Result<(), GenericError> {
-    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
-    if !routing.selected_endpoints().is_empty() {
-        dd_metrics_config = dd_metrics_config.with_endpoint_routing(MetricsEndpointRouting::AllExcept(
-            routing.selected_endpoints().iter().cloned().collect(),
-        ));
-    }
-    blueprint
-        .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
-
-    // Each policy group needs unique component IDs; indices keep endpoint names out of those IDs.
-    for (index, policy) in routing.policy_groups().iter().enumerate() {
-        let filter_id = format!("metrics_routing_filter_{index}");
-        let encoder_id = format!("metrics_routing_encode_{index}");
-        let filter_config = MetricFilterConfiguration::for_allowlist(
-            policy.metric_allowlist.clone(),
-            policy.metric_prefix_allowlist.clone(),
-        );
-        let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
-            .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
-
-        blueprint
-            .add_transform(filter_id.as_str(), filter_config)?
-            .add_encoder(encoder_id.as_str(), metrics_config)?
-            .connect_components_in_order(["metrics_enrich", filter_id.as_str(), encoder_id.as_str(), "dd_out"])?;
-    }
-
-    Ok(())
-}
-
-fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
-) -> Result<(), GenericError> {
+/// Returns the autoscaling failover metrics branch, if it is wired: when autoscaling failover requests it, and the
+/// Cluster Agent's endpoint and token, `cluster_agent`, are known.
+///
+/// Logs a warning when the branch is requested but the Cluster Agent cannot be reached.
+///
+/// # Errors
+///
+/// Returns an error if the Cluster Agent forwarder cannot be configured, such as for a token that cannot be sent.
+pub(crate) fn autoscaling_failover_branch(
+    shared: &SharedConfiguration, cluster_agent: Option<(String, String)>,
+) -> Result<
+    Option<MetricsBranch<AutoscalingFailoverGatewayConfiguration, ClusterAgentForwarderConfiguration>>,
+    GenericError,
+> {
     let af_config = AutoscalingFailoverConfiguration::new(
         shared.autoscaling_failover.enabled,
         shared.autoscaling_failover.metrics.clone(),
     );
-    let cluster_agent = &shared.cluster_agent;
-    let ca_config = ClusterAgentConfiguration {
-        enabled: cluster_agent.enabled,
-        url: cluster_agent.url.clone(),
-        auth_token: cluster_agent.auth_token.clone(),
-        kubernetes_service_name: cluster_agent.kubernetes_service_name.clone(),
-    };
 
-    let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
+    let Some((ca_url, ca_token)) = cluster_agent else {
         if af_config.is_branch_requested() {
             warn!(
                 "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
@@ -594,31 +712,53 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
             );
         }
 
-        return Ok(());
+        return Ok(None);
     };
 
     if !af_config.is_branch_requested() {
-        return Ok(());
+        return Ok(None);
     }
 
-    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
-    let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
-            .error_context("Failed to configure Cluster Agent forwarder.")?;
+    let gateway = AutoscalingFailoverGatewayConfiguration::new(af_config);
+    let encoder = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
+    let forwarder = ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
+        .error_context("Failed to configure Cluster Agent forwarder.")?;
 
-    blueprint
-        .add_transform("af_metrics_gateway", af_gateway_config)?
-        .add_encoder("af_metrics_encode", af_metrics_config)?
-        .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
-        .connect_components_in_order([
-            "metrics_enrich",
-            "af_metrics_gateway",
-            "af_metrics_encode",
-            "cluster_agent_out",
-        ])?;
+    Ok(Some(MetricsBranch {
+        gateway,
+        encoder,
+        forwarder,
+    }))
+}
 
-    Ok(())
+/// Returns the configuration of DogStatsD aggregation, and the handle to its context snapshots.
+///
+/// # Errors
+///
+/// Returns an error if the configured histogram statistics cannot be computed.
+pub(crate) fn dogstatsd_aggregate_configuration(
+    typed: &SalukiConfiguration,
+) -> Result<(AggregateConfiguration, AggregateContextSnapshotHandle), GenericError> {
+    let aggregation = &typed.domains.dogstatsd.aggregation;
+    let histogram = &typed.shared.metrics_encoding.histogram;
+    let dsd_hist_config = HistogramConfiguration::try_new(
+        &histogram.aggregates,
+        &histogram.percentiles,
+        histogram.copy_to_distribution,
+        histogram.copy_to_distribution_prefix.clone(),
+    )
+    .error_context("Failed to configure histogram aggregation.")?;
+    let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
+    let dsd_agg_config = AggregateConfiguration {
+        window_duration_seconds: aggregation.window_duration_seconds,
+        primary_flush_interval: aggregation.flush_interval,
+        context_limit: aggregation.context_limit,
+        flush_open_windows: aggregation.flush_open_windows,
+        counter_expiry_seconds: aggregation.counter_expiry_seconds,
+        hist_config: dsd_hist_config,
+        context_snapshot_receiver: dsd_context_snapshot_receiver,
+    };
+    Ok((dsd_agg_config, dsd_context_snapshot_handle))
 }
 
 fn add_baseline_logs_pipeline_to_blueprint(
@@ -683,6 +823,7 @@ fn add_baseline_service_checks_pipeline_to_blueprint(
 
 async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    metrics: &mut MetricsWiring<'_>,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dd_traces_config = DatadogTraceConfiguration::from_configuration(
@@ -738,11 +879,11 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .add_encoder("dd_traces_encode", dd_traces_config)?
         .connect_components("traces_enrich", "trace_sampler")?
         .connect_components("trace_sampler", ["dd_apm_stats", "dd_traces_encode"])?
-        // The sampler reports its sampling telemetry as metric events through this dedicated
-        // output, delivering the metrics through the metrics pipeline to the backend.
-        .connect_components("trace_sampler.metrics", "metrics_enrich")?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
+    // The sampler reports its sampling telemetry as metric events through this dedicated output, delivering the
+    // metrics through the metrics pipeline to the backend.
+    connect_metrics_source(blueprint, metrics, "trace_sampler.metrics")?;
 
     Ok(())
 }
@@ -884,6 +1025,7 @@ pub(crate) fn dogstatsd_mapper_configuration(mapper: &dogstatsd::Mapper) -> DogS
 
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    metrics: &mut MetricsWiring<'_>,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -896,17 +1038,10 @@ async fn add_dsd_pipeline_to_blueprint(
     //               │                 │                          │ service checks           │ events
     //               │                 ▼                          ▼                          ▼
     //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │     DSD Enrich      │    │     DSD Service     │    │     DSD Events      │
-    //               │      │ (chained transform) │    │    Checks (encoder) │    │      (encoder)      │
-    //               │      │┌───────────────────┐│    └─────────────────────┘    └─────────────────────┘
-    //               │      ││    DSD Mapper     ││               │                          │
-    //               │      │└───────────────────┘│               │                          │
-    //               │      └─────────────────────┘               │                          │
-    //               │                 │                          │                          │
-    //               │                 ▼                          │                          │
-    //               │      ┌─────────────────────┐               │                          │
-    //               │      │  DSD Prefix/Filter  │               │                          │
-    //               │      │     (transform)     │               │                          │
+    //               │      │  DSD pre-aggregation│    │     DSD Service     │    │     DSD Events      │
+    //               │      │      (region)       │    │    Checks (encoder) │    │      (encoder)      │
+    //               │      │ mapper, prefix and  │    └─────────────────────┘    └─────────────────────┘
+    //               │      │ filter, tag filter  │               │                          │
     //               │      └─────────────────────┘               │                          │
     //               │                 │                          │                          │
     //               │                 │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐           │
@@ -919,6 +1054,9 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │      DSD Stats      │    │                           Forwarder                             │
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    //
+    // The metrics path, from the source's `metrics` output to the encoders, is the metrics plan's: the metrics wiring
+    // adds it. Everything else is added here.
 
     let default_hostname = env_provider
         .host()
@@ -935,50 +1073,9 @@ async fn add_dsd_pipeline_to_blueprint(
         dsd_capture_control.clone(),
         dsd_replay_control.clone(),
     );
-    let prefix_filter = &typed.domains.dogstatsd.prefix_filter;
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::new(
-        prefix_filter.metric_namespace.clone(),
-        prefix_filter.metric_namespace_blocklist.clone(),
-        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
-    );
-    let dsd_mapper_config = dogstatsd_mapper_configuration(&typed.domains.dogstatsd.mapper);
-    let dsd_enrich_config =
-        ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::new(
-        config_system.live(|config| &config.domains.dogstatsd.tag_filterlist),
-        &typed.domains.dogstatsd.tag_value_allowlist,
-        typed.domains.dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
-    )
-    .error_context("Failed to configure metric tag filterlist transform.")?;
-    let aggregation = &typed.domains.dogstatsd.aggregation;
-    let histogram = &typed.shared.metrics_encoding.histogram;
-    let dsd_hist_config = HistogramConfiguration::try_new(
-        &histogram.aggregates,
-        &histogram.percentiles,
-        histogram.copy_to_distribution,
-        histogram.copy_to_distribution_prefix.clone(),
-    )
-    .error_context("Failed to configure histogram aggregation.")?;
-    let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
-    let dsd_agg_config = AggregateConfiguration {
-        window_duration_seconds: aggregation.window_duration_seconds,
-        primary_flush_interval: aggregation.flush_interval,
-        context_limit: aggregation.context_limit,
-        flush_open_windows: aggregation.flush_open_windows,
-        counter_expiry_seconds: aggregation.counter_expiry_seconds,
-        hist_config: dsd_hist_config,
-        context_snapshot_receiver: dsd_context_snapshot_receiver,
-    };
-    let dsd_no_agg_split_config = DogStatsDNoAggSplitConfiguration::new(
-        aggregation.passthrough_idle_flush_timeout,
-        aggregation.window_duration_seconds,
-    );
-    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
-        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
-        &histogram.aggregates,
-        &histogram.percentiles,
-    )
-    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    blueprint.add_source("dsd_in", dsd_config)?;
+    let dsd_context_snapshot_handle = metrics.add_dogstatsd(blueprint, &typed)?;
+
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
@@ -1019,16 +1116,9 @@ async fn add_dsd_pipeline_to_blueprint(
 
     blueprint
         // Components.
-        .add_source("dsd_in", dsd_config)?
-        .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
-        .add_transform("dsd_enrich", dsd_enrich_config)?
-        .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
-        .add_transform("dsd_agg", dsd_agg_config)?
-        .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
-        .add_destination("dsd_client_telemetry_out", DogStatsDClientTelemetryConfiguration)?
         // Events.
         .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
         // Service checks.
@@ -1037,47 +1127,12 @@ async fn add_dsd_pipeline_to_blueprint(
             "service_checks_enrich",
             "dd_service_checks_encode",
         ])?
-        // DogStatsD Stats.
-        .connect_components("dsd_in.metrics", "dsd_stats_out")?
-        // Post-aggregation client telemetry for RAR/COAT.
-        .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
-
-    // Metrics.
-    //
-    // `dsd_no_agg_split` only earns a place in the pipeline when the no-aggregation pipeline is enabled. With it
-    // disabled, every metric is aggregated, so the split would have nothing to route out of the aggregation path and
-    // would sit in the hottest part of the process as a pure forwarder.
-    if aggregation.no_aggregation_pipeline {
-        blueprint
-            .add_transform("dsd_no_agg_split", dsd_no_agg_split_config)?
-            .connect_components_in_order([
-                "dsd_in.metrics",
-                "dsd_enrich",
-                "dsd_prefix_filter",
-                "dsd_no_agg_split",
-                "dsd_tag_filterlist",
-                "dsd_agg",
-                "dsd_post_agg_filter",
-                "metrics_enrich",
-            ])?
-            // Timestamped metrics skip tag filtering and aggregation, rejoining the pipeline after the aggregate
-            // transform.
-            .connect_components("dsd_no_agg_split.passthrough", "dsd_post_agg_filter")?;
-    } else {
-        blueprint.connect_components_in_order([
-            "dsd_in.metrics",
-            "dsd_enrich",
-            "dsd_prefix_filter",
-            "dsd_tag_filterlist",
-            "dsd_agg",
-            "dsd_post_agg_filter",
-            "metrics_enrich",
-        ])?;
-    }
+        // DogStatsD Stats, a tap on every metric the source receives.
+        .connect_components("dsd_in.metrics", "dsd_stats_out")?;
 
     if debug_log.logging_enabled {
         blueprint
-            // DogStatsD debug log.
+            // DogStatsD debug log, another tap.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
@@ -1091,6 +1146,7 @@ async fn add_dsd_pipeline_to_blueprint(
 
 async fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    metrics: &mut MetricsWiring<'_>,
 ) -> Result<(), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -1153,13 +1209,12 @@ async fn add_otlp_pipeline_to_blueprint(
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
-            //
-            // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
-            // to avoid transforming counters into rates.
-            .connect_components("otlp_in.metrics", "metrics_enrich")?
+            // Logs and traces.
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
+        // Metrics enter the metrics path after DogStatsD aggregation, at enrichment, to avoid transforming counters
+        // into rates.
+        connect_metrics_source(blueprint, metrics, "otlp_in.metrics")?;
     }
     Ok(())
 }

@@ -318,6 +318,40 @@ impl PortOutputs {
         buffers.push(buffer);
     }
 
+    /// Writes a whole buffer to `port`, after any events already written to it, without touching its events.
+    ///
+    /// An empty buffer is dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `port` does not exist.
+    pub fn push_buffer(&mut self, port: PortIndex, buffer: EventsBuffer) {
+        let buffers = self.port_mut(port);
+        if !buffer.is_empty() {
+            buffers.push(buffer);
+        }
+    }
+
+    /// Makes room for `additional` more events on `port`, so that writing them one by one with [`push`][Self::push]
+    /// allocates once instead of growing a buffer step by step.
+    ///
+    /// Room is made in the port's last buffer, or, if it has none with room left, in a new one, up to the capacity of
+    /// one buffer. Reserving room for no event does nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `port` does not exist.
+    pub fn reserve(&mut self, port: PortIndex, additional: usize) {
+        let buffers = self.port_mut(port);
+        if additional == 0 {
+            return;
+        }
+        match buffers.last_mut() {
+            Some(buffer) if !buffer.is_full() => buffer.reserve(additional),
+            _ => buffers.push(FixedSizeEventBuffer::with_capacity(additional)),
+        }
+    }
+
     /// Sends the events the kernel leaves in its input to `port` instead of the primary port.
     ///
     /// The choice applies to the next call to [`complete`][Self::complete], which resets it to the primary port.
@@ -571,6 +605,24 @@ impl<'a> Turn<'a> {
     /// Panics if `port` does not exist.
     pub fn push(&mut self, port: PortIndex, event: Event) {
         self.outputs.push(port, event);
+    }
+
+    /// Writes a whole buffer to `port`, without touching its events; see [`PortOutputs::push_buffer`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `port` does not exist.
+    pub fn push_buffer(&mut self, port: PortIndex, buffer: EventsBuffer) {
+        self.outputs.push_buffer(port, buffer);
+    }
+
+    /// Makes room for `additional` more events on `port`; see [`PortOutputs::reserve`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `port` does not exist.
+    pub fn reserve(&mut self, port: PortIndex, additional: usize) {
+        self.outputs.reserve(port, additional);
     }
 
     /// Sends the events left in the input to `port` instead of the primary port, without touching them.

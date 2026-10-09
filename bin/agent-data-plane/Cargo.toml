@@ -48,6 +48,7 @@ saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metric-kernels = { workspace = true }
+saluki-metric-plan = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -86,7 +87,7 @@ saluki-metric-plan = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
 serde_yaml = { workspace = true }
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]

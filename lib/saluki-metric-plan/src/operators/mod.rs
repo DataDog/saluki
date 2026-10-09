@@ -29,6 +29,7 @@
 
 use std::{fmt, sync::Arc};
 
+use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_core::{
     accounting::MemoryBoundsBuilder, components::ComponentContext, execution::Kernel, support::SubsystemIdentifier,
     topology::ComponentId,
@@ -156,6 +157,17 @@ pub trait OperatorDef: Send + Sync {
     /// own bounds. The default declares nothing.
     fn specify_bounds(&self, _params: &DecodedParams, _builder: &mut MemoryBoundsBuilder) {}
 
+    /// Returns an estimate of the work the operator does per event, in nanoseconds, for rewrite R1's cost model.
+    ///
+    /// The estimates come from the stage 3 measurements of the default program's kernels running in a region over a
+    /// DogStatsD-like batch, release build, and are only compared with one another: R1 fuses synchronous neighbors
+    /// into one region as long as the region's estimated cost stays within a budget (see
+    /// [`Frame`][crate::compile::Frame]). Operators that run in host components cost nothing here. The default is
+    /// zero, for operators whose work is negligible next to a kernel's.
+    fn cost(&self, _params: &DecodedParams) -> u32 {
+        0
+    }
+
     /// Returns how to build the operator's kernel, or `None` if it has none.
     ///
     /// The spec captures the parameters; the host supplies the rest when it builds the kernel, in a
@@ -187,26 +199,52 @@ const DETACHED_TOPOLOGY: &str = "plan";
 
 /// What a host supplies when it builds a kernel, besides the parameters the kernel's [`KernelSpec`] captured.
 ///
-/// A kernel reports its telemetry and memory accounting, and names its internal caches, under its node's identity.
-/// The context carries that identity: the node the kernel is built for, and the component context the host reports it
-/// as. In a running topology the host supplies the component context of the native component the node stands for, so a
-/// kernel extracted from a native component keeps that component's telemetry names and labels, whatever region runs
-/// it. A host without a topology, such as the reference interpreter or a test, uses [`detached`][Self::detached].
+/// A kernel reports its telemetry, and names its internal caches, under its node's identity. The context carries that
+/// identity: the node the kernel is built for, and the component context the host reports it as. In a running topology
+/// the host supplies the component context of the native component the node stands for, so a kernel extracted from a
+/// native component keeps that component's telemetry names and labels, whatever region runs it. A host without a
+/// topology, such as the reference interpreter or a test, uses [`detached`][Self::detached].
+///
+/// The context can also carry the resource group the kernel's memory and CPU time are accounted to
+/// ([`with_resource_group`][Self::with_resource_group]). A host that runs the kernel enters that group whenever it
+/// builds or calls the kernel, so that the kernel is accounted for separately from the component that runs it, as a
+/// native component's sub-transforms are. Without one, the kernel is accounted to whatever group is current.
 ///
 /// # Missing
 ///
 /// Stateful kernels will also find here the state budget they draw credits from, shared by every lineage of their
 /// state owner, once state lineages exist.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct KernelBuildContext {
     node: NodeId,
     component: ComponentContext,
+    resource_group: Option<ResourceGroupToken>,
+}
+
+impl fmt::Debug for KernelBuildContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KernelBuildContext")
+            .field("node", &self.node)
+            .field("component", &self.component)
+            .field("resource_group", &self.resource_group.is_some())
+            .finish()
+    }
 }
 
 impl KernelBuildContext {
     /// Creates a context for building the kernel of `node`, reported as the component `component`.
     pub fn new(node: NodeId, component: ComponentContext) -> Self {
-        Self { node, component }
+        Self {
+            node,
+            component,
+            resource_group: None,
+        }
+    }
+
+    /// Accounts the kernel's memory and CPU time to the resource group of `token`.
+    pub fn with_resource_group(mut self, token: ResourceGroupToken) -> Self {
+        self.resource_group = Some(token);
+        self
     }
 
     /// Creates a context for building the kernel of `node` outside any topology.
@@ -221,10 +259,7 @@ impl KernelBuildContext {
         // Local identifiers start with a letter and never end with an underscore, so they are valid component IDs.
         let component_id = ComponentId::try_from(name.as_str()).expect("node identifiers are valid component IDs");
         let topology = SubsystemIdentifier::from_segments([DETACHED_TOPOLOGY]);
-        Self {
-            node: node.clone(),
-            component: ComponentContext::transform(&topology, component_id),
-        }
+        Self::new(node.clone(), ComponentContext::transform(&topology, component_id))
     }
 
     /// Returns the node the kernel is built for.
@@ -232,9 +267,21 @@ impl KernelBuildContext {
         &self.node
     }
 
-    /// Returns the component context the kernel reports telemetry and memory accounting under.
+    /// Returns the component context the kernel reports telemetry under.
     pub fn component(&self) -> &ComponentContext {
         &self.component
+    }
+
+    /// Returns the token of the resource group the kernel is accounted to, if the host gave it one.
+    pub fn resource_group(&self) -> Option<ResourceGroupToken> {
+        self.resource_group
+    }
+
+    /// Runs `f` inside the kernel's resource group, if it has one, so that what `f` allocates and the CPU time it
+    /// takes are accounted to the kernel.
+    pub fn accounted<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _entered = self.resource_group.as_ref().map(ResourceGroupToken::enter);
+        f()
     }
 }
 
@@ -378,6 +425,12 @@ impl ConfiguredOperator {
     /// Declares the memory the operator's kernel needs.
     pub fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         self.def.specify_bounds(&self.params, builder);
+    }
+
+    /// Returns the estimate of the work the operator does per event, in nanoseconds, for R1's cost model; see
+    /// [`OperatorDef::cost`].
+    pub fn cost(&self) -> u32 {
+        self.def.cost(&self.params)
     }
 
     /// Returns how to build the operator's kernel, or `None` if it has none.

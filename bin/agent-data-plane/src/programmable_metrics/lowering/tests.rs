@@ -18,7 +18,7 @@ use super::{
     *,
 };
 use crate::{
-    cli::run::create_topology,
+    cli::run::create_legacy_topology,
     config::remote_agent_client_configuration,
     programmable_metrics::{
         bindings,
@@ -727,6 +727,35 @@ async fn lowering_fails_where_the_native_topology_fails_to_build() {
     }
 }
 
+#[tokio::test]
+async fn aggregation_durations_a_plan_cannot_represent_fail_with_the_setting_and_its_limit() {
+    // (configuration, error); 2^53 + 1 seconds is no whole number of minutes, so seconds are its largest unit.
+    let cases = [
+        (
+            "aggregate_window_duration_seconds: 9007199254740993",
+            "`aggregate_window_duration_seconds` is 9007199254740993 seconds, which the metrics plan cannot \
+             represent: a plan duration is a whole number of at most 9007199254740991 of the largest unit that \
+             divides it exactly. Set `aggregate_window_duration_seconds` to at most 9007199254740991 seconds.",
+        ),
+        (
+            "dogstatsd_expiry_seconds: 9007199254740993",
+            "`dogstatsd_expiry_seconds` is 9007199254740993 seconds, which the metrics plan cannot represent: a plan \
+             duration is a whole number of at most 9007199254740991 of the largest unit that divides it exactly. Set \
+             `dogstatsd_expiry_seconds` to at most 9007199254740991 seconds.",
+        ),
+    ];
+    for (yaml, expected) in cases {
+        let config = configuration(yaml).await;
+        let error = lowering_error(&config, facts(&config));
+        assert_eq!(error.to_string(), expected, "{}", yaml);
+    }
+    // A longer duration that is a whole number of a larger unit is represented in that unit: 2^53 − 1 minutes.
+    let config = configuration("aggregate_window_duration_seconds: 540431955284459460").await;
+    lowering(&config)
+        .lower(&config)
+        .expect("9007199254740991 minutes lower");
+}
+
 /// With several problems, the one native construction meets first is reported: blueprint assembly checks endpoint
 /// routing, then the Cluster Agent forwarder, then the DogStatsD pipeline's histogram statistics; building the
 /// components then checks mapper profiles (transforms build first) and finally forwarder endpoints. (Invalid tag value
@@ -768,7 +797,7 @@ async fn with_several_problems_lowering_reports_the_one_native_construction_meet
         let env = environment_provider(&system.config()).await;
         let client = (!system.config().control.standalone_mode)
             .then(|| remote_agent_client_configuration(&system.config()).unwrap());
-        let native = create_topology(&system, client.as_ref(), &env, &ComponentRegistry::default()).await;
+        let native = create_legacy_topology(&system, client.as_ref(), &env, &ComponentRegistry::default()).await;
         match native {
             Err(native) => {
                 assert!(at_assembly, "{:?}: native assembly fails: {}", layers, native);

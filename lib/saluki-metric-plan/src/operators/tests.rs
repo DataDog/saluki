@@ -1447,9 +1447,13 @@ fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
             "{}",
             node
         );
+        // The rule count describes the rules in effect, which the installer records once a generation commits: a
+        // kernel built for a preparation that never commits must not change it.
         assert_eq!(
             recorder.gauge(("tag_filterlist_size", &labels(component)[..])),
-            Some(2.0)
+            None,
+            "{}",
+            node
         );
         assert_eq!(
             recorder.gauge(("cache_weight_limit", &[("cache_id", memo)][..])),

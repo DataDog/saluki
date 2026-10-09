@@ -303,3 +303,4 @@ dataflow
 serializable
 misconfigured
 unstamp(s|ed)?
+[Pp]ipelin(e|ed|es|ing)

@@ -4,7 +4,8 @@
 //! a native default that reproduces today's behavior, and the types here accept only that default until the slot
 //! opens. Richer designs plug into a slot later without changing the core.
 //!
-//! - [`DeliveryPolicy`]: what an output or recipient does when it cannot keep up, and when it closes.
+//! - [`DeliveryPolicy`]: what an output or recipient does when it cannot keep up ([`Overflow`]), and when it closes
+//!   ([`Closure`]).
 //! - [`AdmissionPolicy`]: whether new keys enter a stateful operator's state.
 //! - Signals ([`SignalDecl`]): named, typed state that the host publishes and operators may read.
 //! - [`TransitionStrategy`] and [`TransitionClass`]: how state moves between generations.
@@ -40,6 +41,60 @@ impl DeliveryPolicy {
     /// Returns `true` if this is the native policy, the default, which serialization leaves out.
     pub fn is_native(&self) -> bool {
         *self == Self::Native
+    }
+
+    /// Returns what an output with this policy does when its downstream cannot accept more.
+    pub const fn overflow(self) -> Overflow {
+        match self {
+            Self::Native => Overflow::Wait,
+        }
+    }
+
+    /// Returns what an output with this policy does with queued work when it closes.
+    pub const fn closure(self) -> Closure {
+        match self {
+            Self::Native => Closure::Native,
+        }
+    }
+}
+
+/// What an output does when its downstream cannot accept more.
+///
+/// Shedding and spilling are reserved for the stage that opens the delivery-policy slot.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Overflow {
+    /// The sender waits until the downstream accepts more, as native components do: a region host awaits each exit's
+    /// send in exit order, so one slow output delays the others, as native fan-out does. Nothing is lost.
+    Wait,
+}
+
+impl Overflow {
+    /// Returns the behavior's name, as `explain` shows it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wait => "wait",
+        }
+    }
+}
+
+/// What an output does with queued work when it closes, at process shutdown or when its generation retires.
+///
+/// Attempting, persisting, or discarding within a policy's own deadline is reserved for the stage that opens the
+/// delivery-policy slot.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Closure {
+    /// Native shutdown: in-flight requests finish within the shutdown timeout, and queued work is persisted where
+    /// configured, and otherwise dropped. A retiring generation's batches finish in the shared encoder streams, which
+    /// do not close, so a live update loses nothing beyond what a native shutdown would.
+    Native,
+}
+
+impl Closure {
+    /// Returns the behavior's name, as `explain` shows it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+        }
     }
 }
 
@@ -170,6 +225,8 @@ mod tests {
         assert_eq!(DeliveryPolicy::default(), DeliveryPolicy::Native);
         assert_eq!(serde_json::to_value(DeliveryPolicy::Native).unwrap(), json!("native"));
         assert!(serde_json::from_value::<DeliveryPolicy>(json!("drop_oldest")).is_err());
+        assert_eq!(DeliveryPolicy::Native.overflow(), Overflow::Wait);
+        assert_eq!(DeliveryPolicy::Native.closure(), Closure::Native);
 
         assert_eq!(AdmissionPolicy::default(), AdmissionPolicy::FirstCome);
         assert_eq!(

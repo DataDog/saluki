@@ -5,7 +5,10 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    time::{Instant, SystemTime},
+};
 
 use agent_data_plane_config_system::{EnvPrecedence, LoadedConfiguration};
 // Pull in the Antithesis coverage-instrumentation runtime shim only when
@@ -33,9 +36,6 @@ mod config;
 mod dogstatsd_contexts;
 mod internal;
 
-// Lowering native configuration into the default program is described and tested here, but nothing runs it until the
-// plan-driven topology (stage 3) does, so it is compiled only for its tests.
-#[cfg(test)]
 mod programmable_metrics;
 
 pub(crate) mod state;
@@ -61,6 +61,8 @@ const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
 
 fn main() -> Result<(), GenericError> {
     let started = Instant::now();
+    // The wall-clock time the process started at: time-based parameters of the metrics plan derive from it.
+    let started_at = SystemTime::now();
 
     // Register who we are before anything else, so that everything from here on -- including code that runs before
     // bootstrap -- reports this application rather than an unknown one.
@@ -78,10 +80,10 @@ fn main() -> Result<(), GenericError> {
         .enable_all()
         .build()
         .error_context("Failed to build the primary runtime.")?
-        .block_on(async_main(started))
+        .block_on(async_main(started, started_at))
 }
 
-async fn async_main(started: Instant) -> Result<(), GenericError> {
+async fn async_main(started: Instant, started_at: SystemTime) -> Result<(), GenericError> {
     let cli: Cli = argh::from_env();
 
     // Print version and exit early without requiring config.
@@ -131,6 +133,7 @@ async fn async_main(started: Instant) -> Result<(), GenericError> {
     let maybe_exit_code = run_inner(
         cli.action,
         started,
+        started_at,
         local_config,
         &mut bootstrap_guard,
         bootstrap_supervisor,
@@ -196,8 +199,8 @@ fn parse_metrics_level(level: &str) -> Result<Level, GenericError> {
 }
 
 async fn run_inner(
-    action: Action, started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
-    bootstrap_supervisor: Supervisor,
+    action: Action, started: Instant, started_at: SystemTime, local_config: LoadedConfiguration,
+    bootstrap_guard: &mut BootstrapGuard, bootstrap_supervisor: Supervisor,
 ) -> Result<Option<i32>, GenericError> {
     match action {
         Action::Run(cmd) => {
@@ -211,7 +214,14 @@ async fn run_inner(
             }
 
             // `Run` consumes the local configuration and selects its runtime authority.
-            let exit_code = match handle_run_command(started, local_config, bootstrap_guard, bootstrap_supervisor).await
+            let exit_code = match handle_run_command(
+                started,
+                started_at,
+                local_config,
+                bootstrap_guard,
+                bootstrap_supervisor,
+            )
+            .await
             {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");

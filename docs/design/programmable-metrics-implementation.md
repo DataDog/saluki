@@ -44,6 +44,7 @@ lib/saluki-core/src/execution/        generic execution contracts (no metric or 
   generation.rs    GenerationId, GenerationToken (retirement notification), GenerationRef [types 1, wired 2]
   kernel.rs        Kernel trait, Turn, Budget, Progress, DrainPolicy                      [1]
   region/          RegionDriver trait, RegionHost transform, control mailbox, supervision [3]
+lib/saluki-core/benches/region_host.rs  a region host's per-buffer work vs a plain transform    [3]
 
 lib/saluki-metric-kernels/            native metric semantics, extracted once          [1: names, matcher; 2]
   intake_name.rs   moved from bin/agent-data-plane/src/components/metric_name.rs
@@ -67,9 +68,12 @@ lib/saluki-metric-kernels/            native metric semantics, extracted once   
 lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, installer core
   model/ ir/ canonical.rs predicate/ operators/ validate/ interpret/ equivalence.rs explain/ limits.rs extension/
   fixtures/        hand-written default-program plans (with and without the no-aggregation pipeline)       [1]
-  compile/  frame.rs (physical frame), placement, rewrites R1-R7, region programs, decisions   [3, 4, 6]
-  runtime/  MetricRegionDriver implementing saluki-core RegionDriver                           [3]
-  install/  diff (with correspondence), generation lifecycle, installer core (no I/O)         [3, 5]
+  compile/  frame.rs (physical frame, R1 and its cost model), placement.rs, program.rs        [3]
+            rewrites R2-R7 and decisions                                                       [4, 6]
+  runtime/  MetricRegionDriver implementing saluki-core RegionDriver, RegionBounds, telemetry  [3]
+  benches/  region_driver.rs: the default program's regions vs hand-written baselines         [3]
+  install/  diff.rs (plan diff, kernel reuse), lifecycle.rs, core.rs (InstallerCore, no I/O)   [3]
+            correspondence                                                                     [5]
   channel/  artifact channel types                                                             [5]
   compose.rs, export.rs                                                                        [5]
   testing/  `test-util`: metric strategies, fixtures, harnesses                               [1+]
@@ -77,13 +81,19 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
 lib/saluki-metric-plan-syntax/        surface syntax: parser, printer, spans                    [demo]
                                       for tools only: no crate that runs plans may depend on it
 
-bin/agent-data-plane/src/programmable_metrics/   (compiled only for tests until stage 3 runs it)
+bin/agent-data-plane/src/programmable_metrics/
   host_facts.rs bindings.rs catalog.rs outputs.rs telemetry_profiles.rs    [2, 4]
   lowering/        Lowering::{new, lower}, and its tests: the configuration matrix, a hand-written
                    every-branch fixture, the structural comparison with the legacy blueprint, and a
                    run of the lowered program through the reference interpreter                         [2, 4]
-  topology.rs installer.rs                                                  [3, 5]
+  topology.rs      PlanTopology: the metrics path of the blueprint, built from the frame                  [3]
+  installer.rs     ProgrammableMetrics::boot, the supervised InstallerWorker, PlanStatus                 [3, 5]
+  telemetry.rs     RegionTelemetry (RegisterTelemetry, kernel identities), InstallerTelemetry            [3]
+  test_topology.rs test-only: the primary topology, legacy or plan-driven, with its I/O replaced by test
+                   doubles in place (scripted sources, clocked aggregation, collecting encoders), which the
+                   differential, live-change, fault, telemetry, and measurement tests run                [3]
   channel_stub.rs api.rs                                                    [5]
+bin/agent-data-plane/src/cli/run/legacy.rs   the legacy metrics path, a test-only differential reference [3]
 
 bin/programmable-metrics-demo/        demo server, embedded UI, recording intakes, load        [demo]
 ```
@@ -107,12 +117,17 @@ saluki-core <- saluki-metric-kernels <- saluki-metric-plan <- saluki-metric-plan
 - `agent-data-plane-config-system` depends on it for one function: it validates `metric_tag_value_allowlist` at load
   with the kernels crate's `params::validate_tag_value_rule_keys`, the one implementation of that rule, and words the
   errors in terms of its keys. The configuration model (`agent-data-plane-config`) depends on neither.
-- `saluki-metric-plan` adds `serde`, `serde_json`, `schemars` (with `derive`), `tokio` (`sync`), and `saluki-tls` (for
-  FIPS-consistent SHA-256). It does not depend on `saluki-components` or `agent-data-plane-config`. Operators never read
-  configuration; ADP converts typed configuration into the kernels crate's parameter types.
+- `saluki-metric-plan` adds `serde`, `serde_json`, `schemars` (with `derive`), `tokio` (`sync`), `saluki-tls` (for
+  FIPS-consistent SHA-256), and, for the region driver (stage 3), `saluki-error`, `saluki-metrics`, and `tracing`. It
+  does not depend on `saluki-components` or `agent-data-plane-config`. Operators never read configuration; ADP converts
+  typed configuration into the kernels crate's parameter types.
 - Legacy components stay where they are as thin adapters over the kernels until the stage 3 plan-driven topology
   replaces them. They then become test-only differential references (`#[cfg(test)]`), after the non-metric parts of the
-  legacy builder functions are split out (construction rule 4).
+  legacy builder functions are split out (construction rule 4). Stage 3 did this in ADP: `dogstatsd_prefix_filter`,
+  `dogstatsd_no_agg_split`, `dogstatsd_post_aggregate_filter`, and the transforms of `tag_filterlist` and `host_tags`
+  compile only for tests (the configuration conversions and `fetch_host_tags` stay), and the legacy metric builder
+  functions moved to `cli/run/legacy.rs`. The `saluki-components` transforms (mapper, host enrichment, chained) stay:
+  they are library components, and ADP still uses host enrichment and chaining for events and service checks.
 
 ## Execution contracts in `saluki-core`
 
@@ -293,68 +308,230 @@ pub enum Progress { Done, Yielded, WaitUntil(Instant) }
 
 ### Region host
 
+`saluki_core::execution` (module `region/`, stage 3):
+
 ```rust
 pub trait RegionDriver: Send + 'static {
     type Control: Send + 'static;
-    fn accepts_input(&self) -> bool;                       // false while a yielded drain is pending
-    fn process(&mut self, turn: &mut Turn<'_>, batch: EventsBuffer, exits: &mut ExitSink) -> Progress;
-    fn resume(&mut self, turn: &mut Turn<'_>, exits: &mut ExitSink) -> Progress;
-    fn control(&mut self, message: Self::Control, exits: &mut ExitSink) -> Result<(), RegionFailure>;
-    fn next_deadline(&self) -> Option<Instant>;
-    fn advance_time(&mut self, turn: &mut Turn<'_>, exits: &mut ExitSink) -> Progress;
-    fn finish(&mut self, turn: &mut Turn<'_>, exits: &mut ExitSink, policy: DrainPolicy) -> Progress;
-    fn reset_after_panic(&mut self, failed: PanicSite) -> PanicOutcome;
-    fn publish_telemetry(&mut self);
+    fn accepts_input(&self) -> bool { true }               // false while a yielded drain is pending
+    fn process(&mut self, turn: &mut RegionTurn<'_>, batch: EventsBuffer, exits: &mut ExitSink) -> Progress;
+    fn resume(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress { Progress::Done }
+    fn control(&mut self, turn: &mut RegionTurn<'_>, message: Self::Control, exits: &mut ExitSink)
+        -> Result<(), RegionFailure>;
+    fn next_deadline(&self) -> Option<Instant> { None }    // std::time::Instant, on RegionTurn::now's clock
+    fn advance_time(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress { Progress::Done }
+    fn finish(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink, policy: DrainPolicy) -> Progress { .. }
+    fn reset_after_panic(&mut self, panic: &RegionPanic) -> PanicOutcome;
+    fn publish_telemetry(&mut self) {}
 }
+pub struct RegionTurn<'a> { now: Instant, budget: &'a mut Budget }   // new(now, &mut budget), now(), budget(_mut)()
+pub struct ExitId(u16);                                              // exit i = the i-th named output
+pub struct ExitSink { .. }        // new(exit_count), emit(ExitId, EventsBuffer), len, event_count, drain, clear
+pub enum PanicSite { Process, Resume, Control, AdvanceTime, Finish, PublishTelemetry }
+pub struct RegionPanic { site, message, lost_events }
+pub enum PanicOutcome { Continue, Fail(GenericError) }
+pub struct RegionFailure { error: GenericError }                      // a control message the driver cannot apply
 ```
 
-- `RegionHostBuilder<D>` implements `TransformBuilder`. Its outputs are the slot's exits from the boot
-  [physical frame](#physical-frame-and-region-programs). It declares bounds for its kernels (from the operator registry)
-  plus in-flight exit buffers. It keeps one `Health` handle across all generations.
-- **Run loop.** `select!` over `health.live()`, input (only while `accepts_input()`), the control mailbox, and the
-  driver's deadline. While exit buffers are being sent, the loop keeps answering `health.live()` and the control
-  mailbox, because prepare and abort touch only the program table. Exits are dispatched in exit order, each send awaited:
-  the native "outputs wait for downstream" delivery policy, head-of-line coupling included. At most `work_per_turn`
-  batches run between control checks.
-- **Control mailbox.** The installer never blocks on a region: each region has a small mailbox (a `watch` of the
-  latest pending control plus a queue for acknowledged steps). Closed reply channels mean shutdown.
-- **Supervision.** Every driver entry point that runs kernel code runs under `catch_unwind(AssertUnwindSafe(..))`; no
-  build profile sets `panic = "abort"`. On a panic the host clears the `ExitSink` without dispatching (no partial
-  delivery), counts the batch's events (recorded before the call) as `invalid` loss with reason `region_failure`, and
-  calls `reset_after_panic`. The driver rebuilds every kernel of every live generation from its `KernelSpec` (factory
-  plus parameters) and clears all derived per-generation state: memos, cursors, exit scratch, and per-turn counters.
-  A panic is charged to the provenance of the panicking node. See [supervision](#supervision-and-fallback) for budgets.
+- **Refinements from the code** (stage 3A). Driver calls take a `RegionTurn` (the host's clock reading and a budget),
+  not a kernel `Turn`: a `Turn` borrows one kernel's ports and counters, which the driver owns per kernel, so the
+  driver builds kernel turns from it (`Turn::new(&header, turn.now(), turn.budget_mut(), ..)`) and every kernel of a
+  call charges one budget. Each call starts with a fresh copy of the builder's turn budget (unlimited by default).
+  `now` is `tokio::time::Instant::now().into_std()`, so paused-time tests drive deadlines. `control` gets a turn too,
+  because stage 6 kernel controls (the context snapshot) need one. `reset_after_panic` receives a `RegionPanic` (site,
+  panic message, events the host counted as lost) rather than only the site, so a driver can charge the loss and the
+  panic to the panicking node and word its `Fail` error. Only `process`, `control`, and `reset_after_panic` are
+  required; the defaults suit stateless drivers. Nothing in a turn or a sink needs a topology, so tests and harnesses
+  that wire regions together synchronously drive a `RegionDriver` directly.
+- `RegionHostBuilder<D>` implements `TransformBuilder`: input `EventType::Metric`; outputs the slot's exits from the
+  boot [physical frame](#physical-frame-and-region-programs), as named metric outputs in order (exit `i` is
+  `ExitId(i)`), validated as output names, distinct, and at most 65,536. `RegionHostBuilder::new(exits,
+  work_per_turn: NonZeroUsize, mailbox: ControlMailbox<D::Control>, factory: Fn(&BuildContext) -> Result<D,
+  GenericError>)` builds the driver in `build`, with the region's build context; `from_driver(exits, work_per_turn,
+  mailbox, driver)` hands over one instance. `.with_turn_budget(Budget)` and `.with_bounds(impl MemoryBounds)` (the
+  driver's kernels, from the operator registry) are optional. `work_per_turn` is a required argument because the plan
+  crate's `limits::values::WORK_PER_TURN` owns its value (ADP passes it); saluki-core keeps no copy. The mailbox is
+  taken once in `build`, like `AggregateConfiguration::context_snapshot_receiver`, so a builder builds one transform.
+  Bounds: the component struct (which holds the driver) as minimum; one full events buffer per exit (`(ExitId,
+  EventsBuffer)` plus 1,024 events) as firm, for output held while a send waits; plus the driver's bounds. The
+  interconnect bounds of the topology already count one in-flight buffer per transform, so this is slightly
+  conservative.
+  One `Health` handle serves all generations.
+- **Run loop.** A biased `select!`, in priority order: `health.live()`; the control mailbox; the telemetry timer;
+  resuming a yielded call (through `tokio::task::coop::consume_budget`, so a long drain that writes nothing still lets
+  other tasks run); the driver's deadline (one Tokio `Sleep`, reset only when `next_deadline` changes); and input,
+  only while no call is yielded and `accepts_input()`. After one input batch, up to `work_per_turn - 1` batches already
+  waiting are processed (`now_or_never`) before control and timers are checked again, stopping early when a call
+  yields or the driver stops accepting input. While a call is yielded, the host calls only `resume`, `control`, and
+  `publish_telemetry`. `Progress::WaitUntil` means `Done` to the host, which reads `next_deadline` after every call.
+- **Exits.** After every call, the host commits the `ExitSink` to an outbox and sends it buffer by buffer in the order
+  the driver wrote them (so each exit receives its buffers in write order, and one channel fed by several exits sees
+  them interleaved as written), each send awaited: the native "outputs wait for downstream" delivery policy,
+  head-of-line coupling included. During each send it still answers `health.live()` and applies control messages,
+  because prepare and abort touch only the program table; a control message's output queues behind what is waiting.
+  Buffers go out as the driver wrote them: the driver stamps headers, and header-only buffers (progress batches) are
+  sent like any other. An exit with nothing connected discards and counts, as any output does. A failed send (a
+  downstream that stopped) is logged and processing continues, as every native metrics transform does.
+- **Shutdown.** When the input closes, the host completes any yielded call, calls `finish(DrainPolicy::Shutdown)`,
+  resumes it until it returns anything but `Yielded`, sends its output, publishes telemetry, and returns `Ok`.
+- **Telemetry pacing.** `publish_telemetry` runs at most once per second while the driver works (a timer at the last
+  publish plus one second, armed only after work), immediately after every control message, and once at stop.
+- **Control mailbox.** The installer never blocks on a region. `control_mailbox() -> (ControlSender<C>,
+  ControlMailbox<C>)`: `ControlSender::send(message) -> ControlAck` queues on an unbounded channel and never waits;
+  `ControlAck` is a future of `Result<(), ControlError>`, with `ControlError::{Rejected { failure: RegionFailure },
+  Panicked { message }, Stopped}`. A reply channel closed without a reply (the region stopped or failed, or never ran)
+  resolves to `Stopped`: closed reply channels mean shutdown. `ControlSender::is_closed()` tells whether the region is
+  gone. `ControlSender::running()` resolves to `true` once the region's host runs (it marks its mailbox running when its
+  health handle reports ready) and to `false` if the mailbox is dropped first; `is_running()` reads the same without
+  waiting, and `ControlMailbox::mark_running` (`test-util`) marks a mailbox whose driver a test calls directly. The
+  installer waits for every region to run before it sends anything (stage 3 review): the topology starts only after the
+  environment is ready, which in connected mode can take longer than any prepare timeout. This replaces the earlier
+  "`watch` of the latest control plus a queue": every installer step (prepare, abort) needs its own acknowledgment, and
+  the installer already coalesces candidates (it keeps only the latest pending one) and waits for each barrier before
+  the next step, so the queue is bounded by the protocol, not by the channel.
+- **Supervision.** `process`, `resume`, `control`, `advance_time`, `finish`, and `publish_telemetry` run under
+  `catch_unwind(AssertUnwindSafe(..))`; no build profile sets `panic = "abort"`. `accepts_input` and `next_deadline`
+  are plain reads of driver state that must not run kernel code; a panic there, or in `reset_after_panic`, fails the
+  component. On a panic the host clears the `ExitSink` without dispatching (no partial delivery; output that earlier
+  calls committed is still sent), ends any yielded call, counts the lost events, and calls `reset_after_panic`. Lost
+  events are the batch's events (recorded before the call) for `process` and for `resume` of a yielded `process` (an
+  upper bound there), and otherwise the events the call wrote plus the batch of a yielded `process` that the panic
+  ends. They are counted per component as `component_events_dropped_total{intentional:false,
+  drop_reason:region_failure, loss_class:invalid}`, with `component_errors_total{error_type:panic}` per panic. The
+  host counts events, not points: counting points would cost a pass over every batch before every call, and the batch
+  is gone after the panic; a driver that wants plan-level point loss counts points as it admits batches. The driver
+  rebuilds every kernel of every live generation from its `KernelSpec` (factory plus parameters) and clears all
+  derived per-generation state: memos, cursors, exit scratch, and per-turn counters. A panic is charged to the
+  provenance of the panicking node. `PanicOutcome::Continue` keeps the region running (after a panic in `finish`, it
+  stops normally); `PanicOutcome::Fail(error)` makes `Transform::run` return `error` with the context "Region panicked
+  in <site>: <message>", which fails the component as any native component failure does (the default program's
+  budget of 0). A control message whose call panicked is acknowledged `Panicked`. See
+  [supervision](#supervision-and-fallback) for budgets.
+- **Panic hook.** Catching a panic does not skip the process panic hook, which runs before unwinding. ADP's
+  `antithesis` build installs a hook (`initialize_antithesis` in `bin/agent-data-plane/src/main.rs`) that reports every
+  panic as `unreachable!("agent-data-plane panicked")`, so a region panic that the driver recovers from (an artifact
+  generation within its restart budget, from stage 5) is still reported as a failed property there, and the default
+  hook still prints it. Stage 3 does not change ADP's hook; stage 5, which introduces recoverable region panics, must
+  decide whether that hook should distinguish them.
 
 ## Physical frame and region programs
 
 The topology is built once (`TopologyBlueprint` initializes once; transform outputs are fixed at `add_transform`), so
-physical structure cannot follow each candidate plan. The physical layer is split in two:
+physical structure cannot follow each candidate plan. The physical layer is split in two, in the plan crate's
+`compile` module (no I/O, no topology):
 
-1. **Frame** (boot, fixed until restart): computed from the boot default program. It contains the fixed components
-   (source I/O hosts, opaque hosts, the stage 6 aggregation isolation slot, encoders) and the **slots** between them.
-   A slot is a maximal connected set of synchronous nodes between fences. Slots may have several inputs. Each slot is
-   one `RegionHost` component named by the lowering-supplied slot namer (never by an artifact node ID). Each slot's
-   exits are every fence edge leaving it plus every boot output downstream of it, whether or not any program emits to
-   it. Unused exits stay connected and idle.
-2. **Program** (per generation): the planner places each logical node into a slot, honoring fences. A candidate is
-   installable when every node can be placed and every edge between slots uses a frame edge. Otherwise the install is
-   rejected with an error naming the missing capability (stage 7). R3 may prune nodes and emits inside programs, but
-   never removes exits. Rewrites take the frame as input; a rewrite that would place work outside the frame is skipped
-   and recorded in `explain`.
+1. **Frame** (boot, fixed until restart): `Frame::compute(&boot_plan, &registry, &namer)`, from the boot default
+   program. It contains the **fixed components** (each fence: source I/O hosts and opaque hosts, from stage 6 also the
+   aggregation isolation slot), the declared **outputs** (encoders), and the **slots** between them. Each slot is one
+   `RegionHost` component named by the host-supplied `SlotNamer` (`Fn(&[NodeId]) -> Result<NativeComponentId,
+   String>`, given the slot's boot nodes in plan order, never an artifact node ID). Slots may have several inputs.
+2. **Program** (per generation): `compile::place(&candidate, &report, &registry, &frame)` assigns every logical node to
+   a fixed component, a slot, or a direct edge, and `compile::compile` also builds every slot's `RegionProgram`. A
+   candidate is installable when every node can be placed and every edge uses the frame's physical structure;
+   otherwise placement is rejected with one problem per node or edge, each naming the missing capability and its
+   stage. R3 may prune nodes and emits inside programs, but never removes exits. Rewrites take the frame as input; a
+   rewrite that would place work outside the frame is skipped and recorded in `explain`.
 
-Entries: a slot's program maps each batch to a logical input. If the header's `entry` is set (by the upstream region,
-which knows the consumer's program for the batch's generation), that is the entry; otherwise the slot maps the header's
-`admission_point` (a source or opaque-host output) to an entry. Entry IDs are per generation, so a later generation can
-send several logical branches over one physical edge (stage 6 per-branch widths) without new topology.
+**Slots and R1.** Fusion (R1) puts synchronous neighbors in one slot unless a path leaves one of them through a fence
+and comes back to the other, which would make the slot and the fence a cycle. Concretely: in each connected set `C` of
+synchronous nodes, a node's **fence depth** is the largest number of fences on a path from any node of `C` to it (zero
+when no such path crosses a fence), and neighbors of equal depth share a slot. Every path between two slots then crosses
+a fence or a depth step, so the frame is acyclic. In the default program the timestamp split's passthrough edge is such
+a step: `dsd_post_agg_filter_in` is reached from the pre-aggregation chain through `dsd_agg` too, so the frame has the
+slots `dsd_pre_aggregation` and `metrics_enrich` joined by an exit. R1 also cuts a set where its cost model says one
+region would be slower than the native chain (below). The frame records one `FusionDecision` per boot edge (`fused`,
+`fence`, `separated` with the fence that separates them, `pipelined` with the cost budget, or `direct`) for `explain`.
 
-An `emit` or `drop` whose only input crosses a fence lowers to a direct blueprint edge (or nothing), never to an
-emit-only region.
+**Pipelining (R1's cost model, stage 3 review).** A region runs its program in one task, so one stream of batches gets
+at most one core, where the native chain ran each component in a task of its own and moved consecutive batches through
+it in parallel, at the throughput of its costliest component. Fusing the whole pre-aggregation chain cost 0.68 to 0.72
+of the legacy throughput on one saturated stream (amendment 47). R1 therefore fuses only as far as that throughput is
+kept:
 
-**Region programs** run batch-at-a-time steps: `map(kernel)` in place, `expand(kernel → ports)`, `decide(fn →
-targets)`, `concat`, `state(kernel)` (stage 6), `exit`, and `drop`. A decision computes exit sets first, filters the
-original buffer in place with the order-preserving `retain` and moves it to its last destination, and gives other exits
-buffers created with exact capacity. Native whole-buffer fast paths are kept through `route_all`. Exit buffers are
-never recycled (they leave by value); only region-internal scratch is.
+- Every operator estimates its work in nanoseconds per event (`OperatorDef::cost`, 0 by default): the mapper 65 with
+  profiles and 10 without, the namespace prefix 90 with a namespace and 0 without, a `split` 5 plus its predicate
+  (`intake_name` 15, tag predicates 10, name and host 5, constants, flags, emptiness and kind tests 1, operands
+  summed), a `tee` 15 per port beyond the first, the timestamp split 10, tag projection 15, host tags 30. The
+  estimates are coarse: they only need to rank the components of a chain, so that the costly ones run apart.
+- A **component** is the nodes with one native provenance, or a node of its own otherwise. The **budget** is the
+  estimate of the costliest component of the boot plan, or `REGION_COST_FLOOR` (64 ns, over 15 million events per
+  second) if that is less: a region within the floor keeps up with one stream whatever it fuses.
+- Walking each fused set (connected set and fence depth) in plan order, a component starts on the latest **stage**
+  of its inputs in the set, and moves to the next stage when that stage already holds work and the component would
+  take it over the budget. Slots are the nodes of one set, depth, and stage, so a stage only grows along edges and the
+  frame stays acyclic. A component is never cut, so no region does less than a native component did, and none costs
+  more than the budget unless one component alone does. `Slot::cost` and `Frame::cost_budget()` record the estimates,
+  `explain` prints each slot's, and an edge between stages is `pipelined`.
+
+**Fixed components and admission points.** Every output port of every fixed component is an admission point,
+numbered `0..` in plan order and port order: sources `Admit`, opaque hosts `Readmit`. Each point's `route` is where its
+one physical edge leads: a slot, another fixed component, an output (a direct edge), or nothing. An `emit` or `drop`
+whose only input crosses a fence is a **direct edge** (or nothing), never an emit-only region: the default program's
+four gateways (two routing filters, MRF, autoscaling) connect straight to their encoders. `FixedComponent` keeps the
+boot operator and parameters, and what feeds its input (an admission point or a slot exit).
+
+**Exits.** A slot's exits are, in order: one per target of the boot edges leaving it (a fixed component or another
+slot), and of its `emit`s (an output), in plan edge order; then one per output the boot plan delivers to downstream of
+the slot, through any node, in output order, whether or not the slot emits to it. Exits are named after their target
+(the fixed node's local ID, the slot's name, or the output ID), which are valid component output names; two exits of
+one slot with one name fail the frame. Unused exits stay connected and idle. `Frame::edges()` is the physical edge
+list the topology builder turns into blueprint edges: each admission point's edge, then each slot's exits.
+
+For the stage 3 default program (with the no-aggregation pipeline) and a default configuration, every estimate is small
+(the mapper without profiles 10, the prefix filter without a namespace 20, the timestamp split 10, the tag filterlist
+15, the post-aggregation filter 36), so the floor is the budget and nothing is cut: `dsd_pre_aggregation` holds the
+mapper through the tag filterlist and has exits `dsd_agg`, `metrics_enrich` (passthrough), and an idle one to each
+output; `metrics_enrich` holds the post-aggregation merge through `metrics_policy_0` and has exits to the outputs.
+Without the pipeline there is no passthrough exit. A mapper profile (65) or a namespace (the prefix filter then costs
+110) raises the budget to that component and pipelines the chain. With every branch wired, both, host tags, and five
+outputs, the frame has five slots: `dsd_pre_aggregation` (the mapper), `dsd_prefix_filter_region` (the prefix and the
+listener filterlist), `dsd_no_agg_split_region` (the timestamp split and the tag filterlist, with exits `dsd_agg` and
+the passthrough), `dsd_post_agg_filter_region` (the post-aggregation merge, filter, and fan-out, with an exit to the
+client telemetry tap), and `metrics_enrich` (host enrichment and tags, the policy fan-out, and exits to the primary
+output and the four gateways); each also has an idle exit to every output downstream of it.
+
+**Placement.** Fixed nodes run in the frame's fixed component of the same ID and must keep their boot operator and
+parameters: a host component keeps the configuration it was built with (aggregation needs stage 6, other hosts stage
+7). A fixed component the candidate leaves out is accepted only when it would be idle: a slot exit is all that feeds
+it and none of its admission points feeds a slot (removing a gateway branch leaves its exit and host idle); a source
+is never left out. A synchronous node's slot follows from its inputs: an admission point's route is a hard
+constraint, two admission points routed to different slots are a problem at the joining node, a node of the boot plan
+runs in its boot slot when every slot feeding it has an exit to that slot (so a candidate keeps the boot pipeline: a
+filterlist change leaves every node where it was), and any other node fed only from other slots runs in the one every
+other of them has an exit to. Every slot-to-slot, slot-to-fixed, and
+slot-to-output edge must use an exit, every edge leaving a fixed component must match its route, and every declared
+output must be a boot output with the boot binding ("adding an output requires stage 7 resource generations").
+Synchronous state owners need stage 6 and signal readers stage 10.
+
+**Entries.** A slot's program maps each batch to a logical input. If the header's `entry` is set (by the upstream
+region, which knows the consumer's program for the batch's generation), that is the entry; otherwise the slot maps the
+header's `admission_point` to an entry (`RegionProgram::entry_for(&BatchHeader)`). Entries are `EntryKey::Admission(id)`
+or `EntryKey::Region(EntryId)`; region entries are numbered per slot and per generation in plan edge order, so a later
+generation can send several logical branches over one physical edge (stage 6 per-branch widths) without new topology.
+
+**Region programs** are plain data plus `KernelSpec`s, so the driver can build, rebuild, and share kernels. Each has a
+kernel table (`ProgramKernel { key, operator, ports, spec }`), a decision table (one `Decision` per `split` or `tee`
+through stage 3, with its compiled predicate and port names for per-port telemetry), and one `EntryProgram` per entry:
+a list of steps, in topological order, over registers that hold sequences of buffers carrying the batch's header
+(register 0 holds the batch):
+
+- `Map { kernel, register }`: a single-port kernel in place;
+- `Expand { kernel, input, ports }`: a multi-port kernel (the timestamp split), each port routed;
+- `Decide { decision, input, targets }`: compute each event's targets, filter the original buffer in place with the
+  order-preserving `retain` and move it to its last target, and give other targets buffers created with exact
+  capacity (copies for a `tee`); a whole-buffer route moves the buffer untouched, as `route_all` does for kernels;
+- `Concat { inputs, output }`: a `merge`, only when the entry reaches more than one of its inputs (otherwise the
+  merge is no step);
+- `Exit { register, exit, entry }`: hand the buffers to an exit, setting the consumer's entry when the exit leads to
+  another slot and clearing it otherwise; exit buffers leave by value and are never recycled;
+- `Drop { register, node }`: policy loss of the `drop` node, per event and per point.
+
+A route (`Route::Register` or `Route::Drop(node)`) folds a `drop` that a decision or kernel port leads to straight
+into counting. `state(kernel)` arrives in stage 6. `KernelKey { node, params_hash }` (the hash of `{op, params}` with
+resolved values) identifies a kernel instance across generations, and `RegionProgram::fingerprint()` (a hash of its
+entries, steps, kernel keys, and canonical predicates with resolved values) tells a region that a new generation's
+program equals the one it runs. A test-only executor runs the compiled programs of both default-program fixtures over
+the default-program trace and delivers exactly what the reference interpreter delivers, policy loss included.
 
 **Decisions** (stage 4): a maximal connected group of `split` and `tee` within one slot program, with no intervening map
 that writes a field its predicates read, compiles to one pure function to an exit set. The R4 memo is keyed by `Context`
@@ -362,11 +539,78 @@ that writes a field its predicates read, compiles to one pure function to an exi
 counts events per exit set per turn; at publish time, off the data path, per-node per-port counts are derived from the
 decision's logical tree (exact, because a decision contains no merge) and published at INFO under the logical node ID.
 
-**Watermark progress** (contract in stage 3, used in stage 6): for each exit the frame marks as leading to a state owner,
-the driver tracks the last `t_a` forwarded per admission point. When a batch leaves no events on such an exit and the last
-forwarded `t_a` is older than one heartbeat period, the driver emits a header-only progress batch on it. Exits to opaque
-hosts, host taps, and encoders absorb progress. The validator rejects a stage 6 plan in which a state owner has more than
-one physical path from the same admission point.
+**Watermark progress** (contract in stage 3, used in stage 6): for each exit leading to a state owner, the driver tracks
+the last `t_a` forwarded per admission point. When a batch leaves no events on such an exit and the last forwarded `t_a`
+is older than one heartbeat period, the driver emits a header-only progress batch on it. Exits to opaque hosts, host
+taps, and encoders absorb progress, so through stage 5 no exit needs it (every state owner is a fixed host); stage 6
+marks the exits into the aggregation isolation slot. The validator rejects a stage 6 plan in which a state owner has
+more than one physical path from the same admission point.
+
+**Region driver** (`runtime/`, stage 3). `MetricRegionDriver` implements `RegionDriver` for one slot, with
+`type Control = RegionControl::{Prepare(Box<PrepareRegion>), Abort { generation }, Release}`:
+
+- **Creation.** `MetricRegionDriver::new(RegionConfig, boot: PrepareRegion)`, where `RegionConfig::for_slot(&Slot, &dyn
+  RegisterTelemetry)` takes the slot's name and exit count from the frame and registers the region's invalid-loss
+  counter, and `.with_failure_reporter(GenerationFailureReporter)` (an `Arc<dyn Fn(GenerationId, &str)>`) is told of
+  every generation the region fails, with the reason. The creator builds the boot program's kernels off the data path
+  with `build_kernels(&program, keys, contexts: Fn(&NodeId) -> KernelBuildContext)` (each `PreparedKernel` keeps its
+  spec and context for rebuilds), and `PrepareRegion::new(generation, program, kernels, PanicBudget, &dyn
+  RegisterTelemetry)` registers the program's counters; the driver never registers telemetry. `RegionBounds::new(&plan,
+  &registry, &program)` is the driver's `MemoryBounds` for `RegionHostBuilder::with_bounds`: each kernel's operator
+  `specify_bounds` in a subcomponent named `kernel_accounting_name(node)` (the node's local ID, or `policy` for every
+  policy node), plus one full events buffer per register of the boot program. Kernels of later generations that the boot
+  program lacks are not accounted for until stage 7 scopes registrations.
+- **Generations.** One program per live generation, sorted by ID, each behind a `Weak<GenerationToken>`. Generations
+  whose token is gone are released off the data path, publishing their counts: on every control message, including
+  `Release`, which the installer sends to every region when a generation retires, and when telemetry is published.
+  `process` never releases: a batch holds its own generation, so the program it needs cannot go under it, and an idle
+  region still releases a retired generation's kernels as soon as the installer says (stage 3 review). A preparation is
+  checked whole before anything changes: the program's slot, a duplicate generation, every step's kernel, decision,
+  register, and exit index (`MalformedProgram` names the entry), and every kernel either held or brought
+  (`MissingKernel`); a rejected preparation leaves the region as it was. `Abort` removes a generation, and is a no-op
+  for one the region lacks. A batch's generation and entry come from its header only; a batch without a generation, of a
+  generation the region lacks, of a failed generation, or for an entry its program lacks is dropped and its points
+  counted as `plan_loss_total{component_id:<region>, class:invalid}`, with one warning per kind of fault. A header-only
+  batch (a heartbeat) is ignored.
+- **Kernels.** A slab keyed by `KernelKey`, each instance counting the live generations that use it, with its own
+  reused `PortOutputs`. A preparation reuses every instance the region holds for a key, whatever the installer
+  computed, and drops brought kernels it does not need.
+- **Execution.** Programs are translated once, at preparation, into ops with resolved indices (a `drop` node becomes
+  an index into the program's counts; a split holds its `Arc<CompiledPredicate>`). A batch runs to completion in one
+  `process` call over reused registers. A split whose other port leads to a `drop` filters in place with `retain`,
+  counting the drop's events and points as it goes (the native filter's work, and the default program's only split
+  shape through stage 3); a split to two registers moves a whole buffer when every event goes one way, and otherwise
+  moves the matching events with `FixedSizeEventBuffer::move_into` (order-preserving, no clones) to a buffer of exactly
+  their size while the original keeps the rest; events other than metrics take the `false` port. A tee copies a buffer
+  for every register target but the last, which receives the original. Exits receive a copy of the header with the
+  step's entry, and empty buffers are not sent. A kernel that yields on a batch is called again, as the interpreter
+  does, and one that yields 1,024 times panics (a broken kernel, supervised): stateless kernels complete every batch.
+- **Telemetry.** Per generation, in plain integers: events per output port of every kernel and decision, policy loss
+  per `drop` node, and each kernel's reported loss by class; per region, invalid loss. `publish_telemetry` adds them to
+  `plan_node_events_total{component_id:<node>, port}` and `plan_loss_total{component_id, class}` (per point), and to
+  any further counters `RegisterTelemetry::port_events` returned for a node and port: ADP returns the native
+  `PortEvents` metrics of its telemetry profiles there (the listener filterlist's and post-aggregation filter's `true`
+  port). `PlanTelemetry` registers the plan-level counters with a `MetricsBuilder`; `NoTelemetry` registers none.
+- **Supervision.** The driver records which generation and node each call is running. `reset_after_panic` clears the
+  registers, port outputs, and per-call counters, then decides by the generation's `PanicBudget`: `Zero` (the default
+  program's) returns `Fail` naming the node and generation; `Limited { per_window, window, total }` (`ARTIFACT` is 3 per
+  60 seconds and 5 in all, each limit exceeded only by a panic beyond it) records the panic at the last turn's `now`,
+  and once a limit is exceeded marks the generation failed (its batches are then dropped as invalid loss) and reports it
+  to the failure reporter, which ADP's installer turns into `generation_failed` (so the installer rolls back). It then
+  rebuilds the kernels of the panicking generation only (an instance another generation shares is rebuilt for both),
+  each inside its resource group and under `catch_unwind`, and returns `Continue`. A kernel that cannot be rebuilt,
+  because its factory fails or panics, would leave the instance that panicked in place: every generation using it fails
+  and is reported, and the region fails if one of them has a zero budget. A panic outside any program's steps returns
+  `Fail`. Through stage 4 every node of a generation shares its origin's budget (`PanicBudget::for_origin`); stage 5
+  charges a panic to the panicking node's provenance. Counts recorded before a panic in the same call are kept: they
+  describe work the nodes did. The host counts the lost batch in events; the driver does not count its points.
+- **Accounting** (stage 3 review). A kernel's `KernelBuildContext` can carry a resource group
+  (`with_resource_group`), and the driver enters it around every build, rebuild, and call of that kernel
+  (`KernelBuildContext::accounted`), so each kernel's allocations and CPU time are accounted in a group of its own,
+  `<region>.<kernel_accounting_name(node)>`, which is also where `RegionBounds` declares its bounds, as a native
+  component's chained transforms are accounted. Decisions (`split`, `tee`), registers, and exits are the region's own.
+  Entering a group costs two thread CPU-time reads on Linux (about 1.7 µs in all), once per kernel per buffer, as
+  `ChainedConfiguration` pays natively.
 
 ## The plan crate
 
@@ -432,7 +676,10 @@ A plan is a DAG serialized as JSON (`deny_unknown_fields`). The schema is genera
 - **Provenance** per node: `native(component_id)` or `artifact(revision, hash)`. Plans also carry plan-level provenance
   (configuration change number, artifact revisions).
 - **Outputs** declare accepted port types, a binding **fingerprint** (a digest of encoder, recipient set, and forwarder),
-  physical recipient identities, and a delivery policy (only `native` until stage 7).
+  physical recipient identities, and a delivery policy (only `native` until stage 7). The delivery-policy slot's native
+  default is typed: `DeliveryPolicy::overflow()` is `Overflow::Wait` (the region host awaits each exit's send in exit
+  order) and `closure()` is `Closure::Native` (native shutdown; a retiring generation's batches finish in the shared
+  encoder streams, which do not close).
 - **Scopes** name the replaceable policy regions, their named inputs (output ports that feed the region), and their
   optional named exits (`exits: {name: input port}`, the ports outside the region that it feeds). The region is every
   node reachable from the inputs without entering an exit; a scope without exits extends to its `emit` and `drop`
@@ -699,10 +946,17 @@ is enforced and within it); and `findings`. Golden files for the default-program
 `lib/saluki-metric-plan/fixtures/explain/` and are regenerated with `SALUKI_METRIC_PLAN_UPDATE_EXPLAIN=1`. They are
 change detectors, generated and then reviewed; their semantic content is checked separately against hand-derived
 values: every node's operator, boundary, state, and loss classes, port types at representative edges, bindings, and
-bounds. Later sections
-land with their stages: frame, slots, fences, exits, segments, and output bindings with recipients and delivery policies
-(3); rewrites with justifications and telemetry effects (4); plan diff and acknowledgments (5); state owners and
-transitions (6).
+bounds. Stage 3 adds the physical sections, additively within version 1: `Explain::with_physical(&plan, &frame,
+&placement)` sets `physical` (left out of documents without a frame, so the stage 1 golden files are unchanged) with the
+fixed components and their admission points (mode and route) and inputs, the slots with their nodes, entries, and
+exits (idle ones marked), the physical edges (`admission`, `direct`, or `exit`), R1's fusion decision with its reason
+for every boot edge, the segments (per admission point: the nodes and slots its batches reach and where they are
+re-admitted or delivered), and each output's binding (recipients, delivery policy with its overflow and closure
+behavior, the physical edges feeding its encoder, and its idle exits). Golden files:
+`fixtures/explain/default-program-stage3.{json,txt}` and `default-program-stage3-no-aggregation-pipeline-off.txt`, for
+the fixtures with opaque gateways, checked separately against hand-derived exits, idle flags, edge counts, segments, and
+bindings. Later sections land with their stages: rewrites with justifications and telemetry effects (4); plan diff and
+acknowledgments (5); state owners and transitions (6).
 
 ### Limits
 
@@ -825,34 +1079,71 @@ created only when the composed, resolved plan differs from the active one.
 
 ### Plan diff and correspondence
 
-`diff(active, candidate)` lists nodes as unchanged, changed, added, or removed; state owners with their transition
-class; and outputs as reused. **Correspondence**: an artifact node whose local ID equals a reserved ID in its base
-export's scope keeps that reserved ID. Its provenance switches to the artifact only if its operator or parameters
-differ, so installing an unmodified export diffs as no change. New local IDs enter the `policy` namespace. The validator
-rejects artifact local IDs equal to reserved IDs outside the scope.
+`install::diff(active, candidate, &registry) -> PlanDiff` lists every node as unchanged or changed (operator, parameters
+including resolved values, provenance, or the edges at its ports, each flagged) in candidate order, then the removed
+ones; the edges added and removed; every node that keeps state in both plans with its transition class
+(`ConfiguredOperator::transition_to`); and every output as reused, rebound, added, or removed. **Correspondence**: an
+artifact node whose local ID equals a reserved ID in its base export's scope keeps that reserved ID. Its provenance
+switches to the artifact only if its operator or parameters differ, so installing an unmodified export diffs as no
+change. New local IDs enter the `policy` namespace. The validator rejects artifact local IDs equal to reserved IDs
+outside the scope.
 
-Kernel reuse: stateless kernels are keyed by `(node, params_hash)`. State owners are keyed by `(node, lineage)`, where
-the lineage key hashes only state-contract fields (reducer key, reducer, time contract, admission policy); a `Retain`
-transition with other parameter changes is applied to the existing instance at commit.
+Kernel reuse: stateless kernels are keyed by `KernelKey { node, params_hash }`. `install::kernel_reuse(active,
+candidate)` gives, per slot, whether the program is unchanged (equal fingerprints), the keys to reuse (the active
+program in that slot has them), to build, and to release. Reuse is against the active generation only, which the
+installer holds, so a reused instance cannot be released concurrently by a retirement. From stage 6, state owners are
+keyed by `(node, lineage)`, where the lineage key hashes only state-contract fields (reducer key, reducer, time
+contract, admission policy); a `Retain` transition with other parameter changes is applied to the existing instance at
+commit.
 
 ### Prepare and commit
 
+`install::InstallerCore` holds the installer's state and makes every decision, with no I/O: the caller (the ADP
+installer worker) performs the `Action`s it returns, in order, and reports what happens. `InstallerCore::new(frame,
+registry, config, notifier, boot)` makes the boot candidate active at once and returns `Boot { generation, programs }`:
+the topology starts with those programs and the schedule `Steady(generation)`, so nothing is prepared at boot.
+`notifier` creates each token's `RetireNotifier`, which must lead to `retired(id)`. Events are `propose(Candidate {
+plan, report, origin })`, `prepare_acknowledged(generation, slot, Result<(), String>)` (a kernel that fails to build is
+that slot's failed acknowledgment), `prepare_timed_out`, `retry`, `retired`, and `generation_failed`; actions are
+`Prepare(Prepare { generation, slots: [SlotPrepare { slot, program, unchanged, reuse, build }], timeout })`, `Abort {
+generation, slots }`, `Commit { generation }`, `RetryAfter(delay)`, `InstallDefaultProgram`, and `Report(Report {
+candidate, origin, generation, outcome })`. A candidate equal (by `Plan::hash` with resolved values) to what is being
+prepared, or to the active plan when nothing is, is `Unchanged` and creates no generation. An artifact whose validation
+report has errors is rejected; a default-program candidate is installed anyway, as long as it is structurally sound
+and fits the frame (`compile::compile_unvalidated`, over `place_unvalidated`), because it is what native configuration
+says and nothing else could run in its place (amendment 14). The caller reports it degraded.
+
 1. **Prepare.** Validate, compose, place into the frame, compute the diff, build changed kernels off the data path in the
-   installer task while entering the target slot's resource-group token, and send `Prepare { generation, program,
+   installer task, each inside its own resource group under its slot's, and send `Prepare { generation, program,
    kernel_specs, new_kernels }` to **every** region (unchanged regions alias their existing program). Each region
    acknowledges.
 2. **Barrier.** All acknowledgments must arrive within the prepare timeout. On timeout or any failure, `Abort` goes to
-   every region. Artifacts report `rejected`. Default-program candidates stay `pending` and are retried with backoff,
-   keeping only the latest candidate, so native eventual application of live configuration is preserved.
-3. **Commit.** One store of `AdmissionSchedule::Steady(new)` (stage 6: `Cut`). It is irrevocable; the installer then
-   reports `active`. Abort is legal only before the store. Later proposals are normal installs on top.
+   every region. Artifacts report `rejected`. Default-program candidates stay `pending` and are retried with backoff
+   (1 s doubling to 30 s), keeping only the latest candidate, so native eventual application of live configuration is
+   preserved. One preparation runs at a time. A newer default-program candidate waits behind it (replacing any waiting
+   one) rather than cancelling it, so that a stream of configuration changes always commits; a newer artifact cancels
+   an uncommitted preparation, as the specification's ordering rule says.
+3. **Commit.** One store of `AdmissionSchedule::Steady(new)` (stage 6: `Cut`), which the caller performs on
+   `Action::Commit` before anything else; the core counts the generation active from that action. It is irrevocable.
+   Abort is legal only before the store. Later proposals are normal installs on top. Before the store, a state owner
+   whose transition class is not `retain` rejects the candidate (`cut` names stage 6).
 4. **Drain and retire.** Old batches finish under their header's generation. When the last reference drops, the token
    notifies the installer, which reports `retired`. Generations alive past the drain deadline are reported in status and
    telemetry.
 
-**Overlap budget.** The installer counts live generations through their tokens. When a new candidate would exceed the
-budget, it keeps only the latest candidate as `pending` until a generation retires. Data of stateless generations is
-never dropped to make room.
+**Overlap budget.** The installer counts live generations through their tokens: from preparation (or boot) until
+`retired`. A preparation starts only while fewer generations than the budget (4) are alive; otherwise the latest
+candidate stays `pending` until a generation retires. Data of stateless generations is never dropped to make room.
+A `Prepare` message holds its generation until the region takes it from its mailbox, so a region that stops reading
+control messages keeps every preparation sent to it alive, aborted or not: the retries of a default-program candidate
+stop once the budget is full, which also bounds what that region's unbounded mailbox holds, and resume when the
+region drains its mailbox or goes away (stage 3E's fault test pins this).
+
+**Lifecycle.** `install::GenerationState` is `pending` (preparing), `prepared`, `active`, `draining` (superseded, its
+batches finishing), `retired`, `rejected` (preparation failed or cancelled), or `failed`; `GenerationState::apply(
+LifecycleEvent)` is the transition table, and an impossible transition is an error. A generation kept as
+last-known-good goes back from `active` to `prepared`. A rejected or failed generation also retires, which leaves its
+state. The core keeps records of live generations plus the 16 most recent others.
 
 ### Supervision and fallback
 
@@ -864,13 +1155,35 @@ never dropped to make room.
   remaining batches are dropped and counted.
 - Rollback chain: failed artifact → last-known-good; failed last-known-good artifact → default program. Last-known-good
   stays prepared in every region (the installer holds its token), so rollback is one schedule store. A failure does not
-  change the revision high-water mark.
+  change the revision high-water mark. The core keeps last-known-good only when an artifact generation commits (the
+  generation it replaces); a default-program generation cannot roll back, so committing one releases any kept
+  generation. `generation_failed` on the active artifact generation returns `Commit` of last-known-good (only while it
+  is still `prepared`), or `InstallDefaultProgram` when none is kept; on a default-program generation it only records
+  the failure, and a failure already recorded changes nothing.
+- A failed generation stays failed (stage 3 review). A commit that replaces it does not supersede it and never keeps it
+  as last-known-good: it keeps the last-known-good it had (for an artifact) or releases it (for the default program).
+  A candidate equal to a failed active generation is not `Unchanged`: it is prepared as a new generation. A
+  preparation in flight when the core rolls back was diffed against the failed generation and reuses its kernels, so
+  the core aborts it, reports it `rejected` ("the generation it was prepared against failed, so it is prepared
+  again"), and queues the candidate again, to be prepared against the generation rolled back to.
 
 ### Installer state
 
 Installer state (active plan and hash, last-known-good, revision high-water mark, live generations, schedule handle)
 lives in an `Arc` created in `run.rs`, outside the restartable worker, so a worker restart never forgets the high-water
-mark. Candidate errors are reported, never fatal to the worker.
+mark: the `InstallerCore` (all but the schedule handle, which the caller stores into) is that state. Candidate errors
+are reported, never fatal to the worker. `InstallerCore::status()` is the status snapshot (active, last-known-good,
+preparing, pending, live generations, high-water mark, and generation records).
+
+In ADP (stage 3), `programmable_metrics::installer::InstallerState` is that `Arc`: one `tokio::sync::Mutex` over the
+core, `Lowering`, the schedule handle, every region's `ControlSender`, the retirement receiver, the configuration view
+the worker wakes on (`Live<SalukiConfiguration>`), the last lowered plan, the acknowledgments still awaited, the
+prepare and retry deadlines, the actions not yet performed, and the draining generations with when they started
+draining; plus the `Arc<ArcSwap<PlanStatus>>` it publishes. The worker holds the mutex while it runs, so a restarted
+worker (after a panic) continues exactly where the previous one stopped, with the same pending acknowledgments and
+deadlines; actions are queued and performed one at a time, so a panic loses at most the action being performed. The
+worker is a child of the internal supervisor (one restart per five seconds), on the main runtime, so kernels it builds
+keep their background tasks there.
 
 ### Artifact handling
 
@@ -890,9 +1203,9 @@ mark. Candidate errors are reported, never fatal to the worker.
 
 ### Host facts, bindings, telemetry profiles
 
-Stage 2 compiles `programmable_metrics` only for its tests (`#[cfg(test)]` in `main.rs`, the plan crate a
-dev-dependency): nothing runs it until stage 3 builds the topology from the lowered program, so it would be dead code
-in the binary. Stage 3 removes the gate and moves the dependency.
+Stage 2 compiled `programmable_metrics` only for its tests (`#[cfg(test)]` in `main.rs`, the plan crate a
+dev-dependency). Stage 3 removed the gate and made the plan crate a normal dependency of ADP; the few stage 2 items only
+later stages use (`AdpCatalog::to_document`, `NativeOutputs::routing_groups`) stay test-only until then.
 
 - `HostFacts { process_start: SystemTime, hostname, standalone, host_tags: Option<SharedTagSet>,
   cluster_agent_endpoint: Option<String> }` is captured once before lowering by `HostFacts::capture(process_start,
@@ -1049,6 +1362,104 @@ it, and that a change to a `Startup` input changes nothing.
   and installs as above. It publishes `PlanStatus` and plan telemetry at INFO: `plan_active_generation`,
   `plan_active_revision`, `plan_installs_total{outcome}`, `plan_live_generations`, `plan_rewrites_applied`,
   `plan_loss_total{component_id, class}` (per point), and derived `plan_node_events_total{component_id, port}`.
+
+**As built in stage 3.**
+
+- **Boot** (`installer::ProgrammableMetrics::boot`, called by `handle_run_command` once the environment provider
+  exists). `main` captures the wall-clock process start beside the monotonic one. Boot returns `None` when no metrics
+  pipeline is required; otherwise it creates the wake view `config_system.live(|c| c)` first, captures `HostFacts` (host
+  tags fetched once, in connected mode with a non-zero `expected_tags_duration`, failing the boot as natively), prepares
+  `Lowering::new` from that boot configuration, lowers and validates the boot default program (lowering notes are
+  logged; validation errors are logged as degraded and kept in `PlanStatus::degraded`), computes the frame with
+  `topology::slot_name` (the slot holding `dsd_enrich` is `dsd_pre_aggregation`, the one holding `metrics_enrich` is
+  `metrics_enrich`, and a slot the cost model cuts from them is named after its first node, without the `_in` of a
+  merge, plus `_region`, such as `dsd_prefix_filter_region`), and creates the `InstallerCore` (G0 active at once), the
+  schedule `Steady(G0)`, and one control mailbox per slot. The host tags kernel takes its tags and deadline from the
+  facts, as literals of the program, so the RPC is not repeated. The binding-derived profile gauges are set from the
+  boot program.
+- **Topology** (`run.rs` `create_topology(config_system, env_provider, registry, Option<&mut ProgrammableMetrics>)`).
+  Every pipeline is built by the same code in both modes, through four hooks of a `MetricsWiring` (`None`, `Plan`, and
+  the test-only `Legacy`): `add_baseline` (plan: the frame's outputs, with their encoders, forwarders, and the gateways
+  in front of them, built by the helpers the legacy path uses: `main_metrics_encoder`, `routing_group_branch`,
+  `mrf_metrics_branch`, `autoscaling_failover_branch`; the Cluster Agent endpoint is the host fact), `metrics_source`
+  for each source's `metrics` output (plan: recorded; legacy: connected to `metrics_enrich`), `add_dogstatsd` once
+  `dsd_in` exists (plan: `dsd_agg` from `dogstatsd_aggregate_configuration`, with its context snapshot channel feeding
+  the context dump handler as before), and `finish` (plan: checks that the frame's fixed components and sources are
+  exactly what the native pipelines built, then a `RegionHostBuilder<MetricRegionDriver>` per slot, a blueprint edge per
+  frame edge, and an admission point per fixed-component output with `CLOCK_RESET_THRESHOLD` and no heartbeat). A
+  source's port is its named output (`dsd_in.metrics`, `trace_sampler.metrics`); aggregation's and an opaque host's one
+  port is the default output of its component (`dsd_agg`, the `component` parameter); a slot exit is `<slot>.<exit>`; an
+  output target is its `NativeOutput::component`. A region's factory builds the boot program's kernels when the topology
+  builds the region (each inside its own resource group), with `PanicBudget::DEFAULT_PROGRAM`, and reports generation
+  failures to the installer; its bounds are `RegionBounds`. `create_legacy_topology` (test-only) builds the legacy
+  metrics path through the same hooks, so the two blueprints differ only where the plan replaces native wiring.
+- **Telemetry** (`telemetry.rs`). `RegionTelemetry` implements `RegisterTelemetry` over `PlanTelemetry` and adds, for a
+  node whose profile keeps a `PortEvents` metric on the port, the native counter under the node's native identity; it
+  also gives each kernel its `KernelBuildContext`: the native component of its profile (or a transform named after the
+  node) as the identity its telemetry reports under, and, with `with_accounting(registry, region identities)`, the
+  resource group `<region>.<kernel_accounting_name(node)>` its memory and CPU time are accounted in. The native identity
+  is for telemetry only: what a kernel holds is accounted under its region. `InstallerTelemetry` keeps handles to
+  `plan_active_generation`, `plan_live_generations`, `plan_installs_total{outcome}` (`committed`, `unchanged`,
+  `superseded`, `retried`, `rejected`), and to every binding-derived native metric it records: `BindingLength`,
+  `MatcherEntries`, and `TagProjectionRules` gauges set at boot and at every commit from the committed plan's resolved
+  binding values (`tag_filterlist_size`, the number of tag filterlist rules, is `TagProjectionRules` since the stage 3
+  review: a kernel set it when it was built, so a candidate's kernel changed it before the commit, and an aborted one
+  left it wrong), and `BindingChanges` counters registered at boot, at zero, as the native components register theirs
+  when built (`register_change_counters`, added in stage 3E: before, the series appeared only with the first change),
+  and incremented once per observed change whose lowering changed a watched binding's resolved value. Handles are kept
+  because the internal telemetry evicts a metric that stays idle with no live handle. A change is compared by resolved
+  (normalized) values, so reordering a set-typed list is not an update, unlike the native live view, which counts any
+  change of the list as written.
+- **Series the plan-driven topology no longer reports** (measured in stage 3E against the legacy topology, for the
+  release note; the fused components are `dsd_pre_aggregation` and `metrics_enrich`, plus the regions the cost model
+  cuts from them). For each fused transform (`dsd_enrich`, `dsd_prefix_filter`, `dsd_no_agg_split`,
+  `dsd_tag_filterlist`, `dsd_post_agg_filter`): the interconnect series `component_events_received_total`,
+  `component_events_received_size`, and, per output (`_default`, and `passthrough` for the split),
+  `component_events_sent_total`, `component_send_latency_seconds`, and `component_events_discarded_total`; the health
+  series `health_component_ready`, `health_component_live`, and `health_component_liveness_latency_seconds`
+  (`component_id:topology.primary.transforms.<id>`); and the task series `runtime_task_poll_count` and
+  `runtime_task_poll_duration_seconds` (`task_name:topology.primary.transforms.<id>` and `.<id>.transform`).
+  `metrics_enrich` keeps its ID but reports `component_events_sent_total`, `component_send_latency_seconds`, and
+  `component_events_discarded_total` per exit instead of for `output:_default`, and its
+  `component_events_received_total` counts what reaches the post-aggregation filter, which it now runs. The passthrough
+  batcher's `aggregate_passthrough_batch_duration_secs` and `component_events_dropped_total{component_id:
+  dsd_no_agg_split, drop_reason:buffer_full}` are gone (amendment 12), and `aggregate_passthrough_flushes_total` counts
+  one flush per input batch with timestamped metrics. Every other native series of the fused components keeps its
+  name, labels, and value; none of the removed series is matched by `get_datadog_agent_remappings()` or
+  `get_compat_remappings()`, and the remapped output is identical but for `no_aggregation.flush`.
+- **Resource groups** (stage 3 review). Each kernel of a region is accounted in its own group under the region's,
+  `topology.primary.transforms.<region>.<node>`, in `/memory/status` and in the `group_*{group_id}` series
+  (`group_allocated_bytes_total`, `group_allocated_bytes_live`, `group_allocated_objects_total`,
+  `group_allocated_objects_live`, `group_deallocated_bytes_total`, `group_deallocated_objects_total`,
+  `group_cpu_time_nanos_total`), where natively each fused transform had its own group,
+  `topology.primary.transforms.<transform>` (`dsd_enrich.0_dogstatsd_mapper` and `metrics_enrich.0_host_enrichment` for
+  the chained ones). So `dsd_tag_filterlist`'s memory is reported as
+  `topology.primary.transforms.dsd_pre_aggregation.dsd_tag_filterlist`, for example. The groups of
+  `dsd_post_agg_filter` and the listener filterlist, which run as decisions, are gone: their work is accounted to their
+  region's group. Each region's bounds are its kernels' native bounds, without the struct of each native component, plus
+  a full buffer per exit and per register; every other component's bounds are the legacy ones, and the interconnects
+  lose one queue per fused transform beyond one per region, four with a default configuration (a topology test pins
+  all of it against `create_legacy_topology`).
+- **Buffering** (stage 3 review). Fusion removes the interconnects between fused components. With a default
+  configuration, DogStatsD metrics cross two 128-buffer queues between `dsd_in` and aggregation (into
+  `dsd_pre_aggregation` and `dsd_agg`) where the legacy chain had five, and two after aggregation (into `metrics_enrich`
+  and the encoder) where it had three; a pipelined chain keeps one queue per region. A burst, or a long aggregation
+  flush, therefore fills the queues sooner, and the DogStatsD source blocks and its socket drops sooner (host loss,
+  outside the plan). The region's own exits hold a buffer each while a send waits. Burst loss against legacy is not
+  measured yet (see Risks).
+- **Installer worker** (`InstallerWorker`, a child of the internal supervisor). Before anything else it waits for every
+  region to run (`ControlSender::running`, or shutdown), so that a configuration change made while the topology waits
+  for its environment is prepared once the regions can answer, rather than timing out and filling the overlap budget
+  (stage 3 review). It then waits, in priority order, for a retirement, a generation failure a region reported, an
+  acknowledgment, the prepare deadline, the retry delay, a drain deadline, or a configuration change; on a retirement it
+  sends `Release` to every region, and a failure goes to `generation_failed`; lowers and validates on every change (a
+  lowering error is logged, counted `rejected`, and kept in `PlanStatus::last_error`); proposes; and performs the core's
+  actions: kernels a slot lacks are built off the data path, each in its own resource group under its region's (a build
+  failure is that slot's failed acknowledgment, and the rest are not sent), each `Prepare` is sent without waiting and
+  its `ControlAck` awaited in a `FuturesUnordered`, `Abort` is sent to every listed region without waiting, `Commit` is
+  one schedule store followed by the binding gauges, and reports update telemetry, logs, and status. A preparation's
+  panic budget follows its generation's origin. Generations that are still draining after `DRAIN_DEADLINE` are logged
+  once and listed in `PlanStatus::overdue`.
 - Saluki-only keys `experimental.programmable_metrics.artifact_channel.stub_url` and `.poll_interval` (default 1 s),
   per the config-system skill. Unset means no channel. The stub accepts only loopback addresses, warns at startup, and
   is documented as development-only. It polls `POST {stub_url}/v1/artifacts/poll` with rich acknowledgments and a status
@@ -1215,6 +1626,44 @@ throughput, multiple platforms) are recorded as open, with the closest local evi
 | Demo | Syntax crate, demo server and UI, launcher, headless check. | `make demo-programmable-metrics-check` passes; manual run with screenshots. |
 | 6 | See [stage 6 outline](#stage-6-outline). | Same matrix fixtures rerun unchanged against the kernel; transition traces; R5b capacity tests; bucket assignment under a deterministic clock; demo check passes. |
 
+**Stage 3 exit evidence (stage 3E).** In ADP, over the primary topology as `run.rs` builds it (`test_topology.rs`),
+with every source and the trace sampler replaced by scripted components, every metrics encoder and the client
+telemetry tap by collectors, and every forwarder by one that drops, in place, through the test-only
+`TopologyBlueprint::replace_{source,transform,destination,encoder,forwarder}` of `saluki-core`'s `test-util`:
+
+- **Differential** (`topology/differential_tests.rs`): twelve configurations (the no-aggregation pipeline on and off, a
+  mapper profile, a namespace prefix with both filterlists, a tag filterlist with a value allowlist, zero, one, and two
+  routing groups, Multi-Region Failover, OTLP beside and without DogStatsD, and every branch with the pipeline on and
+  off, including checks, the trace sampler, and autoscaling failover) deliver equal multisets of flattened points to
+  every encoder input (`equivalence::compare`), and two of them match hand-written names, counts, and points.
+  Aggregation runs the native core on a test clock (admitted at one fixed time, flushed once when its input ends), so
+  timing cannot change what it emits; the inputs avoid two native timing effects (no gauge context repeats within a
+  batch, since native filters reorder; the native passthrough batcher is set to flush when it stops).
+- **Live configuration** (`installer/live_tests.rs`), on the connected configuration path (`LoadedConfiguration::run`,
+  `ConfigUpdatesWorker`, `ConfigUpdate::Partial`): a filterlist change installs generation 2, every batch is processed
+  whole by one generation (its buffers' headers and its filtering agree), batches switch once, and unrelated metrics
+  arrive exactly once; a startup-only key changes nothing; thirty changes with batches in flight keep at most the
+  overlap budget alive, wait at the budget, and end on the last configuration with nothing lost or duplicated.
+- **Faults** (`installer/fault_tests.rs`): a preparation commits while a region waits on a full downstream channel
+  (the old generation drains until the channel is read, and nothing is lost); a region that never reads its mailbox
+  times out, is aborted everywhere, and its unread preparations stay within the overlap budget until the mailbox goes;
+  a change made while the topology waits for its environment is installed once the regions run, without a timeout;
+  a restarted installer worker continues from its shared state (generation IDs, configuration changes); twenty
+  installs leave health registrations, readiness, resource groups, the memory bounds tree, and the metric series as
+  they were, with `/ready` healthy.
+- **Telemetry** (`telemetry/tests.rs`): against the legacy topology, the series removed are exactly the fused
+  components' component series listed in the stage 3 ADP integration notes, every other native series keeps name,
+  labels, and value (two hand-derived exceptions), and both remapping rule sets render the same but
+  `no_aggregation.flush`.
+- **Accounting** (`topology/tests.rs`, `telemetry/tests.rs`, added in the stage 3 review): each region's bounds are
+  its kernels' native bounds plus a full buffer per exit and per register, every other component's bounds are the
+  legacy ones, and the interconnects are four queues fewer, all exactly against `create_legacy_topology`; each kernel
+  is accounted in a resource group of its own under its region, where its memory shows.
+- **Measurements** (`topology/measurement_tests.rs`, rerun after the stage 3 review): on one and on four workers,
+  throughput, worker time per metric, allocated bytes per metric, and p99 latency are no worse than legacy within the
+  run-to-run noise of legacy against itself, in every phase; see [Risks](#risks) for the numbers and what is not
+  measured.
+
 ## Stage 6 outline
 
 1. Aggregation becomes a stateful kernel in the `dsd_agg` slot behind a declared isolation fence, keeping component ID
@@ -1265,7 +1714,11 @@ native behavior. Nothing in the specification is edited without the author.
 9. **Host-tags deadline** is process start plus `expected_tags_duration`, compared with `t_a` (native: transform build
    time, monotonic, at processing). Intentional change, in the plan-driven topology only. Lowering rounds it up to a
    whole second (and caps it at 2^53 − 1 seconds), so that the deadline is always a plan duration; rounding up keeps
-   host tags at least as long as configured, as the native deadline, which starts after the process does.
+   host tags at least as long as configured. The native deadline starts when the host tags transform is built, after
+   connected startup has waited for the Datadog Agent to accept the registration and send the initial configuration;
+   both waits are unbounded, and they now count against the duration, which they can use up (stage 3 review): with
+   `expected_tags_duration: 1m` and an Agent that answers after 90 seconds, native adds host tags for a minute after
+   the topology builds, and the plan-driven topology never adds them.
 10. **`dsd_client_telemetry_out` taps the post-aggregation filter's output**: `tee` plus `emit` to an internal output.
 11. **Aggregation**: counters leave as `Rate(width)` (so `kind` is written for counters); `flush_open_windows` has no
     observable effect; new counters receive back-filled zeros from the previous flush; a first insert can emit
@@ -1299,6 +1752,14 @@ native behavior. Nothing in the specification is edited without the author.
     fail lowering with the native error instead, so they fail the boot as today. A duration no plan duration
     represents (more than 2^53−1 of the largest unit dividing it) fails lowering, a gap left open; the host-tags
     deadline is rounded to whole seconds so it is never such a duration (amendment 9).
+    Stage 3 runs a default program whose report has errors whenever it is structurally sound and fits the frame: the
+    installer core compiles a default-program candidate without the validity check (`compile_unvalidated`), and ADP
+    reports it degraded (logs, `PlanStatus::degraded`). The configurations recorded above are not structurally sound:
+    an operator cannot be configured with an out-of-range parameter, so no frame can be computed, and the boot fails
+    with the validation finding, naming the node and parameter. That is an intentional change for these values (beyond
+    9×10^15 contexts or cache entries), which natively run; `aggregate_flush_interval: 0s` stops the process natively
+    anyway. A configuration change whose program cannot be configured is rejected, and the active generation keeps
+    running.
 15. **Gateways**: MRF and autoscaling branches exist only when native wiring builds them; the MRF predicate keeps the
     static `multi_region_failover.enabled` as a startup-bound conjunct; the autoscaling output accepts only
     `{Counter, Rate, Gauge, Set}`.
@@ -1307,7 +1768,8 @@ native behavior. Nothing in the specification is edited without the author.
 17. **No configuration version exists**; the installer numbers observed configuration changes per process.
 18. **Predicates** add `const`, `flag`, `is_empty`, and `matches` (with `in`/`prefix_in` sugar).
 19. **Accounting** for fused kernels nests under the slot (`topology.primary.transforms.<slot>.<node>`); policy nodes
-    share one group per slot.
+    share one group per slot. Only kernels have groups: decisions (`split`, `tee`) run in the region's own, so the
+    native groups of filters that lower to decisions (the listener filterlist and post-aggregation filter) are gone.
 20. **Behavior-changing limits** need decision-log entries, as the specification's limits table requires: the drain
     deadline (30 s) and the overlap budget (4 live generations) are set in stage 1's limits table.
 21. **Canonical numbers**: plans contain only integers written as JSON integers within ±(2^53−1); integral values
@@ -1375,7 +1837,11 @@ native behavior. Nothing in the specification is edited without the author.
     cannot express (amendment 14), with two known exceptions where lowering fails instead: a duration no plan duration
     represents, and host tags enrichment without host tags in the host facts. Lowering approximates in one recorded
     place: it lists a repeated histogram statistic once (amendment 26), while native aggregation, which runs as an
-    opaque host until stage 6, still emits it once per listing.
+    opaque host until stage 6, still emits it once per listing. From stage 3, `Lowering::new` runs before the topology
+    is assembled (the frame needs the default program), so the metrics path's errors are reported before those of the
+    pipelines outside it, which native assembly checked first when it met them first (a malformed checks IPC endpoint,
+    a debug log path that is not UTF-8); and host tags are fetched before assembly rather than when the topology is
+    built. With one error, the error is the native one.
 39. **Host facts include the Cluster Agent endpoint**, which Kubernetes service discovery reads from the process
     environment at boot, so that lowering stays a pure function of configuration and host facts.
 40. **Before stage 4, gateway emits are named `<gateway>_out`**, by `derived_terminal_id` from the opaque host's
@@ -1392,16 +1858,102 @@ native behavior. Nothing in the specification is edited without the author.
     (`AdmissionPoint::status().admitted_to_new`), so the cut is completed or recomputed rather than cancelled. A point
     keeps the epoch it first saw a cut to `new` with for as long as the schedule's cut has that `new` generation, so
     republishing the cut, even with another `T`, never moves a reset-switched point back to `old`.
+43. **Fusion stops where it would form a cycle through a fence.** R1 fuses synchronous neighbors "no fence separates";
+    a maximal connected set of synchronous nodes can still reach itself through a fence, as the default program's
+    pre-aggregation chain reaches the post-aggregation merge both directly (the passthrough) and through aggregation.
+    One region would then be a cycle with the aggregation host. A slot is therefore a connected set of synchronous
+    nodes of equal fence depth (the most fences on a path from the set to the node), and `explain` reports the edge
+    as `separated` through the fence.
+44. **A superseded generation is `draining` until it retires.** The lifecycle reports `rejected`, `pending`,
+    `prepared`, `active`, and `retired`; between being replaced and retiring, a generation still processes its stamped
+    batches. Status reports that state as `draining` (and generations alive past the drain deadline), and a generation
+    kept as last-known-good goes back to `prepared`. Mapping the states onto acknowledgments is a stage 5 deliverable.
+45. **Configuration changes queue behind a preparation instead of cancelling it.** "A newer proposal cancels a
+    preparation that has not committed" applies to artifact revisions. A newer default-program candidate waits until
+    the preparation in flight commits or fails, replacing any candidate already waiting, so a steady stream of
+    configuration changes cannot keep every preparation from committing; the latest configuration is always applied
+    next.
+46. **Last-known-good is kept only below an artifact generation.** It is "the plan that was active before the current
+    one", which matters only when the current one can fail and roll back: an artifact generation. A default-program
+    generation's panic budget is zero, so committing one releases any kept generation instead of holding its programs
+    and kernels in every region and a place in the overlap budget.
+47. **R1 pipelines by cost** (from stage 3E's measurements; resolved in the stage 3 review). R1 fuses the synchronous
+    neighbors that no fence separates, which made the five pre-aggregation transforms one region and removed the
+    pipeline parallelism their five tasks had: one saturated DogStatsD stream ran at 0.68 to 0.72 of the legacy
+    throughput on four workers, below the gate that throughput and p99 latency be no worse than legacy at every gate. R1
+    now also cuts where one region would be slower than the native chain: by the cost model in [Physical frame and
+    region programs](#physical-frame-and-region-programs), a chain runs as one region while its estimated cost stays
+    within that of the costliest native component (or 64 ns per event), and pipelines over several regions otherwise,
+    never cutting a native component. With that, the gate holds as written in the stage 3 measurements (see Risks), so
+    neither restating it per unit of CPU nor bringing stage 9's partitioned parallel regions forward is needed. A
+    region's slot is therefore a connected set of synchronous nodes of equal fence depth and equal pipeline stage, and
+    `explain` reports a cut as `pipelined`, with the budget.
+48. **Fusion removes queues** (stage 3 review). Each interconnect between two fused components is gone, so the
+    plan-driven topology buffers less between DogStatsD and aggregation (two queues instead of five with a default
+    configuration) and after it (two instead of three). The specification's capacity rule ("a rewrite may only reduce
+    capacity loss") speaks of loss inside the plan; this moves loss outside it, to the source socket, sooner under a
+    burst. The proposal is to accept it as R1's cost, to measure burst loss against legacy before stage 3's gate is
+    final, and, if it is worse, to give a region's input interconnect the capacity of the queues it replaces.
 
 ## Risks
 
 - Output fingerprints catch routing-group renumbering after restarts, but an artifact then becomes invalid rather than
   following the endpoints. That is deliberate: the approver never chose the new endpoints.
+- **R1's cost estimates are coarse** (stage 3 review, amendment 47). Whether a chain fuses or pipelines follows fixed
+  per-operator estimates, not measurements of the configuration at hand: a chain costlier than its estimates fuses
+  where pipelining would pay (one saturated stream then gets less than legacy), and one cheaper than them pipelines
+  where one region would do (an extra hop and queue). Before the cost model, fusing the whole pre-aggregation chain ran
+  one saturated stream at 0.68 to 0.72 of legacy on four workers. The measurements below cover one configuration (a
+  mapper profile: two pre-aggregation regions); SMP runs on Linux should check others before the estimates are trusted.
+- **Passthrough per batch** (amendment 12) sends one buffer per input batch where the native batcher sent one per 1,024
+  timestamped metrics. Since the stage 3 review the timestamp split moves a buffer whose metrics all go one way whole,
+  prepares passthrough metrics in place, and moves (rather than copies) what a split separates, and the plan-driven
+  topology uses less worker time per metric than legacy in every phase, passthrough-only batches included. The
+  encoders are replaced by collectors, so the encoder-side cost of more, smaller buffers is not measured.
 - The per-admission-point mutex serializes the DogStatsD decoder pool's dispatches. Dispatch rate is low (full or
-  100 ms buffers), but the stage 3 bench must check it.
-- Per-kernel resource-group entry costs about 1.7 µs per kernel per batch on Linux, as `ChainedConfiguration` pays
-  today. Measure; if needed attribute per slot with an `explain` note.
-- Fused exits feed encoder channels directly, halving the queue slack before head-of-line blocking on some branches.
-  Measure p99 under slow sinks at the stage 3 gate.
+  100 ms buffers). Stage 3E's measurement dispatches through the `dsd_in.metrics` admission point from one scripted
+  source, not from the decoder pool, so contention between decoders is still unmeasured.
+- Per-kernel resource groups (restored in the stage 3 review) cost two thread CPU-time reads per kernel per buffer on
+  Linux, about 1.7 µs, as `ChainedConfiguration` pays natively. The measurements ran on macOS, with the tracking
+  allocator and so with that entry, but at the cost on macOS; Linux numbers are open.
+- **Less buffering** (amendment 48). Fusion removes the queues between fused components, and fused exits feed encoder
+  channels directly. Stage 3E checks the function (a preparation commits while an exit waits on a full channel, and
+  nothing is lost), not burst loss at the DogStatsD socket against legacy, nor p99 under slow sinks; both are still to
+  measure.
+- **Measurements** (after the stage 3 review, release mode, Apple Silicon, local). Criterion benches, each against a
+  hand-written baseline that calls the same kernels with no program, registers, or telemetry:
+
+  | Bench | Driver | Baseline |
+  |---|---|---|
+  | `region_driver` pre-aggregation, three regions, 1,024 metrics, 256 contexts | 224.9 µs | 222.1 µs |
+  | the same, 4,096 contexts | 225.4 µs | 221.7 µs |
+  | the same, 128 metrics | 28.4 µs | 27.7 µs |
+  | `region_driver` post-aggregation, two regions, five-way fan-out | 173.2 µs | 184.8 µs |
+  | `region_host` dispatch, 256 one-event buffers | 81.1 µs | 63.0 µs (plain transform) |
+  | `region_host` dispatch, 256 full buffers | 3.89 ms | 3.73 ms (plain transform) |
+
+  The host's own work is about 70 ns per buffer (its select, the supervised call, and dispatch by exit). The
+  in-process comparison is `topology/measurement_tests.rs` (ignored; five alternating rounds, medians; the
+  `region_driver` workload with a mapper profile, one timestamped sentinel per batch, native aggregation, the
+  connected configuration path, and the production runtime layout, in which the topology and the installer share one
+  runtime). Legacy against itself stays within 1% of throughput, 4% of worker time, and 1% of p99 (four workers),
+  which the tolerances (7%, 7%, and 10%) cover:
+
+  | Workers | Phase | Throughput | Worker time per metric | Allocated bytes per metric | p99, plan / legacy |
+  |---|---|---|---|---|---|
+  | 4 | saturated | 1.04 | 0.94 | 0.82 | (queueing) |
+  | 4 | paced at half the legacy rate | 1.00 | 0.90 | 0.82 | 1.09 / 3.20 ms |
+  | 4 | paced, a filterlist change every 50 ms | 1.00 | 0.94 | 0.83 | 1.21 / 3.21 ms |
+  | 4 | paced, passthrough only | 1.00 | 0.80 | 0.83 | 0.73 / 2.22 ms |
+  | 1 | saturated | 1.27 | 0.77 | 0.82 | (queueing) |
+  | 1 | paced at half the legacy rate | 1.00 | 0.83 | 0.82 | 0.82 / 6.02 ms |
+  | 1 | paced, a filterlist change every 50 ms | 1.00 | 0.89 | 0.84 | 1.45 / 6.03 ms |
+  | 1 | paced, passthrough only | 1.00 | 0.80 | 0.83 | 0.70 / 2.75 ms |
+
+  Ratios are plan over legacy. In the passthrough-only phase the native batcher fills a buffer per batch, as regions
+  send one, so its p99 compares the paths themselves rather than the batching. Allocations per metric (reported, not
+  checked) are 1.10 to 1.22 of legacy with live updates, from lowering and preparing every change, and 1.01 otherwise;
+  live memory at the end of a phase is reported too. SMP throughput, CPU, memory, and RSS on Linux, queue bytes, slow
+  sinks, key skew, and decoder-pool contention remain open, as the stage plan says.
 - `component_events_sent_total` double counts for `BufferedDispatcher` users natively; regions do not use it. Tracked
   separately.

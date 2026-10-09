@@ -14,9 +14,11 @@
 //! change increments the version.
 //!
 //! Sections arrive with the capabilities they describe. Version 1 has the logical graph, port types, provenance, and
-//! resource bounds. Later stages add the physical frame and its slots, fences, and exits, output bindings with their
-//! recipients and delivery policies, the rewrites applied with their justifications, the plan diff, and state owners
-//! with their transitions.
+//! resource bounds, and, for a plan placed into a frame ([`Explain::with_physical`]), the physical sections: the
+//! frame's fixed components with their admission points, its slots with their entries and exits (idle ones marked),
+//! the physical edges including direct ones, rewrite R1's fusion decision for every edge of the boot plan, the
+//! segments between admission points, and each output's binding with its recipients and delivery policy. Later
+//! stages add the rewrites applied with their justifications, the plan diff, and state owners with their transitions.
 
 use std::collections::BTreeMap;
 
@@ -33,6 +35,12 @@ use crate::{
     model::PortType,
     operators::{Boundary, Loss, LossClass, OperatorRegistry, StateContract},
     validate::{binding_uses, BoundScope, Severity, ValidationReport},
+};
+
+mod physical;
+pub use self::physical::{
+    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, OutputBindingEntry, PhysicalEdgeEntry, PhysicalPlan,
+    SegmentEntry, SlotEntry, SlotInputEntry,
 };
 
 mod text;
@@ -57,6 +65,10 @@ pub struct Explain {
 
     /// The validation findings, in the order validation found them.
     pub findings: Vec<FindingEntry>,
+
+    /// How the plan runs in the frame built at boot, if it was placed into one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical: Option<PhysicalPlan>,
 }
 
 /// The plan as a whole.
@@ -426,7 +438,17 @@ impl Explain {
             },
             bounds,
             findings,
+            physical: None,
         }
+    }
+
+    /// Adds the physical sections: how `plan`, the plan this document describes, runs in `frame`, as `placement`
+    /// placed it.
+    pub fn with_physical(
+        mut self, plan: &Plan, frame: &crate::compile::Frame, placement: &crate::compile::Placement,
+    ) -> Self {
+        self.physical = Some(PhysicalPlan::of(plan, frame, placement));
+        self
     }
 
     /// Returns the document as pretty-printed JSON, with a trailing newline.
@@ -494,7 +516,7 @@ fn state_name(state: &StateContract) -> &'static str {
     }
 }
 
-fn loss_class_name(class: LossClass) -> &'static str {
+pub(crate) fn loss_class_name(class: LossClass) -> &'static str {
     match class {
         LossClass::Policy => "policy",
         LossClass::Capacity => "capacity",

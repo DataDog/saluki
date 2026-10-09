@@ -104,7 +104,7 @@ impl HostOutput {
     }
 
     /// Returns the metrics emitted on each port, in port order, and the loss recorded, leaving the output empty.
-    pub(super) fn take(&mut self) -> (Vec<Vec<Metric>>, TurnCounters) {
+    pub(crate) fn take(&mut self) -> (Vec<Vec<Metric>>, TurnCounters) {
         (
             self.ports.iter_mut().map(std::mem::take).collect(),
             self.counters.take(),

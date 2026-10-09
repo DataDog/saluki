@@ -19,6 +19,7 @@ pub use saluki_metric_kernels::testing::{
     arb_host, arb_metric, arb_metric_name, arb_metric_values, arb_tag, arb_tags, HOST_VOCABULARY, NAME_VOCABULARY,
     PREFIX_VOCABULARY, TAG_KEY_VOCABULARY, TAG_VALUE_VOCABULARY,
 };
+use serde_json::Value;
 
 use crate::{
     ir::{BindingName, Operand},
@@ -27,7 +28,10 @@ use crate::{
 };
 
 mod fixtures;
-pub use self::fixtures::{default_program_catalog, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON};
+pub use self::fixtures::{
+    default_program_catalog, default_program_slot_name, with_opaque_gateways, DEFAULT_PROGRAM_JSON,
+    NO_AGGREGATION_PIPELINE_OFF_JSON,
+};
 
 fn arb_strings(vocabulary: &'static [&'static str]) -> impl Strategy<Value = Vec<String>> {
     vec(select(vocabulary).prop_map(str::to_string), 0..4)
@@ -98,6 +102,33 @@ pub fn arb_predicate() -> impl Strategy<Value = Predicate> {
             inner.prop_map(|operand| Predicate::Not(Box::new(operand))),
         ]
     })
+}
+
+/// Returns a predicate as the JSON a plan's `split` holds, with every configuration binding replaced by its resolved
+/// value.
+///
+/// Generated predicates bind one test binding to different values, which a plan could not do consistently. A binding
+/// evaluates exactly as its resolved value does, so the literals keep the predicate's meaning.
+pub fn predicate_json(predicate: &Predicate) -> Value {
+    let mut value = serde_json::to_value(predicate).expect("predicates serialize");
+    literal_operands(&mut value);
+    value
+}
+
+fn literal_operands(value: &mut Value) {
+    match value {
+        Value::Object(members) => {
+            if members.contains_key("config") {
+                if let Some(resolved) = members.get("resolved").cloned() {
+                    *value = resolved;
+                    return;
+                }
+            }
+            members.values_mut().for_each(literal_operands);
+        }
+        Value::Array(values) => values.iter_mut().for_each(literal_operands),
+        _ => {}
+    }
 }
 
 #[cfg(test)]

@@ -15,18 +15,28 @@ test-util = ["dep:proptest", "saluki-metric-kernels/test-util"]
 
 [dependencies]
 proptest = { workspace = true, optional = true }
+saluki-common = { workspace = true }
 saluki-core = { workspace = true }
+saluki-error = { workspace = true }
 saluki-metric-kernels = { workspace = true }
+saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 metrics = { workspace = true }
 proptest = { workspace = true }
 saluki-metric-kernels = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 stringtheory = { workspace = true }
+
+[[bench]]
+name = "region_driver"
+harness = false
+required-features = ["test-util"]

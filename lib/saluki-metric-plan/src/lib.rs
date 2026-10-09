@@ -19,21 +19,27 @@
 //! - [`interpret`]: the reference interpreter, which executes a plan over a trace of events literally.
 //! - [`equivalence`]: the equivalence oracle, which compares what executions deliver, point by point.
 //! - [`explain`]: the versioned description of a plan, as JSON and as text.
+//! - [`compile`]: the physical frame computed at boot, placement of candidate plans into it, and region programs.
+//! - [`install`]: plan diffs, the generation lifecycle, and the installer's decisions, without I/O.
+//! - [`runtime`]: the region driver, which runs the region programs of every live generation in one slot.
 //!
 //! With the `test-util` feature, the `testing` module provides property-testing strategies for metrics and predicates.
 #![deny(warnings)]
 #![deny(missing_docs)]
 
 pub mod canonical;
+pub mod compile;
 pub mod equivalence;
 pub mod explain;
 pub mod extension;
+pub mod install;
 pub mod interpret;
 pub mod ir;
 pub mod limits;
 pub mod model;
 pub mod operators;
 pub mod predicate;
+pub mod runtime;
 pub mod validate;
 
 #[cfg(any(test, feature = "test-util"))]

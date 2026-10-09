@@ -5848,9 +5848,12 @@ dependencies = [
 name = "saluki-metric-plan"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "metrics",
  "proptest",
+ "saluki-common",
  "saluki-core",
+ "saluki-error",
  "saluki-metric-kernels",
  "saluki-metrics",
  "saluki-tls",
@@ -5860,6 +5863,7 @@ dependencies = [
  "snafu",
  "stringtheory",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

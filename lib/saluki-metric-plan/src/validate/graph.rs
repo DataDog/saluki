@@ -10,10 +10,10 @@ use crate::{
 };
 
 /// One port of one node, by position: `(node, port)`.
-pub(super) type Endpoint = (usize, usize);
+pub(crate) type Endpoint = (usize, usize);
 
 /// One node of the plan, with its configured operator.
-pub(super) struct GraphNode<'p> {
+pub(crate) struct GraphNode<'p> {
     /// The node as written.
     pub node: &'p crate::ir::Node,
 
@@ -23,7 +23,7 @@ pub(super) struct GraphNode<'p> {
 }
 
 /// A plan's nodes and edges, resolved to positions.
-pub(super) struct Graph<'p> {
+pub(crate) struct Graph<'p> {
     pub nodes: Vec<GraphNode<'p>>,
     index: HashMap<&'p NodeId, usize>,
     /// For each node and input port, the edge that enters it.
@@ -423,7 +423,7 @@ impl<'p> Graph<'p> {
 }
 
 /// Returns the output an `emit` node delivers to.
-pub(super) fn emit_output(op: &ConfiguredOperator) -> Option<&OutputId> {
+pub(crate) fn emit_output(op: &ConfiguredOperator) -> Option<&OutputId> {
     if op.name() != names::EMIT {
         return None;
     }

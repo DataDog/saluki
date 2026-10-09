@@ -441,6 +441,33 @@ impl HealthRegistry {
         HealthRegistryWorker::new(self.clone())
     }
 
+    /// Runs the liveness probing loop on the current runtime, for tests of components elsewhere in this crate.
+    ///
+    /// The loop runs until the returned sender is used or dropped.
+    #[cfg(test)]
+    pub(crate) fn spawn_runner_for_test(&self) -> tokio::sync::oneshot::Sender<()> {
+        let runner = self
+            .clone()
+            .into_runner()
+            .expect("the health registry's runner is already running");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(runner.run(async move {
+            let _ = stopped.await;
+        }));
+        stop
+    }
+
+    /// Returns `true` if the component registered as `id` answered its latest liveness probe in time.
+    #[cfg(test)]
+    pub(crate) fn is_live_for_test(&self, id: &SubsystemIdentifier) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .component_state
+            .iter()
+            .find(|component| &component.name == id)
+            .is_some_and(ComponentState::is_live)
+    }
+
     pub(crate) fn into_runner(self) -> Result<Runner, GenericError> {
         // Make sure the runner hasn't already been spawned.
         let (responses_rx, pending_components_notify) = {

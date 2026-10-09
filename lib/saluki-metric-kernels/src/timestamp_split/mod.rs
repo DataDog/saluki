@@ -15,7 +15,7 @@ use std::{num::NonZeroU64, time::Duration};
 
 use saluki_core::{
     data_model::event::{
-        metric::{Metric, MetricValues},
+        metric::{Metric, MetricValues, ScalarPoints},
         Event,
     },
     execution::{Kernel, LossClass, PortIndex, Progress, Turn},
@@ -81,6 +81,19 @@ pub fn to_passthrough(metric: Metric, window_secs: NonZeroU64) -> Metric {
     Metric::from_parts(context, adjusted_values, metadata)
 }
 
+/// Prepares a metric of timestamped points to bypass aggregation in place, as [`to_passthrough`] does: a counter
+/// becomes a rate over the aggregation window, `window_secs` seconds. Nothing is allocated.
+pub fn prepare_passthrough(metric: &mut Metric, window_secs: NonZeroU64) {
+    let values = metric.values_mut();
+    if let MetricValues::Counter(points) = values {
+        let points = std::mem::replace(
+            points,
+            ScalarPoints::from_iter(std::iter::empty::<(Option<NonZeroU64>, f64)>()),
+        );
+        *values = MetricValues::rate(points, Duration::from_secs(window_secs.get()));
+    }
+}
+
 /// Splits a metric by timestamp, as `(passthrough, default)`: its timestamped points, ready to bypass aggregation (see
 /// [`to_passthrough`]), and its untimestamped points, unchanged.
 pub fn split_metric(metric: Metric, window_secs: NonZeroU64) -> (Option<Metric>, Option<Metric>) {
@@ -115,14 +128,70 @@ impl TimestampSplit {
 
 impl Kernel for TimestampSplit {
     fn consume(&mut self, turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
+        // Count what leaves on each port, and whether any metric has points of both kinds.
+        let mut timestamped = 0;
+        let mut invalid = 0;
+        let mut mixed = false;
+        for event in &*input {
+            match event.try_as_metric() {
+                Some(metric) if metric.values().any_timestamped() => {
+                    timestamped += 1;
+                    mixed |= !metric.values().all_timestamped();
+                }
+                Some(_) => {}
+                None => invalid += 1,
+            }
+        }
+
         // Fast path: when nothing in this buffer is timestamped -- overwhelmingly the common case, since only clients
-        // using the timestamp extension produce them -- there's nothing to split out, so the buffer leaves as it is.
-        if !has_timestamped_metrics(input) {
+        // using the timestamp extension produce them -- there's nothing to split out, so the buffer leaves as it is,
+        // events other than metrics included.
+        if timestamped == 0 {
             turn.route_all(DEFAULT_PORT);
             return Progress::Done;
         }
 
+        if !mixed {
+            // Every metric leaves whole on one port, prepared in place, in order. When none stays, the input itself
+            // leaves on the passthrough port; otherwise the untimestamped metrics stay in the input and leave on the
+            // default port without being touched, and the rest move to a buffer of exactly their number.
+            let window_secs = self.window_secs;
+            let mut invalid_loss = 0;
+            let mut prepare = |event: &mut Event| match event.try_as_metric_mut() {
+                Some(metric) => {
+                    prepare_passthrough(metric, window_secs);
+                    true
+                }
+                None => {
+                    invalid_loss += 1;
+                    false
+                }
+            };
+            if timestamped + invalid == input.len() {
+                input.retain(&mut prepare);
+                turn.route_all(PASSTHROUGH_PORT);
+            } else {
+                let mut moved = EventsBuffer::with_capacity(timestamped + invalid);
+                input.move_into(&mut moved, |event| {
+                    event
+                        .try_as_metric()
+                        .is_none_or(|metric| metric.values().any_timestamped())
+                });
+                moved.retain(&mut prepare);
+                turn.push_buffer(PASSTHROUGH_PORT, moved);
+            }
+            if invalid_loss > 0 {
+                turn.counters().record_loss(LossClass::Invalid, invalid_loss, 0);
+            }
+            self.telemetry.increment_passthrough_metrics(timestamped as u64);
+            self.telemetry.increment_passthrough_flushes();
+            return Progress::Done;
+        }
+
+        // A metric with both kinds of point leaves on both ports, so every metric is split in turn.
         let events = std::mem::replace(input, EventsBuffer::with_capacity(0));
+        turn.reserve(DEFAULT_PORT, events.len());
+        turn.reserve(PASSTHROUGH_PORT, timestamped);
         let mut passthrough = 0u64;
         for event in events {
             let Some(metric) = event.try_into_metric() else {

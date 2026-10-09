@@ -416,3 +416,312 @@ fn consumers_ignore_members_added_within_a_version() {
     value["bounds"][0]["future_member"] = json!(null);
     assert_eq!(Explain::from_json(&value.to_string()).unwrap(), explain);
 }
+
+// The physical sections.
+
+mod physical {
+    use super::*;
+    use crate::{
+        compile::{place, Frame},
+        ir::NativeComponentId,
+        testing::{with_opaque_gateways, NO_AGGREGATION_PIPELINE_OFF_JSON},
+    };
+
+    fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
+        crate::testing::default_program_slot_name(nodes)
+    }
+
+    /// The explain document of a default-program fixture as it runs through stage 3, with opaque gateways.
+    fn stage3(json: &str) -> Explain {
+        let plan = Plan::from_value(with_opaque_gateways(json)).unwrap();
+        let registry = OperatorRegistry::native();
+        let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
+        let frame = Frame::compute(&plan, &registry, &namer).unwrap();
+        let placement = place(&plan, &report, &registry, &frame).unwrap();
+        Explain::of(&plan, &registry, &report).with_physical(&plan, &frame, &placement)
+    }
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|item| item.to_string()).collect()
+    }
+
+    fn ids(list: &[&str]) -> Vec<NodeId> {
+        list.iter().map(|item| item.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn the_stage_3_default_programs_explain_json_matches_its_golden_file() {
+        assert_golden(
+            "default-program-stage3.json",
+            &stage3(DEFAULT_PROGRAM_JSON).to_json().unwrap(),
+        );
+    }
+
+    #[test]
+    fn the_stage_3_default_programs_explain_text_matches_its_golden_file() {
+        assert_golden("default-program-stage3.txt", &stage3(DEFAULT_PROGRAM_JSON).to_text());
+        assert_golden(
+            "default-program-stage3-no-aggregation-pipeline-off.txt",
+            &stage3(NO_AGGREGATION_PIPELINE_OFF_JSON).to_text(),
+        );
+    }
+
+    #[test]
+    fn physical_sections_round_trip_and_are_left_out_without_a_frame() {
+        let explain = stage3(DEFAULT_PROGRAM_JSON);
+        assert_eq!(Explain::from_json(&explain.to_json().unwrap()).unwrap(), explain);
+        assert!(!default_program().to_json().unwrap().contains("\"physical\""));
+    }
+
+    #[test]
+    fn the_frame_sections_show_slots_exits_and_direct_edges() {
+        let explain = stage3(DEFAULT_PROGRAM_JSON);
+        let physical = explain.physical.as_ref().unwrap();
+
+        let fixed = physical
+            .fixed
+            .iter()
+            .map(|fixed| (fixed.node.to_string(), fixed.boundary.as_str(), fixed.input.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(fixed.len(), 10);
+        assert_eq!(fixed[0], ("dsd_in".to_string(), "io_host", None));
+        assert_eq!(
+            fixed[1],
+            (
+                "dsd_agg".to_string(),
+                "opaque_host",
+                Some("dsd_no_agg_split_region.dsd_agg".to_string())
+            )
+        );
+        assert_eq!(
+            fixed[8],
+            (
+                "mrf_metrics_gateway".to_string(),
+                "opaque_host",
+                Some("metrics_enrich.mrf_metrics_gateway".to_string())
+            )
+        );
+        assert_eq!(physical.fixed[1].admission_points[0].mode, "readmit");
+        assert_eq!(
+            physical.fixed[1].admission_points[0].to.as_deref(),
+            Some("dsd_post_agg_filter_region")
+        );
+        assert_eq!(
+            physical.fixed[8].admission_points[0].to.as_deref(),
+            Some("output mrf_metrics_encode")
+        );
+
+        let idle = |slot: usize| {
+            physical.slots[slot]
+                .exits
+                .iter()
+                .map(|exit| exit.idle)
+                .collect::<Vec<_>>()
+        };
+        // Every slot but enrichment has an exit to the next one and idle exits to every output; enrichment to its
+        // primary output and the four gateways, and idle ones to the gateways' outputs.
+        let names = physical.slots.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "dsd_pre_aggregation",
+                "dsd_prefix_filter_region",
+                "dsd_no_agg_split_region",
+                "dsd_post_agg_filter_region",
+                "metrics_enrich"
+            ]
+        );
+        let busy_then_idle = |busy: usize, idle: usize| {
+            let mut exits = vec![false; busy];
+            exits.extend(vec![true; idle]);
+            exits
+        };
+        let all_idle = (0..5).map(idle).collect::<Vec<_>>();
+        assert_eq!(
+            all_idle,
+            vec![
+                busy_then_idle(1, 6),
+                busy_then_idle(1, 6),
+                busy_then_idle(2, 6),
+                busy_then_idle(2, 5),
+                busy_then_idle(5, 4),
+            ]
+        );
+        assert_eq!(physical.slots[4].entries.len(), 5);
+        assert_eq!(physical.slots[4].entries[4].key, "entry 0");
+
+        // 10 admission points (4 of them direct edges to encoders) and 7 + 7 + 8 + 7 + 9 exits.
+        assert_eq!(physical.edges.len(), 48);
+        let kinds = |kind: &str| physical.edges.iter().filter(|edge| edge.kind == kind).count();
+        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (6, 4, 38));
+
+        assert_eq!(physical.fusion.len(), 30);
+        let separated = physical
+            .fusion
+            .iter()
+            .find(|decision| decision.decision == "separated")
+            .unwrap();
+        assert_eq!(separated.from.to_string(), "dsd_no_agg_split.passthrough");
+        assert_eq!(
+            separated.reason,
+            "fusing would form a cycle through `dsd_agg`: slots `dsd_no_agg_split_region` and \
+             `dsd_post_agg_filter_region` stay apart"
+        );
+        let pipelined = physical
+            .fusion
+            .iter()
+            .filter(|decision| decision.decision == "pipelined")
+            .map(|decision| decision.from.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pipelined,
+            strings(&[
+                "dsd_enrich.out",
+                "dsd_prefix_filter_blocklist.false",
+                "dsd_post_agg_filter_fanout.1"
+            ])
+        );
+        assert_eq!(
+            physical
+                .fusion
+                .iter()
+                .find(|decision| decision.decision == "pipelined")
+                .unwrap()
+                .reason,
+            "fusing would make one region cost more than 110 ns per event, the cost model's budget: slots \
+             `dsd_pre_aggregation` and `dsd_prefix_filter_region` pipeline"
+        );
+        assert_eq!(
+            physical
+                .fusion
+                .iter()
+                .filter(|decision| decision.decision == "direct")
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn segments_end_where_batches_are_admitted_again() {
+        let explain = stage3(DEFAULT_PROGRAM_JSON);
+        let physical = explain.physical.as_ref().unwrap();
+        let segment = |point: u32| {
+            physical
+                .segments
+                .iter()
+                .find(|segment| segment.admission_point == point)
+                .unwrap()
+        };
+        let gateways_and = |outputs: &[&str]| {
+            let mut ends = strings(&[
+                "af_metrics_gateway",
+                "metrics_routing_filter_0",
+                "metrics_routing_filter_1",
+                "mrf_metrics_gateway",
+            ]);
+            ends.extend(outputs.iter().map(|output| format!("output {}", output)));
+            ends.sort();
+            ends
+        };
+        let enrich = [
+            "dsd_post_agg_filter_in",
+            "dsd_post_agg_filter",
+            "dsd_post_agg_filter_true",
+            "dsd_post_agg_filter_fanout",
+            "dsd_post_agg_filter_fanout_0",
+            "metrics_enrich_in",
+            "metrics_enrich",
+            "metrics_enrich_host_tags",
+            "metrics_policy",
+            "metrics_policy_0",
+        ];
+
+        // DogStatsD's passthrough points are not re-admitted before the post-aggregation filter, so the segment that
+        // starts at `dsd_in` spans every slot.
+        let dogstatsd = segment(0);
+        assert_eq!(dogstatsd.from.to_string(), "dsd_in.metrics");
+        assert_eq!(dogstatsd.mode, "admit");
+        assert_eq!(
+            dogstatsd.slots,
+            strings(&[
+                "dsd_pre_aggregation",
+                "dsd_prefix_filter_region",
+                "dsd_no_agg_split_region",
+                "dsd_post_agg_filter_region",
+                "metrics_enrich"
+            ])
+        );
+        let mut nodes = ids(&[
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter_blocklist_true",
+            "dsd_no_agg_split",
+            "dsd_tag_filterlist",
+        ]);
+        nodes.extend(ids(&enrich));
+        assert_eq!(dogstatsd.nodes, nodes);
+        let mut ends = gateways_and(&["dd_metrics_encode", "dsd_client_telemetry"]);
+        ends.push("dsd_agg".to_string());
+        ends.sort();
+        assert_eq!(dogstatsd.ends, ends);
+
+        let aggregated = segment(1);
+        assert_eq!(aggregated.mode, "readmit");
+        assert_eq!(aggregated.nodes, ids(&enrich));
+        assert_eq!(
+            aggregated.ends,
+            gateways_and(&["dd_metrics_encode", "dsd_client_telemetry"])
+        );
+
+        let otlp = segment(2);
+        assert_eq!(otlp.nodes, ids(&enrich[5..]));
+        assert_eq!(otlp.ends, gateways_and(&["dd_metrics_encode"]));
+
+        let mirrored = segment(8);
+        assert!(mirrored.slots.is_empty());
+        assert_eq!(mirrored.nodes, ids(&["mrf_metrics_gateway_out"]));
+        assert_eq!(mirrored.ends, strings(&["output mrf_metrics_encode"]));
+    }
+
+    #[test]
+    fn output_bindings_show_recipients_delivery_and_what_feeds_them() {
+        let explain = stage3(DEFAULT_PROGRAM_JSON);
+        let physical = explain.physical.as_ref().unwrap();
+        let binding = |output: &str| {
+            physical
+                .output_bindings
+                .iter()
+                .find(|binding| binding.output.as_str() == output)
+                .unwrap()
+        };
+
+        let primary = binding("dd_metrics_encode");
+        assert_eq!(primary.recipients, vec!["dd_out/primary/0".parse().unwrap()]);
+        assert_eq!(primary.delivery, DeliveryPolicy::Native);
+        assert_eq!(
+            (primary.overflow.as_str(), primary.closure.as_str()),
+            ("wait", "native")
+        );
+        assert_eq!(primary.fed_by, strings(&["metrics_enrich.dd_metrics_encode"]));
+        let before_enrichment = [
+            "dsd_pre_aggregation",
+            "dsd_prefix_filter_region",
+            "dsd_no_agg_split_region",
+            "dsd_post_agg_filter_region",
+        ];
+        let idle_exits = |output: &str, slots: &[&str]| {
+            slots
+                .iter()
+                .map(|slot| format!("{}.{}", slot, output))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(primary.idle, idle_exits("dd_metrics_encode", &before_enrichment));
+
+        let mirrored = binding("mrf_metrics_encode");
+        assert_eq!(mirrored.fed_by, strings(&["mrf_metrics_gateway.out"]));
+        let mut every_slot = before_enrichment.to_vec();
+        every_slot.push("metrics_enrich");
+        assert_eq!(mirrored.idle, idle_exits("mrf_metrics_encode", &every_slot));
+    }
+}

@@ -63,7 +63,7 @@ metric_tag_value_allowlist:
 "#;
 
 /// The configuration matrix: a name, and the configuration.
-pub(super) const MATRIX: &[(&str, &str)] = &[
+pub(in crate::programmable_metrics) const MATRIX: &[(&str, &str)] = &[
     ("dogstatsd with defaults", ""),
     (
         "no-aggregation pipeline off",
@@ -213,7 +213,7 @@ histogram_copy_to_distribution_prefix: dist.
 
 /// Returns the configuration of the matrix entry named `name`.
 #[track_caller]
-pub(super) fn matrix_entry(name: &str) -> &'static str {
+pub(in crate::programmable_metrics) fn matrix_entry(name: &str) -> &'static str {
     MATRIX
         .iter()
         .find(|(entry, _)| *entry == name)

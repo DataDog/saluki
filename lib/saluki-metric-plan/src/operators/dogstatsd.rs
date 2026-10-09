@@ -230,6 +230,14 @@ impl OperatorDef for DogstatsdMapper {
         }
     }
 
+    fn cost(&self, params: &DecodedParams) -> u32 {
+        // Every name is looked up in the mapper's cache; names that match a profile are rebuilt.
+        match params.get("profiles").and_then(decode_mapper_profiles) {
+            Some(profiles) if profiles.is_empty() => 10,
+            _ => 65,
+        }
+    }
+
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
         let profiles = params.get("profiles").and_then(decode_mapper_profiles);
         let cache_size = params.integer("cache_size").and_then(|size| usize::try_from(size).ok());
@@ -298,6 +306,14 @@ impl OperatorDef for NamespacePrefix {
             writes: PerKind::uniform(FieldSet::of(&[Field::Name])),
             identity: PerKind::uniform(Identity::Quotient),
             ..EffectContract::passthrough()
+        }
+    }
+
+    fn cost(&self, params: &DecodedParams) -> u32 {
+        // Prefixing builds a new name and context for every metric; an empty namespace disables it.
+        match params.str("namespace") {
+            Some("") => 0,
+            _ => 90,
         }
     }
 
@@ -390,6 +406,10 @@ impl OperatorDef for TimestampSplit {
             cardinality: Cardinality::Expand { max: Some(2) },
             ..EffectContract::passthrough()
         }
+    }
+
+    fn cost(&self, _params: &DecodedParams) -> u32 {
+        10
     }
 
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {
@@ -604,6 +624,11 @@ impl OperatorDef for TagProjection {
                 .firm()
                 .with_fixed_amount("context cache", capacity.saturating_mul(CONTEXT_CACHE_ENTRY_BYTES));
         }
+    }
+
+    fn cost(&self, _params: &DecodedParams) -> u32 {
+        // Every counter and distribution is looked up in the context memo.
+        15
     }
 
     fn kernel(&self, params: &DecodedParams) -> Option<KernelSpec> {

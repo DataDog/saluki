@@ -43,22 +43,24 @@
 //! first one native construction reports is the one reported, except between two forwarders' endpoints, which native
 //! construction builds in no fixed order. Problems of other pipelines are left to their own construction.
 //!
-//! A configuration that runs natively lowers, with these known exceptions, where [`Lowering::lower`] fails instead: a
-//! duration that no plan duration can represent (more than 2^53 − 1 of the largest unit dividing it), and host tags
-//! enrichment without host tags in the host facts. If the plan of a configuration that lowers does not validate, the
-//! default program still runs and is reported degraded (see the implementation design's amendments).
+//! A configuration that runs natively lowers, with these known exceptions. [`Lowering::new`] fails for an aggregation
+//! duration that no plan duration can represent (more than 2^53 − 1 of the largest unit dividing it), naming the
+//! setting, its value, and the largest value a plan holds; and [`Lowering::lower`] fails for host tags enrichment
+//! without host tags in the host facts. If the plan of a configuration that lowers does not validate, the default
+//! program still runs and is reported degraded (see the implementation design's amendments).
 //!
 //! Where lowering departs from the configuration as written, because a plan cannot express it, it records a
 //! [`LoweringNote`]: today, only histogram statistics listed more than once, which the plan computes once while native
 //! aggregation emits them once per listing.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use agent_data_plane_config::{Live, SalukiConfiguration};
+use agent_data_plane_config::SalukiConfiguration;
 use saluki_components::transforms::HistogramConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_metric_kernels::mapper::validate_profiles;
 use saluki_metric_plan::{
+    canonical::MAX_SAFE_INTEGER,
     ir::{
         derived_terminal_id, format_duration, BindingName, Edge, NativeComponentId, Node, NodeId, OperatorName,
         ParamName, Params, Plan, PortName, PortRef, Provenance, ScopeDecl, IR_VERSION,
@@ -74,8 +76,7 @@ use super::{
     outputs::{cluster_agent_forwarder, NativeOutputs, OutputKind, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT},
 };
 use crate::{
-    cli::run::dogstatsd_mapper_configuration, components::tag_filterlist::TagFilterlistConfiguration,
-    config::DataPlaneConfiguration,
+    cli::run::dogstatsd_mapper_configuration, components::tag_filterlist::value_rules, config::DataPlaneConfiguration,
 };
 
 /// The reserved node IDs of the default program, which are, or derive from, native component IDs.
@@ -182,6 +183,9 @@ impl Lowering {
         }
 
         check_native_construction(&startup, &facts)?;
+        if dp.dogstatsd_enabled() {
+            check_plan_durations(&startup)?;
+        }
         let outputs = NativeOutputs::from_configuration(&startup, &facts)?;
         Ok(Some(Self {
             startup,
@@ -274,12 +278,8 @@ fn check_native_construction(startup: &SalukiConfiguration, facts: &HostFacts) -
     let dp = DataPlaneConfiguration::from_configuration(startup);
     if dp.dogstatsd_enabled() {
         let dogstatsd = &startup.domains.dogstatsd;
-        TagFilterlistConfiguration::new(
-            Live::new_fixed(dogstatsd.tag_filterlist.clone()),
-            &dogstatsd.tag_value_allowlist,
-            dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
-        )
-        .error_context("Failed to configure metric tag filterlist transform.")?;
+        value_rules(&dogstatsd.tag_value_allowlist)
+            .error_context("Failed to configure metric tag filterlist transform.")?;
         let histogram = &startup.shared.metrics_encoding.histogram;
         HistogramConfiguration::try_new(
             &histogram.aggregates,
@@ -294,6 +294,47 @@ fn check_native_construction(startup: &SalukiConfiguration, facts: &HostFacts) -
         validate_profiles(&profiles)?;
     }
     Ok(())
+}
+
+/// Fails for an aggregation setting whose duration runs natively but that no plan duration can represent: a plan writes
+/// a duration as a whole number, at most 2^53 − 1, of the largest unit that divides it exactly.
+fn check_plan_durations(startup: &SalukiConfiguration) -> Result<(), GenericError> {
+    let aggregation = &startup.domains.dogstatsd.aggregation;
+    let durations = [
+        (
+            "aggregate_window_duration_seconds",
+            Duration::from_secs(aggregation.window_duration_seconds.get()),
+        ),
+        ("aggregate_flush_interval", aggregation.flush_interval),
+        (
+            "dogstatsd_expiry_seconds",
+            Duration::from_secs(aggregation.counter_expiry_seconds.unwrap_or_default()),
+        ),
+    ];
+    for (setting, duration) in durations {
+        if format_duration(duration).is_none() {
+            return Err(generic_error!(
+                "`{}` is {} seconds, which the metrics plan cannot represent: a plan duration is a whole number of at \
+                 most {} of the largest unit that divides it exactly. Set `{}` to at most {} seconds.",
+                setting,
+                format_seconds(duration),
+                MAX_SAFE_INTEGER,
+                setting,
+                MAX_SAFE_INTEGER
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns a duration in seconds, with as many decimals as it needs.
+fn format_seconds(duration: Duration) -> String {
+    match duration.subsec_nanos() {
+        0 => duration.as_secs().to_string(),
+        nanos => format!("{}.{:09}", duration.as_secs(), nanos)
+            .trim_end_matches('0')
+            .to_string(),
+    }
 }
 
 /// Returns the port name `name`, which is a constant of the default program.

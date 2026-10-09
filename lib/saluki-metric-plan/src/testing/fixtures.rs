@@ -1,8 +1,10 @@
 //! Hand-written default-program fixtures and the catalog they validate against.
 
+use serde_json::{json, Value};
+
 use crate::{
     canonical::{PlanHash, MAX_SAFE_INTEGER},
-    ir::{BindingName, InputName, OutputId, ParamSpec, ParamType, RecipientId},
+    ir::{BindingName, InputName, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, RecipientId},
     model::{Kind, KindSet, PortType, TimestampForm},
     validate::{CatalogOutput, Liveness, MemoryCatalog},
 };
@@ -18,6 +20,72 @@ pub const DEFAULT_PROGRAM_JSON: &str = include_str!("../../fixtures/default-prog
 /// merge before the post-aggregation filter.
 pub const NO_AGGREGATION_PIPELINE_OFF_JSON: &str =
     include_str!("../../fixtures/default-program-no-aggregation-pipeline-off.json");
+
+/// Names the region host of a slot of a default-program fixture's frame, as ADP names them.
+///
+/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding host enrichment is
+/// `metrics_enrich`. Any other slot, one that R1's cost model cut from a pipeline, is named after its first node,
+/// without the `_in` of a merge that starts it, as `<node>_region`.
+///
+/// # Errors
+///
+/// Never fails: every slot gets a name.
+pub fn default_program_slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
+    let has = |id: &str| nodes.iter().any(|node| node.local().as_str() == id);
+    let name = if has("dsd_enrich") {
+        "dsd_pre_aggregation".to_string()
+    } else if has("metrics_enrich") {
+        "metrics_enrich".to_string()
+    } else {
+        let first = nodes.first().map_or("slot", |node| node.local().as_str());
+        format!("{}_region", first.strip_suffix("_in").unwrap_or(first))
+    };
+    NativeComponentId::new(name).map_err(|error| error.to_string())
+}
+
+/// The endpoint routing filters and failover gateways of the default-program fixtures, with the type each one's output
+/// accepts.
+const GATEWAYS: [(&str, bool); 4] = [
+    ("metrics_routing_filter_0", false),
+    ("metrics_routing_filter_1", false),
+    ("mrf_metrics_gateway", false),
+    ("af_metrics_gateway", true),
+];
+
+/// Returns a default-program fixture with its endpoint routing filters and failover gateways as opaque hosts, as the
+/// default program has them until they lower to routing operators (stage 4).
+///
+/// Each gateway `split` becomes an `opaque_host` backed by the native component of the same ID, with one output port
+/// `out` of the type its output accepts; its `true` terminal becomes the `emit` named `<gateway>_out` that the port
+/// feeds, and its `false` terminal, a `drop`, is removed, since the native component drops what it does not forward.
+/// This is the shape native lowering produces for the same configuration.
+pub fn with_opaque_gateways(plan_json: &str) -> Value {
+    let mut value = serde_json::from_str::<Value>(plan_json).expect("default-program fixtures are JSON");
+    let all = json!({"kinds": "all", "timestamps": "mixed"});
+    let counters = json!({"kinds": ["counter", "rate", "gauge", "set"], "timestamps": "mixed"});
+
+    let nodes = value["nodes"].as_array_mut().expect("plans have nodes");
+    nodes.retain(|node| !GATEWAYS.iter().any(|(id, _)| node["id"] == format!("{}_false", id)));
+    for node in nodes.iter_mut() {
+        if let Some((id, only_counters)) = GATEWAYS.iter().find(|(id, _)| node["id"] == *id) {
+            let output = if *only_counters { counters.clone() } else { all.clone() };
+            node["op"] = json!("opaque_host");
+            node["params"] = json!({"component": id, "input": all, "outputs": {"out": output}});
+        }
+        if let Some((id, _)) = GATEWAYS.iter().find(|(id, _)| node["id"] == format!("{}_true", id)) {
+            node["id"] = json!(format!("{}_out", id));
+        }
+    }
+    let edges = value["edges"].as_array_mut().expect("plans have edges");
+    edges.retain(|edge| !GATEWAYS.iter().any(|(id, _)| edge["from"] == format!("{}.false", id)));
+    for edge in edges.iter_mut() {
+        if let Some((id, _)) = GATEWAYS.iter().find(|(id, _)| edge["from"] == format!("{}.true", id)) {
+            edge["from"] = json!(format!("{}.out", id));
+            edge["to"] = json!(format!("{}_out.in", id));
+        }
+    }
+    value
+}
 
 const STRINGS: ParamType = ParamType::List(&ParamType::String);
 const MAPPING_TAG: &[ParamSpec] = &[

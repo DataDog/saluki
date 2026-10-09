@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::{BoundEntry, BoundScopeEntry, Explain};
+use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan};
 use crate::{
     canonical::{to_canonical_string, PlanHash},
     ir::Provenance,
@@ -155,6 +155,101 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
             "  {}[{}] {}: {}",
             finding.severity, finding.rule, finding.location, finding.message
         )?;
+    }
+    if let Some(physical) = &explain.physical {
+        write_physical(physical, out)?;
+    }
+    Ok(())
+}
+
+fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result {
+    writeln!(out)?;
+    writeln!(out, "frame")?;
+    writeln!(out, "  fixed ({})", physical.fixed.len())?;
+    for fixed in &physical.fixed {
+        write!(out, "    {}: {} [{}]", fixed.node, fixed.op, fixed.boundary)?;
+        if let Some(input) = &fixed.input {
+            write!(out, ", fed by {}", input)?;
+        }
+        if fixed.idle {
+            write!(out, ", idle")?;
+        }
+        writeln!(out)?;
+        for point in &fixed.admission_points {
+            writeln!(
+                out,
+                "      admission point {} {} ({}) -> {}",
+                point.id,
+                point.port,
+                point.mode,
+                point.to.as_deref().unwrap_or("nothing")
+            )?;
+        }
+    }
+    writeln!(out, "  slots ({})", physical.slots.len())?;
+    for slot in &physical.slots {
+        writeln!(out, "    {} (estimated {} ns per event)", slot.name, slot.cost)?;
+        let nodes = slot.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
+        writeln!(out, "      nodes {}", list(&nodes))?;
+        for entry in &slot.entries {
+            writeln!(out, "      {}: {} -> {}", entry.key, entry.from, entry.input)?;
+        }
+        for exit in &slot.exits {
+            writeln!(
+                out,
+                "      exit {} {} -> {}{}",
+                exit.index,
+                exit.name,
+                exit.to,
+                if exit.idle { ", idle" } else { "" }
+            )?;
+        }
+    }
+    writeln!(out, "  edges ({})", physical.edges.len())?;
+    for edge in &physical.edges {
+        writeln!(out, "    {} -> {} ({})", edge.from, edge.to, edge.kind)?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "fusion ({})", physical.fusion.len())?;
+    for decision in &physical.fusion {
+        writeln!(
+            out,
+            "  {} -> {}: {} ({})",
+            decision.from, decision.to, decision.decision, decision.reason
+        )?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "segments ({})", physical.segments.len())?;
+    for segment in &physical.segments {
+        writeln!(
+            out,
+            "  admission point {} {} ({})",
+            segment.admission_point, segment.from, segment.mode
+        )?;
+        writeln!(out, "    slots {}", list(&segment.slots))?;
+        let nodes = segment.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
+        writeln!(out, "    nodes {}", list(&nodes))?;
+        writeln!(out, "    ends {}", list(&segment.ends))?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "output bindings ({})", physical.output_bindings.len())?;
+    for binding in &physical.output_bindings {
+        writeln!(out, "  {}", binding.output)?;
+        let recipients = binding.recipients.iter().map(ToString::to_string).collect::<Vec<_>>();
+        writeln!(out, "    recipients {}", list(&recipients))?;
+        let delivery = serde_json::to_value(binding.delivery).unwrap_or(Value::Null);
+        writeln!(
+            out,
+            "    delivery {} (overflow {}, closure {})",
+            delivery.as_str().map_or_else(|| json(&delivery), str::to_string),
+            binding.overflow,
+            binding.closure
+        )?;
+        writeln!(out, "    fed by {}", list(&binding.fed_by))?;
+        writeln!(out, "    idle {}", list(&binding.idle))?;
     }
     Ok(())
 }

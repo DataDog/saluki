@@ -132,6 +132,40 @@ impl TestRecorder {
     }
 }
 
+impl TestRecorder {
+    /// Returns every counter registered so far, with its current value, in key order.
+    pub fn counters(&self) -> Vec<(Key, u64)> {
+        let state = self.state.lock().unwrap();
+        let mut counters = state
+            .counters
+            .iter()
+            .map(|(key, counter)| (key.clone(), counter.total()))
+            .collect::<Vec<_>>();
+        counters.sort_by(|(a, _), (b, _)| a.cmp(b));
+        counters
+    }
+
+    /// Returns every gauge registered so far, with its current value, in key order.
+    pub fn gauges(&self) -> Vec<(Key, f64)> {
+        let state = self.state.lock().unwrap();
+        let mut gauges = state
+            .gauges
+            .iter()
+            .map(|(key, gauge)| (key.clone(), gauge.current()))
+            .collect::<Vec<_>>();
+        gauges.sort_by(|(a, _), (b, _)| a.cmp(b));
+        gauges
+    }
+
+    /// Returns the key of every histogram registered so far, in key order.
+    pub fn histogram_keys(&self) -> Vec<Key> {
+        let state = self.state.lock().unwrap();
+        let mut keys = state.histograms.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+}
+
 impl Recorder for TestRecorder {
     fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
 
@@ -170,5 +204,34 @@ impl Recorder for TestRecorder {
         });
 
         Histogram::from_arc(Arc::clone(histogram))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics::{Key, Label, Recorder as _};
+
+    use super::*;
+
+    #[test]
+    fn the_recorder_lists_every_metric_registered_in_key_order() {
+        let recorder = TestRecorder::default();
+        let metadata = metrics::Metadata::new("test", metrics::Level::INFO, None);
+        let labeled = Key::from_parts("requests_total", vec![Label::new("component_id", "b")]);
+        recorder.register_counter(&labeled, &metadata).increment(3);
+        recorder
+            .register_counter(&Key::from_name("requests_total"), &metadata)
+            .increment(1);
+        recorder.register_gauge(&Key::from_name("size"), &metadata).set(2.5);
+        recorder
+            .register_histogram(&Key::from_name("latency"), &metadata)
+            .record(1.0);
+
+        assert_eq!(
+            recorder.counters(),
+            vec![(Key::from_name("requests_total"), 1), (labeled, 3)]
+        );
+        assert_eq!(recorder.gauges(), vec![(Key::from_name("size"), 2.5)]);
+        assert_eq!(recorder.histogram_keys(), vec![Key::from_name("latency")]);
     }
 }

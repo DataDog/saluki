@@ -1,6 +1,11 @@
 pub mod apm_onboarding;
+// The legacy DogStatsD metric transforms, replaced by kernels that regions of the plan-driven topology run. They are
+// compiled only for tests, as differential references for the plan-driven metrics path.
+#[cfg(test)]
 pub mod dogstatsd_no_agg_split;
+#[cfg(test)]
 pub mod dogstatsd_post_aggregate_filter;
+#[cfg(test)]
 pub mod dogstatsd_prefix_filter;
 pub mod host_tags;
 pub mod liveness;

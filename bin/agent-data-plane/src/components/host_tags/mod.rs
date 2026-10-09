@@ -1,24 +1,32 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+//! Host tags: fetching the host's tags from the Core Agent, and the legacy transform that added them to metrics.
+//!
+//! Host tags are added temporarily, to compensate for backend delays when a new host comes online, preventing gaps in
+//! queryability until the backend starts adding these tags automatically. The plan-driven topology fetches them once
+//! at boot, as a host fact ([`fetch_host_tags`]), and adds them with the host tags kernel
+//! (`saluki_metric_kernels::host_enrichment`). The legacy transform, `HostTagsConfiguration`, is compiled only for
+//! tests, as a differential reference.
 
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::{Duration, Instant};
+
+#[cfg(test)]
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
+use saluki_core::data_model::tags::{SharedTagSet, Tag};
+#[cfg(test)]
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{transforms::*, BuildContext},
-    data_model::{
-        event::metric::Metric,
-        tags::{SharedTagSet, Tag},
-    },
+    data_model::event::metric::Metric,
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
+#[cfg(test)]
 use saluki_metric_kernels::host_enrichment::apply_tags;
 use stringtheory::MetaString;
 
-/// Host Tags synchronous transform.
+/// Host Tags synchronous transform: the legacy component, a differential reference for tests.
 ///
 /// Temporarily adds host tags to metrics to compensate for backend delays when a new host comes online,
 /// preventing gaps in queryability until the backend starts adding these tags automatically.
@@ -26,11 +34,13 @@ use stringtheory::MetaString;
 /// Tags are added by the host tags kernel (`saluki_metric_kernels::host_enrichment`). The deadline stays the native
 /// one: `expected_tags_duration` after the transform is built, on a monotonic clock, decided when each buffer is
 /// processed.
+#[cfg(test)]
 pub struct HostTagsConfiguration {
     client_config: RemoteAgentClientConfiguration,
     expected_tags_duration: Duration,
 }
 
+#[cfg(test)]
 impl HostTagsConfiguration {
     /// Creates a new `HostTagsConfiguration` that fetches host tags from the Core Agent over the given IPC client
     /// configuration. A non-zero `expected_tags_duration` turns enrichment on and bounds how long the tags are
@@ -72,6 +82,7 @@ pub(crate) async fn fetch_host_tags(
         .collect::<SharedTagSet>())
 }
 
+#[cfg(test)]
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
@@ -92,6 +103,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
     }
 }
 
+#[cfg(test)]
 impl MemoryBounds for HostTagsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
@@ -100,12 +112,14 @@ impl MemoryBounds for HostTagsConfiguration {
     }
 }
 
+#[cfg(test)]
 pub struct HostTagsEnrichment {
     start: Instant,
     expected_tags_duration: Duration,
     host_tags: Option<SharedTagSet>,
 }
 
+#[cfg(test)]
 impl HostTagsEnrichment {
     fn enrich_metric(&mut self, metric: &mut Metric) {
         let host_tags = match self.host_tags.as_ref() {
@@ -117,6 +131,7 @@ impl HostTagsEnrichment {
     }
 }
 
+#[cfg(test)]
 impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         // Skip adding host tags if duration has elapsed.

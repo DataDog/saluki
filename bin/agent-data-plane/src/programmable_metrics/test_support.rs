@@ -1,16 +1,26 @@
 //! Helpers for tests: configuration from YAML, the environment provider, and host facts.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use agent_data_plane_config::SalukiConfiguration;
-use agent_data_plane_config_system::{ConfigurationSystem, EnvPrecedence, LoadedConfiguration};
+use agent_data_plane_config::{Live, SalukiConfiguration};
+use agent_data_plane_config_system::{ConfigurationSystem, ConfigurationUpdates, EnvPrecedence, LoadedConfiguration};
+use arc_swap::ArcSwap;
+use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
 use saluki_core::{
     accounting::ComponentRegistry,
     data_model::tags::{SharedTagSet, Tag},
     health::HealthRegistry,
 };
+use tokio::sync::{mpsc, watch};
 
-use super::host_facts::{cluster_agent_configuration, host_tags_enabled, HostFacts};
+use super::{
+    host_facts::{cluster_agent_configuration, host_tags_enabled, HostFacts},
+    installer::ProgrammableMetrics,
+    lowering::Lowering,
+};
 use crate::internal::env::ADPEnvironmentProvider;
 
 /// The configuration every test starts from: standalone, with the API key and hostname standalone mode requires.
@@ -56,6 +66,15 @@ pub(super) async fn configuration_system(yaml: &str) -> ConfigurationSystem {
 /// Loads the configuration system for the YAML configurations `layers`, each merged over the previous ones and the
 /// first over the base configuration, as [`configuration_system`] does for one.
 pub(super) async fn layered_configuration_system(layers: &[&str]) -> ConfigurationSystem {
+    loaded_configuration(layers)
+        .await
+        .standalone()
+        .await
+        .expect("test configuration is valid")
+}
+
+/// Loads the local configuration for the YAML configurations `layers`, as [`layered_configuration_system`] does.
+async fn loaded_configuration(layers: &[&str]) -> LoadedConfiguration {
     let mut config = serde_yaml::from_str::<serde_yaml::Value>(BASE).unwrap();
     for layer in layers.iter().filter(|layer| !layer.trim().is_empty()) {
         merge(
@@ -69,9 +88,31 @@ pub(super) async fn layered_configuration_system(layers: &[&str]) -> Configurati
     LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
         .await
         .expect("test configuration loads")
-        .standalone()
+}
+
+/// Starts the configuration system on the connected path, as `run.rs` does with the Core Agent: the local
+/// configuration `yaml`, merged over the base configuration, overlaid by what the configuration stream sends, which
+/// starts with an empty snapshot. Returns the system, its updates, which apply what the stream sends next once they
+/// run, and the stream, into which a test pushes updates.
+///
+/// The base configuration keeps standalone mode on, so the topology has the standalone shape (no liveness source and
+/// no host tags, which need a Core Agent); the configuration still changes only through the stream.
+pub(super) async fn connected_configuration_system(
+    yaml: &str,
+) -> (ConfigurationSystem, ConfigurationUpdates, mpsc::Sender<ConfigUpdate>) {
+    let loaded = loaded_configuration(&[yaml]).await;
+    let (stream, updates) = mpsc::channel(64);
+    stream
+        .send(ConfigUpdate::snapshot([]))
         .await
-        .expect("test configuration is valid")
+        .expect("the stream is open");
+    let (system, applied) = loaded.run(updates).await.expect("the initial snapshot is accepted");
+    (system, applied, stream)
+}
+
+/// Returns an update of the configuration stream that sets the Datadog key `key` to `value`.
+pub(super) fn update(key: &str, value: serde_json::Value) -> ConfigUpdate {
+    ConfigUpdate::Partial(ConfigSetting::explicit(key, value))
 }
 
 /// Returns the configuration for the YAML configuration `yaml`, merged over the base configuration.
@@ -117,4 +158,45 @@ pub(super) fn facts(config: &SalukiConfiguration) -> HostFacts {
 /// Returns the wall-clock time the process starts at in tests.
 pub(super) fn process_start() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(PROCESS_START_SECS)
+}
+
+/// A configuration that a test changes, as the configuration system does on an update.
+pub(super) struct ConfigCell {
+    cell: Arc<ArcSwap<SalukiConfiguration>>,
+    tick: watch::Sender<()>,
+}
+
+impl ConfigCell {
+    /// Creates a cell holding `config`.
+    pub(super) fn new(config: SalukiConfiguration) -> Self {
+        let (tick, _) = watch::channel(());
+        Self {
+            cell: Arc::new(ArcSwap::from_pointee(config)),
+            tick,
+        }
+    }
+
+    /// Returns a live view of the whole configuration, which wakes on every change.
+    pub(super) fn live(&self) -> Live<SalukiConfiguration> {
+        Live::new_dynamic(Arc::clone(&self.cell), self.tick.subscribe(), |config| config)
+    }
+
+    /// Replaces the configuration, waking every live view.
+    pub(super) fn set(&self, config: SalukiConfiguration) {
+        self.cell.store(Arc::new(config));
+        self.tick.send_replace(());
+    }
+}
+
+/// Prepares the programmable metrics path of a process started with `config` and the test host facts (see
+/// [`facts`]), whose installer wakes on `live`; `None` if the configuration requires no metrics pipeline.
+pub(super) fn programmable_metrics(
+    config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
+) -> Option<ProgrammableMetrics> {
+    let facts = facts(config);
+    let lowering = Lowering::new(Arc::new(config.clone()), facts.clone()).expect("the configuration lowers")?;
+    Some(
+        ProgrammableMetrics::from_lowering(lowering, facts, config, live, registry)
+            .expect("the programmable metrics path is prepared"),
+    )
 }

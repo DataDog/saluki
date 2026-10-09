@@ -55,7 +55,7 @@ mod catalog;
 pub use self::catalog::{Catalog, CatalogBinding, CatalogOutput, Liveness, MemoryCatalog};
 
 mod duplicates;
-mod graph;
+pub(crate) mod graph;
 mod references;
 pub(crate) use self::references::binding_uses;
 mod types;

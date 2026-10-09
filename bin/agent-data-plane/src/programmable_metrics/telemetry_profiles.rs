@@ -1,9 +1,10 @@
 //! Telemetry profiles: the native telemetry identity of each reserved node of the default program.
 //!
 //! Telemetry identity lives outside the IR. A reserved node, whose ID derives from a native component's, reports its
-//! telemetry and memory accounting under that component's identity (its `component_id` and `component_type` labels),
-//! and keeps the native metric names of its [profile](TelemetryProfile), as long as its operator is the one the profile
-//! is for, whatever its provenance. A node in the policy namespace has no native identity.
+//! telemetry under that component's identity (its `component_id` and `component_type` labels), and keeps the native
+//! metric names of its [profile](TelemetryProfile), as long as its operator is the one the profile is for, whatever its
+//! provenance. A node in the policy namespace has no native identity. Memory accounting is not part of the identity:
+//! a kernel's memory and CPU time are accounted under its region, in a subcomponent named after its node.
 //!
 //! The table covers both forms of the policy gateways: opaque hosts, through stage 3, whose native components report
 //! their own telemetry, and the routing operators that replace them from stage 4. Stage 3 builds kernels with these
@@ -13,10 +14,11 @@
 //!
 //! Each kept metric says where its value comes from in the plan-driven topology, and so who records it (see
 //! [`MetricSource`]). A kernel records its own. A `split` has no kernel, so the region host running it counts what
-//! leaves its ports, and the installer records what describes the configuration a generation runs with: the length
-//! of a bound list, and how many configuration changes changed a binding. These are the values the native components
-//! report: the native listener filterlist reports its configured list's length and counts its live updates, and a
-//! native filter counts the metrics it drops.
+//! leaves its ports, and the installer records what describes the configuration a generation runs with, when the
+//! generation commits: the length of a bound list, the rules a tag filterlist puts in effect, and how many
+//! configuration changes changed a binding. These are the values the native components report: the native listener
+//! filterlist reports its configured list's length and counts its live updates, the native tag filterlist reports its
+//! rule count, and a native filter counts the metrics it drops.
 
 use saluki_core::components::ComponentType;
 use saluki_metric_plan::{
@@ -62,6 +64,12 @@ pub enum MetricSource {
     /// The number of configuration changes, after the first installation, that changed the value of any of the named
     /// bindings, all of them live. The installer counts them, as it observes configuration changes.
     BindingChanges(&'static [&'static str]),
+
+    /// The number of rules a `tag_projection` node's resolved `rules` and `value_rules` put in effect: one per metric
+    /// name with tag rules, plus one per metric prefix and tag with a value rule, as the native tag filterlist counts
+    /// them. The installer sets it whenever it installs a generation, so that it describes the rules of the generation
+    /// that is active, never those of one still being prepared.
+    TagProjectionRules,
 }
 
 /// A native metric a profile keeps, reported with its node's `component_id` and `component_type` labels.
@@ -159,7 +167,8 @@ const TAG_FILTERLIST_METRICS: &[NativeMetric] = {
         counter("tag_filterlist_noop_hits_total", Kernel),
         counter("tag_filterlist_metrics_modified_total", Kernel),
         counter("tag_filterlist_tags_filtered_total", Kernel),
-        gauge("tag_filterlist_size", Kernel),
+        // A kernel is built while its generation is prepared, which may never commit.
+        gauge("tag_filterlist_size", TagProjectionRules),
         // A change of rules builds a new kernel, which cannot know it replaces one.
         counter(
             "tag_filterlist_updates_total",

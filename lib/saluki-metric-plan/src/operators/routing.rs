@@ -9,6 +9,7 @@ use super::{
 use crate::{
     ir::{DecodedParams, ParamSpec, ParamType, PortName},
     model::{FieldSet, PortType},
+    predicate::Predicate,
 };
 
 /// The largest number of ports a `tee` or `merge` can have: one per port index.
@@ -84,6 +85,28 @@ impl OperatorDef for Split {
         };
         vec![narrowed(true), narrowed(false)]
     }
+
+    fn cost(&self, params: &DecodedParams) -> u32 {
+        // Routing every event by its predicate, plus moving what leaves the buffer.
+        params.predicate("predicate").map_or(20, predicate_cost) + 5
+    }
+}
+
+/// Returns an estimate of the work, in nanoseconds per event, of evaluating a predicate in full.
+fn predicate_cost(predicate: &Predicate) -> u32 {
+    match predicate {
+        Predicate::Const(_)
+        | Predicate::Flag(_)
+        | Predicate::IsEmpty(_)
+        | Predicate::HostUnset {}
+        | Predicate::KindIn(_) => 1,
+        Predicate::Name(_) | Predicate::Host(_) => 5,
+        // The intake name is normalized before it is matched.
+        Predicate::IntakeName(_) => 15,
+        Predicate::HasTag(_) | Predicate::Tag(_) | Predicate::HasOriginTag(_) | Predicate::OriginTag(_) => 10,
+        Predicate::All(operands) | Predicate::Any(operands) => operands.iter().map(predicate_cost).sum(),
+        Predicate::Not(operand) => predicate_cost(operand),
+    }
 }
 
 /// The `tee` operator: copies each record to every output port.
@@ -130,6 +153,12 @@ impl OperatorDef for Tee {
             ports: PortRelation::Copies,
             ..EffectContract::passthrough()
         }
+    }
+
+    fn cost(&self, params: &DecodedParams) -> u32 {
+        // Every port but the last gets a copy of each event.
+        let copies = params.integer("ports").unwrap_or(1).saturating_sub(1);
+        u32::try_from(copies.saturating_mul(15)).unwrap_or(u32::MAX)
     }
 }
 

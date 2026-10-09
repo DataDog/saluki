@@ -11,9 +11,13 @@
 //!   references them any more.
 //! - [`Kernel`] and [`Turn`]: the synchronous core of one processing step, and the context a host runs it in, with
 //!   numbered output ports, a work budget, and per-turn counters.
+//! - [`RegionDriver`] and [`RegionHostBuilder`]: a region, which fuses a chain of processing steps into one topology
+//!   transform, split into its synchronous driver and the asynchronous host that runs it, with a non-blocking
+//!   [control mailbox][control_mailbox] and supervision of every call into the driver.
 //!
-//! Apart from admission points, which stamp batches inside the dispatchers of a topology, nothing here performs I/O or
-//! depends on a running topology, so a kernel can be driven directly, for example by a reference interpreter or a test.
+//! Apart from admission points, which stamp batches inside the dispatchers of a topology, and the region host, which
+//! is a topology component, nothing here performs I/O or depends on a running topology, so a kernel or a region driver
+//! can be driven directly, for example by a reference interpreter or a test.
 
 mod admission;
 pub(crate) use self::admission::OwnerToken;
@@ -36,4 +40,10 @@ pub use self::header::{AdmissionPointId, AdmissionTime, BatchHeader, EntryId};
 mod kernel;
 pub use self::kernel::{
     Budget, DrainPolicy, Kernel, LossClass, LossCount, PortIndex, PortOutputs, Progress, Turn, TurnCounters, WorkKind,
+};
+
+mod region;
+pub use self::region::{
+    control_mailbox, ControlAck, ControlError, ControlMailbox, ControlSender, ExitId, ExitSink, PanicOutcome,
+    PanicSite, RegionDriver, RegionFailure, RegionHostBuilder, RegionPanic, RegionTurn,
 };
