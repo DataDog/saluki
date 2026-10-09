@@ -89,7 +89,7 @@ impl DatadogTracesAPIHandler {
     }
 
     async fn services_handler() -> impl IntoResponse {
-        "OK"
+        "OK\n"
     }
 }
 

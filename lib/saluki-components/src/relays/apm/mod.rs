@@ -5,16 +5,17 @@
 //! decoding: headers are preserved verbatim and the body is handed off unmodified, so tracer metadata and the raw
 //! msgpack payload both survive to the decoder untouched. Every other request is proxied to the trace-agent.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::extract::{Request as AxumRequest, State};
-use axum::response::Response;
-use axum::routing::post;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
 use axum::Router;
 use http::{Request, StatusCode};
+use saluki_api::APIHandler;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
@@ -178,7 +179,10 @@ impl Relay for ApmRelay {
         let memory_limiter = context.topology_context().memory_limiter().clone();
 
         let (payload_tx, mut payload_rx) = mpsc::channel(1024);
-        let router = build_router(RelayState::new(payload_tx, max_payload_size, memory_limiter, proxy));
+        let api_handler = ApmRelayAPIHandler::new(RelayState::new(payload_tx, max_payload_size, memory_limiter, proxy));
+        let router = api_handler
+            .generate_routes()
+            .with_state(api_handler.generate_initial_state());
 
         if let Some(endpoint) = tcp_endpoint {
             debug!(%endpoint, "Binding APM relay TCP listener.");
@@ -190,7 +194,7 @@ impl Relay for ApmRelay {
         if let Some(endpoint) = uds_endpoint {
             debug!(%endpoint, "Binding APM relay Unix domain socket listener.");
             let server = HttpServer::from_listen_address(endpoint)
-                .with_routes(router)
+                .with_routes(router.clone())
                 .with_worker_pool(worker_pool);
             runtime::nested_supervisor(server.into_supervisor()).spawn();
         }
@@ -221,11 +225,76 @@ impl Relay for ApmRelay {
 }
 
 /// Shared HTTP handler state.
+#[derive(Clone)]
 struct RelayState {
     tx: mpsc::Sender<ApmPayload>,
     max_payload_size: usize,
     memory_limiter: MemoryLimiter,
     proxy: TraceAgentProxy,
+}
+
+struct ApmRelayAPIHandler {
+    state: RelayState,
+}
+
+impl ApmRelayAPIHandler {
+    fn new(state: RelayState) -> Self {
+        Self { state }
+    }
+
+    async fn proxy_request(State(state): State<RelayState>, request: AxumRequest) -> impl IntoResponse {
+        state.proxy.forward(request).await
+    }
+
+    async fn handle_traces(State(state): State<RelayState>, request: AxumRequest) -> impl IntoResponse {
+        state.memory_limiter.wait_for_capacity().await;
+
+        let (parts, body) = request.into_parts();
+
+        let body_bytes = match to_bytes(body, state.max_payload_size).await {
+            Ok(bytes) => bytes,
+            Err(err) => return body_size_error_status(&err),
+        };
+
+        let apm_request = Request::from_parts(parts, FrozenChunkedBytesBuffer::from(body_bytes));
+        let payload = ApmPayload {
+            metadata: PayloadMetadata::from_event_count(1),
+            request: apm_request,
+        };
+
+        match state.tx.send(payload).await {
+            Ok(()) => StatusCode::OK,
+            Err(_) => {
+                error!("Failed to send APM payload to relay dispatcher: channel closed.");
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        }
+    }
+
+    async fn services_handler() -> impl IntoResponse {
+        "OK\n"
+    }
+}
+
+impl APIHandler for ApmRelayAPIHandler {
+    type State = RelayState;
+
+    fn generate_initial_state(&self) -> Self::State {
+        self.state.clone()
+    }
+
+    /// Builds the router: `POST` on `TRACES_PATH` is handled here, and every other path or method is proxied to the
+    /// trace-agent, which answers it exactly as it would without the relay in front.
+    fn generate_routes(&self) -> Router<Self::State> {
+        Router::new()
+            .route("/services", get(Self::services_handler))
+            .route("/v0.1/services", get(Self::services_handler))
+            .route("/v0.2/services", get(Self::services_handler))
+            .route("/v0.3/services", get(Self::services_handler))
+            .route("/v0.4/services", get(Self::services_handler))
+            .route(TRACES_PATH, post(Self::handle_traces).fallback(Self::proxy_request))
+            .fallback(Self::proxy_request)
+    }
 }
 
 impl RelayState {
@@ -245,44 +314,6 @@ impl RelayState {
 struct ApmPayload {
     metadata: PayloadMetadata,
     request: Request<FrozenChunkedBytesBuffer>,
-}
-
-/// Builds the router: `POST` on `TRACES_PATH` is handled here, and every other path or method is proxied to the
-/// trace-agent, which answers it exactly as it would without the relay in front.
-fn build_router(state: RelayState) -> Router {
-    Router::new()
-        .route(TRACES_PATH, post(handle_traces).fallback(proxy_request))
-        .fallback(proxy_request)
-        .with_state(Arc::new(state))
-}
-
-async fn proxy_request(State(state): State<Arc<RelayState>>, request: AxumRequest) -> Response {
-    state.proxy.forward(request).await
-}
-
-async fn handle_traces(State(state): State<Arc<RelayState>>, request: AxumRequest) -> StatusCode {
-    state.memory_limiter.wait_for_capacity().await;
-
-    let (parts, body) = request.into_parts();
-
-    let body_bytes = match to_bytes(body, state.max_payload_size).await {
-        Ok(bytes) => bytes,
-        Err(err) => return body_size_error_status(&err),
-    };
-
-    let apm_request = Request::from_parts(parts, FrozenChunkedBytesBuffer::from(body_bytes));
-    let payload = ApmPayload {
-        metadata: PayloadMetadata::from_event_count(1),
-        request: apm_request,
-    };
-
-    match state.tx.send(payload).await {
-        Ok(()) => StatusCode::OK,
-        Err(_) => {
-            error!("Failed to send APM payload to relay dispatcher: channel closed.");
-            StatusCode::SERVICE_UNAVAILABLE
-        }
-    }
 }
 
 /// Maps a body-collection error to a status code, distinguishing an over-limit body (`413`) from any other error
@@ -319,6 +350,13 @@ mod tests {
     /// "was this request proxied?" observable without running a trace-agent.
     fn unreachable_proxy() -> TraceAgentProxy {
         TraceAgentProxy::from_destination("http://127.0.0.1:1").expect("destination should parse")
+    }
+
+    fn build_router(state: RelayState) -> Router {
+        let api_handler = ApmRelayAPIHandler::new(state);
+        api_handler
+            .generate_routes()
+            .with_state(api_handler.generate_initial_state())
     }
 
     fn test_router(max_payload_size: usize) -> (Router, mpsc::Receiver<ApmPayload>) {
