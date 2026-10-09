@@ -4,6 +4,7 @@ use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
 use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
+use datadog_agent_runtime::remote_agent::{RemoteAgentBootstrap, StatusSectionProvider};
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker, api::APIBuilder, config::ConfigWorker, logging::LoggingOverrideController,
@@ -18,9 +19,10 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        config_runtime::ConfigRuntimeWorker, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap,
-        telemetry::InternalTelemetryAPIWorker, TopologyControlSurfaces,
+        config_runtime::ConfigRuntimeWorker, logging::DynamicLogLevelWorker, telemetry::InternalTelemetryAPIWorker,
+        DogStatsDStatusSection, TopologyControlSurfaces,
     },
+    state::metrics::get_datadog_agent_remappings,
 };
 
 /// Creates the control plane supervisor.
@@ -69,12 +71,14 @@ pub async fn create_control_plane_supervisor(
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
     if let Some(ra_bootstrap) = &ra_bootstrap {
+        let status_sections: Vec<Arc<dyn StatusSectionProvider>> = vec![Arc::new(DogStatsDStatusSection::new())];
+
         supervisor.add_worker(ra_bootstrap.create_dataspace_anchor());
         supervisor.add_worker(ra_bootstrap.create_event_reporter());
         privileged_api = privileged_api
-            .with_grpc_service(ra_bootstrap.create_status_service())
+            .with_grpc_service(ra_bootstrap.create_status_service(status_sections))
             .with_grpc_service(ra_bootstrap.create_flare_service())
-            .with_grpc_service(ra_bootstrap.create_telemetry_service());
+            .with_grpc_service(ra_bootstrap.create_telemetry_service(get_datadog_agent_remappings()));
     }
 
     supervisor.add_worker(privileged_api.into_supervisor());
