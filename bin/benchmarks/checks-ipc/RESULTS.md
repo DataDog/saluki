@@ -134,3 +134,26 @@ transport benchmark uses sequential gRPC calls and explicit batches; changing co
 batch size, or downstream pressure can change the result. The whole-application baselines are separate revisions, so
 their difference can include effects beyond the wire transport. No formal zero-loss capacity search or production
 workload profile was completed.
+
+## Batch-512 and batch-1024 follow-up on 2026-10-09
+
+An isolated worktree at benchmark revision `dabefef622` ran three unprofiled 10-second saturation trials per workload
+and transport at each batch size of 256, 512, and 1024. The batch-256 control trials ran in the same session as batch
+512 to compare those sizes under similar machine conditions; batch 1024 followed shortly after. Each trial warmed up
+for two seconds and used a 1 MiB FIT ring. The table reports medians of decoded records per second.
+
+| Workload | Batch | FIT decoded/s | gRPC decoded/s | FIT/gRPC |
+| --- | ---: | ---: | ---: | ---: |
+| Metrics | 256 | 4,164,537 | 1,035,878 | 4.02× |
+| Metrics | 512 | 4,275,777 | 1,166,746 | 3.66× |
+| Metrics | 1024 | 4,302,014 | 1,244,058 | 3.46× |
+| Logs | 256 | 4,779,115 | 1,298,227 | 3.68× |
+| Logs | 512 | 5,073,784 | 1,638,605 | 3.10× |
+| Logs | 1024 | 5,110,761 | 1,579,827 | 3.24× |
+
+Going from 256 to 512 raised FIT throughput by 2.7% for metrics and 6.2% for logs. gRPC throughput rose by 12.6% and
+26.2%, respectively. From 512 to 1024, FIT gained only 0.6% for metrics and 0.7% for logs. gRPC metrics gained 6.6%,
+while gRPC logs fell 3.6%. The metrics ratio narrowed to 3.46×; the logs ratio rose to 3.24×. Neither approaches 1×.
+These rates are self-paced saturation measurements, not no-loss operating limits: FIT rejected attempted records in every
+trial, while gRPC's sequential RPCs applied backpressure. Every accepted record was decoded on both transports.
+Raw trial paths and counts remain local in `results/batch-256-512-1024-2026-10-09.json` (ignored by Git).
