@@ -800,7 +800,6 @@ experiments:
   # Leg 1: the Core Agent's own OTLP receiver handles ingest, no sidecars.
   - name: otlp_ingest_metrics_agent_5mb
     extends: otlp_ingest_converged_base
-    on_demand: true
     optimization_goal: memory
     target:
       files:
@@ -824,14 +823,23 @@ experiments:
   # ingest, supervised by s6 alongside the Core Agent.
   - name: otlp_ingest_metrics_ddot_5mb
     extends: otlp_ingest_converged_base
-    on_demand: true
     optimization_goal: memory
     target:
       environment:
         # Starts the otel-agent sidecar (it exits immediately when this is unset).
         DD_OTELCOLLECTOR_ENABLED: "true"
+
+        # Disable the auto-injected `datadog` (OSS Datadog extension) feature. That
+        # extension builds its own serializer + forwarder from only api.key + api.site
+        # and has no metrics endpoint field — it derives https://api.<site> from the site,
+        # which is DNS-dead in the sandbox and OOMs the otel-agent via unbounded retry.
+        # The remaining features are the default set minus `datadog` (billing/COAT
+        # telemetry only, irrelevant here). See comp/otelcol/converter/README.md in
+        # datadog-agent for the documented feature list.
+        DD_OTELCOLLECTOR_CONVERTER_FEATURES: "infraattributes,prometheus,pprof,zpages,health_check,ddflare,cumulativetodelta"
       files:
         # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
+        # All signal endpoints are set explicitly so nothing is derived from a site.
         otel-config.yaml:
           content:
             receivers:
@@ -844,8 +852,11 @@ experiments:
                 hostname: smp-regression
                 api:
                   key: foo00000001
-                  site: 127.0.0.1:9091
                 metrics:
+                  endpoint: http://127.0.0.1:9091
+                traces:
+                  endpoint: http://127.0.0.1:9091
+                logs:
                   endpoint: http://127.0.0.1:9091
             service:
               pipelines:
@@ -860,7 +871,6 @@ experiments:
   # Leg 3: ADP handles ingest as the data-plane sidecar.
   - name: otlp_ingest_metrics_adp_5mb
     extends: otlp_ingest_converged_base
-    on_demand: true
     optimization_goal: memory
     target:
       environment:
