@@ -4,7 +4,7 @@ target:
   name: datadog-agent
   command: /bin/entrypoint.sh
   cpu_allotment: 4
-  memory_allotment: 4GiB
+  memory_allotment: 8GiB
   environment:
     DD_HOSTNAME: smp-regression
     DD_API_KEY: foo00000001

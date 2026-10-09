@@ -399,7 +399,12 @@ templates:
       name: datadog-agent
       command: /bin/entrypoint.sh
 
-      memory_allotment: 4GiB
+      # Uniform across all three legs: the ceiling is not the metric (PSS measures actual
+      # usage), so equal headroom keeps every leg's runtime -- including Go GC sizing -- on
+      # identical footing. 8GiB accommodates the DDOT otel-agent's legitimate memory profile
+      # at 5 MiB/s ingest (verified: OOM-killed at 4 GiB on the Oct 9 run) while the lighter
+      # legs never come near it. See ddot-oom-root-cause.md.
+      memory_allotment: 8GiB
 
       files:
         empty.yaml: null
