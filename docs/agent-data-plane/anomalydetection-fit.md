@@ -2,7 +2,9 @@
 
 Agent Data Plane (ADP) forwards the scalar metrics from its DogStatsD pipeline to an
 isolated Agent Anomaly Detection (AAD) process over the FIT shared-memory transport.
-This document is the contract for that flow. The payload encoding itself is the Checks
+The datadog-agent can also be a producer of the same endpoint: its anomaly detection
+observer forwards the metrics it derives from logs there directly, with no ADP in the
+path. This document is the contract for that flow. The payload encoding itself is the Checks
 FIT wire contract ([`protocol/checks-fit.md`](../../lib/datadog-agent/checks-protocol/protocol/checks-fit.md)
 in the `datadog-checks-protocol` crate), whose semantic source is the existing
 `checks/v1/*.proto` definitions; this flow defines no new `.proto` file and reuses the
@@ -11,12 +13,24 @@ in the `datadog-checks-protocol` crate), whose semantic source is the existing
 ## Session direction and ownership
 
 The AAD process is the FIT **consumer**: it owns the shared-memory ring, listens on the
-setup endpoint, and learns nothing about ADP beyond the session. ADP is the
-**producer**: its `anomalydetection` destination connects to that endpoint and
-publishes. Consequences:
+setup endpoint, and learns nothing about its producer beyond the session. Either one of
+two peers can be the **producer**, because FIT is single-producer/single-consumer:
 
-- Start the AAD process before ADP. A producer whose setup socket is absent fails the
-  destination build, which fails ADP startup with a named connection error.
+- ADP's `anomalydetection` destination, for the DogStatsD metrics path.
+- The datadog-agent's anomaly detection observer, for the log pattern metrics path
+  (`anomaly_detection.log_pattern_forwarding`, endpoint
+  `anomaly_detection.log_pattern_forwarding.endpoint`). It is the same `DDCHECKS`
+  version 1 protocol; the agent holds the codec in
+  `comp/anomalydetection/checksfit`.
+
+Consequences:
+
+- Start the AAD process before its producer. A producer whose setup socket is absent
+  fails: ADP fails startup with a named connection error, and the agent logs the failure
+  and retries until the endpoint appears.
+- One AAD session accepts one producer and no reconnection: the consumer removes the
+  setup socket once the setup handshake completes, so a second producer needs a new AAD
+  process. A producer with both paths enabled must therefore pick one endpoint each.
 - The ring capacity is the consumer's choice; ADP learns it from the session offer and
   never configures it.
 - FIT has no peer-exit detection and no end-of-stream record. The AAD process runs
@@ -53,8 +67,11 @@ Field mapping from ADP's internal metric model:
 | `hostname` | metric context host | Empty string when unset; the AAD process resolves empty to its configured default host. |
 | `interval_secs` | rate interval, zero otherwise | Rates always carry a nonzero interval here. |
 
-Log, service-check, and event records are never sent in this flow. Logs join in a later
-milestone using the same protocol's log record (type ID `2`).
+Only metric records are sent in either producer flow, and only scalar values: the agent
+forwards the metrics its log extractors derive (counters and gauges) exactly like ADP
+forwards DogStatsD points, so the AAD process holds no log model. Log, service-check,
+and event records (type IDs `2` to `4`) stay unused, even though the protocol reserves
+them; forwarding real log records would need the log model on both sides.
 
 ## Delivery semantics
 
@@ -69,7 +86,10 @@ milestone using the same protocol's log record (type ID `2`).
 
 ## Future extensions
 
-- **Logs** will reuse the existing log record; no version change needed.
-- **Hash-only series identity** (drop name/tags from the wire in favor of ADP-assigned
-  hashes) requires a new record type or a version-2 layout, agreed in this contract
-  before either side changes.
+- **Sending raw log records** (type ID `2`) would carry the pattern string and example
+  log alongside the series, which the current metric-only flow cannot: anomaly titles
+  show the hashed series name instead. Both producers would have to agree on the log
+  model the AAD process would need to store.
+- **Hash-only series identity** (drop name/tags from the wire in favor of
+  producer-assigned hashes) requires a new record type or a version-2 layout, agreed in
+  this contract before either side changes.
