@@ -1767,7 +1767,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "foldspace-core"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=b9207e97513058e76bc8c41f48baa9d9511fc81f#b9207e97513058e76bc8c41f48baa9d9511fc81f"
+source = "git+https://github.com/DataDog/foldspace?rev=c288e5a3fd6883f7ae5d88b023c1064cdfbc465b#c288e5a3fd6883f7ae5d88b023c1064cdfbc465b"
 dependencies = [
  "patterns",
  "prost",
