@@ -7,6 +7,7 @@
 
 use std::sync::{Arc, LazyLock};
 
+use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::extract::{Request as AxumRequest, State};
@@ -57,11 +58,9 @@ pub struct ApmRelayConfiguration {
 
     /// Maximum accepted `/v1.0/traces` request body size, in bytes.
     ///
-    /// Requests whose body exceeds this size are rejected with `413 Payload Too Large` before any decoding is
-    /// attempted.
+    /// Requests whose body exceeds this size are rejected with `413 Payload Too Large` before any decoding is attempted.
     ///
-    /// There is no default here: the effective default lives in the configuration layer, so this struct cannot state a
-    /// second one. The caller supplies every field.
+    /// There is no default here: the effective default lives in the configuration layer, so this struct cannot state a second one. The caller supplies every field.
     pub max_payload_size: usize,
 
     /// URL of the trace-agent that every request other than `POST /v1.0/traces` is proxied to: `http://host:port` or
@@ -70,6 +69,22 @@ pub struct ApmRelayConfiguration {
 }
 
 impl ApmRelayConfiguration {
+    /// Creates a new `ApmRelayConfiguration` from the resolved configuration.
+    pub fn from_configuration(config: &domains::apm::Domain) -> Self {
+        // receiver_port `0` disables the TCP listener
+        let receiver_endpoint = if config.receiver_port == 0 {
+            String::new()
+        } else {
+            format!("127.0.0.1:{}", config.receiver_port)
+        };
+        Self {
+            receiver_endpoint,
+            receiver_socket: config.receiver_socket.clone().unwrap_or_default(),
+            max_payload_size: config.max_payload_size,
+            proxy_destination: config.proxy_destination.to_owned(),
+        }
+    }
+
     fn tcp_listen_address(&self) -> Result<Option<ListenAddress>, GenericError> {
         if self.receiver_endpoint.is_empty() {
             return Ok(None);

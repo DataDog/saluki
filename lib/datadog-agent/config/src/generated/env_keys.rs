@@ -73,6 +73,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_APM_MAX_PAYLOAD_SIZE"],
+        path: &["apm_config", "max_payload_size"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_APM_MAX_TPS", "DD_MAX_TPS"],
         path: &["apm_config", "max_traces_per_second"],
         decode: EnvDecode::Float,

@@ -344,6 +344,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_apm_config_max_payload_size(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(entries) => self.config.domains.apm.max_payload_size = entries,
+            Err(error) => self.record_error(TranslateError::new("apm_config.max_payload_size", error)),
+        }
+    }
+
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64) {
         // Applied to the target rate after the drive completes; see
         // `apply_deprecated_max_tps_alias`.

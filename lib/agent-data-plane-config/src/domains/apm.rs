@@ -36,6 +36,13 @@ pub struct Domain {
     /// Either `http://host:port` or `unix:///path/to/socket`. Every request ADP does not handle itself is forwarded
     /// here. Defaults to `http://127.0.0.1:8127`. (not in Datadog Agent config schema)
     pub proxy_destination: String,
+
+    /// Maximum accepted `/v1.0/traces` request body size, in bytes.
+    ///
+    /// Requests whose body exceeds this size are rejected with `413 Payload Too Large` before any decoding is attempted.
+    ///
+    /// Defaults to `26214400` (25MiB).
+    pub max_payload_size: usize,
 }
 
 impl Default for Domain {
@@ -47,6 +54,7 @@ impl Default for Domain {
             receiver_port: 0,
             receiver_socket: None,
             non_local_traffic: false,
+            max_payload_size: 26214400,
         }
     }
 }

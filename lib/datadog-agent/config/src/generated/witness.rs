@@ -26,6 +26,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_extra_sample_rate(&mut self, value: f64);
     fn consume_apm_config_features(&mut self, value: Vec<String>);
     fn consume_apm_config_max_catalog_entries(&mut self, value: i64);
+    fn consume_apm_config_max_payload_size(&mut self, value: i64);
     fn consume_apm_config_max_traces_per_second(&mut self, value: f64);
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     fn consume_apm_config_obfuscation_credit_cards_keep_values(&mut self, value: Vec<String>);
@@ -291,6 +292,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_extra_sample_rate(config.apm_config.extra_sample_rate.clone());
     consumer.consume_apm_config_features(config.apm_config.features.clone());
     consumer.consume_apm_config_max_catalog_entries(config.apm_config.max_catalog_entries.clone());
+    consumer.consume_apm_config_max_payload_size(config.apm_config.max_payload_size.clone());
     consumer.consume_apm_config_max_traces_per_second(config.apm_config.max_traces_per_second.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(
         config.apm_config.obfuscation.credit_cards.enabled.clone(),

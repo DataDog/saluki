@@ -788,6 +788,10 @@ pub struct ApmConfig {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_catalog_entries: i64,
 
+    #[serde(default = "defaults::default_u64::<i64, 26214400>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub max_payload_size: i64,
+
     #[serde(
         default = "defaults::datadog_configuration_apm_config_max_traces_per_second"
     )]
@@ -838,6 +842,7 @@ impl Default for ApmConfig {
             extra_sample_rate: defaults::datadog_configuration_apm_config_extra_sample_rate(),
             features: Default::default(),
             max_catalog_entries: Default::default(),
+            max_payload_size: defaults::default_u64::<i64, 26214400>(),
             max_traces_per_second: defaults::datadog_configuration_apm_config_max_traces_per_second(),
             obfuscation: Default::default(),
             peer_tags: Default::default(),

@@ -262,6 +262,13 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  apm_config.max_payload_size:
+    support: full
+    pipelines: [traces]
+    description: "Requests max request body size in bytes"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.max_traces_per_second:
     support: full
     pipelines: [traces]
@@ -4055,7 +4062,6 @@ excluded:
   apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
   apm_config.max_events_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_memory: "ignored in initial audit 2026-04-23"
-  apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
   apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
   apm_config.mode: "ignored in initial audit 2026-04-23"
