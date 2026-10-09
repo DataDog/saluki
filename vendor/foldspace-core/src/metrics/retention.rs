@@ -4,7 +4,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, BinaryHeap},
     mem::size_of,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::proto::stateful::{metric_datum::Data, MetricDatum};
@@ -20,7 +20,8 @@ pub struct MetricDictionaryStats {
     /// Definitions across all eight metrics dictionary kinds.
     pub entries: usize,
     /// Estimate of definitions, lookup keys, dependency lists, and entry overhead.
-    /// Excludes allocator slack, buffered metrics, and inflight logical batches.
+    /// Excludes allocator slack, buffered metrics, inflight logical batches, and eviction
+    /// bookkeeping (incoming counts, protection epochs, frontier and grace indexes).
     pub estimated_bytes: usize,
 }
 
@@ -66,19 +67,44 @@ struct Definition {
     bytes: usize,
 }
 
+// Keep the policy's existing byte estimate independent of eviction bookkeeping.
+#[derive(Clone, Debug)]
+struct Entry {
+    definition: Definition,
+    incoming: usize,
+    protected_epoch: u64,
+    frontier_index: Option<usize>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct Retention {
-    entries: BTreeMap<DefinitionKey, Definition>,
+    entries: BTreeMap<DefinitionKey, Entry>,
     bytes: usize,
     now: Option<Instant>,
-    protected: BTreeSet<DefinitionKey>,
+    protected: Vec<DefinitionKey>,
+    epoch: u64,
+    // Mature leaves, including protected entries. Epochs release protection without a scan.
+    frontier: Vec<DefinitionKey>,
+    protected_frontier: usize,
+    // Exactly one deadline per immature entry; removed on maturity or policy rebuild.
+    grace: BTreeSet<(Instant, DefinitionKey)>,
+    indexed_grace_period: Option<Duration>,
     next_stale_sweep: Option<Instant>,
+    #[cfg(test)]
+    candidate_passes: usize,
 }
 
 impl Retention {
     pub(super) fn begin_batch(&mut self, now: Instant) {
         self.now = Some(self.now.map_or(now, |previous| previous.max(now)));
         self.protected.clear();
+        self.protected_frontier = 0;
+        self.epoch = self.epoch.checked_add(1).unwrap_or_else(|| {
+            for entry in self.entries.values_mut() {
+                entry.protected_epoch = 0;
+            }
+            1
+        });
     }
 
     pub(super) fn insert(&mut self, datum: &MetricDatum, lookup_bytes: usize) {
@@ -117,17 +143,32 @@ impl Retention {
         let now = self
             .now
             .expect("encoding supplies the clock before interning");
+        for dependency in &dependencies {
+            self.remove_from_frontier(*dependency);
+            self.entries
+                .get_mut(dependency)
+                .expect("composite dependencies are retained")
+                .incoming += 1;
+        }
         self.entries.insert(
             key,
-            Definition {
-                dependencies,
-                created_at: now,
-                last_access_at: now,
-                hits: 0,
-                bytes,
+            Entry {
+                definition: Definition {
+                    dependencies,
+                    created_at: now,
+                    last_access_at: now,
+                    hits: 0,
+                    bytes,
+                },
+                incoming: 0,
+                protected_epoch: 0,
+                frontier_index: None,
             },
         );
         self.bytes += bytes;
+        if let Some(period) = self.indexed_grace_period {
+            self.index_grace(key, now, period);
+        }
     }
 
     /// Cached composites must count hits on their strings and prefixes as well.
@@ -142,16 +183,21 @@ impl Retention {
                 .entries
                 .get_mut(&key)
                 .expect("a reference has a retained definition");
-            entry.hits = entry.hits.saturating_add(1);
-            entry.last_access_at = self.now.unwrap();
-            self.protected.insert(key);
-            pending.extend(&entry.dependencies);
+            entry.definition.hits = entry.definition.hits.saturating_add(1);
+            entry.definition.last_access_at = self.now.unwrap();
+            if entry.protected_epoch != self.epoch {
+                entry.protected_epoch = self.epoch;
+                self.protected.push(key);
+                self.protected_frontier += usize::from(entry.frontier_index.is_some());
+            }
+            pending.extend(&entry.definition.dependencies);
         }
     }
 
     /// Definitions referenced since the last `begin_batch`, closed over dependencies, in
     /// dependency order. Eviction cannot remove them until the next batch begins.
-    pub(super) fn references(&self) -> impl Iterator<Item = DefinitionKey> + '_ {
+    pub(super) fn references(&mut self) -> impl Iterator<Item = DefinitionKey> + '_ {
+        self.protected.sort_unstable();
         self.protected.iter().copied()
     }
 
@@ -175,6 +221,7 @@ impl Retention {
     pub(super) fn evict(&mut self, config: &EvictionConfig) -> Vec<DefinitionKey> {
         let mut evicted = Vec::new();
         let now = self.now.expect("maintenance supplies the clock");
+        self.advance_grace(config, now);
         let sweep =
             !config.stale_after.is_zero() && self.next_stale_sweep.is_none_or(|due| now >= due);
         if sweep {
@@ -209,44 +256,113 @@ impl Retention {
         bytes: usize,
         evicted: &mut Vec<DefinitionKey>,
     ) {
-        // Kahn's topological sort removes dependents before dependencies, prioritizing by eviction score.
-        let mut dependents: BTreeMap<_, usize> = self.entries.keys().map(|key| (*key, 0)).collect();
-        for entry in self.entries.values() {
-            for dependency in &entry.dependencies {
-                *dependents
-                    .get_mut(dependency)
-                    .expect("composite dependencies are retained") += 1;
-            }
+        // Scores are rebuilt at this pass's clock; only dependency eligibility is persistent.
+        if self.frontier.len() == self.protected_frontier {
+            return;
         }
-        let eligible = |key: &DefinitionKey, entry: &Definition| {
-            !self.protected.contains(key)
-                && now >= config.eligible_at(entry.created_at)
-                && (!stale || config.is_stale(entry.created_at, entry.last_access_at, now))
+        #[cfg(test)]
+        {
+            self.candidate_passes += 1;
+        }
+        let epoch = self.epoch;
+        let eligible = |entry: &Entry| {
+            entry.protected_epoch != epoch
+                && (!stale
+                    || config.is_stale(
+                        entry.definition.created_at,
+                        entry.definition.last_access_at,
+                        now,
+                    ))
         };
-        let mut candidates = BinaryHeap::new();
-        for (key, entry) in &self.entries {
-            if dependents[key] == 0 && eligible(key, entry) {
-                candidates.push(Candidate::new(*key, entry, now, config));
-            }
-        }
+        let candidates: Vec<_> = self
+            .frontier
+            .iter()
+            .filter_map(|key| {
+                let entry = &self.entries[key];
+                eligible(entry).then(|| Candidate::new(*key, &entry.definition, now, config))
+            })
+            .collect();
+        let mut candidates = BinaryHeap::from(candidates);
         let mut removed = 0;
         let mut freed = 0;
         while let Some(candidate) = candidates.pop() {
             if !stale && removed >= count && freed >= bytes {
                 break;
             }
-            let entry = self.entries.remove(&candidate.key).unwrap();
+            self.remove_from_frontier(candidate.key);
+            let entry = self.entries.remove(&candidate.key).unwrap().definition;
             evicted.push(candidate.key);
             removed += 1;
             freed += entry.bytes;
             self.bytes -= entry.bytes;
             for key in entry.dependencies {
-                let remaining = dependents.get_mut(&key).unwrap();
-                *remaining -= 1;
-                let dependency = &self.entries[&key];
-                if *remaining == 0 && eligible(&key, dependency) {
-                    candidates.push(Candidate::new(key, dependency, now, config));
+                let dependency = self.entries.get_mut(&key).unwrap();
+                dependency.incoming -= 1;
+                if dependency.incoming == 0
+                    && now >= config.eligible_at(dependency.definition.created_at)
+                {
+                    self.add_to_frontier(key);
+                    let dependency = &self.entries[&key];
+                    if eligible(dependency) {
+                        candidates.push(Candidate::new(key, &dependency.definition, now, config));
+                    }
                 }
+            }
+        }
+    }
+
+    fn add_to_frontier(&mut self, key: DefinitionKey) {
+        let entry = self.entries.get_mut(&key).unwrap();
+        debug_assert_eq!(entry.incoming, 0);
+        debug_assert!(entry.frontier_index.is_none());
+        entry.frontier_index = Some(self.frontier.len());
+        self.frontier.push(key);
+        self.protected_frontier += usize::from(entry.protected_epoch == self.epoch);
+    }
+
+    fn remove_from_frontier(&mut self, key: DefinitionKey) {
+        let entry = self.entries.get_mut(&key).unwrap();
+        if let Some(index) = entry.frontier_index.take() {
+            self.protected_frontier -= usize::from(entry.protected_epoch == self.epoch);
+            self.frontier.swap_remove(index);
+            if let Some(moved) = self.frontier.get(index) {
+                self.entries.get_mut(moved).unwrap().frontier_index = Some(index);
+            }
+        }
+    }
+
+    fn index_grace(&mut self, key: DefinitionKey, now: Instant, period: Duration) {
+        let entry = &self.entries[&key];
+        // Match eligible_at's overflow fallback, including its existing scoring semantics.
+        let created = entry.definition.created_at;
+        let due = created.checked_add(period).unwrap_or(created);
+        if due > now {
+            self.grace.insert((due, key));
+        } else if entry.incoming == 0 {
+            self.add_to_frontier(key);
+        }
+    }
+
+    fn advance_grace(&mut self, config: &EvictionConfig, now: Instant) {
+        if self.indexed_grace_period != Some(config.grace_period) {
+            self.frontier.clear();
+            self.protected_frontier = 0;
+            self.grace.clear();
+            // A changed grace period can make mature entries young again.
+            let keys: Vec<_> = self.entries.keys().copied().collect();
+            for key in keys {
+                self.entries.get_mut(&key).unwrap().frontier_index = None;
+                self.index_grace(key, now, config.grace_period);
+            }
+            self.indexed_grace_period = Some(config.grace_period);
+        }
+        while let Some(&(due, key)) = self.grace.first() {
+            if due > now {
+                break;
+            }
+            self.grace.pop_first();
+            if self.entries[&key].incoming == 0 {
+                self.add_to_frontier(key);
             }
         }
     }
@@ -295,8 +411,6 @@ impl Ord for Candidate {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use crate::proto::stateful::{MetricNameDefine, MetricTagStringDefine, MetricTagsetDefine};
 
     use super::*;
@@ -385,7 +499,7 @@ mod tests {
             retention
                 .entries
                 .values()
-                .map(|entry| entry.bytes)
+                .map(|entry| entry.definition.bytes)
                 .sum::<usize>()
         );
     }
@@ -445,7 +559,7 @@ mod tests {
         }
         retention.touch([DefinitionKey::of(&child)]);
         for entry in retention.entries.values() {
-            assert_eq!(entry.hits, 1);
+            assert_eq!(entry.definition.hits, 1);
         }
         assert_eq!(
             retention.references().collect::<Vec<_>>(),
@@ -476,8 +590,387 @@ mod tests {
         retention.begin_batch(now);
         retention.touch([DefinitionKey::Name(1)]);
         assert_eq!(
-            retention.entries[&DefinitionKey::Name(1)].last_access_at,
+            retention.entries[&DefinitionKey::Name(1)]
+                .definition
+                .last_access_at,
             now + Duration::from_secs(10)
         );
+    }
+
+    // Independent copy of the original scan algorithm: the oracle does not consult indexes.
+    struct ScanRetention {
+        entries: BTreeMap<DefinitionKey, Definition>,
+        protected: BTreeSet<DefinitionKey>,
+        bytes: usize,
+        now: Option<Instant>,
+        next_stale_sweep: Option<Instant>,
+    }
+
+    impl ScanRetention {
+        /// Evicts by the policy and returns the removed keys, dependents before dependencies.
+        fn evict(&mut self, config: &EvictionConfig) -> Vec<DefinitionKey> {
+            let mut evicted = Vec::new();
+            let now = self.now.expect("maintenance supplies the clock");
+            let sweep =
+                !config.stale_after.is_zero() && self.next_stale_sweep.is_none_or(|due| now >= due);
+            if sweep {
+                self.next_stale_sweep = now.checked_add(config.stale_after);
+            }
+            let (count_over, bytes_over) =
+                config.should_evict(self.entries.len(), self.bytes as i64);
+            if !sweep && !count_over && !bytes_over {
+                return evicted;
+            }
+            if sweep {
+                self.remove_candidates(config, now, true, 0, 0, &mut evicted);
+            }
+            let (count_over, bytes_over) =
+                config.should_evict(self.entries.len(), self.bytes as i64);
+            let (count, bytes, strategy) = config.eviction_targets(
+                self.entries.len(),
+                self.bytes as i64,
+                count_over,
+                bytes_over,
+            );
+            if strategy != Strategy::None {
+                self.remove_candidates(config, now, false, count, bytes as usize, &mut evicted);
+            }
+            evicted
+        }
+
+        fn remove_candidates(
+            &mut self,
+            config: &EvictionConfig,
+            now: Instant,
+            stale: bool,
+            count: usize,
+            bytes: usize,
+            evicted: &mut Vec<DefinitionKey>,
+        ) {
+            // Kahn's topological sort removes dependents before dependencies, prioritizing by eviction score.
+            let mut dependents: BTreeMap<_, usize> =
+                self.entries.keys().map(|key| (*key, 0)).collect();
+            for entry in self.entries.values() {
+                for dependency in &entry.dependencies {
+                    *dependents
+                        .get_mut(dependency)
+                        .expect("composite dependencies are retained") += 1;
+                }
+            }
+            let eligible = |key: &DefinitionKey, entry: &Definition| {
+                !self.protected.contains(key)
+                    && now >= config.eligible_at(entry.created_at)
+                    && (!stale || config.is_stale(entry.created_at, entry.last_access_at, now))
+            };
+            let mut candidates = BinaryHeap::new();
+            for (key, entry) in &self.entries {
+                if dependents[key] == 0 && eligible(key, entry) {
+                    candidates.push(Candidate::new(*key, entry, now, config));
+                }
+            }
+            let mut removed = 0;
+            let mut freed = 0;
+            while let Some(candidate) = candidates.pop() {
+                if !stale && removed >= count && freed >= bytes {
+                    break;
+                }
+                let entry = self.entries.remove(&candidate.key).unwrap();
+                evicted.push(candidate.key);
+                removed += 1;
+                freed += entry.bytes;
+                self.bytes -= entry.bytes;
+                for key in entry.dependencies {
+                    let remaining = dependents.get_mut(&key).unwrap();
+                    *remaining -= 1;
+                    let dependency = &self.entries[&key];
+                    if *remaining == 0 && eligible(&key, dependency) {
+                        candidates.push(Candidate::new(key, dependency, now, config));
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_matches_scan(retention: &mut Retention, config: &EvictionConfig) {
+        let mut scan = ScanRetention {
+            entries: retention
+                .entries
+                .iter()
+                .map(|(key, entry)| (*key, entry.definition.clone()))
+                .collect(),
+            protected: retention.protected.iter().copied().collect(),
+            bytes: retention.bytes,
+            now: retention.now,
+            next_stale_sweep: retention.next_stale_sweep,
+        };
+        let expected = scan.evict(config);
+        assert_eq!(retention.evict(config), expected);
+        assert_eq!(
+            retention.keys().collect::<Vec<_>>(),
+            scan.entries.keys().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(retention.bytes, scan.bytes);
+        assert_eq!(retention.next_stale_sweep, scan.next_stale_sweep);
+        assert_indexes(retention, config);
+    }
+
+    fn assert_indexes(retention: &Retention, config: &EvictionConfig) {
+        let now = retention.now.unwrap();
+        let mut incoming: BTreeMap<_, usize> = retention.keys().map(|key| (key, 0)).collect();
+        for entry in retention.entries.values() {
+            for key in &entry.definition.dependencies {
+                *incoming.get_mut(key).unwrap() += 1;
+            }
+        }
+        let mut expected_frontier = BTreeSet::new();
+        let mut expected_grace = BTreeSet::new();
+        for (key, entry) in &retention.entries {
+            assert_eq!(entry.incoming, incoming[key]);
+            let due = config.eligible_at(entry.definition.created_at);
+            if due > now {
+                expected_grace.insert((due, *key));
+            } else if incoming[key] == 0 {
+                expected_frontier.insert(*key);
+            }
+            assert_eq!(
+                entry.frontier_index.is_some(),
+                expected_frontier.contains(key)
+            );
+        }
+        assert_eq!(
+            retention.frontier.iter().copied().collect::<BTreeSet<_>>(),
+            expected_frontier
+        );
+        assert_eq!(retention.grace, expected_grace);
+        for (index, key) in retention.frontier.iter().enumerate() {
+            assert_eq!(retention.entries[key].frontier_index, Some(index));
+        }
+        assert_eq!(
+            retention.protected_frontier,
+            expected_frontier
+                .intersection(&retention.protected.iter().copied().collect())
+                .count()
+        );
+    }
+
+    #[test]
+    fn impossible_pressure_passes_do_not_enumerate_candidates() {
+        let now = Instant::now();
+        let config = EvictionConfig {
+            max_item_count: 0,
+            grace_period: Duration::from_secs(30),
+            ..policy()
+        };
+        let mut retention = Retention::default();
+        retention.begin_batch(now);
+        for id in 1..=20 {
+            add_name(&mut retention, id);
+        }
+        for second in 0..30 {
+            retention.begin_batch(now + Duration::from_secs(second));
+            assert_matches_scan(&mut retention, &config);
+        }
+        assert_eq!(retention.candidate_passes, 0);
+        retention.begin_batch(now + Duration::from_secs(30));
+        retention.touch((1..=20).map(DefinitionKey::Name));
+        assert_matches_scan(&mut retention, &config);
+        assert_eq!(retention.protected_frontier, 20);
+        assert_eq!(retention.candidate_passes, 0);
+        retention.begin_batch(now + Duration::from_secs(31));
+        assert_matches_scan(&mut retention, &config);
+        assert_eq!(retention.stats(), MetricDictionaryStats::default());
+        assert_eq!(retention.candidate_passes, 1);
+    }
+
+    #[test]
+    fn epoch_wrap_releases_previous_protection() {
+        let now = Instant::now();
+        let mut retention = Retention::default();
+        retention.begin_batch(now);
+        add_name(&mut retention, 1);
+        add_name(&mut retention, 2);
+        retention.touch([DefinitionKey::Name(1)]);
+        retention.evict(&policy());
+        retention.epoch = u64::MAX;
+        retention.touch([DefinitionKey::Name(2)]);
+        retention.begin_batch(now);
+        retention.touch([DefinitionKey::Name(2)]);
+        assert_matches_scan(
+            &mut retention,
+            &EvictionConfig {
+                max_item_count: 0,
+                ..policy()
+            },
+        );
+        assert_eq!(
+            retention.keys().collect::<Vec<_>>(),
+            vec![DefinitionKey::Name(2)]
+        );
+    }
+
+    #[test]
+    fn overlapping_roots_count_once_per_series_and_again_in_the_same_batch() {
+        let mut retention = Retention::default();
+        retention.begin_batch(Instant::now());
+        retention.insert(
+            &MetricDatum {
+                data: Some(Data::MetricTagStringDefine(MetricTagStringDefine {
+                    id: 1,
+                    value: "tag".into(),
+                })),
+            },
+            0,
+        );
+        for id in 1..=2 {
+            retention.insert(
+                &MetricDatum {
+                    data: Some(Data::MetricTagsetDefine(MetricTagsetDefine {
+                        id,
+                        prefix_id: id - 1,
+                        tag_string_ids: vec![1, 1],
+                    })),
+                },
+                0,
+            );
+        }
+        for _ in 0..2 {
+            retention.touch([
+                DefinitionKey::Tagset(2),
+                DefinitionKey::Tagset(1),
+                DefinitionKey::TagString(1),
+            ]);
+        }
+        assert!(retention
+            .entries
+            .values()
+            .all(|entry| entry.definition.hits == 2));
+        assert_eq!(
+            retention.references().collect::<Vec<_>>(),
+            vec![
+                DefinitionKey::TagString(1),
+                DefinitionKey::Tagset(1),
+                DefinitionKey::Tagset(2)
+            ]
+        );
+        assert_matches_scan(
+            &mut retention,
+            &EvictionConfig {
+                max_item_count: 0,
+                ..policy()
+            },
+        );
+    }
+
+    #[test]
+    fn grace_policy_changes_and_overflow_match_the_scan_policy() {
+        let now = Instant::now();
+        let mut retention = Retention::default();
+        retention.begin_batch(now);
+        for id in 1..=8 {
+            add_name(&mut retention, id);
+        }
+        retention.touch((1..=8).map(DefinitionKey::Name));
+        for grace_period in [
+            Duration::ZERO,
+            Duration::from_secs(60),
+            Duration::MAX,
+            Duration::from_secs(1),
+        ] {
+            assert_matches_scan(
+                &mut retention,
+                &EvictionConfig {
+                    grace_period,
+                    ..policy()
+                },
+            );
+        }
+        retention.begin_batch(now + Duration::from_secs(2));
+        assert_matches_scan(
+            &mut retention,
+            &EvictionConfig {
+                grace_period: Duration::MAX,
+                ..policy()
+            },
+        );
+        assert_eq!(retention.entries.len(), 2);
+    }
+
+    #[test]
+    fn mixed_dependency_churn_matches_full_scan_eviction() {
+        let start = Instant::now();
+        let mut retention = Retention::default();
+        let mut random = 12345u64;
+        let mut next = || {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            random
+        };
+        let mut id = 0;
+        for round in 0..400u64 {
+            // Include backward clock inputs and repeated calls at the same time.
+            let now = start + Duration::from_secs(round.saturating_sub(next() % 7));
+            retention.begin_batch(now);
+            for _ in 0..(next() % 5) {
+                id += 1;
+                add_name(&mut retention, id);
+                retention.insert(
+                    &MetricDatum {
+                        data: Some(Data::MetricTagStringDefine(MetricTagStringDefine {
+                            id,
+                            value: format!("tag-{id}"),
+                        })),
+                    },
+                    12,
+                );
+                let prefix = retention
+                    .keys()
+                    .filter_map(|key| match key {
+                        DefinitionKey::Tagset(id) => Some(id),
+                        _ => None,
+                    })
+                    .last()
+                    .unwrap_or(0);
+                let shared = retention
+                    .keys()
+                    .find_map(|key| match key {
+                        DefinitionKey::TagString(id) => Some(id),
+                        _ => None,
+                    })
+                    .unwrap();
+                retention.insert(
+                    &MetricDatum {
+                        data: Some(Data::MetricTagsetDefine(MetricTagsetDefine {
+                            id,
+                            prefix_id: if next() % 3 == 0 { prefix } else { 0 },
+                            tag_string_ids: vec![id, shared, id],
+                        })),
+                    },
+                    24,
+                );
+            }
+            let roots: Vec<_> = retention.keys().filter(|_| next() % 5 == 0).collect();
+            retention.touch(roots.iter().copied());
+            retention.touch(roots);
+            let config = EvictionConfig {
+                max_item_count: if round % 9 == 0 { 10000 } else { 20 },
+                max_memory_bytes: if round % 3 == 0 { 4000 } else { i64::MAX },
+                grace_period: Duration::from_secs([0, 3, 9, 30][(round / 19 % 4) as usize]),
+                stale_after: Duration::from_secs([0, 5, 11][(round / 13 % 3) as usize]),
+                age_decay_factor: [0.0, 0.5, 2.0][(round / 7 % 3) as usize],
+                ..policy()
+            };
+            assert_matches_scan(&mut retention, &config);
+            assert_matches_scan(&mut retention, &config);
+        }
+        retention.begin_batch(start + Duration::from_secs(1000));
+        assert_matches_scan(
+            &mut retention,
+            &EvictionConfig {
+                max_item_count: 0,
+                ..policy()
+            },
+        );
+        assert!(retention.entries.is_empty());
+        assert!(retention.grace.is_empty());
+        assert!(retention.frontier.is_empty());
     }
 }

@@ -397,7 +397,7 @@ impl MetricDictionary {
         self.retention.begin_batch(now);
     }
 
-    pub(super) fn references(&self) -> impl Iterator<Item = DefinitionKey> + '_ {
+    pub(super) fn references(&mut self) -> impl Iterator<Item = DefinitionKey> + '_ {
         self.retention.references()
     }
 
