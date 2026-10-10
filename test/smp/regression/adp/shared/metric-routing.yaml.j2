@@ -15,4 +15,11 @@ experimental:
         - {{ name }}.{{ suffix }}
 {% endfor %}
 {% endfor %}
+{% if exp_vars.allowlist_entries is defined %}
+{# Keep the input corpus fixed; pad the policy to the requested exact-name count. #}
+{% set matching_entries = exp_vars.traffic_metrics * (aggregates | length + 2) %}
+{% for name in lading_names("routing.absent.", 100000, exp_vars.allowlist_entries - matching_entries) %}
+        - {{ name }}
+{% endfor %}
+{% endif %}
 {% endif %}

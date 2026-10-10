@@ -1,0 +1,20 @@
+{# Fixed-width suffixes prevent prefix compaction. In all-match cases, one prefix per
+   input name covers its histogram-derived outputs; the remaining entries miss. #}
+histogram_aggregates: ["max", "median", "avg", "count"]
+histogram_percentiles: ["0.95"]
+histogram_copy_to_distribution: false
+experimental:
+  metrics_endpoint_routing:
+    metric_prefix_allowlist:
+      {{ exp_vars.filtered_endpoint | tojson }}:
+{% if exp_vars.prefix_all_match %}
+{% for name in lading_names(exp_vars.metric_prefix, exp_vars.metric_first, exp_vars.traffic_metrics) %}
+        - {{ name }}
+{% endfor %}
+{% endif %}
+{% set matching_entries = exp_vars.traffic_metrics if exp_vars.prefix_all_match else 0 %}
+{% if exp_vars.allowlist_entries > matching_entries %}
+{% for name in lading_names("routing.absent.", 100000, exp_vars.allowlist_entries - matching_entries) %}
+        - {{ name }}
+{% endfor %}
+{% endif %}
