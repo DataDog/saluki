@@ -776,6 +776,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_METRIC_FILTERLIST_PREFIX"],
+        path: &["metric_filterlist_prefix"],
+        decode: EnvDecode::Json,
+    },
+    EnvKey {
         env_vars: &["DD_METRIC_TAG_FILTERLIST"],
         path: &["metric_tag_filterlist"],
         decode: EnvDecode::JsonValue,

@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use agent_data_plane_config::domains::dogstatsd::{
-    FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
+    FilterAction, MapperProfile, MetricMapping, MetricPrefixRule, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
     CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
@@ -265,6 +265,26 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> Result<MetricTag
         metric_name: parsed.metric_name,
         action,
         tags: parsed.tags,
+    })
+}
+
+/// Parses one `metric_filterlist_prefix` object into a [`MetricPrefixRule`].
+fn parse_metric_prefix_rule(key: &str, raw: serde_json::Map<String, serde_json::Value>) -> Result<MetricPrefixRule> {
+    #[derive(serde::Deserialize)]
+    struct RawEntry {
+        prefix: String,
+        #[serde(default)]
+        except_prefix: Vec<String>,
+        #[serde(default)]
+        except_exact: Vec<String>,
+    }
+
+    let parsed: RawEntry =
+        serde_json::from_value(serde_json::Value::Object(raw)).map_err(|error| TranslateError::new(key, error))?;
+    Ok(MetricPrefixRule {
+        prefix: parsed.prefix,
+        except_prefix: parsed.except_prefix,
+        except_exact: parsed.except_exact,
     })
 }
 
@@ -1117,6 +1137,17 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_metric_filterlist_prefix(&mut self, value: Vec<serde_json::Map<String, serde_json::Value>>) {
+        let mut rules = Vec::with_capacity(value.len());
+        for raw in value {
+            match parse_metric_prefix_rule("metric_filterlist_prefix", raw) {
+                Ok(rule) => rules.push(rule),
+                Err(error) => self.record_error(error),
+            }
+        }
+        self.config.domains.dogstatsd.metric_filter.prefix_rules = rules;
+    }
+
     fn consume_metric_tag_filterlist(&mut self, value: Vec<serde_json::Value>) {
         let mut entries = Vec::with_capacity(value.len());
         for raw in value {
@@ -1613,7 +1644,7 @@ mod tests {
 
     use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use agent_data_plane_config::domains::{
-        dogstatsd::{MetricFilter, OriginTagCardinality},
+        dogstatsd::{MetricFilter, MetricPrefixRule, OriginTagCardinality},
         otlp::{
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
@@ -2704,6 +2735,7 @@ mod tests {
                 MetricFilter {
                     values: vec!["current".to_string()],
                     match_prefix: true,
+                    prefix_rules: Vec::new(),
                 },
             ),
             (
@@ -2716,6 +2748,7 @@ mod tests {
                 MetricFilter {
                     values: vec!["legacy".to_string()],
                     match_prefix: false,
+                    prefix_rules: Vec::new(),
                 },
             ),
             (json!({}), MetricFilter::default()),
@@ -2726,6 +2759,59 @@ mod tests {
             assert!(errors.is_none());
             assert_eq!(config.domains.dogstatsd.metric_filter, expected);
         }
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_translate() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                {
+                    "prefix": "service.",
+                    "except_prefix": ["service.keep."],
+                    "except_exact": ["service.keep.exact"],
+                },
+                {
+                    "prefix": "db.",
+                    "except_exact": ["db.status"],
+                },
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![
+                MetricPrefixRule {
+                    prefix: "service.".to_string(),
+                    except_prefix: vec!["service.keep.".to_string()],
+                    except_exact: vec!["service.keep.exact".to_string()],
+                },
+                MetricPrefixRule {
+                    prefix: "db.".to_string(),
+                    except_prefix: Vec::new(),
+                    except_exact: vec!["db.status".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn metric_filter_prefix_rules_without_optional_fields_keep_empty_exceptions() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_filterlist_prefix": [
+                { "prefix": "requests." }
+            ],
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.dogstatsd.metric_filter.prefix_rules,
+            vec![MetricPrefixRule {
+                prefix: "requests.".to_string(),
+                except_prefix: Vec::new(),
+                except_exact: Vec::new(),
+            }]
+        );
     }
 
     #[test]

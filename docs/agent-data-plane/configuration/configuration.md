@@ -1047,6 +1047,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `log_to_syslog`                                                                            | Write logs to syslog                               |
 | `metric_filterlist`                                                                        | Metric name blocklist                              |
 | `metric_filterlist_match_prefix`                                                           | Blocklist uses prefix matching                     |
+| `metric_filterlist_prefix`                                                                 | Per-entry metric prefix blocklist rules            |
 | `metric_tag_filterlist`                                                                    | Per-metric tag allow/deny filter list              |
 | `multi_region_failover.api_key`                                                            | API key for the failover-region endpoint           |
 | `multi_region_failover.dd_url`                                                             | Failover intake URL                                |
@@ -1293,12 +1294,25 @@ ADP uses `metric_filterlist_match_prefix` as the active match mode. Clearing
 Both lists default to empty, and both match-prefix settings default to `false`. Accepted
 runtime changes to any of these settings update filtering.
 
-Entries are matched against the *normalized* metric name. The Datadog metrics intake rewrites
-metric names on ingest, so a metric submitted as `my metric-name` is stored and displayed as
-`my_metric_name`. Write entries as the metric name appears in Datadog: entries themselves are
-matched as written, so an entry that is not itself a normalized name matches nothing. Metric
-names the intake rejects outright, meaning empty names, names longer than 350 bytes, and names
-containing no ASCII letter, never match.
+Entries are normalized before matching. The Datadog metrics intake rewrites metric names on
+ingest, so a metric submitted as `my metric-name` is stored and displayed as `my_metric_name`.
+ADP normalizes configured entries in the same way so operators can copy names directly from
+traffic or from Datadog. Entries that can never match a stored name, including empty names,
+names longer than 350 bytes, and names containing no ASCII letter, are dropped.
+
+### DogStatsD metric prefix blocklist rules
+
+`metric_filterlist_prefix` adds per-entry prefixes to the blocklist. Each entry has a
+required `prefix` and optional `except_exact` and `except_prefix` lists. Prefixes and
+prefix exceptions are normalized as prefixes, preserving trailing boundaries such as
+`service_` so they do not widen to `service`.
+
+Exceptions apply across this whole key: a metric excepted by one rule is kept even when it
+matches another prefix rule. Exact or prefix matches from `metric_filterlist` still drop the
+metric.
+
+The empty `prefix` matches every storable metric name. The empty `except_prefix` keeps every
+storable metric name, making the rule a no-op.
 
 ### `otlp_config.metrics.delta_ttl`
 

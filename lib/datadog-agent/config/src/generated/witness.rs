@@ -165,6 +165,7 @@ pub trait DatadogConfigWitness {
     fn consume_log_to_syslog(&mut self, value: bool);
     fn consume_metric_filterlist(&mut self, value: Vec<String>);
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool);
+    fn consume_metric_filterlist_prefix(&mut self, value: Vec<::serde_json::Map<String, ::serde_json::Value>>);
     fn consume_metric_tag_filterlist(&mut self, value: Vec<::serde_json::Value>);
     fn consume_min_tls_version(&mut self, value: String);
     fn consume_multi_region_failover_api_key(&mut self, value: String);
@@ -468,6 +469,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_log_to_syslog(config.log_to_syslog.clone());
     consumer.consume_metric_filterlist(config.metric_filterlist.clone());
     consumer.consume_metric_filterlist_match_prefix(config.metric_filterlist_match_prefix.clone());
+    consumer.consume_metric_filterlist_prefix(config.metric_filterlist_prefix.clone());
     consumer.consume_metric_tag_filterlist(config.metric_tag_filterlist.clone());
     consumer.consume_min_tls_version(config.min_tls_version.clone());
     consumer.consume_multi_region_failover_api_key(config.multi_region_failover.api_key.clone());
