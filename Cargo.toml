@@ -14,6 +14,7 @@ members = [
   "lib/datadog-agent/config-testing",
   "lib/datadog-agent/metrics-v3",
   "lib/datadog-agent/remote-config",
+  "lib/datadog-agent/runtime",
   "lib/ddsketch",
   "lib/go-duration",
   "lib/ottl",
@@ -58,6 +59,7 @@ datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
 datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
 datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
+datadog-agent-runtime = { path = "lib/datadog-agent/runtime" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }

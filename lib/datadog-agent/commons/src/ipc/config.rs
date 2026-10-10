@@ -2,7 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use saluki_error::generic_error;
+use saluki_error::GenericError;
 use tonic::transport::Uri;
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
 
 use crate::platform::PlatformSettings;
 
@@ -80,6 +85,46 @@ pub struct RemoteAgentClientConfiguration {
 }
 
 impl RemoteAgentClientConfiguration {
+    /// Creates a `RemoteAgentClientConfiguration` from its parts, resolving the named vsock address to a CID.
+    ///
+    /// `vsock_addr` follows the Datadog Agent's `vsock_addr` setting: an empty value disables vsock, and `host`,
+    /// `hypervisor`, and `local` select the well-known context identifiers 2, 0, and 3. vsock is only supported on
+    /// Linux; on other platforms, a non-empty value is ignored with a warning.
+    ///
+    /// # Errors
+    ///
+    /// On Linux, returns an error if `vsock_addr` is not empty and is not one of the supported names.
+    pub fn from_parts(
+        cmd_port: u16, auth: IpcAuthConfiguration, grpc_max_message_size: usize, vsock_addr: &str,
+    ) -> Result<Self, GenericError> {
+        #[cfg(target_os = "linux")]
+        let vsock_cid = match vsock_addr {
+            "" => None,
+            "host" => Some(2),
+            "hypervisor" => Some(0),
+            "local" => Some(3),
+            other => {
+                return Err(generic_error!(
+                    "invalid vsock address '{}'; expected one of: host, hypervisor, local",
+                    other
+                ))
+            }
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        if !vsock_addr.is_empty() {
+            warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
+        }
+
+        Ok(Self {
+            cmd_port,
+            auth,
+            grpc_max_message_size,
+            #[cfg(target_os = "linux")]
+            vsock_cid,
+        })
+    }
+
     /// Returns the Core Agent CMD API gRPC endpoint URI.
     pub fn endpoint(&self) -> Uri {
         format!("https://127.0.0.1:{}", self.cmd_port)
@@ -196,6 +241,53 @@ mod tests {
         for (cmd_port, expected) in [(5001, "https://127.0.0.1:5001/"), (7777, "https://127.0.0.1:7777/")] {
             assert_eq!(remote_agent_config(cmd_port).endpoint().to_string(), expected);
         }
+    }
+
+    #[test]
+    fn from_parts_keeps_the_given_parts() {
+        let auth = IpcAuthConfiguration::new("/secret/auth_token".into(), "/secret/ipc_cert.pem".into());
+        let config = RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, "")
+            .expect("an empty vsock address is valid");
+
+        assert_eq!(config.cmd_port, 5001);
+        assert_eq!(config.grpc_max_message_size, 4 * 1024 * 1024);
+        assert_eq!(config.auth.auth_token_file_path(), Path::new("/secret/auth_token"));
+        assert_eq!(config.auth.ipc_cert_file_path(), Path::new("/secret/ipc_cert.pem"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn from_parts_resolves_vsock_addresses() {
+        for (value, expected_cid) in [
+            ("", None),
+            ("host", Some(2)),
+            ("hypervisor", Some(0)),
+            ("local", Some(3)),
+        ] {
+            let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+            let config = RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, value)
+                .expect("valid vsock address");
+            assert_eq!(config.vsock_cid, expected_cid, "input: {value:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn from_parts_rejects_invalid_vsock_addresses() {
+        for value in ["invalid", "2", "HOST", "host ", "vm0"] {
+            let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+            assert!(
+                RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, value).is_err(),
+                "expected error for input: {value:?}",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn from_parts_ignores_vsock_addresses_off_linux() {
+        let auth = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+        assert!(RemoteAgentClientConfiguration::from_parts(5001, auth, 4 * 1024 * 1024, "host").is_ok());
     }
 
     #[cfg(target_os = "linux")]
