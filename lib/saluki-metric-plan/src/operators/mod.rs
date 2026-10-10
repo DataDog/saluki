@@ -68,6 +68,7 @@ mod opaque;
 pub use self::opaque::OpaqueHost;
 
 mod routing;
+pub(crate) use self::routing::decision_cost;
 pub use self::routing::{DropOperator, Emit, Merge, Split, Tee, FALSE_PORT, TRUE_PORT};
 
 mod source;

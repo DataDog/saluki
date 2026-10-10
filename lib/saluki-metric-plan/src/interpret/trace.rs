@@ -140,6 +140,18 @@ impl Trace {
         self.events.push(event);
     }
 
+    /// Returns this trace without its `capacity` events: the same trace with no output bounded.
+    ///
+    /// What the original plan delivers on it is what the policy includes, which
+    /// [`compare_under_capacity`][crate::equivalence::compare_under_capacity] checks executions under capacity against.
+    pub fn without_capacity(&self) -> Self {
+        self.events
+            .iter()
+            .filter(|event| !matches!(event, TraceEvent::Capacity { .. }))
+            .cloned()
+            .collect()
+    }
+
     /// Returns this trace followed by an `install` of `plan`.
     pub fn install(mut self, plan: Plan) -> Self {
         self.push(TraceEvent::Install { plan: Arc::new(plan) });

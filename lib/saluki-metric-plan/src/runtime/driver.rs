@@ -21,16 +21,19 @@ use saluki_metrics::Counter;
 use tracing::{debug, error, warn};
 
 use super::{
-    code::{EntryCode, Op, ProgramCode, Target},
+    code::{DecisionCode, EntryCode, Op, ProgramCode, Target},
     kernels::{KernelSlab, KernelSlot, PreparedKernel},
     supervision::{PanicBudget, PanicHistory},
     telemetry::{add_loss, Layout, ProgramCounts, ProgramTelemetry, RegisterTelemetry, LOSS_CLASSES},
     RegionError,
 };
 use crate::{
-    compile::{DecisionIndex, KernelIndex, RegionProgram, Slot, SlotId},
+    compile::{
+        DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, RegionProgram, Slot, SlotId,
+        COUNTED_EXIT_SETS,
+    },
     ir::NativeComponentId,
-    model::EventView,
+    limits::values::DECISION_MEMO_ENTRIES,
 };
 
 /// The most times a kernel may yield on one batch before the driver treats it as broken.
@@ -62,6 +65,10 @@ pub struct RegionConfig {
     /// Where the region reports the generations it fails, so that the installer can roll back from them. `None` by
     /// default: failures are then only logged.
     pub failures: Option<GenerationFailureReporter>,
+
+    /// The number of entries of the memo the region keeps for each memoized decision (R4) of each generation:
+    /// [`DECISION_MEMO_ENTRIES`] from the limits table.
+    pub(crate) memo_entries: usize,
 }
 
 impl RegionConfig {
@@ -73,12 +80,25 @@ impl RegionConfig {
             exits: slot.exits.len(),
             invalid_loss: telemetry.loss(slot.name.as_str(), LossClass::Invalid),
             failures: None,
+            // The limit is a count of entries, which every platform's memory addresses.
+            memo_entries: DECISION_MEMO_ENTRIES as usize,
         }
     }
 
     /// Reports the generations the region fails to `failures`.
     pub fn with_failure_reporter(mut self, failures: GenerationFailureReporter) -> Self {
         self.failures = Some(failures);
+        self
+    }
+
+    /// Sets the number of entries of each memoized decision's memo, in place of the limits table's
+    /// [`DECISION_MEMO_ENTRIES`]; zero memoizes nothing.
+    ///
+    /// For tests and benchmarks that compare memoized decisions with evaluated ones, or exercise eviction. Production
+    /// regions use the limits table's value.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_memo_entries(mut self, entries: usize) -> Self {
+        self.memo_entries = entries;
         self
     }
 }
@@ -90,6 +110,7 @@ impl fmt::Debug for RegionConfig {
             .field("name", &self.name)
             .field("exits", &self.exits)
             .field("failures", &self.failures.is_some())
+            .field("memo_entries", &self.memo_entries)
             .finish_non_exhaustive()
     }
 }
@@ -181,6 +202,14 @@ pub enum RegionControl {
     Release,
 }
 
+/// What a region keeps for one decision of one generation's program.
+struct DecisionState {
+    /// The decision's R4 memo, if it is memoized.
+    memo: Option<DecisionMemo>,
+    /// Events per exit set since the region last published.
+    counts: ExitSetCounts,
+}
+
 /// A generation the region can process batches of.
 struct LiveGeneration {
     id: GenerationId,
@@ -190,12 +219,44 @@ struct LiveGeneration {
     layout: Layout,
     /// The slab index of each of the program's kernels, by kernel index.
     kernels: Vec<usize>,
+    /// The memo and counts of each of the program's decisions, by decision index.
+    decisions: Vec<DecisionState>,
     counts: ProgramCounts,
     telemetry: ProgramTelemetry,
     budget: PanicBudget,
     panics: PanicHistory,
     /// Whether the generation exceeded its panic budget: its batches are dropped.
     failed: bool,
+}
+
+impl LiveGeneration {
+    /// Derives every decision's per-port counts and policy loss from its counts per exit set, and adds what the
+    /// generation counted to its counters.
+    fn publish(&mut self) {
+        for (index, (decision, state)) in self.code.decisions.iter().zip(&mut self.decisions).enumerate() {
+            if let Some(decision) = decision {
+                let base = self.layout.decision_ports[index];
+                let ports = &mut self.counts.decision_ports[base..base + decision.function.port_count()];
+                derive_counts(decision, &state.counts, ports, &mut self.counts.drops);
+            }
+            state.counts.clear();
+        }
+        self.telemetry.publish(&mut self.counts);
+    }
+}
+
+/// Adds the per-port counts and the policy loss of each `drop` a decision leads to, derived from its counts per exit
+/// set: an event left a port when its exit set has an exit below the port, and was lost to a `drop` when its exit set
+/// has the exit leading to it.
+fn derive_counts(decision: &DecisionCode, counts: &ExitSetCounts, ports: &mut [u64], drops: &mut [LossCount]) {
+    decision.function.port_counts(counts, ports);
+    for (set, events, points) in counts.iter() {
+        for &(exit, drop) in &decision.drops {
+            if set.contains(exit) {
+                add_loss(&mut drops[drop], events, points);
+            }
+        }
+    }
 }
 
 /// The node a call is running, for charging a panic to it.
@@ -217,7 +278,7 @@ struct Cursor {
 struct Scratch {
     registers: Vec<Vec<EventsBuffer>>,
     pending: Vec<EventsBuffer>,
-    matches: Vec<bool>,
+    decide: DecideScratch,
     counters: TurnCounters,
 }
 
@@ -227,8 +288,27 @@ impl Scratch {
             register.clear();
         }
         self.pending.clear();
-        self.matches.clear();
+        self.decide.clear();
         self.counters = TurnCounters::default();
+    }
+}
+
+/// Storage a decision step reuses for every buffer.
+#[derive(Default)]
+struct DecideScratch {
+    /// Each event's exit set, in buffer order.
+    sets: Vec<ExitSet>,
+    /// The events leaving by each exit.
+    exit_events: Vec<u64>,
+    /// The buffer being filled for each exit, other than the one the original buffer goes to.
+    outputs: Vec<Option<EventsBuffer>>,
+}
+
+impl DecideScratch {
+    fn clear(&mut self) {
+        self.sets.clear();
+        self.exit_events.clear();
+        self.outputs.clear();
     }
 }
 
@@ -288,16 +368,28 @@ struct InvalidLoss {
 ///
 /// A batch runs to completion in one call: the driver takes its header out, runs the steps of its entry's program
 /// batch at a time over registers of buffers, and stamps every buffer it hands to an exit with a copy of the header,
-/// with the consumer's entry set for an exit to another slot and cleared otherwise. Decisions filter buffers in place,
-/// in order, and move a buffer whole where every event goes one way. Stateless kernels complete every batch, so the
-/// driver never yields.
+/// with the consumer's entry set for an exit to another slot and cleared otherwise. A decision computes each event's
+/// exit set with its compiled [function][crate::compile::DecisionFunction], from its generation's memo when it is
+/// memoized (R4), then moves each event to its targets in order: a buffer whose events all take the same exits moves
+/// whole, a buffer whose kept events all go to one target is filtered in place, and the others' events are copied, or
+/// moved for the last target, into buffers of exactly their size. Stateless kernels complete every batch, so the driver
+/// never yields.
+///
+/// # Memos
+///
+/// Each generation's program has a memo per memoized decision, of the limits table's
+/// [`DECISION_MEMO_ENTRIES`] entries, allocated when the generation is prepared and dropped with it: a generation
+/// never sees the results of another. A lookup is one probe and an insertion overwrites, so the data path never
+/// allocates.
 ///
 /// # Telemetry
 ///
-/// The driver counts in plain integers as it runs: events per output port of every kernel and decision, policy loss
-/// per `drop` node, the loss each kernel reports, and invalid loss of the region. It adds them to the counters
-/// registered with each generation's preparation when the host calls
-/// [`publish_telemetry`][RegionDriver::publish_telemetry].
+/// The driver counts in plain integers as it runs: events per output port of every kernel, events per exit set of
+/// every decision, policy loss per `drop` node, the loss each kernel reports, and invalid loss of the region. When the
+/// host calls [`publish_telemetry`][RegionDriver::publish_telemetry], or the generation is released, it derives every
+/// decision node's per-port counts from the counts per exit set (exact, as a decision has no `merge`), and adds
+/// everything to the counters registered with each generation's preparation. A decision whose events take more
+/// distinct exit sets than it counts ([`COUNTED_EXIT_SETS`]) derives its per-port counts early, and counts on.
 ///
 /// # Supervision
 ///
@@ -318,6 +410,7 @@ pub struct MetricRegionDriver {
     slot: SlotId,
     name: NativeComponentId,
     exit_count: usize,
+    memo_entries: usize,
     kernels: KernelSlab,
     generations: Vec<LiveGeneration>,
     scratch: Scratch,
@@ -355,11 +448,13 @@ impl MetricRegionDriver {
             exits,
             invalid_loss,
             failures,
+            memo_entries,
         } = config;
         let mut driver = Self {
             slot,
             name,
             exit_count: exits,
+            memo_entries,
             kernels: KernelSlab::default(),
             generations: Vec::new(),
             scratch: Scratch::default(),
@@ -457,9 +552,23 @@ impl MetricRegionDriver {
                 Resolved::New(prepared, ports) => self.kernels.insert(*prepared, ports),
             })
             .collect();
+        // Each memoized decision's memo is allocated here, off the data path, and lives as long as its generation.
+        let decisions = code
+            .decisions
+            .iter()
+            .map(|decision| DecisionState {
+                memo: decision
+                    .as_ref()
+                    .filter(|decision| decision.memoized && self.memo_entries > 0)
+                    .map(|decision| DecisionMemo::for_exits(self.memo_entries, decision.function.exit_count())),
+                // A decision no step runs counts nothing.
+                counts: ExitSetCounts::with_capacity(if decision.is_some() { COUNTED_EXIT_SETS } else { 0 }),
+            })
+            .collect();
         let live = LiveGeneration {
             id,
             token: Arc::downgrade(&generation),
+            decisions,
             counts: ProgramCounts::new(&layout),
             program,
             code,
@@ -508,7 +617,7 @@ impl MetricRegionDriver {
 
     /// Publishes what a generation counted, and releases its kernels.
     fn release(&mut self, mut generation: LiveGeneration) {
-        generation.telemetry.publish(&mut generation.counts);
+        generation.publish();
         for index in generation.kernels {
             self.kernels.release(index);
         }
@@ -650,6 +759,7 @@ impl RegionDriver for MetricRegionDriver {
             code,
             layout,
             kernels: kernel_slots,
+            decisions,
             counts,
             ..
         } = &mut generations[index];
@@ -657,6 +767,8 @@ impl RegionDriver for MetricRegionDriver {
         Run {
             layout,
             kernel_slots,
+            functions: &code.decisions,
+            decisions,
             counts,
             slab: kernels,
             scratch,
@@ -715,7 +827,7 @@ impl RegionDriver for MetricRegionDriver {
             Some(NodeRef::Decision(decision)) => generation
                 .program
                 .decision(DecisionIndex::new(decision as u16))
-                .map(|decision| format!("node `{}`", decision.node)),
+                .map(|decision| format!("node `{}`", decision.root().node)),
             None => None,
         }
         .unwrap_or_else(|| "the region's own steps".to_string());
@@ -780,7 +892,7 @@ impl RegionDriver for MetricRegionDriver {
     fn publish_telemetry(&mut self) {
         self.prune();
         for generation in &mut self.generations {
-            generation.telemetry.publish(&mut generation.counts);
+            generation.publish();
         }
         let invalid = std::mem::take(&mut self.invalid.pending);
         if invalid.points > 0 {
@@ -852,6 +964,8 @@ fn consume(
 struct Run<'a, 't> {
     layout: &'a Layout,
     kernel_slots: &'a [usize],
+    functions: &'a [Option<DecisionCode>],
+    decisions: &'a mut [DecisionState],
     counts: &'a mut ProgramCounts,
     slab: &'a mut KernelSlab,
     scratch: &'a mut Scratch,
@@ -866,6 +980,8 @@ impl Run<'_, '_> {
         let Run {
             layout,
             kernel_slots,
+            functions,
+            decisions,
             counts,
             slab,
             scratch,
@@ -877,7 +993,7 @@ impl Run<'_, '_> {
         let Scratch {
             registers,
             pending,
-            matches,
+            decide,
             counters,
         } = scratch;
         if registers.len() < entry.registers {
@@ -919,127 +1035,35 @@ impl Run<'_, '_> {
                     }
                     fold_loss(&mut counts.kernel_loss[*kernel], counters);
                 }
-                Op::Split {
-                    decision,
-                    input,
-                    predicate,
-                    matched,
-                    unmatched,
-                } => {
-                    cursor.node = Some(NodeRef::Decision(*decision));
-                    let base = layout.decision_ports[*decision];
-                    let is_match = |event: &Event| {
-                        event
-                            .try_as_metric()
-                            .is_some_and(|metric| predicate.evaluate(&mut EventView::new(metric)))
-                    };
-                    std::mem::swap(pending, &mut registers[*input]);
-                    for mut buffer in pending.drain(..) {
-                        let total = buffer.len() as u64;
-                        match (*matched, *unmatched) {
-                            (Target::Register(keep), Target::Drop(drop))
-                            | (Target::Drop(drop), Target::Register(keep)) => {
-                                // The common filter: keep one side in place, in order, and count the other as loss.
-                                let keep_matches = matches!(matched, Target::Register(_));
-                                let mut lost = LossCount::default();
-                                buffer.retain(|event| {
-                                    if is_match(event) == keep_matches {
-                                        return true;
-                                    }
-                                    add_loss(&mut lost, 1, points_of(event));
-                                    false
-                                });
-                                let kept = buffer.len() as u64;
-                                let matched_events = if keep_matches { kept } else { lost.events };
-                                counts.decision_ports[base] += matched_events;
-                                counts.decision_ports[base + 1] += total - matched_events;
-                                add_loss(&mut counts.drops[drop], lost.events, lost.points);
-                                if !buffer.is_empty() {
-                                    registers[keep].push(buffer);
-                                }
-                            }
-                            (Target::Drop(matched_drop), Target::Drop(unmatched_drop)) => {
-                                let mut matched_loss = LossCount::default();
-                                let mut unmatched_loss = LossCount::default();
-                                for event in &buffer {
-                                    let loss = if is_match(event) {
-                                        &mut matched_loss
-                                    } else {
-                                        &mut unmatched_loss
-                                    };
-                                    add_loss(loss, 1, points_of(event));
-                                }
-                                counts.decision_ports[base] += matched_loss.events;
-                                counts.decision_ports[base + 1] += unmatched_loss.events;
-                                add_loss(
-                                    &mut counts.drops[matched_drop],
-                                    matched_loss.events,
-                                    matched_loss.points,
-                                );
-                                add_loss(
-                                    &mut counts.drops[unmatched_drop],
-                                    unmatched_loss.events,
-                                    unmatched_loss.points,
-                                );
-                            }
-                            (Target::Register(matched_register), Target::Register(unmatched_register)) => {
-                                matches.clear();
-                                matches.extend((&buffer).into_iter().map(is_match));
-                                let matched_events = matches.iter().filter(|matched| **matched).count();
-                                counts.decision_ports[base] += matched_events as u64;
-                                counts.decision_ports[base + 1] += total - matched_events as u64;
-                                if matched_events == buffer.len() {
-                                    registers[matched_register].push(buffer);
-                                } else if matched_events == 0 {
-                                    registers[unmatched_register].push(buffer);
-                                } else {
-                                    // The original buffer keeps the unmatched events and goes to the last target; the
-                                    // matched events move to a buffer of exactly their size.
-                                    let mut moved = EventsBuffer::with_capacity(matched_events);
-                                    let mut flags = matches.iter();
-                                    buffer.move_into(&mut moved, |_| flags.next().copied().unwrap_or(false));
-                                    registers[matched_register].push(moved);
-                                    registers[unmatched_register].push(buffer);
-                                }
-                            }
-                        }
-                    }
-                }
-                Op::Tee {
+                Op::Decide {
                     decision,
                     input,
                     targets,
-                    last,
+                    registers: register_exits,
+                    drops: drop_exits,
                 } => {
                     cursor.node = Some(NodeRef::Decision(*decision));
+                    // Translation compiles the function of every decision a step runs.
+                    let (Some(Some(code)), Some(state)) = (functions.get(*decision), decisions.get_mut(*decision))
+                    else {
+                        continue;
+                    };
                     let base = layout.decision_ports[*decision];
-                    let drops = targets.iter().any(|target| matches!(target, Target::Drop(_)));
+                    let ProgramCounts {
+                        decision_ports, drops, ..
+                    } = &mut *counts;
+                    let mut step = DecideStep {
+                        code,
+                        state,
+                        ports: &mut decision_ports[base..base + code.function.port_count()],
+                        targets,
+                        register_exits: *register_exits,
+                        drop_exits: *drop_exits,
+                        drops,
+                    };
                     std::mem::swap(pending, &mut registers[*input]);
                     for buffer in pending.drain(..) {
-                        let events = buffer.len() as u64;
-                        for port in 0..targets.len() {
-                            counts.decision_ports[base + port] += events;
-                        }
-                        if drops {
-                            let points = points_in(&buffer);
-                            for target in targets {
-                                if let Target::Drop(drop) = target {
-                                    add_loss(&mut counts.drops[*drop], events, points);
-                                }
-                            }
-                        }
-                        let Some((last_position, last_register)) = *last else {
-                            continue;
-                        };
-                        // Every register target but the last gets a copy; the last gets the original.
-                        for (position, target) in targets.iter().enumerate() {
-                            if let Target::Register(register) = target {
-                                if position != last_position {
-                                    registers[*register].push(buffer.clone());
-                                }
-                            }
-                        }
-                        registers[last_register].push(buffer);
+                        step.run(buffer, registers, decide);
                     }
                 }
                 Op::Concat { inputs, output } => {
@@ -1083,6 +1107,186 @@ impl Run<'_, '_> {
         for register in used {
             register.clear();
         }
+    }
+}
+
+/// One decision step over the buffers of its input register.
+struct DecideStep<'a> {
+    code: &'a DecisionCode,
+    state: &'a mut DecisionState,
+    /// The decision's per-port counts, derived from its counts per exit set.
+    ports: &'a mut [u64],
+    targets: &'a [Target],
+    register_exits: ExitSet,
+    drop_exits: ExitSet,
+    /// Policy loss per `drop` node.
+    drops: &'a mut [LossCount],
+}
+
+impl DecideStep<'_> {
+    /// Runs the decision over one buffer.
+    ///
+    /// It computes each event's exit set (from the memo, for a memoized decision), counts events per exit set for
+    /// telemetry and policy loss (with their points, for the sets that lead to a `drop`) and per exit for the buffers'
+    /// capacities, then moves each event to the target of every exit in its set: the original to one target and
+    /// copies to the others, in buffer order everywhere. Three ways of moving them, from cheapest:
+    ///
+    /// - every event has the same exit set: the buffer moves whole to its last register target, and every other
+    ///   register target receives a copy;
+    /// - every event leaving by a register target leaves by the one most events leave by: the original buffer keeps
+    ///   those events, in place, and every other target receives copies in a buffer of exactly their size;
+    /// - otherwise: every target receives a buffer of exactly its size, each event moving to the last target in its set
+    ///   and copied to the others.
+    fn run(&mut self, mut buffer: EventsBuffer, registers: &mut [Vec<EventsBuffer>], scratch: &mut DecideScratch) {
+        let events = buffer.len();
+        if events == 0 {
+            return;
+        }
+        let function = &self.code.function;
+        let DecideScratch {
+            sets,
+            exit_events,
+            outputs,
+        } = scratch;
+        exit_events.clear();
+        exit_events.resize(self.targets.len(), 0);
+
+        // Each event's exit set, counted per run of equal sets, with the points of the runs that lead to a `drop`.
+        let mut with_register = 0u64;
+        let uniform = match function.constant() {
+            Some(set) => {
+                let points = if set.intersects(&self.drop_exits) {
+                    points_in(&buffer)
+                } else {
+                    0
+                };
+                with_register += self.count(set, events as u64, points, exit_events);
+                Some(set)
+            }
+            None => {
+                sets.clear();
+                match self.state.memo.as_mut() {
+                    Some(memo) => sets.extend(
+                        (&buffer)
+                            .into_iter()
+                            .map(|event| function.evaluate_memoized(event, memo)),
+                    ),
+                    None => sets.extend((&buffer).into_iter().map(|event| function.evaluate(event))),
+                }
+                let mut run = (sets[0], 0u64, 0u64);
+                let mut changes = 0;
+                for (event, set) in (&buffer).into_iter().zip(sets.iter()) {
+                    if *set != run.0 {
+                        with_register += self.count(run.0, run.1, run.2, exit_events);
+                        changes += 1;
+                        run = (*set, 0, 0);
+                    }
+                    run.1 += 1;
+                    if set.intersects(&self.drop_exits) {
+                        run.2 += points_of(event);
+                    }
+                }
+                with_register += self.count(run.0, run.1, run.2, exit_events);
+                (changes == 0).then(|| sets[0])
+            }
+        };
+
+        if let Some(set) = uniform {
+            let kept = set.intersection(self.register_exits);
+            let Some(last) = kept.last() else { return };
+            for exit in kept.iter().filter(|exit| *exit != last) {
+                if let Target::Register(register) = self.targets[exit.get()] {
+                    registers[register].push(buffer.clone());
+                }
+            }
+            if let Target::Register(register) = self.targets[last.get()] {
+                registers[register].push(buffer);
+            }
+            return;
+        }
+
+        // The register target most events leave by, the later one of equals: if every event leaving by a register
+        // target leaves by it, the original buffer keeps exactly its events.
+        let keeper = self
+            .register_exits
+            .iter()
+            .max_by_key(|exit| (exit_events[exit.get()], exit.get()))
+            .filter(|keeper| exit_events[keeper.get()] == with_register);
+        outputs.clear();
+        outputs.resize_with(self.targets.len(), || None);
+        for exit in self.register_exits.iter() {
+            let count = exit_events[exit.get()];
+            if count > 0 && Some(exit) != keeper {
+                outputs[exit.get()] = Some(EventsBuffer::with_capacity(count as usize));
+            }
+        }
+
+        match keeper {
+            Some(keeper) => {
+                let mut index = 0;
+                buffer.retain(|event| {
+                    let set = sets[index];
+                    index += 1;
+                    for exit in set.intersection(self.register_exits).iter() {
+                        if exit != keeper {
+                            push(&mut outputs[exit.get()], event.clone());
+                        }
+                    }
+                    set.contains(keeper)
+                });
+                if !buffer.is_empty() {
+                    if let Target::Register(register) = self.targets[keeper.get()] {
+                        registers[register].push(buffer);
+                    }
+                }
+            }
+            None => {
+                for (event, set) in buffer.into_iter().zip(sets.iter()) {
+                    let kept = set.intersection(self.register_exits);
+                    let Some(last) = kept.last() else { continue };
+                    for exit in kept.iter().filter(|exit| *exit != last) {
+                        push(&mut outputs[exit.get()], event.clone());
+                    }
+                    push(&mut outputs[last.get()], event);
+                }
+            }
+        }
+        for (target, output) in self.targets.iter().zip(outputs.iter_mut()) {
+            if let (Target::Register(register), Some(output)) = (target, output.take()) {
+                registers[*register].push(output);
+            }
+        }
+    }
+
+    /// Counts `events` events, with `points` points, with the exit set `set`: per exit set for telemetry and policy
+    /// loss, and per register exit in `exit_events`. Returns `events` if the set has a register exit, and zero
+    /// otherwise.
+    fn count(&mut self, set: ExitSet, events: u64, points: u64, exit_events: &mut [u64]) -> u64 {
+        if !self.state.counts.add(set, events, points) {
+            // The counts hold as many distinct sets as they can: derive the per-port counts and loss early, and count
+            // on.
+            derive_counts(self.code, &self.state.counts, self.ports, self.drops);
+            self.state.counts.clear();
+            let counted = self.state.counts.add(set, events, points);
+            debug_assert!(counted, "cleared counts have room for a set");
+        }
+        let kept = set.intersection(self.register_exits);
+        for exit in kept.iter() {
+            exit_events[exit.get()] += events;
+        }
+        if kept.is_empty() {
+            0
+        } else {
+            events
+        }
+    }
+}
+
+/// Appends an event to a decision's output buffer, which was created with room for every event it receives.
+fn push(output: &mut Option<EventsBuffer>, event: Event) {
+    if let Some(output) = output {
+        let rejected = output.try_push(event);
+        debug_assert!(rejected.is_none(), "decision outputs have room for every event");
     }
 }
 

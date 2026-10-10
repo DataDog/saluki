@@ -7,6 +7,7 @@ use std::{
 use saluki_core::accounting::ComponentRegistry;
 use saluki_metric_plan::{
     canonical::{PlanHash, ResolvedValues},
+    compile::{compile, Frame, RewriteId},
     ir::Plan,
     operators::OperatorRegistry,
     validate::{Catalog, Liveness, ValidationReport, Validator},
@@ -215,6 +216,37 @@ async fn every_configuration_of_the_matrix_lowers_to_a_valid_plan() {
     }
 }
 
+#[tokio::test]
+async fn no_configuration_of_the_matrix_gives_r3_or_r7_anything_to_rewrite() {
+    // Lowering writes no constant `split`, and every junction in R7's static order (operands cheapest first, ties by
+    // canonical form, so by binding name), so compiling a lowered default program applies neither logical rewrite:
+    // explain and the rewrite telemetry show neither. A lowering whose order drifts would start reordering in
+    // production. (Decision compilation still folds bound constants, such as a Multi-Region Failover gateway whose
+    // mirroring is off, inside the compiled programs: R3 records of the decisions, not of the plan.)
+    let registry = OperatorRegistry::native();
+    for (name, yaml) in MATRIX {
+        let lowered = lowered(yaml).await;
+        let report = validate(&lowered.plan, &lowered.catalog);
+        assert!(report.is_valid(), "{}:\n{}", name, report);
+        let frame = Frame::compute(
+            &lowered.plan,
+            &registry,
+            &crate::programmable_metrics::topology::slot_name,
+        )
+        .unwrap_or_else(|error| panic!("{}: {}", name, error));
+        let compiled =
+            compile(&lowered.plan, &report, &registry, &frame).unwrap_or_else(|error| panic!("{}: {}", name, error));
+        assert!(compiled.converged, "{}", name);
+        assert_eq!(*compiled.plan, lowered.plan, "{}", name);
+        let records = compiled
+            .logical_rewrites()
+            .iter()
+            .filter(|record| matches!(record.id, RewriteId::R3 | RewriteId::R7))
+            .collect::<Vec<_>>();
+        assert!(records.is_empty(), "{}: {:#?}", name, records);
+    }
+}
+
 /// The nodes whose presence depends on configuration, for each configuration of the matrix, as `run.rs` wires their
 /// components.
 #[tokio::test]
@@ -263,6 +295,10 @@ async fn branches_exist_only_when_native_wiring_builds_them() {
             [&dsd[..], &["metrics_routing_filter_0"]].concat(),
         ),
         ("multi-region failover", [&dsd[..], &["mrf_metrics_gateway"]].concat()),
+        (
+            "multi-region failover mirroring an allowlist",
+            [&dsd[..], &["mrf_metrics_gateway"]].concat(),
+        ),
         ("multi-region failover without an api key", dsd.to_vec()),
         ("autoscaling failover", [&dsd[..], &["af_metrics_gateway"]].concat()),
         ("autoscaling failover without a cluster agent", dsd.to_vec()),
@@ -358,7 +394,7 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
     let startup = configuration(EVERY_BRANCH).await;
     let before = lower_with(&startup, &startup);
 
-    let cases: [(&str, &str, &[&str]); 4] = [
+    let cases: [(&str, &str, &[&str]); 7] = [
         // A filterlist entry that names no histogram statistic changes the listener filterlist only.
         (
             "an entry for the listener filterlist",
@@ -381,6 +417,22 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
             "metric_tag_filterlist: [{metric_name: tenant.checkout.latency, action: include, tags: [env]}]",
             &["dsd_tag_filterlist.rules"],
         ),
+        // Metric mirroring and its allowlist reach the multi-region failover gateway only.
+        (
+            "metric mirroring",
+            "multi_region_failover: {failover_metrics: true}",
+            &["mrf_metrics_gateway.predicate"],
+        ),
+        (
+            "the mirroring allowlist",
+            "multi_region_failover: {metric_allowlist: [requests.count]}",
+            &["mrf_metrics_gateway.predicate"],
+        ),
+        (
+            "metric mirroring and its allowlist",
+            "multi_region_failover: {failover_metrics: true, metric_allowlist: [requests.count]}",
+            &["mrf_metrics_gateway.predicate"],
+        ),
     ];
     for (name, change, expected) in cases {
         let current = layered_configuration(&[EVERY_BRANCH, change]).await;
@@ -394,15 +446,36 @@ async fn live_inputs_change_only_the_parameters_bound_to_them() {
         assert!(validate(&after.plan, &after.catalog).findings().is_empty(), "{}", name);
     }
 
-    // Metric mirroring is live too, but until stage 4 the multi-region failover gateway is a native component that
-    // follows it itself: the plan does not change, and the catalog carries the new values.
+    // The gateway's predicate carries the new values, and so does the catalog.
     let current = layered_configuration(&[
         EVERY_BRANCH,
         "multi_region_failover: {failover_metrics: true, metric_allowlist: [requests.count]}",
     ])
     .await;
     let after = lower_with(&startup, &current);
-    assert_eq!(after.plan, before.plan);
+    let gateway = after.plan.node(&ids::MRF_METRICS_GATEWAY.parse().unwrap()).unwrap();
+    assert_eq!(
+        bindings_of(gateway),
+        [
+            ("predicate", "multi_region_failover.enabled", json!(true)),
+            (
+                "predicate",
+                "multi_region_failover.metric_mirroring.enabled",
+                json!(true)
+            ),
+            (
+                "predicate",
+                "multi_region_failover.metric_mirroring.allowlist",
+                json!(["requests.count"])
+            ),
+            (
+                "predicate",
+                "multi_region_failover.metric_mirroring.allowlist",
+                json!(["requests.count"])
+            ),
+        ]
+        .map(|(param, binding, value)| (param.to_string(), binding.to_string(), value))
+    );
     let value = |lowered: &Lowered, name: &str| {
         lowered
             .catalog
@@ -474,8 +547,14 @@ async fn startup_inputs_do_not_change_a_re_lowered_plan() {
 
 #[tokio::test]
 async fn live_bindings_are_only_on_components_that_read_live_views_natively() {
-    // The components `run.rs` gives live views of the metrics path's configuration, other than the forwarders.
-    let live_components = ["dsd_prefix_filter", "dsd_post_agg_filter", "dsd_tag_filterlist"];
+    // The components the legacy metrics path gives live views of the metrics path's configuration, other than the
+    // forwarders.
+    let live_components = [
+        "dsd_prefix_filter",
+        "dsd_post_agg_filter",
+        "dsd_tag_filterlist",
+        "mrf_metrics_gateway",
+    ];
     for (name, yaml) in MATRIX {
         let lowered = lowered(yaml).await;
         for node in &lowered.plan.nodes {
@@ -505,6 +584,16 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
     let mapper = matrix_entry("mapper profiles, a namespace prefix, and filterlists");
     let aggregation = matrix_entry("aggregation settings");
     let legacy_blocklist = matrix_entry("the legacy metric blocklist");
+    let routing_groups = matrix_entry("two routing groups, a shared group, and an endpoint with empty lists");
+    let multi_region_failover = matrix_entry("multi-region failover");
+    let mirroring = matrix_entry("multi-region failover mirroring an allowlist");
+    let autoscaling_failover = matrix_entry("autoscaling failover");
+    // The keys of that configuration's routing groups: the first 16 hexadecimal digits of the SHA-256 of
+    // `["https://e.example.com"]` and of `["https://b.example.com","https://c.example.com"]`, by `shasum -a 256`.
+    let (group_e, group_b_c) = ("ce7249fa1ea667a9", "e3488d4119bf8279");
+    let group = |key: &str, list: &str| format!("metrics_endpoint_routing.group.{}.{}", key, list);
+    let (e_names, e_prefixes) = (group(group_e, "names"), group(group_e, "prefixes"));
+    let (b_c_names, b_c_prefixes) = (group(group_b_c, "names"), group(group_b_c, "prefixes"));
     let cases: Vec<(&str, &str, &str, &str, Value)> = vec![
         (
             mapper,
@@ -643,6 +732,79 @@ async fn parameters_are_native_configuration_converted_into_plan_values() {
             "predicate",
             "dogstatsd.post_aggregate_filter.values",
             json!(["tenant.requests.max"]),
+        ),
+        // Routing groups are ordered by their lists, an endpoint with empty lists has none, and endpoints with equal
+        // lists share one.
+        (
+            routing_groups,
+            "metrics_routing_filter_0",
+            "predicate",
+            &e_names,
+            json!([]),
+        ),
+        (
+            routing_groups,
+            "metrics_routing_filter_0",
+            "predicate",
+            &e_prefixes,
+            json!(["catalog."]),
+        ),
+        (
+            routing_groups,
+            "metrics_routing_filter_1",
+            "predicate",
+            &b_c_names,
+            json!(["orders.total"]),
+        ),
+        (
+            routing_groups,
+            "metrics_routing_filter_1",
+            "predicate",
+            &b_c_prefixes,
+            json!([]),
+        ),
+        // The branch exists only while failover is enabled; mirroring is off and mirrors everything by default.
+        (
+            multi_region_failover,
+            "mrf_metrics_gateway",
+            "predicate",
+            "multi_region_failover.enabled",
+            json!(true),
+        ),
+        (
+            multi_region_failover,
+            "mrf_metrics_gateway",
+            "predicate",
+            "multi_region_failover.metric_mirroring.enabled",
+            json!(false),
+        ),
+        (
+            multi_region_failover,
+            "mrf_metrics_gateway",
+            "predicate",
+            "multi_region_failover.metric_mirroring.allowlist",
+            json!([]),
+        ),
+        (
+            mirroring,
+            "mrf_metrics_gateway",
+            "predicate",
+            "multi_region_failover.metric_mirroring.enabled",
+            json!(true),
+        ),
+        (
+            mirroring,
+            "mrf_metrics_gateway",
+            "predicate",
+            "multi_region_failover.metric_mirroring.allowlist",
+            json!(["requests.count", "orders.total"]),
+        ),
+        (
+            autoscaling_failover,
+            "af_metrics_gateway",
+            "predicate",
+            "autoscaling_failover.metrics",
+            json!(["requests.count"]),
         ),
     ];
     for (yaml, node, param, binding, expected) in cases {

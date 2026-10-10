@@ -304,3 +304,8 @@ serializable
 misconfigured
 unstamp(s|ed)?
 [Pp]ipelin(e|ed|es|ing)
+[Mm]emoiz(e|ed|es|ing|able|ation)
+[Uu]nmemoized
+[Mm]atcher(s|'s)?
+[Ss]ubgraphs?
+[Rr]eorderable

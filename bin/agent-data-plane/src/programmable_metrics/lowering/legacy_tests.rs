@@ -10,7 +10,6 @@
 //! |---|---|
 //! | `source` nodes | the source component (`trace_sampler` is a transform); port `metrics` is its `metrics` output |
 //! | `emit` nodes | the component of the output they name: its encoder, or the tap `dsd_client_telemetry_out` |
-//! | `opaque_host` nodes (the gateways) | the transform their `component` parameter names |
 //! | `dsd_enrich` (mapper kernel) | the `dsd_enrich` chain |
 //! | `dsd_prefix_filter` (prefix), `dsd_prefix_filter_blocklist` (split) and its `drop` | `dsd_prefix_filter` |
 //! | `dsd_no_agg_split` (timestamp split) | `dsd_no_agg_split`; port `passthrough` is its `passthrough` output |
@@ -22,9 +21,12 @@
 //! | `metrics_enrich_in` (merge) | fan-in at the input of `metrics_enrich` |
 //! | `metrics_enrich` (host enrichment) and `metrics_enrich_host_tags` (host tags) | the `metrics_enrich` chain |
 //! | `metrics_policy` (tee) | fan-out of `metrics_enrich`'s output |
+//! | `metrics_routing_filter_{i}` (split) and its `false` drop | the transform `metrics_routing_filter_{i}` |
+//! | `mrf_metrics_gateway` (split) and its `false` drop | the transform `mrf_metrics_gateway` |
+//! | `af_metrics_gateway` (split) and its `false` drop | the transform `af_metrics_gateway` |
 //!
-//! Emits and opaque hosts are mapped by their parameters, not their IDs, so an emit that delivers to another output
-//! than its branch's, or an opaque host standing for another component, is a structural difference.
+//! Emits are mapped by their parameters, not their IDs, so an emit that delivers to another output than its branch's
+//! is a structural difference. A gateway's `true` port is its emit, so the gateway's output feeds the encoder.
 //!
 //! Every other port of a node mapped to a component leaves through the component's default output. Each plan edge
 //! between nodes of different components, followed through merges and tees, is a legacy edge from a component output to
@@ -80,8 +82,7 @@ enum Legacy {
 
 /// Returns the legacy counterpart of a lowered node, by the mapping table, independently of the node's provenance.
 ///
-/// An `emit` maps to the component of the output it names, among `outputs`, and an opaque host to the component its
-/// parameters name.
+/// An `emit` maps to the component of the output it names, among `outputs`.
 fn legacy(node: &Node, outputs: &NativeOutputs) -> Legacy {
     use ComponentType::{Destination, Encoder, Source, Transform};
 
@@ -109,8 +110,16 @@ fn legacy(node: &Node, outputs: &NativeOutputs) -> Legacy {
             };
             return component(&output.component, ty);
         }
-        names::OPAQUE_HOST => return component(param("component"), Transform),
         _ => {}
+    }
+    // A gateway is a `split` whose `false` port drops.
+    let gateway = match op {
+        names::DROP => id.strip_suffix("_false"),
+        names::SPLIT => Some(id.as_str()),
+        _ => None,
+    };
+    if let Some(gateway) = gateway.filter(|gateway| is_gateway(gateway)) {
+        return component(gateway, Transform);
     }
     match id.as_str() {
         "dsd_enrich" | "dsd_no_agg_split" | "dsd_tag_filterlist" | "dsd_agg" => component(&id, Transform),
@@ -121,6 +130,14 @@ fn legacy(node: &Node, outputs: &NativeOutputs) -> Legacy {
         "metrics_enrich" | "metrics_enrich_host_tags" => component("metrics_enrich", Transform),
         _ => panic!("node `{}` ({}) is not in the mapping table", id, op),
     }
+}
+
+/// Returns `true` if `id` is the ID of a gateway in front of a metrics output.
+fn is_gateway(id: &str) -> bool {
+    let routing_filter = id
+        .strip_prefix("metrics_routing_filter_")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()));
+    routing_filter || id == "mrf_metrics_gateway" || id == "af_metrics_gateway"
 }
 
 /// The physical structure a plan describes, by the mapping table.
@@ -352,8 +369,8 @@ async fn the_comparison_finds_the_native_edges() {
 
 #[tokio::test]
 async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
-    // The table, not provenance, decides; this pins the rows that differ from a node's own ID. Emits and opaque hosts
-    // map by their parameters, whatever their IDs.
+    // The table, not provenance, decides; this pins the rows that differ from a node's own ID. Emits map by their
+    // parameters, whatever their IDs.
     let config = configuration(matrix_entry("every branch")).await;
     let lowering = Lowering::new(
         Arc::new(config),
@@ -381,7 +398,7 @@ async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
         ),
         (
             node(
-                "metrics_routing_filter_0_out",
+                "metrics_routing_filter_0_true",
                 names::EMIT,
                 json!({"output": "metrics_routing_encode_0"}),
             ),
@@ -389,11 +406,19 @@ async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
         ),
         (
             node(
-                "metrics_routing_filter_0_out",
+                "metrics_routing_filter_0_true",
                 names::EMIT,
                 json!({"output": "metrics_routing_encode_1"}),
             ),
             component("metrics_routing_encode_1", ComponentType::Encoder),
+        ),
+        (
+            node("metrics_routing_filter_1", names::SPLIT, json!({})),
+            component("metrics_routing_filter_1", ComponentType::Transform),
+        ),
+        (
+            node("metrics_routing_filter_1_false", names::DROP, json!({})),
+            component("metrics_routing_filter_1", ComponentType::Transform),
         ),
         (
             node(
@@ -408,12 +433,12 @@ async fn every_lowered_node_has_a_legacy_counterpart_by_the_mapping_table() {
             component("mrf_metrics_encode", ComponentType::Encoder),
         ),
         (
-            node(
-                "af_metrics_gateway",
-                names::OPAQUE_HOST,
-                json!({"component": "mrf_metrics_gateway"}),
-            ),
+            node("mrf_metrics_gateway_false", names::DROP, json!({})),
             component("mrf_metrics_gateway", ComponentType::Transform),
+        ),
+        (
+            node("af_metrics_gateway", names::SPLIT, json!({})),
+            component("af_metrics_gateway", ComponentType::Transform),
         ),
         (
             node("trace_sampler", names::SOURCE, json!({})),

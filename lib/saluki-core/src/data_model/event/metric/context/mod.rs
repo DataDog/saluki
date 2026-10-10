@@ -182,6 +182,15 @@ impl Context {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Returns the key of this context: the hash of its name, host, tags, and origin tags that identifies it.
+    ///
+    /// Contexts compare and hash by their key alone, so two contexts with equal keys are the same context, even in
+    /// the rare case that their hashes collide. A cache keyed by [`ContextKey`] therefore treats contexts exactly as
+    /// every map keyed by `Context` does.
+    pub fn key(&self) -> ContextKey {
+        self.inner.key
+    }
+
     /// Returns the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name
@@ -543,6 +552,22 @@ mod tests {
 
     fn tag_set(tags: &[&str]) -> TagSet {
         tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>()
+    }
+
+    #[test]
+    fn context_keys_identify_contexts_as_equality_does() {
+        let context = Context::from_static_parts("requests", &["a:1", "b:2"]);
+        let reordered = Context::from_static_parts("requests", &["b:2", "a:1"]);
+        let hosted = context.with_host(MetaString::from("web-1"));
+        assert_eq!(context, reordered);
+        assert_eq!(context.key(), reordered.key());
+        assert_eq!(context.key().as_u64(), reordered.key().as_u64());
+        assert_ne!(context, hosted);
+        assert_ne!(context.key().as_u64(), hosted.key().as_u64());
+        // A mutation recomputes the key.
+        let mut mutated = context.clone();
+        mutated.mutate_tags(|tags| tags.insert_tag("c:3"));
+        assert_ne!(mutated.key(), context.key());
     }
 
     #[test]

@@ -6,9 +6,9 @@
 //! provenance. A node in the policy namespace has no native identity. Memory accounting is not part of the identity:
 //! a kernel's memory and CPU time are accounted under its region, in a subcomponent named after its node.
 //!
-//! The table covers both forms of the policy gateways: opaque hosts, through stage 3, whose native components report
-//! their own telemetry, and the routing operators that replace them from stage 4. Stage 3 builds kernels with these
-//! identities; nothing reads the table at runtime before then.
+//! The policy gateways are routing operators: a `split` whose `true` port is emitted to the gateway's output and whose
+//! `false` port drops. A routing group's filter keeps the native allowlist metrics; the failover gateways report no
+//! filter telemetry natively, and keep none.
 //!
 //! # Where values come from
 //!
@@ -113,8 +113,7 @@ pub enum TelemetryProfile {
     /// for a component's output fan-out.
     Silent,
 
-    /// The node is a host component (a source, aggregation, or an opaque host), which reports its own telemetry as it
-    /// does natively.
+    /// The node is a host component (a source or aggregation), which reports its own telemetry as it does natively.
     Host,
 
     /// The DogStatsD mapper, whose context resolver and result cache are named `<component>/dsd_mapper/primary` and
@@ -367,27 +366,13 @@ static PROFILES: &[ProfileEntry] = {
         ),
         entry("metrics_policy", names::TEE, "metrics_enrich", Transform, Silent),
         entry("metrics_policy_0", names::EMIT, "dd_metrics_encode", Encoder, Silent),
-        // Endpoint routing groups: opaque filters through stage 3, then a split.
-        entry(
-            "metrics_routing_filter_{i}",
-            names::OPAQUE_HOST,
-            "metrics_routing_filter_{i}",
-            Transform,
-            Host,
-        ),
+        // Endpoint routing groups.
         entry(
             "metrics_routing_filter_{i}",
             names::SPLIT,
             "metrics_routing_filter_{i}",
             Transform,
             EndpointAllowlist,
-        ),
-        entry(
-            "metrics_routing_filter_{i}_out",
-            names::EMIT,
-            "metrics_routing_encode_{i}",
-            Encoder,
-            Silent,
         ),
         entry(
             "metrics_routing_filter_{i}_true",
@@ -403,27 +388,12 @@ static PROFILES: &[ProfileEntry] = {
             Transform,
             Silent,
         ),
-        // The failover gateways: opaque filters through stage 3, then a split. Neither reports filter telemetry
-        // natively.
-        entry(
-            "mrf_metrics_gateway",
-            names::OPAQUE_HOST,
-            "mrf_metrics_gateway",
-            Transform,
-            Host,
-        ),
+        // The failover gateways, neither of which reports filter telemetry natively.
         entry(
             "mrf_metrics_gateway",
             names::SPLIT,
             "mrf_metrics_gateway",
             Transform,
-            Silent,
-        ),
-        entry(
-            "mrf_metrics_gateway_out",
-            names::EMIT,
-            "mrf_metrics_encode",
-            Encoder,
             Silent,
         ),
         entry(
@@ -442,23 +412,9 @@ static PROFILES: &[ProfileEntry] = {
         ),
         entry(
             "af_metrics_gateway",
-            names::OPAQUE_HOST,
-            "af_metrics_gateway",
-            Transform,
-            Host,
-        ),
-        entry(
-            "af_metrics_gateway",
             names::SPLIT,
             "af_metrics_gateway",
             Transform,
-            Silent,
-        ),
-        entry(
-            "af_metrics_gateway_out",
-            names::EMIT,
-            "af_metrics_encode",
-            Encoder,
             Silent,
         ),
         entry(

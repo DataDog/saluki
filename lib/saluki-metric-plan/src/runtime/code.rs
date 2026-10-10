@@ -1,14 +1,11 @@
 //! A region program translated for execution: every reference resolved to an index, checked once when a generation
 //! is prepared rather than on every batch.
 
-use std::sync::Arc;
-
 use saluki_core::execution::{BatchHeader, EntryId, ExitId};
 
 use super::{telemetry::Layout, RegionError};
-use crate::{
-    compile::{DecisionKind, EntryKey, KernelIndex, RegionProgram, RegisterId, Route, Step},
-    predicate::CompiledPredicate,
+use crate::compile::{
+    DecisionExit, DecisionFunction, EntryKey, ExitSet, KernelIndex, RegionProgram, RegisterId, Route, Step,
 };
 
 /// Where one output of a step leads.
@@ -34,23 +31,16 @@ pub(super) enum Op {
         ports: Vec<Target>,
     },
 
-    /// A `split`: the predicate's matches go to `matched`, everything else, events other than metrics included, to
-    /// `unmatched`.
-    Split {
+    /// A decision: each event goes to the target of every exit in its exit set.
+    Decide {
         decision: usize,
         input: usize,
-        predicate: Arc<CompiledPredicate>,
-        matched: Target,
-        unmatched: Target,
-    },
-
-    /// A `tee`: every target receives every event. `last` is the position, among `targets`, and the register of the
-    /// last register target, which receives the original buffers; the others receive copies.
-    Tee {
-        decision: usize,
-        input: usize,
+        /// Where each exit leads, in exit order.
         targets: Vec<Target>,
-        last: Option<(usize, usize)>,
+        /// The exits whose target is a register.
+        registers: ExitSet,
+        /// The exits whose target is a `drop`.
+        drops: ExitSet,
     },
 
     /// A `merge` of several registers.
@@ -75,11 +65,24 @@ pub(super) struct EntryCode {
     pub ops: Vec<Op>,
 }
 
-/// The ops of every entry of a program.
+/// One decision of a program, compiled to its function.
+#[derive(Clone, Debug)]
+pub(super) struct DecisionCode {
+    pub function: DecisionFunction,
+    /// Whether the region memoizes the function (R4).
+    pub memoized: bool,
+    /// Each exit that leads to a `drop`, with the drop's index in the program's [`Layout`]: the policy loss derived
+    /// from the decision's counts per exit set.
+    pub drops: Vec<(DecisionExit, usize)>,
+}
+
+/// The ops of every entry of a program, and its decisions' functions.
 #[derive(Clone, Debug)]
 pub(super) struct ProgramCode {
     pub entries: Vec<EntryCode>,
     pub registers: usize,
+    /// Every decision of the program that a step runs, by decision index.
+    pub decisions: Vec<Option<DecisionCode>>,
 }
 
 impl ProgramCode {
@@ -87,8 +90,8 @@ impl ProgramCode {
     ///
     /// # Errors
     ///
-    /// Returns an error if the program refers to a kernel, decision, register, or exit it does not have, or if a
-    /// decision's targets do not match its kind: a program the region cannot run.
+    /// Returns an error if the program refers to a kernel, decision, register, or exit it does not have, if a
+    /// decision is malformed, or if a decision's targets do not match its exits: a program the region cannot run.
     pub fn translate(program: &RegionProgram, layout: &Layout, exit_count: usize) -> Result<Self, RegionError> {
         let malformed = |entry: &EntryKey, message: String| RegionError::MalformedProgram {
             slot: program.slot(),
@@ -96,6 +99,8 @@ impl ProgramCode {
             message,
         };
 
+        // Every decision a step runs compiles to its function once, here, rather than for every batch.
+        let mut decisions = vec![None; program.decisions().len()];
         let mut entries = Vec::with_capacity(program.entries().len());
         for entry in program.entries() {
             let key = &entry.key;
@@ -140,106 +145,126 @@ impl ProgramCode {
 
             let mut ops = Vec::with_capacity(entry.steps.len());
             for step in &entry.steps {
-                let op =
-                    match step {
-                        Step::Map {
-                            kernel: index,
-                            register: id,
-                        } => Op::Map {
-                            kernel: kernel(*index, Some(1))?,
-                            register: register(*id)?,
-                        },
-                        Step::Expand {
-                            kernel: index,
-                            input,
-                            ports,
-                        } => Op::Expand {
-                            kernel: kernel(*index, Some(ports.len()))?,
-                            input: register(*input)?,
-                            ports: ports.iter().map(target).collect::<Result<_, _>>()?,
-                        },
-                        Step::Decide {
-                            decision,
-                            input,
-                            targets,
-                        } => {
-                            let found = program.decision(*decision).ok_or_else(|| {
-                                malformed(
-                                    key,
-                                    format!("a step uses decision {}, which the program lacks", decision),
-                                )
-                            })?;
-                            if targets.len() != found.ports.len() {
-                                return Err(malformed(
-                                    key,
-                                    format!(
-                                        "decision `{}` has {} ports, but its step routes {}",
-                                        found.node,
-                                        found.ports.len(),
-                                        targets.len()
-                                    ),
-                                ));
-                            }
-                            let targets = targets.iter().map(target).collect::<Result<Vec<_>, _>>()?;
-                            match (&found.kind, targets.as_slice()) {
-                                (DecisionKind::Split { compiled, .. }, [matched, unmatched]) => Op::Split {
-                                    decision: decision.get(),
-                                    input: register(*input)?,
-                                    predicate: Arc::clone(compiled),
-                                    matched: *matched,
-                                    unmatched: *unmatched,
-                                },
-                                (DecisionKind::Split { .. }, _) => {
-                                    return Err(malformed(
-                                        key,
-                                        format!("split `{}` must have two ports, `true` and `false`", found.node),
-                                    ))
+                let op = match step {
+                    Step::Map {
+                        kernel: index,
+                        register: id,
+                    } => Op::Map {
+                        kernel: kernel(*index, Some(1))?,
+                        register: register(*id)?,
+                    },
+                    Step::Expand {
+                        kernel: index,
+                        input,
+                        ports,
+                    } => Op::Expand {
+                        kernel: kernel(*index, Some(ports.len()))?,
+                        input: register(*input)?,
+                        ports: ports.iter().map(target).collect::<Result<_, _>>()?,
+                    },
+                    Step::Decide {
+                        decision,
+                        input,
+                        targets,
+                    } => {
+                        let found = program.decision(*decision).ok_or_else(|| {
+                            malformed(
+                                key,
+                                format!("a step uses decision {}, which the program lacks", decision),
+                            )
+                        })?;
+                        let root = &found.root().node;
+                        if targets.len() != found.exits.len() {
+                            return Err(malformed(
+                                key,
+                                format!(
+                                    "decision `{}` has {} exits, but its step routes {}",
+                                    root,
+                                    found.exits.len(),
+                                    targets.len()
+                                ),
+                            ));
+                        }
+                        let targets = targets.iter().map(target).collect::<Result<Vec<_>, _>>()?;
+                        let mut registers = ExitSet::EMPTY;
+                        let mut drops = ExitSet::EMPTY;
+                        let mut drop_targets = Vec::new();
+                        for (exit, target) in targets.iter().enumerate() {
+                            let Ok(exit) = u16::try_from(exit) else {
+                                return Err(malformed(key, format!("decision `{}` has too many exits", root)));
+                            };
+                            let exit = DecisionExit::new(exit);
+                            match target {
+                                Target::Register(_) => registers.insert(exit),
+                                Target::Drop(drop) => {
+                                    drops.insert(exit);
+                                    drop_targets.push((exit, *drop));
                                 }
-                                (DecisionKind::Tee, _) => Op::Tee {
-                                    decision: decision.get(),
-                                    input: register(*input)?,
-                                    last: targets.iter().enumerate().rev().find_map(
-                                        |(position, target)| match target {
-                                            Target::Register(register) => Some((position, *register)),
-                                            Target::Drop(_) => None,
-                                        },
-                                    ),
-                                    targets,
-                                },
                             }
                         }
-                        Step::Concat { inputs, output } => Op::Concat {
-                            inputs: inputs.iter().map(|id| register(*id)).collect::<Result<_, _>>()?,
-                            output: register(*output)?,
-                        },
-                        Step::Exit {
-                            register: id,
-                            exit,
-                            entry: consumer,
-                        } => {
-                            if exit.get() >= exit_count {
+                        // A decision's exits lead to the same `drop`s in every entry, so that its loss can be
+                        // derived from its counts alone.
+                        match &decisions[decision.get()] {
+                            None => {
+                                let function =
+                                    DecisionFunction::new(found).map_err(|error| malformed(key, error.to_string()))?;
+                                decisions[decision.get()] = Some(DecisionCode {
+                                    function,
+                                    memoized: found.memoized,
+                                    drops: drop_targets,
+                                });
+                            }
+                            Some(known) if known.drops != drop_targets => {
                                 return Err(malformed(
                                     key,
                                     format!(
-                                        "a step writes to exit {}, but the region has {} exits",
-                                        exit.get(),
-                                        exit_count
+                                        "decision `{}` leads to other `drop`s here than in an earlier entry",
+                                        root
                                     ),
                                 ));
                             }
-                            Op::Exit {
-                                register: register(*id)?,
-                                exit: ExitId::new(exit.get() as u16),
-                                entry: *consumer,
-                            }
+                            Some(_) => {}
                         }
-                        Step::Drop { register: id, node } => Op::Drop {
+                        Op::Decide {
+                            decision: decision.get(),
+                            input: register(*input)?,
+                            targets,
+                            registers,
+                            drops,
+                        }
+                    }
+                    Step::Concat { inputs, output } => Op::Concat {
+                        inputs: inputs.iter().map(|id| register(*id)).collect::<Result<_, _>>()?,
+                        output: register(*output)?,
+                    },
+                    Step::Exit {
+                        register: id,
+                        exit,
+                        entry: consumer,
+                    } => {
+                        if exit.get() >= exit_count {
+                            return Err(malformed(
+                                key,
+                                format!(
+                                    "a step writes to exit {}, but the region has {} exits",
+                                    exit.get(),
+                                    exit_count
+                                ),
+                            ));
+                        }
+                        Op::Exit {
                             register: register(*id)?,
-                            drop: layout
-                                .drop_index(node)
-                                .ok_or_else(|| malformed(key, format!("drop node `{}` has no counts", node)))?,
-                        },
-                    };
+                            exit: ExitId::new(exit.get() as u16),
+                            entry: *consumer,
+                        }
+                    }
+                    Step::Drop { register: id, node } => Op::Drop {
+                        register: register(*id)?,
+                        drop: layout
+                            .drop_index(node)
+                            .ok_or_else(|| malformed(key, format!("drop node `{}` has no counts", node)))?,
+                    },
+                };
                 ops.push(op);
             }
             if entry.registers == 0 {
@@ -253,7 +278,11 @@ impl ProgramCode {
         }
 
         let registers = entries.iter().map(|entry| entry.registers).max().unwrap_or(0);
-        Ok(Self { entries, registers })
+        Ok(Self {
+            entries,
+            registers,
+            decisions,
+        })
     }
 
     /// Returns the position of the entry a batch belongs to: by the entry its header carries, set by the slot that

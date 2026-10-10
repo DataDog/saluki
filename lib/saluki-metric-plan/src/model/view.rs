@@ -27,6 +27,8 @@ enum IntakeName {
 /// shared between them.
 pub struct EventView<'a> {
     metric: &'a Metric,
+    /// The raw name, read once: every name and intake name leaf reads it.
+    name: &'a str,
     intake_name: IntakeName,
 
     /// The buffer a name that needs normalizing is normalized into. It is only initialized when it is needed, since
@@ -39,6 +41,7 @@ impl<'a> EventView<'a> {
     pub fn new(metric: &'a Metric) -> Self {
         Self {
             metric,
+            name: metric.context().name(),
             intake_name: IntakeName::Unknown,
             buf: None,
         }
@@ -51,7 +54,7 @@ impl<'a> EventView<'a> {
 
     /// Returns the raw name, exactly as it is forwarded.
     pub fn name(&self) -> &'a str {
-        self.metric.context().name()
+        self.name
     }
 
     /// Returns the host, or `None` if it is unset.
@@ -95,7 +98,7 @@ impl<'a> EventView<'a> {
         }
 
         match (self.intake_name, &self.buf) {
-            (IntakeName::AsGiven, _) => Some(self.name().as_bytes()),
+            (IntakeName::AsGiven, _) => Some(self.name.as_bytes()),
             (IntakeName::Normalized, Some(buf)) => Some(buf.as_bytes()),
             _ => None,
         }

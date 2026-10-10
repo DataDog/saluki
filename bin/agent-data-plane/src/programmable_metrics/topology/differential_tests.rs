@@ -7,6 +7,11 @@
 //! DogStatsD-like and OTLP-like batches, stops them, which drains them and makes aggregation flush once, and compares
 //! the multisets of flattened points each encoder received with the plan crate's equivalence oracle.
 //!
+//! [`GATEWAY_MATRIX`] does the same for the gateways in front of the outputs, which the legacy topology runs as
+//! components of their own and the plan-driven one as `split`s of its policy region: zero, one, and two endpoint
+//! routing groups (with a shared group and an endpoint with empty lists), Multi-Region Failover mirroring everything,
+//! its allowlist, or nothing, and autoscaling failover, over input whose names the gateways' rules tell apart.
+//!
 //! Two native behaviors would make a comparison depend on timing rather than on what each path computes, and the
 //! inputs avoid them: native filters reorder events within a batch (amendment 2), so no gauge context repeats within a
 //! batch, where the last value wins; and the native no-aggregation split holds timestamped metrics until it has been
@@ -264,19 +269,31 @@ fn other_batches(feed: &str) -> Vec<Vec<Metric>> {
     }
 }
 
+/// Returns the differential input of a source: what the source `feed` sends, in batches.
+fn differential_batches(feed: &str) -> Vec<Vec<Metric>> {
+    match feed {
+        "dsd_in.metrics" => dogstatsd_batches(),
+        "otlp_in.metrics" => otlp_batches(),
+        other => other_batches(other),
+    }
+}
+
 /// Runs one path of a configuration's primary topology over the differential input, returning what the outputs
 /// received and which outputs the topology has.
 async fn run(name: &str, yaml: &'static str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<String>) {
-    let system = layered_configuration_system(&layers(name, yaml)).await;
+    run_layers(&layers(name, yaml), path, differential_batches).await
+}
+
+/// Runs one path of the primary topology of the configuration `layers`, feeding each source what `batches` returns
+/// for it, and returns what the outputs received and which outputs the topology has.
+async fn run_layers(
+    layers: &[&str], path: MetricsPath, batches: fn(&str) -> Vec<Vec<Metric>>,
+) -> (Vec<Delivery>, BTreeSet<String>) {
+    let system = layered_configuration_system(layers).await;
     let topology = TestTopology::start(&system, Options::new(path, Aggregation::Clocked), |_| {}).await;
     let outputs = collected_outputs(topology.snapshot());
     for feed in topology.feeds() {
-        let batches = match feed.as_str() {
-            "dsd_in.metrics" => dogstatsd_batches(),
-            "otlp_in.metrics" => otlp_batches(),
-            other => other_batches(other),
-        };
-        for batch in batches {
+        for batch in batches(&feed) {
             topology.feed(&feed, batch);
         }
     }
@@ -483,6 +500,232 @@ async fn every_output_receives_what_the_configuration_says_it_does() {
             &deliveries,
             "af_metrics_encode",
             r#"counter "otel.requests" host=<unset> tags=[service:api] ts=1700000100 value=10.0"#,
+        );
+    }
+}
+
+/// What every gateway configuration adds: the OTLP source beside DogStatsD, and four additional endpoints for routing
+/// policies to select.
+const GATEWAY_BASE: &str = r#"
+data_plane: {otlp: {enabled: true}}
+dd_url: https://primary.example.com
+additional_endpoints:
+  https://b.example.com: [key-b]
+  https://c.example.com: [key-c]
+  https://d.example.com: [key-d]
+  https://e.example.com: [key-e]
+"#;
+
+/// Endpoint routing with two groups: `b` and `c` have equal lists, written differently, and share one; `d` has empty
+/// lists, so it is excluded from the main output and has no group; `e` has prefixes (including one, `9`, that only a
+/// name the intake rejects would start with) and names, one of them covered by a prefix.
+const ROUTING_GROUPS: &str = r#"
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://b.example.com: [orders.total, my_service.requests]
+      https://c.example.com: [my_service.requests, orders.total, orders.total]
+      https://d.example.com: []
+      https://e.example.com: [visitors, billing.total]
+    metric_prefix_allowlist:
+      https://e.example.com: [billing., '9']
+"#;
+
+const AUTOSCALING_FAILOVER: &str = r#"
+autoscaling:
+  failover:
+    enabled: true
+    metrics: [orders.total, request.duration.count, visitors, checkout.latency, billing.otel]
+cluster_agent:
+  enabled: true
+  url: https://cluster-agent.example.com:5005
+  auth_token: cluster-agent-token
+"#;
+
+/// The configurations the gateways are compared over: a name, the configuration over [`GATEWAY_BASE`], and the
+/// outputs that receive nothing.
+const GATEWAY_MATRIX: &[(&str, &[&str], &[&str])] = &[
+    ("no routing group", &[], &[]),
+    (
+        "one routing group",
+        &["experimental: {metrics_endpoint_routing: {metric_allowlist: {https://b.example.com: [orders.total]}}}"],
+        &[],
+    ),
+    (
+        "two routing groups, a shared group, and an endpoint with empty lists",
+        &[ROUTING_GROUPS],
+        &[],
+    ),
+    (
+        "multi-region failover mirroring everything",
+        &[
+            "multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com, \
+           failover_metrics: true}",
+        ],
+        &[],
+    ),
+    (
+        "multi-region failover mirroring its allowlist",
+        &[
+            "multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com, \
+           failover_metrics: true, metric_allowlist: [orders.total, my-service.requests]}",
+        ],
+        &[],
+    ),
+    (
+        "multi-region failover with mirroring off",
+        &[
+            "multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com, \
+           failover_metrics: false, metric_allowlist: [orders.total]}",
+        ],
+        &["mrf_metrics_encode"],
+    ),
+    ("autoscaling failover", &[AUTOSCALING_FAILOVER], &[]),
+    (
+        "every gateway",
+        &[
+            ROUTING_GROUPS,
+            AUTOSCALING_FAILOVER,
+            "multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com, \
+             failover_metrics: true, metric_allowlist: [orders.total, billing.ts]}",
+        ],
+        &[],
+    ),
+];
+
+/// The input of the gateway configurations: metrics of every kind, aggregated and timestamped, from DogStatsD and
+/// OTLP, with names that the intake normalizes (`my-service.requests`), rejects (`9lives.count`), or stores as they
+/// are, so that the gateways' name rules make a difference. Gauge contexts repeat only across batches.
+fn gateway_batches(feed: &str) -> Vec<Vec<Metric>> {
+    match feed {
+        "dsd_in.metrics" => vec![
+            vec![
+                Metric::counter(context("orders.total", &["env:prod"]), 1.0),
+                Metric::counter(context("my-service.requests", &[]), 2.0),
+                Metric::counter(context("my_service.requests", &[]), 3.0),
+                Metric::gauge(context("billing.balance", &[]), 4.0),
+                Metric::set(context("visitors", &[]), "u1"),
+                Metric::distribution(context("checkout.latency", &[]), 5.0),
+                Metric::histogram(context("request.duration", &[]), [1.0, 2.0]),
+                Metric::counter(context("9lives.count", &[]), 1.0),
+            ],
+            vec![
+                Metric::counter(context("orders.total", &["env:prod"]), (1_700_000_000, 2.0)),
+                Metric::gauge(context("billing.ts", &[]), (1_700_000_010, 6.0)),
+                Metric::gauge(context("billing.balance", &[]), 7.0),
+            ],
+        ],
+        "otlp_in.metrics" => vec![vec![
+            Metric::counter(context("orders.total", &["env:otel"]), (1_700_000_100, 3.0)),
+            Metric::gauge(context("billing.otel", &[]), (1_700_000_100, 8.0)),
+            Metric::distribution(context("otel.latency", &[]), (1_700_000_100, 9.0)),
+        ]],
+        _ => Vec::new(),
+    }
+}
+
+/// Runs one path of a gateway configuration over the gateway input.
+async fn run_gateways(layers: &[&str], path: MetricsPath) -> (Vec<Delivery>, BTreeSet<String>) {
+    let layers = [&[FLUSH_PASSTHROUGH_ON_STOP, GATEWAY_BASE][..], layers].concat();
+    run_layers(&layers, path, gateway_batches).await
+}
+
+#[tokio::test]
+async fn the_gateways_route_what_the_legacy_gateways_route() {
+    for (name, layers, silent) in GATEWAY_MATRIX {
+        let (legacy, legacy_outputs) = run_gateways(layers, MetricsPath::Legacy).await;
+        let (plan, plan_outputs) = run_gateways(layers, MetricsPath::Plan).await;
+        assert_eq!(plan_outputs, legacy_outputs, "{}: the outputs", name);
+        if let Err(mismatch) = compare(&output_points(&legacy), &output_points(&plan)) {
+            panic!(
+                "{}: the plan-driven topology differs from the legacy one:\n{}",
+                name, mismatch
+            );
+        }
+        let names = names_by_output(&plan);
+        for output in &plan_outputs {
+            assert_eq!(
+                names.contains_key(output),
+                !silent.contains(&output.as_str()),
+                "{}: what `{}` received",
+                name,
+                output
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn each_gateway_selects_what_its_native_rules_select() {
+    // Everything the policy region receives, by name and points: aggregation's flush (counters and the set aggregate
+    // to one point, the gauge's last value wins, the histogram expands into the default statistics), the timestamped
+    // DogStatsD points, and the OTLP metrics.
+    const EVERYTHING: &[(&str, usize)] = &[
+        ("9lives.count", 1),
+        ("billing.balance", 1),
+        ("billing.otel", 1),
+        ("billing.ts", 1),
+        ("checkout.latency", 1),
+        ("my-service.requests", 1),
+        ("my_service.requests", 1),
+        ("orders.total", 3),
+        ("otel.latency", 1),
+        ("request.duration.95percentile", 1),
+        ("request.duration.avg", 1),
+        ("request.duration.count", 1),
+        ("request.duration.max", 1),
+        ("request.duration.median", 1),
+        ("visitors", 1),
+    ];
+    let (_, every_gateway, _) = GATEWAY_MATRIX
+        .iter()
+        .find(|(name, ..)| *name == "every gateway")
+        .unwrap();
+    for path in [MetricsPath::Legacy, MetricsPath::Plan] {
+        let (deliveries, _) = run_gateways(every_gateway, path).await;
+        let mut names = names_by_output(&deliveries);
+        names.remove("dsd_client_telemetry_out");
+        assert_eq!(
+            names,
+            expected(&[
+                // The scalar series of the configured names: not the distribution, and not the histogram, whose
+                // statistics have names of their own, one of which is configured.
+                (
+                    "af_metrics_encode",
+                    &[
+                        ("billing.otel", 1),
+                        ("orders.total", 3),
+                        ("request.duration.count", 1),
+                        ("visitors", 1),
+                    ],
+                ),
+                // Every endpoint but the routed ones, so everything.
+                ("dd_metrics_encode", EVERYTHING),
+                // The shared group of `b` and `c` compares intake names, so both spellings of the service match.
+                (
+                    "metrics_routing_encode_0",
+                    &[
+                        ("my-service.requests", 1),
+                        ("my_service.requests", 1),
+                        ("orders.total", 3)
+                    ],
+                ),
+                // The group of `e`: `visitors` by name, the `billing.` names by prefix, and nothing by the `9` prefix,
+                // since the intake has no name for `9lives.count`.
+                (
+                    "metrics_routing_encode_1",
+                    &[
+                        ("billing.balance", 1),
+                        ("billing.otel", 1),
+                        ("billing.ts", 1),
+                        ("visitors", 1),
+                    ],
+                ),
+                // Raw names, exactly.
+                ("mrf_metrics_encode", &[("billing.ts", 1), ("orders.total", 3)]),
+            ]),
+            "{:?}",
+            path
         );
     }
 }

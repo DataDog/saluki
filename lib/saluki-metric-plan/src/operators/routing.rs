@@ -7,8 +7,9 @@ use super::{
     OperatorDef,
 };
 use crate::{
+    compile::MEMO_COST_FLOOR,
     ir::{DecodedParams, ParamSpec, ParamType, PortName},
-    model::{FieldSet, PortType},
+    model::{Field, FieldSet, PortType},
     predicate::Predicate,
 };
 
@@ -88,12 +89,69 @@ impl OperatorDef for Split {
 
     fn cost(&self, params: &DecodedParams) -> u32 {
         // Routing every event by its predicate, plus moving what leaves the buffer.
-        params.predicate("predicate").map_or(20, predicate_cost) + 5
+        params
+            .predicate("predicate")
+            .map_or(20, |predicate| evaluation_cost([predicate]))
+            .saturating_add(ROUTE_COST)
     }
 }
 
-/// Returns an estimate of the work, in nanoseconds per event, of evaluating a predicate in full.
-fn predicate_cost(predicate: &Predicate) -> u32 {
+/// The estimated work, in nanoseconds per event, of moving the events a `split`, or a decision with `split`s, routes
+/// out of its buffer.
+const ROUTE_COST: u32 = 5;
+
+/// The estimated work, in nanoseconds per event, of looking an event's exit set up in a decision's memo (R4): reading
+/// the context's identity, one probe, and one comparison.
+const MEMO_LOOKUP_COST: u32 = 10;
+
+/// The estimated work, in nanoseconds per event, of normalizing a name into its intake name, which a predicate or a
+/// decision does once per event however many `intake_name` leaves it has (see `EventView::intake_name`).
+const INTAKE_NAME_COST: u32 = 10;
+
+/// Returns R1's estimate of the work, in nanoseconds per event, of the `split`s of one decision, a group of `split`s
+/// and `tee`s that a region runs as one function: routing by the exit set, plus evaluating the `predicates` with every
+/// derived field computed once, or one memo lookup in place of that when regions memoize the decision (R4): when it is
+/// memoizable (every predicate reads only context fields and the kind, as `Decision::memoizable` decides) and its
+/// `split`s cost at least [`MEMO_COST_FLOOR`] together, each as it costs alone. The estimate is a memo hit's.
+///
+/// A decision without `split`s costs nothing here: its `tee`s' copies are their own estimates. Through stage 4, the
+/// predicate forms read nothing but context fields and the kind, so every decision with a `split` is memoizable.
+pub(crate) fn decision_cost(predicates: &[&Predicate]) -> u32 {
+    if predicates.is_empty() {
+        return 0;
+    }
+    let memoizable = predicates
+        .iter()
+        .all(|predicate| predicate.reads().is_subset(FieldSet::CONTEXT.with(Field::Kind)));
+    let alone = predicates
+        .iter()
+        .map(|&predicate| evaluation_cost([predicate]).saturating_add(ROUTE_COST))
+        .fold(0, u32::saturating_add);
+    let decide = if memoizable && alone >= MEMO_COST_FLOOR {
+        MEMO_LOOKUP_COST
+    } else {
+        evaluation_cost(predicates.iter().copied())
+    };
+    decide.saturating_add(ROUTE_COST)
+}
+
+/// Returns an estimate of the work, in nanoseconds per event, of evaluating predicates in full on one event, with the
+/// intake name normalized once.
+///
+/// The estimates only rank a `split` against the kernels of its chain. A tag scan that finds no tag with its key costs
+/// more than this says on records with many tags; R7, which orders the operands of junctions, ranks leaves by its own
+/// static costs (see [`r7`][crate::compile::rewrite::r7]).
+fn evaluation_cost<'a>(predicates: impl IntoIterator<Item = &'a Predicate>) -> u32 {
+    let mut intake_name = false;
+    predicates
+        .into_iter()
+        .map(|predicate| leaves_cost(predicate, &mut intake_name))
+        .fold(0, u32::saturating_add)
+}
+
+/// Returns the estimate of evaluating every leaf of `predicate`, adding the intake name's normalization unless
+/// `intake_name` says an earlier leaf has paid for it.
+fn leaves_cost(predicate: &Predicate, intake_name: &mut bool) -> u32 {
     match predicate {
         Predicate::Const(_)
         | Predicate::Flag(_)
@@ -101,11 +159,21 @@ fn predicate_cost(predicate: &Predicate) -> u32 {
         | Predicate::HostUnset {}
         | Predicate::KindIn(_) => 1,
         Predicate::Name(_) | Predicate::Host(_) => 5,
-        // The intake name is normalized before it is matched.
-        Predicate::IntakeName(_) => 15,
+        // The intake name is normalized before it is matched, once per event.
+        Predicate::IntakeName(_) => {
+            let normalize = if std::mem::replace(intake_name, true) {
+                0
+            } else {
+                INTAKE_NAME_COST
+            };
+            5 + normalize
+        }
         Predicate::HasTag(_) | Predicate::Tag(_) | Predicate::HasOriginTag(_) | Predicate::OriginTag(_) => 10,
-        Predicate::All(operands) | Predicate::Any(operands) => operands.iter().map(predicate_cost).sum(),
-        Predicate::Not(operand) => predicate_cost(operand),
+        Predicate::All(operands) | Predicate::Any(operands) => operands
+            .iter()
+            .map(|operand| leaves_cost(operand, intake_name))
+            .fold(0, u32::saturating_add),
+        Predicate::Not(operand) => leaves_cost(operand, intake_name),
     }
 }
 

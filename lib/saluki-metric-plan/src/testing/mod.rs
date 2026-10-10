@@ -9,12 +9,16 @@
 //! - every metric kind, with and without timestamps, and rates with zero and non-zero intervals.
 //!
 //! Names, tag keys, and tag values are drawn largely from small vocabularies shared with [`arb_predicate`], so that
-//! generated predicates match generated metrics often enough to be interesting.
+//! generated predicates match generated metrics often enough to be interesting. Predicates bind `flag`, `is_empty`, and
+//! `matches` operands to configuration bindings with resolved values as well as writing them as literals, two flags to
+//! two bindings, so that folding bound constants, and telling apart two bindings with equal values, is exercised.
 //!
 //! The metric strategies and their vocabularies are those of `saluki_metric_kernels::testing`, re-exported here, so
 //! that the kernels' property tests and the plan's draw from the same metrics.
 
 use proptest::{collection::vec, prelude::*, sample::select};
+#[cfg(test)]
+use saluki_core::data_model::event::metric::Metric;
 pub use saluki_metric_kernels::testing::{
     arb_host, arb_metric, arb_metric_name, arb_metric_values, arb_tag, arb_tags, HOST_VOCABULARY, NAME_VOCABULARY,
     PREFIX_VOCABULARY, TAG_KEY_VOCABULARY, TAG_VALUE_VOCABULARY,
@@ -72,12 +76,22 @@ fn arb_tag_match() -> impl Strategy<Value = TagMatch> {
         })
 }
 
+/// The configuration bindings generated `flag` operands bind to: two, so that two bindings with equal values occur.
+const FLAG_BINDINGS: &[&str] = &["test.enabled", "test.mirrored"];
+
 fn arb_leaf() -> impl Strategy<Value = Predicate> {
     let kinds = vec(select(Kind::ALL.to_vec()), 0..3).prop_map(|kinds| Predicate::KindIn(kinds.into_iter().collect()));
+    let list = BindingName::new("test.values").expect("valid binding name");
     prop_oneof![
         any::<bool>().prop_map(Predicate::Const),
         any::<bool>().prop_map(|flag| Predicate::Flag(Operand::literal(flag))),
+        (select(FLAG_BINDINGS), any::<bool>()).prop_map(|(binding, flag)| {
+            let binding = BindingName::new(binding).expect("valid binding name");
+            Predicate::Flag(Operand::config(binding).with_resolved(flag))
+        }),
         arb_strings(NAME_VOCABULARY).prop_map(|values| Predicate::IsEmpty(Operand::literal(values))),
+        arb_strings(NAME_VOCABULARY)
+            .prop_map(move |values| Predicate::IsEmpty(Operand::config(list.clone()).with_resolved(values))),
         arb_string_match(NAME_VOCABULARY, PREFIX_VOCABULARY).prop_map(Predicate::Name),
         arb_string_match(NAME_VOCABULARY, PREFIX_VOCABULARY).prop_map(Predicate::IntakeName),
         arb_string_match(HOST_VOCABULARY, HOST_VOCABULARY).prop_map(Predicate::Host),
@@ -102,6 +116,25 @@ pub fn arb_predicate() -> impl Strategy<Value = Predicate> {
             inner.prop_map(|operand| Predicate::Not(Box::new(operand))),
         ]
     })
+}
+
+/// Returns a strategy for metrics in pairs: each generated metric followed by a sibling with the same context and
+/// values of another kind.
+///
+/// Metrics drawn one by one almost never share a context, so a cache keyed by context identity alone would go
+/// unnoticed where it must also be keyed by the kind (R4); interleaved siblings meet every context with two kinds in
+/// turn.
+#[cfg(test)]
+pub(crate) fn arb_metrics_with_kind_siblings(pairs: std::ops::Range<usize>) -> impl Strategy<Value = Vec<Metric>> {
+    let pair = (arb_metric(), arb_metric_values())
+        .prop_filter("a sibling of another kind", |(metric, values)| {
+            Kind::of(metric.values()) != Kind::of(values)
+        })
+        .prop_map(|(metric, values)| {
+            let sibling = Metric::from_parts(metric.context().clone(), values, metric.metadata().clone());
+            [metric, sibling]
+        });
+    vec(pair, pairs).prop_map(|pairs| pairs.into_iter().flatten().collect())
 }
 
 /// Returns a predicate as the JSON a plan's `split` holds, with every configuration binding replaced by its resolved

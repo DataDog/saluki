@@ -1464,6 +1464,65 @@ fn kernels_report_native_telemetry_under_the_component_they_are_built_for() {
     }
 }
 
+#[test]
+fn a_split_costs_its_predicate_and_a_decision_at_most_a_memo_lookup() {
+    // (predicates, a `split` of the first alone, a decision of them all), estimated per event by hand: a constant,
+    // flag, emptiness, or kind test costs 1 ns, a name match 5 ns, a tag test 10 ns, an intake-name match 5 ns plus
+    // 10 ns to normalize the name, once per event, and routing 5 ns. A decision whose predicates read only context
+    // fields and the kind, and whose `split`s cost at least `MEMO_COST_FLOOR` (25 ns) alone, is memoized: a lookup
+    // (10 ns) and routing.
+    let intake = |values: &[&str]| json!({"intake_name": {"matches": {"values": values, "prefix": false}}});
+    let routing = |names: &[&str], prefixes: &[&str]| {
+        json!({"any": [
+            intake(names),
+            {"intake_name": {"matches": {"values": prefixes, "prefix": true}}},
+        ]})
+    };
+    let mirroring = json!({"all": [
+        {"flag": true},
+        {"flag": true},
+        {"any": [{"is_empty": ["a"]}, {"name": {"matches": {"values": ["a"], "prefix": false}}}]},
+    ]});
+    let cases: [(Vec<Value>, u32, u32); 8] = [
+        (vec![json!({"kind_in": ["counter"]})], 6, 6),
+        (vec![json!({"const": false})], 6, 6),
+        // Below the memo's floor, evaluated, though a hit would cost less.
+        (
+            vec![json!({"all": [{"kind_in": ["gauge"]}, {"has_tag": "env"}]})],
+            16,
+            16,
+        ),
+        (vec![json!({"kind_in": ["gauge"]}), json!({"name": {"eq": "a"}})], 6, 11),
+        // One intake-name leaf: below the floor, evaluated.
+        (vec![intake(&["a"])], 20, 20),
+        // Both leaves read the one intake name.
+        (vec![routing(&["a"], &["b."])], 25, 15),
+        (vec![mirroring.clone()], 13, 13),
+        // Two endpoint routing groups and Multi-Region Failover: three predicates, one lookup.
+        (vec![routing(&["a"], &[]), routing(&[], &["b."]), mirroring], 25, 15),
+    ];
+    for (predicates, split, decision) in cases {
+        let decoded = predicates
+            .iter()
+            .map(|predicate| serde_json::from_value::<crate::predicate::Predicate>(predicate.clone()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            configure("split", json!({"predicate": predicates[0]})).cost(),
+            split,
+            "{:?}",
+            predicates
+        );
+        assert_eq!(
+            decision_cost(&decoded.iter().collect::<Vec<_>>()),
+            decision,
+            "{:?}",
+            predicates
+        );
+    }
+    assert_eq!(decision_cost(&[]), 0);
+    assert_eq!(configure("tee", json!({"ports": 5})).cost(), 60);
+}
+
 mod properties {
     use proptest::prelude::*;
 

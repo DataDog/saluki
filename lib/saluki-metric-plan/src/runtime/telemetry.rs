@@ -1,18 +1,18 @@
 //! What a region records about the nodes it runs, and the handles it publishes to.
 //!
-//! A region counts in plain integers while it processes batches: events per output port of every kernel and decision,
-//! and points lost per node and loss class. It adds them to shared counters only when the region host asks it to
-//! publish, off the processing path of any batch. The counters are registered beforehand, by whoever creates the
+//! A region counts in plain integers while it processes batches: events per output port of every kernel, events per
+//! exit set of every decision, from which it derives each decision node's per-port counts, and points lost per node and
+//! loss class. It adds them to shared counters only when the region host asks it to publish, off the processing path
+//! of any batch. The counters are registered beforehand, by whoever creates the
 //! region or prepares a generation in it, through [`RegisterTelemetry`]: a region never registers telemetry itself.
 
 use saluki_core::execution::{LossClass, LossCount, TurnCounters};
 use saluki_metrics::{Counter, MetricsBuilder};
 
 use crate::{
-    compile::{DecisionKind, RegionProgram, Route, Step},
+    compile::{RegionProgram, Route, Step},
     explain::loss_class_name,
     ir::{NodeId, PortName},
-    operators::names,
 };
 
 /// The name of the counter of events leaving each output port of each node a region runs, tagged `component_id` (the
@@ -111,7 +111,7 @@ pub(super) struct Layout {
     pub kernel_ports: Vec<usize>,
     /// The number of kernel ports.
     pub kernel_port_count: usize,
-    /// The index of each decision's first port, by decision index.
+    /// The index of each decision's first port, by decision index: the ports of its nodes, node by node.
     pub decision_ports: Vec<usize>,
     /// The number of decision ports.
     pub decision_port_count: usize,
@@ -131,7 +131,7 @@ impl Layout {
         let mut decision_port_count = 0;
         for decision in program.decisions() {
             decision_ports.push(decision_port_count);
-            decision_port_count += decision.ports.len();
+            decision_port_count += decision.port_count();
         }
 
         let mut drops = Vec::new();
@@ -192,12 +192,10 @@ impl ProgramTelemetry {
         }
         let mut decision_ports = Vec::with_capacity(layout.decision_port_count);
         for decision in program.decisions() {
-            let operator = match decision.kind {
-                DecisionKind::Split { .. } => names::SPLIT,
-                DecisionKind::Tee => names::TEE,
-            };
-            for port in &decision.ports {
-                decision_ports.push(telemetry.port_events(&decision.node, operator, port));
+            for node in &decision.nodes {
+                for port in &node.ports {
+                    decision_ports.push(telemetry.port_events(&node.node, node.operator(), port));
+                }
             }
         }
         let drops = layout
@@ -251,7 +249,8 @@ fn publish_events(counters: &[Vec<Counter>], counts: &mut [u64]) {
 pub(super) struct ProgramCounts {
     /// Events per kernel port, by the layout's kernel port index.
     pub kernel_ports: Vec<u64>,
-    /// Events per decision port, by the layout's decision port index.
+    /// Events per decision port, by the layout's decision port index, as derived from the decisions' counts per exit
+    /// set.
     pub decision_ports: Vec<u64>,
     /// Policy loss per `drop` node, by the layout's drop index.
     pub drops: Vec<LossCount>,

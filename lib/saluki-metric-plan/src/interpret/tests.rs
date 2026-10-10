@@ -161,11 +161,6 @@ fn names(run: &RunOutput, output: &str) -> Vec<String> {
         .collect()
 }
 
-fn sorted(mut names: Vec<String>) -> Vec<String> {
-    names.sort();
-    names
-}
-
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
@@ -312,8 +307,7 @@ fn merge_interleaves_its_inputs() {
     );
     assert_eq!(names(&run, "a"), strings(&["x1", "y1", "x2"]));
 
-    // The two ports of one split rejoin: every record arrives once. The interleaving within one batch is unspecified,
-    // so only the multiset is compared.
+    // The two ports of one split rejoin: every record arrives once, the merge's first input's records first.
     let rejoin = plan(
         vec![
             source("src", "otlp"),
@@ -334,7 +328,101 @@ fn merge_interleaves_its_inputs() {
         t(100),
         vec![gauge("a1"), gauge("b1"), gauge("a2")],
     ));
-    assert_eq!(sorted(names(&run, "a")), strings(&["a1", "a2", "b1"]));
+    assert_eq!(names(&run, "a"), strings(&["a1", "a2", "b1"]));
+}
+
+#[test]
+fn a_merge_passes_its_inputs_on_in_port_order_whatever_the_lengths_of_their_paths() {
+    // The split's `true` port goes straight to the merge's second input, its `false` port through two kernels to the
+    // first: the merge passes on its first input's records, then its second's, each in batch order. Neither the port
+    // the split writes first nor the shorter path decides.
+    let plan = plan(
+        vec![
+            source("src", "otlp"),
+            split("s", json!({"name": {"prefix": "a"}})),
+            node("k1", "test_prefix", json!({"prefix": "x."})),
+            node("k2", "test_prefix", json!({"prefix": "y."})),
+            node("m", "merge", json!({"inputs": 2})),
+            emit("e", "a"),
+        ],
+        &[
+            "src.metrics -> s.in",
+            "s.true -> m.1",
+            "s.false -> k1.in",
+            "k1.out -> k2.in",
+            "k2.out -> m.0",
+            "m.out -> e.in",
+        ],
+        &["a"],
+    );
+    let run = execute(Trace::new().install(plan).admit(
+        id("src"),
+        t(100),
+        vec![gauge("a1"), gauge("b1"), gauge("a2"), gauge("b2")],
+    ));
+    assert_eq!(names(&run, "a"), strings(&["y.x.b1", "y.x.b2", "a1", "a2"]));
+}
+
+#[test]
+fn records_from_several_emits_reach_one_output_in_the_plan_order_of_the_emits() {
+    // `first` is first in the plan, below the split's `false` port and a kernel; `second` takes the `true` port
+    // straight away.
+    let plan = plan(
+        vec![
+            source("src", "otlp"),
+            split("s", json!({"name": {"prefix": "a"}})),
+            emit("first", "a"),
+            node("k", "test_prefix", json!({"prefix": "x."})),
+            emit("second", "a"),
+        ],
+        &[
+            "src.metrics -> s.in",
+            "s.true -> second.in",
+            "s.false -> k.in",
+            "k.out -> first.in",
+        ],
+        &["a"],
+    );
+    let run = execute(
+        Trace::new()
+            .install(plan)
+            .admit(id("src"), t(100), vec![gauge("a1"), gauge("b1"), gauge("a2")]),
+    );
+    assert_eq!(names(&run, "a"), strings(&["x.b1", "a1", "a2"]));
+}
+
+#[test]
+fn time_driven_output_of_several_state_owners_reaches_a_merge_in_port_order() {
+    // Both state owners tick in one pass: `early`, first in the plan, feeds the merge's second input, and `late`,
+    // through a kernel, its first.
+    let plan = plan(
+        vec![
+            source("src", "otlp"),
+            split("s", json!({"name": {"prefix": "a"}})),
+            node("early", "test_hold", json!({})),
+            node("late", "test_hold", json!({})),
+            node("k", "test_prefix", json!({"prefix": "x."})),
+            node("m", "merge", json!({"inputs": 2})),
+            emit("e", "a"),
+        ],
+        &[
+            "src.metrics -> s.in",
+            "s.true -> early.in",
+            "s.false -> late.in",
+            "late.out -> k.in",
+            "k.out -> m.0",
+            "early.out -> m.1",
+            "m.out -> e.in",
+        ],
+        &["a"],
+    );
+    let run = execute(
+        Trace::new()
+            .install(plan)
+            .admit(id("src"), t(100), vec![gauge("a1"), gauge("b1"), gauge("a2")])
+            .advance(t(110)),
+    );
+    assert_eq!(names(&run, "a"), strings(&["x.b1", "a1", "a2"]));
 }
 
 #[test]
@@ -363,6 +451,160 @@ fn drop_discards_records_as_policy_loss() {
         assert_eq!(loss.loss(class), LossCount::default(), "{:?}", class);
     }
     assert!(run.loss(&id("e")).is_empty());
+}
+
+#[test]
+fn capacity_bounds_what_an_output_accepts_until_the_next_bound_and_across_installations() {
+    let plan = plan(
+        vec![
+            source("src", "otlp"),
+            split("s", json!({"kind_in": ["gauge"]})),
+            emit("ga", "a"),
+            emit("gb", "b"),
+        ],
+        &["src.metrics -> s.in", "s.true -> ga.in", "s.false -> gb.in"],
+        &["a", "b"],
+    );
+    let two_points = Metric::counter("c", [(10, 1.0), (20, 2.0)]);
+    let run = execute(
+        Trace::new()
+            .capacity(out("a"), 3)
+            .install(plan.clone())
+            .admit(id("src"), t(100), vec![gauge("g1"), gauge("g2")])
+            // The bound lasts across installations: one record of the next batch is accepted, the rest refused.
+            .install(plan.clone())
+            .admit(id("src"), t(101), vec![gauge("g3"), gauge("g4"), two_points.clone()])
+            .admit(id("src"), t(102), vec![gauge("g5")])
+            // A new bound replaces what the last one left.
+            .capacity(out("a"), 1)
+            .capacity(out("b"), 0)
+            .admit(id("src"), t(103), vec![gauge("g6"), gauge("g7"), two_points]),
+    );
+
+    assert_eq!(names(&run, "a"), strings(&["g1", "g2", "g3", "g6"]));
+    let refused = |output: &str| {
+        run.refused(&out(output))
+            .iter()
+            .map(|record| record.metric.context().name().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(refused("a"), strings(&["g4", "g5", "g7"]));
+    // An output never bounded accepts everything, until a bound of zero refuses everything.
+    assert_eq!(names(&run, "b"), strings(&["c"]));
+    assert_eq!(refused("b"), strings(&["c"]));
+    assert_eq!(
+        run.refused_outputs()
+            .map(|(output, _)| output.to_string())
+            .collect::<Vec<_>>(),
+        strings(&["a", "b"])
+    );
+
+    // Refused records are capacity loss of the `emit` that delivered them, in events and points.
+    let capacity = |node: &str| run.loss(&id(node)).loss(LossClass::Capacity);
+    assert_eq!(capacity("ga"), LossCount { events: 3, points: 3 });
+    assert_eq!(capacity("gb"), LossCount { events: 1, points: 2 });
+}
+
+#[test]
+fn capacity_bounds_an_output_across_installations_and_counts_what_it_refuses() {
+    let two_emits = plan(
+        vec![
+            source("src", "otlp"),
+            split("s", json!({"name": {"prefix": "a."}})),
+            emit("ea", "a"),
+            emit("eb", "a"),
+        ],
+        &["src.metrics -> s.in", "s.true -> ea.in", "s.false -> eb.in"],
+        &["a"],
+    );
+    let one_emit = plan(
+        vec![source("src", "otlp"), emit("e", "a")],
+        &["src.metrics -> e.in"],
+        &["a"],
+    );
+    let points = |name: &'static str, count: usize| Metric::counter(name, &[1.0, 2.0, 3.0][..count]);
+
+    // (what the step does, the step, the names `a` has accepted and refused after it, in delivery order)
+    type Step = Box<dyn Fn(Trace) -> Trace>;
+    let steps: Vec<(&str, Step, &[&str], &[&str])> = vec![
+        (
+            "bound `a` to two records, before any plan declares it",
+            Box::new(|trace| trace.capacity(out("a"), 2)),
+            &[],
+            &[],
+        ),
+        (
+            "install a plan with two emits to `a`, which share its bound",
+            Box::new(move |trace| trace.install(two_emits.clone())),
+            &[],
+            &[],
+        ),
+        (
+            "admit three records: the split's `true` port delivers first, and `b.1` finds the bound used up",
+            Box::new(move |trace| {
+                trace.admit(
+                    id("src"),
+                    t(100),
+                    vec![points("a.1", 1), points("b.1", 2), points("a.2", 1)],
+                )
+            }),
+            &["a.1", "a.2"],
+            &["b.1"],
+        ),
+        (
+            "install a plan with one emit to `a`: the bound belongs to the output, so it holds",
+            Box::new(move |trace| trace.install(one_emit.clone())),
+            &["a.1", "a.2"],
+            &["b.1"],
+        ),
+        (
+            "admit one record",
+            Box::new(move |trace| trace.admit(id("src"), t(101), vec![points("c.1", 1)])),
+            &["a.1", "a.2"],
+            &["b.1", "c.1"],
+        ),
+        (
+            "bound `a` again, to one record: the new bound replaces what was left",
+            Box::new(|trace| trace.capacity(out("a"), 1)),
+            &["a.1", "a.2"],
+            &["b.1", "c.1"],
+        ),
+        (
+            "admit two records",
+            Box::new(move |trace| trace.admit(id("src"), t(102), vec![points("d.1", 1), points("d.2", 3)])),
+            &["a.1", "a.2", "d.1"],
+            &["b.1", "c.1", "d.2"],
+        ),
+    ];
+
+    let refused = |run: &RunOutput| {
+        run.refused(&out("a"))
+            .iter()
+            .map(|record| record.metric.context().name().to_string())
+            .collect::<Vec<_>>()
+    };
+    let mut trace = Trace::new();
+    for (what, step, accepted, refusals) in &steps {
+        trace = step(trace);
+        let run = execute(trace.clone());
+        assert_eq!(names(&run, "a"), strings(accepted), "{}", what);
+        assert_eq!(refused(&run), strings(refusals), "{}", what);
+    }
+    let run = execute(trace);
+
+    // Each refused record is the capacity loss of the `emit` that delivered it, with its points; nothing else is lost.
+    for (node, events, points) in [("ea", 0, 0), ("eb", 1, 2), ("e", 2, 4)] {
+        let loss = run.loss(&id(node));
+        assert_eq!(loss.loss(LossClass::Capacity), LossCount { events, points }, "{}", node);
+        assert_eq!(loss.loss(LossClass::Policy), LossCount::default(), "{}", node);
+    }
+    // A refused record carries the installation that delivered it, as an accepted one does.
+    let installs = run
+        .refused(&out("a"))
+        .iter()
+        .map(|record| record.install)
+        .collect::<Vec<_>>();
+    assert_eq!(installs, vec![1, 3, 3]);
 }
 
 #[test]
@@ -1024,12 +1266,6 @@ fn malformed_and_unsupported_trace_events_are_explicit_errors() {
             2,
             "a clock reset at admission point `src.metrics`",
         ),
-        (
-            "an output capacity",
-            installed().capacity(out("a"), 10),
-            1,
-            "bounding the capacity of output `a`",
-        ),
         ("a cancellation", installed().cancel(), 1, "cancelling an installation"),
         (
             "an event after close",
@@ -1086,7 +1322,6 @@ fn malformed_and_unsupported_trace_events_are_explicit_errors() {
 
     // Unsupported capabilities name the stage that adds them.
     for (trace, stage) in [
-        (installed().capacity(out("a"), 10), "stage 3"),
         (installed().cancel(), "stage 6"),
         (
             installed().admit(id("src"), t(2), vec![]).heartbeat(id("src"), t(1)),

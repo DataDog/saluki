@@ -253,6 +253,7 @@ impl ProgrammableMetrics {
         let mut telemetry = InstallerTelemetry::new(topology_root);
         telemetry.set_binding_gauges(&plan);
         telemetry.register_change_counters(&plan);
+        telemetry.rewrites(core.active_rewrites());
 
         let status = Arc::new(ArcSwap::from_pointee(PlanStatus {
             installer: core.status(),
@@ -633,6 +634,7 @@ impl Installer {
                 if let Some(plan) = self.core.active_plan() {
                     self.telemetry.set_binding_gauges(plan);
                 }
+                self.telemetry.rewrites(self.core.active_rewrites());
             }
             Action::RetryAfter(delay) => self.retry_at = Some(Instant::now() + delay),
             Action::InstallDefaultProgram => {

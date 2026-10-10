@@ -421,20 +421,43 @@ impl<'a> Validator<'a> {
 
         let graph = graph::Graph::build(plan, self.registry, &mut report);
         let types = types::check(&graph, plan, &mut report);
-        for (node, outputs) in types.outputs.iter().enumerate() {
-            let Some(op) = graph.op(node) else { continue };
-            for (port, port_type) in op.ports().outputs.iter().zip(outputs) {
-                if let Some(port_type) = port_type {
-                    let port = PortRef::new(graph.id(node).clone(), port.name.clone());
-                    report.port_types.insert(port, *port_type);
-                }
-            }
-        }
+        record_port_types(&graph, &types, &mut report);
         references::check(&graph, &types, plan, self.catalog, &mut report);
         duplicates::check(&graph, &types, plan, &mut report);
         bounds::check(&graph, plan, &mut report);
 
         report
+    }
+}
+
+/// Validates a plan that rewrites derived from a valid plan, without a catalog.
+///
+/// Rewrites never change a plan's outputs, the configuration bindings an operator's parameters use, or its scopes,
+/// which are what the catalog checks: so every check but those runs, as [`Validator::validate`] runs it, and the
+/// report carries the rewritten plan's port types and bounds. Rewrites do remove nodes, so the ports that scopes name
+/// are checked to still be there: scope inputs here, and exits by scope closure.
+pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    let graph = graph::Graph::build(plan, registry, &mut report);
+    let types = types::check(&graph, plan, &mut report);
+    record_port_types(&graph, &types, &mut report);
+    references::check_scope_input_ports(&graph, plan, &mut report);
+    references::check_scope_closure(&graph, plan, &mut report);
+    duplicates::check(&graph, &types, plan, &mut report);
+    bounds::check(&graph, plan, &mut report);
+    report
+}
+
+/// Records the port type of every output port that type checking computed.
+fn record_port_types(graph: &graph::Graph<'_>, types: &types::Types, report: &mut ValidationReport) {
+    for (node, outputs) in types.outputs.iter().enumerate() {
+        let Some(op) = graph.op(node) else { continue };
+        for (port, port_type) in op.ports().outputs.iter().zip(outputs) {
+            if let Some(port_type) = port_type {
+                let port = PortRef::new(graph.id(node).clone(), port.name.clone());
+                report.port_types.insert(port, *port_type);
+            }
+        }
     }
 }
 

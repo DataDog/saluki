@@ -6,6 +6,10 @@
 //! topology (see [`test_topology`](crate::programmable_metrics::test_topology)). The batches are timestamped counters,
 //! which the no-aggregation pipeline sends past aggregation, so each reaches the main output with the header it was
 //! admitted with: the generation that processed it.
+//!
+//! The Multi-Region Failover toggle runs the legacy topology too, on the same path with the same updates, and feeds
+//! the OTLP source instead, which no native component batches: the legacy gateway follows its live view of metric
+//! mirroring, and the plan-driven topology installs a generation for each change.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -307,6 +311,194 @@ async fn a_burst_of_live_changes_stays_within_the_overlap_budget_and_ends_on_the
             1,
             "batch {}: `kept.a`",
             index
+        );
+    }
+}
+
+/// The configuration of the Multi-Region Failover toggle: the branch is wired, with mirroring off and an allowlist, and
+/// the OTLP source feeds the metrics path, which no native component batches or aggregates on the way.
+const MIRRORING: &str = r#"
+data_plane: {otlp: {enabled: true}}
+multi_region_failover:
+  enabled: true
+  api_key: mrf-key
+  dd_url: https://mrf.example.com
+  failover_metrics: false
+  metric_allowlist: [mirrored.a, mirrored.b]
+"#;
+
+/// The metrics of every batch of the toggle: two the mirroring allowlist names, and one it does not.
+const MIRRORED: [&str; 3] = ["mirrored.a", "mirrored.b", "other.c"];
+
+/// How one batch of the toggle was routed: the generation of the main output's buffer, and the metrics the Multi-Region
+/// Failover output received of it, with the generation of each buffer they arrived in.
+#[derive(Debug, Eq, PartialEq)]
+struct Routed {
+    generation: Option<u64>,
+    mirrored: Vec<(String, Option<u64>)>,
+}
+
+/// Returns how each batch was routed, by batch.
+fn routed(deliveries: &[Delivery], batches: usize) -> Vec<Routed> {
+    let main = received(deliveries);
+    (0..batches)
+        .map(|index| {
+            let generation = main[&(MIRRORED[0].to_string(), index)][0];
+            let mut mirrored = deliveries
+                .iter()
+                .filter(|delivery| delivery.output == "mrf_metrics_encode")
+                .flat_map(|delivery| delivery.metrics.iter().map(move |metric| (metric, delivery.generation)))
+                .filter(|(metric, _)| batch_of(metric) == index)
+                .map(|(metric, generation)| (metric.context().name().to_string(), generation))
+                .collect::<Vec<_>>();
+            mirrored.sort();
+            Routed { generation, mirrored }
+        })
+        .collect()
+}
+
+/// Sends batch `index` of the toggle to the OTLP source, waits until the main output has received it, and returns
+/// whether the Multi-Region Failover output receives its mirrored metrics within `limit`.
+async fn send_mirrored(topology: &mut TestTopology, index: usize, limit: Duration) -> bool {
+    topology.feed("otlp_in.metrics", batch(index, &MIRRORED));
+    topology
+        .wait_for(&format!("batch {}", index), |deliveries| {
+            let received = received(deliveries);
+            MIRRORED
+                .iter()
+                .all(|name| received.contains_key(&(name.to_string(), index)))
+        })
+        .await;
+    topology
+        .received_within(limit, |deliveries| {
+            deliveries
+                .iter()
+                .filter(|delivery| delivery.output == "mrf_metrics_encode")
+                .flat_map(|delivery| &delivery.metrics)
+                .any(|metric| batch_of(metric) == index)
+        })
+        .await
+}
+
+/// Runs the toggle on `path`: mirroring off, then on, then off again, each by a `ConfigUpdate::Partial` of the
+/// connected configuration path, with batches flowing throughout. Returns how each batch was routed, the index of the
+/// first batch sent after each change, and the installer's final status.
+///
+/// A change applies at a batch boundary on both paths, some time after it is sent, so batches are sent until it
+/// appears to have applied: until three in a row are mirrored within 50 ms each, after mirroring is turned on, and
+/// until three in a row are not mirrored within half a second each, after it is turned off; three more follow. These
+/// waits only decide when to stop sending: a delivery later than its wait still counts in what is returned, which is
+/// what the test checks.
+async fn toggle_mirroring(path: MetricsPath) -> (Vec<Routed>, [usize; 2], Option<PlanStatus>) {
+    let (system, updates, stream) = connected_configuration_system(MIRRORING).await;
+    let mut topology = TestTopology::start(&system, Options::new(path, Aggregation::Native), |supervisor| {
+        supervisor.add_worker(ConfigUpdatesWorker::new(updates))
+    })
+    .await;
+    let status = topology.status();
+    let quick = Duration::from_millis(50);
+    let mut sent = 0;
+    for _ in 0..3 {
+        send_mirrored(&mut topology, sent, quick).await;
+        sent += 1;
+    }
+
+    let mut changes = [0; 2];
+    for (change, mirroring) in [true, false].into_iter().enumerate() {
+        stream
+            .send(update("multi_region_failover.failover_metrics", json!(mirroring)))
+            .await
+            .unwrap();
+        changes[change] = sent;
+        let limit = if mirroring { quick } else { Duration::from_millis(500) };
+        let mut unchanged = 0;
+        while unchanged < 3 {
+            let mirrored = send_mirrored(&mut topology, sent, limit).await;
+            sent += 1;
+            unchanged = if mirrored == mirroring { unchanged + 1 } else { 0 };
+            assert!(
+                sent - changes[change] < 2_000,
+                "{:?}: change {} never applied",
+                path,
+                change
+            );
+        }
+        for _ in 0..3 {
+            send_mirrored(&mut topology, sent, quick).await;
+            sent += 1;
+        }
+    }
+    let status = match status {
+        Some(status) => Some(status_where(&status, |status| live(status) == [3]).await),
+        None => None,
+    };
+    let deliveries = topology.stop().await;
+    (routed(&deliveries, sent), changes, status)
+}
+
+#[tokio::test]
+async fn toggling_metric_mirroring_installs_a_generation_each_way_that_routes_as_the_legacy_gateway_does() {
+    let (legacy, legacy_changes, _) = toggle_mirroring(MetricsPath::Legacy).await;
+    let (plan, plan_changes, status) = toggle_mirroring(MetricsPath::Plan).await;
+
+    // Each change installed a generation: generation 2 mirrors, and generation 3 does not, as generation 1 did not.
+    let status = status.expect("the plan-driven path has an installer");
+    assert_eq!(active(&status), Some(3));
+    assert_eq!(status.config_changes, 2);
+    for generation in [1, 2] {
+        assert_eq!(
+            state_of(&status, generation),
+            Some(GenerationState::Retired),
+            "{}",
+            generation
+        );
+    }
+
+    // On both paths, every batch was routed whole by one setting, which switched once at each change, at a batch sent
+    // after it: the phases are contiguous, and found from what was routed. With mirroring on, the allowlist's metrics,
+    // and nothing else, are mirrored. On the plan-driven path, the setting is the generation's that processed the
+    // batch, whose buffers carry it.
+    let mirrored = |generation: Option<u64>| {
+        ["mirrored.a", "mirrored.b"]
+            .map(|name| (name.to_string(), generation))
+            .to_vec()
+    };
+    for (path, routed, [first_on, first_off]) in [
+        (MetricsPath::Legacy, &legacy, legacy_changes),
+        (MetricsPath::Plan, &plan, plan_changes),
+    ] {
+        let mirrors = |index: &usize| !routed[*index].mirrored.is_empty();
+        let on = (first_on..routed.len())
+            .find(mirrors)
+            .unwrap_or_else(|| panic!("{:?}: nothing was mirrored", path));
+        let off = (first_off.max(on)..routed.len())
+            .find(|index| !mirrors(index))
+            .unwrap_or_else(|| panic!("{:?}: mirroring never stopped", path));
+        for (index, batch) in routed.iter().enumerate() {
+            let phase = match index {
+                index if index < on => 1,
+                index if index < off => 2,
+                _ => 3,
+            };
+            let expected = match path {
+                MetricsPath::Legacy => Routed {
+                    generation: None,
+                    mirrored: if phase == 2 { mirrored(None) } else { Vec::new() },
+                },
+                MetricsPath::Plan => Routed {
+                    generation: Some(phase),
+                    mirrored: if phase == 2 { mirrored(Some(2)) } else { Vec::new() },
+                },
+            };
+            assert_eq!(batch, &expected, "{:?}: batch {}", path, index);
+        }
+        // Each phase has batches: the three sent before the first change, and three or more after each.
+        assert!(
+            on >= 3 && off >= on + 3 && routed.len() >= off + 3,
+            "{:?}: {} {}",
+            path,
+            on,
+            off
         );
     }
 }

@@ -2,6 +2,10 @@
 //!
 //! Names are matched by the selections in `saluki_metric_kernels::selection`: an exact raw-name set for MRF, and an
 //! intake-name allowlist of exact names and literal prefixes for endpoints.
+//!
+//! This is the legacy gateway component. The plan-driven metrics path runs both filters as `split` operators of the
+//! default program's policy region (see `programmable_metrics::lowering`); the component is kept, for tests only, as
+//! the differential reference that the legacy topology builds.
 
 use agent_data_plane_config::{domains::multi_region_failover::MetricMirroring, Live};
 use async_trait::async_trait;

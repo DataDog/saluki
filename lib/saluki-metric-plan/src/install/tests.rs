@@ -483,6 +483,8 @@ fn the_boot_generation_is_active_at_once() {
     assert_eq!(status.preparing, None);
     assert_eq!(status.last_known_good, None);
     assert_eq!(harness.core.active_programs().unwrap().len(), 5);
+    // No logical rewrite applies to the boot plan yet, and no decision records one.
+    assert_eq!(harness.core.active_rewrites(), Some(&[][..]));
 }
 
 #[test]

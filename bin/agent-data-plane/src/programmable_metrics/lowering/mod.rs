@@ -9,17 +9,27 @@
 //! # Shape
 //!
 //! The program is the one the implementation design draws in "Default program shape"
-//! (`docs/design/programmable-metrics-implementation.md`), in its stage 2 form. The DogStatsD source feeds the mapper,
-//! the namespace prefix, and the listener filterlist (a `split` whose `true` port drops); with the no-aggregation
-//! pipeline, a timestamp split sends timestamped points past the tag filterlist and aggregation to a merge in front of
-//! the post-aggregation filter (another `split` and `drop`), whose output a `tee` sends to the client telemetry output
-//! and to metrics enrichment. Metrics enrichment merges that with the OTLP, checks, liveness, and trace sampler
-//! sources, runs host enrichment and host tags, and feeds the `post_enrich` scope: a `tee` with one branch per output,
-//! the main output emitted directly and each gateway an opaque host whose `out` port is emitted to its output.
+//! (`docs/design/programmable-metrics-implementation.md`). The DogStatsD source feeds the mapper, the namespace prefix,
+//! and the listener filterlist (a `split` whose `true` port drops); with the no-aggregation pipeline, a timestamp split
+//! sends timestamped points past the tag filterlist and aggregation to a merge in front of the post-aggregation filter
+//! (another `split` and `drop`), whose output a `tee` sends to the client telemetry output and to metrics enrichment.
+//! Metrics enrichment merges that with the OTLP, checks, liveness, and trace sampler sources, runs host enrichment and
+//! host tags, and feeds the `post_enrich` scope, the policy region: a `tee` with one branch per output. The main output
+//! is emitted directly; every other output sits behind its gateway, a `split` whose `true` port is emitted to the
+//! output and whose `false` port drops:
+//!
+//! - an endpoint routing group's filter, `metrics_routing_filter_{i}`, selects the metrics whose intake name is one of
+//!   the group's names or starts with one of its prefixes (both lists bound to the group, by its key);
+//! - the multi-region failover gateway selects every metric while failover is enabled (a startup flag) and metric
+//!   mirroring is on (a live flag), and only the metrics its live allowlist names when that allowlist is not empty;
+//! - the autoscaling failover gateway selects the scalar series (counters, rates, gauges, and sets) whose name is one
+//!   of the startup list of metrics.
+//!
+//! Each predicate matches as the gateway's native component does: routing groups compare the intake name (normalized
+//! as the intake stores it), the failover gateways the raw name, and nothing but a metric is selected.
 //!
 //! Every branch exists only when `run.rs` builds it, decided from the startup configuration by the same predicates and
-//! helpers. Until stage 4, the policy gateways are opaque hosts backed by today's components, with their parameters in
-//! those components. The metrics enrichment merge (`metrics_enrich_in`) and the tees (`metrics_policy`,
+//! helpers. The metrics enrichment merge (`metrics_enrich_in`) and the tees (`metrics_policy`,
 //! `dsd_post_agg_filter_fanout`) are present even with one input or output, so that their IDs never depend on which
 //! other branches exist. The merge in front of the post-aggregation filter (`dsd_post_agg_filter_in`) exists only with
 //! the no-aggregation pipeline, whose passthrough is its second input, as natively that filter has a second input
@@ -31,7 +41,9 @@
 //! `Startup` bindings from the startup configuration, `Live` ones from the current configuration. Structure always
 //! comes from the startup configuration. So re-lowering with a changed live input changes only the parameters bound to
 //! it, and re-lowering with a changed startup-only input changes nothing, as natively. Host facts (the host tags and
-//! their deadline) and structural parameters (port counts, source bindings, opaque-host port types) are literals.
+//! their deadline) and structural parameters (port counts, source bindings, the kinds a gateway selects, and whether a
+//! list holds names or prefixes) are literals. A flag or an emptiness test over a bound value stays in the program as
+//! written; only compiled programs fold it.
 //!
 //! # Errors
 //!
@@ -73,7 +85,10 @@ use super::{
     bindings::{self, Snapshots},
     catalog::{AdpCatalog, POST_ENRICH_INPUT, POST_ENRICH_SCOPE},
     host_facts::{host_tags_enabled, HostFacts},
-    outputs::{cluster_agent_forwarder, NativeOutputs, OutputKind, DSD_CLIENT_TELEMETRY, DSD_CLIENT_TELEMETRY_OUT},
+    outputs::{
+        cluster_agent_forwarder, NativeOutputs, OutputKind, RoutingGroup, DSD_CLIENT_TELEMETRY,
+        DSD_CLIENT_TELEMETRY_OUT,
+    },
 };
 use crate::{
     cli::run::dogstatsd_mapper_configuration, components::tag_filterlist::value_rules, config::DataPlaneConfiguration,
@@ -127,9 +142,6 @@ pub mod ids {
         format!("metrics_routing_filter_{}", index)
     }
 }
-
-/// The output port of an opaque host in the default program.
-pub const OPAQUE_OUTPUT_PORT: &str = "out";
 
 /// A place where lowering departs from the configuration as written.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,7 +251,7 @@ impl Lowering {
         }
 
         let enriched = program.enrichment(startup, &self.facts, enrichment_inputs)?;
-        program.policy(enriched.clone(), &self.outputs);
+        program.policy(enriched.clone(), &self.outputs)?;
 
         let mut plan = Plan {
             ir_version: IR_VERSION,
@@ -624,20 +636,10 @@ impl<'a> Program<'a> {
     }
 
     /// Lowers the policy region fed by `enriched`: one branch per output other than the client telemetry tap.
-    fn policy(&mut self, enriched: PortRef, outputs: &NativeOutputs) {
-        // Each branch, with the gateway that selects what reaches its output, if any.
+    fn policy(&mut self, enriched: PortRef, outputs: &NativeOutputs) -> Result<(), GenericError> {
         let branches = outputs
             .iter()
-            .filter_map(|output| {
-                let gateway = match &output.kind {
-                    OutputKind::ClientTelemetry => return None,
-                    OutputKind::Main => None,
-                    OutputKind::RoutingGroup(group) => Some(ids::routing_filter(group.index)),
-                    OutputKind::MultiRegionFailover => Some(ids::MRF_METRICS_GATEWAY.to_string()),
-                    OutputKind::AutoscalingFailover => Some(ids::AF_METRICS_GATEWAY.to_string()),
-                };
-                Some((output, gateway))
-            })
+            .filter(|output| output.kind != OutputKind::ClientTelemetry)
             .collect::<Vec<_>>();
         let policy = self.node(
             ids::METRICS_POLICY,
@@ -647,25 +649,63 @@ impl<'a> Program<'a> {
         );
         self.edge(enriched, &policy, "in");
 
-        for (index, (output, gateway)) in branches.into_iter().enumerate() {
+        for (index, output) in branches.into_iter().enumerate() {
             let emit = json!({"output": output.decl.id.as_str()});
             let branch = index.to_string();
-            match gateway {
-                None => self.terminal(&policy, &branch, names::EMIT, emit, &output.component),
-                Some(gateway) => {
-                    // Until stage 4, the gateway is its native component, which forwards what it selects.
-                    let selected = serde_json::to_value(output.decl.accepts).expect("port types serialize");
-                    let params = json!({
-                        "component": gateway,
-                        "input": {"kinds": "all", "timestamps": "mixed"},
-                        "outputs": {OPAQUE_OUTPUT_PORT: selected},
-                    });
-                    let gateway = self.node(&gateway, names::OPAQUE_HOST, params, &gateway);
-                    self.edge(PortRef::new(policy.clone(), port(&branch)), &gateway, "in");
-                    self.terminal(&gateway, OPAQUE_OUTPUT_PORT, names::EMIT, emit, &output.component);
+            // The gateway that selects what reaches the output, as a `split` whose `true` port leads to the output and
+            // whose `false` port drops, and the predicate its native component applies.
+            let (gateway, predicate) = match &output.kind {
+                OutputKind::ClientTelemetry => continue,
+                OutputKind::Main => {
+                    self.terminal(&policy, &branch, names::EMIT, emit, &output.component);
+                    continue;
                 }
-            }
+                OutputKind::RoutingGroup(group) => (ids::routing_filter(group.index), self.routing_group(group)?),
+                OutputKind::MultiRegionFailover => {
+                    (ids::MRF_METRICS_GATEWAY.to_string(), self.multi_region_failover()?)
+                }
+                OutputKind::AutoscalingFailover => (ids::AF_METRICS_GATEWAY.to_string(), self.autoscaling_failover()?),
+            };
+            let split = self.node(&gateway, names::SPLIT, json!({"predicate": predicate}), &gateway);
+            self.edge(PortRef::new(policy.clone(), port(&branch)), &split, "in");
+            self.terminal(&split, "true", names::EMIT, emit, &output.component);
+            self.terminal(&split, "false", names::DROP, Value::Null, &gateway);
         }
+        Ok(())
+    }
+
+    /// Returns the predicate of an endpoint routing group's filter: the intake name is one of the group's names, or
+    /// starts with one of its prefixes. Two empty lists match nothing, as natively.
+    fn routing_group(&self, group: &RoutingGroup) -> Result<Value, GenericError> {
+        let binding = |list: &str| format!("metrics_endpoint_routing.group.{}.{}", group.key, list);
+        Ok(json!({"any": [
+            {"intake_name": {"matches": {"values": self.bound(&binding("names"))?, "prefix": false}}},
+            {"intake_name": {"matches": {"values": self.bound(&binding("prefixes"))?, "prefix": true}}},
+        ]}))
+    }
+
+    /// Returns the predicate of the multi-region failover gateway: failover is enabled (read at startup, as the branch
+    /// exists only then), metric mirroring is on, and the raw name is in the mirroring allowlist, unless the allowlist
+    /// is empty, which mirrors everything. Mirroring and its allowlist are live, as natively.
+    fn multi_region_failover(&self) -> Result<Value, GenericError> {
+        let allowlist = self.bound("multi_region_failover.metric_mirroring.allowlist")?;
+        Ok(json!({"all": [
+            {"flag": self.bound("multi_region_failover.enabled")?},
+            {"flag": self.bound("multi_region_failover.metric_mirroring.enabled")?},
+            {"any": [
+                {"is_empty": allowlist},
+                {"name": {"matches": {"values": allowlist, "prefix": false}}},
+            ]},
+        ]}))
+    }
+
+    /// Returns the predicate of the autoscaling failover gateway: a scalar series (a counter, rate, gauge, or set)
+    /// whose raw name is one of the configured metrics.
+    fn autoscaling_failover(&self) -> Result<Value, GenericError> {
+        Ok(json!({"all": [
+            {"kind_in": ["counter", "rate", "gauge", "set"]},
+            {"name": {"matches": {"values": self.bound("autoscaling_failover.metrics")?, "prefix": false}}},
+        ]}))
     }
 }
 

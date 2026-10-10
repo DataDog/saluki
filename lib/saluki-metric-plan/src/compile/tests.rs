@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::{frame::REGION_COST_FLOOR, *};
 use crate::{
-    ir::{NativeComponentId, NodeId, OutputId, Plan, PortRef},
+    ir::{NativeComponentId, NodeId, OutputId, Plan, PortRef, Provenance},
     model::PortType,
     operators::Boundary,
     testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
@@ -110,9 +110,12 @@ const OUTPUTS: [&str; 6] = [
 ];
 
 /// The slots of the pre-aggregation chain, as R1's cost model cuts it, with their nodes. Estimated per event, the
-/// mapper costs 65 ns, the namespace prefix with its listener filterlist 110 ns (prefixing builds a new name for every
-/// metric), the timestamp split 10 ns, and the tag filterlist 15 ns: the budget is the costliest component's, 110 ns,
-/// so the mapper runs alone, the namespace prefix with its filterlist alone, and the split with the tag filterlist.
+/// mapper costs 65 ns, the namespace prefix with its listener filterlist natively 110 ns (prefixing builds a new name
+/// for every metric, 90 ns, and the filterlist normalizes and matches the intake name, 15 ns, and routes, 5 ns), the
+/// timestamp split 10 ns, and the tag filterlist 15 ns: the budget is the costliest native component's, 110 ns. In a
+/// region the filterlist is a memoizable decision, priced as a memo lookup (10 ns) and routing (5 ns), so the prefix
+/// and its filterlist cost 105 ns, and the timestamp split (10 ns) does not fit beside them: the mapper runs alone, the
+/// namespace prefix with its filterlist alone, and the split with the tag filterlist.
 const PRE_AGGREGATION: [(&str, &[&str]); 3] = [
     ("dsd_pre_aggregation", &["dsd_enrich"]),
     (
@@ -126,9 +129,10 @@ const PRE_AGGREGATION: [(&str, &[&str]); 3] = [
     ("dsd_no_agg_split_region", &["dsd_no_agg_split", "dsd_tag_filterlist"]),
 ];
 
-/// The slots after aggregation, as the cost model cuts them: the post-aggregation filter, whose predicate reads the
-/// kind and the intake name (21 ns), and the client telemetry tap (one copy, 15 ns) fit within the budget, but not
-/// with enrichment, whose host tags (30 ns) and five-port fan-out (four copies of 15 ns) cost 90 ns.
+/// The slots after aggregation, as the cost model cuts them: the post-aggregation filter and the client telemetry tap
+/// are one decision, whose predicate reads the kind and the intake name (a memo lookup, 10 ns, and routing, 5 ns) and
+/// whose tap makes one copy (15 ns), 30 ns, which fits within the budget, but not with enrichment, whose host tags
+/// (30 ns) and five-port fan-out (four copies of 15 ns) cost 90 ns.
 const POST_AGGREGATION: [(&str, &[&str]); 2] = [
     (
         "dsd_post_agg_filter_region",
@@ -291,6 +295,9 @@ fn the_default_programs_frame_has_the_designed_slots_and_fixed_components() {
 
     assert_eq!(slots_of(&frame), designed_slots());
     assert_eq!(frame.cost_budget(), 110);
+    // The listener filterlist (one intake-name leaf, 20 ns) and the post-aggregation filter (the kind and one
+    // intake-name leaf, 21 ns) cost less than `MEMO_COST_FLOOR`, so R1 prices them evaluated, as regions run them: the
+    // prefix filter's slot costs 90 + 20 ns, and the post-aggregation filter's 21 ns beside its fan-out's copy (15 ns).
     let costs = frame.slots().iter().map(|slot| slot.cost).collect::<Vec<_>>();
     assert_eq!(costs, vec![65, 110, 25, 36, 90]);
     let fixed_nodes = frame.fixed().iter().map(|fixed| fixed.node.clone()).collect::<Vec<_>>();
@@ -542,7 +549,7 @@ fn without_the_no_aggregation_pipeline_the_slots_are_joined_only_through_aggrega
 }
 
 #[test]
-fn with_gateways_as_routing_operators_the_policy_region_pipelines_the_costlier_ones() {
+fn with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as_one_decision() {
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     let frame = frame_of(&plan);
     let fixed_nodes = frame.fixed().iter().map(|fixed| fixed.node.clone()).collect::<Vec<_>>();
@@ -552,47 +559,37 @@ fn with_gateways_as_routing_operators_the_policy_region_pipelines_the_costlier_o
         (FrameSource::Admission(_), FrameTarget::Output(_))
     )));
 
-    // Enrichment (90 ns per event) leaves room within the budget (110 ns) for the first gateway it copies to, in plan
-    // order, whose two intake-name matchers cost 35 ns; the second, also 35 ns, and the autoscaling failover gateway
-    // (11 ns) would not fit, so each runs in a region of its own, fed by an exit of enrichment. The Multi-Region
-    // Failover gateway's flags and name matcher (13 ns) fit, and it stays.
+    // The policy fan-out and the four gateways below it are one decision, which R1 never cuts and prices as it runs:
+    // its predicates read only context fields and the kind, so one memo lookup (10 ns) and routing (5 ns) stand for
+    // the gateways' matchers, beside the fan-out's four copies (60 ns). With host tags (30 ns), enrichment costs
+    // 105 ns, within the budget (110 ns, the native prefix filter's), so it runs the whole policy region and feeds
+    // every encoder directly; the post-aggregation filter (36 ns with its fan-out's copy) still does not fit beside it.
     let gateway = |node: &str| ids(&[node, &format!("{}_true", node), &format!("{}_false", node)]);
     let mut enrichment = ids(POST_AGGREGATION[1].1);
-    enrichment.extend(gateway("mrf_metrics_gateway"));
-    let mut expected = designed_slots();
-    expected[4].1 = enrichment;
     for node in [
         "metrics_routing_filter_0",
         "metrics_routing_filter_1",
+        "mrf_metrics_gateway",
         "af_metrics_gateway",
     ] {
-        expected.push((format!("{}_region", node), gateway(node)));
+        enrichment.extend(gateway(node));
     }
+    let mut expected = designed_slots();
+    expected[4].1 = enrichment;
     assert_eq!(slots_of(&frame), expected);
+    assert_eq!(frame.cost_budget(), 110);
     let costs = frame.slots().iter().map(|slot| slot.cost).collect::<Vec<_>>();
-    assert_eq!(costs, vec![65, 110, 25, 36, 103, 35, 35, 11]);
+    assert_eq!(costs, vec![65, 110, 25, 36, 105]);
 
-    assert_eq!(
-        exits(&frame.slots()[4]),
-        named(&[
-            ("dd_metrics_encode", to_output("dd_metrics_encode")),
-            ("metrics_routing_filter_0_region", to_slot(5)),
-            ("metrics_routing_filter_1_region", to_slot(6)),
-            ("mrf_metrics_encode", to_output("mrf_metrics_encode")),
-            ("af_metrics_gateway_region", to_slot(7)),
-            ("metrics_routing_encode_0", to_output("metrics_routing_encode_0")),
-            ("metrics_routing_encode_1", to_output("metrics_routing_encode_1")),
-            ("af_metrics_encode", to_output("af_metrics_encode")),
-        ])
-    );
-    for (slot, output_id, exit) in [
-        (5, "metrics_routing_encode_0", 1),
-        (6, "metrics_routing_encode_1", 2),
-        (7, "af_metrics_encode", 4),
-    ] {
-        assert_eq!(exits(&frame.slots()[slot]), named(&[(output_id, to_output(output_id))]));
-        assert_eq!(frame.slots()[slot].inputs, vec![exit_of(4, exit)]);
-    }
+    let outputs = [
+        "dd_metrics_encode",
+        "metrics_routing_encode_0",
+        "metrics_routing_encode_1",
+        "mrf_metrics_encode",
+        "af_metrics_encode",
+    ];
+    let expected = outputs.map(|output_id| (output_id, to_output(output_id)));
+    assert_eq!(exits(&frame.slots()[4]), named(&expected));
 }
 
 /// A plan of sources, opaque hosts, `host_enrichment` maps, routing operators, and one output `out`, written as
@@ -833,6 +830,169 @@ fn the_cost_model_pipelines_a_chain_between_native_components_and_within_its_bud
     .unwrap();
     assert_eq!(frame.slots().len(), 1);
     assert_eq!(frame.slots()[0].cost, 0);
+}
+
+/// Two branches, `x` and `y`, each a native component of two `host_tags` nodes (60 ns per event), either fanned out
+/// from `otlp_in` and ending in terminals of their own (`x_out` emits, `y_out` drops), or, if `join`, fed by `otlp_in`
+/// and `checks_ipc_in` and meeting in a merge `m` that `m_out` emits (a fan-out cannot feed both: its copies would
+/// reach one output twice).
+fn parallel_branches(join: bool) -> Plan {
+    let tags = json!({"tags": ["team:core"], "deadline": "1700000300s"});
+    let mut nodes = vec![json!(
+        {"id": "otlp_in", "op": "source", "params": {"binding": "otlp"}, "provenance": {"native": "otlp_in"}}
+    )];
+    let mut edges = Vec::new();
+    let inputs = if join {
+        nodes.push(json!(
+            {"id": "checks_ipc_in", "op": "source", "params": {"binding": "checks"},
+             "provenance": {"native": "checks_ipc_in"}}
+        ));
+        ["otlp_in.metrics", "checks_ipc_in.metrics"]
+    } else {
+        nodes.push(json!({"id": "fanout", "op": "tee", "params": {"ports": 2}, "provenance": {"native": "fanout"}}));
+        edges.push(json!({"from": "otlp_in.metrics", "to": "fanout.in"}));
+        ["fanout.0", "fanout.1"]
+    };
+    for (input, branch) in inputs.into_iter().zip(["x", "y"]) {
+        for step in 1..=2 {
+            nodes.push(json!({
+                "id": format!("{}{}", branch, step), "op": "host_tags", "params": tags,
+                "provenance": {"native": branch},
+            }));
+        }
+        edges.push(json!({"from": input, "to": format!("{}1.in", branch)}));
+        edges.push(json!({"from": format!("{}1.out", branch), "to": format!("{}2.in", branch)}));
+    }
+    let terminals = if join {
+        edges.push(json!({"from": "x2.out", "to": "m.0"}));
+        edges.push(json!({"from": "y2.out", "to": "m.1"}));
+        edges.push(json!({"from": "m.out", "to": "m_out.in"}));
+        vec![
+            ("m", "merge", json!({"inputs": 2})),
+            ("m_out", "emit", json!({"output": "out"})),
+        ]
+    } else {
+        edges.push(json!({"from": "x2.out", "to": "x_out.in"}));
+        edges.push(json!({"from": "y2.out", "to": "y_out.in"}));
+        vec![
+            ("x_out", "emit", json!({"output": "out"})),
+            ("y_out", "drop", json!({})),
+        ]
+    };
+    for (id, op, params) in terminals {
+        nodes.push(json!({"id": id, "op": op, "params": params, "provenance": {"native": id}}));
+    }
+    let mut value = serde_json::to_value(synthetic(&[], &[])).unwrap();
+    value["nodes"] = Value::Array(nodes);
+    value["edges"] = Value::Array(edges);
+    Plan::from_value(value).unwrap()
+}
+
+#[test]
+fn the_cost_model_sums_parallel_branches_only_where_a_node_joins_them() {
+    // The budget is the floor, 64 ns. After a fan-out, neither branch (60 ns) fits beside the fan-out's copy (15 ns),
+    // so each starts a region of its own on the next stage. That stage holds 120 ns of work, but in two regions, each
+    // within the budget, so the terminals, which cost nothing, stay with their branches rather than starting regions
+    // of their own. Fed by two sources, the branches run on the first stage, in two regions; a merge of the two, which
+    // costs nothing either, would join both into one region of 120 ns, so it starts the next stage, with its emit.
+    type Slots<'a> = &'a [(&'a str, &'a [&'a str])];
+    let cases: [(bool, Slots, &[u32]); 2] = [
+        (
+            false,
+            &[
+                ("slot_fanout", &["fanout"]),
+                ("slot_x1", &["x1", "x2", "x_out"]),
+                ("slot_y1", &["y1", "y2", "y_out"]),
+            ],
+            &[15, 60, 60],
+        ),
+        (
+            true,
+            &[
+                ("slot_x1", &["x1", "x2"]),
+                ("slot_y1", &["y1", "y2"]),
+                ("slot_m", &["m", "m_out"]),
+            ],
+            &[60, 60, 0],
+        ),
+    ];
+    for (join, slots, costs) in cases {
+        let plan = parallel_branches(join);
+        validated(&plan, &synthetic_catalog());
+        let frame = Frame::compute(&plan, &OperatorRegistry::native(), &first_node_namer).unwrap();
+        assert_eq!(frame.cost_budget(), REGION_COST_FLOOR, "join: {}", join);
+        let expected = slots
+            .iter()
+            .map(|(name, nodes)| (name.to_string(), ids(nodes)))
+            .collect::<Vec<_>>();
+        assert_eq!(slots_of(&frame), expected, "join: {}", join);
+        assert_eq!(
+            frame.slots().iter().map(|slot| slot.cost).collect::<Vec<_>>(),
+            costs,
+            "join: {}",
+            join
+        );
+    }
+}
+
+#[test]
+fn a_decision_is_never_cut_and_costs_what_its_function_does() {
+    // Host tags (30 ns) and a three-way fan-out (two copies, 30 ns) are one native component, and the fan-out leads to
+    // three splits, each matching the intake name four times (natively 35 ns: it normalizes the name once). The
+    // budget is the floor, 64 ns. The fan-out and the splits are one decision, never cut, so the component and the
+    // splits' components run in one region: the splits' predicates read only the name, so the decision costs one memo
+    // lookup (10 ns) and routing (5 ns) beside the copies, and the region 75 ns, more than the budget, as a component
+    // alone may.
+    let matches = json!({"intake_name": {"matches": {"values": ["a"], "prefix": false}}});
+    let split = json!({"predicate": {"any": [matches, matches, matches, matches]}});
+    let names = [
+        "s0", "s0_true", "s0_false", "s1", "s1_true", "s1_false", "s2", "s2_true", "s2_false",
+    ];
+    let mut nodes = vec![
+        ("otlp_in", "source", json!({"binding": "otlp"})),
+        (
+            "tags",
+            "host_tags",
+            json!({"tags": ["team:core"], "deadline": "1700000300s"}),
+        ),
+        ("fanout", "tee", json!({"ports": 3})),
+    ];
+    for name in names {
+        let (op, params) = match name {
+            "s0_true" => ("emit", json!({"output": "out"})),
+            _ if name.contains('_') => ("drop", json!({})),
+            _ => ("split", split.clone()),
+        };
+        nodes.push((name, op, params));
+    }
+    let mut edges = vec![
+        ("otlp_in.metrics".to_string(), "tags.in".to_string()),
+        ("tags.out".to_string(), "fanout.in".to_string()),
+    ];
+    for index in 0..3 {
+        edges.push((format!("fanout.{}", index), format!("s{}.in", index)));
+        edges.push((format!("s{}.true", index), format!("s{}_true.in", index)));
+        edges.push((format!("s{}.false", index), format!("s{}_false.in", index)));
+    }
+    let edges = edges
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .collect::<Vec<_>>();
+    let mut plan = synthetic(&nodes, &edges);
+    let enrich = NativeComponentId::new("enrich").unwrap();
+    for node in &mut plan.nodes {
+        if ["tags", "fanout"].contains(&node.id.local().as_str()) {
+            node.provenance = Some(Provenance::Native(enrich.clone()));
+        }
+    }
+    validated(&plan, &synthetic_catalog());
+
+    let frame = Frame::compute(&plan, &OperatorRegistry::native(), &first_node_namer).unwrap();
+    assert_eq!(frame.cost_budget(), REGION_COST_FLOOR);
+    let mut members = vec!["tags", "fanout"];
+    members.extend(names);
+    assert_eq!(slots_of(&frame), vec![("slot_tags".to_string(), ids(&members))]);
+    assert_eq!(frame.slots()[0].cost, 75);
 }
 
 #[test]
@@ -1334,10 +1494,11 @@ fn decision_nodes(program: &RegionProgram) -> Vec<(String, Vec<String>, bool)> {
         .decisions()
         .iter()
         .map(|decision| {
+            let root = decision.root();
             (
-                decision.node.to_string(),
-                decision.ports.iter().map(ToString::to_string).collect(),
-                matches!(decision.kind, DecisionKind::Split { .. }),
+                root.node.to_string(),
+                root.ports.iter().map(ToString::to_string).collect(),
+                matches!(root.kind, DecisionKind::Split { .. }),
             )
         })
         .collect()
@@ -1477,30 +1638,44 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
     let filter = &compiled.programs[3];
     let program = &compiled.programs[4];
 
-    // The post-aggregation filter's region: no kernel; the filter and the client telemetry tap's copy. From
-    // aggregation, and from the passthrough, the whole slot: the merge before the filter is no step, since one batch
-    // only ever reaches one of its inputs.
+    // The post-aggregation filter's region: no kernel; the filter and the client telemetry tap's copy, joined by an
+    // edge, are one decision, whose exits are the filter's `true` port and both ports of the copy. From aggregation,
+    // and from the passthrough, the whole slot: the merge before the filter is no step, since one batch only ever
+    // reaches one of its inputs.
     assert!(kernel_nodes(filter).is_empty());
     assert_eq!(
         decision_nodes(filter),
+        vec![(
+            "dsd_post_agg_filter".to_string(),
+            vec!["true".to_string(), "false".to_string()],
+            true
+        )]
+    );
+    let decision = &filter.decisions()[0];
+    assert_eq!(
+        decision
+            .nodes
+            .iter()
+            .map(|node| node.node.to_string())
+            .collect::<Vec<_>>(),
+        vec!["dsd_post_agg_filter", "dsd_post_agg_filter_fanout"]
+    );
+    assert_eq!(
+        decision
+            .exits
+            .iter()
+            .map(|exit| format!("{}.{}", exit.node, exit.port))
+            .collect::<Vec<_>>(),
         vec![
-            (
-                "dsd_post_agg_filter".to_string(),
-                vec!["true".to_string(), "false".to_string()],
-                true
-            ),
-            (
-                "dsd_post_agg_filter_fanout".to_string(),
-                vec!["0".to_string(), "1".to_string()],
-                false
-            ),
+            "dsd_post_agg_filter.true",
+            "dsd_post_agg_filter_fanout.0",
+            "dsd_post_agg_filter_fanout.1"
         ]
     );
     let filtered = vec![
-        decide(0, 0, vec![Route::Drop(id("dsd_post_agg_filter_true")), to(1)]),
-        decide(1, 1, vec![to(2), to(3)]),
-        to_next(3, 1),
-        exit(2, 0),
+        decide(0, 0, vec![Route::Drop(id("dsd_post_agg_filter_true")), to(1), to(2)]),
+        to_next(2, 1),
+        exit(1, 0),
     ];
     let filter_entries = filter
         .entries()
@@ -1514,13 +1689,13 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
                 EntryKey::Admission(point(1)),
                 "dsd_post_agg_filter_in.0".to_string(),
                 filtered.clone(),
-                4
+                3
             ),
             (
                 EntryKey::Region(EntryId::new(0)),
                 "dsd_post_agg_filter_in.1".to_string(),
                 filtered,
-                4
+                3
             ),
         ]
     );

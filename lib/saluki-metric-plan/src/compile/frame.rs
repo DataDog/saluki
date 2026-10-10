@@ -45,10 +45,16 @@
 //!   native component, the nodes with its provenance, costs the sum of its nodes' estimates.
 //! - The **budget** of a region is the estimated cost of the costliest native component that runs in any slot, or
 //!   [`REGION_COST_FLOOR`] if that is less: a region within the floor is fast enough for one stream whatever it fuses.
-//! - Walking each fused set in topological order, a native component joins the region its inputs come from if the
-//!   region's estimate stays within the budget, and starts the next region of a pipeline otherwise. A native
-//!   component is never cut, so no region does less than a native component did, and none costs more than the budget
-//!   unless one component alone does.
+//! - In a region, `split`s and `tee`s joined by edges are one **decision**, run as one function (see
+//!   [`decision`][super::decision]), so they are never cut, and their `split`s are priced together as the function
+//!   runs them: derived fields such as the intake name are computed once, and a memoizable decision costs one memo
+//!   lookup (R4) in place of its predicates. A `tee` keeps its copies' estimate. The **units** R1 never cuts are the
+//!   native components, each joined with every other that one of its decisions reaches into.
+//! - Walking each fused set in topological order, a unit joins the regions its inputs come from, on their stage, if
+//!   the joined region's estimate stays within the budget, and starts the next stage of a pipeline otherwise. Regions
+//!   are tracked as they form, so parallel branches, which run in regions of their own, never add up unless a node
+//!   joins them; a unit that adds no work to the one region it joins never moves, so no region holds only a terminal.
+//!   No region does less than a native component did, and none costs more than the budget unless one unit alone does.
 //!
 //! A cut follows the edges, so a slot's **stage** only grows along them, and the slots and fixed components stay
 //! acyclic. The frame records each cut as a [`FusionVerdict::Pipelined`] decision.
@@ -68,7 +74,7 @@ use crate::{
         Namespace, NativeComponentId, NodeId, OperatorName, OutputDecl, OutputId, Params, Plan, PortName, PortRef,
         Provenance,
     },
-    operators::{Boundary, OperatorRegistry, StateContract},
+    operators::{decision_cost, names, Boundary, OperatorRegistry, StateContract},
     validate::graph::{emit_output, Graph},
 };
 
@@ -246,7 +252,8 @@ pub struct Slot {
     /// The slot's exits, in order.
     pub exits: Vec<Exit>,
 
-    /// The estimated cost per event of the slot's boot nodes, in nanoseconds: the sum of their operators' estimates.
+    /// The estimated cost per event of the slot's boot nodes, in nanoseconds: the sum of their operators' estimates,
+    /// with the `split`s of each decision priced together (see [Pipelining](self#pipelining)).
     pub cost: u32,
 }
 
@@ -956,9 +963,9 @@ impl Layout {
             }
         }
 
-        // R1's cost model: the stage of each node within its set and depth, so that each stage's region stays within
-        // the budget (see the module documentation).
-        let cost = (0..count)
+        // R1's cost model: the stage of each node within its set and depth, so that each region stays within the
+        // budget (see the module documentation).
+        let native_cost = (0..count)
             .map(|node| match graph.op(node) {
                 Some(op) if synchronous(node) => op.cost(),
                 _ => 0,
@@ -968,15 +975,11 @@ impl Layout {
             Some(Provenance::Native(component)) => component.to_string(),
             _ => graph.id(node).to_string(),
         };
+        // The budget is what the costliest native component costs natively.
         let mut component_cost: BTreeMap<String, u32> = BTreeMap::new();
-        let mut group_component_cost: BTreeMap<(usize, u32, String), u32> = BTreeMap::new();
         for node in (0..count).filter(|&node| synchronous(node)) {
             let total = component_cost.entry(component(node)).or_default();
-            *total = total.saturating_add(cost[node]);
-            let in_group = group_component_cost
-                .entry((sets.find(node), depth[node], component(node)))
-                .or_default();
-            *in_group = in_group.saturating_add(cost[node]);
+            *total = total.saturating_add(native_cost[node]);
         }
         let budget = component_cost
             .values()
@@ -984,37 +987,115 @@ impl Layout {
             .max()
             .unwrap_or_default()
             .max(REGION_COST_FLOOR);
+
+        // Decisions: `split`s and `tee`s joined by edges run as one function, so a region prices their `split`s
+        // together, as the function runs them (`tee`s keep their copies' estimates), on the first `split` of each.
+        let decides = |node: usize| {
+            synchronous(node)
+                && graph
+                    .op(node)
+                    .is_some_and(|op| matches!(op.name(), names::SPLIT | names::TEE))
+        };
+        let mut decisions = UnionFind::new(count);
+        for &((from, _), (to, _)) in &edges {
+            if decides(from) && decides(to) && depth[from] == depth[to] {
+                decisions.union(from, to);
+            }
+        }
+        let mut cost = native_cost;
+        let mut splits_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for &node in &graph.order {
+            if decides(node) && graph.op(node).is_some_and(|op| op.name() == names::SPLIT) {
+                splits_of.entry(decisions.find(node)).or_default().push(node);
+            }
+        }
+        for splits in splits_of.values() {
+            let predicates = splits
+                .iter()
+                .filter_map(|&split| graph.op(split)?.params().predicate("predicate"))
+                .collect::<Vec<_>>();
+            for &split in splits {
+                cost[split] = 0;
+            }
+            cost[splits[0]] = decision_cost(&predicates);
+        }
+
+        // Units: what R1 never cuts. Each is a native component (its nodes in one set and depth), joined with every
+        // other that one of its decisions reaches into, since a decision is never cut either.
+        let mut units = UnionFind::new(count);
+        let mut first_of_component: BTreeMap<(usize, u32, String), usize> = BTreeMap::new();
+        for node in (0..count).filter(|&node| synchronous(node)) {
+            let first = *first_of_component
+                .entry((sets.find(node), depth[node], component(node)))
+                .or_insert(node);
+            units.union(first, node);
+        }
+        for node in (0..count).filter(|&node| decides(node)) {
+            units.union(decisions.find(node), node);
+        }
+        let mut unit_cost = vec![0u32; count];
+        for node in (0..count).filter(|&node| synchronous(node)) {
+            let unit = units.find(node);
+            unit_cost[unit] = unit_cost[unit].saturating_add(cost[node]);
+        }
+
+        // Walking each set in plan order, a unit joins the regions of its inputs on their stage unless the joined
+        // region would cost more than the budget. Regions are tracked as they form, so that parallel branches, which
+        // run in regions of their own, are never summed unless a node joins them.
         let mut stage = vec![0u32; count];
-        let mut stage_cost: BTreeMap<(usize, u32, u32), u32> = BTreeMap::new();
-        let mut component_stage: BTreeMap<(usize, u32, String), u32> = BTreeMap::new();
+        let mut unit_stage: Vec<Option<u32>> = vec![None; count];
+        let mut regions = UnionFind::new(count);
+        let mut region_cost = vec![0u32; count];
         for &node in &graph.order {
             if !synchronous(node) {
                 continue;
             }
-            let group = (sets.find(node), depth[node]);
             let Some(op) = graph.op(node) else { continue };
             // A node runs no earlier than the stage of any input in its group.
-            let mut at = (0..op.ports().inputs.len())
+            let inputs = (0..op.ports().inputs.len())
                 .filter_map(|port| graph.source(node, port))
-                .filter(|&(from, _)| synchronous(from) && depth[from] == depth[node])
-                .map(|(from, _)| stage[from])
-                .max()
-                .unwrap_or(0);
-            let key = (group.0, group.1, component(node));
-            match component_stage.get(&key) {
-                Some(&placed) => at = at.max(placed),
+                .map(|(from, _)| from)
+                .filter(|&from| synchronous(from) && depth[from] == depth[node])
+                .collect::<Vec<_>>();
+            let mut at = inputs.iter().map(|&from| stage[from]).max().unwrap_or(0);
+            let unit = units.find(node);
+            let added = match unit_stage[unit] {
+                Some(placed) => {
+                    at = at.max(placed);
+                    0
+                }
                 None => {
-                    let added = group_component_cost.get(&key).copied().unwrap_or_default();
-                    let used = stage_cost.get(&(group.0, group.1, at)).copied().unwrap_or_default();
-                    if used > 0 && used.saturating_add(added) > budget {
+                    let added = unit_cost[unit];
+                    let mut joined = inputs
+                        .iter()
+                        .filter(|&&from| stage[from] == at)
+                        .map(|&from| regions.find(from))
+                        .collect::<Vec<_>>();
+                    joined.sort_unstable();
+                    joined.dedup();
+                    let merged = joined
+                        .iter()
+                        .map(|&region| region_cost[region])
+                        .fold(added, u32::saturating_add);
+                    // A unit that adds no work to the one region it joins stays with it, even past the budget (behind
+                    // a unit that alone costs more): moving it would only add a region for a lone `emit` or `drop`.
+                    if !joined.is_empty() && merged > budget && (added > 0 || joined.len() > 1) {
                         at += 1;
                     }
-                    let used = stage_cost.entry((group.0, group.1, at)).or_default();
-                    *used = used.saturating_add(added);
-                    component_stage.insert(key, at);
+                    unit_stage[unit] = Some(at);
+                    added
+                }
+            };
+            stage[node] = at;
+            region_cost[node] = added;
+            for &from in &inputs {
+                let (own, other) = (regions.find(node), regions.find(from));
+                if stage[from] == at && own != other {
+                    let total = region_cost[own].saturating_add(region_cost[other]);
+                    regions.union(own, other);
+                    region_cost[regions.find(own)] = total;
                 }
             }
-            stage[node] = at;
         }
 
         // Slots: neighbors in one set with equal depth and stage.

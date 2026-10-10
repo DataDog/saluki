@@ -4,15 +4,18 @@
 //! process (see the plan crate's `compile::frame`). [`PlanTopology`] builds it into the topology blueprint:
 //!
 //! - **Fixed components** are built exactly as natively, with the same component IDs and builders: the sources by
-//!   their own pipelines (which register their metrics outputs here), DogStatsD aggregation (`dsd_agg`, with its
-//!   context snapshot channel), and the policy gateways, which run as opaque hosts backed by their native components
-//!   until stage 4. Each output of a fixed component is an admission point: sources' outputs admit, and the outputs of
-//!   aggregation and the gateways readmit, all from the one schedule the installer commits to.
+//!   their own pipelines (which register their metrics outputs here), and DogStatsD aggregation (`dsd_agg`, with its
+//!   context snapshot channel). Each output of a fixed component is an admission point: sources' outputs admit, and
+//!   aggregation's output readmits, all from the one schedule the installer commits to.
 //! - **Slots** each run in one region host, named by [`slot_name`]: `dsd_pre_aggregation` (the DogStatsD mapper
-//!   through the tag filterlist) and `metrics_enrich` (the post-aggregation filter through the fan-out to the outputs).
-//!   A region host's outputs are its slot's exits, in order.
+//!   through the tag filterlist) and `metrics_enrich` (the post-aggregation filter through the policy region, whose
+//!   gateways select what reaches each output, as one decision R1 never cuts), and the regions R1's cost model cuts
+//!   from them so that a costly chain pipelines, such as the post-aggregation filter when it does not fit beside
+//!   enrichment (`dsd_post_agg_filter_region`). A region host's outputs are its slot's exits, in order.
 //! - **Outputs** are the native encoders and forwarders, built exactly as natively, and the DogStatsD client telemetry
-//!   tap, `dsd_client_telemetry_out`, which the `metrics_enrich` slot feeds.
+//!   tap, `dsd_client_telemetry_out`, which the `metrics_enrich` slot feeds. No gateway component stands in front of an
+//!   encoder: the endpoint routing filters and the failover gateways are `split`s of the policy region, so a region
+//!   exit feeds each encoder directly.
 //! - **Edges** are the frame's: one blueprint edge per physical edge, from an admission point or a slot's exit to a
 //!   fixed component, a slot, or an output's component. Exits the default program does not use are connected and stay
 //!   idle, so that later generations can use them.
@@ -39,7 +42,6 @@ use saluki_metric_plan::{
     operators::names,
     runtime::{build_kernels, MetricRegionDriver, PanicBudget, PrepareRegion, RegionBounds, RegionConfig},
 };
-use serde_json::Value;
 
 use super::{
     bindings::routing_groups,
@@ -49,7 +51,7 @@ use super::{
 };
 use crate::cli::run::{
     autoscaling_failover_branch, dogstatsd_aggregate_configuration, main_metrics_encoder, mrf_metrics_branch,
-    routing_group_branch,
+    routing_group_encoder,
 };
 
 /// Names the region host of a slot of the default program's frame, after the native components it replaces.
@@ -88,7 +90,6 @@ pub fn slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
 pub struct PlanTopology<'a> {
     boot: &'a mut BootTopology,
     sources: BTreeSet<String>,
-    gateways: BTreeSet<String>,
     aggregate: bool,
 }
 
@@ -98,13 +99,13 @@ impl<'a> PlanTopology<'a> {
         Self {
             boot: metrics.boot_topology(),
             sources: BTreeSet::new(),
-            gateways: BTreeSet::new(),
             aggregate: false,
         }
     }
 
-    /// Adds the outputs of the frame, with their encoders and forwarders, and the gateways in front of them, built as
-    /// natively.
+    /// Adds the outputs of the frame, with their encoders and forwarders, built as natively.
+    ///
+    /// The gateways in front of them are part of the default program, which the regions run.
     ///
     /// # Errors
     ///
@@ -155,21 +156,14 @@ impl<'a> PlanTopology<'a> {
                         .policy_groups()
                         .get(group.index)
                         .ok_or_else(|| missing("endpoint routing group"))?;
-                    let (filter, encoder) = routing_group_branch(shared, policy);
-                    let gateway = ids::routing_filter(group.index);
-                    blueprint
-                        .add_transform(gateway.as_str(), filter)?
-                        .add_encoder(component, encoder)?;
-                    self.gateways.insert(gateway);
+                    blueprint.add_encoder(component, routing_group_encoder(shared, policy))?;
                 }
                 OutputKind::MultiRegionFailover => {
                     let branch = mrf.take().ok_or_else(|| missing("Multi-Region Failover branch"))?;
                     let forwarder = output.forwarder.ok_or_else(|| missing("forwarder"))?;
                     blueprint
-                        .add_transform(ids::MRF_METRICS_GATEWAY, branch.gateway)?
                         .add_encoder(component, branch.encoder)?
                         .add_forwarder(forwarder, branch.forwarder)?;
-                    self.gateways.insert(ids::MRF_METRICS_GATEWAY.to_string());
                 }
                 OutputKind::AutoscalingFailover => {
                     let branch = autoscaling
@@ -177,10 +171,8 @@ impl<'a> PlanTopology<'a> {
                         .ok_or_else(|| missing("autoscaling failover branch"))?;
                     let forwarder = output.forwarder.ok_or_else(|| missing("forwarder"))?;
                     blueprint
-                        .add_transform(ids::AF_METRICS_GATEWAY, branch.gateway)?
                         .add_encoder(component, branch.encoder)?
                         .add_forwarder(forwarder, branch.forwarder)?;
-                    self.gateways.insert(ids::AF_METRICS_GATEWAY.to_string());
                 }
             }
             // Encoders feed their forwarder, as natively: `dd_out`, shared with the other pipelines, or their own.
@@ -225,7 +217,7 @@ impl<'a> PlanTopology<'a> {
                 )
             })?;
         let (aggregate, snapshots) = dogstatsd_aggregate_configuration(typed)?;
-        blueprint.add_transform(component_id(aggregation)?, aggregate)?;
+        blueprint.add_transform(component_id(aggregation), aggregate)?;
         self.aggregate = true;
         self.sources.insert(format!("{}.metrics", ids::DSD_IN));
         Ok(snapshots)
@@ -242,10 +234,9 @@ impl<'a> PlanTopology<'a> {
         let Self {
             boot,
             sources,
-            gateways,
             aggregate,
         } = self;
-        check_fixed_components(&boot.frame, &sources, &gateways, aggregate)?;
+        check_fixed_components(&boot.frame, &sources, aggregate)?;
         add_regions(blueprint, boot)?;
         connect_frame(blueprint, boot)
     }
@@ -286,20 +277,14 @@ pub(super) fn connect_frame(blueprint: &mut TopologyBlueprint, boot: &BootTopolo
 
 /// Checks that the native pipelines built every fixed component of the frame, and that the frame reads every output
 /// that carries metrics into the metrics path.
-fn check_fixed_components(
-    frame: &Frame, sources: &BTreeSet<String>, gateways: &BTreeSet<String>, aggregate: bool,
-) -> Result<(), GenericError> {
+fn check_fixed_components(frame: &Frame, sources: &BTreeSet<String>, aggregate: bool) -> Result<(), GenericError> {
     let mut read = BTreeSet::new();
-    let mut hosts = BTreeSet::new();
     for fixed in frame.fixed() {
         match fixed.operator.as_str() {
             names::SOURCE => {
                 read.insert(admission_output(frame, &fixed.node)?);
             }
             names::AGGREGATE if aggregate => {}
-            names::OPAQUE_HOST => {
-                hosts.insert(component_id(fixed)?);
-            }
             other => {
                 return Err(generic_error!(
                     "The default program has a `{}` node, `{}`, that no native component runs; this is a lowering bug.",
@@ -319,13 +304,6 @@ fn check_fixed_components(
         return Err(generic_error!(
             "The default program reads metrics from `{}`, which no native pipeline provides; this is a lowering bug.",
             missing
-        ));
-    }
-    if hosts != *gateways {
-        return Err(generic_error!(
-            "The default program's opaque hosts ({}) are not the native gateways ({}); this is a lowering bug.",
-            hosts.into_iter().collect::<Vec<_>>().join(", "),
-            gateways.iter().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
     Ok(())
@@ -378,32 +356,19 @@ fn region_host(boot: &mut BootTopology, slot: &Slot) -> Result<RegionHostBuilder
     Ok(host.with_bounds(bounds))
 }
 
-/// Returns the component ID a fixed component runs as: an opaque host's `component` parameter, or otherwise its node's
-/// ID, as sources and aggregation have their native component's ID.
-pub(super) fn component_id(fixed: &FixedComponent) -> Result<String, GenericError> {
-    if fixed.operator.as_str() == names::OPAQUE_HOST {
-        return fixed
-            .params
-            .get("component")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                generic_error!(
-                    "Opaque host `{}` names no component; this is a lowering bug.",
-                    fixed.node
-                )
-            });
-    }
-    Ok(fixed.node.local().to_string())
+/// Returns the component ID a fixed component runs as: its node's ID, as sources and aggregation have their native
+/// component's ID.
+fn component_id(fixed: &FixedComponent) -> String {
+    fixed.node.local().to_string()
 }
 
 /// Returns the component output an admission point is: a source's port is its output of the same name, and the one
-/// port of aggregation or an opaque host is its default output.
+/// port of aggregation is its default output.
 pub(super) fn admission_output(frame: &Frame, node: &NodeId) -> Result<String, GenericError> {
     let fixed = frame
         .fixed_component(node)
         .ok_or_else(|| generic_error!("The frame has no fixed component `{}`; this is a bug.", node))?;
-    let component = component_id(fixed)?;
+    let component = component_id(fixed);
     if fixed.operator.as_str() == names::SOURCE {
         let point = fixed
             .admission_points
@@ -452,7 +417,7 @@ fn target_component(frame: &Frame, outputs: &NativeOutputs, target: &FrameTarget
             let fixed = frame
                 .fixed_component(node)
                 .ok_or_else(|| generic_error!("The frame has no fixed component `{}`; this is a bug.", node))?;
-            component_id(fixed)
+            Ok(component_id(fixed))
         }
         FrameTarget::Slot(slot) => frame
             .slot(*slot)

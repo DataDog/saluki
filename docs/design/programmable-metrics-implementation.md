@@ -69,9 +69,16 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
   model/ ir/ canonical.rs predicate/ operators/ validate/ interpret/ equivalence.rs explain/ limits.rs extension/
   fixtures/        hand-written default-program plans (with and without the no-aggregation pipeline)       [1]
   compile/  frame.rs (physical frame, R1 and its cost model), placement.rs, program.rs        [3]
-            rewrites R2-R7 and decisions                                                       [4, 6]
+            decision.rs: decisions, their functions, R2, R3's bound constants, the R4 memo     [4]
+            rewrite/: the logical rewrites' pipeline (mod.rs), r3.rs, r5a.rs, r6.rs, r7.rs,
+            filters.rs (what R5a and R6 share), and the property tests' random plans
+            (harness.rs, random_plans.rs, cfg(test))                                           [4]
+            R5b                                                                                [6]
   runtime/  MetricRegionDriver implementing saluki-core RegionDriver, RegionBounds, telemetry  [3]
   benches/  region_driver.rs: the default program's regions vs hand-written baselines         [3]
+            selection.rs: endpoint routing selection vs hand-written selections, at 1, 3,
+            and 7 policies: a one-region fan-out's decision and region, the stage 4
+            default program's policy region in its own frame, and memo hits and misses        [4]
   install/  diff.rs (plan diff, kernel reuse), lifecycle.rs, core.rs (InstallerCore, no I/O)   [3]
             correspondence                                                                     [5]
   channel/  artifact channel types                                                             [5]
@@ -449,25 +456,46 @@ of the legacy throughput on one saturated stream (amendment 47). R1 therefore fu
 kept:
 
 - Every operator estimates its work in nanoseconds per event (`OperatorDef::cost`, 0 by default): the mapper 65 with
-  profiles and 10 without, the namespace prefix 90 with a namespace and 0 without, a `split` 5 plus its predicate
-  (`intake_name` 15, tag predicates 10, name and host 5, constants, flags, emptiness and kind tests 1, operands
-  summed), a `tee` 15 per port beyond the first, the timestamp split 10, tag projection 15, host tags 30. The
-  estimates are coarse: they only need to rank the components of a chain, so that the costly ones run apart.
+  profiles and 10 without, the namespace prefix 90 with a namespace and 0 without, a `split` 5 plus its predicate (an
+  `intake_name` leaf 5, plus 10 to normalize the name, once per predicate, as `EventView` caches it; tag predicates
+  10, name and host 5, constants, flags, emptiness and kind tests 1, operands summed), a `tee` 15 per port beyond the
+  first, the timestamp split 10, tag projection 15, host tags 30. The estimates are coarse: they only need to rank the
+  components of a chain, so that the costly ones run apart.
 - A **component** is the nodes with one native provenance, or a node of its own otherwise. The **budget** is the
-  estimate of the costliest component of the boot plan, or `REGION_COST_FLOOR` (64 ns, over 15 million events per
-  second) if that is less: a region within the floor keeps up with one stream whatever it fuses.
-- Walking each fused set (connected set and fence depth) in plan order, a component starts on the latest **stage**
-  of its inputs in the set, and moves to the next stage when that stage already holds work and the component would
-  take it over the budget. Slots are the nodes of one set, depth, and stage, so a stage only grows along edges and the
-  frame stays acyclic. A component is never cut, so no region does less than a native component did, and none costs
-  more than the budget unless one component alone does. `Slot::cost` and `Frame::cost_budget()` record the estimates,
-  `explain` prints each slot's, and an edge between stages is `pipelined`.
+  estimate of the costliest component of the boot plan as it runs natively (each `split` alone), or
+  `REGION_COST_FLOOR` (64 ns, over 15 million events per second) if that is less: a region within the floor keeps up
+  with one stream whatever it fuses.
+- In a region, the `split`s and `tee`s joined by edges are one **decision**, run as one function (stage 4), so R1
+  never cuts one, and prices its `split`s together as the function runs them (`operators::decision_cost`): routing
+  (5) and their predicates with derived fields computed once, or, when regions memoize the decision (R4: every
+  predicate reads only context fields and the kind, and the `split`s cost at least `compile::MEMO_COST_FLOOR`, 25 ns,
+  alone, the floor decision compilation uses), one memo lookup (10) in place of the predicates: the estimate is a
+  hit's. A `tee` keeps its copies' estimate. The **units** R1 never cuts are the components, each joined with every
+  other that one of its decisions reaches into: in the default program, `metrics_enrich` with every gateway, and the
+  post-aggregation filter with the client telemetry tap.
+- Walking each fused set (connected set and fence depth) in plan order, a unit starts on the latest **stage** of its
+  inputs in the set and joins the regions of its inputs on that stage, unless the joined region would cost more than
+  the budget; then it moves to the next stage. Regions are tracked as they form, so parallel branches, which run in
+  regions of their own, never add up unless a node joins them (a `merge` of two full branches starts the next stage,
+  with its emit), and a unit that adds no work to the one region it joins never moves (no region holds only a
+  terminal, even behind a unit that alone costs more than the budget). Slots are the nodes of one set, depth, and
+  stage that edges join, so a stage only grows along edges and the frame stays acyclic. No region does less than a
+  native component did, and none costs more than the budget unless one unit alone does (`metrics_enrich` with every
+  gateway and DogStatsD defaults: 75 of 64). `Slot::cost` and `Frame::cost_budget()` record the estimates, `explain`
+  prints each slot's, and an edge between stages is `pipelined`. Tests: `compile::tests::{
+  the_cost_model_sums_parallel_branches_only_where_a_node_joins_them,
+  a_decision_is_never_cut_and_costs_what_its_function_does,
+  with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as_one_decision}`,
+  `operators::tests::a_split_costs_its_predicate_and_a_decision_at_most_a_memo_lookup`, and
+  `runtime::frame_tests::property_test_the_cost_model_keeps_decisions_whole_and_regions_within_the_budget` (random
+  plans: no decision cut, no terminal-only region, and a region over the budget only with a decision that copies).
 
 **Fixed components and admission points.** Every output port of every fixed component is an admission point,
 numbered `0..` in plan order and port order: sources `Admit`, opaque hosts `Readmit`. Each point's `route` is where its
 one physical edge leads: a slot, another fixed component, an output (a direct edge), or nothing. An `emit` or `drop`
-whose only input crosses a fence is a **direct edge** (or nothing), never an emit-only region: the default program's
-four gateways (two routing filters, MRF, autoscaling) connect straight to their encoders. `FixedComponent` keeps the
+whose only input crosses a fence is a **direct edge** (or nothing), never an emit-only region. Through stage 3 the
+default program's gateways were opaque hosts, whose emits were such direct edges; from stage 4 they are `split`s of the
+policy region, so no fixed component stands between a region and an encoder. `FixedComponent` keeps the
 boot operator and parameters, and what feeds its input (an admission point or a slot exit).
 
 **Exits.** A slot's exits are, in order: one per target of the boot edges leaving it (a fixed component or another
@@ -483,12 +511,18 @@ For the stage 3 default program (with the no-aggregation pipeline) and a default
 mapper through the tag filterlist and has exits `dsd_agg`, `metrics_enrich` (passthrough), and an idle one to each
 output; `metrics_enrich` holds the post-aggregation merge through `metrics_policy_0` and has exits to the outputs.
 Without the pipeline there is no passthrough exit. A mapper profile (65) or a namespace (the prefix filter then costs
-110) raises the budget to that component and pipelines the chain. With every branch wired, both, host tags, and five
-outputs, the frame has five slots: `dsd_pre_aggregation` (the mapper), `dsd_prefix_filter_region` (the prefix and the
-listener filterlist), `dsd_no_agg_split_region` (the timestamp split and the tag filterlist, with exits `dsd_agg` and
-the passthrough), `dsd_post_agg_filter_region` (the post-aggregation merge, filter, and fan-out, with an exit to the
-client telemetry tap), and `metrics_enrich` (host enrichment and tags, the policy fan-out, and exits to the primary
-output and the four gateways); each also has an idle exit to every output downstream of it.
+110, natively and in a region, where its filterlist, one intake-name leaf, is evaluated) raises the budget to that
+component and pipelines the chain. With every branch wired, both, host tags, and five outputs, the frame has five
+slots: `dsd_pre_aggregation` (the mapper, 65), `dsd_prefix_filter_region` (the prefix and the listener filterlist,
+110), `dsd_no_agg_split_region` (the timestamp split and the tag filterlist, 25, with exits `dsd_agg` and the
+passthrough), `dsd_post_agg_filter_region` (the post-aggregation merge, filter, and tap, one decision, 36, with an exit
+to the client telemetry tap), and `metrics_enrich` (host enrichment and tags, and the whole policy region: the fan-out
+and the four gateways, one memoized decision, 105 within the 110 budget), whose exits lead to every encoder directly.
+Each slot also has an idle exit to every output downstream of it. With DogStatsD defaults (the floor is the budget),
+Multi-Region Failover alone (64 ns with the post-aggregation filter's 36) and autoscaling failover alone (62) run in
+`metrics_enrich` beside the post-aggregation filter; one routing group (the fan-out's copy and the memoized filter, 15
+ns each: 66) or two (45 ns of policy region) leave the post-aggregation filter in `dsd_post_agg_filter_region`. The
+gateways always run in `metrics_enrich`: the fan-out has `metrics_enrich`'s provenance, and a decision is never cut.
 
 **Placement.** Fixed nodes run in the frame's fixed component of the same ID and must keep their boot operator and
 parameters: a host component keeps the configuration it was built with (aggregation needs stage 6, other hosts stage
@@ -510,16 +544,16 @@ or `EntryKey::Region(EntryId)`; region entries are numbered per slot and per gen
 generation can send several logical branches over one physical edge (stage 6 per-branch widths) without new topology.
 
 **Region programs** are plain data plus `KernelSpec`s, so the driver can build, rebuild, and share kernels. Each has a
-kernel table (`ProgramKernel { key, operator, ports, spec }`), a decision table (one `Decision` per `split` or `tee`
-through stage 3, with its compiled predicate and port names for per-port telemetry), and one `EntryProgram` per entry:
-a list of steps, in topological order, over registers that hold sequences of buffers carrying the batch's header
-(register 0 holds the batch):
+kernel table (`ProgramKernel { key, operator, ports, spec }`), a decision table (one `Decision` per group of `split`
+and `tee` nodes, see **Decisions** below, with its predicate table and its nodes' port names for per-port telemetry),
+and one `EntryProgram` per entry: a list of steps, in topological order, over registers that hold sequences of buffers
+carrying the batch's header (register 0 holds the batch):
 
 - `Map { kernel, register }`: a single-port kernel in place;
 - `Expand { kernel, input, ports }`: a multi-port kernel (the timestamp split), each port routed;
-- `Decide { decision, input, targets }`: compute each event's targets, filter the original buffer in place with the
-  order-preserving `retain` and move it to its last target, and give other targets buffers created with exact
-  capacity (copies for a `tee`); a whole-buffer route moves the buffer untouched, as `route_all` does for kernels;
+- `Decide { decision, input, targets }`: run a decision: compute each event's exit set, then move each event to the
+  register of every exit in it, the original into one and copies into the others, in batch order everywhere (see
+  **Decisions**); `targets` has one route per exit of the decision, in exit order;
 - `Concat { inputs, output }`: a `merge`, only when the entry reaches more than one of its inputs (otherwise the
   merge is no step);
 - `Exit { register, exit, entry }`: hand the buffers to an exit, setting the consumer's entry when the exit leads to
@@ -529,15 +563,204 @@ a list of steps, in topological order, over registers that hold sequences of buf
 A route (`Route::Register` or `Route::Drop(node)`) folds a `drop` that a decision or kernel port leads to straight
 into counting. `state(kernel)` arrives in stage 6. `KernelKey { node, params_hash }` (the hash of `{op, params}` with
 resolved values) identifies a kernel instance across generations, and `RegionProgram::fingerprint()` (a hash of its
-entries, steps, kernel keys, and canonical predicates with resolved values) tells a region that a new generation's
-program equals the one it runs. A test-only executor runs the compiled programs of both default-program fixtures over
+entries, steps, kernel keys, and predicates with resolved values, in canonical form and as written, which R7's order
+changes, and whether each decision is memoized) tells a region that a new generation's program equals the one it
+runs. A test-only executor runs the compiled programs of both default-program fixtures over
 the default-program trace and delivers exactly what the reference interpreter delivers, policy loss included.
 
-**Decisions** (stage 4): a maximal connected group of `split` and `tee` within one slot program, with no intervening map
-that writes a field its predicates read, compiles to one pure function to an exit set. The R4 memo is keyed by `Context`
-(its 64-bit identity) plus kind, direct-mapped with a fixed capacity, and never allocates on eviction. Each decision
-counts events per exit set per turn; at publish time, off the data path, per-node per-port counts are derived from the
-decision's logical tree (exact, because a decision contains no merge) and published at INFO under the logical node ID.
+**Decisions** (stage 4, `compile::decision`). `program.rs` groups the `split` and `tee` nodes of a slot into
+decisions: a group starts at each `split` or `tee` whose input does not come from another `split` or `tee` of the
+slot, and takes in, depth first, every `split` and `tee` an edge from the group leads to. Every other node ends a
+group: a `merge`, because a decision is a tree (every event reaches each node at most once, by one path), and every
+map, including one that writes no field a predicate below it reads (amendment 51). Nothing in a group writes a field,
+so the specification's condition on intervening maps holds trivially. The group's exits are its nodes' ports that lead
+out of it, numbered node by node in depth-first order and port by port; a group whose exits would exceed
+`EXIT_SET_CAPACITY` (256, the artifact node limit) is cut at node boundaries, a node that would take it over the
+capacity starting a decision of its own, and a `tee` with more than 256 ports fails compilation
+(`CompileError::TooLarge`, "output ports on one `tee`"). One `Decide` step runs the whole group; its other nodes are no
+steps. Types: `Decision { nodes: Vec<DecisionNode>, exits: Vec<ExitTarget>, predicates: PredicateTable, memoized,
+rewrites }`, each `DecisionNode` a `split` (`DecisionKind::Split { predicate: PredicateIndex }`) or `tee` with a
+`Branch` per port (another node, by position, or a `DecisionExit`); `ExitSet` is a 256-bit set; `Decision::evaluate(&
+Event, &mut DecisionScratch) -> ExitSet` is the reference walk. `PredicateTable::intern(&NodeId, written: &Predicate,
+Arc<CompiledPredicate>)` takes the predicate as the `split` writes it and computes the canonical form itself;
+`SharedPredicate { predicate (canonical), written, compiled, reads, folded, nodes }`, and with R2 sharing, `written`
+stays the first `split`'s, which is what `compiled` evaluates.
+
+At decision compilation three rewrites apply, each recorded on the decision (`Decision::rewrites`, then
+`CompiledPlan::rewrites`, after the logical records, and `explain`), with no telemetry effect and no capacity rule:
+
+- **R2.** `PredicateTable::intern` keeps each predicate once, by canonical form with resolved values, and lists every
+  `split` using it (`SharedPredicate::nodes`). Equality is structural: `prefix` and `matches` by prefix are unified,
+  but two bindings with equal values are not. A record lists the sharing `split`s.
+- **R3 (bound constants).** `fold_bound_constants` evaluates a predicate's `const`, `flag`, and `is_empty` leaves by
+  three-valued logic over their literals and resolved values (`all` is false as soon as one operand is; an unresolved
+  binding decides nothing); a constant predicate is `SharedPredicate::folded`, and its `split` takes its constant
+  branch in the compiled function. The plan keeps the node and the decision keeps its exits (the other one idles);
+  structure never depends on a binding's value. In the stage 4 default program the Multi-Region Failover gateway folds
+  to `true` with its fixture's values (enabled, mirroring, an empty allowlist), and to `false` whenever mirroring is
+  off.
+- **R4.** A decision is `memoizable` when its predicates read only context fields and the kind (every predicate form
+  today does), and `memoized` when, in addition, the `split`s it evaluates (those R3 did not fold, a shared predicate
+  once) cost at least `MEMO_COST_FLOOR`, 25 ns per event by R1's cost model (`Decision::evaluation_cost` over
+  `OperatorDef::cost`, which normalizes the intake name once per predicate): an endpoint allowlist, two intake-name
+  leaves (25), is memoized; one intake-name leaf (20, the listener filterlist; 21 with a kind test, the
+  post-aggregation filter), a name or kind test alone (the autoscaling gateway's, 11; Multi-Region Failover's, 13),
+  and a decision with nothing left to evaluate (a constant function) are not. R1 prices decisions by the same floor
+  (see Pipelining), so the frame is cut by what regions run, and the record states the decision's estimated cost.
+  Measured (`benches/selection.rs`, `memo_misses`): a lookup that hits costs about 10 ns, and one that misses adds
+  about 4 ns to the evaluation, whatever the decision, so memoizing a decision that takes `t` ns pays at a hit rate `p`
+  when `p (t - 10) > (1 - p) 4`. An endpoint allowlist (about 25 ns measured, as estimated) pays from about one hit in
+  five, and costs at most 15% more (7% to 8% of its region) when every lookup misses; one intake-name leaf (about 18
+  ns) would need one hit in three and costs 16% to 19% more when every lookup misses, as for a pre-aggregation filter
+  over more contexts than the memo holds. This is a compile-time rule, not a runtime selection.
+
+`DecisionFunction::new(&Decision)` compiles a decision to the function regions run (it validates the decision is a tree
+reaching each exit once, `MalformedDecision` otherwise). Every exit set that does not depend on the event is
+precomputed, R3's folded `split`s take their branch at compilation, and the function has one of four forms: a constant
+(only `tee`s and folded `split`s); a single test; a list of independent tests (a `tee` to `split`s whose ports all leave
+the decision, the shape endpoint routing lowers to); or straight-line code with forward jumps only, in which an event
+runs each instruction at most once. A predicate several instructions test (R2) is remembered per event in a cache slot.
+Events other than metrics take every `split`'s `false` port (a precomputed set). Evaluating never allocates.
+
+Two changes outside the decision module serve selection cost: `EventView` reads the raw name once when it is created,
+and `Predicate::compile` fuses an `any` whose operands all match the intake name (the shape endpoint allowlists lower
+to) into one node that reads the intake name once and tests each matcher in turn.
+
+The **R4 memo** (`DecisionMemo`) is keyed by `MemoKey { context: Context::key().as_u64(), kind }` (`saluki-core`'s
+`Context::key()` and `ContextKey::as_u64()`, added for this), direct-mapped with `DECISION_MEMO_ENTRIES` (4,096)
+entries, one probe per lookup (`get_or_insert_with` probes once for a lookup and the insertion after a miss), an
+insertion overwriting its entry; an entry stores the key and only the exit-set words the decision needs, so a decision
+of up to 64 exits takes 24 bytes per entry (96 KiB per memo). Colliding contexts share an entry, as native aggregation
+treats them as one context. The region driver allocates one memo per memoized decision per generation when it prepares
+the generation and drops it with the generation.
+
+**Running a decision** (driver): for each buffer, the driver computes every event's exit set (from the memo when the
+decision is memoized), counts runs of equal sets into the decision's `ExitSetCounts` (a hash table of
+`COUNTED_EXIT_SETS`, 64, distinct sets, with events and their points), and counts events per register exit for exact
+buffer capacities. Then: a buffer whose events all take one exit set moves whole to the last register its exits lead
+to, with a copy to every other; when one register receives every event that goes to any (the later of two such), the
+original buffer keeps those events in place (`retain`, order-preserving) and every other register gets a buffer of
+copies of exactly its size; otherwise every register gets a buffer of exactly its size, each event moving to the last
+register its set leads to and copied to the others. Per-node, per-port counts (`plan_node_events_total`, and the native
+`PortEvents` counters ADP returns from `RegisterTelemetry::port_events`) and each decision `drop`'s policy loss (events
+and points) are derived from the counts per exit set when the region publishes or releases the generation, off the data
+path, exactly, because a decision has no `merge`; a decision whose events take more than 64 distinct sets between
+publications derives early and counts on. `RegionConfig::with_memo_entries` (`test-util` only) changes the memo size
+for tests and benches; production has no selection flag.
+
+**Rewrites** (stage 4, `compile::rewrite`). `compile` runs `optimize(&plan, &RewriteContext::new(&registry, &frame,
+&report))` before placement, on the one path from a candidate to its programs that the installer core takes for the
+boot generation and every later one; `compile_unvalidated` (a degraded default program) runs no logical rewrite.
+`optimize` applies `PIPELINE` (each a `Rewrite { id, apply(&RewriteContext, &Plan) -> Option<Rewritten> }`) to a fixed
+point, at most `MAX_PASSES` (8) passes and `MAX_APPLICATIONS` (1,024) applications, in the order R3, R5a, R6, R7: R3
+first, so that no later rewrite sees a constant `split` or an unreachable node; R5a before R6, since R5a brings filters
+up to a `tee`'s direct targets, the only form R6 hoists; R7 last, so that it also orders the predicates R5a's partial
+push-downs restrict and R6's hoisted copies. A site one rewrite opens for an earlier one is taken in the next pass.
+Every application is checked: the rewritten plan must validate without the catalog (`validate::revalidate`: rewrites
+change no outputs, bindings, or scopes, which are all the catalog checks; it also checks that every scope input names
+an output port of the plan, as scope closure checks exits, since rewrites remove nodes), place into the boot frame, and
+leave every kernel in the slot the plan before it placed the kernel in (`rewrite::moved_kernel`: a kernel is built in
+the resource group `<region>.<node>`, so moving it would change its memory accounting and R1's cuts unrecorded; this
+happens when a filter would move above a kernel across an R1 cut). One that fails is skipped, the plan unchanged, and
+recorded, and a rewrite never proposes a skipped site again (`RewriteContext::is_rejected`); a plan that does not place
+is not rewritten. Each application leaves a `RewriteRecord { id, outcome: Applied | Skipped { reason }, nodes,
+justification, telemetry: Vec<TelemetryEffect>, capacity_rule }`. `CompiledPlan` carries the rewritten `plan`, the
+logical records followed by every decision's records (`rewrites`, split by `logical_rewrites()` and
+`decision_rewrites()`), and `converged`; the installer core keeps them per installed generation
+(`InstallerCore::active_rewrites`, which ADP counts in `plan_rewrites_applied`), and `Explain::with_rewrites` renders
+them as the `rewrites` section (left out of documents of plans not compiled). Tests run one rewrite alone through the
+pipeline's own loop and checks (private `run_pipeline(plan, ctx, rewrites)`).
+
+**R3 and R7 in structure** (stage 4). R3 (`compile::rewrite::r3`) folds a `split` when its validated port types make
+it constant: one port carries no kind while its input carries some. That covers literal constants after canonical
+form (`const`, a junction that `const` operands decide, `not` of either) and predicates that `kind_in` leaves decide
+for every kind the input can carry (validation's `predicate_can_match` warning); `flag` and `is_empty` stay opaque
+whatever their operands, as in port types, and decision compilation folds them. The `split` becomes an edge from its
+input to its live port's target (whose type is the input's, so no downstream type changes); every node all of whose
+inputs the dead port or a removed node feeds is removed; a `merge` the dead subgraph feeds that keeps another input
+keeps its live inputs, renumbered in order (`inputs` decreases). A site is not proposed when the dead subgraph would
+remove a source, a fence, a stateful or dynamic operator, or a node a scope's inputs or exits name, when a node other
+than a `merge` would lose an input, when a scope exit names the live target's port, or when the `split`'s input
+itself carries nothing (it sits below another operator's dead port, which needs its edge). Folding to `true` relies on
+regions receiving only metrics: a compiled decision sends any other event down every `split`'s `false` port, and a
+region host's input type is `EventType::Metric`
+(`r3::tests::regions_receive_only_metrics_which_folding_a_split_to_its_true_port_relies_on` pins both). One
+application folds the first such `split` in plan order with all it makes unreachable. Outputs stay declared; a removed
+`emit` leaves its exit idle. Every port R3 keeps carries what it carried, in the same order, so the rewritten plan
+delivers every output's records in the same order and, under any capacity bound, refuses the same ones
+(`capacity_rule: false`). The record lists the `split`, removed nodes, and changed merges in plan order; telemetry
+effects: the `split`'s per-port counts, and the (zero) series of removed `split`s, `tee`s, kernels, and `drop`s. A fold
+the frame cannot run (for example one that would connect an opaque host straight to an output, where the frame routes
+the host into a slot) is skipped by the pipeline and recorded; the decision that runs the `split` still folds its
+constant predicate (a decision-time R3 record). R7 (`compile::rewrite::r7`) reorders the operands of every pure
+`all`/`any` of a node's predicate parameters (every leaf is pure; an exhaustive `is_pure` makes a future signal leaf
+opt out), cheapest to decide first: by static cost (`const` 1, `kind_in` 2, `flag`/`is_empty` 3, `host_unset` 6, exact
+`name`/`host` 8, exact `intake_name` 12, prefix 16 and 20, `has_tag` 32, tag values 40 exact and 48 prefix; a junction
+the sum of its operands; a `matches` whose mode is bound counts as prefix), ties by canonical JSON without resolved
+values, so the order never depends on a binding's value. The ranks follow a measurement of each leaf over a
+DogStatsD-like metric (27-byte name, ten tags, release build): constants, kinds, and configuration leaves about 1.5 ns,
+`host_unset` 2, a name or host match 7, an intake-name match 17 to 19 (normalization check first), `has_tag` 11 on a
+hit at the first tag and 90 on a miss, a tag value 58 to 63; R7 assumes a tag scan misses. R1's `split` estimates only
+rank a `split` against its chain's kernels, and no default-program `split` reads tags. With an explicit
+`OperandProfile` (`RewriteContext::with_profile`; observations of `(evaluated, matched)` keyed by canonical form without
+resolved values), operands are ordered by expected cost per decision, `cost × evaluated / decided` (decided = false
+evaluations for `all`, true ones for `any`; unobserved operands 1/2; never-deciding operands last), then by static
+order; nothing compiles with a profile yet. R7 writes the order into the plan's predicate parameter, native nodes'
+included (amendment 52); canonical forms, and so R2 and the duplicate analysis, do not change. A decision's predicate
+table keeps each predicate as written as well, and `RegionProgram::fingerprint` covers it, so a program whose only
+change is R7's order (after a degraded boot generation, which compiles without rewrites, or with another profile) is a
+new program that regions install, and the installed generation's rewrite records describe what runs. Both
+default-program fixtures and ADP's lowering write no constant `split` and every junction in the static order, so no
+logical rewrite applies to the default program (`agent-data-plane`
+`lowering::tests::no_configuration_of_the_matrix_gives_r3_or_r7_anything_to_rewrite` checks every configuration of the
+lowering matrix: the compiled plan is the lowered one, and no logical R3 or R7 record exists).
+
+**R5a** (`rewrite::r5a`) pushes a filter (a `split` one of whose ports leads straight to a `drop`, or an
+order-independent operator of `filter` cardinality, shared as `rewrite::filters::Filter`) up across the operator `O`
+directly above it, when `O` is synchronous, stateless, reads no signal, is order-independent, is a map (one record for
+each record received: above an expansion, the filter and its `drop` would count one record where they counted each
+record it made) with one output port (which leads to the filter, so the filter applies to every consumer), carries its
+points in the form they arrived in, and is not itself a filter (so two filters never trade places). A map with several
+inputs must be a `merge`, a per-record union: for another one, filtering each input need not filter its output. The
+kinds that commute are those reaching `O` (the port types feeding it) for which `O` writes no `kind`, maps the kind to
+itself, and writes no field the filter reads for that kind. Three forms, all at the first site in plan order: when
+every reaching kind commutes and `O` has one input, the filter moves **whole** (its ID, its `drop`, and its counts
+unchanged); when `O` is a `merge`, a copy goes on **each input whose kinds the filter can remove something of**
+(`kinds_where(true, input kinds)` of its drop condition is not empty; the others keep their edge) and the filter goes;
+when only some kinds commute, a `split` filter gets a **restricted copy** above `O` (`all(kind_in(K), p)` for a filter
+dropping its `true` port, `any(kind_in(not K), p)` for one dropping its `false` port, written around the original
+predicate's JSON so bindings stay as they are) and stays below unchanged as the residual. A filter operator is never
+restricted (a `split` and `merge` around it would reorder a batch). A restricted copy is not inserted when it could
+drop nothing (`kinds_where(true, K)` is empty) or when one that covers it already applies to every record reaching `O`:
+`filters::applied_above` walks up through nodes that change nothing the copy reads and through merges on every input,
+to a `split` whose **restriction** (`filters::restriction`: the drop condition of `p` and the kinds `K` of a restricted
+copy, or a filter's own drop condition and every kind) has the same drop condition and kinds that include `K`.
+Comparing restrictions rather than the copies' drop conditions is what makes partial push-down reach its fixed point in
+one copy. **Native filters move only whole** (amendment 50): ADP reports native series under native node IDs (the
+listener filterlist's and post-aggregation filter's `true` port, the endpoint allowlists' `false` port), which a copy
+would not carry, so a filter any of whose nodes has native provenance is never copied (across a merge or partially).
+The default program is therefore unchanged by R5a and R6: its only reachable site, the post-aggregation filter below
+`dsd_post_agg_filter_in`, is native. A filter never crosses a scope boundary: the edge from `O` to the filter is no
+scope input or exit, no input of `O` is an exit (an input of `O` may be a scope input; the filter is then first in that
+scope), and no port of the filter's own nodes is a boundary (`ScopeBoundaries::bound_at`). New nodes are
+`<base>_r5a<n>` in the base node's namespace and provenance (`rewrite::filters::Edit::fresh_id`, shortened to 63
+characters). Records list `O`, the filter, and its `drop` in plan order, then the inserted nodes; telemetry effects:
+`O`'s counts `changed` when `O` reports per-port counts (a kernel, or a one-port `tee`, a decision), the copies
+`added`, the replaced filter and `drop` `removed` (merge form) or `changed` (residual), and, for a whole move across an
+`O` that declares capacity loss, the filter and its `drop` `changed` (they now count what `O` sheds). `capacity_rule`
+is set when `O` declares capacity loss (no native stateless operator does; the harness's `test_shed` does).
+
+**R6** (`rewrite::r6`) hoists the filters on every port of a `tee` above it when each port leads directly to a filter,
+none native or dynamic, and they remove the same records: `split` filters with equal canonical drop conditions (the
+predicate, or its negation when the `false` port drops; operands compared with their bindings and resolved values, so
+a binding never equals a literal of its value and structure never depends on a value), or one filter operator with
+equal parameters. One copy of the first (`<first>_r6h<n>`, with its `drop`) goes between the `tee` and its input, and
+the per-port filters, which would pass everything below it, are removed. No scope boundary is crossed (the `tee`'s
+input is no exit; its ports and the filters' inputs are no scope input or exit) and no port of a filter or `drop` it
+removes is a scope input or exit. Records list the `tee`, every filter and `drop`, then the hoisted pair; telemetry:
+the `tee` `changed`, the per-port filters and drops `removed`, the hoisted pair `added`. Neither rewrite relies on the
+capacity rule except across an operator that declares capacity loss: under the interpreter's delivery order (see
+Reference interpreter), every output receives the same records in the same order.
 
 **Watermark progress** (contract in stage 3, used in stage 6): for each exit leading to a state owner, the driver tracks
 the last `t_a` forwarded per admission point. When a batch leaves no events on such an exit and the last forwarded `t_a`
@@ -558,8 +781,14 @@ more than one physical path from the same admission point.
   RegisterTelemetry)` registers the program's counters; the driver never registers telemetry. `RegionBounds::new(&plan,
   &registry, &program)` is the driver's `MemoryBounds` for `RegionHostBuilder::with_bounds`: each kernel's operator
   `specify_bounds` in a subcomponent named `kernel_accounting_name(node)` (the node's local ID, or `policy` for every
-  policy node), plus one full events buffer per register of the boot program. Kernels of later generations that the boot
-  program lacks are not accounted for until stage 7 scopes registrations.
+  policy node); each predicate of its decisions under the subcomponent of the first `split` using it (stage 4: the
+  `SharedPredicate`, its values, `Predicate::value_bytes`, and its matchers' entries,
+  `CompiledPredicate::matcher_bytes`); one full events buffer per register of the boot program; and what its decisions
+  keep (all firm): the memo of each memoized decision (`decision memos`), the counts per exit set of each decision
+  (`decision counts`, `ExitSetCounts::footprint(COUNTED_EXIT_SETS)`, 7 KiB each), and once the scratch of its decision
+  steps (`decision scratch`: an exit set per event of a full batch, 32 KiB, and a count and an output buffer per exit of
+  the widest decision). Kernels, predicates, memos, and counts of later generations that the boot program lacks are not
+  accounted for until stage 7 scopes registrations.
 - **Generations.** One program per live generation, sorted by ID, each behind a `Weak<GenerationToken>`. Generations
   whose token is gone are released off the data path, publishing their counts: on every control message, including
   `Release`, which the installer sends to every region when a generation retires, and when telemetry is published.
@@ -576,20 +805,21 @@ more than one physical path from the same admission point.
   reused `PortOutputs`. A preparation reuses every instance the region holds for a key, whatever the installer
   computed, and drops brought kernels it does not need.
 - **Execution.** Programs are translated once, at preparation, into ops with resolved indices (a `drop` node becomes
-  an index into the program's counts; a split holds its `Arc<CompiledPredicate>`). A batch runs to completion in one
-  `process` call over reused registers. A split whose other port leads to a `drop` filters in place with `retain`,
-  counting the drop's events and points as it goes (the native filter's work, and the default program's only split
-  shape through stage 3); a split to two registers moves a whole buffer when every event goes one way, and otherwise
-  moves the matching events with `FixedSizeEventBuffer::move_into` (order-preserving, no clones) to a buffer of exactly
-  their size while the original keeps the rest; events other than metrics take the `false` port. A tee copies a buffer
-  for every register target but the last, which receives the original. Exits receive a copy of the header with the
-  step's entry, and empty buffers are not sent. A kernel that yields on a batch is called again, as the interpreter
-  does, and one that yields 1,024 times panics (a broken kernel, supervised): stateless kernels complete every batch.
-- **Telemetry.** Per generation, in plain integers: events per output port of every kernel and decision, policy loss
-  per `drop` node, and each kernel's reported loss by class; per region, invalid loss. `publish_telemetry` adds them to
-  `plan_node_events_total{component_id:<node>, port}` and `plan_loss_total{component_id, class}` (per point), and to
-  any further counters `RegisterTelemetry::port_events` returned for a node and port: ADP returns the native
-  `PortEvents` metrics of its telemetry profiles there (the listener filterlist's and post-aggregation filter's `true`
+  an index into the program's counts; a decision holds its compiled `DecisionFunction`). A batch runs to completion in
+  one `process` call over reused registers. A decision runs as **Decisions** above describes: a buffer whose events all
+  take the same exits moves whole (a tee's copies, or a filter that keeps everything), a filter keeps its events in
+  place with `retain`, and events split between registers move to their last register and are copied to the others, in
+  buffers of exactly their size; events other than metrics take every `split`'s `false` port. Exits receive a copy of
+  the header with the step's entry, and empty buffers are not sent. A kernel that yields on a batch is called again, as
+  the interpreter does, and one that yields 1,024 times panics (a broken kernel, supervised): stateless kernels complete
+  every batch.
+- **Telemetry.** Per generation, in plain integers: events per output port of every kernel, events and points per exit
+  set of every decision (from which each decision node's per-port counts and its `drop`s' policy loss are derived when
+  the region publishes), policy loss per other `drop` node, and each kernel's reported loss by class; per region,
+  invalid loss. `publish_telemetry` adds them to `plan_node_events_total{component_id:<node>, port}` and
+  `plan_loss_total{component_id, class}` (per point), and to any further counters `RegisterTelemetry::port_events`
+  returned for a node and port: ADP returns the native `PortEvents` metrics of its telemetry profiles there (the
+  listener filterlist's and post-aggregation filter's `true` port, and from stage 4 each endpoint allowlist's `false`
   port). `PlanTelemetry` registers the plan-level counters with a `MetricsBuilder`; `NoTelemetry` registers none.
 - **Supervision.** The driver records which generation and node each call is running. `reset_after_panic` clears the
   registers, port outputs, and per-call counters, then decides by the generation's `PanicBudget`: `Zero` (the default
@@ -902,8 +1132,22 @@ Time and admission:
   points from which a path reaches it without crossing another opaque host, or `None` while one of them has admitted
   nothing. Hosts receive it at every tick; kernels' time-driven output (ticks and finishes) is stamped with it as
   `t_a`. `RunOutput::watermark(node)` reports the final value.
-- `advance` ticks state owners in topological order, delivering each one's output before the next ticks; `close`
-  finishes every kernel and host under `DrainPolicy::Shutdown` in topological order, and any later event is an error.
+- **Delivery order** (stage 4). Every trace event that moves records (`admit`, `advance`, `close`, and the retirement
+  of an installation's old plan) is one **pass**: nodes run in topological order (ties by plan order), with the `emit`s
+  last, in plan order; at its turn a node runs every batch waiting at it, input port by input port and in arrival
+  order within a port, then ticks (`advance`, state owners) or finishes (`close` under `DrainPolicy::Shutdown`, a
+  retirement under `Retire`, except carried state owners). A `merge` therefore passes its inputs on in port order, as
+  a region's `concat` does, and the order in which an output receives records follows from the dataflow alone (what
+  each node does to its input's order, `merge` port order, `emit` plan order), never from path lengths, from how a
+  port's records are cut into batches, or from which of two unrelated nodes runs first. Through stage 3 the interpreter
+  delivered breadth first, so a `merge` received a shorter path's records first, and a rewrite that only shortened or
+  lengthened a path (an R3 fold, a partial push-down) changed which records a capacity bound inside one batch cut; a
+  depth-first order (tried in stage 4) depends on how a kernel cuts its output into buffers instead. Any event after
+  `close` is an error. Tests:
+  `interpret::tests::{a_merge_passes_its_inputs_on_in_port_order_whatever_the_lengths_of_their_paths,
+  records_from_several_emits_reach_one_output_in_the_plan_order_of_the_emits,
+  time_driven_output_of_several_state_owners_reaches_a_merge_in_port_order}`, and
+  `r5a::tests::a_partial_push_down_keeps_the_order_in_which_an_output_receives_records`.
 
 Installations commit at once, since no batch is ever in flight. An invalid plan (validated against the interpreter's
 catalog) is recorded as `InstallOutcome::Rejected` and the active plan stays. State owners correspond by node ID: an
@@ -911,13 +1155,37 @@ unchanged one (`Retain` and equal parameters) keeps its kernel or adapter instan
 flows through the new plan; `Reject` rejects the installation; `Cut`, `Retain` with changed parameters, and adding or
 removing a stateful kernel are `Unsupported` (stage 6), and adding or removing a host component is `Unsupported`
 (stage 7). The old plan's other kernels finish under `DrainPolicy::Retire`, their output flowing through the old
-generation. `capacity` is `Unsupported` until the delivery-policy slot (stage 3), `cancel` until a `cut` can leave an
-installation pending (stage 6), and a plan whose operators read signals until stage 10; `signal` events are recorded
-(`RunOutput::signal`) and change nothing.
+generation. `cancel` is `Unsupported` until a `cut` can leave an installation pending (stage 6), and so is a plan whose
+operators read signals until stage 10; `signal` events are recorded (`RunOutput::signal`) and change nothing.
+`capacity(output, n)` (stage 4, `interpret::capacity::OutputCapacity`) bounds the output to `n` more records until the
+next `capacity` event for it replaces the bound, across installations, and may name an output before a plan declares
+it; an unbounded output accepts everything, and every `emit` to one output shares its bound. Records beyond the bound,
+in delivery order, are counted (events and points) as `capacity` loss of the delivering `emit` and kept in
+`RunOutput::refused(output)`, with their generation and installation
+(`interpret::tests::{capacity_bounds_an_output_across_installations_and_counts_what_it_refuses,
+capacity_bounds_what_an_output_accepts_until_the_next_bound_and_across_installations}` pin each of these with
+hand-written expectations).
 
 `RunOutput` lists every declared output's `EmittedRecord { generation, install, admitted_at, metric }` (`install` is
-the trace position of the generation's `install` event), the install outcomes, per-node loss by class (telemetry, not
-equivalence), watermarks, and signals.
+the trace position of the generation's `install` event), the records each output refused to capacity, the install
+outcomes, per-node loss by class (telemetry, not equivalence), watermarks, and signals.
+
+Under capacity pressure, `equivalence::compare_under_capacity(&policy, &original, &rewritten)` checks the
+specification's rule, where `policy` is the original plan's delivery on `Trace::without_capacity()` and each side is a
+`CapacityOutcome { delivered, refused }` (`CapacityOutcome::from_run`): no output receives a point more often than the
+policy delivers it (no excluded contribution), no point is lost (policy count minus delivered count) more often than
+in the original execution (no more capacity loss for any policy-included contribution), and the outputs refuse no more
+points in all. Without capacity pressure it holds exactly when both deliver what the policy delivers.
+
+The per-point check is meaningful because both executions use the interpreter's one delivery order (amendment 49): a
+rewrite that changed the interleaving at a `merge` would move loss between contributions without changing how much is
+lost. The rewrite property tests check what the rule needs directly: a rewrite that keeps every remaining port's
+records in order delivers every output's records in the same order (`compile::rewrite::random_plans::check_same_order`,
+which compares the ordered `EmittedRecord`s), and the capacity variants check delivered and refused points exactly,
+plus `compare_under_capacity`, under arbitrary bounds (0 to 3 records, cutting inside batches) and under batch-aligned
+bounds (whole batches' counts from an unbounded run); where a rewrite crosses an operator that loses to capacity, the
+rewrite harness checks the rule itself and that no node loses more to capacity in the rewritten plan
+(`harness::Case::check_capacity_loss`), at an operator as at an output.
 
 `equivalence` flattens each delivered record into `Point { context, kind, metadata, timestamp, value }`: the context by
 its parts (name, host, deduplicated sorted tags and origin tags), the kind with a rate's interval, scalar values compared
@@ -955,8 +1223,25 @@ re-admitted or delivered), and each output's binding (recipients, delivery polic
 behavior, the physical edges feeding its encoder, and its idle exits). Golden files:
 `fixtures/explain/default-program-stage3.{json,txt}` and `default-program-stage3-no-aggregation-pipeline-off.txt`, for
 the fixtures with opaque gateways, checked separately against hand-derived exits, idle flags, edge counts, segments, and
-bindings. Later sections land with their stages: rewrites with justifications and telemetry effects (4); plan diff and
-acknowledgments (5); state owners and transitions (6).
+bindings. Stage 4 adds the `rewrites` section, before `physical`, also additively: `Explain::with_rewrites(&records)`
+lists every record of `CompiledPlan::rewrites` in order (the logical rewrites as the pipeline considered them, then the
+decision-time ones by slot and decision), each `RewriteEntry { id, outcome, reason, nodes, justification,
+capacity_rule, telemetry: [{ node, change, detail }] }`, rendered in text as `rewrites (n)`, one `<id> applied|skipped:
+<nodes>` line per record (`[capacity rule]` when it relies on the rule), then its reason, justification, and each
+telemetry effect. A document built with `with_rewrites` describes the candidate in its graph and the rewritten plan in
+its physical sections. The stage 3 golden files list none (`rewrites (0)`: in the opaque-gateway form nothing is memoized or
+folded). Two more golden files show records: `default-program-stage4.{json,txt}`, the stage 4 default program (gateways as
+`split`s) in the frame ADP builds from it, whose only records are decision-time (Multi-Region Failover folded by R3, the
+policy decision memoized by R4); and `artifact-like-policy.txt`, the same program with its policy region edited as an
+author edits the export (a `debug` filter on each of the fan-out's five ports, a tag projection and a name filter on the
+primary path, a canary switch left on in front of Multi-Region Failover), compiled into the default program's boot
+frame, which gets every logical rewrite (R3 folds the canary, R5a moves the name filter above the projection, R6 hoists
+the five filters above the fan-out, R7 orders the moved filter's predicate) and both decision-time ones on the
+enlarged policy decision. Hand-written checks
+(`explain::tests::physical::{the_stage_4_default_program_gets_only_decision_time_rewrites,
+an_artifact_like_policy_region_explains_every_rewrite_it_gets}`) pin the records, the rewritten plan's edges, and the
+reordered predicate. Later sections land with their stages: plan diff and acknowledgments (5); state owners and
+transitions (6).
 
 ### Limits
 
@@ -1255,22 +1540,23 @@ later stages use (`AdpCatalog::to_document`, `NativeOutputs::routing_groups`) st
 - `telemetry_profiles.rs` maps (reserved node ID, operator) to `NativeTelemetry { component_id, component_type,
   profile }`, outside the IR; `{i}` patterns cover routing groups. Profiles list the native metrics a node keeps
   (`ListenerFilterlist`, `TimestampSplit`, `TagFilterlist`, `PostAggregateFilter`, `EndpointAllowlist`), or are `Host`
-  (the component reports its own, for sources and opaque hosts), `Mapper` (caches named after the component), or
-  `Silent`. Both gateway forms are listed: opaque hosts through stage 3, `split` with `_true`/`_false` terminals from
-  stage 4. A reserved node keeps its native metric names while its operator matches the profile, whatever its
-  provenance. Each kept metric has a `MetricSource`, which says who records it in the plan-driven topology: `Kernel`
-  (the kernel's telemetry, registered by its factory for the node's identity), `PortEvents(port)` (events leaving a
-  `split`'s port, which the region host counts: the listener filterlist's and post-aggregation filter's drops on `true`,
-  an endpoint allowlist's on `false`), `BindingLength(binding)` (`metric_filterlist_size`, the configured list's length),
-  `MatcherEntries { binding, prefixes }` (`metrics_endpoint_allowlist_size{match_type}`, the distinct names or
-  compacted prefixes), and `BindingChanges(bindings)` (`metric_filterlist_updates_total`,
-  `tag_filterlist_updates_total`: configuration changes that changed those live bindings). The installer records the
-  binding-derived values at each installation; `KernelBuildContext` needs no replacement flag, since a rule change
-  builds a new kernel that the installer counts. Tests check that every lowered node's profile names its provenance
-  component, that the names equal the native components' constants, that kernels built with a profile's identity
-  register exactly its `Kernel` metrics (no other metric under the node's labels), and that every other source names a
-  port or bindings of the node it is kept on, in the lowered program and in the plan crate's stage 4 fixture, with
-  `BindingChanges` naming only live bindings.
+  (the component reports its own, for sources and aggregation), `Mapper` (caches named after the component), or
+  `Silent`. The gateways are listed in their stage 4 form only, a `split` with a `_true` emit (the encoder's identity)
+  and a `_false` drop (the gateway's): the routing filters keep `EndpointAllowlist`, the failover gateways are
+  `Silent`, as natively; an `opaque_host` with a gateway's ID has no native identity. A reserved node keeps its native
+  metric names while its operator matches the profile, whatever its provenance. Each kept metric has a `MetricSource`,
+  which says who records it in the plan-driven topology: `Kernel` (the kernel's telemetry, registered by its factory for
+  the node's identity), `PortEvents(port)` (events leaving a `split`'s port, which the region host counts: the listener
+  filterlist's and post-aggregation filter's drops on `true`, an endpoint allowlist's on `false`),
+  `BindingLength(binding)` (`metric_filterlist_size`, the configured list's length), `MatcherEntries { binding, prefixes
+  }` (`metrics_endpoint_allowlist_size{match_type}`, the distinct names or compacted prefixes), and
+  `BindingChanges(bindings)` (`metric_filterlist_updates_total`, `tag_filterlist_updates_total`: configuration changes
+  that changed those live bindings). The installer records the binding-derived values at each installation;
+  `KernelBuildContext` needs no replacement flag, since a rule change builds a new kernel that the installer counts.
+  Tests check that every lowered node's profile names its provenance component, that the names equal the native
+  components' constants, that kernels built with a profile's identity register exactly its `Kernel` metrics (no other
+  metric under the node's labels), and that every other source names a port or bindings of the node it is kept on, in
+  the lowered program and in the plan crate's stage 4 fixture, with `BindingChanges` naming only live bindings.
 
 ### Default program shape
 
@@ -1300,17 +1586,29 @@ metrics_enrich_in (merge) -> metrics_enrich (host_enrichment) -> metrics_enrich_
               .true -> emit af_metrics_encode   .false -> drop
 ```
 
-Frame for that program: slots `dsd_pre_aggregation` (mapper through tag filterlist) and `metrics_enrich` (post-aggregation
-filter through the policy region); fixed components `dsd_in`, `dsd_agg` (opaque, readmit), the other sources, and the
-encoders. The `metrics_enrich` slot keeps the native ID that upstream wiring uses. Before stage 4 the three gateways lower
-to `opaque_host` nodes backed by today's components (`{component, input: any, outputs: {out: <the output's accepted
-type>}}`), each with a direct edge from its `out` port to an `emit` named `<gateway>_out` by `derived_terminal_id`. A
-branch exists only when native wiring builds it, decided from the startup configuration by the predicates `run.rs` uses
-(`DataPlaneConfiguration`'s pipeline gates, `no_aggregation_pipeline`, connected mode for `liveness_in` and, with a
-non-zero `expected_tags_duration`, host tags, and the output gates above). `metrics_enrich_in` and the tees are present
-even with one input or port, so their IDs never depend on which other branches exist; `dsd_post_agg_filter_in` exists
-only with the no-aggregation pipeline, whose passthrough is its second input. `dsd_stats_out` and `dsd_debug_log_out`
-stay host edges on `dsd_in.metrics`, outside the plan.
+Frame for that program: with default estimates, slots `dsd_pre_aggregation` (mapper through tag filterlist) and
+`metrics_enrich` (enrichment and the whole policy region, one decision), the post-aggregation filter beside the policy
+region when it fits the budget and in `dsd_post_agg_filter_region` when the fan-out is wider (a routing group or more,
+see Physical frame); a mapper profile or a namespace pipelines the pre-aggregation chain; fixed components `dsd_in`,
+`dsd_agg` (opaque, readmit), the other sources, and the encoders. The `metrics_enrich` slot keeps the native ID that
+upstream wiring uses. From stage 4 the gateways lower as drawn (through stage 3 they were `opaque_host` nodes backed by
+the native components, with `<gateway>_out` emits), and the policy region is one decision of `metrics_enrich` (see
+Pipelining). A routing group's filter is bound to its group by key,
+`metrics_endpoint_routing.group.{key}.{names,prefixes}`, the lists in the group's canonical form (sorted, deduplicated,
+prefixes compacted, names a prefix covers removed), matched as intake names; Multi-Region Failover reads
+`multi_region_failover.enabled` (startup; always true when the branch exists) and
+`multi_region_failover.metric_mirroring.{enabled,allowlist}` (live), matched as raw names; autoscaling failover reads
+`autoscaling_failover.metrics` (startup), raw names of scalar series. `flag` and `is_empty` stay in the program as
+written (only compiled programs fold them), so a mirroring change changes only `mrf_metrics_gateway.predicate`, and
+installs a generation. Non-metric events take `false`, which drops them, as the native gateways do. The legacy
+`MetricFilter` component (`components/metric_filter`) is `#[cfg(test)]`, a reference for the legacy topology only;
+`saluki-components`' autoscaling gateway stays public. A branch exists only when native wiring builds it, decided from
+the startup configuration by the predicates `run.rs` uses (`DataPlaneConfiguration`'s pipeline gates,
+`no_aggregation_pipeline`, connected mode for `liveness_in` and, with a non-zero `expected_tags_duration`, host tags,
+and the output gates above). `metrics_enrich_in` and the tees are present even with one input or port, so their IDs
+never depend on which other branches exist; `dsd_post_agg_filter_in` exists only with the no-aggregation pipeline, whose
+passthrough is its second input. `dsd_stats_out` and `dsd_debug_log_out` stay host edges on `dsd_in.metrics`, outside
+the plan.
 
 `programmable_metrics::lowering::Lowering::new(startup: Arc<SalukiConfiguration>, facts: HostFacts) ->
 Result<Option<Lowering>, GenericError>` runs once at boot (`None` when no metrics pipeline is required): it checks the
@@ -1334,24 +1632,25 @@ The shape is checked in as hand-written plans, `lib/saluki-metric-plan/fixtures/
 branch wired, the no-aggregation pipeline on, stage 4 gateways) and `default-program-no-aggregation-pipeline-off.json`,
 which validate with no findings against a hand-written catalog. Inline terminals are named by `derived_terminal_id`, and
 a test checks that the IR represents every row of the specification's default lowering coverage table. In ADP, a
-hand-written `lowering/fixtures/every-branch.json` pins the stage 2 lowering of one every-branch configuration exactly,
-with fingerprints checked against hand-written binding documents, and the same lowered program runs through the
-reference interpreter (every native kernel, the default aggregation adapter, and gateway adapters applying their native
-components' selections) over the plan crate's default-program trace, against hand-derived outputs and policy loss. A
-configuration matrix (24 configurations: the no-aggregation pipeline on and off, every source alone and together,
-including checks without DogStatsD and the trace sampler without the OTLP source (proxy mode with traces not proxied),
-connected and standalone, host tags, zero, one, and two routing groups
-including a shared group, an endpoint with empty lists, and a policy on the primary endpoint, both failover branches
-wired or not, mapper profiles, namespace prefix, filterlists including the legacy blocklist, a metrics override intake,
-the primary endpoint repeated as an additional endpoint, repeated histogram statistics, and aggregation settings) lowers
-to plans that validate with zero findings, and each is compared structurally with the blueprint `run.rs`'s
-`create_topology` builds for it (in standalone mode, or with standalone mode off and a fixed host provider for the
-connected entries): every lowered node maps by a documented table onto a legacy component, a fan-in, or a fan-out
-(emits through the output they name, opaque hosts through their `component` parameter), and the legacy edges leaving
-the mapped outputs and entering the mapped components are exactly the plan's, plus the host taps on `dsd_in.metrics`.
-What runs inside a chained component (the mapper in `dsd_enrich`, host tags in `metrics_enrich`) is outside the
-comparison; the presence table pins whether host tags are lowered. Re-lowering tests check that a change to a `Live` input changes only the parameters bound to
-it, and that a change to a `Startup` input changes nothing.
+hand-written `lowering/fixtures/every-branch.json` pins the lowering of one every-branch configuration exactly (routing
+group keys hand-computed with `shasum -a 256`), with fingerprints checked against hand-written binding documents, and
+the same lowered program runs through the reference interpreter (every native kernel, the default aggregation adapter,
+and the gateways as `split`s; Multi-Region Failover also with an allowlist and with mirroring off) over the plan crate's
+default-program trace, against hand-derived outputs and policy loss. A configuration matrix (25 configurations: the
+no-aggregation pipeline on and off, every source alone and together, including checks without DogStatsD and the trace
+sampler without the OTLP source (proxy mode with traces not proxied), connected and standalone, host tags, zero, one,
+and two routing groups including a shared group, an endpoint with empty lists, and a policy on the primary endpoint,
+both failover branches wired or not, metric mirroring with an allowlist, mapper profiles, namespace prefix, filterlists
+including the legacy blocklist, a metrics override intake, the primary endpoint repeated as an additional endpoint,
+repeated histogram statistics, and aggregation settings) lowers to plans that validate with zero findings, and each is
+compared structurally with the blueprint `run.rs`'s `create_topology` builds for it (in standalone mode, or with
+standalone mode off and a fixed host provider for the connected entries): every lowered node maps by a documented table
+onto a legacy component, a fan-in, or a fan-out (emits through the output they name; a gateway's `split` and its `false`
+drop onto the legacy gateway transform), and the legacy edges leaving the mapped outputs and entering the mapped
+components are exactly the plan's, plus the host taps on `dsd_in.metrics`. What runs inside a chained component (the
+mapper in `dsd_enrich`, host tags in `metrics_enrich`) is outside the comparison; the presence table pins whether host
+tags are lowered. Re-lowering tests check that a change to a `Live` input changes only the parameters bound to it, and
+that a change to a `Startup` input changes nothing.
 
 ### Topology construction, installer, stub, control surface
 
@@ -1379,20 +1678,22 @@ it, and that a change to a `Startup` input changes nothing.
   boot program.
 - **Topology** (`run.rs` `create_topology(config_system, env_provider, registry, Option<&mut ProgrammableMetrics>)`).
   Every pipeline is built by the same code in both modes, through four hooks of a `MetricsWiring` (`None`, `Plan`, and
-  the test-only `Legacy`): `add_baseline` (plan: the frame's outputs, with their encoders, forwarders, and the gateways
-  in front of them, built by the helpers the legacy path uses: `main_metrics_encoder`, `routing_group_branch`,
-  `mrf_metrics_branch`, `autoscaling_failover_branch`; the Cluster Agent endpoint is the host fact), `metrics_source`
+  the test-only `Legacy`): `add_baseline` (plan: the frame's outputs, with their encoders and forwarders, built by the
+  helpers the legacy path uses: `main_metrics_encoder`, `routing_group_encoder`, `mrf_metrics_branch`,
+  `autoscaling_failover_branch`, which return `MetricsBranch { encoder, forwarder }`; the Cluster Agent endpoint is the
+  host fact; the legacy path adds the gateway components itself), `metrics_source`
   for each source's `metrics` output (plan: recorded; legacy: connected to `metrics_enrich`), `add_dogstatsd` once
   `dsd_in` exists (plan: `dsd_agg` from `dogstatsd_aggregate_configuration`, with its context snapshot channel feeding
-  the context dump handler as before), and `finish` (plan: checks that the frame's fixed components and sources are
-  exactly what the native pipelines built, then a `RegionHostBuilder<MetricRegionDriver>` per slot, a blueprint edge per
-  frame edge, and an admission point per fixed-component output with `CLOCK_RESET_THRESHOLD` and no heartbeat). A
-  source's port is its named output (`dsd_in.metrics`, `trace_sampler.metrics`); aggregation's and an opaque host's one
-  port is the default output of its component (`dsd_agg`, the `component` parameter); a slot exit is `<slot>.<exit>`; an
-  output target is its `NativeOutput::component`. A region's factory builds the boot program's kernels when the topology
-  builds the region (each inside its own resource group), with `PanicBudget::DEFAULT_PROGRAM`, and reports generation
-  failures to the installer; its bounds are `RegionBounds`. `create_legacy_topology` (test-only) builds the legacy
-  metrics path through the same hooks, so the two blueprints differ only where the plan replaces native wiring.
+  the context dump handler as before), and `finish` (plan: checks that the frame's fixed components (sources and
+  aggregation; no opaque host since stage 4) and sources are exactly what the native pipelines built, then a
+  `RegionHostBuilder<MetricRegionDriver>` per slot, a blueprint edge per frame edge, and an admission point per
+  fixed-component output with `CLOCK_RESET_THRESHOLD` and no heartbeat). A source's port is its named output
+  (`dsd_in.metrics`, `trace_sampler.metrics`); aggregation's one port is the default output of `dsd_agg`; a slot exit is
+  `<slot>.<exit>`; an output target is its `NativeOutput::component`. A region's factory builds the boot program's
+  kernels when the topology builds the region (each inside its own resource group), with `PanicBudget::DEFAULT_PROGRAM`,
+  and reports generation failures to the installer; its bounds are `RegionBounds`. `create_legacy_topology` (test-only)
+  builds the legacy metrics path through the same hooks, so the two blueprints differ only where the plan replaces
+  native wiring.
 - **Telemetry** (`telemetry.rs`). `RegionTelemetry` implements `RegisterTelemetry` over `PlanTelemetry` and adds, for a
   node whose profile keeps a `PortEvents` metric on the port, the native counter under the node's native identity; it
   also gives each kernel its `KernelBuildContext`: the native component of its profile (or a transform named after the
@@ -1400,16 +1701,20 @@ it, and that a change to a `Startup` input changes nothing.
   resource group `<region>.<kernel_accounting_name(node)>` its memory and CPU time are accounted in. The native identity
   is for telemetry only: what a kernel holds is accounted under its region. `InstallerTelemetry` keeps handles to
   `plan_active_generation`, `plan_live_generations`, `plan_installs_total{outcome}` (`committed`, `unchanged`,
-  `superseded`, `retried`, `rejected`), and to every binding-derived native metric it records: `BindingLength`,
-  `MatcherEntries`, and `TagProjectionRules` gauges set at boot and at every commit from the committed plan's resolved
-  binding values (`tag_filterlist_size`, the number of tag filterlist rules, is `TagProjectionRules` since the stage 3
-  review: a kernel set it when it was built, so a candidate's kernel changed it before the commit, and an aborted one
-  left it wrong), and `BindingChanges` counters registered at boot, at zero, as the native components register theirs
-  when built (`register_change_counters`, added in stage 3E: before, the series appeared only with the first change),
-  and incremented once per observed change whose lowering changed a watched binding's resolved value. Handles are kept
-  because the internal telemetry evicts a metric that stays idle with no live handle. A change is compared by resolved
-  (normalized) values, so reordering a set-typed list is not an update, unlike the native live view, which counts any
-  change of the list as written.
+  `superseded`, `retried`, `rejected`), `plan_rewrites_applied{rewrite}` (one gauge per rewrite of `RewriteId::ALL`,
+  `R2` to `R7`, registered by the installer's first report, at boot, and set at boot and at every commit from
+  `InstallerCore::active_rewrites()`: applied records only, skipped ones are not counted; with Multi-Region Failover's
+  mirroring off, `R3` is 1, the gateway's folded predicate,
+  `installer::tests::the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_commit`), and to every
+  binding-derived native metric it records: `BindingLength`, `MatcherEntries`, and `TagProjectionRules` gauges set at
+  boot and at every commit from the committed plan's resolved binding values (`tag_filterlist_size`, the number of tag
+  filterlist rules, is `TagProjectionRules` since the stage 3 review: a kernel set it when it was built, so a
+  candidate's kernel changed it before the commit, and an aborted one left it wrong), and `BindingChanges` counters
+  registered at boot, at zero, as the native components register theirs when built (`register_change_counters`, added in
+  stage 3E: before, the series appeared only with the first change), and incremented once per observed change whose
+  lowering changed a watched binding's resolved value. Handles are kept because the internal telemetry evicts a metric
+  that stays idle with no live handle. A change is compared by resolved (normalized) values, so reordering a set-typed
+  list is not an update, unlike the native live view, which counts any change of the list as written.
 - **Series the plan-driven topology no longer reports** (measured in stage 3E against the legacy topology, for the
   release note; the fused components are `dsd_pre_aggregation` and `metrics_enrich`, plus the regions the cost model
   cuts from them). For each fused transform (`dsd_enrich`, `dsd_prefix_filter`, `dsd_no_agg_split`,
@@ -1426,7 +1731,15 @@ it, and that a change to a `Startup` input changes nothing.
   dsd_no_agg_split, drop_reason:buffer_full}` are gone (amendment 12), and `aggregate_passthrough_flushes_total` counts
   one flush per input batch with timestamped metrics. Every other native series of the fused components keeps its
   name, labels, and value; none of the removed series is matched by `get_datadog_agent_remappings()` or
-  `get_compat_remappings()`, and the remapped output is identical but for `no_aggregation.flush`.
+  `get_compat_remappings()`, and the remapped output is identical but for `no_aggregation.flush`. From stage 4 the
+  gateways (`metrics_routing_filter_{i}`, `mrf_metrics_gateway`, `af_metrics_gateway`) lose the same component series
+  (received, sent per `output:_default`, latency, discarded, health, task); the routing filters keep
+  `metrics_endpoint_allowlist_metrics_filtered_total` (counted on the `false` port, which leads to the drop) and
+  `metrics_endpoint_allowlist_size{match_type}` (the installer's `MatcherEntries` gauges) with their values, and the
+  remapped output is unchanged but for `no_aggregation.flush`
+  (`telemetry::tests::the_gateways_keep_their_native_metrics_and_lose_only_their_component_series`, which also pins
+  the regions: the gateways run in `metrics_enrich`, none in a region of its own). Release note
+  `plan-driven-metrics-gateways-8f5f8bebdc56b2e3.yaml`.
 - **Resource groups** (stage 3 review). Each kernel of a region is accounted in its own group under the region's,
   `topology.primary.transforms.<region>.<node>`, in `/memory/status` and in the `group_*{group_id}` series
   (`group_allocated_bytes_total`, `group_allocated_bytes_live`, `group_allocated_objects_total`,
@@ -1436,10 +1749,20 @@ it, and that a change to a `Startup` input changes nothing.
   the chained ones). So `dsd_tag_filterlist`'s memory is reported as
   `topology.primary.transforms.dsd_pre_aggregation.dsd_tag_filterlist`, for example. The groups of
   `dsd_post_agg_filter` and the listener filterlist, which run as decisions, are gone: their work is accounted to their
-  region's group. Each region's bounds are its kernels' native bounds, without the struct of each native component, plus
-  a full buffer per exit and per register; every other component's bounds are the legacy ones, and the interconnects
-  lose one queue per fused transform beyond one per region, four with a default configuration (a topology test pins
-  all of it against `create_legacy_topology`).
+  region's group. Each region's bounds are its kernels' native bounds, without the struct of each native component, its
+  decisions' predicates, memos, counts, and scratch (from stage 4), plus a full buffer per exit and per register; every
+  other component's bounds are the legacy ones, and the interconnects lose one queue per fused transform beyond one per
+  region, four with a default configuration (a topology test pins all of it against `create_legacy_topology`). The
+  gateways run as decisions, so their groups (`topology.primary.transforms.<gateway>`) are gone; their CPU time is their
+  region's. `RegionBounds` declares each predicate of the boot program's decisions under the subcomponent of the first
+  `split` using it (`<region>.<split>`, `policy` for an artifact's): the predicate itself, its values
+  (`Predicate::value_bytes`: each literal and resolved string as a `String` and its bytes), and its matchers' entries
+  (`CompiledPredicate::matcher_bytes`, `SortedSetMatcher::entry_bytes`: each a `MetaString` and its bytes, the fused
+  intake-name `any` included). A routing filter's region therefore declares exactly what the native `MetricFilter`
+  declared for its lists (one copy of the strings and the matcher's entries); Multi-Region Failover's declares one more
+  copy of its allowlist (its emptiness test's), and autoscaling failover's the names its matcher keeps besides them
+  (`topology::tests::gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_do`, which also pins each
+  region's memoized decisions). Each gateway removes one interconnect and one transform's in-flight buffers.
 - **Buffering** (stage 3 review). Fusion removes the interconnects between fused components. With a default
   configuration, DogStatsD metrics cross two 128-buffer queues between `dsd_in` and aggregation (into
   `dsd_pre_aggregation` and `dsd_agg`) where the legacy chain had five, and two after aggregation (into `metrics_enrich`
@@ -1664,6 +1987,88 @@ telemetry tap by collectors, and every forwarder by one that drops, in place, th
   run-to-run noise of legacy against itself, in every phase; see [Risks](#risks) for the numbers and what is not
   measured.
 
+**Stage 4 exit evidence.** The plan crate's part:
+
+- **Decisions** (`compile::decision::tests`, `runtime::frame_tests`, `runtime::tests`).
+  `property_test_decision_functions_and_memos_compute_what_the_reference_walk_computes` (random decision trees over a
+  small pool of random predicates and one on the kind, interned as written, so that R2 shares, R3 folds `flag` and
+  `is_empty` over literals and over resolved bindings, two flag bindings with equal values stay apart, and memos meet
+  each context with two kinds: the compiled function, a one-entry and a full memo, and the reference walk against a
+  literal walk without R2 and R3, over metrics each followed by a sibling of the same context and another kind, every
+  event twice so memos hit, and derived per-port counts against counted ports);
+  `property_test_decisions_with_and_without_rewrites_and_memos_deliver_what_the_interpreter_delivers` (random plans,
+  half of whose predicates are endpoint allowlists restricted to some kinds so that R4 memoizes decisions on the kind,
+  through frames of region drivers with the default memo, a one-entry memo, no memo, and programs without decision-time
+  rewrites: outputs and policy loss equal the interpreter's, per-port counts equal across configurations); and
+  `property_test_decision_rewrites_only_reduce_capacity_loss_under_capacity_pressure` (outputs accepting at most `k`
+  records: `compare_under_capacity` against the original, and exact equality). A memo keyed by the context alone fails
+  all three. Deterministic tests check that the random plans exercise groups, R2, R3, and R4 (on the kind too); hand
+  tests cover grouping boundaries, R2 over equal and distinct bindings, the default program's decisions and records,
+  derived counts in the driver (more distinct exit sets than counted included), memo lookups, every function form,
+  and the region bounds of decisions.
+- **R3 and R7** (`compile::rewrite::{r3,r7}::tests`, over `compile::rewrite::random_plans`: `Rejoin` chains so that
+  merges receive paths of different lengths, opaque hosts, kernels, timestamp splits, bound and literal
+  `flag`/`is_empty`, random batches, and for R7 with and without a random `OperandProfile`): the rewritten plan
+  delivers what the original does, every output receives the same records in the same order, every kept node loses
+  what it lost, removed nodes lost nothing; under arbitrary and batch-aligned capacity bounds, delivered and refused
+  points are equal and `compare_under_capacity` holds. Vacuity tests require R3 to apply to over a third of generated
+  plans, in every form, bounds to refuse records in over a fifth and to cut inside a batch of a rewritten plan in over
+  a twentieth, and profiles to change R7's order in over a tenth; hand-written cases cover each obligation branch.
+  Mutation checks: an interpreter that ignores `merge` port order fails the R3 order and capacity properties; a
+  fingerprint without the written predicate fails R7's fingerprint test.
+- **R5a and R6** (`compile::rewrite::{r5a,r6}::tests`, over `compile::rewrite::harness`: random valid plans below a
+  DogStatsD and an OTLP source from links (`split` filters, the `filter`-cardinality test operator `test_keep`, the
+  five stateless kernels, tag projection followed by a tag filter, and `test_shed`, a map that loses metrics with more
+  than `max_points` points to capacity), `tee`s, `tee`s whose ports start with equivalent filters, `split`s whose
+  ports rejoin a `merge` through different chains, complementary `split`s, timestamp splits, opaque hosts, and scopes;
+  traces of up to 40 metrics with up to four capacity bounds; `Case::{check_equivalent, check_capacity,
+  check_structure}`). Property tests: `property_test_r5a_rewritten_plans_deliver_what_the_original_delivers`,
+  `property_test_r5a_only_reduces_capacity_loss`, the same two for R6,
+  `property_test_r5a_and_r6_together_deliver_what_the_original_delivers_under_capacity_too`,
+  `property_test_capacity_bounds_split_each_outputs_delivery_into_accepted_and_refused`,
+  `property_test_harness_plans_are_valid_compile_into_their_frame_and_run`, and
+  `compile::execution_tests::property_test_compiled_programs_of_rewritten_plans_deliver_what_the_interpreter_delivers`
+  (random plans compiled with every logical rewrite, their programs run by the minimal executor against the
+  interpreter on the plan as written). Sampled counts check that each form applies. Mutation check: breadth-first
+  delivery fails the R5a-only capacity property at its default case count.
+- **The pipeline** (`compile::rewrite::tests::pipeline`):
+  `property_test_the_pipeline_keeps_what_plans_around_filters_deliver_under_capacity_too` (`optimize` itself over
+  `harness` plans: structure, equivalence, and the capacity rule, with R3's removals and R7's new operand orders allowed by
+  `check_structure`) and
+  `property_test_the_pipeline_keeps_what_plans_around_constant_and_reorderable_predicates_deliver` (`optimize` over
+  `random_plans` plans: equivalence, the same order at every output, and exact delivery and refusal under arbitrary
+  bounds); `random_plans_of_both_families_exercise_every_logical_rewrite_through_the_pipeline` requires every rewrite
+  to apply through the pipeline (over 512 plans: R3 288, R5a 221, R6 9, R7 262 applications; 122 plans get several
+  rewrites; 16 skips). The stage 3 frame property test compiles with `compile`, so it runs rewritten programs through
+  region drivers too.
+- **Explain** (see Explain): the stage 4 default program's and an artifact-like policy region's records, with
+  hand-written checks.
+
+ADP's part, on the stage 3 harness:
+
+- **Gateway differential** (`topology/differential_tests.rs`, `GATEWAY_MATRIX`): zero, one, and two endpoint routing
+  groups (two endpoints sharing a group with lists written differently, an endpoint with empty lists, a prefix only a
+  rejected name would start with, a name a prefix covers), Multi-Region Failover mirroring everything, its allowlist,
+  and nothing, autoscaling failover, and all together, with DogStatsD and OTLP input whose names the intake normalizes
+  (`my-service.requests`) or rejects (`9lives.count`): every output receives the same multiset of points from both
+  topologies, and, for all together, the hand-derived names and point counts.
+- **Live Multi-Region Failover toggle** (`installer/live_tests.rs`), on the connected configuration path, legacy and
+  plan-driven: mirroring off, on, off (`ConfigUpdate::Partial` of `multi_region_failover.failover_metrics`), OTLP
+  batches throughout; on both paths every batch is routed whole by one setting, the phases are contiguous and found
+  from what was routed, and the plan-driven path installs generations 2 and 3, each batch's buffers carrying the
+  generation whose setting routed it. `installer/tests.rs` checks `plan_rewrites_applied` across the same toggle
+  (`R3` 1, 0, 1).
+- **Structure** (`topology/tests.rs`, `lowering/legacy_tests.rs`, `lowering/tests.rs`): no gateway component,
+  `metrics_enrich` feeding every encoder, hand-written edge lists for Multi-Region Failover alone and every branch (five
+  regions), and, for four gateway configurations, the regions, their memoized decisions, the gateways' declared bytes
+  against the legacy gateways', the other bounds, and the interconnects against the legacy topology; no matrix
+  configuration gets a logical rewrite.
+- **Telemetry** (`telemetry/tests.rs`): the gateways keep their native metrics and lose only their component series.
+- **Measurements** (`topology/measurement_tests.rs`): a gateway configuration (two routing groups and Multi-Region
+  Failover mirroring an allowlist, beside the stage 3 workload) on one and four workers; numbers in Risks.
+- **Selection** (`benches/selection.rs`): the gate's "selection cost near the hand-written baseline" rests on
+  `selection_default_program`, the frame ADP runs; numbers in Risks.
+
 ## Stage 6 outline
 
 1. Aggregation becomes a stateful kernel in the `dsd_agg` slot behind a declared isolation fence, keeping component ID
@@ -1801,7 +2206,7 @@ native behavior. Nothing in the specification is edited without the author.
     `advance` (a queued batch, as in the "backlog at the cut" trace) arrives at the later of the two. An opaque host's
     output admission clock latches, reads the arrival time when admitting and the tick's clock when ticking, and
     heartbeats at every tick, so a state owner behind an opaque host has a watermark from its own segment.
-30. **Trace events before their stages**: `capacity` needs the delivery-policy slot (stage 3), and `cancel` and a
+30. **Trace events before their stages**: `capacity` was such an event until stage 4 implemented it; `cancel` and a
     source whose `t_a` moves back (a clock reset) need `cut` and clock resets (stage 6); the interpreter reports each
     as an explicit error rather than approximating it. State owners added, removed, reconfigured, or cut across an
     installation are likewise errors naming stage 6 (stage 7 for host components).
@@ -1887,13 +2292,49 @@ native behavior. Nothing in the specification is edited without the author.
     never cutting a native component. With that, the gate holds as written in the stage 3 measurements (see Risks), so
     neither restating it per unit of CPU nor bringing stage 9's partitioned parallel regions forward is needed. A
     region's slot is therefore a connected set of synchronous nodes of equal fence depth and equal pipeline stage, and
-    `explain` reports a cut as `pipelined`, with the budget.
+    `explain` reports a cut as `pipelined`, with the budget. Stage 4 refined the cost model for decisions: R1 never
+    cuts a decision (its `split`s and `tee`s run as one function), prices a decision as its function runs (derived
+    fields once, a memoized decision as one lookup, by decision compilation's own `MEMO_COST_FLOOR`), joins a component
+    with those its decisions reach into, and compares a unit with the regions it joins rather than with its whole
+    stage, so parallel branches are not summed. The specification's R4 cost ("a cache hit costs one lookup plus buffer
+    pushes, independent of the number of policies") then holds for the default program's policy region, which runs in
+    `metrics_enrich`. With DogStatsD defaults, one routing group or more leaves the post-aggregation filter in a
+    region of its own (an extra hop and queue against the stage 3 frame, where the routing filter was an opaque host).
 48. **Fusion removes queues** (stage 3 review). Each interconnect between two fused components is gone, so the
     plan-driven topology buffers less between DogStatsD and aggregation (two queues instead of five with a default
     configuration) and after it (two instead of three). The specification's capacity rule ("a rewrite may only reduce
     capacity loss") speaks of loss inside the plan; this moves loss outside it, to the source socket, sooner under a
     burst. The proposal is to accept it as R1's cost, to measure burst loss against legacy before stage 3's gate is
     final, and, if it is worse, to give a region's input interconnect the capacity of the queues it replaces.
+49. **The capacity rule is checked against one interleaving** (stage 4). "Never increase capacity loss for any
+    policy-included contribution" depends on which records an output accepts first, and the specification leaves how
+    a `merge` interleaves unspecified. The reference interpreter fixes one delivery order, in which a `merge` passes its
+    inputs on in port order and an output's order follows from the dataflow alone (see Reference interpreter), so
+    inserting, moving, or removing a node along a path keeps every output's order, and the rewrite property tests check
+    the per-contribution rule against it. The proposal is to say so in the Equivalence section: "the rule compares the
+    two executions under the reference interpreter's delivery order, in which a `merge` passes its inputs on in port
+    order".
+50. **Native filters are moved only whole** (stage 4). The specification lets rewrites change internal telemetry if
+    `explain` lists it; native series that hosts report under a native node's ID would instead stop (copies carry
+    other IDs). R5a and R6 therefore never copy, restrict, or hoist a filter with native provenance; R5a may still
+    move one whole, which keeps its ID and counts. Stage 6's R5b partial push-down of the post-aggregation filter
+    (the specification's own example) needs its native counter to sum the copy's and the residual's ports; until a
+    telemetry profile can do that, this restriction stands.
+51. **Decisions group only `split`s and `tee`s joined directly by edges** (stage 4). The specification's decision is "a
+    maximal connected group of `split` and `tee` operators within one region, with no intervening map that writes a
+    field one of its predicates reads", which allows a group to span a map that writes nothing its predicates read.
+    Programs cut every group at every map: the events below a map are the map's output, which an exit set computed on
+    its input cannot route when the map drops, adds, or changes events, and carrying exit sets through a map would need
+    a correspondence between its input and output events that kernels do not expose. The function's semantics are
+    unchanged; only its form is smaller where such a map sits between two `split`s. Proposed wording: "a maximal group
+    of `split` and `tee` operators joined directly by edges within one region".
+52. **R7 writes the order it chooses into the plan** (stage 4). "Rewrites never change routing, lossy operators,
+    operator parameters, or delivery", but R7 reorders the operands of a predicate parameter, and does so for native
+    nodes too (their telemetry is unaffected; lowering writes every junction in R7's static order, so it never applies
+    to the default program, which a test over the lowering matrix checks). The canonical form, every result, and so R2
+    and the duplicate analysis are unchanged; the candidate, its hash, and its diff are what was proposed, since
+    rewrites run in compilation; and `explain` lists each reordering. The proposal is to say "operator parameters, other
+    than the order of a pure `all` or `any`'s operands (R7)".
 
 ## Risks
 
@@ -1903,8 +2344,12 @@ native behavior. Nothing in the specification is edited without the author.
   per-operator estimates, not measurements of the configuration at hand: a chain costlier than its estimates fuses
   where pipelining would pay (one saturated stream then gets less than legacy), and one cheaper than them pipelines
   where one region would do (an extra hop and queue). Before the cost model, fusing the whole pre-aggregation chain ran
-  one saturated stream at 0.68 to 0.72 of legacy on four workers. The measurements below cover one configuration (a
-  mapper profile: two pre-aggregation regions); SMP runs on Linux should check others before the estimates are trusted.
+  one saturated stream at 0.68 to 0.72 of legacy on four workers. The measurements below cover two configurations (a
+  mapper profile: two pre-aggregation regions; and that with two routing groups and Multi-Region Failover, whose policy
+  region runs in `metrics_enrich`); SMP runs on Linux should check others before the estimates are trusted. Since stage
+  4 the estimates also decide where the post-aggregation filter runs: with DogStatsD defaults and one routing group it
+  no longer fits beside the policy region (66 of 64 ns) and gets a region, a hop, and a queue of its own, where stage
+  3's frame (an opaque routing filter) kept it in `metrics_enrich`.
 - **Passthrough per batch** (amendment 12) sends one buffer per input batch where the native batcher sent one per 1,024
   timestamped metrics. Since the stage 3 review the timestamp split moves a buffer whose metrics all go one way whole,
   prepares passthrough metrics in place, and moves (rather than copies) what a split separates, and the plan-driven
@@ -1955,5 +2400,74 @@ native behavior. Nothing in the specification is edited without the author.
   checked) are 1.10 to 1.22 of legacy with live updates, from lowering and preparing every change, and 1.01 otherwise;
   live memory at the end of a phase is reported too. SMP throughput, CPU, memory, and RSS on Linux, queue bytes, slow
   sinks, key skew, and decoder-pool contention remain open, as the stage plan says.
+
+  The gateway configuration (`measurement_tests::GATEWAYS`: the stage 3 workload with two routing groups and
+  Multi-Region Failover mirroring an allowlist) has no idle-machine numbers yet; legacy against itself exceeded its own
+  tolerances on every run. With the policy region in `metrics_enrich` (four regions), the last runs (load 4 to 30)
+  gave saturated throughput 1.13 to 1.23 of legacy, worker time per metric 0.71 to 0.94 in every phase, allocated bytes
+  0.83 to 0.89, and p99 0.27 to 0.76 of legacy except one loaded four-worker run's passthrough phase (1.49);
+  allocations per metric with live updates are 1.16 to 1.37 of legacy (each change lowers, compiles, and prepares every
+  region; reported, not gated). Those runs predate the integration's memo floor (25 ns), which leaves the
+  post-aggregation filter unmemoized; rerun idle before the gate is called, and if live updates still cost more CPU and
+  allocations than legacy, have regions reuse an unchanged program's translated code and telemetry
+  (`SlotKernels::unchanged` already hands them the active program).
+- **R1 prices a memoized decision as a memo hit** (stage 4). With more contexts than the memo holds, most lookups
+  miss, and the decision costs its predicates plus a probe and a write: a region R1 sized for hits can then be slower
+  than its estimate. And a decision is never cut, so a wide policy fan-out runs in one region however many copies it
+  makes: with DogStatsD defaults and every gateway, `metrics_enrich` is estimated at 75 ns per event against a 64 ns
+  budget (natively, enrichment made the same copies, 60 ns, and each gateway filtered in a task of its own). The
+  decision copies an event only to the gateways that keep it, which the estimate (a copy per port) does not credit.
+- **Memo memory.** Each memoized decision's memo is 96 KiB (4,096 entries of 24 bytes, for up to 64 exits) per
+  generation per region, up to the overlap budget's four live generations; the stage 4 default program memoizes its
+  policy decision in `metrics_enrich` once it has a routing group (96 KiB, or 384 KiB with four generations live).
+  `RegionBounds` declares the boot program's memos, counts, decision scratch, and predicates; later generations' are
+  not accounted, as their kernels are not, and a live list that grows later (Multi-Region Failover's allowlist) is not
+  declared again, as the native component, which declared its startup snapshot, did not either.
+- **Memo misses.** With more contexts than entries, nearly every lookup misses and overwrites; a miss adds about 4 ns
+  to the evaluation (an endpoint allowlist's region: 7% to 8% more; the policy region with one routing group, as a
+  function, 8%, and with enrichment, under 1%). There is no adaptive switch (a selection flag); `MEMO_COST_FLOOR` (25)
+  keeps the memo off decisions too cheap to repay misses, which includes the pre-aggregation listener filterlist (one
+  intake-name leaf, measured 16% to 19% slower with every lookup a miss) and the post-aggregation filter.
+  Post-aggregation decisions see each context once per flush, so their memos hit only while the agent has fewer
+  contexts than entries.
+- **Selection cost** (stage 4 gate; `benches/selection.rs`, `selection_default_program`: the stage 4 default program
+  with 1, 3, and 7 routing policies in its own frame, where the policy fan-out and every gateway are one memoized
+  decision of `metrics_enrich`, beside the enrichment kernels; a batch of 1,024 events entering the region). Medians of
+  61 alternating rounds of the bench's own setup (a temporary harness, not checked in; criterion runs on the shared
+  machine were too noisy to compare), load 3.5 to 4, µs per batch:
+
+  | Policies, contexts | Region, memoized | Region, evaluated | Hand-written selection | Native fan-out | Enrichment only |
+  |---|---|---|---|---|---|
+  | 1, 256 (hits) | 151.4 | 173.5 | 130.7 | 171.8 | 78.3 |
+  | 1, 16,384 (misses) | 181.8 | 174.7 | 133.5 | 173.9 | 80.5 |
+  | 3, 256 | 162.2 | 222.8 | 162.6 | 259.1 | 78.3 |
+  | 3, 16,384 | 226.9 | 223.6 | 164.6 | 262.5 | 79.9 |
+  | 7, 256 | 177.6 | 288.5 | 218.8 | 430.3 | 77.1 |
+  | 7, 16,384 | 291.9 | 290.3 | 223.3 | 434.6 | 79.3 |
+
+  Less the enrichment, the region's selection costs 1.40x, 1.00x, and 0.71x the hand-written selection's (enrichment,
+  then every event's outputs at once and buffers of exact copies, with no telemetry or loss counts) with memo hits, and
+  1.91x, 1.74x, and 1.48x with misses (unmemoized: 1.78x, 1.70x, 1.47x); against the native shape (a copy of the batch
+  per gateway, each filtered in place) 0.78x, 0.46x, and 0.28x with hits and 1.08x, 0.81x, and 0.60x with misses. With
+  hits the cost grows little with the number of policies (the specification's "one lookup plus buffer pushes"), so the
+  gate's "near the hand-written baseline" holds from three policies and is within 21 ns per event at one; with misses
+  the region pays the predicates, which `CompiledPredicate::evaluate` dominates, plus telemetry and loss accounting.
+  Before the integration's R1 change (each routing filter a region of its own) the same frame cost 1.6x to 2.3x the
+  hand-written selection with hits and 2.0x to 3.5x with misses. In one region (`selection_function`,
+  `selection_region`, a tee to every policy in one slot, from the decisions part's harness), with hits the decision
+  takes 10.1, 11.6, and 14.6 against the hand-written selection's 22.5, 48.8, and 92.0, and the region 21.1, 30.7,
+  and 47.8 against the hand-written region's 26.2, 57.5, and 115.2; unmemoized, or with misses, the function is 1.1x to
+  1.2x the hand-written selection and the region 1.2x to 1.4x the hand-written region.
+- **Partial push-down and copies never apply to native filters** (amendment 50), so R5a and R6 change nothing in the
+  default program and only optimize what artifacts add. R5b in stage 6 needs native telemetry that sums a filter's
+  copies before it can push the post-aggregation filter above aggregation. R5a also declines to move a filter above a
+  kernel when an R1 cut separates them (the kernel, fed from the filter's slot, would follow it there), so in pipelined
+  plans a filter can stop below a cut; one in the same slot as the kernel still moves, and may then cross a cut into an
+  earlier slot itself, since a decision has no resource group.
+- **Two random-plan families for rewrite tests.** `compile::rewrite::harness` (filters, scopes, capacity-shedding
+  operators) and `compile::rewrite::random_plans` (predicate strategies, constant and reorderable predicates) were
+  written by different parts and kept both, with a pipeline property test over each; one generator with both
+  families' strengths would be simpler to maintain. R6 applies to few generated plans through the whole pipeline (9 of
+  512; its own tests sample more).
 - `component_events_sent_total` double counts for `BufferedDispatcher` users natively; regions do not use it. Tracked
   separately.

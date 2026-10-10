@@ -11,6 +11,7 @@ use std::{
     time::Instant,
 };
 
+use proptest::prelude::*;
 use saluki_core::{
     data_model::event::{
         metric::{context::Context, Metric, ScalarPoints},
@@ -22,12 +23,16 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 
-use super::*;
+use super::{
+    rewrite::harness::{self, arb_plan_params, arb_shape, arb_trace, Case, TraceParams},
+    *,
+};
 use crate::{
     equivalence::{compare, OutputPoints},
-    interpret::{adapters::AggregateAdapter, HostBatch, HostOutput, HostTick, Interpreter, OpaqueHostAdapter, Trace},
+    interpret::{
+        adapters::AggregateAdapter, HostBatch, HostOutput, HostTick, Interpreter, OpaqueHostAdapter, Trace, TraceEvent,
+    },
     ir::{NativeComponentId, NodeId, Plan},
-    model::EventView,
     operators::{names, KernelBuildContext, OperatorRegistry},
     testing::{default_program_catalog, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
     validate::Validator,
@@ -67,11 +72,27 @@ struct Executor {
 }
 
 impl Executor {
+    /// Compiles a default program with the native registry, and runs its aggregation through the interpreter's
+    /// adapter.
     fn new(plan: &Plan) -> Self {
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
         let frame = Frame::compute(plan, &registry, &namer).unwrap();
         let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        let mut hosts = BTreeMap::new();
+        for fixed in frame.fixed() {
+            if fixed.operator.as_str() == names::AGGREGATE {
+                let op = registry.configure(fixed.operator.as_str(), &fixed.params).unwrap();
+                let adapter = Box::new(AggregateAdapter::from_operator(&op).unwrap()) as Box<dyn OpaqueHostAdapter>;
+                hosts.insert(fixed.node.clone(), (adapter, op.ports().outputs.len()));
+            }
+        }
+        Self::of(frame, compiled, hosts)
+    }
+
+    /// Runs a plan's compiled programs in its frame, with `hosts`: an adapter, and its number of output ports, for each
+    /// fixed component the trace reaches.
+    fn of(frame: Frame, compiled: CompiledPlan, hosts: BTreeMap<NodeId, (Box<dyn OpaqueHostAdapter>, usize)>) -> Self {
         let kernels = compiled
             .programs
             .iter()
@@ -88,18 +109,8 @@ impl Executor {
                     .collect()
             })
             .collect();
-        let mut hosts = BTreeMap::new();
-        let mut host_ports = BTreeMap::new();
-        for fixed in frame.fixed() {
-            if fixed.operator.as_str() == names::AGGREGATE {
-                let op = registry.configure(fixed.operator.as_str(), &fixed.params).unwrap();
-                hosts.insert(
-                    fixed.node.clone(),
-                    Box::new(AggregateAdapter::from_operator(&op).unwrap()) as Box<dyn OpaqueHostAdapter>,
-                );
-                host_ports.insert(fixed.node.clone(), op.ports().outputs.len());
-            }
-        }
+        let host_ports = hosts.iter().map(|(node, (_, ports))| (node.clone(), *ports)).collect();
+        let hosts = hosts.into_iter().map(|(node, (adapter, _))| (node, adapter)).collect();
         Self {
             frame,
             programs: compiled.programs,
@@ -115,20 +126,7 @@ impl Executor {
     fn run(&mut self, events: Vec<TraceStep>) {
         for event in events {
             match event {
-                TraceStep::Admit(source, at, metrics) => {
-                    let point = self
-                        .frame
-                        .admission_point_at(&id(source), &"metrics".parse().unwrap())
-                        .unwrap()
-                        .clone();
-                    let header = BatchHeader {
-                        admitted_at: Some(at),
-                        admission_point: Some(point.id),
-                        ..BatchHeader::default()
-                    };
-                    let arrival = self.last_tick.map_or(at, |tick| tick.max(at));
-                    self.deliver(point.route.clone(), buffer_of(header, metrics), arrival);
-                }
+                TraceStep::Admit(source, at, metrics) => self.admit(&id(source), at, metrics),
                 TraceStep::Advance(now) => {
                     self.last_tick = Some(now);
                     let nodes = self.hosts.keys().cloned().collect::<Vec<_>>();
@@ -141,6 +139,22 @@ impl Executor {
                 }
             }
         }
+    }
+
+    /// Admits a batch at a source's admission point.
+    fn admit(&mut self, source: &NodeId, at: AdmissionTime, metrics: Vec<Metric>) {
+        let point = self
+            .frame
+            .admission_point_at(source, &"metrics".parse().unwrap())
+            .unwrap()
+            .clone();
+        let header = BatchHeader {
+            admitted_at: Some(at),
+            admission_point: Some(point.id),
+            ..BatchHeader::default()
+        };
+        let arrival = self.last_tick.map_or(at, |tick| tick.max(at));
+        self.deliver(point.route.clone(), buffer_of(header, metrics), arrival);
     }
 
     /// Re-admits what a host emitted, stamped at its output's admission point with the host's clock.
@@ -253,20 +267,12 @@ impl Executor {
                 } => {
                     let decision = program.decision(*decision).unwrap();
                     let buffers = std::mem::take(&mut registers[input.get()]);
+                    let mut scratch = DecisionScratch::default();
                     for buffer in buffers {
                         let mut routed = (0..targets.len()).map(|_| Vec::new()).collect::<Vec<Vec<Event>>>();
                         for event in buffer {
-                            match &decision.kind {
-                                DecisionKind::Split { compiled, .. } => {
-                                    let matched =
-                                        compiled.evaluate(&mut EventView::new(event.try_as_metric().unwrap()));
-                                    routed[if matched { 0 } else { 1 }].push(event);
-                                }
-                                DecisionKind::Tee => {
-                                    for target in routed.iter_mut() {
-                                        target.push(event.clone());
-                                    }
-                                }
+                            for exit in decision.evaluate(&event, &mut scratch).iter() {
+                                routed[exit.get()].push(event.clone());
                             }
                         }
                         for (route, events) in targets.iter().zip(routed) {
@@ -455,4 +461,75 @@ fn compiled_programs_deliver_what_the_interpreter_delivers() {
             );
         }
     }
+}
+
+// Rewritten plans.
+
+/// Compiles a random plan of the rewrite harness, with every logical rewrite, and runs its programs over the trace
+/// without capacity bounds; returns what its outputs received and whether a logical rewrite applied.
+fn run_compiled(case: &Case, trace: &TraceParams) -> Result<(OutputPoints, bool), String> {
+    let compiled = compile(&case.plan, &case.report, harness::registry(), &case.frame)
+        .map_err(|error| format!("the plan does not compile: {}", error))?;
+    let rewritten = compiled.rewrites.iter().any(|record| record.is_applied());
+    // Kernels with caches need a Tokio runtime to be built in, as the interpreter's are.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let _guard = runtime.enter();
+    let hosts = case
+        .opaque
+        .iter()
+        .map(|host| (host.clone(), (harness::echo_host(), 1)))
+        .collect();
+    let mut executor = Executor::of(case.frame.clone(), compiled, hosts);
+    for event in trace.events(&case.outputs(), false) {
+        if let TraceEvent::Admit {
+            source,
+            admitted_at,
+            batch,
+        } = event
+        {
+            executor.admit(&source, admitted_at, batch);
+        }
+    }
+    Ok((executor.outputs, rewritten))
+}
+
+/// Requires the compiled, rewritten programs of a random plan to deliver what the reference interpreter delivers
+/// running the plan as written; returns whether a logical rewrite applied.
+fn check_compiled(case: &Case, trace: &TraceParams) -> Result<bool, String> {
+    let (delivered, rewritten) = run_compiled(case, trace)?;
+    let expected = OutputPoints::from_run(&case.run(&case.plan, &trace.events(&case.outputs(), false))?);
+    compare(&expected, &delivered)
+        .map_err(|mismatch| format!("the compiled programs deliver something else:\n{}", mismatch))?;
+    Ok(rewritten)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// R5a's copies, partial push-downs, and whole moves, and R6's hoists, run as compiled steps of region programs,
+    /// not only in the interpreter.
+    #[test]
+    fn property_test_compiled_programs_of_rewritten_plans_deliver_what_the_interpreter_delivers(
+        shape in arb_shape(),
+        params in arb_plan_params(),
+        trace in arb_trace(),
+    ) {
+        let case = Case::new(&shape, &params).map_err(TestCaseError::fail)?;
+        let checked = check_compiled(&case, &trace);
+        prop_assert!(checked.is_ok(), "{:?}", checked.err());
+    }
+}
+
+#[test]
+fn many_random_plans_run_compiled_after_a_rewrite() {
+    // The property test would hold vacuously if the pipeline rewrote nothing: count the compiled plans it rewrote.
+    let rewritten = harness::sample(64)
+        .iter()
+        .filter(|(case, trace)| check_compiled(case, trace).unwrap())
+        .count();
+    eprintln!("{} of 64 plans rewritten", rewritten);
+    assert!(rewritten > 24, "only {} of 64 plans were rewritten", rewritten);
 }

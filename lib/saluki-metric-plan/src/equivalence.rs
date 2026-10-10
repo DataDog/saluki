@@ -12,7 +12,8 @@
 //! | `histogram` | The samples, each with its weight, as a multiset. |
 //! | `distribution` | The sketch: its count, minimum, maximum, sum, and average (bitwise), and its bins. |
 //!
-//! [`compare`] is the exact oracle the reference interpreter is checked against. [`compare_reordered`] is the weaker
+//! [`compare`] is the exact oracle the reference interpreter is checked against. [`compare_under_capacity`] checks the
+//! weaker rule rewrites must keep under capacity pressure. [`compare_reordered`] is the weaker
 //! oracle for executions that may reorder inputs across admission contexts, as partitioned execution does: there,
 //! floating-point sums may differ within a [tolerance][Tolerance], and set points are compared by their union.
 //!
@@ -592,6 +593,195 @@ pub fn compare(expected: &OutputPoints, actual: &OutputPoints) -> Result<(), Mis
     }
 }
 
+/// What one execution of a trace with capacity events delivered, and what its outputs refused.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CapacityOutcome {
+    /// The points each output received.
+    pub delivered: OutputPoints,
+
+    /// The points of the records each output refused: its capacity loss.
+    pub refused: OutputPoints,
+}
+
+impl CapacityOutcome {
+    /// Returns what an execution of the reference interpreter delivered and refused.
+    pub fn from_run(run: &RunOutput) -> Self {
+        let mut refused = OutputPoints::new();
+        for (output, records) in run.refused_outputs() {
+            for record in records {
+                refused.insert(output, &record.metric);
+            }
+        }
+        Self {
+            delivered: OutputPoints::from_run(run),
+            refused,
+        }
+    }
+}
+
+/// One way a rewritten execution breaks the specification's capacity rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CapacityViolation {
+    /// An output received a point more times than the policy delivers it: a contribution the policy excludes.
+    Excluded {
+        /// The output.
+        output: OutputId,
+
+        /// The point.
+        point: Point,
+
+        /// How many times the policy delivers it.
+        policy: usize,
+
+        /// How many times the rewritten execution delivered it.
+        delivered: usize,
+    },
+
+    /// A point the policy delivers was lost more times than the original execution lost it.
+    MoreLoss {
+        /// The output.
+        output: OutputId,
+
+        /// The point.
+        point: Point,
+
+        /// How many times the original execution lost it.
+        original: usize,
+
+        /// How many times the rewritten execution lost it.
+        rewritten: usize,
+    },
+
+    /// The rewritten execution's outputs refused more points in all than the original's.
+    MoreRefused {
+        /// The points the original execution's outputs refused.
+        original: usize,
+
+        /// The points the rewritten execution's outputs refused.
+        rewritten: usize,
+    },
+}
+
+impl fmt::Display for CapacityViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Excluded {
+                output,
+                point,
+                policy,
+                delivered,
+            } => write!(
+                f,
+                "output `{}` received {}x, but the policy delivers {}x: {}",
+                output, delivered, policy, point
+            ),
+            Self::MoreLoss {
+                output,
+                point,
+                original,
+                rewritten,
+            } => write!(
+                f,
+                "output `{}` lost {}x, but the original lost {}x: {}",
+                output, rewritten, original, point
+            ),
+            Self::MoreRefused { original, rewritten } => write!(
+                f,
+                "the outputs refused {} point(s), but the original's refused {}",
+                rewritten, original
+            ),
+        }
+    }
+}
+
+/// How a rewritten execution under capacity pressure breaks the capacity rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapacityMismatch {
+    /// Every violation, by output and point, then the total.
+    pub violations: Vec<CapacityViolation>,
+}
+
+impl fmt::Display for CapacityMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for violation in &self.violations {
+            writeln!(f, "{}", violation)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CapacityMismatch {}
+
+/// Checks the specification's capacity rule: under capacity pressure, a rewrite may only reduce capacity loss.
+///
+/// `policy` is what the policy includes: what the original plan delivers on the same trace with every `capacity`
+/// event removed ([`Trace::without_capacity`][crate::interpret::Trace::without_capacity]), so that no output bounds
+/// it. `original` and `rewritten` are the executions of the original and the rewritten plan on the trace with its
+/// capacity events. A point's **loss** in an execution is how many fewer times its output received it than the policy
+/// delivers it. The rewritten execution must:
+///
+/// - never deliver a contribution the policy excludes: no output receives a point more times than the policy delivers
+///   it;
+/// - never increase capacity loss for any policy-included contribution: no point is lost more times than the original
+///   execution lost it;
+/// - only reduce capacity loss: its outputs refuse no more points, in all, than the original's.
+///
+/// On a trace without capacity pressure, this holds exactly when the two executions are [equivalent][compare] to the
+/// policy.
+///
+/// # Errors
+///
+/// Returns a [`CapacityMismatch`] listing every violation.
+pub fn compare_under_capacity(
+    policy: &OutputPoints, original: &CapacityOutcome, rewritten: &CapacityOutcome,
+) -> Result<(), CapacityMismatch> {
+    let empty = BTreeMap::new();
+    let mut violations = Vec::new();
+    let outputs = policy
+        .outputs(&rewritten.delivered)
+        .into_iter()
+        .chain(original.delivered.0.keys())
+        .collect::<BTreeSet<_>>();
+    for output in outputs {
+        let included = policy.0.get(output).unwrap_or(&empty);
+        let before = original.delivered.0.get(output).unwrap_or(&empty);
+        let after = rewritten.delivered.0.get(output).unwrap_or(&empty);
+        let points = included.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+        for point in points {
+            let count = |points: &BTreeMap<Point, usize>| points.get(point).copied().unwrap_or(0);
+            let (policy, original, delivered) = (count(included), count(before), count(after));
+            if delivered > policy {
+                violations.push(CapacityViolation::Excluded {
+                    output: output.clone(),
+                    point: point.clone(),
+                    policy,
+                    delivered,
+                });
+            } else if policy - delivered > policy.saturating_sub(original) {
+                violations.push(CapacityViolation::MoreLoss {
+                    output: output.clone(),
+                    point: point.clone(),
+                    original: policy.saturating_sub(original),
+                    rewritten: policy - delivered,
+                });
+            }
+        }
+    }
+    let total = |points: &OutputPoints| points.0.values().flat_map(BTreeMap::values).sum::<usize>();
+    let (refused_before, refused_after) = (total(&original.refused), total(&rewritten.refused));
+    if refused_after > refused_before {
+        violations.push(CapacityViolation::MoreRefused {
+            original: refused_before,
+            rewritten: refused_after,
+        });
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(CapacityMismatch { violations })
+    }
+}
+
 /// The relative tolerance within which two floating-point sums are equal when inputs may be reordered.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tolerance {
@@ -1123,6 +1313,51 @@ mod tests {
                 );
             }
             other => panic!("expected a difference, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn under_capacity_a_rewrite_may_only_reduce_capacity_loss() {
+        let p = Metric::gauge(context("p", &[]), 1.0);
+        let q = Metric::gauge(context("q", &[]), 1.0);
+        let r = Metric::gauge(context("r", &[]), 1.0);
+        let outcome = |delivered: &[&Metric], refused: &[&Metric]| CapacityOutcome {
+            delivered: OutputPoints::new().with(&output("a"), delivered.iter().copied()),
+            refused: OutputPoints::new().with(&output("a"), refused.iter().copied()),
+        };
+        // The policy delivers p twice and q once; the original, under pressure, lost one p to capacity.
+        let policy = points_of(&[p.clone(), p.clone(), q.clone()]);
+        let original = outcome(&[&p, &q], &[&p]);
+
+        let cases = [
+            ("the same delivery", outcome(&[&p, &q], &[&p]), None),
+            ("less loss", outcome(&[&p, &p, &q], &[]), None),
+            (
+                "an excluded contribution",
+                outcome(&[&p, &q, &r], &[&p]),
+                Some("received 1x, but the policy delivers 0x"),
+            ),
+            (
+                "loss moved to another contribution",
+                outcome(&[&p, &p], &[&q]),
+                Some("lost 1x, but the original lost 0x"),
+            ),
+            (
+                "more refused in all",
+                outcome(&[&p, &q], &[&p, &r]),
+                Some("refused 2 point(s), but the original's refused 1"),
+            ),
+        ];
+        for (case, rewritten, expected) in cases {
+            let result = compare_under_capacity(&policy, &original, &rewritten);
+            match expected {
+                None => assert!(result.is_ok(), "{}: {}", case, result.unwrap_err()),
+                Some(message) => {
+                    let mismatch = result.expect_err(case);
+                    assert_eq!(mismatch.violations.len(), 1, "{}: {}", case, mismatch);
+                    assert!(mismatch.to_string().contains(message), "{}: {}", case, mismatch);
+                }
+            }
         }
     }
 }

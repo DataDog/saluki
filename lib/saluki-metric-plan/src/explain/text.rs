@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan};
+use super::{BoundEntry, BoundScopeEntry, Explain, PhysicalPlan, RewriteEntry};
 use crate::{
     canonical::{to_canonical_string, PlanHash},
     ir::Provenance,
@@ -156,8 +156,36 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
             finding.severity, finding.rule, finding.location, finding.message
         )?;
     }
+    if let Some(rewrites) = &explain.rewrites {
+        write_rewrites(rewrites, out)?;
+    }
     if let Some(physical) = &explain.physical {
         write_physical(physical, out)?;
+    }
+    Ok(())
+}
+
+fn write_rewrites(rewrites: &[RewriteEntry], out: &mut String) -> std::fmt::Result {
+    writeln!(out)?;
+    writeln!(out, "rewrites ({})", rewrites.len())?;
+    for rewrite in rewrites {
+        let nodes = rewrite.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
+        write!(out, "  {} {}: {}", rewrite.id, rewrite.outcome, list(&nodes))?;
+        if rewrite.capacity_rule {
+            write!(out, " [capacity rule]")?;
+        }
+        writeln!(out)?;
+        if let Some(reason) = &rewrite.reason {
+            writeln!(out, "    reason {}", reason)?;
+        }
+        writeln!(out, "    justification {}", rewrite.justification)?;
+        for effect in &rewrite.telemetry {
+            writeln!(
+                out,
+                "    telemetry {} {}: {}",
+                effect.change, effect.node, effect.detail
+            )?;
+        }
     }
     Ok(())
 }

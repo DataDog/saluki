@@ -129,6 +129,15 @@ pub struct ContextKey {
     hash: u64,
 }
 
+impl ContextKey {
+    /// Returns the key's 64-bit hash.
+    ///
+    /// The value is process-local: it identifies a context within one process, and is not stable across versions.
+    pub const fn as_u64(self) -> u64 {
+        self.hash
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TagSetKey {
     hash: u64,

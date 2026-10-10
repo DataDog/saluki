@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     canonical::to_canonical_string,
-    ir::{BindingName, Operand, ParamType, ParamValue, Plan, ScopeName, ValueType},
+    ir::{BindingName, InputName, Operand, ParamType, ParamValue, Plan, PortRef, ScopeName, ValueType},
     operators::ConfiguredOperator,
     predicate::{Predicate, StringMatch},
 };
@@ -293,7 +293,7 @@ fn visit_predicate<'a>(predicate: &'a Predicate, path: String, uses: &mut Vec<Bi
 /// Checks that every scope is closed: its region, every node reachable from its inputs without entering one of its
 /// exits, is fed from outside only through its inputs; every exit is fed from inside the region and leads out of it;
 /// and no node is in the regions of two scopes.
-fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationReport) {
+pub(super) fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationReport) {
     let mut owner: BTreeMap<usize, &ScopeName> = BTreeMap::new();
     for (scope, declaration) in &plan.scopes {
         let at = || Location::Scope(scope.clone());
@@ -398,19 +398,38 @@ fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationRe
     }
 }
 
+/// Checks that every scope input names an output port of the plan, without the catalog.
+///
+/// [`check`] reports the same finding while it checks scope inputs against the catalog. Validation of a rewritten plan
+/// runs this alone: a rewrite never changes a plan's scopes, but it removes nodes, and must not remove one a scope's
+/// input names. (Scope closure, which also runs there, reports exits that name no input port.)
+pub(super) fn check_scope_input_ports(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationReport) {
+    for (scope, declaration) in &plan.scopes {
+        for (input, port) in &declaration.inputs {
+            if graph.output_port(&port.node, &port.port).is_none() {
+                report.push(missing_scope_input(scope, input, port));
+            }
+        }
+    }
+}
+
+fn missing_scope_input(scope: &ScopeName, input: &InputName, port: &PortRef) -> Finding {
+    Finding::new(
+        Rule::ScopeInputs,
+        Location::Scope(scope.clone()),
+        format!(
+            "input `{}` refers to `{}`, which is not an output port of the plan",
+            input, port
+        ),
+    )
+}
+
 fn check_scopes(graph: &Graph<'_>, types: &Types, plan: &Plan, catalog: &dyn Catalog, report: &mut ValidationReport) {
     for (scope, declaration) in &plan.scopes {
         for (input, port) in &declaration.inputs {
             let at = Location::Scope(scope.clone());
             let Some(endpoint) = graph.output_port(&port.node, &port.port) else {
-                report.push(Finding::new(
-                    Rule::ScopeInputs,
-                    at,
-                    format!(
-                        "input `{}` refers to `{}`, which is not an output port of the plan",
-                        input, port
-                    ),
-                ));
+                report.push(missing_scope_input(scope, input, port));
                 continue;
             };
             let Some(declared) = catalog.scope_input(scope, input) else {

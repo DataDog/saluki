@@ -1,36 +1,32 @@
 //! The lowered every-branch program, run through the plan crate's reference interpreter.
 //!
 //! The other lowering tests pin the plan's structure and parameters; this one executes them, with every native kernel,
-//! the default aggregation adapter, and an adapter for each opaque gateway that applies the selection its native
-//! component applies, through the `saluki_metric_kernels::selection` types that component calls, configured from
-//! the same configuration. The trace is the one the plan crate's
-//! `the_default_program_delivers_what_native_processing_does` runs over its own default-program fixture, whose
+//! the default aggregation adapter, and the gateways as the `split`s they lower to. The trace is the one the plan
+//! crate's `the_default_program_delivers_what_native_processing_does` runs over its own default-program fixture, whose
 //! parameters equal the lowered ones except where the configuration differs (the listener filterlist also names
-//! `tenant.checkout.latency.max`, which no metric of the trace has) and in the gateways (here opaque hosts, there
-//! splits). The expected outputs were derived by hand from the configuration and the native rules: the plan crate's
-//! derivation for everything up to the gateways, and the configuration's own routing groups (`catalog.` for the group
-//! at index 0; `orders.total` and `checkout.` for the group at index 1), multi-region failover mirroring everything,
-//! and autoscaling failover forwarding the scalar series `requests.count`.
+//! `tenant.checkout.latency.max`, which no metric of the trace has, and the gateways select by this configuration's
+//! lists). The expected outputs were derived by hand from the configuration and the native rules: the plan crate's
+//! derivation for everything up to the gateways, and then the native gateways' rules over the configuration's own
+//! lists: the routing groups (`catalog.` for the group at index 0; `orders.total` and `checkout.` for the group at
+//! index 1) compare intake names, multi-region failover mirrors everything with an empty allowlist, the raw names its
+//! allowlist names otherwise, and nothing with mirroring off, and autoscaling failover forwards the scalar series
+//! `requests.count`.
 
-use std::{collections::BTreeMap, num::NonZeroU64, sync::Arc};
+use std::{num::NonZeroU64, sync::Arc};
 
 use agent_data_plane_config::SalukiConfiguration;
 use saluki_core::{
     data_model::event::metric::{context::Context, Metric, MetricValues, ScalarPoints},
-    execution::{AdmissionTime, LossClass, LossCount, PortIndex},
+    execution::{AdmissionTime, LossClass, LossCount},
 };
-use saluki_metric_kernels::selection::{is_scalar_series, IntakeNameAllowlist, RawNameSet};
 use saluki_metric_plan::{
-    interpret::{HostBatch, HostOutput, InstallOutcome, Interpreter, OpaqueHostAdapter, RunOutput, Trace},
-    ir::NodeId,
+    interpret::{InstallOutcome, Interpreter, RunOutput, Trace},
+    ir::{NodeId, OutputId},
     operators::OperatorRegistry,
 };
 
 use super::{ids, matrix::EVERY_BRANCH, Lowering};
-use crate::programmable_metrics::{
-    bindings::routing_groups,
-    test_support::{facts, layered_configuration},
-};
+use crate::programmable_metrics::test_support::{facts, layered_configuration};
 
 /// The base time: the test process start, a multiple of the 10-second window.
 const B: u64 = 1_700_000_000;
@@ -95,18 +91,16 @@ fn describe(metric: &Metric) -> String {
     format!("{} {} [{}]", name, kind, points.join(", "))
 }
 
-/// Returns what each output received, as sorted descriptions: delivery order is not observable.
-fn received(run: &RunOutput) -> BTreeMap<String, Vec<String>> {
-    run.outputs()
-        .map(|(output, records)| {
-            let mut described = records
-                .iter()
-                .map(|record| describe(&record.metric))
-                .collect::<Vec<_>>();
-            described.sort();
-            (output.to_string(), described)
-        })
-        .collect()
+/// Returns what an output received, as sorted descriptions: delivery order is not observable.
+fn received(run: &RunOutput, output: &str) -> Vec<String> {
+    let output = output.parse::<OutputId>().unwrap();
+    let mut described = run
+        .output(&output)
+        .iter()
+        .map(|record| describe(&record.metric))
+        .collect::<Vec<_>>();
+    described.sort();
+    described
 }
 
 fn sorted(records: &[&str]) -> Vec<String> {
@@ -115,82 +109,22 @@ fn sorted(records: &[&str]) -> Vec<String> {
     records
 }
 
-/// An opaque gateway: forwards what its native component's selection keeps on its only port, and records the rest as
-/// policy loss, one event per metric with its points.
-struct Gateway {
-    forwards: Box<dyn Fn(&Metric) -> bool + Send>,
-}
-
-impl Gateway {
-    fn boxed(forwards: impl Fn(&Metric) -> bool + Send + 'static) -> Box<dyn OpaqueHostAdapter> {
-        Box::new(Self {
-            forwards: Box::new(forwards),
-        })
-    }
-}
-
-impl OpaqueHostAdapter for Gateway {
-    fn admit(&mut self, batch: HostBatch, output: &mut HostOutput) {
-        for metric in batch.events {
-            if (self.forwards)(&metric) {
-                output.push(PortIndex::PRIMARY, metric);
-            } else {
-                output.record_loss(LossClass::Policy, 1, metric.values().len() as u64);
-            }
-        }
-    }
-}
-
-/// Returns the configuration: every branch, with multi-region failover mirroring every metric.
-fn configuration() -> SalukiConfiguration {
+/// Returns the every-branch configuration, with the multi-region failover settings `mirroring`.
+fn configuration(mirroring: &str) -> SalukiConfiguration {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(layered_configuration(&[
-        EVERY_BRANCH,
-        "multi_region_failover: {failover_metrics: true}",
-    ]))
+    runtime.block_on(layered_configuration(&[EVERY_BRANCH, mirroring]))
 }
 
-#[test]
-fn the_lowered_default_program_delivers_what_native_processing_does() {
-    let config = configuration();
-    let lowering = Lowering::new(Arc::new(config.clone()), facts(&config))
-        .unwrap()
-        .unwrap();
-    let lowered = lowering.lower(&config).unwrap();
-
-    // The gateways' selections, as their native components build them from this configuration.
-    let groups = routing_groups(&config).unwrap();
-    let group = |index: usize| {
-        let group = &groups.policy_groups()[index];
-        IntakeNameAllowlist::new(&group.metric_allowlist, &group.metric_prefix_allowlist)
-    };
-    let (group_0, group_1) = (group(0), group(1));
-    let mrf = &config.domains.multi_region_failover;
-    assert!(mrf.enabled && mrf.metric_mirroring.enabled && mrf.metric_mirroring.allowlist.is_empty());
-    let autoscaling = RawNameSet::new(&config.shared.autoscaling_failover.metrics);
+/// Lowers the configuration and runs its default program over the trace.
+fn run(config: &SalukiConfiguration) -> RunOutput {
+    let lowering = Lowering::new(Arc::new(config.clone()), facts(config)).unwrap().unwrap();
+    let lowered = lowering.lower(config).unwrap();
 
     let registry = OperatorRegistry::native();
-    let interpreter = Interpreter::new(&registry, &lowered.catalog)
-        .with_opaque_host(id(&ids::routing_filter(0)), move |_| {
-            let group = group_0.clone();
-            Ok(Gateway::boxed(move |metric| group.matches(metric.context().name())))
-        })
-        .with_opaque_host(id(&ids::routing_filter(1)), move |_| {
-            let group = group_1.clone();
-            Ok(Gateway::boxed(move |metric| group.matches(metric.context().name())))
-        })
-        // Enabled, mirroring, with an empty allowlist: everything.
-        .with_opaque_host(id(ids::MRF_METRICS_GATEWAY), |_| Ok(Gateway::boxed(|_| true)))
-        .with_opaque_host(id(ids::AF_METRICS_GATEWAY), move |_| {
-            let allowlist = autoscaling.clone();
-            Ok(Gateway::boxed(move |metric| {
-                is_scalar_series(metric.values()) && allowlist.contains(metric.context().name())
-            }))
-        });
-
+    let interpreter = Interpreter::new(&registry, &lowered.catalog);
     let dogstatsd = vec![
         // Mapped to `mapped.requests` with `route:login`, then prefixed; aggregated.
         Metric::counter(Context::from_static_parts("raw.requests.login", &["env:prod"]), 1.0),
@@ -233,87 +167,140 @@ fn the_lowered_default_program_delivers_what_native_processing_does() {
         .admit(id(ids::DSD_IN), t(302), vec![gauge_at("system.disk", 302, 9.0)]);
     let run = interpreter.run(&trace).unwrap();
     assert!(matches!(run.installs()[0].outcome, InstallOutcome::Active { .. }));
+    run
+}
 
-    // What aggregation flushes at `B + 15`, after post-aggregation filtering, without host tags.
-    let flushed = [
-        "tenant.mapped.requests{env:prod,route:login} rate/10s [0:1]",
-        "tenant.checkout.latency{env:other} distribution [0:n=1,sum=10]",
-        "internal.queue gauge [0:7]",
-        "tenant.checkout.latency.median{env:prod} gauge [0:3]",
-        "tenant.checkout.latency.avg{env:prod} gauge [0:3]",
-        "tenant.checkout.latency.count{env:prod} rate/10s [0:5]",
-        "tenant.checkout.latency.95percentile{env:prod} gauge [0:5]",
-        "system.load gauge [0:1]",
-    ];
-    // The same, with the host tags: the flush is re-admitted at `B + 15`, before the deadline.
-    let flushed_with_host_tags = [
-        "tenant.mapped.requests{cloud_provider:example,env:prod,route:login,zone:a} rate/10s [0:1]",
-        "tenant.checkout.latency{cloud_provider:example,env:other,zone:a} distribution [0:n=1,sum=10]",
-        "internal.queue{cloud_provider:example,zone:a} gauge [0:7]",
-        "tenant.checkout.latency.median{cloud_provider:example,env:prod,zone:a} gauge [0:3]",
-        "tenant.checkout.latency.avg{cloud_provider:example,env:prod,zone:a} gauge [0:3]",
-        "tenant.checkout.latency.count{cloud_provider:example,env:prod,zone:a} rate/10s [0:5]",
-        "tenant.checkout.latency.95percentile{cloud_provider:example,env:prod,zone:a} gauge [0:5]",
-        "system.load{cloud_provider:example,zone:a} gauge [0:1]",
-    ];
-    // Everything the policy region receives: the timestamped DogStatsD points (admitted at `B + 3` and `B + 302`), the
-    // OTLP metrics (at `B + 4` and `B + 301`), and the flush.
-    let mut everything = vec![
-        "tenant.checkout.requests{cloud_provider:example,zone:a} rate/10s [1:2]",
-        "system.load{cloud_provider:example,zone:a} gauge [2:2]",
-        "system.disk gauge [302:9]",
-        "catalog.items{cloud_provider:example,zone:a} gauge [4:3]",
-        "requests.count{cloud_provider:example,zone:a} counter [4:4]",
-        "checkout.requests{cloud_provider:example,zone:a} counter [4:1]",
-        "checkout.cpu gauge [301:0.5]",
-    ];
-    everything.extend(flushed_with_host_tags);
+/// What aggregation flushes at `B + 15`, after post-aggregation filtering, without host tags.
+const FLUSHED: [&str; 8] = [
+    "tenant.mapped.requests{env:prod,route:login} rate/10s [0:1]",
+    "tenant.checkout.latency{env:other} distribution [0:n=1,sum=10]",
+    "internal.queue gauge [0:7]",
+    "tenant.checkout.latency.median{env:prod} gauge [0:3]",
+    "tenant.checkout.latency.avg{env:prod} gauge [0:3]",
+    "tenant.checkout.latency.count{env:prod} rate/10s [0:5]",
+    "tenant.checkout.latency.95percentile{env:prod} gauge [0:5]",
+    "system.load gauge [0:1]",
+];
+
+/// Everything the policy region receives: the timestamped DogStatsD points (admitted at `B + 3` and `B + 302`), the
+/// OTLP metrics (at `B + 4` and `B + 301`), and the flush, with the host tags: the flush is re-admitted at `B + 15`,
+/// before their deadline.
+const EVERYTHING: [&str; 15] = [
+    "tenant.checkout.requests{cloud_provider:example,zone:a} rate/10s [1:2]",
+    "system.load{cloud_provider:example,zone:a} gauge [2:2]",
+    "system.disk gauge [302:9]",
+    "catalog.items{cloud_provider:example,zone:a} gauge [4:3]",
+    "requests.count{cloud_provider:example,zone:a} counter [4:4]",
+    "checkout.requests{cloud_provider:example,zone:a} counter [4:1]",
+    "checkout.cpu gauge [301:0.5]",
+    "tenant.mapped.requests{cloud_provider:example,env:prod,route:login,zone:a} rate/10s [0:1]",
+    "tenant.checkout.latency{cloud_provider:example,env:other,zone:a} distribution [0:n=1,sum=10]",
+    "internal.queue{cloud_provider:example,zone:a} gauge [0:7]",
+    "tenant.checkout.latency.median{cloud_provider:example,env:prod,zone:a} gauge [0:3]",
+    "tenant.checkout.latency.avg{cloud_provider:example,env:prod,zone:a} gauge [0:3]",
+    "tenant.checkout.latency.count{cloud_provider:example,env:prod,zone:a} rate/10s [0:5]",
+    "tenant.checkout.latency.95percentile{cloud_provider:example,env:prod,zone:a} gauge [0:5]",
+    "system.load{cloud_provider:example,zone:a} gauge [0:1]",
+];
+
+#[test]
+fn the_lowered_default_program_delivers_what_native_processing_does() {
+    let run = run(&configuration("multi_region_failover: {failover_metrics: true}"));
+
     let mut client_telemetry = vec![
         "tenant.checkout.requests rate/10s [1:2]",
         "system.load gauge [2:2]",
         "system.disk gauge [302:9]",
     ];
-    client_telemetry.extend(flushed);
-
-    let expected = BTreeMap::from([
-        ("dsd_client_telemetry".to_string(), sorted(&client_telemetry)),
-        ("dd_metrics_encode".to_string(), sorted(&everything)),
+    client_telemetry.extend(FLUSHED);
+    let expected: [(&str, Vec<&str>); 6] = [
+        ("dsd_client_telemetry", client_telemetry),
+        ("dd_metrics_encode", EVERYTHING.to_vec()),
         // `catalog.` by prefix.
         (
-            "metrics_routing_encode_0".to_string(),
-            sorted(&["catalog.items{cloud_provider:example,zone:a} gauge [4:3]"]),
+            "metrics_routing_encode_0",
+            vec!["catalog.items{cloud_provider:example,zone:a} gauge [4:3]"],
         ),
         // `checkout.` by prefix (no `orders.total`); DogStatsD names carry the namespace, so they do not match.
         (
-            "metrics_routing_encode_1".to_string(),
-            sorted(&[
+            "metrics_routing_encode_1",
+            vec![
                 "checkout.requests{cloud_provider:example,zone:a} counter [4:1]",
                 "checkout.cpu gauge [301:0.5]",
-            ]),
+            ],
         ),
-        ("mrf_metrics_encode".to_string(), sorted(&everything)),
+        // Mirroring with an empty allowlist: everything.
+        ("mrf_metrics_encode", EVERYTHING.to_vec()),
+        // The one scalar series named `requests.count`.
         (
-            "af_metrics_encode".to_string(),
-            sorted(&["requests.count{cloud_provider:example,zone:a} counter [4:4]"]),
+            "af_metrics_encode",
+            vec!["requests.count{cloud_provider:example,zone:a} counter [4:4]"],
         ),
-    ]);
-    assert_eq!(received(&run), expected);
+    ];
+    for (output, records) in expected {
+        assert_eq!(received(&run, output), sorted(&records), "{}", output);
+    }
 
     // The policy loss: the listener filterlist's drop, the post-aggregation filter's, and what each gateway does not
-    // forward, of the 15 records reaching the policy region. Every record dropped here has one point.
+    // select, of the 15 records reaching the policy region. Every record dropped here has one point.
     for (node, events) in [
         ("dsd_prefix_filter_blocklist_true", 1),
         ("dsd_post_agg_filter_true", 1),
-        ("metrics_routing_filter_0", 14),
-        ("metrics_routing_filter_1", 13),
-        ("mrf_metrics_gateway", 0),
-        ("af_metrics_gateway", 14),
+        ("metrics_routing_filter_0_false", 14),
+        ("metrics_routing_filter_1_false", 13),
+        ("mrf_metrics_gateway_false", 0),
+        ("af_metrics_gateway_false", 14),
     ] {
         assert_eq!(
             run.loss(&id(node)).loss(LossClass::Policy),
             LossCount { events, points: events },
             "{}",
             node
+        );
+    }
+}
+
+#[test]
+fn the_multi_region_failover_gateway_mirrors_what_its_allowlist_names_and_nothing_while_mirroring_is_off() {
+    // (settings, what the output receives) for mirroring with an allowlist, which names raw names after the mapper
+    // and the namespace (`tenant.checkout.requests`, not `checkout.requests` from DogStatsD), and for mirroring off,
+    // whatever the allowlist.
+    let allowlist = "multi_region_failover: {failover_metrics: true, metric_allowlist: [requests.count, checkout.cpu, \
+                     tenant.checkout.requests, tenant.missing]}";
+    let cases: [(&str, Vec<&str>); 3] = [
+        (
+            allowlist,
+            vec![
+                "requests.count{cloud_provider:example,zone:a} counter [4:4]",
+                "checkout.cpu gauge [301:0.5]",
+                "tenant.checkout.requests{cloud_provider:example,zone:a} rate/10s [1:2]",
+            ],
+        ),
+        ("multi_region_failover: {failover_metrics: false}", vec![]),
+        (
+            "multi_region_failover: {failover_metrics: false, metric_allowlist: [requests.count]}",
+            vec![],
+        ),
+    ];
+    for (mirroring, expected) in cases {
+        let run = run(&configuration(mirroring));
+        assert_eq!(received(&run, "mrf_metrics_encode"), sorted(&expected), "{}", mirroring);
+        let dropped = (EVERYTHING.len() - expected.len()) as u64;
+        assert_eq!(
+            run.loss(&id("mrf_metrics_gateway_false")).loss(LossClass::Policy),
+            LossCount {
+                events: dropped,
+                points: dropped
+            },
+            "{}",
+            mirroring
+        );
+        // The other outputs are unchanged.
+        assert_eq!(
+            received(&run, "dd_metrics_encode"),
+            sorted(&EVERYTHING),
+            "{}",
+            mirroring
         );
     }
 }

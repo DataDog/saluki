@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1607d61eafd9b6de80de385d3376ab8824f141697632d9e6ccbc998fd3c259de # shrinks to shape = Rejoin(Const(false), [], [], Rejoin(Const(false), [Filter { predicate: Any([Flag(Config { binding: BindingName("test.enabled"), resolved: Some(false) })]), keep: false }], [], Emit)), batches = [("dsd", []), ("otlp", [])], observations = []

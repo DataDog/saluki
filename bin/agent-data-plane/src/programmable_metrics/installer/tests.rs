@@ -30,7 +30,7 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition, TopologyBlueprint},
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_metric_plan::install::GenerationState;
+use saluki_metric_plan::{compile::RewriteId, install::GenerationState};
 use saluki_metrics::test::TestRecorder;
 use tokio::sync::{mpsc, oneshot};
 
@@ -38,7 +38,7 @@ use super::*;
 use crate::{
     cli::run::{dogstatsd_aggregate_configuration, PRIMARY_TOPOLOGY},
     programmable_metrics::{
-        telemetry::{PLAN_ACTIVE_GENERATION, PLAN_INSTALLS_TOTAL, PLAN_LIVE_GENERATIONS},
+        telemetry::{PLAN_ACTIVE_GENERATION, PLAN_INSTALLS_TOTAL, PLAN_LIVE_GENERATIONS, PLAN_REWRITES_APPLIED},
         test_support::{configuration, programmable_metrics, ConfigCell},
         topology::{add_regions, connect_frame},
     },
@@ -240,6 +240,8 @@ struct Running {
     batches: mpsc::Sender<Vec<Event>>,
     main_output: mpsc::UnboundedReceiver<String>,
     telemetry_output: mpsc::UnboundedReceiver<String>,
+    /// What the Multi-Region Failover output receives, when the configuration enables it.
+    _mirror_output: mpsc::UnboundedReceiver<String>,
     status: Arc<ArcSwap<PlanStatus>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<Result<(), saluki_core::runtime::SupervisorError>>,
@@ -268,11 +270,13 @@ impl Running {
         let boot = metrics.boot_topology();
         let (main, main_output) = mpsc::unbounded_channel();
         let (telemetry, telemetry_output) = mpsc::unbounded_channel();
+        let (mirror, mirror_output) = mpsc::unbounded_channel();
         for output in boot.outputs.iter() {
             let metrics = match output.component.as_str() {
                 "dd_metrics_encode" => main.clone(),
                 "dsd_client_telemetry_out" => telemetry.clone(),
-                other => panic!("DogStatsD alone has no output `{}`", other),
+                "mrf_metrics_encode" => mirror.clone(),
+                other => panic!("DogStatsD with Multi-Region Failover has no output `{}`", other),
             };
             blueprint
                 .add_destination(output.component.as_str(), DescribingDestinationBuilder { metrics })
@@ -299,6 +303,7 @@ impl Running {
             batches,
             main_output,
             telemetry_output,
+            _mirror_output: mirror_output,
             status,
             shutdown: Some(shutdown),
             task,
@@ -355,6 +360,11 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
     let mut running = Running::start("", Aggregation::Native).await;
     status_where(&running.status, |status| active(status) == Some(1)).await;
     assert_eq!(gauge(&recorder, "metric_filterlist_size", PREFIX_FILTER), Some(0.0));
+    // The installer reports the rewrites applied in compiling the boot generation, by rewrite, from boot: none applies
+    // to DogStatsD's default program (see the next test for one that does).
+    let rewrites =
+        || RewriteId::ALL.map(|rewrite| gauge(&recorder, PLAN_REWRITES_APPLIED, &[("rewrite", rewrite.as_str())]));
+    assert_eq!(rewrites(), [Some(0.0); 6]);
 
     // Generation 1 runs the boot configuration, which blocks nothing.
     assert_eq!(running.send(&["blocked", "kept"]).await, ["blocked", "kept"]);
@@ -386,6 +396,8 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         counter(&recorder, PLAN_INSTALLS_TOTAL, &[("outcome", "unchanged")]),
         Some(1)
     );
+    // And it sets them at every commit, for the generation committed: still none here.
+    assert_eq!(rewrites(), [Some(0.0); 6]);
     // The native filterlist's size and updates, which the installer records from the plan's bindings.
     assert_eq!(gauge(&recorder, "metric_filterlist_size", PREFIX_FILTER), Some(1.0));
     assert_eq!(
@@ -425,6 +437,44 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         ),
         Some(1)
     );
+}
+
+/// DogStatsD with Multi-Region Failover, mirroring what its allowlist names, or nothing when `mirroring` is false.
+fn multi_region_failover(mirroring: bool) -> String {
+    format!(
+        "multi_region_failover:\n  enabled: true\n  api_key: mrf-key\n  dd_url: https://mrf.example.com\n  \
+         failover_metrics: {}\n  metric_allowlist: [mirrored.a]\n",
+        mirroring
+    )
+}
+
+#[tokio::test]
+async fn the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_commit() {
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let rewrites =
+        || RewriteId::ALL.map(|rewrite| gauge(&recorder, PLAN_REWRITES_APPLIED, &[("rewrite", rewrite.as_str())]));
+
+    // With mirroring off, the Multi-Region Failover gateway's predicate, `all(flag(enabled), flag(mirroring), ...)`,
+    // is false given its resolved values, so decision compilation folds it (R3): one application, from boot. Nothing
+    // else applies (gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R6, R7).
+    let running = Running::start(&multi_region_failover(false), Aggregation::Forwarding).await;
+    status_where(&running.status, |status| active(status) == Some(1)).await;
+    let folded = [Some(0.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0)];
+    assert_eq!(rewrites(), folded);
+
+    // Mirroring on: the predicate now depends on each metric's name (the allowlist is not empty), so the generation
+    // committed folds nothing, and the gauges say so at the commit.
+    running.cell.set(configuration(&multi_region_failover(true)).await);
+    status_where(&running.status, |status| active(status) == Some(2)).await;
+    assert_eq!(rewrites(), [Some(0.0); 6]);
+
+    // And off again.
+    running.cell.set(configuration(&multi_region_failover(false)).await);
+    status_where(&running.status, |status| active(status) == Some(3)).await;
+    assert_eq!(rewrites(), folded);
+
+    running.stop().await;
 }
 
 #[tokio::test]

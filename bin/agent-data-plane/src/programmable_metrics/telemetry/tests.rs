@@ -12,9 +12,12 @@ use saluki_core::{
     observability::metrics::{
         AggregatedMetricsProcessor, MetricsSnapshot, Processor as _, RemapperRule, TelemetryProcessor,
     },
+    support::SubsystemIdentifier,
 };
+use saluki_metric_plan::compile::{RewriteId, RewriteOutcome, RewriteRecord};
 use saluki_metrics::test::TestRecorder;
 
+use super::{InstallerTelemetry, PLAN_REWRITES_APPLIED};
 use crate::{
     programmable_metrics::{
         test_support::layered_configuration_system,
@@ -64,13 +67,13 @@ fn batches() -> Vec<Vec<Metric>> {
     ]
 }
 
-/// Runs `path` over the batches with `recorder` as the metrics recorder, and returns every series it registered, with
-/// its value.
-async fn telemetry(path: MetricsPath) -> BTreeMap<Series, String> {
+/// Runs `path` with the configuration `config` over the batches with `recorder` as the metrics recorder, and returns
+/// every series it registered, with its value.
+async fn telemetry(path: MetricsPath, config: &str) -> BTreeMap<Series, String> {
     let recorder = TestRecorder::default();
     {
         let _recorder = metrics::set_default_local_recorder(&recorder);
-        let system = layered_configuration_system(&[CONFIG]).await;
+        let system = layered_configuration_system(&[config]).await;
         let topology = TestTopology::start(&system, Options::new(path, Aggregation::Clocked), |_| {}).await;
         for batch in batches() {
             topology.feed("dsd_in.metrics", batch);
@@ -150,6 +153,39 @@ fn series(name: &str, tags: &[&str]) -> Series {
     (name.to_string(), tags)
 }
 
+/// Returns everything the topology reports about the transform `id` as a component of its own, with the given outputs:
+/// its interconnects, its health, and its task.
+fn component_series(id: &str, outputs: &[&str]) -> BTreeSet<Series> {
+    let mut found = BTreeSet::new();
+    let component = format!("component_id:{}", id);
+    let labels = [component.as_str(), "component_type:transform"];
+    found.insert(series("component_events_received_total", &labels));
+    found.insert(series("component_events_received_size", &labels));
+    for output in outputs {
+        for name in [
+            "component_events_sent_total",
+            "component_send_latency_seconds",
+            "component_events_discarded_total",
+        ] {
+            found.insert(series(name, &[labels[0], labels[1], output]));
+        }
+    }
+    let identity = format!("topology.primary.transforms.{}", id);
+    for name in [
+        "health_component_live",
+        "health_component_ready",
+        "health_component_liveness_latency_seconds",
+    ] {
+        found.insert(series(name, &[format!("component_id:{}", identity).as_str()]));
+    }
+    for task in [identity.clone(), format!("{}.transform", identity)] {
+        for name in ["runtime_task_poll_count", "runtime_task_poll_duration_seconds"] {
+            found.insert(series(name, &[format!("task_name:{}", task).as_str()]));
+        }
+    }
+    found
+}
+
 /// The series of the legacy topology that the plan-driven one does not report, written by hand: everything the
 /// topology reports about a fused transform as a component of its own (its interconnects, its health, its task), the
 /// one output `metrics_enrich` had before it had one per exit, and the no-aggregation split's passthrough batcher,
@@ -157,36 +193,11 @@ fn series(name: &str, tags: &[&str]) -> Series {
 fn removed_series() -> BTreeSet<Series> {
     let mut removed = BTreeSet::new();
     for id in FUSED {
-        let component = format!("component_id:{}", id);
-        let labels = [component.as_str(), "component_type:transform"];
-        removed.insert(series("component_events_received_total", &labels));
-        removed.insert(series("component_events_received_size", &labels));
         let outputs: &[&str] = match id {
             "dsd_no_agg_split" => &["output:_default", "output:passthrough"],
             _ => &["output:_default"],
         };
-        for output in outputs {
-            for name in [
-                "component_events_sent_total",
-                "component_send_latency_seconds",
-                "component_events_discarded_total",
-            ] {
-                removed.insert(series(name, &[labels[0], labels[1], output]));
-            }
-        }
-        let identity = format!("topology.primary.transforms.{}", id);
-        for name in [
-            "health_component_live",
-            "health_component_ready",
-            "health_component_liveness_latency_seconds",
-        ] {
-            removed.insert(series(name, &[format!("component_id:{}", identity).as_str()]));
-        }
-        for task in [identity.clone(), format!("{}.transform", identity)] {
-            for name in ["runtime_task_poll_count", "runtime_task_poll_duration_seconds"] {
-                removed.insert(series(name, &[format!("task_name:{}", task).as_str()]));
-            }
-        }
+        removed.extend(component_series(id, outputs));
     }
     for name in [
         "component_events_sent_total",
@@ -224,15 +235,15 @@ fn removed_series() -> BTreeSet<Series> {
 const NEW_REGIONS: [&str; 2] = ["dsd_pre_aggregation", "dsd_prefix_filter_region"];
 
 /// Returns `true` if a series the plan-driven topology adds is one it is expected to add: what the topology reports
-/// about each pre-aggregation region as a component, the enrichment region's outputs (one per exit) and the region
-/// hosts' failure counters, the plan-level metrics, and the installer's task.
-fn expected_addition((name, tags): &Series) -> bool {
+/// about each of the regions `new_regions` as a component, the enrichment region's outputs (one per exit) and the
+/// region hosts' failure counters, the plan-level metrics, and the installer's task.
+fn expected_addition(new_regions: &[&str], (name, tags): &Series) -> bool {
     let has = |tag: &str| tags.iter().any(|candidate| candidate == tag);
-    let region = NEW_REGIONS
+    let region = new_regions
         .iter()
         .chain(&["metrics_enrich"])
         .any(|region| has(&format!("component_id:{}", region)));
-    let new_component = NEW_REGIONS.iter().any(|region| {
+    let new_component = new_regions.iter().any(|region| {
         let identity = format!("topology.primary.transforms.{}", region);
         has(&format!("component_id:{}", identity))
             || has(&format!("task_name:{}", identity))
@@ -256,8 +267,8 @@ fn value<'a>(telemetry: &'a BTreeMap<Series, String>, name: &str, tags: &[&str])
 
 #[tokio::test]
 async fn the_fused_components_keep_their_native_metrics_and_lose_only_their_component_series() {
-    let legacy = telemetry(MetricsPath::Legacy).await;
-    let plan = telemetry(MetricsPath::Plan).await;
+    let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
+    let plan = telemetry(MetricsPath::Plan, CONFIG).await;
 
     let removed = legacy
         .keys()
@@ -267,7 +278,7 @@ async fn the_fused_components_keep_their_native_metrics_and_lose_only_their_comp
     assert_eq!(removed, removed_series());
     let unexpected = plan
         .keys()
-        .filter(|series| !legacy.contains_key(*series) && !expected_addition(series))
+        .filter(|series| !legacy.contains_key(*series) && !expected_addition(&NEW_REGIONS, series))
         .collect::<Vec<_>>();
     assert!(unexpected.is_empty(), "unexpected series: {:?}", unexpected);
 
@@ -328,6 +339,142 @@ async fn the_fused_components_keep_their_native_metrics_and_lose_only_their_comp
     }
 }
 
+/// The configuration of the gateway telemetry test: two endpoint routing groups (one of prefixes, which compact, and
+/// one of names, which repeat) and both failover gateways, with nothing for the DogStatsD transforms to do.
+const GATEWAYS: &str = r#"
+aggregate_passthrough_idle_flush_timeout: 0s
+dd_url: https://primary.example.com
+additional_endpoints:
+  https://b.example.com: [key-b]
+  https://c.example.com: [key-c]
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://b.example.com: [orders.total, checkout.cart, orders.total]
+    metric_prefix_allowlist:
+      https://c.example.com: [raw., raw.requests.]
+multi_region_failover:
+  enabled: true
+  api_key: mrf-key
+  dd_url: https://mrf.example.com
+  failover_metrics: true
+  metric_allowlist: [orders.total]
+autoscaling:
+  failover:
+    enabled: true
+    metrics: [orders.total]
+cluster_agent:
+  enabled: true
+  url: https://cluster-agent.example.com:5005
+  auth_token: cluster-agent-token
+"#;
+
+/// The gateways of [`GATEWAYS`]: the routing groups are ordered by their lists, so the one of prefixes is the first.
+const GATEWAY_COMPONENTS: [&str; 4] = [
+    "metrics_routing_filter_0",
+    "metrics_routing_filter_1",
+    "mrf_metrics_gateway",
+    "af_metrics_gateway",
+];
+
+/// The regions the plan-driven topology runs for [`GATEWAYS`], besides `metrics_enrich`: the policy fan-out and the
+/// four gateways are one decision, which runs in the enrichment region, and whose five-way fan-out keeps enrichment
+/// from the post-aggregation filter.
+const GATEWAY_REGIONS: [&str; 2] = ["dsd_pre_aggregation", "dsd_post_agg_filter_region"];
+
+#[tokio::test]
+async fn the_gateways_keep_their_native_metrics_and_lose_only_their_component_series() {
+    let legacy = telemetry(MetricsPath::Legacy, GATEWAYS).await;
+    let plan = telemetry(MetricsPath::Plan, GATEWAYS).await;
+
+    // Removed: the DogStatsD transforms' component series, as above, and the gateways', each a transform with one
+    // output.
+    let removed = legacy
+        .keys()
+        .filter(|series| !plan.contains_key(*series))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut expected = removed_series();
+    for gateway in GATEWAY_COMPONENTS {
+        expected.extend(component_series(gateway, &["output:_default"]));
+    }
+    assert_eq!(removed, expected);
+    let unexpected = plan
+        .keys()
+        .filter(|series| !legacy.contains_key(*series) && !expected_addition(&GATEWAY_REGIONS, series))
+        .collect::<Vec<_>>();
+    assert!(unexpected.is_empty(), "unexpected series: {:?}", unexpected);
+    // Each of those regions runs, and none other: no gateway has a region of its own.
+    for region in GATEWAY_REGIONS {
+        let health = format!("component_id:topology.primary.transforms.{}", region);
+        assert!(
+            plan.contains_key(&series("health_component_live", &[health.as_str()])),
+            "{}",
+            region
+        );
+    }
+
+    // Every other series of a gateway keeps its name, labels, and value.
+    let mut kept = 0;
+    for (series, legacy_value) in &legacy {
+        let gateway = component_id(series).is_some_and(|id| GATEWAY_COMPONENTS.contains(&id));
+        if gateway && !removed.contains(series) {
+            assert_eq!(plan[series], *legacy_value, "{:?}", series);
+            kept += 1;
+        }
+    }
+    // The routing filters' counts of what they drop and sizes of their lists; the failover gateways report none.
+    assert_eq!(kept, 6);
+
+    // The values, written by hand: the 12 metrics reaching the gateways are the 9 that aggregation flushes and the 3
+    // timestamped ones. The prefix group keeps the 2 `raw.` counters (`raw.requests.` is covered by `raw.`); the name
+    // group keeps `checkout.cart` and both `orders.total` points (its names are kept once each).
+    for (gateway, filtered, exact, prefix) in [
+        ("metrics_routing_filter_0", 10, 0, 1),
+        ("metrics_routing_filter_1", 9, 2, 0),
+    ] {
+        let labels = [
+            format!("component_id:{}", gateway),
+            "component_type:transform".to_string(),
+        ];
+        let labels = labels.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            value(&plan, "metrics_endpoint_allowlist_metrics_filtered_total", &labels),
+            format!("counter {}", filtered),
+            "{}",
+            gateway
+        );
+        for (match_type, expected) in [("match_type:exact", exact), ("match_type:prefix", prefix)] {
+            let tags = [labels[0], labels[1], match_type];
+            assert_eq!(
+                value(&plan, "metrics_endpoint_allowlist_size", &tags),
+                format!("gauge {}", expected),
+                "{}: {}",
+                gateway,
+                match_type
+            );
+        }
+    }
+
+    // Either consumer of remapped telemetry sees what it saw, but the passthrough flushes, whose native count depends
+    // on timing (see above).
+    let without_flushes = |rendered: String| {
+        rendered
+            .lines()
+            .filter(|line| !line.starts_with("no_aggregation__flush "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        without_flushes(render(get_datadog_agent_remappings(), &plan)),
+        without_flushes(render(get_datadog_agent_remappings(), &legacy))
+    );
+    assert_eq!(
+        render(get_compat_remappings(), &plan),
+        render(get_compat_remappings(), &legacy)
+    );
+}
+
 /// Returns the remapped metric names in rendered telemetry.
 fn rendered_names(rendered: &str) -> BTreeSet<String> {
     rendered
@@ -340,8 +487,8 @@ fn rendered_names(rendered: &str) -> BTreeSet<String> {
 
 #[tokio::test]
 async fn the_datadog_agent_and_the_compatibility_endpoint_see_the_fused_components_as_before() {
-    let legacy = telemetry(MetricsPath::Legacy).await;
-    let plan = telemetry(MetricsPath::Plan).await;
+    let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
+    let plan = telemetry(MetricsPath::Plan, CONFIG).await;
 
     // Through the remappings for the Datadog Agent, the plan-driven topology reports every remapped metric the fused
     // components report natively, with the same values but the one the passthrough batching changes.
@@ -482,5 +629,56 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
     // Each region's own group is accounted separately, against the region's own bounds.
     for region in NEW_REGIONS {
         assert!(status.contains_key(&format!("topology.primary.transforms.{}", region)));
+    }
+}
+
+#[test]
+fn the_installer_counts_the_rewrites_applied_to_the_active_generation_by_rewrite() {
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let applied = |rewrite: &'static str| {
+        recorder.gauge(metrics::Key::from_parts(PLAN_REWRITES_APPLIED, &[("rewrite", rewrite)]))
+    };
+    let record = |id, outcome| RewriteRecord {
+        id,
+        outcome,
+        nodes: Vec::new(),
+        justification: String::new(),
+        telemetry: Vec::new(),
+        capacity_rule: false,
+    };
+    let rewrites = ["R2", "R3", "R4", "R5a", "R6", "R7"];
+
+    // Nothing is reported until the installer reports the rewrites of its first generation, as it does at boot; then
+    // every rewrite is, at zero when none applies.
+    let mut telemetry = InstallerTelemetry::new(SubsystemIdentifier::from_dotted("primary"));
+    for rewrite in rewrites {
+        assert_eq!(applied(rewrite), None, "{}", rewrite);
+    }
+    telemetry.rewrites(Some(&[]));
+    for rewrite in rewrites {
+        assert_eq!(applied(rewrite), Some(0.0), "{}", rewrite);
+    }
+
+    // Applications are counted per rewrite; skipped ones are not.
+    let skipped = || RewriteOutcome::Skipped {
+        reason: "the rewritten plan places work outside the frame".to_string(),
+    };
+    telemetry.rewrites(Some(&[
+        record(RewriteId::R2, RewriteOutcome::Applied),
+        record(RewriteId::R3, RewriteOutcome::Applied),
+        record(RewriteId::R2, RewriteOutcome::Applied),
+        record(RewriteId::R6, skipped()),
+    ]));
+    for (rewrite, expected) in rewrites.into_iter().zip([2.0, 1.0, 0.0, 0.0, 0.0, 0.0]) {
+        assert_eq!(applied(rewrite), Some(expected), "{}", rewrite);
+    }
+
+    // A generation compiled with fewer rewrites, or none, resets the others.
+    telemetry.rewrites(Some(&[record(RewriteId::R3, RewriteOutcome::Applied)]));
+    assert_eq!((applied("R2"), applied("R3")), (Some(0.0), Some(1.0)));
+    telemetry.rewrites(None);
+    for rewrite in rewrites {
+        assert_eq!(applied(rewrite), Some(0.0), "{}", rewrite);
     }
 }

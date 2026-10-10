@@ -17,7 +17,7 @@ use crate::{
     canonical::{PlanHash, ResolvedValues},
     compile::{
         compile, compile_unvalidated, CompileError, CompiledPlan, Frame, KernelKey, PlacementError, RegionProgram,
-        SlotId,
+        RewriteRecord, SlotId,
     },
     extension::TransitionClass,
     ir::{NodeId, Plan},
@@ -428,6 +428,8 @@ struct Installed {
     plan: Arc<Plan>,
     plan_hash: PlanHash,
     programs: Vec<Arc<RegionProgram>>,
+    /// The rewrites compilation considered, applied or skipped.
+    rewrites: Arc<[RewriteRecord]>,
 }
 
 /// A candidate ready to be prepared.
@@ -559,6 +561,7 @@ impl InstallerCore {
             plan: queued.plan,
             plan_hash: queued.plan_hash,
             programs: programs.clone(),
+            rewrites: queued.compiled.rewrites.into(),
         });
         Ok((core, Boot { generation, programs }))
     }
@@ -571,6 +574,12 @@ impl InstallerCore {
     /// Returns the active plan.
     pub fn active_plan(&self) -> Option<&Arc<Plan>> {
         self.active.as_ref().map(|active| &active.plan)
+    }
+
+    /// Returns the rewrites compilation considered for the active plan, applied or skipped, as
+    /// [`CompiledPlan::rewrites`] lists them: for `explain` and the count of applied rewrites.
+    pub fn active_rewrites(&self) -> Option<&[RewriteRecord]> {
+        self.active.as_ref().map(|active| &*active.rewrites)
     }
 
     /// Returns the active generation's program of every slot, in slot order.
@@ -963,6 +972,7 @@ impl InstallerCore {
                 plan: queued.plan,
                 plan_hash: queued.plan_hash,
                 programs,
+                rewrites: queued.compiled.rewrites.clone().into(),
             },
             compiled: queued.compiled,
             attempts: queued.attempts + 1,

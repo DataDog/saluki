@@ -1,0 +1,26 @@
+upgrade:
+  - |
+    The filters in front of the endpoint routing, Multi-Region Failover, and autoscaling failover
+    metrics destinations now run in the plan-driven metrics path instead of as the components
+    ``metrics_routing_filter_<n>``, ``mrf_metrics_gateway``, and ``af_metrics_gateway``. They run
+    together in ``metrics_enrich``, which decides once per metric which destinations receive it and
+    sends it to each of them directly. They select the same metrics as before. Since
+    ``metrics_enrich`` now does this work too, the post-aggregation filter runs in
+    ``dsd_post_agg_filter_region`` in more configurations, for example with one additional endpoint.
+    ``metrics_endpoint_allowlist_metrics_filtered_total`` and ``metrics_endpoint_allowlist_size`` keep
+    their names and ``component_id`` tags.
+  - |
+    The metrics Agent Data Plane reports about ``metrics_routing_filter_<n>``, ``mrf_metrics_gateway``,
+    and ``af_metrics_gateway`` as components are no longer reported, since they no longer run as
+    separate components: ``component_events_received_total``, ``component_events_sent_total``,
+    ``component_events_discarded_total``, ``component_events_received_size``,
+    ``component_send_latency_seconds``, ``health_component_ready``, ``health_component_live``,
+    ``health_component_liveness_latency_seconds``, ``runtime_task_poll_count``, and
+    ``runtime_task_poll_duration_seconds``. Their CPU time is reported with ``metrics_enrich``, and their
+    memory bounds are declared below it, for example as ``metrics_enrich.mrf_metrics_gateway``.
+  - |
+    A live configuration change to ``multi_region_failover.failover_metrics`` or
+    ``multi_region_failover.metric_allowlist`` is now installed as a new generation of the plan, like a
+    change to the metric filterlist: batches already being processed finish under the configuration they
+    were received with, and later batches use the new one. The new ``plan_rewrites_applied`` metric
+    reports, by ``rewrite``, how many optimizations the plan that is running uses.

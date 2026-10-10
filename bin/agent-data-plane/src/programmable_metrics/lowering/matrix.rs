@@ -6,7 +6,7 @@
 //! enrichment alone and together (including the trace sampler without the OTLP source, in proxy mode with traces not
 //! proxied), connected and standalone mode, host tags, endpoint routing groups (none, one, two, a shared group, a
 //! selected endpoint with empty lists, a policy on the primary endpoint), multi-region and autoscaling failover wired
-//! or not, and every DogStatsD parameter that lowering converts.
+//! or not (and metric mirroring with an allowlist), and every DogStatsD parameter that lowering converts.
 
 /// The configuration of a process with every optional branch of the native metrics path wired.
 pub(in crate::programmable_metrics) const EVERY_BRANCH: &str = r#"
@@ -131,6 +131,11 @@ experimental: {metrics_endpoint_routing: {metric_prefix_allowlist: {https://prim
     (
         "multi-region failover",
         "multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com}",
+    ),
+    (
+        "multi-region failover mirroring an allowlist",
+        "multi_region_failover: {enabled: true, api_key: mrf-key, dd_url: https://mrf.example.com, failover_metrics: \
+         true, metric_allowlist: [requests.count, orders.total]}",
     ),
     (
         "multi-region failover without an api key",

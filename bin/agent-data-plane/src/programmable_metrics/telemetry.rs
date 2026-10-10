@@ -7,10 +7,10 @@
 //!   region host counts on a port of the node (`MetricSource::PortEvents`). It also names the component each kernel
 //!   reports its own telemetry as, and the resource group each kernel's memory and CPU time are accounted to:
 //!   `<region>.<node>`, under the region's own, as a native component's sub-transforms are.
-//! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the live generations, and the
-//!   installations by outcome, and the native metrics that telemetry profiles say the installer records from the plan
-//!   a generation runs (`MetricSource::BindingLength`, `MatcherEntries`, `TagProjectionRules`, and
-//!   `BindingChanges`).
+//! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the live generations, the
+//!   installations by outcome, and the rewrites applied in compiling the active generation, and the native metrics
+//!   that telemetry profiles say the installer records from the plan a generation runs (`MetricSource::BindingLength`,
+//!   `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
 
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ use saluki_metric_kernels::{
     tag_projection::{TagProjectionRules, ValueRules},
 };
 use saluki_metric_plan::{
-    compile::RegionProgram,
+    compile::{RegionProgram, RewriteId, RewriteRecord},
     ir::{BindingName, Namespace, Node, NodeId, Plan, PortName},
     operators::{decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry},
     runtime::{kernel_accounting_name, PlanTelemetry, RegisterTelemetry},
@@ -48,6 +48,9 @@ pub const PLAN_LIVE_GENERATIONS: &str = "plan_live_generations";
 
 /// The name of the counter of installations, tagged `outcome`.
 pub const PLAN_INSTALLS_TOTAL: &str = "plan_installs_total";
+
+/// The name of the gauge of the rewrites applied in compiling the active generation, tagged `rewrite`.
+pub const PLAN_REWRITES_APPLIED: &str = "plan_rewrites_applied";
 
 /// What became of a candidate plan, as `plan_installs_total` counts it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -199,6 +202,7 @@ pub struct InstallerTelemetry {
     active_generation: Gauge,
     live_generations: Gauge,
     installs: Vec<(InstallOutcome, Counter)>,
+    rewrites: Vec<(RewriteId, Gauge)>,
     native_gauges: BTreeMap<NativeKey, Gauge>,
     native_counters: BTreeMap<NativeKey, Counter>,
 }
@@ -224,6 +228,7 @@ impl InstallerTelemetry {
             active_generation: builder.register_gauge(PLAN_ACTIVE_GENERATION),
             live_generations: builder.register_gauge(PLAN_LIVE_GENERATIONS),
             installs,
+            rewrites: Vec::new(),
             topology,
             native_gauges: BTreeMap::new(),
             native_counters: BTreeMap::new(),
@@ -243,6 +248,33 @@ impl InstallerTelemetry {
         self.active_generation
             .set(active.map_or(0.0, |generation| generation.get() as f64));
         self.live_generations.set(live as f64);
+    }
+
+    /// Sets the number of applications of each rewrite among `records`, the rewrites compilation considered for the
+    /// active generation (none without one); skipped applications are not counted.
+    ///
+    /// The first call registers a gauge for every rewrite ([`RewriteId::ALL`]), so the installer reports them all from
+    /// boot, where it first calls this, and keeps reporting those it no longer applies, at zero.
+    pub fn rewrites(&mut self, records: Option<&[RewriteRecord]>) {
+        if self.rewrites.is_empty() {
+            let builder = MetricsBuilder::default();
+            self.rewrites = RewriteId::ALL
+                .into_iter()
+                .map(|rewrite| {
+                    let gauge =
+                        builder.register_gauge_with_tags(PLAN_REWRITES_APPLIED, [("rewrite", rewrite.as_str())]);
+                    (rewrite, gauge)
+                })
+                .collect();
+        }
+        let records = records.unwrap_or_default();
+        for (rewrite, gauge) in &self.rewrites {
+            let applied = records
+                .iter()
+                .filter(|record| record.id == *rewrite && record.is_applied())
+                .count();
+            gauge.set(applied as f64);
+        }
     }
 
     /// Sets the native gauges the installer records from the plan of a generation, as the generation is installed:

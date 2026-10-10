@@ -169,6 +169,44 @@ impl Predicate {
         }
     }
 
+    /// Returns the memory the predicate's values take, as memory bounds declare it: each literal or resolved string,
+    /// and each tag key, as a `String` and its bytes.
+    ///
+    /// Binding names, and the predicate's own nodes, are not counted: they do not grow with the lists a predicate
+    /// matches against.
+    pub fn value_bytes(&self) -> usize {
+        fn strings(values: &[String]) -> usize {
+            values.iter().map(|value| value.len() + size_of::<String>()).sum()
+        }
+        fn list(operand: &Operand<Vec<String>>) -> usize {
+            match operand {
+                Operand::Literal(values)
+                | Operand::Config {
+                    resolved: Some(values), ..
+                } => strings(values),
+                Operand::Config { resolved: None, .. } => 0,
+            }
+        }
+        fn string_match(matcher: &StringMatch) -> usize {
+            match matcher {
+                StringMatch::Eq(value) | StringMatch::Prefix(value) => value.len() + size_of::<String>(),
+                StringMatch::In(values) | StringMatch::PrefixIn(values) => strings(values),
+                StringMatch::Matches(set) => list(&set.values),
+            }
+        }
+        match self {
+            Self::Const(_) | Self::Flag(_) | Self::HostUnset {} | Self::KindIn(_) => 0,
+            Self::IsEmpty(values) => list(values),
+            Self::Name(matcher) | Self::IntakeName(matcher) | Self::Host(matcher) => string_match(matcher),
+            Self::HasTag(key) | Self::HasOriginTag(key) => key.len() + size_of::<String>(),
+            Self::Tag(TagMatch { key, value }) | Self::OriginTag(TagMatch { key, value }) => {
+                key.len() + size_of::<String>() + string_match(value)
+            }
+            Self::All(operands) | Self::Any(operands) => operands.iter().map(Self::value_bytes).sum(),
+            Self::Not(operand) => operand.value_bytes(),
+        }
+    }
+
     /// Returns the predicate's value for every metric of `kind`, when the kind alone decides it.
     ///
     /// `Some(value)` means the predicate is `value` for every metric of that kind, whatever its other fields;

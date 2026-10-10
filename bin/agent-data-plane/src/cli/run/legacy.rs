@@ -1,31 +1,38 @@
 //! The legacy metrics path: the native components that built the metrics path before the plan-driven topology.
 //!
-//! The plan-driven topology replaces the chains of synchronous DogStatsD and enrichment transforms with regions that
-//! run the default program, and builds everything else exactly as these functions do. They are kept, with the
-//! components only they use, as a differential reference: tests compare the structure and behavior of the
-//! plan-driven topology with those of the topology they build.
+//! The plan-driven topology replaces the chains of synchronous DogStatsD and enrichment transforms, and the gateways
+//! in front of the metrics outputs (the endpoint routing filters and both failover gateways), with regions that run
+//! the default program, and builds everything else exactly as these functions do. They are kept, with the components
+//! only they use, as a differential reference: tests compare the structure and behavior of the plan-driven topology
+//! with those of the topology they build.
 
 use agent_data_plane_config::{shared::SharedConfiguration, SalukiConfiguration};
 use agent_data_plane_config_system::ConfigurationSystem;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_components::{
-    config::{ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration},
+    config::{
+        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MetricsEndpointRoutingConfiguration,
+        MrfConfiguration,
+    },
     destinations::DogStatsDClientTelemetryConfiguration,
-    transforms::{AggregateContextSnapshotHandle, ChainedConfiguration, HostEnrichmentConfiguration},
+    transforms::{
+        AggregateContextSnapshotHandle, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
+        HostEnrichmentConfiguration,
+    },
 };
 use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 use super::{
     autoscaling_failover_branch, dogstatsd_aggregate_configuration, dogstatsd_mapper_configuration,
-    main_metrics_encoder, mrf_metrics_branch, routing_group_branch,
+    main_metrics_encoder, mrf_metrics_branch, routing_group_encoder,
 };
 use crate::{
     components::{
         dogstatsd_no_agg_split::DogStatsDNoAggSplitConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        tag_filterlist::TagFilterlistConfiguration,
+        metric_filter::MetricFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     config::DataPlaneConfiguration,
     internal::env::ADPEnvironmentProvider,
@@ -173,12 +180,17 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
     config: &SalukiConfiguration,
 ) -> Result<(), GenericError> {
-    let Some(branch) = mrf_metrics_branch(config_system, shared, &config.domains.multi_region_failover) else {
+    let mrf = &config.domains.multi_region_failover;
+    let Some(branch) = mrf_metrics_branch(config_system, shared, mrf) else {
         return Ok(());
     };
+    let gateway = MetricFilterConfiguration::for_mrf(
+        MrfConfiguration::from_configuration(mrf).is_enabled(),
+        config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
+    );
 
     blueprint
-        .add_transform("mrf_metrics_gateway", branch.gateway)?
+        .add_transform("mrf_metrics_gateway", gateway)?
         .add_encoder("mrf_metrics_encode", branch.encoder)?
         .add_forwarder("mrf_dd_out", branch.forwarder)?
         .connect_components_in_order([
@@ -204,7 +216,11 @@ fn add_metrics_output_pipelines_to_blueprint(
     for (index, policy) in routing.policy_groups().iter().enumerate() {
         let filter_id = format!("metrics_routing_filter_{index}");
         let encoder_id = format!("metrics_routing_encode_{index}");
-        let (filter_config, metrics_config) = routing_group_branch(shared, policy);
+        let filter_config = MetricFilterConfiguration::for_allowlist(
+            policy.metric_allowlist.clone(),
+            policy.metric_prefix_allowlist.clone(),
+        );
+        let metrics_config = routing_group_encoder(shared, policy);
 
         blueprint
             .add_transform(filter_id.as_str(), filter_config)?
@@ -228,9 +244,13 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     let Some(branch) = autoscaling_failover_branch(shared, ca_config.endpoint_and_token())? else {
         return Ok(());
     };
+    let gateway = AutoscalingFailoverGatewayConfiguration::new(AutoscalingFailoverConfiguration::new(
+        shared.autoscaling_failover.enabled,
+        shared.autoscaling_failover.metrics.clone(),
+    ));
 
     blueprint
-        .add_transform("af_metrics_gateway", branch.gateway)?
+        .add_transform("af_metrics_gateway", gateway)?
         .add_encoder("af_metrics_encode", branch.encoder)?
         .add_forwarder("cluster_agent_out", branch.forwarder)?
         .connect_components_in_order([

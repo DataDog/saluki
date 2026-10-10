@@ -417,12 +417,60 @@ fn consumers_ignore_members_added_within_a_version() {
     assert_eq!(Explain::from_json(&value.to_string()).unwrap(), explain);
 }
 
+// The rewrites section.
+
+#[test]
+fn the_rewrites_section_lists_every_record_with_its_justification_and_effects() {
+    use crate::compile::{RewriteId, TelemetryChange, TelemetryEffect};
+
+    let node = |name: &str| name.parse::<NodeId>().unwrap();
+    let records = [
+        RewriteRecord {
+            id: RewriteId::R5a,
+            outcome: RewriteOutcome::Applied,
+            nodes: vec![node("a"), node("b")],
+            justification: "reads and writes are disjoint".to_string(),
+            telemetry: vec![TelemetryEffect {
+                node: node("b"),
+                change: TelemetryChange::Added,
+                detail: "per-port counts of the copy".to_string(),
+            }],
+            capacity_rule: true,
+        },
+        RewriteRecord {
+            id: RewriteId::R6,
+            outcome: RewriteOutcome::Skipped {
+                reason: "it would not fit the frame".to_string(),
+            },
+            nodes: vec![node("c")],
+            justification: "equal predicates on every path".to_string(),
+            telemetry: Vec::new(),
+            capacity_rule: false,
+        },
+    ];
+    let explain = default_program().with_rewrites(&records);
+    let text = explain.to_text();
+    let section = &text[text.find("rewrites (2)").expect("the section is rendered")..];
+    assert_eq!(
+        section,
+        "rewrites (2)\n\
+         \x20 R5a applied: a, b [capacity rule]\n\
+         \x20   justification reads and writes are disjoint\n\
+         \x20   telemetry added b: per-port counts of the copy\n\
+         \x20 R6 skipped: c\n\
+         \x20   reason it would not fit the frame\n\
+         \x20   justification equal predicates on every path\n"
+    );
+    assert_eq!(Explain::from_json(&explain.to_json().unwrap()).unwrap(), explain);
+    assert!(!default_program().to_json().unwrap().contains("\"rewrites\""));
+}
+
 // The physical sections.
 
 mod physical {
     use super::*;
     use crate::{
-        compile::{place, Frame},
+        compile::{compile, CompiledPlan, Frame, RewriteId},
         ir::NativeComponentId,
         testing::{with_opaque_gateways, NO_AGGREGATION_PIPELINE_OFF_JSON},
     };
@@ -431,14 +479,17 @@ mod physical {
         crate::testing::default_program_slot_name(nodes)
     }
 
-    /// The explain document of a default-program fixture as it runs through stage 3, with opaque gateways.
+    /// The explain document of a default-program fixture as it runs through stage 3, with opaque gateways, compiled
+    /// into its own frame: with its rewrites and physical sections.
     fn stage3(json: &str) -> Explain {
         let plan = Plan::from_value(with_opaque_gateways(json)).unwrap();
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
         let frame = Frame::compute(&plan, &registry, &namer).unwrap();
-        let placement = place(&plan, &report, &registry, &frame).unwrap();
-        Explain::of(&plan, &registry, &report).with_physical(&plan, &frame, &placement)
+        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        Explain::of(&plan, &registry, &report)
+            .with_rewrites(&compiled.rewrites)
+            .with_physical(&compiled.plan, &frame, &compiled.placement)
     }
 
     fn strings(list: &[&str]) -> Vec<String> {
@@ -464,6 +515,243 @@ mod physical {
             "default-program-stage3-no-aggregation-pipeline-off.txt",
             &stage3(NO_AGGREGATION_PIPELINE_OFF_JSON).to_text(),
         );
+    }
+
+    /// The explain document of `plan` compiled into the frame of the stage 4 default program, the frame ADP builds at
+    /// boot (gateways as `split`s), with its rewrites and physical sections, and the compiled plan.
+    fn in_the_boot_frame(plan: &Plan) -> (Explain, CompiledPlan) {
+        let boot = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+        let registry = OperatorRegistry::native();
+        let frame = Frame::compute(&boot, &registry, &namer).unwrap();
+        let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
+        assert!(report.is_valid(), "{}", report);
+        let compiled = compile(plan, &report, &registry, &frame).unwrap();
+        let explain = Explain::of(plan, &registry, &report)
+            .with_rewrites(&compiled.rewrites)
+            .with_physical(&compiled.plan, &frame, &compiled.placement);
+        (explain, compiled)
+    }
+
+    /// A sample artifact-like plan: the stage 4 default program with its policy region edited as an author edits the
+    /// export, every new node in the policy namespace with the artifact's provenance.
+    ///
+    /// - Each of the policy fan-out's five ports first drops metrics tagged `debug` (`policy/no_debug_<port>`), the
+    ///   same filter written once per destination: R6 hoists one copy above the fan-out.
+    /// - The primary output's path strips `user_id` tags (`policy/strip_user`, a tag projection) and then keeps only
+    ///   `checkout.*` and `requests.count` (`policy/only_known`), whose predicate reads only the name: R5a moves the
+    ///   filter above the projection, which then projects only what is kept, and R7 writes its exact match before its
+    ///   prefix match.
+    /// - The Multi-Region Failover path passes a canary switch left on (`policy/canary`, `const(true)`, whose `false`
+    ///   port drops): R3 folds it and removes the drop.
+    fn artifact_like_plan() -> Plan {
+        let hash = "sha256:00000000000000000000000000000000000000000000000000000000000000a1";
+        let artifact = json!({"artifact": {"revision": 1, "hash": hash}});
+        let mut value = serde_json::from_str::<serde_json::Value>(DEFAULT_PROGRAM_JSON).unwrap();
+        value["provenance"] = json!({"artifacts": [{"revision": 1, "hash": hash}]});
+        let node = |id: &str, op: &str, params: serde_json::Value| {
+            let provenance = artifact.clone();
+            json!({"id": id, "op": op, "params": params, "provenance": provenance})
+        };
+        let edge = |from: String, to: String| json!({"from": from, "to": to});
+
+        // Where each port of the policy fan-out led in the default program.
+        let targets = [
+            "metrics_policy_0",
+            "metrics_routing_filter_0",
+            "metrics_routing_filter_1",
+        ]
+        .into_iter()
+        .chain(["mrf_metrics_gateway", "af_metrics_gateway"])
+        .collect::<Vec<_>>();
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for (port, target) in targets.iter().enumerate() {
+            let filter = format!("policy/no_debug_{}", port);
+            nodes.push(node(&filter, "split", json!({"predicate": {"has_tag": "debug"}})));
+            nodes.push(node(&format!("{}_dropped", filter), "drop", json!({})));
+            edges.push(edge(format!("metrics_policy.{}", port), format!("{}.in", filter)));
+            edges.push(edge(format!("{}.true", filter), format!("{}_dropped.in", filter)));
+            let next = match port {
+                0 => "policy/strip_user".to_string(),
+                3 => "policy/canary".to_string(),
+                _ => target.to_string(),
+            };
+            edges.push(edge(format!("{}.false", filter), format!("{}.in", next)));
+        }
+        nodes.extend([
+            node(
+                "policy/strip_user",
+                "tag_projection",
+                json!({
+                    "rules": [{"metric_name": "checkout.latency", "action": "exclude", "tags": ["user_id"]}],
+                    "value_rules": [],
+                    "cache_capacity": 1000,
+                }),
+            ),
+            node(
+                "policy/only_known",
+                "split",
+                json!({"predicate": {"any": [{"name": {"prefix": "checkout."}}, {"name": {"eq": "requests.count"}}]}}),
+            ),
+            node("policy/only_known_dropped", "drop", json!({})),
+            node("policy/canary", "split", json!({"predicate": {"const": true}})),
+            node("policy/canary_dropped", "drop", json!({})),
+        ]);
+        edges.extend([
+            edge("policy/strip_user.out".to_string(), "policy/only_known.in".to_string()),
+            edge("policy/only_known.true".to_string(), "metrics_policy_0.in".to_string()),
+            edge(
+                "policy/only_known.false".to_string(),
+                "policy/only_known_dropped.in".to_string(),
+            ),
+            edge("policy/canary.true".to_string(), "mrf_metrics_gateway.in".to_string()),
+            edge(
+                "policy/canary.false".to_string(),
+                "policy/canary_dropped.in".to_string(),
+            ),
+        ]);
+
+        // The fan-out's ports now lead to the new filters.
+        let replaced = |edge: &serde_json::Value| {
+            edge["from"]
+                .as_str()
+                .is_some_and(|from| from.starts_with("metrics_policy."))
+        };
+        let plan_edges = value["edges"].as_array_mut().unwrap();
+        plan_edges.retain(|edge| !replaced(edge));
+        plan_edges.extend(edges);
+        value["nodes"].as_array_mut().unwrap().extend(nodes);
+        Plan::from_value(value).unwrap()
+    }
+
+    fn records(records: &[RewriteRecord]) -> Vec<(RewriteId, bool, Vec<String>)> {
+        records
+            .iter()
+            .map(|record| {
+                (
+                    record.id,
+                    record.is_applied(),
+                    record.nodes.iter().map(ToString::to_string).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_stage_4_default_programs_explain_matches_its_golden_files() {
+        let (explain, _) = in_the_boot_frame(&Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap());
+        assert_golden("default-program-stage4.json", &explain.to_json().unwrap());
+        assert_golden("default-program-stage4.txt", &explain.to_text());
+    }
+
+    #[test]
+    fn the_stage_4_default_program_gets_only_decision_time_rewrites() {
+        // Lowering writes nothing a logical rewrite changes, so the plan places as written. Its one policy decision
+        // (the fan-out and every gateway, in the enrichment region) folds Multi-Region Failover's predicate, constant
+        // given the fixture's configuration (R3), and is memoized (R4): the rest reads only the context and the kind,
+        // and costs more than the floor.
+        let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+        let (explain, compiled) = in_the_boot_frame(&plan);
+        assert_eq!(*compiled.plan, plan);
+        assert!(compiled.logical_rewrites().is_empty());
+        let policy = strings(&[
+            "metrics_policy",
+            "metrics_routing_filter_0",
+            "metrics_routing_filter_1",
+            "mrf_metrics_gateway",
+            "af_metrics_gateway",
+        ]);
+        assert_eq!(
+            records(compiled.decision_rewrites()),
+            vec![
+                (RewriteId::R3, true, strings(&["mrf_metrics_gateway"])),
+                (RewriteId::R4, true, policy),
+            ]
+        );
+        let text = explain.to_text();
+        let section = &text[text.find("rewrites (2)\n").expect("the section is rendered")..];
+        let headers = section
+            .lines()
+            .filter(|line| line.starts_with("  R"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            headers,
+            vec![
+                "  R3 applied: mrf_metrics_gateway",
+                "  R4 applied: metrics_policy, metrics_routing_filter_0, metrics_routing_filter_1, \
+                 mrf_metrics_gateway, af_metrics_gateway",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_artifact_like_policy_region_explains_every_rewrite_it_gets() {
+        let plan = artifact_like_plan();
+        let (explain, compiled) = in_the_boot_frame(&plan);
+        assert_golden("artifact-like-policy.txt", &explain.to_text());
+        assert!(compiled.converged);
+
+        // In pipeline order: R3 folds the canary switch; R5a moves the primary path's filter above the tag
+        // projection; R6 hoists the five `debug` filters above the fan-out as one copy; R7 reorders the moved filter's
+        // predicate. A second pass finds nothing more: the hoisted copy cannot cross host tags, which write tags.
+        let logical = records(compiled.logical_rewrites());
+        let ids = logical
+            .iter()
+            .map(|(id, applied, _)| (*id, *applied))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                (RewriteId::R3, true),
+                (RewriteId::R5a, true),
+                (RewriteId::R6, true),
+                (RewriteId::R7, true),
+            ]
+        );
+        assert_eq!(logical[0].2, strings(&["policy/canary", "policy/canary_dropped"]));
+        assert_eq!(logical[3].2, strings(&["policy/only_known"]));
+
+        let rewritten = &compiled.plan;
+        for removed in [
+            "policy/canary",
+            "policy/canary_dropped",
+            "policy/no_debug_0",
+            "policy/no_debug_4_dropped",
+        ] {
+            assert!(
+                rewritten.node(&removed.parse().unwrap()).is_none(),
+                "`{}` stays",
+                removed
+            );
+        }
+        let edge = |from: &str, to: &str| {
+            rewritten
+                .edges
+                .iter()
+                .any(|edge| edge.from.to_string() == from && edge.to.to_string() == to)
+        };
+        assert!(edge("metrics_policy.3", "mrf_metrics_gateway.in"));
+        assert!(edge("metrics_policy.0", "policy/only_known.in"));
+        assert!(edge("policy/only_known.true", "policy/strip_user.in"));
+        assert!(edge("policy/strip_user.out", "metrics_policy_0.in"));
+        let only_known = rewritten.node(&"policy/only_known".parse().unwrap()).unwrap();
+        assert_eq!(
+            only_known.params.get("predicate"),
+            Some(&json!({"any": [{"name": {"eq": "requests.count"}}, {"name": {"prefix": "checkout."}}]}))
+        );
+
+        // Decision compilation then folds Multi-Region Failover's predicate (R3) and memoizes the policy decision,
+        // which now starts at the hoisted copy (R4): every predicate reads only the context and the kind.
+        let decision = records(compiled.decision_rewrites());
+        assert_eq!(
+            decision
+                .iter()
+                .map(|(id, applied, _)| (*id, *applied))
+                .collect::<Vec<_>>(),
+            vec![(RewriteId::R3, true), (RewriteId::R4, true)]
+        );
+        assert_eq!(decision[0].2, strings(&["mrf_metrics_gateway"]));
+        assert_eq!(explain.rewrites.as_ref().unwrap().len(), 6);
     }
 
     #[test]

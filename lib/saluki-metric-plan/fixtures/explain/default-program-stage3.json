@@ -1986,6 +1986,7 @@
     }
   ],
   "findings": [],
+  "rewrites": [],
   "physical": {
     "fixed": [
       {

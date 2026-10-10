@@ -14,8 +14,9 @@
 //!   it receives and encodes nothing;
 //! - every forwarder with one that drops what it receives, so nothing leaves the process.
 //!
-//! Everything else runs as it does in production: the regions, the native transforms, aggregation unless replaced, the
-//! gateways, and, for the plan-driven path, the installer.
+//! Everything else runs as it does in production: the regions (with the gateways, on the plan-driven path), the native
+//! transforms (with the gateways, on the legacy path), aggregation unless replaced, and, for the plan-driven path, the
+//! installer.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -408,6 +409,24 @@ impl TestTopology {
             Ok(false) => panic!("the outputs stopped before {}: received {:?}", what, self.received),
             Err(_) => panic!("timed out waiting for {}: received {:?}", what, self.received),
         }
+    }
+
+    /// Waits at most `limit` until the outputs have received buffers for which `done` returns `true`, recording what
+    /// arrives meanwhile, and returns whether they did: for something that may not happen.
+    pub(super) async fn received_within(&mut self, limit: Duration, done: impl Fn(&[Delivery]) -> bool) -> bool {
+        let received = &mut self.received;
+        let deliveries = &mut self.deliveries;
+        tokio::time::timeout(limit, async {
+            while !done(received) {
+                match deliveries.recv().await {
+                    Some(delivery) => received.push(delivery),
+                    None => return false,
+                }
+            }
+            true
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Stops the topology: closes every feed, so the scripted components stop once they have sent what they were fed,

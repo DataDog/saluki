@@ -108,6 +108,8 @@ enum Compiled {
     KindIn(KindSet),
     All(Vec<Compiled>),
     Any(Vec<Compiled>),
+    /// An `any` whose operands all match the intake name: the name is read once, and each matcher tested in turn.
+    AnyIntakeName(Vec<SortedSetMatcher>),
     Not(Box<Compiled>),
 }
 
@@ -164,12 +166,30 @@ where
                 .map(|operand| compile(operand, resolver))
                 .collect::<Result<_, _>>()?,
         ),
-        Predicate::Any(operands) => Compiled::Any(
-            operands
+        Predicate::Any(operands) => {
+            let operands = operands
                 .iter()
                 .map(|operand| compile(operand, resolver))
-                .collect::<Result<_, _>>()?,
-        ),
+                .collect::<Result<Vec<_>, _>>()?;
+            // Endpoint allowlists lower to `any` of an exact and a prefix match on the intake name: read it once.
+            if operands.len() > 1
+                && operands
+                    .iter()
+                    .all(|operand| matches!(operand, Compiled::IntakeName(_)))
+            {
+                Compiled::AnyIntakeName(
+                    operands
+                        .into_iter()
+                        .filter_map(|operand| match operand {
+                            Compiled::IntakeName(matcher) => Some(matcher),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            } else {
+                Compiled::Any(operands)
+            }
+        }
         Predicate::Not(operand) => Compiled::Not(Box::new(compile(operand, resolver)?)),
     })
 }
@@ -198,6 +218,26 @@ impl CompiledPredicate {
     pub fn evaluate(&self, view: &mut EventView<'_>) -> bool {
         evaluate(&self.root, view)
     }
+
+    /// Returns the memory the predicate's matchers take, as memory bounds declare it: each matcher's entries (see
+    /// [`SortedSetMatcher::entry_bytes`]), and each tag key as a `String` and its bytes.
+    pub fn matcher_bytes(&self) -> usize {
+        matcher_bytes(&self.root)
+    }
+}
+
+fn matcher_bytes(node: &Compiled) -> usize {
+    match node {
+        Compiled::Const(_) | Compiled::HostUnset | Compiled::KindIn(_) => 0,
+        Compiled::Name(matcher) | Compiled::IntakeName(matcher) | Compiled::Host(matcher) => matcher.entry_bytes(),
+        Compiled::HasTag(key) | Compiled::HasOriginTag(key) => key.len() + size_of::<String>(),
+        Compiled::Tag(key, matcher) | Compiled::OriginTag(key, matcher) => {
+            key.len() + size_of::<String>() + matcher.entry_bytes()
+        }
+        Compiled::All(operands) | Compiled::Any(operands) => operands.iter().map(matcher_bytes).sum(),
+        Compiled::AnyIntakeName(matchers) => matchers.iter().map(SortedSetMatcher::entry_bytes).sum(),
+        Compiled::Not(operand) => matcher_bytes(operand),
+    }
 }
 
 fn evaluate(node: &Compiled, view: &mut EventView<'_>) -> bool {
@@ -214,6 +254,9 @@ fn evaluate(node: &Compiled, view: &mut EventView<'_>) -> bool {
         Compiled::KindIn(kinds) => kinds.contains(view.kind()),
         Compiled::All(operands) => operands.iter().all(|operand| evaluate(operand, view)),
         Compiled::Any(operands) => operands.iter().any(|operand| evaluate(operand, view)),
+        Compiled::AnyIntakeName(matchers) => view
+            .intake_name()
+            .is_some_and(|name| matchers.iter().any(|matcher| matcher.matches(name))),
         Compiled::Not(operand) => !evaluate(operand, view),
     }
 }
@@ -258,6 +301,23 @@ mod tests {
         let predicate = serde_json::from_value::<Predicate>(predicate).expect("test predicate is valid");
         let compiled = predicate.compile(&NoBindings).expect("test predicate compiles");
         compiled.evaluate(&mut EventView::new(metric))
+    }
+
+    #[test]
+    fn a_predicate_declares_its_values_and_its_compiled_form_its_matchers_entries() {
+        let predicate = serde_json::from_value::<Predicate>(json!({"all": [
+            {"kind_in": ["gauge"]},
+            {"is_empty": {"config": "list.a", "resolved": ["ab"]}},
+            {"name": {"matches": {"values": {"config": "list.b", "resolved": ["ab", "cde", "ab"]}, "prefix": false}}},
+            {"tag": {"key": "env", "value": {"eq": "prod"}}},
+        ]}))
+        .unwrap();
+        let (string, meta) = (size_of::<String>(), size_of::<MetaString>());
+        // Every string the predicate holds: the emptiness test's list, the name list as written, the tag key and value.
+        assert_eq!(predicate.value_bytes(), 2 + (2 + 3 + 2) + 3 + 4 + 6 * string);
+        // The matchers keep each name once, and the tag key and its value's matcher; the emptiness test is a constant.
+        let compiled = predicate.compile(&NoBindings).unwrap();
+        assert_eq!(compiled.matcher_bytes(), (2 + 3) + 3 + 4 + 3 * meta + string);
     }
 
     /// Hand-written expected results for every leaf, including every tag edge case.
@@ -464,6 +524,84 @@ mod tests {
             !view.has_computed_intake_name(),
             "the intake name was computed but never needed"
         );
+    }
+
+    #[test]
+    fn an_any_of_intake_name_matches_is_one_node_that_matches_as_its_operands_do() {
+        // Endpoint allowlists lower to this shape: compilation fuses it, reading the intake name once.
+        let allowlist = json!({"any": [
+            {"intake_name": {"in": ["checkout.requests"]}},
+            {"intake_name": {"prefix_in": ["catalog."]}},
+        ]});
+        let compiled = serde_json::from_value::<Predicate>(allowlist.clone())
+            .unwrap()
+            .compile(&NoBindings)
+            .unwrap();
+        assert!(matches!(&compiled.root, Compiled::AnyIntakeName(matchers) if matchers.len() == 2));
+        // Any other `any` stays as it is.
+        let mixed = serde_json::from_value::<Predicate>(json!({"any": [
+            {"intake_name": {"eq": "a"}}, {"name": {"eq": "a"}}
+        ]}))
+        .unwrap()
+        .compile(&NoBindings)
+        .unwrap();
+        assert!(matches!(&mixed.root, Compiled::Any(_)));
+
+        // (name, expected): exactly, by prefix, neither, after normalizing, and without an intake name.
+        let cases = [
+            ("checkout.requests", true),
+            ("catalog.items", true),
+            ("checkout.errors", false),
+            ("catalog.my item", true),
+            ("123", false),
+        ];
+        for (name, expected) in cases {
+            let metric = metric(name, None, &[], &[]);
+            assert_eq!(evaluate_json(allowlist.clone(), &metric), expected, "{}", name);
+        }
+    }
+
+    mod properties {
+        use proptest::{collection::vec, prelude::*, sample::select};
+
+        use super::*;
+        use crate::testing::{arb_metric, NAME_VOCABULARY, PREFIX_VOCABULARY};
+
+        /// Returns a strategy for lists of exact names and of prefixes, from the metric strategies' vocabularies.
+        fn arb_lists() -> impl Strategy<Value = (Vec<&'static str>, Vec<&'static str>)> {
+            (
+                vec(select(NAME_VOCABULARY.to_vec()), 0..3),
+                vec(select(PREFIX_VOCABULARY.to_vec()), 0..3),
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn property_test_a_fused_any_of_intake_name_matches_matches_as_its_operands_do(
+                lists in vec(arb_lists(), 2..4),
+                metric in arb_metric(),
+            ) {
+                let operands = lists
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (names, prefixes))| {
+                        if index % 2 == 0 {
+                            Predicate::IntakeName(StringMatch::In(names.iter().map(|name| name.to_string()).collect()))
+                        } else {
+                            Predicate::IntakeName(StringMatch::PrefixIn(
+                                prefixes.iter().map(|prefix| prefix.to_string()).collect(),
+                            ))
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let fused = Predicate::Any(operands.clone()).compile(&NoBindings).unwrap();
+                prop_assert!(matches!(fused.root, Compiled::AnyIntakeName(_)));
+                let expected = operands
+                    .iter()
+                    .any(|operand| operand.compile(&NoBindings).unwrap().evaluate(&mut EventView::new(&metric)));
+                prop_assert_eq!(fused.evaluate(&mut EventView::new(&metric)), expected);
+            }
+        }
     }
 
     struct Bindings(HashMap<&'static str, Value>);

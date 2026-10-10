@@ -159,7 +159,8 @@ pub(super) struct Program {
     pub nodes: Vec<ProgramNode>,
     pub index: HashMap<NodeId, usize>,
 
-    /// The nodes in topological order.
+    /// The order a pass runs the nodes in: topological order, choosing among ready nodes in plan order, with the
+    /// `emit`s last, in plan order.
     pub order: Vec<usize>,
 
     /// For each node and output port, the input port its edge enters.
@@ -245,6 +246,15 @@ impl Program {
                 message: "a validated plan has a cycle".to_string(),
             }));
         }
+        // An `emit` feeds nothing, so running every `emit` last keeps the order topological, and makes the order in
+        // which records from different `emit`s reach one output their plan order.
+        let is_emit = |node: &usize| matches!(nodes[*node].exec, Exec::Emit(_));
+        let order = order
+            .iter()
+            .copied()
+            .filter(|node| !is_emit(node))
+            .chain((0..nodes.len()).filter(is_emit))
+            .collect::<Vec<_>>();
 
         let points = nodes
             .iter()

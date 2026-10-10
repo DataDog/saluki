@@ -74,29 +74,11 @@ fn reserved_nodes_report_as_the_native_component_they_stand_for() {
         // A routing group's index carries over to its component.
         (
             "metrics_routing_filter_12",
-            names::OPAQUE_HOST,
-            telemetry(
-                "metrics_routing_filter_12",
-                ComponentType::Transform,
-                TelemetryProfile::Host,
-            ),
-        ),
-        (
-            "metrics_routing_filter_12",
             names::SPLIT,
             telemetry(
                 "metrics_routing_filter_12",
                 ComponentType::Transform,
                 TelemetryProfile::EndpointAllowlist,
-            ),
-        ),
-        (
-            "metrics_routing_filter_3_out",
-            names::EMIT,
-            telemetry(
-                "metrics_routing_encode_3",
-                ComponentType::Encoder,
-                TelemetryProfile::Silent,
             ),
         ),
         (
@@ -108,7 +90,16 @@ fn reserved_nodes_report_as_the_native_component_they_stand_for() {
                 TelemetryProfile::Silent,
             ),
         ),
-        // The failover gateways report no filter telemetry natively once they are routing operators.
+        (
+            "metrics_routing_filter_3_false",
+            names::DROP,
+            telemetry(
+                "metrics_routing_filter_3",
+                ComponentType::Transform,
+                TelemetryProfile::Silent,
+            ),
+        ),
+        // The failover gateways report no filter telemetry natively.
         (
             "mrf_metrics_gateway",
             names::SPLIT,
@@ -118,12 +109,20 @@ fn reserved_nodes_report_as_the_native_component_they_stand_for() {
                 TelemetryProfile::Silent,
             ),
         ),
+        (
+            "af_metrics_gateway_true",
+            names::EMIT,
+            telemetry("af_metrics_encode", ComponentType::Encoder, TelemetryProfile::Silent),
+        ),
         // A node keeps its native identity only while its operator is the profile's.
         ("dsd_no_agg_split", names::SPLIT, None),
         ("dsd_tag_filterlist", names::OPAQUE_HOST, None),
+        // The gateways are routing operators: an opaque host in their place has no native identity.
+        ("metrics_routing_filter_0", names::OPAQUE_HOST, None),
+        ("af_metrics_gateway", names::OPAQUE_HOST, None),
         // Indices are written canonically.
-        ("metrics_routing_filter_01", names::OPAQUE_HOST, None),
-        ("metrics_routing_filter_a", names::OPAQUE_HOST, None),
+        ("metrics_routing_filter_01", names::SPLIT, None),
+        ("metrics_routing_filter_a", names::SPLIT, None),
         // Nodes in the policy namespace have no native identity, whatever their local ID.
         ("policy/dsd_tag_filterlist", names::TAG_PROJECTION, None),
         ("unknown_node", names::TEE, None),
@@ -310,7 +309,7 @@ fn instance_of(name: &str, pattern: &str) -> bool {
 /// of the node, or bindings of its parameters; and only live bindings change.
 #[tokio::test]
 async fn metrics_recorded_outside_kernels_name_ports_and_bindings_of_their_nodes() {
-    // The lowered default program has every branch; the plan crate's default program has the stage 4 gateway splits.
+    // The lowered default program and the plan crate's default program both have every branch.
     let config = configuration(EVERY_BRANCH).await;
     let lowered = Lowering::new(Arc::new(config.clone()), facts(&config))
         .unwrap()

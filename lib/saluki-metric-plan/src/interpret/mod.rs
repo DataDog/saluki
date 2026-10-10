@@ -25,7 +25,26 @@
 //! | `install(plan)` | Validates the plan and, if it is valid, makes it the active plan from the next event on. |
 //! | `close` | Ends input: every kernel and host finishes under [`DrainPolicy::Shutdown`]. |
 //! | `signal(name, value)` | Records the signal's value. No operator reads signals yet, so it has no effect. |
-//! | `capacity(output, n)`, `cancel` | Not supported until delivery policies (stage 3) and cuts (stage 6). |
+//! | `capacity(output, n)` | Bounds the output to `n` more records until the next bound; see [capacity](#capacity). |
+//! | `cancel` | Not supported until cuts (stage 6). |
+//!
+//! # Delivery order
+//!
+//! Each trace event that moves records (`admit`, `advance`, `close`, and the retirement of an installation's old plan)
+//! is one **pass** over the plan. Nodes run in topological order, choosing among ready nodes in plan order, with the
+//! `emit`s last, in plan order. When its turn comes, a node runs every batch waiting at it, input port by input port,
+//! and in arrival order within a port; a state owner then runs its tick or finish, if the event calls for one. A
+//! `merge` therefore passes its inputs on in port order, as a region's `concat` step does, and every port carries the
+//! records of its node's input ports in that order, each path keeping its own order.
+//!
+//! The order in which an output receives records thus follows from the plan's dataflow alone: from what each node
+//! does to the order of its input, from `merge` port order, and from the plan order of the `emit`s. It never depends on
+//! how many nodes a path passes, on how the records a port carries are cut into batches, or on which of two nodes that
+//! do not reach each other runs first. A rewrite that keeps every remaining port's records and order (removing a node
+//! a path passes without changing what it carries, or a `merge` input that carries nothing) keeps what every output
+//! receives, in order, and with it what a `capacity` bound accepts: bounds count records in this order. The
+//! specification leaves the order of records arriving at a `merge` from different paths open; this is the
+//! interpreter's choice.
 //!
 //! # Time
 //!
@@ -43,6 +62,14 @@
 //! admission points upstream of it: sources, and the outputs of opaque hosts, which re-admit. An admission point that
 //! has admitted nothing holds the watermark back. Opaque hosts receive their watermark at every tick, and a stateful
 //! kernel's time-driven output, from its ticks and its finish, is stamped with its watermark as `t_a`.
+//!
+//! # Capacity
+//!
+//! `capacity(output, n)` bounds an output: from that event on it accepts at most `n` more records, until the next
+//! `capacity` event for it replaces the bound. Bounds belong to outputs, so they hold across installations. An output
+//! accepts records in delivery order while its bound lasts; every record beyond it is **capacity loss**, counted as
+//! `capacity` loss of the `emit` node that delivered it and kept in [`RunOutput::refused`], so that two executions'
+//! losses can be compared with [`compare_under_capacity`][crate::equivalence::compare_under_capacity].
 //!
 //! # Opaque hosts and segments
 //!
@@ -73,7 +100,7 @@
 //! unobservable.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::Arc,
     time::{Duration, Instant},
@@ -101,6 +128,9 @@ use crate::{
 
 pub mod adapters;
 use self::adapters::AggregateAdapter;
+
+mod capacity;
+use self::capacity::OutputCapacity;
 
 mod host;
 pub use self::host::{AdapterError, HostBatch, HostFactory, HostFinish, HostOutput, HostTick, OpaqueHostAdapter};
@@ -238,6 +268,7 @@ pub struct EmittedRecord {
 #[derive(Debug, Default)]
 pub struct RunOutput {
     outputs: BTreeMap<OutputId, Vec<EmittedRecord>>,
+    refused: BTreeMap<OutputId, Vec<EmittedRecord>>,
     installs: Vec<InstallRecord>,
     loss: BTreeMap<NodeId, TurnCounters>,
     watermarks: BTreeMap<NodeId, Option<AdmissionTime>>,
@@ -253,6 +284,17 @@ impl RunOutput {
     /// Returns the records an output received, in delivery order. An output no plan declared received nothing.
     pub fn output(&self, id: &OutputId) -> &[EmittedRecord] {
         self.outputs.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns the records an output did not accept, because a `capacity` event bounded it, in delivery order: its
+    /// capacity loss. An output never bounded refused nothing.
+    pub fn refused(&self, id: &OutputId) -> &[EmittedRecord] {
+        self.refused.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns every output that refused records, with the records it refused, in delivery order.
+    pub fn refused_outputs(&self) -> impl Iterator<Item = (&OutputId, &[EmittedRecord])> {
+        self.refused.iter().map(|(id, records)| (id, records.as_slice()))
     }
 
     /// Returns every `install` event's outcome, in trace order.
@@ -515,14 +557,47 @@ struct Batch {
     metrics: Vec<Metric>,
 }
 
-/// A batch on its way into one input port.
+/// A batch on its way into one input port: `port` of `node`.
 struct Delivery {
     node: usize,
+    port: usize,
     batch: Batch,
 }
 
-/// The pending deliveries of one trace event, processed in order.
-type Queue = VecDeque<Delivery>;
+/// The deliveries one node's run causes, in the order it makes them.
+type Queue = Vec<Delivery>;
+
+/// The batches waiting at the nodes of one pass, by node, each with the input port it enters, in arrival order.
+struct Pending {
+    batches: Vec<Vec<(usize, Batch)>>,
+}
+
+impl Pending {
+    fn new(program: &Program) -> Self {
+        Self {
+            batches: program.nodes.iter().map(|_| Vec::new()).collect(),
+        }
+    }
+
+    fn add(&mut self, deliveries: Queue) {
+        for Delivery { node, port, batch } in deliveries {
+            self.batches[node].push((port, batch));
+        }
+    }
+
+    /// Takes the batches waiting at a node: input port by input port, and in arrival order within each port.
+    fn take(&mut self, node: usize) -> Vec<Batch> {
+        let mut batches = std::mem::take(&mut self.batches[node]);
+        // A stable sort, so that each port keeps its arrival order.
+        batches.sort_by_key(|(port, _)| *port);
+        batches.into_iter().map(|(_, batch)| batch).collect()
+    }
+
+    /// Returns a node that still has batches waiting, if any does.
+    fn waiting(&self) -> Option<usize> {
+        self.batches.iter().position(|batches| !batches.is_empty())
+    }
+}
 
 /// The state of one run.
 struct Run<'r, 'a> {
@@ -537,6 +612,7 @@ struct Run<'r, 'a> {
     closed: bool,
     last_rejection: Option<String>,
     output: RunOutput,
+    capacity: OutputCapacity,
 }
 
 impl<'r, 'a> Run<'r, 'a> {
@@ -551,6 +627,7 @@ impl<'r, 'a> Run<'r, 'a> {
             closed: false,
             last_rejection: None,
             output: RunOutput::default(),
+            capacity: OutputCapacity::default(),
         }
     }
 
@@ -586,13 +663,10 @@ impl<'r, 'a> Run<'r, 'a> {
             TraceEvent::Heartbeat { source, admitted_at } => self.admit(source, *admitted_at, &[]),
             TraceEvent::Advance { clock } => self.advance(*clock),
             TraceEvent::Install { plan } => self.install(position, plan),
-            TraceEvent::Capacity { output, .. } => Err(InterpretErrorKind::Unsupported {
-                capability: format!(
-                    "bounding the capacity of output `{}`, which needs the delivery-policy slot,",
-                    output
-                ),
-                stage: 3,
-            }),
+            TraceEvent::Capacity { output, limit } => {
+                self.capacity.bound(output, *limit);
+                Ok(())
+            }
             TraceEvent::Signal { name, value } => {
                 // Installation refuses plans with signal readers, so a signal changes nothing yet.
                 self.output.signals.insert(name.clone(), *value);
@@ -667,7 +741,7 @@ impl<'r, 'a> Run<'r, 'a> {
         let mut queue = Queue::new();
         forward(program, &mut queue, node, 0, header, batch.to_vec())?;
         let arrival = self.clock.max(admitted_at);
-        self.flow(program, queue, arrival)
+        self.pass(program, queue, arrival, |_, _, _| Ok(Queue::new()))
     }
 
     /// Runs one flush tick for every state owner, in topological order.
@@ -687,34 +761,33 @@ impl<'r, 'a> Run<'r, 'a> {
         result
     }
 
+    /// Runs one flush tick for every state owner in one pass: each ticks once what its upstream state owners' ticks
+    /// sent it in this pass has reached it.
     fn tick(&mut self, program: &mut Program) -> Result<(), InterpretErrorKind> {
-        for position in 0..program.order.len() {
-            let node = program.order[position];
+        let clock = self.clock;
+        self.pass(program, Queue::new(), clock, |run, program, node| {
             if !program.nodes[node].is_stateful() {
-                continue;
+                return Ok(Queue::new());
             }
-            let watermark = self.watermark(program, node);
-            let clock = self.clock;
-            let queue = with_exec(program, node, |program, exec| match exec {
+            let watermark = run.watermark(program, node);
+            with_exec(program, node, |program, exec| match exec {
                 Exec::Kernel {
                     kernel: Some(kernel), ..
                 } => {
                     let header = time_driven_header(program, watermark);
-                    let mut call = KernelCall::new(&header, self.instant(clock), port_count(program, node))
+                    let mut call = KernelCall::new(&header, run.instant(clock), port_count(program, node))
                         .with_watermark(watermark);
                     call.repeat(&program.nodes[node].id, |turn| kernel.advance_time(turn))?;
-                    self.kernel_output(program, node, call, &header)
+                    run.kernel_output(program, node, call, &header)
                 }
                 Exec::Host(Some(adapter)) => {
                     let mut output = HostOutput::new(port_count(program, node));
                     adapter.tick(HostTick { now: clock, watermark }, &mut output);
-                    self.readmit(program, node, output, clock, true)
+                    run.readmit(program, node, output, clock, true)
                 }
                 _ => Ok(Queue::new()),
-            })?;
-            self.flow(program, queue, clock)?;
-        }
-        Ok(())
+            })
+        })
     }
 
     /// Finishes every kernel and host under the shutdown policy, in topological order, and ends the input.
@@ -728,37 +801,35 @@ impl<'r, 'a> Run<'r, 'a> {
         result
     }
 
-    /// Finishes every kernel and host of `program` except the nodes in `keep`, in topological order.
+    /// Finishes every kernel and host of `program` except the nodes in `keep`, in one pass: each finishes once what
+    /// its upstream nodes' finishes sent it in this pass has reached it.
     fn finish(
         &mut self, program: &mut Program, policy: DrainPolicy, keep: &BTreeSet<usize>,
     ) -> Result<(), InterpretErrorKind> {
-        for position in 0..program.order.len() {
-            let node = program.order[position];
+        let clock = self.clock;
+        self.pass(program, Queue::new(), clock, |run, program, node| {
             if keep.contains(&node) {
-                continue;
+                return Ok(Queue::new());
             }
-            let watermark = self.watermark(program, node);
-            let clock = self.clock;
-            let queue = with_exec(program, node, |program, exec| match exec {
+            let watermark = run.watermark(program, node);
+            with_exec(program, node, |program, exec| match exec {
                 Exec::Kernel {
                     kernel: Some(kernel), ..
                 } => {
                     let header = time_driven_header(program, watermark);
-                    let mut call = KernelCall::new(&header, self.instant(clock), port_count(program, node))
+                    let mut call = KernelCall::new(&header, run.instant(clock), port_count(program, node))
                         .with_watermark(watermark);
                     call.repeat(&program.nodes[node].id, |turn| kernel.finish(turn, policy))?;
-                    self.kernel_output(program, node, call, &header)
+                    run.kernel_output(program, node, call, &header)
                 }
                 Exec::Host(Some(adapter)) => {
                     let mut output = HostOutput::new(port_count(program, node));
                     adapter.finish(HostFinish { now: clock, policy }, &mut output);
-                    self.readmit(program, node, output, clock, false)
+                    run.readmit(program, node, output, clock, false)
                 }
                 _ => Ok(Queue::new()),
-            })?;
-            self.flow(program, queue, clock)?;
-        }
-        Ok(())
+            })
+        })
     }
 
     fn reject(&mut self, position: usize, rejection: InstallRejection) {
@@ -967,23 +1038,38 @@ impl<'r, 'a> Run<'r, 'a> {
             .unwrap_or(self.origin)
     }
 
-    /// Processes deliveries until none are left, at host time `now`.
-    fn flow(&mut self, program: &mut Program, mut queue: Queue, now: AdmissionTime) -> Result<(), InterpretErrorKind> {
-        while let Some(Delivery { node, batch }) = queue.pop_front() {
-            self.deliver(program, &mut queue, node, batch, now)?;
+    /// Runs one pass over the program at host time `now`, starting with the deliveries `initial`: every node, in the
+    /// program's order, runs the batches waiting at it, and then `after` runs for it, adding what it produces (see the
+    /// module documentation's delivery order).
+    fn pass<F>(
+        &mut self, program: &mut Program, initial: Queue, now: AdmissionTime, mut after: F,
+    ) -> Result<(), InterpretErrorKind>
+    where
+        F: FnMut(&mut Self, &mut Program, usize) -> Result<Queue, InterpretErrorKind>,
+    {
+        let mut pending = Pending::new(program);
+        pending.add(initial);
+        for position in 0..program.order.len() {
+            let node = program.order[position];
+            for batch in pending.take(node) {
+                let more = with_exec(program, node, |program, exec| {
+                    self.run_node(program, node, exec, batch, now)
+                })?;
+                pending.add(more);
+            }
+            let more = after(self, program, node)?;
+            pending.add(more);
         }
-        Ok(())
-    }
-
-    /// Runs one node over one batch.
-    fn deliver(
-        &mut self, program: &mut Program, queue: &mut Queue, node: usize, batch: Batch, now: AdmissionTime,
-    ) -> Result<(), InterpretErrorKind> {
-        let more = with_exec(program, node, |program, exec| {
-            self.run_node(program, node, exec, batch, now)
-        })?;
-        queue.extend(more);
-        Ok(())
+        // Every edge leads to a node later in the order, so nothing can be left.
+        match pending.waiting() {
+            None => Ok(()),
+            Some(node) => Err(InterpretErrorKind::Internal {
+                message: format!(
+                    "a batch reached node `{}` after its turn in the pass",
+                    program.nodes[node].id
+                ),
+            }),
+        }
     }
 
     /// Runs one node, whose execution state is `exec`, over one batch, and returns the deliveries it causes.
@@ -1028,13 +1114,26 @@ impl<'r, 'a> Run<'r, 'a> {
             Exec::Merge => forward(program, &mut queue, node, 0, header, metrics)?,
             Exec::Emit(output) => {
                 let generation = program.generation.id();
-                let records = self.output.outputs.entry(output.clone()).or_default();
-                records.extend(metrics.into_iter().map(|metric| EmittedRecord {
+                let record = |metric| EmittedRecord {
                     generation,
                     install: program.install,
                     admitted_at: header.admitted_at,
                     metric,
-                }));
+                };
+                let mut metrics = metrics;
+                let refused = metrics.split_off(self.capacity.accept(output, metrics.len()));
+                let records = self.output.outputs.entry(output.clone()).or_default();
+                records.extend(metrics.into_iter().map(record));
+                if !refused.is_empty() {
+                    let points = refused.iter().map(|metric| metric.values().len() as u64).sum();
+                    self.output.loss.entry(id.clone()).or_default().record_loss(
+                        LossClass::Capacity,
+                        refused.len() as u64,
+                        points,
+                    );
+                    let records = self.output.refused.entry(output.clone()).or_default();
+                    records.extend(refused.into_iter().map(record));
+                }
             }
             Exec::Drop => {
                 let points = metrics.iter().map(|metric| metric.values().len() as u64).sum();
@@ -1170,13 +1269,14 @@ fn forward(
     if metrics.is_empty() {
         return Ok(());
     }
-    let Some((target, _)) = program.targets[node].get(port).copied().flatten() else {
+    let Some((target, input)) = program.targets[node].get(port).copied().flatten() else {
         return Err(InterpretErrorKind::Internal {
             message: format!("output port {} of node `{}` has no edge", port, program.nodes[node].id),
         });
     };
-    queue.push_back(Delivery {
+    queue.push(Delivery {
         node: target,
+        port: input,
         batch: Batch { header, metrics },
     });
     Ok(())
@@ -1312,6 +1412,6 @@ impl<'h> KernelCall<'h> {
 #[cfg(test)]
 mod default_program_tests;
 #[cfg(test)]
-mod test_operators;
+pub(crate) mod test_operators;
 #[cfg(test)]
 mod tests;

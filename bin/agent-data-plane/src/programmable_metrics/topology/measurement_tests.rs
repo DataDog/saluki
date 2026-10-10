@@ -10,7 +10,10 @@
 //! `region_driver` bench (mapped counters, a blocked name, distributions whose `user_id` tag the tag filterlist
 //! removes, gauges, and timestamped counters for the passthrough), with one timestamped sentinel per batch, which
 //! reaches the main output through every region. Its mapper profile makes the pre-aggregation chain costly enough that
-//! R1's cost model pipelines it over two regions. Four phases are measured:
+//! R1's cost model pipelines it over two regions. A second configuration, [`GATEWAYS`], adds two endpoint routing
+//! groups and Multi-Region Failover mirroring an allowlist, whose gateways the legacy topology runs as components of
+//! their own and the plan-driven one as `split`s of its policy region, one decision of the enrichment region. Four
+//! phases are measured:
 //!
 //! - **Saturation**: batches are fed as fast as the topology takes them; throughput is metrics per second until the
 //!   last sentinel arrives.
@@ -67,6 +70,40 @@ metric_tag_filterlist:
   - metric_name: checkout.latency
     action: exclude
     tags: [user_id]
+"#;
+
+/// The configuration of the gateway measurements: [`CONFIG`], with two endpoint routing groups, one of names and one of
+/// prefixes, that select some of the batch, and Multi-Region Failover mirroring the distributions.
+const GATEWAYS: &str = r#"
+dogstatsd_mapper_profiles:
+  - name: requests
+    prefix: raw.
+    mappings:
+      - match: raw.requests.*
+        name: requests
+        tags:
+          route: $1
+metric_filterlist: [raw.blocked]
+metric_tag_filterlist:
+  - metric_name: checkout.latency
+    action: exclude
+    tags: [user_id]
+dd_url: https://primary.example.com
+additional_endpoints:
+  https://b.example.com: [key-b]
+  https://c.example.com: [key-c]
+experimental:
+  metrics_endpoint_routing:
+    metric_allowlist:
+      https://b.example.com: [checkout.latency, system.disk0, system.disk1]
+    metric_prefix_allowlist:
+      https://c.example.com: [app.queue, requests.]
+multi_region_failover:
+  enabled: true
+  api_key: mrf-key
+  dd_url: https://mrf.example.com
+  failover_metrics: true
+  metric_allowlist: [checkout.latency]
 "#;
 
 /// The metrics of a batch, the sentinel included.
@@ -292,10 +329,10 @@ async fn phase(
 /// The measurements of one path in one round, by phase.
 type Round = [Measured; 4];
 
-/// Runs one round of `path`, pacing at `paced_rate` batches per second, or at half the measured saturated rate when
-/// `None`.
-async fn round(path: MetricsPath, paced_rate: Option<f64>) -> Round {
-    let (system, updates, stream) = connected_configuration_system(CONFIG).await;
+/// Runs one round of `path` with the configuration `config`, pacing at `paced_rate` batches per second, or at half the
+/// measured saturated rate when `None`.
+async fn round(path: MetricsPath, config: &str, paced_rate: Option<f64>) -> Round {
+    let (system, updates, stream) = connected_configuration_system(config).await;
     let mut options = Options::new(path, Aggregation::Native);
     options.keep = |metric| metric.context().name() == SENTINEL;
     let mut topology = TestTopology::start(&system, options, |supervisor| {
@@ -369,21 +406,25 @@ const MEASURES: [(&str, Measure); 8] = [
     ("worst latency (µs)", |m| m.worst),
 ];
 
-/// Measures `first` against `second` over [`ROUNDS`] rounds each, alternating them, on a runtime of `workers` workers,
-/// and prints the medians as a table; returns the rounds of each.
-async fn compare(first: MetricsPath, second: MetricsPath, workers: usize) -> (Vec<Round>, Vec<Round>) {
+/// Measures `first` against `second` with the configuration `config` over [`ROUNDS`] rounds each, alternating them, on
+/// a runtime of `workers` workers, and prints the medians as a table; returns the rounds of each.
+async fn compare(first: MetricsPath, second: MetricsPath, workers: usize, config: &str) -> (Vec<Round>, Vec<Round>) {
     let mut firsts = Vec::new();
     let mut seconds = Vec::new();
     // Both are paced at the same rate: half the saturated rate of the first in its first round.
     let mut rate = None;
     for _ in 0..ROUNDS {
-        let round_first = round(first, rate).await;
+        let round_first = round(first, config, rate).await;
         let paced = *rate.get_or_insert(round_first[0].throughput / BATCH as f64 / 2.0);
         firsts.push(round_first);
-        seconds.push(round(second, Some(paced)).await);
+        seconds.push(round(second, config, Some(paced)).await);
     }
 
-    println!("{} runtime worker(s), {:?} against {:?}:", workers, second, first);
+    let gateways = if config == GATEWAYS { ", with gateways" } else { "" };
+    println!(
+        "{} runtime worker(s){}, {:?} against {:?}:",
+        workers, gateways, second, first
+    );
     println!("| Phase | Measure | {:?} | {:?} | ratio |", first, second);
     println!("|---|---|---|---|---|");
     for (index, phase) in PHASES.iter().enumerate() {
@@ -438,7 +479,7 @@ fn check_gate(legacy: &[Round], plan: &[Round]) {
 #[ignore = "a measurement: run it in release mode, as the module documentation says"]
 async fn the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_one_on_one_worker() {
     // With one worker, the topology is CPU-bound, and throughput follows CPU per metric.
-    let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 1).await;
+    let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 1, CONFIG).await;
     check_gate(&legacy, &plan);
 }
 
@@ -447,13 +488,29 @@ async fn the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_o
 async fn the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_one_on_four_workers() {
     // With workers to spare, one saturated stream is bounded by the slowest stage of the chain: the legacy chain runs
     // its transforms as tasks of their own, and R1's cost model pipelines the regions so that none costs more.
-    let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 4).await;
+    let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 4, CONFIG).await;
+    check_gate(&legacy, &plan);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "a measurement: run it in release mode, as the module documentation says"]
+async fn with_gateways_the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_one_on_one_worker() {
+    // The legacy gateways copy and filter each buffer in tasks of their own; the policy region decides where each
+    // metric goes in the enrichment region, and copies only what a gateway keeps.
+    let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 1, GATEWAYS).await;
+    check_gate(&legacy, &plan);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement: run it in release mode, as the module documentation says"]
+async fn with_gateways_the_plan_driven_topology_is_no_slower_and_no_costlier_than_the_legacy_one_on_four_workers() {
+    let (legacy, plan) = compare(MetricsPath::Legacy, MetricsPath::Plan, 4, GATEWAYS).await;
     check_gate(&legacy, &plan);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "a measurement of the noise the tolerances allow: run it in release mode, as the module documentation says"]
 async fn the_legacy_topology_against_itself_stays_within_the_tolerances() {
-    let (first, second) = compare(MetricsPath::Legacy, MetricsPath::Legacy, 4).await;
+    let (first, second) = compare(MetricsPath::Legacy, MetricsPath::Legacy, 4, CONFIG).await;
     check_gate(&first, &second);
 }

@@ -34,8 +34,11 @@ use serde_json::{json, Value};
 use super::*;
 use crate::{
     canonical::PlanHash,
-    compile::{compile, CompiledPlan, Frame, FrameTarget, Placement, RegionProgram, Site},
-    equivalence::{compare, OutputPoints},
+    compile::{
+        compile, compile_without_decision_rewrites, CompiledPlan, Frame, FrameTarget, FusionVerdict, Placement,
+        RegionProgram, Site,
+    },
+    equivalence::{compare, compare_under_capacity, CapacityOutcome, OutputPoints},
     explain::loss_class_name,
     install::kernel_reuse,
     interpret::{
@@ -43,12 +46,13 @@ use crate::{
         Trace,
     },
     ir::{NativeComponentId, NodeId, OutputId, Plan, PortName, RecipientId},
-    model::{Kind, PortType},
+    model::{Field, Kind, PortType},
     operators::{names, ConfiguredOperator, KernelBuildContext, OperatorRegistry},
-    predicate::Predicate,
+    predicate::{Predicate, StringMatch},
     testing::{
-        arb_metric, arb_predicate, default_program_catalog, predicate_json, DEFAULT_PROGRAM_JSON,
-        NO_AGGREGATION_PIPELINE_OFF_JSON, PREFIX_VOCABULARY, TAG_KEY_VOCABULARY, TAG_VALUE_VOCABULARY,
+        arb_metric, arb_metrics_with_kind_siblings, arb_predicate, default_program_catalog, predicate_json,
+        DEFAULT_PROGRAM_JSON, NAME_VOCABULARY, NO_AGGREGATION_PIPELINE_OFF_JSON, PREFIX_VOCABULARY, TAG_KEY_VOCABULARY,
+        TAG_VALUE_VOCABULARY,
     },
     validate::{CatalogOutput, MemoryCatalog, ValidationReport, Validator},
 };
@@ -148,8 +152,33 @@ fn buffer_of(header: BatchHeader, metrics: Vec<Metric>) -> EventsBuffer {
     buffer
 }
 
+/// How a [`FrameHarness`] compiles and runs its programs.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HarnessOptions {
+    /// Whether programs are compiled with the decision-time rewrites (R2, R3's folding of bound constants, R4), as
+    /// production compiles them.
+    pub decision_rewrites: bool,
+
+    /// The entries of each memoized decision's memo; zero memoizes nothing.
+    pub memo_entries: usize,
+
+    /// The most records each output accepts; it refuses the rest, as an output under capacity pressure does.
+    pub output_capacity: Option<usize>,
+}
+
+impl Default for HarnessOptions {
+    fn default() -> Self {
+        Self {
+            decision_rewrites: true,
+            memo_entries: crate::limits::values::DECISION_MEMO_ENTRIES as usize,
+            output_capacity: None,
+        }
+    }
+}
+
 /// A frame whose slots run through region drivers, wired together in process.
 pub(super) struct FrameHarness {
+    options: HarnessOptions,
     registry: OperatorRegistry,
     frame: Frame,
     placement: Placement,
@@ -162,6 +191,9 @@ pub(super) struct FrameHarness {
     next_generation: u64,
     last_tick: Option<AdmissionTime>,
     outputs: OutputPoints,
+    /// The records each output accepted, and the points of those it refused.
+    accepted: BTreeMap<OutputId, usize>,
+    refused: OutputPoints,
     telemetry: RecordingTelemetry,
     /// Whether buffers one slot sends another are held, as a queue between two regions holds them, rather than
     /// delivered at once.
@@ -174,8 +206,16 @@ pub(super) struct FrameHarness {
 impl FrameHarness {
     /// Computes the frame of a valid boot plan, and creates a driver for each slot, prepared for generation 1.
     pub fn new(plan: &Plan, report: &ValidationReport, registry: OperatorRegistry) -> Self {
+        Self::with_options(plan, report, registry, HarnessOptions::default())
+    }
+
+    /// Computes the frame of a valid boot plan, and creates a driver for each slot, prepared for generation 1, compiled
+    /// and run as `options` say.
+    pub fn with_options(
+        plan: &Plan, report: &ValidationReport, registry: OperatorRegistry, options: HarnessOptions,
+    ) -> Self {
         let frame = Frame::compute(plan, &registry, &namer).unwrap();
-        let compiled = compile(plan, report, &registry, &frame).unwrap();
+        let compiled = compiled_with(plan, report, &registry, &frame, options);
         let active: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
         let telemetry = RecordingTelemetry::default();
         let drivers = frame
@@ -192,7 +232,8 @@ impl FrameHarness {
                     PanicBudget::DEFAULT_PROGRAM,
                     &telemetry,
                 );
-                MetricRegionDriver::new(RegionConfig::for_slot(slot, &telemetry), boot).unwrap()
+                let config = RegionConfig::for_slot(slot, &telemetry).with_memo_entries(options.memo_entries);
+                MetricRegionDriver::new(config, boot).unwrap()
             })
             .collect();
         let hosts = frame
@@ -206,6 +247,7 @@ impl FrameHarness {
             })
             .collect();
         Self {
+            options,
             registry,
             frame,
             placement: compiled.placement,
@@ -218,6 +260,8 @@ impl FrameHarness {
             next_generation: 2,
             last_tick: None,
             outputs: OutputPoints::new(),
+            accepted: BTreeMap::new(),
+            refused: OutputPoints::new(),
             telemetry,
             holding: false,
             held: VecDeque::new(),
@@ -257,7 +301,7 @@ impl FrameHarness {
     /// Prepares a candidate plan in every region, reusing the kernels the active programs have, as the installer
     /// does before its barrier. Admission points keep stamping the active generation until [`commit`][Self::commit].
     pub fn prepare(&mut self, plan: &Plan, report: &ValidationReport) {
-        let compiled = compile(plan, report, &self.registry, &self.frame).unwrap();
+        let compiled = compiled_with(plan, report, &self.registry, &self.frame, self.options);
         let reuse = kernel_reuse(Some(&self.programs), &compiled.programs);
         let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(self.next_generation)));
         self.next_generation += 1;
@@ -363,7 +407,18 @@ impl FrameHarness {
                 None => {}
                 Some(FrameTarget::Output(output)) => {
                     for event in buffer {
-                        self.outputs.insert(&output, &event.try_into_metric().unwrap());
+                        let metric = event.try_into_metric().unwrap();
+                        let accepted = self.accepted.entry(output.clone()).or_default();
+                        if self
+                            .options
+                            .output_capacity
+                            .is_some_and(|capacity| *accepted >= capacity)
+                        {
+                            self.refused.insert(&output, &metric);
+                        } else {
+                            *accepted += 1;
+                            self.outputs.insert(&output, &metric);
+                        }
                     }
                 }
                 Some(FrameTarget::Slot(slot)) => {
@@ -418,6 +473,14 @@ impl FrameHarness {
         &self.outputs
     }
 
+    /// Returns what every output received and refused.
+    pub fn capacity_outcome(&self) -> CapacityOutcome {
+        CapacityOutcome {
+            delivered: self.outputs.clone(),
+            refused: self.refused.clone(),
+        }
+    }
+
     /// Returns the recorded telemetry.
     pub fn telemetry(&self) -> &RecordingTelemetry {
         &self.telemetry
@@ -436,6 +499,17 @@ impl FrameHarness {
     /// Returns the drivers.
     pub fn drivers(&self) -> &[MetricRegionDriver] {
         &self.drivers
+    }
+}
+
+/// Compiles a plan into a frame, with or without the decision-time rewrites.
+fn compiled_with(
+    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, options: HarnessOptions,
+) -> CompiledPlan {
+    if options.decision_rewrites {
+        compile(plan, report, registry, frame).unwrap()
+    } else {
+        compile_without_decision_rewrites(plan, report, registry, frame).unwrap()
     }
 }
 
@@ -526,13 +600,9 @@ fn the_default_program_runs_through_a_frame_of_region_drivers_as_the_interpreter
             .unwrap();
         let _guard = runtime.enter();
         let mut harness = FrameHarness::new(&plan, &report, registry);
-        // R1's cost model cuts the default program into eight slots: three before aggregation, the post-aggregation
-        // filter's, enrichment with the Multi-Region Failover gateway, and one for each other gateway.
-        assert_eq!(
-            harness.drivers().len(),
-            8,
-            "the default program's frame has eight slots"
-        );
+        // R1's cost model cuts the default program into five slots: three before aggregation, the post-aggregation
+        // filter's, and enrichment with the whole policy region, one decision.
+        assert_eq!(harness.drivers().len(), 5, "the default program's frame has five slots");
         harness.admit("dsd_in", t(3), dogstatsd);
         harness.admit("otlp_in", t(4), otlp);
         harness.advance(t(15));
@@ -707,9 +777,15 @@ impl PlanParams {
 }
 
 fn arb_plan_params() -> impl Strategy<Value = PlanParams> {
+    arb_plan_params_of(8)
+}
+
+/// Returns plan parameters with `distinct` parameter sets, from 1 to 8, that nodes cycle through: with few, many
+/// `split`s of one decision share a predicate.
+fn arb_plan_params_of(distinct: usize) -> impl Strategy<Value = PlanParams> {
     (
-        vec(arb_node_params(), 8),
-        vec(arb_node_params(), 8),
+        vec(arb_node_params(), distinct),
+        vec(arb_node_params(), distinct),
         vec(any::<bool>(), 8),
         vec(proptest::bool::weighted(0.25), 8),
     )
@@ -1056,6 +1132,10 @@ fn a_slot_reached_by_two_edges_over_one_exit_has_an_entry_for_each() {
     let mut runner = proptest::test_runner::TestRunner::deterministic();
     let mut params = proptest::strategy::ValueTree::current(&arb_plan_params().new_tree(&mut runner).unwrap());
     params.swapped = vec![true; 8];
+    // Splits that route by name, so that R3 folds none of them and both of the second split's edges stay.
+    for node in params.first.iter_mut().chain(params.second.iter_mut()) {
+        node.predicate = Predicate::Name(crate::predicate::StringMatch::Eq("app.requests".to_string()));
+    }
     let registry = OperatorRegistry::native();
     let catalog = random_plan_catalog();
     let shape = Shape::DoubleDetour(Box::new(Shape::Emit));
@@ -1098,6 +1178,11 @@ fn a_batch_held_between_regions_across_a_commit_runs_its_own_generations_program
     let mut params = proptest::strategy::ValueTree::current(&arb_plan_params().new_tree(&mut runner).unwrap());
     params.swapped = vec![true; 8];
     params.changed = vec![false; 8];
+    // The splits test the kind, so that the first one sends the batch's other kinds on, below the host, whatever the
+    // strategy draws.
+    for node in &mut params.first {
+        node.predicate = Predicate::KindIn([Kind::Counter].into_iter().collect());
+    }
     let shape = Shape::DoubleDetour(Box::new(Shape::Emit));
     let registry = OperatorRegistry::native();
     let catalog = random_plan_catalog();
@@ -1105,7 +1190,7 @@ fn a_batch_held_between_regions_across_a_commit_runs_its_own_generations_program
     let (second, _) = random_plan(&shape, &params, 1);
     let validator = Validator::new(&registry, &catalog);
     let (first_report, second_report) = (validator.validate(&first), validator.validate(&second));
-    // Every kind, so that whatever the splits' predicates, both of the second split's ports carry events.
+    // Counters and other kinds, so that the splits send events each way.
     let metrics = (0..16)
         .map(|index| match index % 4 {
             0 => Metric::counter(Context::from_static_name("app.requests"), 1.0),
@@ -1229,6 +1314,299 @@ proptest! {
         // Retired generations are released: only the active one is left in every region.
         for driver in harness.drivers() {
             prop_assert_eq!(driver.generations().len(), 1);
+        }
+    }
+}
+
+// Decisions: grouping, the decision-time rewrites (R2, R3's folding of bound constants, R4), and derived counts.
+
+/// The configurations decisions run in: production's, memos that evict on every other context and none, and programs
+/// compiled without the decision-time rewrites.
+fn decision_configurations() -> [(&'static str, HarnessOptions); 4] {
+    let production = HarnessOptions::default();
+    [
+        ("decision rewrites and the default memo", production),
+        (
+            "decision rewrites and one-entry memos",
+            HarnessOptions {
+                memo_entries: 1,
+                ..production
+            },
+        ),
+        (
+            "decision rewrites without memos",
+            HarnessOptions {
+                memo_entries: 0,
+                ..production
+            },
+        ),
+        (
+            "no decision-time rewrites",
+            HarnessOptions {
+                decision_rewrites: false,
+                memo_entries: 0,
+                ..production
+            },
+        ),
+    ]
+}
+
+/// Runs batches through a frame of region drivers compiled and run as `options` say, and publishes their telemetry.
+fn run_harness(
+    plan: &Plan, report: &ValidationReport, batches: &[(&'static str, Vec<Metric>)], options: HarnessOptions,
+) -> FrameHarness {
+    let mut harness = FrameHarness::with_options(plan, report, OperatorRegistry::native(), options);
+    for (position, (source, batch)) in batches.iter().enumerate() {
+        harness.admit(
+            source,
+            AdmissionTime::from_unix_secs(1_000 + position as u64),
+            batch.clone(),
+        );
+    }
+    harness.publish();
+    harness
+}
+
+/// Returns the events each port of every `split` and `tee` that runs in a slot sent, by node and port, as the
+/// regions' published telemetry counts them.
+fn decision_port_events(harness: &FrameHarness, plan: &Plan) -> BTreeMap<(String, String), u64> {
+    let mut events = BTreeMap::new();
+    for node in &plan.nodes {
+        if !matches!(node.op.as_str(), names::SPLIT | names::TEE)
+            || !matches!(harness.placement.site(&node.id), Some(Site::Slot(_)))
+        {
+            continue;
+        }
+        let operator = harness.registry.configure(node.op.as_str(), &node.params).unwrap();
+        for port in &operator.ports().outputs {
+            let (node, port) = (node.id.to_string(), port.name.to_string());
+            let count = harness.telemetry().port_events(&node, &port);
+            events.insert((node, port), count);
+        }
+    }
+    events
+}
+
+/// Returns the interpreter's run of a random plan's batches.
+fn interpreted(plan: &Plan, opaque: &[String], batches: &[(&'static str, Vec<Metric>)]) -> crate::interpret::RunOutput {
+    let registry = OperatorRegistry::native();
+    let catalog = random_plan_catalog();
+    let mut trace = Trace::new().install(plan.clone());
+    for (position, (source, batch)) in batches.iter().enumerate() {
+        trace = trace.admit(
+            id(source),
+            AdmissionTime::from_unix_secs(1_000 + position as u64),
+            batch.clone(),
+        );
+    }
+    let interpreter = opaque
+        .iter()
+        .fold(Interpreter::new(&registry, &catalog), |interpreter, host| {
+            interpreter.with_opaque_host(id(host), echo)
+        });
+    interpreter.run(&trace).unwrap()
+}
+
+/// Returns plan parameters for the decision property tests: those of [`arb_plan_params_of`], with from 1 to 8 distinct
+/// sets, in which each predicate is, half of the time, an endpoint allowlist restricted to some kinds, `all(kind_in,
+/// any(intake_name in, intake_name prefix_in))`: costly enough to memoize, and reading the kind, so that memos meet
+/// the metrics' kind siblings.
+fn arb_decision_plan_params() -> impl Strategy<Value = PlanParams> {
+    let allowlist = (
+        vec(select(Kind::ALL.to_vec()), 1..4),
+        vec(select(NAME_VOCABULARY), 0..3),
+        vec(select(PREFIX_VOCABULARY), 0..3),
+    )
+        .prop_map(|(kinds, names, prefixes)| {
+            let strings = |values: Vec<&str>| values.into_iter().map(str::to_string).collect();
+            Predicate::All(vec![
+                Predicate::KindIn(kinds.into_iter().collect()),
+                Predicate::Any(vec![
+                    Predicate::IntakeName(StringMatch::In(strings(names))),
+                    Predicate::IntakeName(StringMatch::PrefixIn(strings(prefixes))),
+                ]),
+            ])
+        });
+    (
+        (1usize..=8).prop_flat_map(arb_plan_params_of),
+        vec(proptest::option::of(allowlist), 16),
+    )
+        .prop_map(|(mut params, allowlists)| {
+            let nodes = params.first.iter_mut().chain(params.second.iter_mut());
+            for (node, allowlist) in nodes.zip(allowlists) {
+                if let Some(allowlist) = allowlist {
+                    node.predicate = allowlist;
+                }
+            }
+            params
+        })
+}
+
+#[test]
+fn random_plans_exercise_decision_groups_and_every_decision_time_rewrite() {
+    // The property tests below draw plans from these strategies; they hold vacuously unless the plans have decisions of
+    // several nodes, predicates R2 shares, predicates R3 folds, and decisions R4 memoizes, some of them on the kind,
+    // which the metrics' kind siblings (a metric of the same context and another kind after each) then tell apart.
+    let strategy = (arb_shape(), arb_decision_plan_params());
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let registry = OperatorRegistry::native();
+    let catalog = random_plan_catalog();
+    let (mut grouped, mut shared, mut folded, mut memoized, mut on_the_kind) = (0, 0, 0, 0, 0);
+    for _ in 0..256 {
+        let (shape, params) = proptest::strategy::ValueTree::current(&strategy.new_tree(&mut runner).unwrap());
+        let (plan, _) = random_plan(&shape, &params, 0);
+        let report = Validator::new(&registry, &catalog).validate(&plan);
+        assert!(report.is_valid(), "{:?}:\n{}", shape, report);
+        let frame = Frame::compute(&plan, &registry, &namer).unwrap();
+        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let decisions = compiled.programs.iter().flat_map(|program| program.decisions());
+        for decision in decisions {
+            grouped += usize::from(decision.nodes.len() > 1);
+            on_the_kind += usize::from(decision.memoized && decision.predicates.reads().contains(Field::Kind));
+        }
+        for record in &compiled.rewrites {
+            match record.id {
+                crate::compile::RewriteId::R2 => shared += 1,
+                crate::compile::RewriteId::R3 => folded += 1,
+                crate::compile::RewriteId::R4 => memoized += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(grouped >= 32, "{} decisions of several nodes", grouped);
+    assert!(shared >= 8, "{} shared predicates", shared);
+    assert!(folded >= 8, "{} folded predicates", folded);
+    assert!(memoized >= 32, "{} memoized decisions", memoized);
+    assert!(on_the_kind >= 32, "{} memoized decisions read the kind", on_the_kind);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn property_test_decisions_with_and_without_rewrites_and_memos_deliver_what_the_interpreter_delivers(
+        shape in arb_shape(),
+        params in arb_decision_plan_params(),
+        metrics in arb_metrics_with_kind_siblings(0..20),
+        cuts in vec(any::<proptest::sample::Index>(), 0..4),
+    ) {
+        let registry = OperatorRegistry::native();
+        let catalog = random_plan_catalog();
+        let (plan, opaque) = random_plan(&shape, &params, 0);
+        let report = Validator::new(&registry, &catalog).validate(&plan);
+        prop_assert!(report.is_valid(), "the plan is invalid:\n{}", report);
+        let mut cuts = cuts.iter().map(|cut| cut.index(metrics.len() + 1)).collect::<Vec<_>>();
+        cuts.sort_unstable();
+        let batches = batches(&metrics, &cuts);
+        let run = interpreted(&plan, &opaque, &batches);
+
+        // Every configuration delivers what the interpreter delivers, with its policy loss, and derives the same
+        // per-port counts for every decision node: neither the rewrites nor a memo, however small, changes an exit set.
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let _guard = runtime.enter();
+        let mut first_events = None;
+        for (configuration, options) in decision_configurations() {
+            let harness = run_harness(&plan, &report, &batches, options);
+            if let Err(mismatch) = compare(&OutputPoints::from_run(&run), harness.outputs()) {
+                prop_assert!(
+                    false,
+                    "with {}, region drivers differ from the interpreter:\n{}",
+                    configuration,
+                    mismatch
+                );
+            }
+            for node in harness.drops_in_slots(&plan) {
+                prop_assert_eq!(
+                    harness.telemetry().loss(&node.to_string(), LossClass::Policy),
+                    run.loss(&node).loss(LossClass::Policy).points,
+                    "policy loss of `{}` with {}", node, configuration
+                );
+            }
+            let events = decision_port_events(&harness, &plan);
+            match &first_events {
+                None => first_events = Some(events),
+                Some(expected) => prop_assert_eq!(&events, expected, "per-port counts with {}", configuration),
+            }
+        }
+    }
+
+    #[test]
+    fn property_test_decision_rewrites_only_reduce_capacity_loss_under_capacity_pressure(
+        shape in arb_shape(),
+        params in arb_decision_plan_params(),
+        metrics in arb_metrics_with_kind_siblings(0..20),
+        cuts in vec(any::<proptest::sample::Index>(), 0..4),
+        capacity in 0usize..12,
+    ) {
+        let registry = OperatorRegistry::native();
+        let catalog = random_plan_catalog();
+        let (plan, opaque) = random_plan(&shape, &params, 0);
+        let report = Validator::new(&registry, &catalog).validate(&plan);
+        prop_assert!(report.is_valid(), "the plan is invalid:\n{}", report);
+        let mut cuts = cuts.iter().map(|cut| cut.index(metrics.len() + 1)).collect::<Vec<_>>();
+        cuts.sort_unstable();
+        let batches = batches(&metrics, &cuts);
+        // What the policy delivers: the plan without capacity pressure.
+        let policy = OutputPoints::from_run(&interpreted(&plan, &opaque, &batches));
+
+        // Each output accepts at most `capacity` records. The original runs every `split`'s predicate as written,
+        // unshared and unmemoized; the rewritten one with R2, R3's folding, and R4, as production does.
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let _guard = runtime.enter();
+        let pressure = HarnessOptions { output_capacity: Some(capacity), ..HarnessOptions::default() };
+        let original = run_harness(&plan, &report, &batches, HarnessOptions {
+            decision_rewrites: false,
+            memo_entries: 0,
+            ..pressure
+        });
+        let rewritten = run_harness(&plan, &report, &batches, pressure);
+        let (original, rewritten) = (original.capacity_outcome(), rewritten.capacity_outcome());
+        if let Err(mismatch) = compare_under_capacity(&policy, &original, &rewritten) {
+            prop_assert!(false, "the decision-time rewrites break the capacity rule:\n{}", mismatch);
+        }
+        // The rewrites change no exit set and no order within an exit, so under pressure they deliver and refuse
+        // exactly what the original does.
+        prop_assert_eq!(rewritten, original);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// R1's cost model over random plans, in which every node is a native component of its own: a decision (`split`s
+    /// and `tee`s joined by edges) is never cut, no region runs only terminals, and a region costs more than the budget
+    /// only when one decision alone does, which takes a `tee` (no single node costs more than the budget, which is the
+    /// costliest node's estimate, and a decision without copies costs no more than its costliest `split`).
+    #[test]
+    fn property_test_the_cost_model_keeps_decisions_whole_and_regions_within_the_budget(
+        shape in arb_shape(),
+        params in arb_plan_params(),
+    ) {
+        let registry = OperatorRegistry::native();
+        let (plan, _) = random_plan(&shape, &params, 0);
+        let frame = Frame::compute(&plan, &registry, &namer).unwrap();
+        let operator = |node: &NodeId| plan.node(node).map_or("", |node| node.op.as_str());
+        let decides = |node: &NodeId| matches!(operator(node), names::SPLIT | names::TEE);
+        for decision in frame.fusion() {
+            if decides(&decision.from.node) && decides(&decision.to.node) {
+                prop_assert!(
+                    !matches!(decision.verdict, FusionVerdict::Pipelined { .. }),
+                    "{} to {} is cut: {:?}", decision.from, decision.to, decision.verdict
+                );
+            }
+        }
+        for slot in frame.slots() {
+            prop_assert!(
+                slot.nodes.iter().any(|node| !matches!(operator(node), names::EMIT | names::DROP)),
+                "`{}` runs only terminals: {:?}", slot.name, slot.nodes
+            );
+            if slot.cost > frame.cost_budget() {
+                prop_assert!(
+                    slot.nodes.iter().any(|node| operator(node) == names::TEE),
+                    "`{}` costs {} of {} without a decision that copies: {:?}",
+                    slot.name, slot.cost, frame.cost_budget(), slot.nodes
+                );
+            }
         }
     }
 }

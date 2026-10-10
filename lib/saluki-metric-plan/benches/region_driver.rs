@@ -31,7 +31,7 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_metric_plan::{
-    compile::{compile, CompiledPlan, DecisionKind, Frame, FrameTarget, RegionProgram, SlotId},
+    compile::{compile, CompiledPlan, Frame, FrameTarget, RegionProgram, SlotId},
     ir::{NativeComponentId, NodeId, Plan},
     model::EventView,
     operators::{KernelBuildContext, OperatorRegistry},
@@ -235,9 +235,12 @@ fn split_of(program: &RegionProgram) -> Arc<CompiledPredicate> {
     program
         .decisions()
         .iter()
-        .find_map(|decision| match &decision.kind {
-            DecisionKind::Split { compiled, .. } => Some(Arc::clone(compiled)),
-            DecisionKind::Tee => None,
+        .find_map(|decision| {
+            decision
+                .predicates
+                .entries()
+                .first()
+                .map(|entry| Arc::clone(&entry.compiled))
         })
         .unwrap()
 }

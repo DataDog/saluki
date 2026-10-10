@@ -90,6 +90,14 @@ impl SortedSetMatcher {
         self.data.len()
     }
 
+    /// Returns the memory the matcher's entries take, as memory bounds declare it: each entry's string and its bytes.
+    pub fn entry_bytes(&self) -> usize {
+        self.data
+            .iter()
+            .map(|entry| entry.len() + std::mem::size_of::<MetaString>())
+            .sum()
+    }
+
     /// Returns whether `value` matches an entry, comparing it verbatim.
     ///
     /// `value` is taken as bytes rather than as a `&str` so that a name normalized into a [`NameBuf`] needs no UTF-8
@@ -166,6 +174,18 @@ mod tests {
         // Entries are taken verbatim, never rewritten. A non-normalized entry is kept as-is and simply matches nothing,
         // rather than being rewritten into something that matches more than the user asked for.
         assert_eq!(compiled(&["a-b", "a_b"]), vec!["a-b", "a_b"]);
+    }
+
+    #[test]
+    fn entry_bytes_count_each_kept_entry_and_its_string() {
+        let entry = std::mem::size_of::<MetaString>();
+        assert_eq!(SortedSetMatcher::new(Vec::<&str>::new(), false).entry_bytes(), 0);
+        // Duplicates are kept once, and in prefix mode a covered prefix not at all.
+        assert_eq!(
+            SortedSetMatcher::new(["abc", "de", "abc"], false).entry_bytes(),
+            3 + 2 + 2 * entry
+        );
+        assert_eq!(SortedSetMatcher::new(["a.", "a.b."], true).entry_bytes(), 2 + entry);
     }
 
     /// Normalizing a prefix entry as if it were a complete metric name would strip its trailing separator, which widens

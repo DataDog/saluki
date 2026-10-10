@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// Returns the native operators plus the test operators.
-pub(super) fn test_registry() -> OperatorRegistry {
+pub(crate) fn test_registry() -> OperatorRegistry {
     static REGISTRY: OnceLock<OperatorRegistry> = OnceLock::new();
     *REGISTRY.get_or_init(|| {
         let tests: [&'static dyn OperatorDef; 8] = [

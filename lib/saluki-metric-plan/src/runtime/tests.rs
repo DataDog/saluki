@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use super::{frame_tests::RecordingTelemetry, *};
 use crate::{
     canonical::PlanHash,
-    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, KernelKey, RegionProgram, SlotId},
+    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, KernelKey, RegionProgram, SharedPredicate, SlotId},
     install::kernel_reuse,
     ir::{DecodedParams, NativeComponentId, NodeId, OutputId, ParamSpec, ParamType, Plan, RecipientId},
     model::{Field, FieldSet, PortType},
@@ -178,6 +178,14 @@ fn node(id: &str, op: &str, params: Value) -> Value {
 
 fn prefix(value: &str) -> Value {
     predicate_json(&Predicate::Name(StringMatch::Prefix(value.to_string())))
+}
+
+/// An endpoint allowlist's predicate, as lowering writes one: the exact intake name `value`, or a name it prefixes.
+fn allowlist(value: &str) -> Value {
+    json!({"any": [
+        {"intake_name": {"matches": {"values": [value], "prefix": false}}},
+        {"intake_name": {"matches": {"values": [value], "prefix": true}}},
+    ]})
 }
 
 fn fingerprint(output: &str) -> PlanHash {
@@ -1169,6 +1177,262 @@ fn plan_telemetry_registers_node_events_and_loss_counters_tagged_with_the_node()
     assert_eq!(loss("region_count", "invalid"), Some(2));
 }
 
+// Decisions.
+
+/// One slot: `src -> t (tee)`, with `t.0 -> s1 (an endpoint allowlist: the intake name keep, or names it prefixes) ->
+/// true: emit kept; false: drop d1`, `t.1 -> s2 (the same predicate) -> true: drop d2; false: emit out`, and `t.2 ->
+/// s3 (flag false) -> true: drop d3; false: drop d4`.
+///
+/// The four nodes are one decision; `s2` shares `s1`'s predicate (R2), `s3`'s predicate is folded (R3), and the
+/// decision matches intake names twice, costly enough to memoize (R4).
+fn policy_plan() -> Plan {
+    plan(
+        vec![
+            node(
+                "src",
+                names::SOURCE,
+                json!({"binding": "dogstatsd", "timestamps": "mixed"}),
+            ),
+            node("t", names::TEE, json!({"ports": 3})),
+            node("s1", names::SPLIT, json!({"predicate": allowlist("keep")})),
+            node("kept_out", names::EMIT, json!({"output": "kept"})),
+            node("d1", names::DROP, json!({})),
+            node("s2", names::SPLIT, json!({"predicate": allowlist("keep")})),
+            node("d2", names::DROP, json!({})),
+            node("out_out", names::EMIT, json!({"output": "out"})),
+            node("s3", names::SPLIT, json!({"predicate": {"flag": false}})),
+            node("d3", names::DROP, json!({})),
+            node("d4", names::DROP, json!({})),
+        ],
+        &[
+            ("src.metrics", "t.in"),
+            ("t.0", "s1.in"),
+            ("s1.true", "kept_out.in"),
+            ("s1.false", "d1.in"),
+            ("t.1", "s2.in"),
+            ("s2.true", "d2.in"),
+            ("s2.false", "out_out.in"),
+            ("t.2", "s3.in"),
+            ("s3.true", "d3.in"),
+            ("s3.false", "d4.in"),
+        ],
+        &["kept", "out"],
+    )
+}
+
+/// Returns the names of a slot's exits, by exit index.
+fn exit_names(frame: &Frame, slot: usize) -> Vec<String> {
+    frame.slots()[slot]
+        .exits
+        .iter()
+        .map(|exit| exit.name.to_string())
+        .collect()
+}
+
+#[test]
+fn a_decision_of_several_nodes_routes_each_event_by_its_exit_set_and_derives_every_ports_count() {
+    let plan = policy_plan();
+    let frame = frame_of(&plan);
+    let programs = compiled(&plan, &frame).programs;
+    let [decision] = programs[0].decisions() else {
+        panic!("one decision")
+    };
+    assert_eq!(decision.nodes.len(), 4);
+    assert!(decision.memoized);
+    let exits = exit_names(&frame, 0);
+    let telemetry = RecordingTelemetry::default();
+    let one: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+    let mut region = driver(&frame, &programs, 0, &one, PanicBudget::DEFAULT_PROGRAM, &telemetry);
+
+    // `keep.*` leave by `s1.true` (kept), `s2.true` (d2), and `s3.false` (d4); the rest by `s1.false` (d1),
+    // `s2.false` (out), and `s3.false`. Each exit receives its events in batch order.
+    let written = process(
+        &mut region,
+        exits.len(),
+        batch(header(Some(&one), 0), &["keep.a:2", "drop.b:3", "keep.c", "x"]),
+    );
+    let by_exit = |written: &[Written]| {
+        let mut delivered = written
+            .iter()
+            .map(|written| (exits[written.exit].clone(), written.names.clone()))
+            .collect::<Vec<_>>();
+        delivered.sort();
+        delivered
+    };
+    assert_eq!(
+        by_exit(&written),
+        vec![
+            ("kept".to_string(), strings(&["keep.a", "keep.c"])),
+            ("out".to_string(), strings(&["drop.b", "x"])),
+        ]
+    );
+    assert!(written.iter().all(|written| written.header.generation.is_some()));
+
+    // A batch every event of which takes the same exits moves whole: here, of `keep.*` only.
+    let written = process(
+        &mut region,
+        exits.len(),
+        batch(header(Some(&one), 0), &["keep.d", "keep.e"]),
+    );
+    assert_eq!(
+        by_exit(&written),
+        vec![("kept".to_string(), strings(&["keep.d", "keep.e"]))]
+    );
+
+    let ports = |telemetry: &RecordingTelemetry| {
+        [
+            ("t", "0"),
+            ("t", "1"),
+            ("t", "2"),
+            ("s1", "true"),
+            ("s1", "false"),
+            ("s2", "true"),
+            ("s2", "false"),
+            ("s3", "true"),
+            ("s3", "false"),
+        ]
+        .map(|(node, port)| telemetry.port_events(node, port))
+    };
+    let loss =
+        |telemetry: &RecordingTelemetry| ["d1", "d2", "d3", "d4"].map(|node| telemetry.loss(node, LossClass::Policy));
+    assert_eq!(ports(&telemetry), [0; 9], "nothing is published during a turn");
+    region.publish_telemetry();
+    // Six events entered the decision; four were `keep.*`. The folded split sends every event to `false`.
+    assert_eq!(ports(&telemetry), [6, 6, 6, 4, 2, 4, 2, 0, 6]);
+    // Points: `drop.b` 3 and `x` 1; the `keep.*` 2, 1, 1, and 1; every event, 2 + 3 + 1 + 1 + 1 + 1.
+    assert_eq!(loss(&telemetry), [4, 5, 0, 9]);
+    region.publish_telemetry();
+    assert_eq!(
+        ports(&telemetry),
+        [6, 6, 6, 4, 2, 4, 2, 0, 6],
+        "counts are published once"
+    );
+}
+
+#[test]
+fn derived_counts_stay_exact_when_a_turn_has_more_exit_sets_than_a_decision_counts() {
+    // `t` copies to seven splits, `s<k>` on `has_tag(t<k>)`, each to two drops: an event with a subset of the tags
+    // takes one of 128 exit sets, twice as many as a decision counts between publications.
+    let mut nodes = vec![
+        node(
+            "src",
+            names::SOURCE,
+            json!({"binding": "dogstatsd", "timestamps": "mixed"}),
+        ),
+        node("t", names::TEE, json!({"ports": 7})),
+    ];
+    let mut edges = vec![("src.metrics".to_string(), "t.in".to_string())];
+    for k in 0..7 {
+        nodes.push(node(
+            &format!("s{}", k),
+            names::SPLIT,
+            json!({"predicate": {"has_tag": format!("t{}", k)}}),
+        ));
+        edges.push((format!("t.{}", k), format!("s{}.in", k)));
+        for port in ["true", "false"] {
+            nodes.push(node(&format!("s{}_{}", k, port), names::DROP, json!({})));
+            edges.push((format!("s{}.{}", k, port), format!("s{}_{}.in", k, port)));
+        }
+    }
+    let edges = edges
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .collect::<Vec<_>>();
+    let plan = plan(nodes, &edges, &[]);
+    let frame = frame_of(&plan);
+    let programs = compiled(&plan, &frame).programs;
+    assert_eq!(programs[0].decisions().len(), 1);
+    const { assert!(128 > crate::compile::COUNTED_EXIT_SETS) };
+    let telemetry = RecordingTelemetry::default();
+    let one: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+    let mut region = driver(&frame, &programs, 0, &one, PanicBudget::DEFAULT_PROGRAM, &telemetry);
+
+    let mut buffer = EventsBuffer::default().with_header(header(Some(&one), 0));
+    for subset in 0..128u32 {
+        let tags = (0..7)
+            .filter(|k| subset & (1 << k) != 0)
+            .map(|k| saluki_core::data_model::tags::Tag::from(format!("t{}", k)))
+            .collect::<TagSet>();
+        let metric = Metric::gauge(Context::from_parts(format!("m{}", subset), tags), 1.0);
+        assert!(buffer.try_push(Event::Metric(metric)).is_none());
+    }
+    assert!(process(&mut region, 0, buffer).is_empty(), "everything is dropped");
+    region.publish_telemetry();
+
+    // Every tag is on half of the events.
+    for k in 0..7 {
+        let split = format!("s{}", k);
+        assert_eq!(telemetry.port_events("t", &k.to_string()), 128);
+        assert_eq!(telemetry.port_events(&split, "true"), 64, "{}", split);
+        assert_eq!(telemetry.port_events(&split, "false"), 64, "{}", split);
+        assert_eq!(telemetry.loss(&format!("{}_true", split), LossClass::Policy), 64);
+        assert_eq!(telemetry.loss(&format!("{}_false", split), LossClass::Policy), 64);
+    }
+}
+
+#[test]
+fn a_decision_whose_events_leave_by_different_targets_gives_each_its_events_in_order() {
+    // The detour's split sends `a.*` toward the host and the rest toward the merge's region: two register targets,
+    // neither taking every event.
+    let plan = detour_plan();
+    let frame = frame_of(&plan);
+    let programs = compiled(&plan, &frame).programs;
+    let exits = exit_names(&frame, 0);
+    let telemetry = RecordingTelemetry::default();
+    let one: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+    let mut region = driver(&frame, &programs, 0, &one, PanicBudget::DEFAULT_PROGRAM, &telemetry);
+    let written = process(
+        &mut region,
+        exits.len(),
+        batch(header(Some(&one), 0), &["a.1", "b.1", "a.2", "b.2", "a.3"]),
+    );
+    let mut delivered = written
+        .iter()
+        .map(|written| (exits[written.exit].clone(), written.names.clone()))
+        .collect::<Vec<_>>();
+    delivered.sort();
+    assert_eq!(
+        delivered,
+        vec![
+            ("h".to_string(), strings(&["a.1", "a.2", "a.3"])),
+            ("region_m".to_string(), strings(&["b.1", "b.2"])),
+        ]
+    );
+}
+
+#[test]
+fn memoized_and_evaluated_decisions_route_alike_across_batches_and_evictions() {
+    let plan = policy_plan();
+    let frame = frame_of(&plan);
+    let programs = compiled(&plan, &frame).programs;
+    let exits = exit_names(&frame, 0);
+    let one: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+    let names = ["keep.a", "x", "keep.a", "y", "keep.b", "x", "keep.a"];
+    let mut runs = Vec::new();
+    for entries in [0, 1, 4096] {
+        let telemetry = RecordingTelemetry::default();
+        let boot = prepare_all(&one, &programs[0], PanicBudget::DEFAULT_PROGRAM, &telemetry);
+        let config = RegionConfig::for_slot(&frame.slots()[0], &telemetry).with_memo_entries(entries);
+        let mut region = MetricRegionDriver::new(config, boot).unwrap();
+        let mut delivered = Vec::new();
+        for _ in 0..3 {
+            for written in process(&mut region, exits.len(), batch(header(Some(&one), 0), &names)) {
+                delivered.push((exits[written.exit].clone(), written.names));
+            }
+        }
+        region.publish_telemetry();
+        runs.push((
+            delivered,
+            telemetry.port_events("s1", "true"),
+            telemetry.loss("d1", LossClass::Policy),
+        ));
+    }
+    assert_eq!(runs[0].1, 12, "four `keep.*` per batch");
+    assert_eq!(runs[0].2, 9, "three others per batch");
+    assert_eq!(runs[0], runs[1], "a one-entry memo");
+    assert_eq!(runs[0], runs[2], "the default memo");
+}
+
 // Bounds.
 
 #[test]
@@ -1182,11 +1446,32 @@ fn region_bounds_add_each_kernels_declared_bounds_and_a_full_buffer_per_register
     bounds.specify_bounds(&mut components.bounds_builder(&SubsystemIdentifier::from_segments(["region"])));
     let totals = components.as_bounds();
 
-    // The count kernel declares 100 bytes minimum and 1,000 more firm; the program has two registers (the batch, and
-    // the split's `true` port), each holding at most one full events buffer.
+    // The count kernel declares 100 bytes minimum and 1,000 more firm; the split's predicate, its value (`keep`), and
+    // its matcher's entry are declared under the split; the program has two registers (the batch, and the split's
+    // `true` port), each holding at most one full events buffer; and the split, whose predicate reads the name by
+    // prefix, which costs too little to memoize, is not memoized. Its decision has counts for 64 exit sets in a table
+    // of 128 slots, each a 32-byte exit set, its events, its points, and a tag word; and decision steps reuse an exit
+    // set per event of a full batch, and for each of the decision's two exits a count and an output buffer.
     let full_buffer = std::mem::size_of::<EventsBuffer>() + 1024 * std::mem::size_of::<Event>();
-    assert_eq!(totals.total_minimum_required_bytes(), 100);
-    assert_eq!(totals.total_firm_limit_bytes(), 100 + 1_000 + 2 * full_buffer);
+    let predicate = std::mem::size_of::<SharedPredicate>()
+        + (4 + std::mem::size_of::<String>())
+        + (4 + std::mem::size_of::<stringtheory::MetaString>());
+    let counts = 128 * (32 + 8 + 8 + 8);
+    let scratch = |exits: usize| 1024 * 32 + exits * (8 + std::mem::size_of::<Option<EventsBuffer>>());
+    assert!(!programs[0].decisions()[0].memoized);
+    assert_eq!(totals.total_minimum_required_bytes(), 100 + predicate);
+    assert_eq!(
+        totals.total_firm_limit_bytes(),
+        100 + 1_000 + predicate + 2 * full_buffer + counts + scratch(2)
+    );
+    let region = totals.subcomponents().into_iter().next().unwrap().1;
+    let keep = region
+        .subcomponents()
+        .into_iter()
+        .find(|(name, _)| name.as_str() == "keep")
+        .unwrap()
+        .1;
+    assert_eq!(keep.total_minimum_required_bytes(), predicate);
 
     // Bounds need the plan the program was compiled from.
     assert_eq!(
@@ -1195,6 +1480,23 @@ fn region_bounds_add_each_kernels_declared_bounds_and_a_full_buffer_per_register
             .to_string(),
         "The plan has no node `count`, which the program has a kernel for; compute bounds with the plan the program \
          was compiled from."
+    );
+
+    // A program with a memoized decision also declares its memo: 4,096 entries of three words (the context, the kind,
+    // and one word of exits). Its one decision has six exits, and two predicates: the allowlist `s1` and `s2` share
+    // (R2), with its two values (`keep`) and its two matchers' entries, and `s3`'s literal flag, which holds nothing.
+    let policy = policy_plan();
+    let policy_programs = compiled(&policy, &frame_of(&policy)).programs;
+    assert!(policy_programs[0].decisions()[0].memoized);
+    let bounds = RegionBounds::new(&policy, &registry(), &policy_programs[0]).unwrap();
+    let components = ComponentRegistry::default();
+    bounds.specify_bounds(&mut components.bounds_builder(&SubsystemIdentifier::from_segments(["region"])));
+    let predicates = 2 * std::mem::size_of::<SharedPredicate>()
+        + 2 * (4 + std::mem::size_of::<String>())
+        + 2 * (4 + std::mem::size_of::<stringtheory::MetaString>());
+    assert_eq!(
+        components.as_bounds().total_firm_limit_bytes(),
+        predicates + policy_programs[0].register_count() * full_buffer + 4096 * 3 * 8 + counts + scratch(6)
     );
 }
 

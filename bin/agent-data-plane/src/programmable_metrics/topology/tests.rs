@@ -14,11 +14,10 @@ use saluki_core::{
     topology::{BlueprintSnapshot, DataType, EventsBuffer},
 };
 use saluki_metric_plan::{
-    compile::{Frame, FrameSource, FrameTarget, RegionProgram},
+    compile::{Frame, FrameSource, FrameTarget, RegionProgram, SharedPredicate},
     limits,
     operators::names,
 };
-use serde_json::Value;
 
 use crate::{
     cli::run::{create_legacy_topology, create_topology},
@@ -30,7 +29,7 @@ use crate::{
     },
 };
 
-/// The legacy transforms whose work the regions do, besides the `metrics_enrich` chain, whose ID the region keeps.
+/// The legacy DogStatsD transforms whose work the regions do.
 const FUSED: [&str; 5] = [
     "dsd_enrich",
     "dsd_prefix_filter",
@@ -38,6 +37,16 @@ const FUSED: [&str; 5] = [
     "dsd_tag_filterlist",
     "dsd_post_agg_filter",
 ];
+
+/// Returns `true` if the legacy component `id` is one whose work the regions do, besides the `metrics_enrich` chain,
+/// whose ID a region keeps: a DogStatsD transform, or a gateway in front of a metrics output (an endpoint routing
+/// filter or a failover gateway), which the policy region runs as a `split`.
+fn fused(id: &str) -> bool {
+    let routing_filter = id
+        .strip_prefix("metrics_routing_filter_")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()));
+    FUSED.contains(&id) || routing_filter || id == "mrf_metrics_gateway" || id == "af_metrics_gateway"
+}
 
 /// The taps on the DogStatsD source's metrics, outside the plan.
 const TAPS: [&str; 2] = ["dsd_stats_out", "dsd_debug_log_out"];
@@ -96,20 +105,10 @@ fn pairs(pairs: &[(&str, &str)]) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-/// Returns the component a fixed node of the frame runs as, by the rule the module documents: an opaque host's
-/// `component` parameter, or the node's own ID.
+/// Returns the component a fixed node of the frame runs as, by the rule the module documents: the node's own ID.
 fn fixed_component(frame: &Frame, node: &saluki_metric_plan::ir::NodeId) -> String {
-    let fixed = frame.fixed_component(node).unwrap();
-    if fixed.operator.as_str() == names::OPAQUE_HOST {
-        fixed
-            .params
-            .get("component")
-            .and_then(Value::as_str)
-            .unwrap()
-            .to_string()
-    } else {
-        node.to_string()
-    }
+    assert!(frame.fixed_component(node).is_some(), "`{}` is fixed", node);
+    node.to_string()
 }
 
 /// Returns the component output an admission point is: a source's named port, or a host's default output.
@@ -165,13 +164,13 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
             .collect::<BTreeSet<_>>();
         assert!(regions.contains("metrics_enrich"), "{}: regions {:?}", name, regions);
 
-        // Components: the legacy ones without the fused transforms, and a region host per slot. Every component but
-        // the regions is the legacy one: same type, input, and outputs.
+        // Components: the legacy ones without the fused transforms and gateways, and a region host per slot. Every
+        // component but the regions is the legacy one: same type, input, and outputs.
         let legacy_ids = legacy
             .components()
             .iter()
             .map(|component| component.id().to_string())
-            .filter(|id| !FUSED.contains(&id.as_str()))
+            .filter(|id| !fused(id))
             .collect::<BTreeSet<_>>();
         let plan_ids = plan
             .components()
@@ -225,14 +224,14 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
             assert_eq!(exits, expected, "{}: exits of `{}`", name, slot.name);
         }
 
-        // Edges: the legacy ones, without those leaving or entering a fused transform or metrics enrichment and those
-        // leaving an output the frame reads, but with the DogStatsD taps; and the frame's.
+        // Edges: the legacy ones, without those leaving or entering a fused transform, a gateway, or metrics
+        // enrichment and those leaving an output the frame reads, but with the DogStatsD taps; and the frame's.
         let read = frame
             .admission_points()
             .iter()
             .map(|point| admission_output(frame, point.id))
             .collect::<BTreeSet<_>>();
-        let replaced = |component: &str| FUSED.contains(&component) || component == "metrics_enrich";
+        let replaced = |component: &str| fused(component) || component == "metrics_enrich";
         let mut expected = edges(legacy)
             .into_iter()
             .filter(|(from, to)| {
@@ -303,11 +302,47 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     let expected = legacy.difference(&native).cloned().chain(path).collect::<BTreeSet<_>>();
     assert_eq!(edges(&plan), expected);
 
-    // Every branch: five sources, two routing groups, and both failover gateways, whose outputs connect straight to
-    // their encoders. Its mapper profile and namespace prefix make the pre-aggregation chain costly enough that R1's
-    // cost model pipelines it over three regions (the mapper, the prefix with the listener filterlist, and the
-    // timestamp split with the tag filterlist), and its host tags and five-way fan-out keep enrichment from the
-    // post-aggregation filter.
+    // With Multi-Region Failover: its gateway (13 ns per event) and the policy fan-out's copy (15 ns) fit in the
+    // `metrics_enrich` region beside the post-aggregation filter (30 ns), within the floor, so that region feeds the
+    // encoder directly, where the legacy metrics enrichment fed the gateway, and the gateway the encoder.
+    let Topologies { legacy, plan, .. } = topologies(matrix_entry("multi-region failover")).await;
+    let gateway = pairs(&[
+        ("metrics_enrich", "mrf_metrics_gateway"),
+        ("mrf_metrics_gateway", "mrf_metrics_encode"),
+    ]);
+    let path = pairs(&[
+        ("dsd_in.metrics", "dsd_pre_aggregation"),
+        ("dsd_agg", "metrics_enrich"),
+        ("dsd_pre_aggregation.dsd_agg", "dsd_agg"),
+        ("dsd_pre_aggregation.metrics_enrich", "metrics_enrich"),
+        ("dsd_pre_aggregation.dsd_client_telemetry", "dsd_client_telemetry_out"),
+        ("dsd_pre_aggregation.dd_metrics_encode", "dd_metrics_encode"),
+        ("dsd_pre_aggregation.mrf_metrics_encode", "mrf_metrics_encode"),
+        ("metrics_enrich.dsd_client_telemetry", "dsd_client_telemetry_out"),
+        ("metrics_enrich.dd_metrics_encode", "dd_metrics_encode"),
+        ("metrics_enrich.mrf_metrics_encode", "mrf_metrics_encode"),
+    ]);
+    let legacy = edges(&legacy);
+    assert!(native.is_subset(&legacy) && gateway.is_subset(&legacy));
+    let expected = legacy
+        .difference(&native)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .difference(&gateway)
+        .cloned()
+        .chain(path)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(edges(&plan), expected);
+    assert!(plan.component("mrf_metrics_gateway").is_none());
+
+    // Every branch: five sources, two routing groups, and both failover gateways, which are `split`s of the policy
+    // region, so no component stands between a region and an encoder. Its mapper profile and namespace prefix make the
+    // pre-aggregation chain costly enough that R1's cost model pipelines it over three regions (the mapper, the prefix
+    // with the listener filterlist, and the timestamp split with the tag filterlist), and its host tags and five-way
+    // fan-out keep enrichment from the post-aggregation filter. The fan-out and the four gateways are one decision,
+    // which R1 never cuts and prices as one memo lookup and routing (15 ns), so enrichment (105 ns per event with host
+    // tags and the fan-out's copies) runs the whole policy region within the budget (110 ns, the prefix filter's), and
+    // feeds every encoder directly.
     let Topologies { plan, .. } = topologies(matrix_entry("every branch")).await;
     const OUTPUTS: [(&str, &str); 6] = [
         ("dsd_client_telemetry", "dsd_client_telemetry_out"),
@@ -356,31 +391,22 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
             "metrics_enrich",
             &[
                 ("dd_metrics_encode", "dd_metrics_encode"),
-                ("metrics_routing_filter_0", "metrics_routing_filter_0"),
-                ("metrics_routing_filter_1", "metrics_routing_filter_1"),
-                ("mrf_metrics_gateway", "mrf_metrics_gateway"),
-                ("af_metrics_gateway", "af_metrics_gateway"),
+                ("metrics_routing_encode_0", "metrics_routing_encode_0"),
+                ("metrics_routing_encode_1", "metrics_routing_encode_1"),
+                ("mrf_metrics_encode", "mrf_metrics_encode"),
+                ("af_metrics_encode", "af_metrics_encode"),
             ],
-            &[
-                "metrics_routing_encode_0",
-                "metrics_routing_encode_1",
-                "mrf_metrics_encode",
-                "af_metrics_encode",
-            ],
+            &[],
         ),
     ];
     let mut path = pairs(&[
-        // Admission points.
+        // Admission points: the sources and aggregation, and nothing else.
         ("dsd_in.metrics", "dsd_pre_aggregation"),
         ("dsd_agg", "dsd_post_agg_filter_region"),
         ("otlp_in.metrics", "metrics_enrich"),
         ("checks_ipc_in.metrics", "metrics_enrich"),
         ("liveness_in.metrics", "metrics_enrich"),
         ("trace_sampler.metrics", "metrics_enrich"),
-        ("metrics_routing_filter_0", "metrics_routing_encode_0"),
-        ("metrics_routing_filter_1", "metrics_routing_encode_1"),
-        ("mrf_metrics_gateway", "mrf_metrics_encode"),
-        ("af_metrics_gateway", "af_metrics_encode"),
         // Encoders feed their forwarders, as natively.
         ("dd_metrics_encode", "dd_out"),
         ("metrics_routing_encode_0", "dd_out"),
@@ -399,12 +425,9 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     }
     let touching = |component: &str| {
         regions.iter().any(|(region, _, _)| *region == component)
+            || fused(component)
             || [
                 "dsd_agg",
-                "metrics_routing_filter_0",
-                "metrics_routing_filter_1",
-                "mrf_metrics_gateway",
-                "af_metrics_gateway",
                 "dsd_client_telemetry_out",
                 "dd_metrics_encode",
                 "metrics_routing_encode_0",
@@ -419,6 +442,10 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         .filter(|(from, to)| touching(from.split('.').next().unwrap()) || touching(to))
         .collect::<BTreeSet<_>>();
     assert_eq!(found, path);
+    assert!(plan
+        .components()
+        .iter()
+        .all(|component| !fused(&component.id().to_string())));
 }
 
 /// Returns the bounds of the component at `path` below the registry's root.
@@ -447,6 +474,17 @@ fn own_bytes(bounds: &ComponentBounds) -> (usize, usize) {
         });
     let minimum = bounds.total_minimum_required_bytes() - minimum;
     (minimum, bounds.total_firm_limit_bytes() - firm - minimum)
+}
+
+/// Returns the bytes `bounds` declares at or below the component besides struct sizes: what grows with the lists it
+/// holds.
+fn list_bytes(bounds: &ComponentBounds) -> usize {
+    bounds
+        .to_exprs()
+        .iter()
+        .filter(|entry| entry["expr"]["type"] == "Constant")
+        .map(|entry| entry["expr"]["value"].as_u64().unwrap() as usize)
+        .sum()
 }
 
 /// Returns every bound expression `bounds` declares at or below the component, as `min` or `firm` with the expression,
@@ -497,32 +535,58 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     let at = |bounds, component: &str| bounds_at(bounds, &[&transforms[..], &[component]].concat());
 
     // A region host holds one full buffer per exit while a send waits, and its driver one full batch per register of
-    // its program between steps.
+    // its program between steps, the memo of each decision it memoizes (4,096 entries of three words: the context, the
+    // kind, and one word of exits), the counts per exit set of each decision (a table of 128 slots, each a 32-byte
+    // exit set, its events, its points, and a tag word), and once the scratch of its decision steps (an exit set per
+    // event of a full batch, and for each exit of its widest decision a count and an output buffer).
     let exit_buffer = size_of::<(ExitId, EventsBuffer)>() + size_of::<Event>() * 1024;
     let register_buffer = size_of::<EventsBuffer>() + size_of::<Event>() * limits::values::BATCH_SIZE;
+    let memo = 4096 * 3 * size_of::<u64>();
+    let counts = 128 * (32 + 8 + 8 + 8);
+    let scratch = |exits: usize| 1024 * 32 + exits * (size_of::<u64>() + size_of::<Option<EventsBuffer>>());
     // Each region, with its exits (where it sends, then the outputs it keeps an idle exit to for later generations),
-    // the registers of the largest entry of its boot program, and the native transform each of its kernels is.
-    type Region<'a> = (&'a str, &'a [&'a str], usize, &'a [&'a str]);
+    // the registers of the largest entry of its boot program, its decisions (the listener filterlist; the
+    // post-aggregation filter with the client telemetry tap's copy, and the policy fan-out) with the exits of the
+    // widest, its memoized decisions (none: each filter matches one intake-name leaf, too little to memoize, and the
+    // policy fan-out has no predicate), the native transform each of its kernels is, and the `split` of each predicate
+    // its decisions hold.
+    type Region<'a> = (
+        &'a str,
+        &'a [&'a str],
+        usize,
+        (usize, usize),
+        usize,
+        &'a [&'a str],
+        &'a [&'a str],
+    );
     let regions: [Region; 2] = [
         (
             "dsd_pre_aggregation",
             &["dsd_agg", "metrics_enrich", "dsd_client_telemetry", "dd_metrics_encode"],
             4,
+            (1, 2),
+            0,
             &[
                 "dsd_enrich",
                 "dsd_prefix_filter",
                 "dsd_no_agg_split",
                 "dsd_tag_filterlist",
             ],
+            &["dsd_prefix_filter_blocklist"],
         ),
         (
             "metrics_enrich",
             &["dsd_client_telemetry", "dd_metrics_encode"],
-            5,
+            4,
+            (2, 3),
+            0,
             &["metrics_enrich"],
+            &["dsd_post_agg_filter"],
         ),
     ];
-    for (index, (region, exits, registers, kernels)) in regions.into_iter().enumerate() {
+    for (index, (region, exits, registers, (decisions, widest), memoized, kernels, splits)) in
+        regions.into_iter().enumerate()
+    {
         let slot = &topologies.frame.slots()[index];
         assert_eq!(slot.name.as_str(), region);
         let slot_exits = slot.exits.iter().map(|exit| exit.name.as_str()).collect::<Vec<_>>();
@@ -533,23 +597,53 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         let (minimum, firm) = own_bytes(region_bounds);
         // The minimum is the host itself, with the driver it holds.
         assert!(minimum > 0, "`{}`", region);
+        let program_decisions = topologies.programs[index].decisions();
+        assert_eq!(program_decisions.len(), decisions, "`{}`", region);
+        assert_eq!(
+            program_decisions.iter().map(|decision| decision.exits.len()).max(),
+            Some(widest),
+            "`{}`",
+            region
+        );
+        assert_eq!(
+            program_decisions.iter().filter(|decision| decision.memoized).count(),
+            memoized,
+            "`{}`",
+            region
+        );
         assert_eq!(
             firm,
-            exits.len() * exit_buffer + registers * register_buffer,
+            exits.len() * exit_buffer
+                + registers * register_buffer
+                + memoized * memo
+                + decisions * counts
+                + scratch(widest),
             "`{}`",
             region
         );
 
-        // Each kernel declares what its native transform does, but for the transform's own struct.
+        // Each kernel declares what its native transform does, but for the transform's own struct, and each predicate
+        // what it holds: its lists, which the default configuration leaves empty, and itself.
         let mut nodes = region_bounds
             .subcomponents()
             .into_iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
         nodes.sort();
-        let mut expected = kernels.to_vec();
+        let mut expected = [kernels, splits].concat();
         expected.sort();
         assert_eq!(nodes, expected, "`{}`", region);
+        for split in splits {
+            let predicate = bounds_at(region_bounds, &[split]);
+            assert_eq!(list_bytes(predicate), 0, "`{}` in `{}`", split, region);
+            assert_eq!(
+                predicate.total_firm_limit_bytes(),
+                size_of::<SharedPredicate>(),
+                "`{}` in `{}`",
+                split,
+                region
+            );
+        }
         for kernel in kernels {
             let kernel_bounds = bounds_at(region_bounds, &[kernel]);
             assert_eq!(
@@ -573,7 +667,7 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         100_000 * saluki_metric_kernels::tag_projection::CONTEXT_CACHE_ENTRY_BYTES
     );
     // The post-aggregation filter, which runs as a decision of the `metrics_enrich` region, declares nothing natively
-    // but its struct.
+    // but its struct; the region declares its predicate, as above.
     assert!(declared_without_structs(at(&legacy, "dsd_post_agg_filter")).is_empty());
 
     // Every other component declares what it does natively.
@@ -590,5 +684,210 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
         let (minimum, firm) = own_bytes(bounds_at(bounds, &["topology", "primary", "interconnects"]));
         assert_eq!(minimum, interconnects * 128 * size_of::<EventsBuffer>());
         assert_eq!(firm, (interconnects * 128 + 1 + transforms) * in_flight_buffer);
+    }
+}
+
+/// One gateway of a configuration: its node, the strings its lists hold, and how many copies of them, besides its
+/// matcher's entries, the legacy gateway declares and the region declares for its predicate.
+type Gateway<'a> = (&'a str, &'a [&'a str], usize, usize);
+
+/// One gateway configuration: its name in the lowering matrix, its regions, the transforms of the legacy topology, its
+/// gateways, and the memoized decisions of each region.
+type GatewayCase<'a> = (&'a str, &'a [&'a str], usize, &'a [Gateway<'a>], &'a [usize]);
+
+#[tokio::test]
+async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_do() {
+    // (configuration, the regions, the legacy topology's transforms, the gateways, the memoized decisions of each
+    // region): the legacy gateways are transforms of their own, with an interconnect each, where the plan-driven
+    // topology runs them as decisions of its regions. The DogStatsD-only topology has nine legacy transforms, six of
+    // which the regions replace (see above); each gateway adds a legacy transform. The policy region is memoized where
+    // its predicates cost at least `MEMO_COST_FLOOR` (25 ns): with a routing filter (25 ns each), not with a failover
+    // gateway alone (13 and 11 ns); the filters on one intake-name leaf never are.
+    let cases: [GatewayCase; 4] = [
+        // The legacy filter keeps a copy of its source's allowlist; Multi-Region Failover's predicate holds it twice,
+        // in its emptiness test and its name match.
+        (
+            "multi-region failover mirroring an allowlist",
+            &["dsd_pre_aggregation", "metrics_enrich"],
+            10,
+            &[("mrf_metrics_gateway", &["requests.count", "orders.total"], 1, 2)],
+            &[0, 0],
+        ),
+        // A routing filter's predicate holds its names and prefixes once, as the legacy filter's source does. The
+        // policy region (the fan-out's copy and the memoized routing filter, 15 ns each) leaves no room for the
+        // post-aggregation filter (36 ns with its fan-out's copy) beside enrichment within the 64 ns floor: 66 ns.
+        (
+            "one routing group",
+            &["dsd_pre_aggregation", "dsd_post_agg_filter_region", "metrics_enrich"],
+            10,
+            &[("metrics_routing_filter_0", &["orders.total"], 1, 1)],
+            &[0, 0, 1],
+        ),
+        // Two groups (the endpoint with empty lists has none, and two endpoints share one), ordered by their lists,
+        // whose wider fan-out keeps enrichment from the post-aggregation filter.
+        (
+            "two routing groups, a shared group, and an endpoint with empty lists",
+            &["dsd_pre_aggregation", "dsd_post_agg_filter_region", "metrics_enrich"],
+            11,
+            &[
+                ("metrics_routing_filter_0", &["catalog."], 1, 1),
+                ("metrics_routing_filter_1", &["orders.total"], 1, 1),
+            ],
+            &[0, 0, 1],
+        ),
+        // The legacy autoscaling gateway keeps only its matcher; the predicate also holds the names.
+        (
+            "autoscaling failover",
+            &["dsd_pre_aggregation", "metrics_enrich"],
+            10,
+            &[("af_metrics_gateway", &["requests.count"], 0, 1)],
+            &[0, 0],
+        ),
+    ];
+    let in_flight_buffer = size_of::<EventsBuffer>() + size_of::<Event>() * 1024;
+    let exit_buffer = size_of::<(ExitId, EventsBuffer)>() + size_of::<Event>() * 1024;
+    let register_buffer = size_of::<EventsBuffer>() + size_of::<Event>() * limits::values::BATCH_SIZE;
+    let strings = |list: &[&str]| {
+        list.iter()
+            .map(|value| value.len() + size_of::<String>())
+            .sum::<usize>()
+    };
+    let entries = |list: &[&str]| {
+        list.iter()
+            .map(|value| value.len() + size_of::<stringtheory::MetaString>())
+            .sum::<usize>()
+    };
+    let memo = 4096 * 3 * size_of::<u64>();
+    let counts = 128 * (32 + 8 + 8 + 8);
+    let scratch = |exits: usize| 1024 * 32 + exits * (size_of::<u64>() + size_of::<Option<EventsBuffer>>());
+    for (name, regions, legacy_transforms, expected_gateways, memoized) in cases {
+        let topologies = topologies(matrix_entry(name)).await;
+        let frame = &topologies.frame;
+        let slots = frame.slots().iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>();
+        let costs = frame.slots().iter().map(|slot| slot.cost).collect::<Vec<_>>();
+        assert_eq!(slots, regions, "{}: costs {:?} of {}", name, costs, frame.cost_budget());
+
+        let gateways = topologies
+            .legacy
+            .components()
+            .iter()
+            .map(|component| component.id().to_string())
+            .filter(|id| fused(id) && !FUSED.contains(&id.as_str()))
+            .collect::<Vec<_>>();
+        let mut expected = expected_gateways
+            .iter()
+            .map(|(gateway, ..)| gateway.to_string())
+            .collect::<Vec<_>>();
+        expected.sort();
+        let mut found = gateways.clone();
+        found.sort();
+        assert_eq!(found, expected, "{}", name);
+        assert_eq!(gateways.len(), legacy_transforms - 9, "{}", name);
+
+        let plan = topologies.registry.as_bounds();
+        let legacy = topologies.legacy_registry.as_bounds();
+        let transforms = ["topology", "primary", "transforms"];
+        let below = |bounds: &ComponentBounds| {
+            bounds_at(bounds, &transforms)
+                .subcomponents()
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect::<BTreeSet<_>>()
+        };
+
+        // A gateway is a decision of a region, which declares its predicate under its node: itself, and the lists it
+        // holds, the matcher's entries exactly as the legacy gateway declared them, and the copies of the strings it
+        // keeps, at least as many as the legacy gateway did.
+        for (gateway, list, legacy_copies, copies) in expected_gateways {
+            assert!(below(&legacy).contains(*gateway), "{}: `{}`", name, gateway);
+            assert!(!below(&plan).contains(*gateway), "{}: `{}`", name, gateway);
+            let node = gateway.parse().unwrap();
+            let slot = frame
+                .slots()
+                .iter()
+                .find(|slot| slot.nodes.contains(&node))
+                .unwrap_or_else(|| panic!("{}: `{}` runs in a region", name, gateway));
+            let declared = bounds_at(&plan, &[&transforms[..], &[slot.name.as_str(), gateway]].concat());
+            let native = bounds_at(&legacy, &[&transforms[..], &[gateway]].concat());
+            assert_eq!(
+                list_bytes(native),
+                legacy_copies * strings(list) + entries(list),
+                "{}: `{}`",
+                name,
+                gateway
+            );
+            assert_eq!(
+                list_bytes(declared),
+                copies * strings(list) + entries(list),
+                "{}: `{}`",
+                name,
+                gateway
+            );
+            assert_eq!(
+                declared.total_firm_limit_bytes(),
+                size_of::<SharedPredicate>() + list_bytes(declared),
+                "{}: `{}`",
+                name,
+                gateway
+            );
+        }
+
+        // A region declares a full buffer per exit and per register, and what its decisions keep (see above): the
+        // memo of each memoized decision (of at most 64 exits, so three words an entry), counts per decision, and the
+        // scratch of its widest decision.
+        for ((slot, program), memoized) in frame.slots().iter().zip(&topologies.programs).zip(memoized) {
+            let region = bounds_at(&plan, &[&transforms[..], &[slot.name.as_str()]].concat());
+            let (_, firm) = own_bytes(region);
+            let decisions = program.decisions();
+            assert_eq!(
+                decisions.iter().filter(|decision| decision.memoized).count(),
+                *memoized,
+                "{}: `{}`",
+                name,
+                slot.name
+            );
+            let widest = decisions
+                .iter()
+                .map(|decision| decision.exits.len())
+                .max()
+                .unwrap_or_default();
+            assert!(widest <= 64, "{}: `{}`", name, slot.name);
+            let kept = if decisions.is_empty() {
+                0
+            } else {
+                memoized * memo + decisions.len() * counts + scratch(widest)
+            };
+            assert_eq!(
+                firm,
+                slot.exits.len() * exit_buffer + program.register_count() * register_buffer + kept,
+                "{}: `{}`",
+                name,
+                slot.name
+            );
+        }
+
+        // Every other component declares what it does natively.
+        let mut replaced = [&FUSED[..], &["metrics_enrich"], regions].concat();
+        replaced.extend(gateways.iter().map(String::as_str));
+        assert_eq!(
+            declared_by_path(&plan, &replaced),
+            declared_by_path(&legacy, &replaced),
+            "{}",
+            name
+        );
+
+        // One interconnect, and one transform's in-flight buffers, per transform: the gateways' are gone.
+        let plan_transforms = legacy_transforms - 6 - gateways.len() + regions.len();
+        for (bounds, transforms) in [(&legacy, legacy_transforms), (&plan, plan_transforms)] {
+            let interconnects = transforms + 3;
+            let (minimum, firm) = own_bytes(bounds_at(bounds, &["topology", "primary", "interconnects"]));
+            assert_eq!(minimum, interconnects * 128 * size_of::<EventsBuffer>(), "{}", name);
+            assert_eq!(
+                firm,
+                (interconnects * 128 + 1 + transforms) * in_flight_buffer,
+                "{}",
+                name
+            );
+        }
     }
 }

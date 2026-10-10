@@ -17,8 +17,10 @@
 //! resource bounds, and, for a plan placed into a frame ([`Explain::with_physical`]), the physical sections: the
 //! frame's fixed components with their admission points, its slots with their entries and exits (idle ones marked),
 //! the physical edges including direct ones, rewrite R1's fusion decision for every edge of the boot plan, the
-//! segments between admission points, and each output's binding with its recipients and delivery policy. Later
-//! stages add the rewrites applied with their justifications, the plan diff, and state owners with their transitions.
+//! segments between admission points, and each output's binding with its recipients and delivery policy, and, for a
+//! compiled plan ([`Explain::with_rewrites`]), the rewrites the compiler considered, applied or skipped, each with its
+//! justification, whether it relies on the capacity rule, and its telemetry effects. Later stages add the plan diff,
+//! and state owners with their transitions.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +29,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     canonical::{PlanHash, ResolvedValues},
+    compile::{RewriteOutcome, RewriteRecord},
     extension::DeliveryPolicy,
     ir::{
         ArtifactRevision, BindingName, InputName, NodeId, OperatorName, OutputId, ParamName, Plan, PlanProvenance,
@@ -65,6 +68,10 @@ pub struct Explain {
 
     /// The validation findings, in the order validation found them.
     pub findings: Vec<FindingEntry>,
+
+    /// The rewrites the compiler considered for the plan, applied or skipped, if it was compiled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewrites: Option<Vec<RewriteEntry>>,
 
     /// How the plan runs in the frame built at boot, if it was placed into one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,6 +283,72 @@ pub struct FindingEntry {
     pub message: String,
 }
 
+/// One rewrite the compiler considered: applied, or skipped with the reason.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RewriteEntry {
+    /// The rewrite, as the specification names it, such as `R5a`.
+    pub id: String,
+
+    /// `applied` or `skipped`.
+    pub outcome: String,
+
+    /// Why it was skipped, if it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+
+    /// The nodes it changes, removes, or inserts.
+    pub nodes: Vec<NodeId>,
+
+    /// Why it is sound: the proof obligations it checked, and how each holds.
+    pub justification: String,
+
+    /// Whether its equivalence relies on the capacity rule: equal outputs without capacity pressure, and under
+    /// pressure only less capacity loss.
+    pub capacity_rule: bool,
+
+    /// What it changes in internal telemetry.
+    pub telemetry: Vec<TelemetryEffectEntry>,
+}
+
+/// One change a rewrite makes to internal telemetry.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TelemetryEffectEntry {
+    /// The node whose series change.
+    pub node: NodeId,
+
+    /// `removed`, `added`, or `changed`.
+    pub change: String,
+
+    /// What changes, and why.
+    pub detail: String,
+}
+
+impl RewriteEntry {
+    fn of(record: &RewriteRecord) -> Self {
+        let (outcome, reason) = match &record.outcome {
+            RewriteOutcome::Applied => ("applied", None),
+            RewriteOutcome::Skipped { reason } => ("skipped", Some(reason.clone())),
+        };
+        Self {
+            id: record.id.as_str().to_string(),
+            outcome: outcome.to_string(),
+            reason,
+            nodes: record.nodes.clone(),
+            justification: record.justification.clone(),
+            capacity_rule: record.capacity_rule,
+            telemetry: record
+                .telemetry
+                .iter()
+                .map(|effect| TelemetryEffectEntry {
+                    node: effect.node.clone(),
+                    change: effect.change.as_str().to_string(),
+                    detail: effect.detail.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl Explain {
     /// Describes a plan, using the operator registry it was validated against and its validation report.
     pub fn of(plan: &Plan, registry: &OperatorRegistry, report: &ValidationReport) -> Self {
@@ -438,8 +511,16 @@ impl Explain {
             },
             bounds,
             findings,
+            rewrites: None,
             physical: None,
         }
+    }
+
+    /// Adds the rewrites section: every rewrite the compiler considered for the plan, applied or skipped, in the order
+    /// it considered them, as [`CompiledPlan::rewrites`][crate::compile::CompiledPlan::rewrites] lists them.
+    pub fn with_rewrites(mut self, records: &[RewriteRecord]) -> Self {
+        self.rewrites = Some(records.iter().map(RewriteEntry::of).collect());
+        self
     }
 
     /// Adds the physical sections: how `plan`, the plan this document describes, runs in `frame`, as `placement`

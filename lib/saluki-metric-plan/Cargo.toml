@@ -40,3 +40,8 @@ stringtheory = { workspace = true }
 name = "region_driver"
 harness = false
 required-features = ["test-util"]
+
+[[bench]]
+name = "selection"
+harness = false
+required-features = ["test-util"]

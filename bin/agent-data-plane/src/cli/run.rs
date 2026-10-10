@@ -43,10 +43,9 @@ use saluki_components::{
     },
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
-        ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
-        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
-        HostEnrichmentConfiguration, ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration,
-        TraceTagReplacerConfiguration,
+        ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile,
+        DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration, ReplaceRule,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
 use saluki_core::{
@@ -65,8 +64,8 @@ use tracing::{debug, info, warn};
 use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, liveness::LivenessConfiguration,
-        metric_filter::MetricFilterConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, static_tags::resolve_static_tags,
+        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        static_tags::resolve_static_tags,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -615,25 +614,20 @@ pub(crate) fn main_metrics_encoder(
     dd_metrics_config
 }
 
-/// Returns the filter and the encoder of an endpoint routing group's branch, which sends what the group's policy
-/// allows to the group's endpoints only.
-pub(crate) fn routing_group_branch(
+/// Returns the encoder of an endpoint routing group's branch, which sends to the group's endpoints only.
+///
+/// The group's filter, which selects what its policy allows, is a gateway of the metrics path, in front of the encoder.
+pub(crate) fn routing_group_encoder(
     shared: &SharedConfiguration, policy: &EndpointAllowlistGroup,
-) -> (MetricFilterConfiguration, DatadogMetricsConfiguration) {
-    let filter_config = MetricFilterConfiguration::for_allowlist(
-        policy.metric_allowlist.clone(),
-        policy.metric_prefix_allowlist.clone(),
-    );
-    let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
-        .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
-    (filter_config, metrics_config)
+) -> DatadogMetricsConfiguration {
+    DatadogMetricsConfiguration::from_configuration(shared)
+        .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()))
 }
 
-/// The native components of a metrics branch behind a gateway: the gateway, the branch's encoder, and its forwarder.
-pub(crate) struct MetricsBranch<G, F> {
-    /// The gateway, which selects what reaches the branch.
-    pub(crate) gateway: G,
-
+/// The native components of a metrics branch behind a gateway: the branch's encoder and its forwarder.
+///
+/// The gateway, which selects what reaches the branch, is part of the metrics path, in front of the encoder.
+pub(crate) struct MetricsBranch<F> {
     /// The branch's encoder.
     pub(crate) encoder: DatadogMetricsConfiguration,
 
@@ -646,7 +640,7 @@ pub(crate) struct MetricsBranch<G, F> {
 /// Logs a warning when Multi-Region Failover is enabled but the branch cannot be wired.
 pub(crate) fn mrf_metrics_branch(
     config_system: &ConfigurationSystem, shared: &SharedConfiguration, mrf: &multi_region_failover::Domain,
-) -> Option<MetricsBranch<MetricFilterConfiguration, DatadogForwarderConfiguration>> {
+) -> Option<MetricsBranch<DatadogForwarderConfiguration>> {
     let mrf_config = MrfConfiguration::from_configuration(mrf);
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
@@ -662,10 +656,6 @@ pub(crate) fn mrf_metrics_branch(
         return None;
     };
 
-    let gateway = MetricFilterConfiguration::for_mrf(
-        mrf_config.is_enabled(),
-        config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
-    );
     let encoder =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
     let forwarder = DatadogForwarderConfiguration::for_endpoint_override(
@@ -676,11 +666,7 @@ pub(crate) fn mrf_metrics_branch(
         config_system.live(|config| &config.shared.secrets),
     );
 
-    Some(MetricsBranch {
-        gateway,
-        encoder,
-        forwarder,
-    })
+    Some(MetricsBranch { encoder, forwarder })
 }
 
 /// Returns the autoscaling failover metrics branch, if it is wired: when autoscaling failover requests it, and the
@@ -693,10 +679,7 @@ pub(crate) fn mrf_metrics_branch(
 /// Returns an error if the Cluster Agent forwarder cannot be configured, such as for a token that cannot be sent.
 pub(crate) fn autoscaling_failover_branch(
     shared: &SharedConfiguration, cluster_agent: Option<(String, String)>,
-) -> Result<
-    Option<MetricsBranch<AutoscalingFailoverGatewayConfiguration, ClusterAgentForwarderConfiguration>>,
-    GenericError,
-> {
+) -> Result<Option<MetricsBranch<ClusterAgentForwarderConfiguration>>, GenericError> {
     let af_config = AutoscalingFailoverConfiguration::new(
         shared.autoscaling_failover.enabled,
         shared.autoscaling_failover.metrics.clone(),
@@ -719,16 +702,11 @@ pub(crate) fn autoscaling_failover_branch(
         return Ok(None);
     }
 
-    let gateway = AutoscalingFailoverGatewayConfiguration::new(af_config);
     let encoder = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
     let forwarder = ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
         .error_context("Failed to configure Cluster Agent forwarder.")?;
 
-    Ok(Some(MetricsBranch {
-        gateway,
-        encoder,
-        forwarder,
-    }))
+    Ok(Some(MetricsBranch { encoder, forwarder }))
 }
 
 /// Returns the configuration of DogStatsD aggregation, and the handle to its context snapshots.

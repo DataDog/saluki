@@ -15,11 +15,16 @@
 //!   that register, followed by anything it writes to its port.
 //! - [`Step::Expand`] runs a kernel with several ports, routing each port's buffers to a register (or to a drop). A
 //!   kernel's whole-buffer fast path (`route_all`) moves a buffer to its port untouched.
-//! - [`Step::Decide`] runs one decision, a `split` or a `tee`, over a register: it computes each event's targets
-//!   first, then filters the original buffer in place with the order-preserving `retain` and moves it to its last
-//!   target, and gives every other target a buffer created with exact capacity (copies for a `tee`). When every event
-//!   goes to one target, the buffer moves there whole. A target that leads to a `drop` counts its events and points
-//!   as policy loss of that `drop` node instead of holding them.
+//! - [`Step::Decide`] runs one [decision](super::decision) over a register: it computes each event's exit set first,
+//!   then moves the events to the registers its exits lead to, in batch order everywhere. A buffer whose events all
+//!   take the same exits moves whole to the last of their registers, and every other one receives a copy. When one
+//!   register receives every event that goes to any (the later of two such), the original buffer keeps those events,
+//!   filtered in place with the order-preserving `retain`, and every other register receives a buffer of copies
+//!   created with exact capacity. Otherwise every register receives a buffer of exactly its size, each event moving
+//!   to the last register its set leads to and copied to the others. An exit that leads to a `drop` counts its events
+//!   and points as policy loss of that `drop` node instead of holding them. A decision is a maximal group of `split`
+//!   and `tee` nodes joined directly by edges, which runs as one function (see
+//!   [decisions](super::decision#grouping)); the group's other nodes are no steps of their own.
 //! - [`Step::Concat`] joins registers, as a `merge` does, in input port order.
 //! - [`Step::Exit`] hands a register's buffers to one of the slot's exits, with the consumer's entry set in their
 //!   header when the exit leads to another slot, and cleared otherwise. Exit buffers leave by value.
@@ -45,6 +50,10 @@ use serde_json::{json, Value};
 use snafu::Snafu;
 
 use super::{
+    decision::{
+        Branch, Decision, DecisionExit, DecisionKind, DecisionNode, ExitTarget, PredicateIndex, PredicateTable,
+        EXIT_SET_CAPACITY, MEMO_COST_FLOOR,
+    },
     frame::{ExitIndex, Frame, FrameTarget, SlotId},
     placement::{EntryKey, Placement},
     resolve, Role,
@@ -53,7 +62,7 @@ use crate::{
     canonical::PlanHash,
     ir::{Node, NodeId, Plan, PortName, PortRef},
     operators::{names, KernelSpec, OperatorRegistry},
-    predicate::{CompiledPredicate, NoBindings, Predicate, PredicateError},
+    predicate::{NoBindings, PredicateError},
     validate::graph::{emit_output, Graph},
 };
 
@@ -116,32 +125,6 @@ pub enum CompileError {
         /// What went wrong.
         message: String,
     },
-}
-
-macro_rules! index {
-    ($(#[$meta:meta])* $ty:ident) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        pub struct $ty(u16);
-
-        impl $ty {
-            /// Creates an index.
-            pub const fn new(index: u16) -> Self {
-                Self(index)
-            }
-
-            /// Returns this index as a `usize`, for indexing.
-            pub const fn get(self) -> usize {
-                self.0 as usize
-            }
-        }
-
-        impl fmt::Display for $ty {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.fmt(f)
-            }
-        }
-    };
 }
 
 index!(
@@ -244,7 +227,7 @@ pub enum Step {
         ports: Vec<Route>,
     },
 
-    /// Runs a decision, routing each event to its targets.
+    /// Runs a decision: computes each event's exit set, then moves each event to the target of every exit in it.
     Decide {
         /// The decision.
         decision: DecisionIndex,
@@ -252,8 +235,10 @@ pub enum Step {
         /// The register it consumes.
         input: RegisterId,
 
-        /// Where each of its targets leads, in the decision's port order. The original buffer moves to the last target
-        /// that receives events.
+        /// Where each of the decision's exits leads, in its exit order. The original buffer moves whole to the last
+        /// register when every event takes the same exits, and stays, filtered, at the register that receives every
+        /// event going to any; otherwise each event moves to the last register its set leads to (see [the module
+        /// documentation](self)).
         targets: Vec<Route>,
     },
 
@@ -286,37 +271,6 @@ pub enum Step {
         /// The `drop` node.
         node: NodeId,
     },
-}
-
-/// What a decision does.
-#[derive(Clone, Debug)]
-pub enum DecisionKind {
-    /// A `split`: each event goes to `true` if the predicate matches it, and to `false` otherwise.
-    Split {
-        /// The predicate, in canonical form, with resolved values.
-        predicate: Predicate,
-
-        /// The predicate, compiled, shared so that a region can hold it beside the program.
-        compiled: Arc<CompiledPredicate>,
-    },
-
-    /// A `tee`: each event goes to every target.
-    Tee,
-}
-
-/// One decision: a `split` or a `tee`.
-///
-/// From stage 4, a maximal group of them compiles to one decision; through stage 3 each is its own.
-#[derive(Clone, Debug)]
-pub struct Decision {
-    /// The node.
-    pub node: NodeId,
-
-    /// The node's output ports, in target order, for telemetry that counts events per port.
-    pub ports: Vec<PortName>,
-
-    /// What the decision does.
-    pub kind: DecisionKind,
 }
 
 /// The steps that run a batch arriving at one entry of a slot.
@@ -418,14 +372,52 @@ impl RegionProgram {
     }
 }
 
+/// Which decision-time rewrites decision compilation applies.
+///
+/// Production compiles with [`ALL`][Self::ALL]; tests compare it with programs compiled without them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DecisionRewrites {
+    /// R4: memoize every decision worth memoizing.
+    pub memoize: bool,
+
+    /// R2 and R3: share equal predicates within a decision, and fold predicates constant given their resolved values.
+    #[cfg(test)]
+    pub predicates: bool,
+}
+
+impl DecisionRewrites {
+    /// Every decision-time rewrite.
+    pub const ALL: Self = Self {
+        memoize: true,
+        #[cfg(test)]
+        predicates: true,
+    };
+
+    /// No decision-time rewrite: each `split`'s predicate is evaluated as written, and nothing is memoized.
+    #[cfg(test)]
+    pub const NONE: Self = Self {
+        memoize: false,
+        predicates: false,
+    };
+}
+
 /// Compiles the program of every slot of a frame for a placed candidate plan, in slot order.
 ///
 /// # Errors
 ///
 /// Returns an error if a `split`'s predicate has a binding without a resolved value, if a node's parameters cannot be
-/// hashed, or if the plan does not match its placement.
+/// hashed, if a `tee` has more output ports than a decision has exits ([`EXIT_SET_CAPACITY`]), or if the plan does not
+/// match its placement.
 pub fn compile_programs(
     plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement,
+) -> Result<Vec<RegionProgram>, CompileError> {
+    compile_programs_with(plan, registry, frame, placement, DecisionRewrites::ALL)
+}
+
+/// Compiles the program of every slot of a frame for a placed candidate plan, in slot order, applying the given
+/// decision-time rewrites.
+pub(crate) fn compile_programs_with(
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, rewrites: DecisionRewrites,
 ) -> Result<Vec<RegionProgram>, CompileError> {
     let graph = resolve(plan, registry).map_err(|problems| CompileError::Internal {
         message: format!("a placed plan has structural problems: {}", problems.join("; ")),
@@ -443,6 +435,7 @@ pub fn compile_programs(
         slot_of: &slot_of,
         frame,
         placement,
+        rewrites,
     };
     frame.slots().iter().map(|slot| context.compile_slot(slot.id)).collect()
 }
@@ -453,6 +446,16 @@ struct Context<'a, 'p> {
     slot_of: &'a [Option<SlotId>],
     frame: &'a Frame,
     placement: &'a Placement,
+    rewrites: DecisionRewrites,
+}
+
+/// The decisions of one slot, and where their exits are.
+struct SlotDecisions {
+    decisions: Vec<Decision>,
+    /// The output port, as `(node, port)` by graph position, behind each exit of each decision, in exit order.
+    exits: Vec<Vec<(usize, usize)>>,
+    /// The decision each node is the first node of, by graph position.
+    decision_of: Vec<Option<DecisionIndex>>,
 }
 
 impl Context<'_, '_> {
@@ -469,49 +472,11 @@ impl Context<'_, '_> {
         };
         let mut kernels = Vec::new();
         let mut kernel_of = vec![None; graph.nodes.len()];
-        let mut decisions = Vec::new();
-        let mut decision_of = vec![None; graph.nodes.len()];
         for &node in &members {
             let op = graph.op(node).expect("a resolved plan configures every node");
             let id = graph.id(node);
             match op.name() {
-                names::SPLIT => {
-                    let predicate = op
-                        .params()
-                        .predicate("predicate")
-                        .ok_or_else(|| CompileError::Internal {
-                            message: format!("validated `split` node `{}` has no predicate", id),
-                        })?;
-                    let compiled =
-                        predicate
-                            .compile(&NoBindings)
-                            .map_err(|source| CompileError::UnresolvedBinding {
-                                node: id.clone(),
-                                source,
-                            })?;
-                    decision_of[node] = Some(DecisionIndex(
-                        u16::try_from(decisions.len()).map_err(|_| too_large("decisions"))?,
-                    ));
-                    decisions.push(Decision {
-                        node: id.clone(),
-                        ports: op.ports().outputs.iter().map(|port| port.name.clone()).collect(),
-                        kind: DecisionKind::Split {
-                            predicate: predicate.canonical(),
-                            compiled: Arc::new(compiled),
-                        },
-                    });
-                }
-                names::TEE => {
-                    decision_of[node] = Some(DecisionIndex(
-                        u16::try_from(decisions.len()).map_err(|_| too_large("decisions"))?,
-                    ));
-                    decisions.push(Decision {
-                        node: id.clone(),
-                        ports: op.ports().outputs.iter().map(|port| port.name.clone()).collect(),
-                        kind: DecisionKind::Tee,
-                    });
-                }
-                names::MERGE | names::EMIT | names::DROP => {}
+                names::SPLIT | names::TEE | names::MERGE | names::EMIT | names::DROP => {}
                 _ => {
                     let spec = op.kernel().ok_or_else(|| CompileError::Internal {
                         message: format!(
@@ -532,6 +497,11 @@ impl Context<'_, '_> {
                 }
             }
         }
+        let SlotDecisions {
+            decisions,
+            exits: decision_exits,
+            decision_of,
+        } = self.decisions(slot, &members)?;
 
         let placed = self.placement.slot(slot).ok_or_else(|| CompileError::Internal {
             message: format!("the placement has no slot {}", slot),
@@ -549,6 +519,7 @@ impl Context<'_, '_> {
                 slot,
                 kernel_of: &kernel_of,
                 decision_of: &decision_of,
+                decision_exits: &decision_exits,
                 steps: Vec::new(),
                 registers: 1,
                 inputs: BTreeMap::from([((start, port), RegisterId(0))]),
@@ -574,6 +545,201 @@ impl Context<'_, '_> {
             kernels,
             decisions,
         })
+    }
+
+    /// Groups the `split` and `tee` nodes of a slot into decisions, and compiles each, with the decision-time rewrites.
+    ///
+    /// A group starts at each `split` or `tee` whose input does not come from another `split` or `tee` of the slot,
+    /// and takes in, depth first, every `split` and `tee` an edge from the group leads to, as long as the group's exits
+    /// stay within [`EXIT_SET_CAPACITY`] (and its nodes within what a branch numbers); a node that would take the group
+    /// beyond either starts a group of its own.
+    /// Decisions are numbered in plan order of their first node, then in the order cut groups were found.
+    fn decisions(&self, slot: SlotId, members: &[usize]) -> Result<SlotDecisions, CompileError> {
+        let graph = self.graph;
+        let is_decision = |node: usize| {
+            self.slot_of[node] == Some(slot)
+                && graph
+                    .op(node)
+                    .is_some_and(|op| matches!(op.name(), names::SPLIT | names::TEE))
+        };
+        let ports = |node: usize| graph.op(node).map_or(0, |op| op.ports().outputs.len());
+        let too_wide = || CompileError::TooLarge {
+            slot,
+            what: "output ports on one `tee`",
+            limit: EXIT_SET_CAPACITY,
+        };
+
+        let mut roots = members
+            .iter()
+            .copied()
+            .filter(|&node| is_decision(node))
+            .filter(|&node| !graph.source(node, 0).is_some_and(|(from, _)| is_decision(from)))
+            .collect::<std::collections::VecDeque<_>>();
+        let mut slot_decisions = SlotDecisions {
+            decisions: Vec::new(),
+            exits: Vec::new(),
+            decision_of: vec![None; graph.nodes.len()],
+        };
+        while let Some(root) = roots.pop_front() {
+            // The group, depth first: every node after the node leading to it.
+            if ports(root) > EXIT_SET_CAPACITY {
+                return Err(too_wide());
+            }
+            let mut group = vec![root];
+            let mut exits = ports(root);
+            let mut stack = vec![(root, 0)];
+            while let Some(&(node, port)) = stack.last() {
+                if port == ports(node) {
+                    stack.pop();
+                    continue;
+                }
+                if let Some(top) = stack.last_mut() {
+                    top.1 += 1;
+                }
+                let Some((next, _)) = graph.target(node, port).filter(|&(next, _)| is_decision(next)) else {
+                    continue;
+                };
+                let width = ports(next);
+                if width > EXIT_SET_CAPACITY {
+                    return Err(too_wide());
+                }
+                // Taking `next` in turns the port leading to it into `next`'s own ports. A group also stays within
+                // the nodes a branch numbers, which only a chain of one-port `tee`s could exceed.
+                if exits - 1 + width <= EXIT_SET_CAPACITY && group.len() < usize::from(u16::MAX) {
+                    exits = exits - 1 + width;
+                    group.push(next);
+                    stack.push((next, 0));
+                } else {
+                    roots.push_back(next);
+                }
+            }
+
+            let index =
+                DecisionIndex(
+                    u16::try_from(slot_decisions.decisions.len()).map_err(|_| CompileError::TooLarge {
+                        slot,
+                        what: "decisions",
+                        limit: usize::from(u16::MAX) + 1,
+                    })?,
+                );
+            let (decision, exits) = self.decision(slot, &group)?;
+            slot_decisions.decision_of[root] = Some(index);
+            slot_decisions.decisions.push(decision);
+            slot_decisions.exits.push(exits);
+        }
+        Ok(slot_decisions)
+    }
+
+    /// Compiles one group of `split` and `tee` nodes, by graph position with every node after the node leading to it,
+    /// into a decision, returning it with the output port behind each of its exits.
+    fn decision(&self, slot: SlotId, group: &[usize]) -> Result<(Decision, Vec<(usize, usize)>), CompileError> {
+        let graph = self.graph;
+        let position_in_group = |node: usize| group.iter().position(|&member| member == node);
+        let mut nodes = Vec::with_capacity(group.len());
+        let mut exits = Vec::new();
+        let mut exit_ports = Vec::new();
+        let mut predicates = PredicateTable::new();
+        for &node in group {
+            let op = graph.op(node).expect("a resolved plan configures every node");
+            let id = graph.id(node);
+            let port_names = op
+                .ports()
+                .outputs
+                .iter()
+                .map(|port| port.name.clone())
+                .collect::<Vec<_>>();
+            let mut branches = Vec::with_capacity(port_names.len());
+            for (port, name) in port_names.iter().enumerate() {
+                let next = graph.target(node, port).and_then(|(next, _)| position_in_group(next));
+                match next {
+                    // Grouping keeps a group's nodes within what a branch numbers.
+                    Some(next) => branches.push(Branch::Node(next as u16)),
+                    None => {
+                        branches.push(Branch::Exit(DecisionExit::new(exits.len() as u16)));
+                        exits.push(ExitTarget {
+                            node: id.clone(),
+                            port: name.clone(),
+                        });
+                        exit_ports.push((node, port));
+                    }
+                }
+            }
+            let kind = match op.name() {
+                names::SPLIT => DecisionKind::Split {
+                    predicate: self.predicate(slot, node, &mut predicates)?,
+                },
+                _ => DecisionKind::Tee,
+            };
+            nodes.push(DecisionNode {
+                node: id.clone(),
+                ports: port_names,
+                kind,
+                branches,
+            });
+        }
+
+        let mut decision = Decision {
+            nodes,
+            exits,
+            predicates,
+            memoized: false,
+            rewrites: Vec::new(),
+        };
+        let plan_position = group
+            .iter()
+            .map(|&node| (graph.id(node).clone(), node))
+            .collect::<BTreeMap<_, _>>();
+        // R4 where it pays: the `split`s the memo spares cost enough that a hit saves several times what a miss adds.
+        let cost = decision.evaluation_cost(|node| {
+            plan_position
+                .get(node)
+                .and_then(|&node| graph.op(node))
+                .map_or(0, |op| op.cost())
+        });
+        decision.memoized = self.rewrites.memoize && decision.memoizable() && cost >= MEMO_COST_FLOOR;
+        decision.rewrites =
+            decision.rewrite_records(|node| plan_position.get(node).copied().unwrap_or(usize::MAX), cost);
+        Ok((decision, exit_ports))
+    }
+
+    /// Compiles the predicate of a `split` node into a decision's predicate table, returning its index.
+    fn predicate(
+        &self, slot: SlotId, node: usize, predicates: &mut PredicateTable,
+    ) -> Result<PredicateIndex, CompileError> {
+        let graph = self.graph;
+        let id = graph.id(node);
+        let op = graph.op(node).expect("a resolved plan configures every node");
+        let predicate = op
+            .params()
+            .predicate("predicate")
+            .ok_or_else(|| CompileError::Internal {
+                message: format!("validated `split` node `{}` has no predicate", id),
+            })?;
+        let compiled = Arc::new(
+            predicate
+                .compile(&NoBindings)
+                .map_err(|source| CompileError::UnresolvedBinding {
+                    node: id.clone(),
+                    source,
+                })?,
+        );
+        #[cfg(test)]
+        if !self.rewrites.predicates {
+            return predicates
+                .append(id, predicate, compiled)
+                .ok_or(CompileError::TooLarge {
+                    slot,
+                    what: "predicates",
+                    limit: usize::from(u16::MAX) + 1,
+                });
+        }
+        predicates
+            .intern(id, predicate, compiled)
+            .ok_or(CompileError::TooLarge {
+                slot,
+                what: "predicates",
+                limit: usize::from(u16::MAX) + 1,
+            })
     }
 
     /// Returns the exit an edge from `slot` to the input port `(to, port)` leaves by, and the consumer's entry when it
@@ -605,7 +771,10 @@ struct EntryBuilder<'c, 'a, 'p> {
     context: &'c Context<'a, 'p>,
     slot: SlotId,
     kernel_of: &'c [Option<KernelIndex>],
+    /// The decision each node is the first node of.
     decision_of: &'c [Option<DecisionIndex>],
+    /// The output port behind each exit of each decision.
+    decision_exits: &'c [Vec<(usize, usize)>],
     steps: Vec<Step>,
     registers: usize,
     /// The register holding what reaches each input port of a node in the slot.
@@ -629,8 +798,9 @@ impl EntryBuilder<'_, '_, '_> {
                 .collect::<Vec<_>>();
             let Some(&first) = present.first() else { continue };
 
-            // The register for each output port, where the records stay in the slot or leave by an exit.
-            let mut outputs: Vec<Option<RegisterId>> = vec![None; op.ports().outputs.len()];
+            // The register behind each output port, as `(node, port, register)`, where the records stay in the slot or
+            // leave by an exit: the node's own ports, or for a decision the ports behind its exits.
+            let mut outputs: Vec<(usize, usize, RegisterId)> = Vec::new();
             match op.name() {
                 names::MERGE => {
                     let output = if present.len() == 1 {
@@ -643,7 +813,7 @@ impl EntryBuilder<'_, '_, '_> {
                         });
                         output
                     };
-                    outputs[0] = Some(output);
+                    outputs.push((node, 0, output));
                 }
                 names::EMIT => {
                     if let Some((exit, entry)) = self.context.exit_for(self.slot, node, 0) {
@@ -659,9 +829,17 @@ impl EntryBuilder<'_, '_, '_> {
                     node: id,
                 }),
                 names::SPLIT | names::TEE => {
-                    let targets = self.routes(node, &mut outputs)?;
+                    // Only a decision's first node has an input register; its other nodes are part of its step.
+                    let Some(decision) = self.decision_of[node] else {
+                        continue;
+                    };
+                    let decision_exits = &self.decision_exits[decision.get()];
+                    let mut targets = Vec::with_capacity(decision_exits.len());
+                    for &(from, port) in decision_exits {
+                        targets.push(self.route(from, port, &mut outputs)?);
+                    }
                     self.steps.push(Step::Decide {
-                        decision: self.decision_of[node].expect("every decision node has a decision"),
+                        decision,
                         input: first,
                         targets,
                     });
@@ -673,9 +851,12 @@ impl EntryBuilder<'_, '_, '_> {
                             kernel,
                             register: first,
                         });
-                        outputs[0] = Some(first);
+                        outputs.push((node, 0, first));
                     } else {
-                        let ports = self.routes(node, &mut outputs)?;
+                        let mut ports = Vec::with_capacity(op.ports().outputs.len());
+                        for port in 0..op.ports().outputs.len() {
+                            ports.push(self.route(node, port, &mut outputs)?);
+                        }
                         self.steps.push(Step::Expand {
                             kernel,
                             input: first,
@@ -685,9 +866,8 @@ impl EntryBuilder<'_, '_, '_> {
                 }
             }
 
-            for (port, register) in outputs.into_iter().enumerate() {
-                let Some(register) = register else { continue };
-                let Some((to, to_port)) = graph.target(node, port) else {
+            for (from, port, register) in outputs {
+                let Some((to, to_port)) = graph.target(from, port) else {
                     continue;
                 };
                 if self.context.slot_of[to] == Some(self.slot) && self.context.roles[to] != Role::Fixed {
@@ -700,29 +880,24 @@ impl EntryBuilder<'_, '_, '_> {
         Ok((self.steps, self.registers))
     }
 
-    /// Returns a route for each output port of `node`, folding `drop` targets in the slot, and records the register of
-    /// every other port.
-    fn routes(&mut self, node: usize, outputs: &mut [Option<RegisterId>]) -> Result<Vec<Route>, ()> {
+    /// Returns the route of the output port `port` of `node`, folding a `drop` target in the slot, and otherwise
+    /// records the port's new register in `outputs`.
+    fn route(&mut self, node: usize, port: usize, outputs: &mut Vec<(usize, usize, RegisterId)>) -> Result<Route, ()> {
         let graph = self.context.graph;
-        let mut routes = Vec::with_capacity(outputs.len());
-        for (port, output) in outputs.iter_mut().enumerate() {
-            let target = graph.target(node, port);
-            let drop = target.filter(|&(to, _)| {
-                self.context.slot_of[to] == Some(self.slot) && graph.op(to).is_some_and(|op| op.name() == names::DROP)
-            });
-            match drop {
-                Some((to, _)) => {
-                    self.folded[to] = true;
-                    routes.push(Route::Drop(graph.id(to).clone()));
-                }
-                None => {
-                    let register = self.register()?;
-                    *output = Some(register);
-                    routes.push(Route::Register(register));
-                }
+        let drop = graph.target(node, port).filter(|&(to, _)| {
+            self.context.slot_of[to] == Some(self.slot) && graph.op(to).is_some_and(|op| op.name() == names::DROP)
+        });
+        match drop {
+            Some((to, _)) => {
+                self.folded[to] = true;
+                Ok(Route::Drop(graph.id(to).clone()))
+            }
+            None => {
+                let register = self.register()?;
+                outputs.push((node, port, register));
+                Ok(Route::Register(register))
             }
         }
-        Ok(routes)
     }
 
     fn register(&mut self) -> Result<RegisterId, ()> {
@@ -812,13 +987,41 @@ fn fingerprint(
     let decisions = decisions
         .iter()
         .map(|decision| {
-            let kind = match &decision.kind {
-                DecisionKind::Split { predicate, .. } => {
-                    json!({"split": serde_json::to_value(predicate).map_err(|error| error.to_string())?})
-                }
-                DecisionKind::Tee => json!({"tee": decision.ports.len()}),
-            };
-            Ok(json!({"node": decision.node.to_string(), "kind": kind}))
+            let predicates = decision
+                .predicates
+                .entries()
+                .iter()
+                .map(|entry| {
+                    Ok(json!({
+                        "predicate": serde_json::to_value(&entry.predicate).map_err(|error| error.to_string())?,
+                        // The canonical form sorts operands; what runs evaluates them in the order written (R7).
+                        "written": serde_json::to_value(&entry.written).map_err(|error| error.to_string())?,
+                        "folded": entry.folded,
+                    }))
+                })
+                .collect::<Result<Vec<Value>, String>>()?;
+            let nodes = decision
+                .nodes
+                .iter()
+                .map(|node| {
+                    let kind = match node.kind {
+                        DecisionKind::Split { predicate } => json!({"split": predicate.get()}),
+                        DecisionKind::Tee => json!("tee"),
+                    };
+                    let branches = node
+                        .branches
+                        .iter()
+                        .map(|branch| match branch {
+                            Branch::Node(next) => json!({"node": next}),
+                            Branch::Exit(exit) => json!({"exit": exit.get()}),
+                        })
+                        .collect::<Vec<_>>();
+                    json!({"node": node.node.to_string(), "kind": kind, "branches": branches})
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "nodes": nodes, "predicates": predicates, "exits": decision.exits.len(), "memoized": decision.memoized
+            }))
         })
         .collect::<Result<Vec<Value>, String>>()?;
     let description = json!({
