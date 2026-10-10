@@ -3,8 +3,9 @@
 Generate SMP experiment configuration files from experiments.yaml.
 
 This script reads the experiment definitions from experiments.yaml and generates one
-target-config directory per suite (see SUITES): the full superset under full/ and the PR
-gating subset under quality-gates/, each holding a copy of config.yaml and a cases/ tree.
+target-config directory per suite (see SUITES): the nightly superset under full/, the PR
+gating subset under quality-gates/, and the manually triggered subset under on-demand/,
+each holding a copy of config.yaml and a cases/ tree.
 
 Usage:
     python generate_experiments.py          # Generate experiment files
@@ -35,13 +36,20 @@ LEGACY_CASES_DIR = SCRIPT_DIR / "cases"
 # Experiments are materialized into one or more "suites", each of which is a self-contained SMP
 # target-config directory (a copied config.yaml plus a cases/ tree). A suite's predicate decides,
 # from the raw experiment definition, whether the experiment belongs to that suite:
-#   - "full": every experiment. This is the nightly / on-demand superset.
-#   - "quality-gates": only experiments that declare `checks:`. This is the PR gating subset; an
+#   - "full": every experiment not flagged `on_demand`. This is the nightly superset.
+#   - "quality-gates": experiments that declare `checks:`. This is the PR gating subset; an
 #     experiment's bound *is* its gate, so the presence of `checks` is the classifier.
-# A gating experiment is written, byte-for-byte identically, into both suites.
+#   - "on-demand": experiments flagged `on_demand: true`. These never run automatically: they
+#     are submitted only through the dedicated manual CI job, for platform comparisons and
+#     similar one-off performance questions.
+# A gating experiment is written, byte-for-byte identically, into both `full` and `quality-gates`.
+# The predicates see the raw experiment definition, so `on_demand` is read from the experiment
+# itself rather than through `extends` inheritance.
 SUITES = {
-    "full": lambda experiment: True,
-    "quality-gates": lambda experiment: "checks" in experiment,
+    "full": lambda experiment: not experiment.get("on_demand", False),
+    "quality-gates": lambda experiment: "checks" in experiment
+    and not experiment.get("on_demand", False),
+    "on-demand": lambda experiment: bool(experiment.get("on_demand", False)),
 }
 
 # Suffix marking a target file `source:` as a Jinja template rather than a file to copy verbatim.
