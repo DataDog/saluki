@@ -42,7 +42,7 @@
 <a href=#42 id=42 data-nosnippet>42</a>/// Implemented for each of the seven component kinds. Producing the run-future is where the per-kind
 <a href=#43 id=43 data-nosnippet>43</a>/// differences live: which context type is used, and whether the supervisor-provided shutdown handle is
 <a href=#44 id=44 data-nosnippet>44</a>/// installed into the context (sources and relays) or ignored (everything else).
-<a href=#45 id=45 data-nosnippet>45</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">trait </span>RunnableComponent: Send + <span class="lifetime">'static </span>{
+<a href=#45 id=45 data-nosnippet>45</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">trait </span>RunnableComponent: Send + <span class="lifetime">'static </span>{
 <a href=#46 id=46 data-nosnippet>46</a>    <span class="doccomment">/// Whether this component kind observes the shutdown signal it is handed.
 <a href=#47 id=47 data-nosnippet>47</a>    ///
 <a href=#48 id=48 data-nosnippet>48</a>    /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
@@ -66,7 +66,7 @@
 <a href=#66 id=66 data-nosnippet>66</a>///
 <a href=#67 id=67 data-nosnippet>67</a>/// Holds the component behind a take-once [`Mutex`] -- a component is built and run exactly once -- and
 <a href=#68 id=68 data-nosnippet>68</a>/// exposes it to a supervisor via [`Supervisable`].
-<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span>ComponentWorker&lt;C&gt; {
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>ComponentWorker&lt;C&gt; {
 <a href=#70 id=70 data-nosnippet>70</a>    component_context: ComponentContext,
 <a href=#71 id=71 data-nosnippet>71</a>    inner: Mutex&lt;<span class="prelude-ty">Option</span>&lt;C&gt;&gt;,
 <a href=#72 id=72 data-nosnippet>72</a>}
@@ -75,7 +75,7 @@
 <a href=#75 id=75 data-nosnippet>75</a>    <span class="doccomment">/// Creates a new `ComponentWorker` for the given runnable component.
 <a href=#76 id=76 data-nosnippet>76</a>    ///
 <a href=#77 id=77 data-nosnippet>77</a>    /// `component_context` identifies the component (its kind and id).
-<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>new(component_context: ComponentContext, runnable: C) -&gt; <span class="self">Self </span>{
+<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(component_context: ComponentContext, runnable: C) -&gt; <span class="self">Self </span>{
 <a href=#79 id=79 data-nosnippet>79</a>        <span class="self">Self </span>{
 <a href=#80 id=80 data-nosnippet>80</a>            component_context,
 <a href=#81 id=81 data-nosnippet>81</a>            inner: Mutex::new(<span class="prelude-val">Some</span>(runnable)),
@@ -132,9 +132,9 @@
 <a href=#132 id=132 data-nosnippet>132</a></span><span class="macro">macro_rules!</span> runnable_component {
 <a href=#133 id=133 data-nosnippet>133</a>    (<span class="macro-nonterminal">$name</span>:ident, <span class="macro-nonterminal">$component</span>:path, <span class="macro-nonterminal">$context</span>:ty, inject_shutdown) =&gt; {
 <a href=#134 id=134 data-nosnippet>134</a>        <span class="doccomment">/// Pairs a built component with its context for supervised execution.
-<a href=#135 id=135 data-nosnippet>135</a>        </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
-<a href=#136 id=136 data-nosnippet>136</a>            <span class="kw">pub</span>(<span class="kw">super</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
-<a href=#137 id=137 data-nosnippet>137</a>            <span class="kw">pub</span>(<span class="kw">super</span>) context: <span class="macro-nonterminal">$context</span>,
+<a href=#135 id=135 data-nosnippet>135</a>        </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
+<a href=#136 id=136 data-nosnippet>136</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
+<a href=#137 id=137 data-nosnippet>137</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) context: <span class="macro-nonterminal">$context</span>,
 <a href=#138 id=138 data-nosnippet>138</a>        }
 <a href=#139 id=139 data-nosnippet>139</a>
 <a href=#140 id=140 data-nosnippet>140</a>        <span class="kw">impl </span>RunnableComponent <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
@@ -152,9 +152,9 @@
 <a href=#152 id=152 data-nosnippet>152</a>    };
 <a href=#153 id=153 data-nosnippet>153</a>    (<span class="macro-nonterminal">$name</span>:ident, <span class="macro-nonterminal">$component</span>:path, <span class="macro-nonterminal">$context</span>:ty) =&gt; {
 <a href=#154 id=154 data-nosnippet>154</a>        <span class="doccomment">/// Pairs a built component with its context for supervised execution.
-<a href=#155 id=155 data-nosnippet>155</a>        </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
-<a href=#156 id=156 data-nosnippet>156</a>            <span class="kw">pub</span>(<span class="kw">super</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
-<a href=#157 id=157 data-nosnippet>157</a>            <span class="kw">pub</span>(<span class="kw">super</span>) context: <span class="macro-nonterminal">$context</span>,
+<a href=#155 id=155 data-nosnippet>155</a>        </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span><span class="macro-nonterminal">$name </span>{
+<a href=#156 id=156 data-nosnippet>156</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) component: Box&lt;<span class="kw">dyn </span><span class="macro-nonterminal">$component </span>+ Send&gt;,
+<a href=#157 id=157 data-nosnippet>157</a>            <span class="kw">pub</span>(<span class="kw">crate</span>) context: <span class="macro-nonterminal">$context</span>,
 <a href=#158 id=158 data-nosnippet>158</a>        }
 <a href=#159 id=159 data-nosnippet>159</a>
 <a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">impl </span>RunnableComponent <span class="kw">for </span><span class="macro-nonterminal">$name </span>{

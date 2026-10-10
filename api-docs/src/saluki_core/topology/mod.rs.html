@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a>
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">mod </span>built;
 <a href=#13 id=13 data-nosnippet>13</a>
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">mod </span>component_worker;
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">mod </span>component_worker;
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">mod </span>context;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub use </span><span class="self">self</span>::context::TopologyContext;
@@ -31,7 +31,7 @@
 <a href=#31 id=31 data-nosnippet>31</a>
 <a href=#32 id=32 data-nosnippet>32</a><span class="comment">// SAFETY: These are obviously non-zero.
 <a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">const </span>DEFAULT_EVENTS_BUFFER_CAPACITY: usize = <span class="number">1024</span>;
-<a href=#34 id=34 data-nosnippet>34</a><span class="kw">const </span>DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(<span class="number">128</span>).unwrap();
+<a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(<span class="number">128</span>).unwrap();
 <a href=#35 id=35 data-nosnippet>35</a>
 <a href=#36 id=36 data-nosnippet>36</a><span class="comment">// Topology-wide defaults.
 <a href=#37 id=37 data-nosnippet>37</a>
