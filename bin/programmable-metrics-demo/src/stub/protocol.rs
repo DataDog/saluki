@@ -22,8 +22,21 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// The product policy artifacts are delivered in.
 pub const POLICY_PRODUCT: &str = "policy";
 
-/// The config ID the demo publishes its policy artifact under.
+/// The config ID the demo publishes its artifact for the policy scope under.
 pub const DEMO_CONFIG_ID: &str = "demo";
+
+/// The scope whose artifact the top-level status members describe, and which the demo's config `demo` replaces.
+pub const POLICY_SCOPE: &str = saluki_metric_plan::channel::POLICY_SCOPE;
+
+/// Returns the config ID the demo publishes an artifact for `scope` under: one config per scope, `demo` for the policy
+/// scope, as the first version of the demo published it, and `demo-<scope>` for any other.
+pub fn config_id(scope: &str) -> String {
+    if scope == POLICY_SCOPE {
+        DEMO_CONFIG_ID.to_string()
+    } else {
+        format!("{}-{}", DEMO_CONFIG_ID, scope)
+    }
+}
 
 /// The path ADP polls.
 pub const POLL_PATH: &str = "/v1/artifacts/poll";
@@ -173,9 +186,41 @@ pub struct ChannelStatus {
 
     /// How many generations are alive.
     pub live_generations: Option<u64>,
+
+    /// The status of each scope, by scope, when ADP reports them: the top-level members describe the policy scope.
+    pub scopes: BTreeMap<String, ScopeState>,
+}
+
+/// The status of one scope of ADP's default program.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ScopeState {
+    /// The base program hash of the scope's export.
+    pub default_program_hash: Option<String>,
+
+    /// The artifact active for the scope, or `None` when the default program's region runs there.
+    pub active_artifact: Option<ActiveArtifact>,
+
+    /// Whether the scope's active artifact's base no longer matches the default program.
+    pub stale_base: Option<bool>,
 }
 
 impl ChannelStatus {
+    /// Returns the artifact ADP reports active in each scope, by scope: those `scopes` names, and the top-level
+    /// `active_artifact` for the policy scope when `scopes` does not describe it.
+    pub fn active_artifacts(&self) -> BTreeMap<String, ActiveArtifact> {
+        let mut active = self
+            .scopes
+            .iter()
+            .filter_map(|(scope, state)| Some((scope.clone(), state.active_artifact.clone()?)))
+            .collect::<BTreeMap<_, _>>();
+        if !self.scopes.contains_key(POLICY_SCOPE) {
+            if let Some(artifact) = &self.active_artifact {
+                active.insert(POLICY_SCOPE.to_string(), artifact.clone());
+            }
+        }
+        active
+    }
+
     /// Reads a status summary, noting the fields that cannot be read. `null` is no status.
     fn read(value: &Value, path: &str, notes: &mut Vec<String>) -> Option<Self> {
         if value.is_null() {
@@ -186,29 +231,47 @@ impl ChannelStatus {
     }
 
     fn read_members(status: &Map<String, Value>, path: &str, notes: &mut Vec<String>) -> Self {
-        let artifact_path = format!("{}active_artifact", path);
         Self {
             default_program_hash: member(status, path, "default_program_hash", notes).flatten(),
             revision_high_water: member(status, path, "revision_high_water", notes).flatten(),
             active_generation: member(status, path, "active_generation", notes).flatten(),
             active_plan_hash: member(status, path, "active_plan_hash", notes).flatten(),
-            active_artifact: status
-                .get("active_artifact")
-                .filter(|artifact| !artifact.is_null())
-                .and_then(|artifact| object(artifact, &artifact_path, notes))
-                .map(|artifact| {
-                    let path = format!("{}.", artifact_path);
-                    ActiveArtifact {
-                        id: member(artifact, &path, "id", notes).unwrap_or_default(),
-                        revision: member(artifact, &path, "revision", notes).flatten(),
-                        artifact_hash: member(artifact, &path, "artifact_hash", notes).flatten(),
-                    }
-                }),
+            active_artifact: ActiveArtifact::read(status, path, notes),
             stale_base: member(status, path, "stale_base", notes).flatten(),
             stale_review: member(status, path, "stale_review", notes).flatten(),
             degraded: member(status, path, "degraded", notes).flatten(),
             live_generations: member(status, path, "live_generations", notes).flatten(),
+            scopes: ScopeState::read_all(status, path, notes),
         }
+    }
+}
+
+impl ScopeState {
+    /// Reads the `scopes` member of a status, noting the scopes and fields that cannot be read. A missing or `null`
+    /// member is no scope.
+    fn read_all(status: &Map<String, Value>, path: &str, notes: &mut Vec<String>) -> BTreeMap<String, Self> {
+        let scopes_path = format!("{}scopes", path);
+        let Some(scopes) = status
+            .get("scopes")
+            .filter(|scopes| !scopes.is_null())
+            .and_then(|scopes| object(scopes, &scopes_path, notes))
+        else {
+            return BTreeMap::new();
+        };
+        scopes
+            .iter()
+            .filter_map(|(name, scope)| {
+                let path = format!("{}.{}", scopes_path, name);
+                let scope = object(scope, &path, notes)?;
+                let path = format!("{}.", path);
+                let state = Self {
+                    default_program_hash: member(scope, &path, "default_program_hash", notes).flatten(),
+                    active_artifact: ActiveArtifact::read(scope, &path, notes),
+                    stale_base: member(scope, &path, "stale_base", notes).flatten(),
+                };
+                Some((name.clone(), state))
+            })
+            .collect()
     }
 }
 
@@ -223,6 +286,26 @@ pub struct ActiveArtifact {
 
     /// The artifact hash, `sha256:<hex>`.
     pub artifact_hash: Option<String>,
+}
+
+impl ActiveArtifact {
+    /// Reads the `active_artifact` member of a status or of a scope's status, noting the fields that cannot be read.
+    /// `null` is no artifact.
+    fn read(status: &Map<String, Value>, path: &str, notes: &mut Vec<String>) -> Option<Self> {
+        let artifact_path = format!("{}active_artifact", path);
+        status
+            .get("active_artifact")
+            .filter(|artifact| !artifact.is_null())
+            .and_then(|artifact| object(artifact, &artifact_path, notes))
+            .map(|artifact| {
+                let path = format!("{}.", artifact_path);
+                Self {
+                    id: member(artifact, &path, "id", notes).unwrap_or_default(),
+                    revision: member(artifact, &path, "revision", notes).flatten(),
+                    artifact_hash: member(artifact, &path, "artifact_hash", notes).flatten(),
+                }
+            })
+    }
 }
 
 /// ADP's full status, as `GET /programmable-metrics/status` serves it: the poll's status plus its config states.
@@ -456,6 +539,44 @@ mod tests {
         assert_eq!(notes.len(), 1);
         let (_, notes) = PollRequest::read(&json!([1]));
         assert_eq!(notes, ["poll: expected an object (got [1])"]);
+    }
+
+    #[test]
+    fn each_scopes_status_is_read_field_by_field() {
+        let (status, notes) = AdpStatus::read(&json!({
+            "active_artifact": {"id": "demo", "revision": 3, "artifact_hash": "sha256:03"},
+            "scopes": {
+                "dogstatsd_pre_aggregation": {"default_program_hash": "sha256:11", "stale_base": true,
+                    "active_artifact": {"id": "demo-dogstatsd_pre_aggregation", "revision": 4,
+                                        "artifact_hash": "sha256:04"}},
+                "post_enrich": {"default_program_hash": "sha256:22", "active_artifact": null, "stale_base": "no",
+                                "future_field": 1},
+                "broken": 7
+            }
+        }));
+        let scopes = &status.status.scopes;
+        assert_eq!(
+            scopes.keys().collect::<Vec<_>>(),
+            ["dogstatsd_pre_aggregation", "post_enrich"]
+        );
+        let pre = &scopes["dogstatsd_pre_aggregation"];
+        assert_eq!(pre.default_program_hash.as_deref(), Some("sha256:11"));
+        assert_eq!(pre.stale_base, Some(true));
+        assert_eq!(pre.active_artifact.as_ref().unwrap().revision, Some(4));
+        let post = &scopes["post_enrich"];
+        assert_eq!((post.active_artifact.as_ref(), post.stale_base), (None, None));
+        assert_eq!(
+            notes,
+            [
+                "scopes.broken: expected an object (got 7)",
+                "scopes.post_enrich.stale_base: invalid type: string \"no\", expected a boolean (got \"no\")",
+            ]
+        );
+        // A status without scopes, as the first version of the protocol writes it, has none.
+        let (status, notes) = AdpStatus::read(&json!({"revision_high_water": 1}));
+        assert!(status.status.scopes.is_empty() && notes.is_empty());
+        assert_eq!(config_id(POLICY_SCOPE), DEMO_CONFIG_ID);
+        assert_eq!(config_id("dogstatsd_pre_aggregation"), "demo-dogstatsd_pre_aggregation");
     }
 
     #[test]

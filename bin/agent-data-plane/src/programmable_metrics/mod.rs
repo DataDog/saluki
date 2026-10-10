@@ -13,6 +13,8 @@
 //! - [`installer`]: booting the metrics path, and installing a new generation of the plan whenever a configuration
 //!   change or a policy artifact changes it;
 //! - [`telemetry`]: what regions and the installer publish, under the native identities of the nodes;
+//! - [`snapshot_bridge`]: the worker that answers DogStatsD aggregation's context snapshot requests from the region
+//!   that runs it, when aggregation runs as a stateful kernel;
 //! - [`channel_stub`]: the local development stub of the artifact channel, which polls a stub server for policy
 //!   snapshots;
 //! - [`api`]: the control surface on the privileged API: status, export, plan, and explain.
@@ -25,6 +27,7 @@ pub mod host_facts;
 pub mod installer;
 pub mod lowering;
 pub mod outputs;
+pub mod snapshot_bridge;
 pub mod telemetry;
 pub mod telemetry_profiles;
 pub mod topology;

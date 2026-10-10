@@ -265,6 +265,105 @@ fn the_default_programs_policy_scope_prints_without_fingerprints() {
     assert_eq!(parse_ok(&printed).artifact, without);
 }
 
+/// Exports a declared scope of a plan as an artifact, the way the host exports scopes, through its exits: the nodes
+/// reachable from the scope's inputs without entering one of its exits, in the plan's order, without provenance or
+/// resolved values; the edges from its inputs as leaving `input.<name>`, the edges into its exits as entering
+/// `exit.<name>`, and the edges between its nodes, in the plan's order; and a base of the program's hash and the
+/// fingerprints of the outputs the region emits to.
+fn export_scope(plan: &Plan, scope: &str) -> PolicyArtifact {
+    let decl = &plan.scopes[scope];
+    let exits = decl
+        .exits
+        .iter()
+        .map(|(name, port)| (port, name))
+        .collect::<BTreeMap<_, _>>();
+    let mut region = BTreeSet::new();
+    let mut pending = decl.inputs.values().cloned().collect::<Vec<_>>();
+    while let Some(from) = pending.pop() {
+        for edge in plan.edges.iter().filter(|edge| edge.from == from) {
+            if exits.contains_key(&edge.to) || !region.insert(edge.to.node.clone()) {
+                continue;
+            }
+            pending.extend(
+                plan.edges
+                    .iter()
+                    .filter(|other| other.from.node == edge.to.node)
+                    .map(|other| other.from.clone()),
+            );
+        }
+    }
+    let mut export = export_region(plan, scope, &decl.inputs[&InputName::new("metrics").unwrap()], &region);
+    export.edges = plan
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let from = match decl.inputs.iter().find(|(_, port)| **port == edge.from) {
+                Some((name, _)) => ArtifactPortRef::Input(name.clone()),
+                None if region.contains(&edge.from.node) => ArtifactPortRef::Node {
+                    node: ArtifactNodeId::new(edge.from.node.local().as_str()).unwrap(),
+                    port: edge.from.port.clone(),
+                },
+                None => return None,
+            };
+            let to = match exits.get(&edge.to) {
+                Some(name) => ArtifactPortRef::Exit((*name).clone()),
+                None if region.contains(&edge.to.node) => ArtifactPortRef::Node {
+                    node: ArtifactNodeId::new(edge.to.node.local().as_str()).unwrap(),
+                    port: edge.to.port.clone(),
+                },
+                None => return None,
+            };
+            Some(ArtifactEdge { from, to })
+        })
+        .collect();
+    export
+}
+
+#[test]
+fn the_default_programs_pre_aggregation_scope_prints_and_parses_back_through_its_exits() {
+    // The DogStatsD pre-aggregation scope ends where aggregation's output and the passthrough of timestamped points
+    // join the post-aggregation filter: with the no-aggregation pipeline, by two exits; without it, by one.
+    let cases = [
+        (
+            "default program",
+            default_program(),
+            (7, 9),
+            &["    -> exit.aggregated\n  }\n", "    passthrough -> exit.passthrough\n"][..],
+        ),
+        (
+            "no-aggregation pipeline off",
+            Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
+            (6, 7),
+            &["    -> exit.aggregated\n  }\n"][..],
+        ),
+    ];
+    for (what, plan, (nodes, edges), fragments) in cases {
+        let export = export_scope(&plan, "dogstatsd_pre_aggregation");
+        assert_eq!((export.nodes.len(), export.edges.len()), (nodes, edges), "{}", what);
+        // The export is a valid artifact document.
+        let document = serde_json::to_value(&export).unwrap();
+        assert_eq!(PolicyArtifact::from_value(document).unwrap(), export, "{}", what);
+
+        let printed = print_default(&export);
+        assert!(
+            printed.starts_with("policy dogstatsd_pre_aggregation {\n"),
+            "{}",
+            printed
+        );
+        assert!(printed.contains("\n  input.metrics -> dsd_enrich\n"), "{}", printed);
+        for fragment in fragments {
+            assert!(printed.contains(fragment), "{}: {:?} in\n{}", what, fragment, printed);
+        }
+        assert!(printed.lines().all(|line| line.chars().count() <= 120), "{}", printed);
+
+        // Lowering writes the scope's nodes and edges in the order parsing does, its exits included, so it comes
+        // back exactly, with its hash.
+        let parsed = parse_ok(&printed);
+        assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
+        assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
+    }
+}
+
 #[test]
 fn the_default_programs_dogstatsd_chain_prints_within_the_line_width() {
     let export = export_dogstatsd_chain();

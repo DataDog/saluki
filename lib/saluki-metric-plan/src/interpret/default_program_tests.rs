@@ -1,5 +1,7 @@
-//! The whole default program, with every native kernel and the default aggregation adapter, run over a small trace of
-//! DogStatsD-like and OTLP input, against outputs derived by hand from the fixture's parameters.
+//! The whole default program, with every native kernel, run over a small trace of DogStatsD-like and OTLP input,
+//! against outputs derived by hand from the fixture's parameters: with aggregation in its host component, through the
+//! default aggregation adapter, and as a stateful kernel behind an isolation fence, in the no-queueing mode, where
+//! both give the same outputs.
 //!
 //! The fixture (`fixtures/default-program.json`) maps `raw.requests.*` to `mapped.requests` with a `route` tag,
 //! prefixes names with `tenant.` except those starting with `internal.` or `system.`, drops `tenant.raw.blocked` at the
@@ -151,11 +153,29 @@ fn the_default_program_delivers_what_native_processing_does() {
         .admit(id("otlp_in"), t(301), vec![gauge_at("checkout.cpu", 301, 0.5)])
         .admit(id("dsd_in"), t(302), vec![gauge_at("system.disk", 302, 9.0)]);
 
-    let registry = OperatorRegistry::native();
     let catalog = default_program_catalog();
-    let run = Interpreter::new(&registry, &catalog).run(&trace).unwrap();
-    assert!(matches!(run.installs()[0].outcome, InstallOutcome::Active { .. }));
+    let native = OperatorRegistry::native();
+    let isolated = OperatorRegistry::native();
+    for (what, interpreter) in [
+        ("aggregation in its host component", Interpreter::new(&native, &catalog)),
+        (
+            "aggregation as a kernel",
+            Interpreter::new(&isolated, &catalog).with_heartbeats_at_ticks(),
+        ),
+    ] {
+        let run = interpreter.run(&trace).unwrap();
+        assert!(
+            matches!(run.installs()[0].outcome, InstallOutcome::Active { .. }),
+            "{}",
+            what
+        );
+        check_default_program_outputs(what, &run);
+    }
+}
 
+/// Checks what the default program delivers over the trace of
+/// [`the_default_program_delivers_what_native_processing_does`].
+fn check_default_program_outputs(what: &str, run: &RunOutput) {
     // What aggregation flushes at `B + 15`, after post-aggregation filtering, without host tags.
     let flushed = [
         "tenant.mapped.requests{env:prod,route:login} rate/10s [0:1]",
@@ -218,7 +238,7 @@ fn the_default_program_delivers_what_native_processing_does() {
             sorted(&["requests.count{cloud_provider:example,zone:a} counter [4:4]"]),
         ),
     ]);
-    assert_eq!(received(&run), expected);
+    assert_eq!(received(run), expected, "{}", what);
 
     // The policy loss: the listener filterlist's drop, the post-aggregation filter's, and what each gateway does not
     // forward. Every record dropped here has one point.
@@ -233,7 +253,8 @@ fn the_default_program_delivers_what_native_processing_does() {
         assert_eq!(
             run.loss(&id(node)).loss(LossClass::Policy),
             LossCount { events, points: events },
-            "{}",
+            "{}: {}",
+            what,
             node
         );
     }

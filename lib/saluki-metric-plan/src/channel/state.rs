@@ -3,12 +3,16 @@
 //! These types are the wire form of the local stub protocol (version 1), member for member: every member is written,
 //! `null` when it has no value, and readers ignore members they do not know.
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{ArtifactConfigId, ArtifactProduct};
-use crate::canonical::PlanHash;
+use crate::{canonical::PlanHash, ir::ScopeName};
+
+/// The scope the top-level members of the [status summary](StatusSummary) describe, as version 1 of the stub protocol
+/// defines them: the policy scope of the default program, which artifacts replace to change routing after enrichment.
+pub const POLICY_SCOPE: &str = "post_enrich";
 
 /// The state an acknowledgment reports for a config.
 ///
@@ -83,9 +87,11 @@ pub struct ConfigAcknowledgment {
     /// The generation the artifact runs in, once it has one.
     pub generation: Option<u64>,
 
-    /// The admission time at which a prepared cut takes effect, in whole milliseconds since the Unix epoch.
+    /// The admission time at which the cut of the artifact's generation takes effect, in whole milliseconds since the
+    /// Unix epoch, while the cut is armed and not finalized.
     ///
-    /// Only state transitions that cut at a bucket boundary have one (stage 6); until then it is always `None`.
+    /// Only installations that switch state owners at a bucket boundary, cut installations, have one: `None`
+    /// otherwise, and once the cut is finalized.
     pub cut_at: Option<u64>,
 
     /// Why the config was rejected or failed, in plain text. Never contains secrets.
@@ -107,8 +113,10 @@ pub struct ActiveArtifact {
 
 /// The host's status summary, sent with every poll.
 ///
-/// The members are those of the stub protocol's `status` object, plus `stale_review`, an additive member: the
-/// protocol says a stale review is flagged in status, and readers ignore members they do not know.
+/// The members are those of the stub protocol's `status` object, plus `stale_review` and `scopes`, additive members:
+/// the protocol says a stale review is flagged in status, and readers ignore members they do not know. The top-level
+/// `default_program_hash`, `active_artifact`, and `stale_base` describe the policy scope ([`POLICY_SCOPE`]); `scopes`
+/// describes every scope.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusSummary {
     /// The base program hash of the current export of the policy scope: what an artifact derived from that export
@@ -124,14 +132,15 @@ pub struct StatusSummary {
     /// The hash of the active composed plan, with resolved values: the hash an approval's `approved_against` names.
     pub active_plan_hash: Option<PlanHash>,
 
-    /// The artifact active, or `None` when the default program runs.
+    /// The artifact active for the policy scope, or `None` when the default program's region runs there.
     pub active_artifact: Option<ActiveArtifact>,
 
-    /// Whether the active artifact's base no longer matches the current default program. The artifact keeps running;
-    /// its author rebases it on the new export.
+    /// Whether the policy scope's active artifact's base no longer matches the current default program. The artifact
+    /// keeps running; its author rebases it on the new export.
     pub stale_base: bool,
 
-    /// Whether the active artifact was approved against an active plan other than the one it was prepared against.
+    /// Whether an active artifact, of any scope, was approved against an active plan other than the one it was
+    /// prepared against.
     pub stale_review: bool,
 
     /// Why the host is degraded, in a few words, or `None` if it is not.
@@ -139,6 +148,29 @@ pub struct StatusSummary {
 
     /// The number of generations alive.
     pub live_generations: u64,
+
+    /// The status of each replaceable scope of the default program, by scope: an additive member. The top-level
+    /// `default_program_hash`, `active_artifact`, and `stale_base` keep describing the policy scope, `post_enrich`.
+    ///
+    /// A host that reports every scope's base writes every scope; one that reports the policy scope's base alone
+    /// writes the member only while an artifact is active in another scope. It is left out when empty, so the wire
+    /// form of a host with one scope in use is that of the first version of the protocol.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scopes: BTreeMap<ScopeName, ScopeStatus>,
+}
+
+/// The status of one replaceable scope of the default program.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScopeStatus {
+    /// The base program hash of the scope's current export: what an artifact derived from that export records as
+    /// `base.program_hash`.
+    pub default_program_hash: Option<PlanHash>,
+
+    /// The artifact in effect for the scope, or `None` when the default program's region runs there.
+    pub active_artifact: Option<ActiveArtifact>,
+
+    /// Whether the scope's active artifact's base no longer matches the current default program.
+    pub stale_base: bool,
 }
 
 /// Everything the host reports through the channel: its status summary and the acknowledgment of every config.
@@ -181,6 +213,7 @@ mod tests {
                 stale_review: false,
                 degraded: None,
                 live_generations: 2,
+                scopes: BTreeMap::new(),
             },
             config_states: vec![ConfigAcknowledgment {
                 product: ArtifactProduct::Policy,
@@ -211,6 +244,50 @@ mod tests {
         });
         assert_eq!(serde_json::to_value(&states).unwrap(), expected);
         assert_eq!(serde_json::from_value::<ApplyStates>(expected).unwrap(), states);
+    }
+
+    #[test]
+    fn each_scopes_status_is_written_member_for_member_and_left_out_when_there_is_none() {
+        let hash: PlanHash = HASH.parse().unwrap();
+        let scope = |name: &str| ScopeName::new(name).unwrap();
+        let summary = StatusSummary {
+            scopes: BTreeMap::from([
+                (
+                    scope("dogstatsd_pre_aggregation"),
+                    ScopeStatus {
+                        default_program_hash: Some(hash),
+                        active_artifact: Some(ActiveArtifact {
+                            id: ArtifactConfigId::new("demo-dogstatsd_pre_aggregation"),
+                            revision: 6,
+                            artifact_hash: hash,
+                        }),
+                        stale_base: true,
+                    },
+                ),
+                (scope(POLICY_SCOPE), ScopeStatus::default()),
+            ]),
+            ..StatusSummary::default()
+        };
+        let document = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            document["scopes"],
+            json!({
+                "dogstatsd_pre_aggregation": {
+                    "default_program_hash": HASH,
+                    "active_artifact": {"id": "demo-dogstatsd_pre_aggregation", "revision": 6, "artifact_hash": HASH},
+                    "stale_base": true
+                },
+                "post_enrich": {"default_program_hash": null, "active_artifact": null, "stale_base": false}
+            })
+        );
+        assert_eq!(serde_json::from_value::<StatusSummary>(document).unwrap(), summary);
+        // Without scopes, the summary is written as the first version of the protocol writes it, and reads back.
+        let document = serde_json::to_value(StatusSummary::default()).unwrap();
+        assert!(document.get("scopes").is_none());
+        assert_eq!(
+            serde_json::from_value::<StatusSummary>(document).unwrap(),
+            StatusSummary::default()
+        );
     }
 
     #[test]

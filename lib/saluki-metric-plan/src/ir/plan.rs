@@ -12,7 +12,7 @@ use super::{
         PortRef, RecipientId, ScopeName,
     },
     params::Params,
-    version::{migrate, BlobTable, Invalid, IrError, Parse, ResolvedInArtifact, Unhashable},
+    version::{migrate, BlobTable, EdgeFromExit, Invalid, IrError, Parse, ResolvedInArtifact, Unhashable},
 };
 use crate::{
     canonical::{contains_resolved_values, strip_resolved_values, CanonicalError, PlanHash, ResolvedValues},
@@ -247,7 +247,7 @@ pub struct ScopeDecl {
     /// The scope's named exits, each mapped to the input port outside the scope that it feeds.
     ///
     /// Exits let a scope end before the end of its paths, such as a region of processing before aggregation. Artifact
-    /// edges will reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.
+    /// edges reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub exits: BTreeMap<ExitName, PortRef>,
 }
@@ -280,7 +280,7 @@ pub struct PolicyArtifact {
     /// The artifact's nodes.
     pub nodes: Vec<ArtifactNode>,
 
-    /// The edges between the scope's inputs and the artifact's node ports.
+    /// The edges between the scope's inputs, the artifact's node ports, and the scope's exits.
     pub edges: Vec<ArtifactEdge>,
 
     /// Content-addressed values that parameters refer to.
@@ -303,14 +303,27 @@ impl PolicyArtifact {
     ///
     /// # Errors
     ///
-    /// Returns an error if its IR version is not accepted, it does not match the artifact's structure, a node's
-    /// parameters carry a resolved configuration value, or its blob table is inconsistent: a blob stored under a hash
-    /// other than its content's, or a reference to a blob the table does not hold.
+    /// Returns an error if its IR version is not accepted, it does not match the artifact's structure, an edge leaves
+    /// one of the scope's exits, a node's parameters carry a resolved configuration value, or its blob table is
+    /// inconsistent: a blob stored under a hash other than its content's, or a reference to a blob the table does not
+    /// hold. Whether the scope declares the exits the edges enter is checked when the artifact is composed.
     pub fn from_value(mut value: Value) -> Result<Self, IrError> {
         migrate(&mut value)?;
         let artifact: Self = serde_json::from_value(value).context(Invalid {
             what: "policy artifact",
         })?;
+        if let Some((index, edge)) = artifact
+            .edges
+            .iter()
+            .enumerate()
+            .find(|(_, edge)| matches!(edge.from, ArtifactPortRef::Exit(_)))
+        {
+            return EdgeFromExit {
+                index,
+                exit: edge.from.clone(),
+            }
+            .fail();
+        }
         for node in &artifact.nodes {
             if node.params.iter().any(|(_, value)| contains_resolved_values(value)) {
                 return ResolvedInArtifact { node: node.id.clone() }.fail();
@@ -398,7 +411,7 @@ pub struct ArtifactEdge {
     /// The port the edge leaves: a scope input, or an output port of an artifact node.
     pub from: ArtifactPortRef,
 
-    /// The input port the edge enters.
+    /// The port the edge enters: an input port of an artifact node, or a scope exit.
     pub to: ArtifactPortRef,
 }
 
@@ -723,6 +736,34 @@ mod tests {
                 .hash(ResolvedValues::Exclude)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn artifact_edges_enter_a_scopes_exits_and_never_leave_them() {
+        let mut value = artifact_example();
+        value["scope"] = json!("dogstatsd_pre_aggregation");
+        value["edges"][1] = json!({"from": "metrics_policy.1", "to": "exit.aggregated"});
+        let artifact = PolicyArtifact::from_value(value.clone()).unwrap();
+        assert_eq!(
+            artifact.edges[1].to,
+            ArtifactPortRef::Exit(ExitName::new("aggregated").unwrap())
+        );
+        assert_eq!(
+            serde_json::to_value(&artifact).unwrap()["edges"][1]["to"],
+            json!("exit.aggregated")
+        );
+
+        value["edges"][1] = json!({"from": "exit.aggregated", "to": "drop_debug.in"});
+        let error = PolicyArtifact::from_value(value.clone()).unwrap_err();
+        assert!(matches!(error, IrError::EdgeFromExit { index: 1, .. }), "{}", error);
+        assert!(
+            error
+                .to_string()
+                .starts_with("Artifact edge 1 leaves `exit.aggregated`, a scope exit."),
+            "{}",
+            error
+        );
+        assert!(ReceivedArtifact::from_value(value).is_err());
     }
 
     #[test]

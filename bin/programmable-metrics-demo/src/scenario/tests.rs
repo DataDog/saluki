@@ -89,6 +89,7 @@ fn the_scenario_edits_compose_as_the_check_expects() {
         export: &export,
         default_program: Some(&plan),
         active: None,
+        others: &[],
         revision: 2,
     };
     let clean = [
@@ -113,7 +114,11 @@ fn the_scenario_edits_compose_as_the_check_expects() {
             edits::undeclared_output(&source, &outputs).unwrap(),
             UNDECLARED_OUTPUT,
         ),
-        ("S5c", edits::stateful_node(&source).unwrap(), "keeps state"),
+        (
+            "S5c",
+            edits::aggregation_without_parameters(&source).unwrap(),
+            "valid_parameters",
+        ),
     ];
     for (id, edited, fragment) in flagged {
         let (outcome, compiled) = compile(&edited, Some(&context));
@@ -129,6 +134,18 @@ fn the_scenario_edits_compose_as_the_check_expects() {
             outcome.diagnostics
         );
     }
+
+    // S5d: an aggregation with every parameter in the policy scope is publishable. The editor does not place plans, so
+    // it flags nothing, and ADP's placement refuses it.
+    let edited = edits::aggregation_in_the_policy_scope(&source).unwrap();
+    let (outcome, compiled) = compile(&edited, Some(&context));
+    assert!(compiled.is_some(), "S5d: publishable");
+    assert!(outcome.diagnostics.is_empty(), "S5d: {:#?}", outcome.diagnostics);
+    assert!(
+        outcome.preview.reason.contains("not placed"),
+        "{}",
+        outcome.preview.reason
+    );
 }
 
 #[test]

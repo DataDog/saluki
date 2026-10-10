@@ -6,7 +6,9 @@ use std::{
 };
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
-use agent_data_plane_config_system::{ConfigurationSystem, ConfigurationUpdates, EnvPrecedence, LoadedConfiguration};
+use agent_data_plane_config_system::{
+    ConfigurationSystem, ConfigurationUpdates, EnvPrecedence, Error as ConfigurationError, LoadedConfiguration,
+};
 use arc_swap::ArcSwap;
 use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
 use saluki_core::{
@@ -76,6 +78,12 @@ pub(super) async fn layered_configuration_system(layers: &[&str]) -> Configurati
 
 /// Loads the local configuration for the YAML configurations `layers`, as [`layered_configuration_system`] does.
 async fn loaded_configuration(layers: &[&str]) -> LoadedConfiguration {
+    load(layers).await.expect("test configuration loads")
+}
+
+/// Loads the local configuration for the YAML configurations `layers`, each merged over the previous ones and the
+/// first over the base configuration.
+async fn load(layers: &[&str]) -> Result<LoadedConfiguration, ConfigurationError> {
     let mut config = serde_yaml::from_str::<serde_yaml::Value>(BASE).unwrap();
     for layer in layers.iter().filter(|layer| !layer.trim().is_empty()) {
         merge(
@@ -86,9 +94,19 @@ async fn loaded_configuration(layers: &[&str]) -> LoadedConfiguration {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("datadog.yaml");
     std::fs::write(&path, serde_yaml::to_string(&config).unwrap()).unwrap();
-    LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
-        .await
-        .expect("test configuration loads")
+    LoadedConfiguration::load(&path, EnvPrecedence::Disabled).await
+}
+
+/// Returns why the YAML configuration `yaml`, merged over the base configuration, fails to load.
+///
+/// # Panics
+///
+/// Panics if the configuration loads.
+pub(super) async fn configuration_error(yaml: &str) -> String {
+    match load(&[yaml]).await {
+        Ok(_) => panic!("the configuration loads: {}", yaml),
+        Err(error) => format!("{:#}", error),
+    }
 }
 
 /// Starts the configuration system on the connected path, as `run.rs` does with the Core Agent: the local
@@ -199,6 +217,10 @@ pub(super) fn programmable_metrics(
 
 /// Prepares the programmable metrics path as [`programmable_metrics`] does, with the operators of `operators` in place
 /// of the native ones.
+///
+/// # Panics
+///
+/// Panics if the configuration does not lower, or the metrics path cannot be prepared from it.
 pub(super) fn programmable_metrics_with_operators(
     config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
     operators: OperatorRegistry,

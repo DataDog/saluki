@@ -14,6 +14,9 @@
 //!   R1's cost model cuts between them, so that a chain too costly for one task pipelines across several (see
 //!   [below](#pipelining)). A slot may have several inputs. Each slot is run by one region host component, named by
 //!   the host's [slot namer][SlotNamer].
+//! - **Isolation slots** each hold one state owner behind a declared isolation fence
+//!   ([`Boundary::Isolated`]), such as aggregation as a kernel: it is never fused, and its region owns its state, its
+//!   watermark, and its flush ticks (see [below](#isolation-slots)).
 //! - Each slot's **exits** are its outputs: one for every edge of the boot plan that leaves the slot, to a fixed
 //!   component or to another slot, and one for every output the boot plan delivers to downstream of the slot, whether
 //!   or not the boot plan emits to it from the slot. Exits nothing uses stay connected and idle, so that later
@@ -58,6 +61,21 @@
 //!
 //! A cut follows the edges, so a slot's **stage** only grows along them, and the slots and fixed components stay
 //! acyclic. The frame records each cut as a [`FusionVerdict::Pipelined`] decision.
+//!
+//! # Isolation slots
+//!
+//! A state owner behind an isolation fence counts as a fence in the fence-depth walk, as a host does, and runs in an
+//! isolation slot of its own ([`SlotKind::Isolation`]); R1 neither fuses it nor prices it. Its exits are only the
+//! targets of its boot edges: what it emits at its flush ticks goes where the boot plan sends it. Every edge into or
+//! out of it is recorded as a [`FusionVerdict::Isolation`] decision.
+//!
+//! The slot's watermark is made of the latest admission times of the admission points **upstream** of it: those whose
+//! physical edge leads to it through fused slots only. Exactly one admission point feeds a state owner, over exactly
+//! one path, until repartition edges ([`FrameError::StateOwnerPoints`], [`FrameError::StateOwnerPaths`]). That point
+//! [feeds state][AdmissionPointInfo::feeds_state], so it sends heartbeats toward the slot and a cut is armed over it,
+//! and every exit on its path [forwards its progress][Exit::progress_points]. The slot stamps its time-driven output
+//! as if its output were an admission point of its own, numbered after every admission point of the fixed
+//! components.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -193,6 +211,10 @@ pub struct AdmissionPointInfo {
     /// Where the port's physical edge leads, or `None` if the boot plan drops everything the port carries, which needs
     /// no edge.
     pub route: Option<FrameTarget>,
+
+    /// Whether the point feeds a state owner: whether it is upstream of an isolation slot, so that it sends heartbeats
+    /// toward it and a cut is armed over it.
+    pub feeds_state: bool,
 }
 
 /// A fixed component: a fence of the boot plan, run by a host component of its own.
@@ -232,6 +254,30 @@ pub struct Exit {
 
     /// Where the exit leads.
     pub target: FrameTarget,
+
+    /// The admission points whose progress the exit forwards: those upstream of the state owners downstream of it,
+    /// whose watermarks need progress through the exit even when a batch leaves the slot without output. Empty for
+    /// an exit that leads to no state owner.
+    pub progress_points: Vec<AdmissionPointId>,
+}
+
+/// What kind of slot a slot is.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SlotKind {
+    /// A slot of fused synchronous nodes.
+    Fused,
+
+    /// An isolation slot: the region of a state owner behind a declared isolation fence, which owns its state, its
+    /// watermark, and its flush ticks.
+    Isolation {
+        /// The ID that stamps the slot's time-driven output: numbered after every admission point of the frame's fixed
+        /// components, and only ever seen in headers, never registered.
+        output_point: AdmissionPointId,
+
+        /// The admission points with a physical path to the slot, in ID order, whose latest admission times make up
+        /// its watermark.
+        upstream: Vec<AdmissionPointId>,
+    },
 }
 
 /// One slot: a connected set of synchronous nodes run by one region host component.
@@ -252,6 +298,9 @@ pub struct Slot {
     /// The slot's exits, in order.
     pub exits: Vec<Exit>,
 
+    /// What kind of slot it is: fused synchronous nodes, or an isolation slot.
+    pub kind: SlotKind,
+
     /// The estimated cost per event of the slot's boot nodes, in nanoseconds: the sum of their operators' estimates,
     /// with the `split`s of each decision priced together (see [Pipelining](self#pipelining)).
     pub cost: u32,
@@ -261,6 +310,11 @@ impl Slot {
     /// Returns the exit leading to `target`, if the slot has one.
     pub fn exit_to(&self, target: &FrameTarget) -> Option<&Exit> {
         self.exits.iter().find(|exit| &exit.target == target)
+    }
+
+    /// Returns `true` if the slot is an isolation slot.
+    pub fn is_isolation(&self) -> bool {
+        matches!(self.kind, SlotKind::Isolation { .. })
     }
 }
 
@@ -306,6 +360,12 @@ pub enum FusionVerdict {
 
         /// The fence's boundary.
         boundary: Boundary,
+    },
+
+    /// The edge enters or leaves an isolation slot, which runs its state owner alone.
+    Isolation {
+        /// The isolation slot.
+        slot: SlotId,
     },
 
     /// Both nodes are synchronous, but fusing them would form a cycle through a fence: some path leaves the upstream
@@ -409,6 +469,43 @@ pub enum FrameError {
         name: String,
     },
 
+    /// An isolation slot has more than one admission point upstream of it.
+    ///
+    /// A state owner's watermark is the earliest latest admission time of the points upstream of it, and its clock
+    /// resets at a point's reset. Resets at several points need a rule that does not close one point's open buckets
+    /// early at the reset of another, so a state owner is fed by one admission point, until repartition edges.
+    #[snafu(display(
+        "State owner slot `{}` is fed by several admission points ({}), and a state owner is fed by one admission \
+         point until stage 9 adds repartition edges. Feed the state owner from one source.",
+        slot,
+        describe_ports(points)
+    ))]
+    StateOwnerPoints {
+        /// The isolation slot.
+        slot: NativeComponentId,
+
+        /// The admission points upstream of it.
+        points: Vec<PortRef>,
+    },
+
+    /// An admission point reaches an isolation slot over more than one physical path.
+    ///
+    /// A state owner's watermark relies on batches from one admission point arriving in the order they were stamped,
+    /// which holds only along one path.
+    #[snafu(display(
+        "Admission point `{}` reaches state owner slot `{}` over more than one path, and a state owner's watermark \
+         needs one path from each admission point. Join the paths before the state owner's input, in one region.",
+        point,
+        slot
+    ))]
+    StateOwnerPaths {
+        /// The isolation slot.
+        slot: NativeComponentId,
+
+        /// The admission point.
+        point: PortRef,
+    },
+
     /// The plan has more slots, exits, or admission points than a frame can number.
     #[snafu(display("The boot plan has more {} than a frame supports ({}).", what, limit))]
     TooLarge {
@@ -418,6 +515,14 @@ pub enum FrameError {
         /// The largest number supported.
         limit: usize,
     },
+}
+
+fn describe_ports(ports: &[PortRef]) -> String {
+    ports
+        .iter()
+        .map(|port| format!("`{}`", port))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn describe_nodes(nodes: &[NodeId]) -> String {
@@ -450,9 +555,11 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// Returns an error if the plan has structural problems, if it has a synchronous node that keeps state or reads a
-    /// signal (no region runs one in this stage), if the namer refuses a slot or names two alike, if a slot's exits
-    /// would share a name, or if the plan is too large to number.
+    /// Returns an error if the plan has structural problems, if it has a node that keeps state without an isolation
+    /// fence, one behind an isolation fence that keeps no keyed state, or one that reads a signal (no region runs one
+    /// in this stage), if a state owner is fed by no admission point, by several, or by one over several paths, if the
+    /// namer refuses a slot or names two alike, if a slot's exits would share a name, or if the plan is too large to
+    /// number.
     pub fn compute(plan: &Plan, registry: &OperatorRegistry, namer: &SlotNamer<'_>) -> Result<Self, FrameError> {
         let graph = resolve(plan, registry).map_err(|problems| FrameError::InvalidPlan { problems })?;
         let roles = super::roles(&graph);
@@ -481,6 +588,7 @@ impl Frame {
                 nodes,
                 inputs: Vec::new(),
                 exits: Vec::new(),
+                kind: SlotKind::Fused,
                 cost,
             });
         }
@@ -508,7 +616,14 @@ impl Frame {
                     targets.push(target);
                 }
             }
-            let downstream = downstream_outputs(&graph, members);
+            // A fused slot has an exit to every output downstream of it, so that later generations can emit to it; an
+            // isolation slot only those of its boot edges, since only its state owner runs in it.
+            let isolated = members.iter().any(|&node| roles[node] == Role::Isolated);
+            let downstream = if isolated {
+                BTreeSet::new()
+            } else {
+                downstream_outputs(&graph, members)
+            };
             for output in &plan.outputs {
                 let target = FrameTarget::Output(output.id.clone());
                 if downstream.contains(&output.id) && !targets.contains(&target) {
@@ -532,7 +647,12 @@ impl Frame {
                 }
                 // Node identifiers, output identifiers, and slot names are all valid component IDs.
                 let name = NativeComponentId::new(name).expect("exit names are valid component IDs");
-                slot.exits.push(Exit { index, name, target });
+                slot.exits.push(Exit {
+                    index,
+                    name,
+                    target,
+                    progress_points: Vec::new(),
+                });
             }
         }
 
@@ -550,7 +670,7 @@ impl Frame {
                 let id = AdmissionPointId::new(u32::try_from(admission_points.len()).map_err(|_| too_large("ports"))?);
                 let route = graph.target(node, port).and_then(|(to, _)| match roles[to] {
                     Role::Fixed => Some(FrameTarget::Fixed(graph.id(to).clone())),
-                    Role::Synchronous => slot_of(to).map(FrameTarget::Slot),
+                    Role::Synchronous | Role::Isolated => slot_of(to).map(FrameTarget::Slot),
                     Role::Terminal => graph
                         .op(to)
                         .and_then(emit_output)
@@ -568,6 +688,7 @@ impl Frame {
                         AdmissionMode::Readmit
                     },
                     route,
+                    feeds_state: false,
                 });
             }
             fixed.push((node, points));
@@ -632,6 +753,21 @@ impl Frame {
             slots[target.get()].inputs.push(from);
         }
 
+        // Isolation slots: their output points, and the admission points upstream of them, with the exits that carry
+        // those points' progress.
+        let mut next_point = admission_points.len();
+        for (index, members) in layout.slots.iter().enumerate() {
+            if members.iter().any(|&node| roles[node] == Role::Isolated) {
+                let point = AdmissionPointId::new(u32::try_from(next_point).map_err(|_| too_large("ports"))?);
+                next_point += 1;
+                slots[index].kind = SlotKind::Isolation {
+                    output_point: point,
+                    upstream: Vec::new(),
+                };
+            }
+        }
+        state_upstream(&graph, &layout, &mut admission_points, &mut slots)?;
+
         let fusion = layout
             .edges
             .iter()
@@ -648,6 +784,12 @@ impl Frame {
                 );
                 let boundary = |node: usize| graph.op(node).expect("configured").contract().boundary;
                 let verdict = match (roles[from], roles[to]) {
+                    (Role::Isolated, _) | (_, Role::Isolated) => {
+                        let isolated = if roles[from] == Role::Isolated { from } else { to };
+                        FusionVerdict::Isolation {
+                            slot: slot_of(isolated).expect("every state owner behind an isolation fence has a slot"),
+                        }
+                    }
                     (Role::Fixed, Role::Terminal) => FusionVerdict::Direct {
                         fence: graph.id(from).clone(),
                     },
@@ -687,7 +829,9 @@ impl Frame {
                 let site = match roles[node] {
                     Role::Fixed => Site::Fixed,
                     Role::Terminal => Site::Direct,
-                    Role::Synchronous => Site::Slot(slot_of(node).expect("synchronous nodes are always in a slot")),
+                    Role::Synchronous | Role::Isolated => {
+                        Site::Slot(slot_of(node).expect("every node a frame runs in a region is in a slot"))
+                    }
                 };
                 (graph.id(node).clone(), site)
             })
@@ -752,6 +896,30 @@ impl Frame {
     /// Returns the slot with the given index, if there is one.
     pub fn slot(&self, id: SlotId) -> Option<&Slot> {
         self.slots.get(id.get())
+    }
+
+    /// Returns the admission points upstream of the isolation slots among `slots`, in ID order: the points a cut of
+    /// the state owners in those slots is armed over.
+    ///
+    /// Fused slots have no upstream points of their own, so they add nothing.
+    pub fn affected_points(&self, slots: &[SlotId]) -> Vec<AdmissionPointId> {
+        let mut points = BTreeSet::new();
+        for slot in slots.iter().filter_map(|&slot| self.slot(slot)) {
+            if let SlotKind::Isolation { upstream, .. } = &slot.kind {
+                points.extend(upstream.iter().copied());
+            }
+        }
+        points.into_iter().collect()
+    }
+
+    /// Returns every admission point in the order a cut's cancellation locks them: the points that feed no state
+    /// owner first, then those that do, each in ID order.
+    ///
+    /// A point's lock is held while its batches fan out, so taking the points that feed state owners last holds them
+    /// only for the check and the store, never while waiting for another point's lock.
+    pub fn cancel_lock_order(&self) -> Vec<AdmissionPointId> {
+        let (state, other): (Vec<_>, Vec<_>) = self.admission_points.iter().partition(|point| point.feeds_state);
+        other.iter().chain(&state).map(|point| point.id).collect()
     }
 
     /// Returns the boot plan's declared outputs, in plan order: the encoder streams of the topology.
@@ -824,18 +992,29 @@ fn component_name(node: &NodeId) -> String {
     }
 }
 
-/// Rejects synchronous nodes that no region runs in this stage.
+/// Rejects nodes that no region runs in this stage.
+///
+/// A region runs a node that keeps state only behind a declared isolation fence, in an isolation slot of its own, and
+/// a node behind such a fence only if it keeps keyed state.
 fn check_supported(graph: &Graph<'_>, roles: &[Role]) -> Result<(), FrameError> {
     for (node, role) in roles.iter().enumerate() {
         if *role == Role::Fixed {
             continue;
         }
         let op = graph.op(node).expect("a resolved plan configures every node");
-        if op.contract().state != StateContract::None {
+        let keyed = matches!(op.contract().state, StateContract::Keyed(_));
+        if *role == Role::Isolated && !keyed {
             return Err(FrameError::Unsupported {
                 node: graph.id(node).clone(),
-                what: "running an operator that keeps state in a region".to_string(),
-                stage: 6,
+                what: "running an operator behind an isolation fence that keeps no keyed state".to_string(),
+                stage: 10,
+            });
+        }
+        if *role != Role::Isolated && op.contract().state != StateContract::None {
+            return Err(FrameError::Unsupported {
+                node: graph.id(node).clone(),
+                what: "running an operator that keeps state in a region without an isolation fence".to_string(),
+                stage: 10,
             });
         }
         if op.contract().is_dynamic() {
@@ -847,6 +1026,119 @@ fn check_supported(graph: &Graph<'_>, roles: &[Role]) -> Result<(), FrameError> 
         }
     }
     Ok(())
+}
+
+/// Finds the admission points upstream of each isolation slot, whose latest admission times make up its state owner's
+/// watermark, and the exits that carry their progress toward it.
+///
+/// A point is upstream of an isolation slot when its physical edge leads to the slot through fused slots only: a fixed
+/// component re-admits what it receives, and an isolation slot stamps its own time-driven output, so neither passes a
+/// point's stamps on. A state owner is fed by exactly one admission point over exactly one path, since resets at
+/// several points need a rule for how the reset of one point closes the open buckets of another, and a watermark relies
+/// on a point's batches arriving in the order they were stamped, which only one path keeps. Every exit on that path
+/// carries the point's progress, so that the watermark advances even when a batch leaves a slot without output.
+fn state_upstream(
+    graph: &Graph<'_>, layout: &Layout, points: &mut [AdmissionPointInfo], slots: &mut [Slot],
+) -> Result<(), FrameError> {
+    let targets = slots
+        .iter()
+        .filter(|slot| slot.is_isolation())
+        .map(|slot| slot.id)
+        .collect::<Vec<_>>();
+    for target in targets {
+        let mut paths = vec![None; slots.len()];
+        let mut upstream = Vec::new();
+        for point in points.iter() {
+            let Some(FrameTarget::Slot(first)) = &point.route else {
+                continue;
+            };
+            let count = paths_to(*first, target, slots, &mut paths);
+            if count > 1 {
+                return Err(FrameError::StateOwnerPaths {
+                    slot: slots[target.get()].name.clone(),
+                    point: PortRef::new(point.node.clone(), point.port.clone()),
+                });
+            }
+            if count == 1 {
+                upstream.push((point.id, *first));
+            }
+        }
+        if upstream.len() > 1 {
+            return Err(FrameError::StateOwnerPoints {
+                slot: slots[target.get()].name.clone(),
+                points: upstream
+                    .iter()
+                    .filter_map(|(id, _)| points.iter().find(|point| point.id == *id))
+                    .map(|point| PortRef::new(point.node.clone(), point.port.clone()))
+                    .collect(),
+            });
+        }
+        let Some(&(point, first)) = upstream.first() else {
+            let node = layout.slots[target.get()][0];
+            return Err(FrameError::Unsupported {
+                node: graph.id(node).clone(),
+                what: "running a state owner that no admission point feeds, such as one fed by another state owner's \
+                       time-driven output"
+                    .to_string(),
+                stage: 10,
+            });
+        };
+
+        // The one path from the point: every exit on it forwards the point's progress.
+        let mut on_path = Vec::new();
+        let mut current = first;
+        while current != target {
+            let exit = slots[current.get()].exits.iter().find(|exit| match exit.target {
+                FrameTarget::Slot(next) => paths_to(next, target, slots, &mut paths) > 0,
+                _ => false,
+            });
+            let Some(exit) = exit else { break };
+            on_path.push((current, exit.index));
+            let FrameTarget::Slot(next) = exit.target else { break };
+            current = next;
+        }
+        for (slot, exit) in on_path {
+            let progress = &mut slots[slot.get()].exits[exit.get()].progress_points;
+            if !progress.contains(&point) {
+                progress.push(point);
+                progress.sort();
+            }
+        }
+        if let SlotKind::Isolation { upstream, .. } = &mut slots[target.get()].kind {
+            *upstream = vec![point];
+        }
+        if let Some(info) = points.iter_mut().find(|info| info.id == point) {
+            info.feeds_state = true;
+        }
+    }
+    Ok(())
+}
+
+/// Returns the number of physical paths from `slot` to the isolation slot `target` through fused slots, saturating,
+/// memoized in `paths` by slot: one for `target` itself, and none from another isolation slot.
+fn paths_to(slot: SlotId, target: SlotId, slots: &[Slot], paths: &mut [Option<u64>]) -> u64 {
+    if slot == target {
+        return 1;
+    }
+    if let Some(count) = paths[slot.get()] {
+        return count;
+    }
+    let count = if slots[slot.get()].is_isolation() {
+        0
+    } else {
+        slots[slot.get()]
+            .exits
+            .iter()
+            .filter_map(|exit| match exit.target {
+                FrameTarget::Slot(next) => Some(next),
+                _ => None,
+            })
+            .fold(0u64, |count, next| {
+                count.saturating_add(paths_to(next, target, slots, paths))
+            })
+    };
+    paths[slot.get()] = Some(count);
+    count
 }
 
 /// Returns the outputs that `emit` nodes downstream of `members` deliver to, through any node.
@@ -882,7 +1174,7 @@ struct Layout {
     /// Each slot's nodes, in plan order; slots are ordered by their first node.
     slots: Vec<Vec<usize>>,
 
-    /// Each node's slot, for synchronous nodes.
+    /// Each node's slot, for synchronous nodes and state owners behind an isolation fence.
     slot_of: Vec<Option<usize>>,
 
     /// Each node's fence depth within its connected set of synchronous nodes.
@@ -945,7 +1237,8 @@ impl Layout {
                         continue;
                     };
                     let Some(reached) = reach[from] else { continue };
-                    let fence = roles[from] == Role::Fixed;
+                    // An isolation fence separates as a host does: a state owner's slot is a fence for fusion.
+                    let fence = matches!(roles[from], Role::Fixed | Role::Isolated);
                     let value = reached + u32::from(fence);
                     if best.is_none_or(|best| value > best) {
                         best = Some(value);
@@ -1112,6 +1405,12 @@ impl Layout {
             }
         }
         let mut slots = by_root.into_values().collect::<Vec<_>>();
+        // Each state owner behind an isolation fence runs alone, in an isolation slot of its own.
+        slots.extend(
+            (0..count)
+                .filter(|&node| roles[node] == Role::Isolated)
+                .map(|node| vec![node]),
+        );
         slots.sort_by_key(|members| members[0]);
         let mut slot_of = vec![None; count];
         for (index, members) in slots.iter().enumerate() {

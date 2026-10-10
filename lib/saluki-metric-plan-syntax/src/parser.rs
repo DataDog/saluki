@@ -9,8 +9,8 @@ use std::{collections::BTreeMap, str::FromStr as _};
 use saluki_metric_plan::{
     canonical::{PlanHash, BINDING_MEMBER},
     ir::{
-        ArtifactNodeId, ArtifactPortRef, BindingName, IdError, InputName, Operand, OperatorName, OutputId, ParamName,
-        ParamSpec, ParamType, Params, PortName, ScopeName, BLOB_MEMBER,
+        ArtifactNodeId, ArtifactPortRef, BindingName, ExitName, IdError, InputName, Operand, OperatorName, OutputId,
+        ParamName, ParamSpec, ParamType, Params, PortName, ScopeName, BLOB_MEMBER,
     },
     model::{Kind, KindSet},
     operators::OperatorRegistry,
@@ -90,6 +90,8 @@ pub(crate) enum Target {
     },
     /// A scope input, which is never a valid target; it is accepted so that every artifact can be printed.
     Input { name: InputName, span: Span },
+    /// A scope exit: where the edge leaves the scope.
+    Exit { name: ExitName, span: Span },
     /// An inline `emit`.
     Emit {
         output: OutputId,
@@ -103,7 +105,11 @@ pub(crate) enum Target {
 impl Target {
     pub(crate) fn span(&self) -> Span {
         match self {
-            Self::Node { span, .. } | Self::Input { span, .. } | Self::Emit { span, .. } | Self::Drop { span } => *span,
+            Self::Node { span, .. }
+            | Self::Input { span, .. }
+            | Self::Exit { span, .. }
+            | Self::Emit { span, .. }
+            | Self::Drop { span } => *span,
         }
     }
 }
@@ -668,6 +674,16 @@ impl<'s> Parser<'s> {
         let from = if self.is_word(first, "input") {
             let name = InputName::new(port.as_str()).map_err(|error| Error::new(port_span, error.to_string()))?;
             ArtifactPortRef::Input(name)
+        } else if self.is_word(first, "exit") {
+            return Err(Error::new(
+                from_span,
+                format!(
+                    "An edge cannot leave `{}`, a scope exit: exits are where edges leave the scope, so an exit is \
+                     only ever an edge's target, as in `<node>.<port> -> exit.{}`.",
+                    &self.source[from_span.range()],
+                    port
+                ),
+            ));
         } else {
             let node =
                 ArtifactNodeId::new(self.text(first)).map_err(|error| Error::new(first.span, error.to_string()))?;
@@ -685,7 +701,7 @@ impl<'s> Parser<'s> {
 
     fn target(&mut self) -> Result<Target, Error> {
         let token = self.peek();
-        let what = "a target: a node ID, `emit <output>`, or `drop`";
+        let what = "a target: a node ID, `exit.<name>`, `emit <output>`, or `drop`";
         if token.kind != TokenKind::Ident {
             return Err(self.expected(what));
         }
@@ -708,6 +724,15 @@ impl<'s> Parser<'s> {
             self.advance();
             let (name, span) = self.ident("a scope input name after `input.`", InputName::new)?;
             return Ok(Target::Input {
+                name,
+                span: token.span.to(span),
+            });
+        }
+        if self.is_word(token, "exit") && dotted {
+            self.advance();
+            self.advance();
+            let (name, span) = self.ident("a scope exit name after `exit.`", ExitName::new)?;
+            return Ok(Target::Exit {
                 name,
                 span: token.span.to(span),
             });

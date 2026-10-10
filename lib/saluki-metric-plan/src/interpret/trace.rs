@@ -25,6 +25,8 @@ pub enum TraceEvent {
     },
 
     /// An idle source reports that its admission clock has reached `admitted_at`, without admitting anything.
+    ///
+    /// A heartbeat is stamped as a batch is: it can reset the source's clock, and it is assigned a generation.
     Heartbeat {
         /// The `source` node.
         source: NodeId,
@@ -39,7 +41,8 @@ pub enum TraceEvent {
         clock: AdmissionTime,
     },
 
-    /// A plan is installed, replacing the active one from the next event on.
+    /// A plan is installed: it replaces the active one from the next event on, or, when its state owners' lineages
+    /// change, from a cut. An installation while a cut is in flight waits for the cut to finish.
     Install {
         /// The plan.
         plan: Arc<Plan>,
@@ -66,7 +69,8 @@ pub enum TraceEvent {
     /// Input ends: every kernel and host finishes under the shutdown policy.
     Close,
 
-    /// A prepared installation that has not committed is abandoned.
+    /// The installation whose cut is in flight is abandoned, if no admission point has stamped a batch or heartbeat
+    /// with its generation yet.
     Cancel,
 }
 

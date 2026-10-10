@@ -1,5 +1,6 @@
 //! The physical sections of explain documents: the frame, its slots, fences, exits, and direct edges, rewrite R1's
-//! fusion decisions, segments, and output bindings.
+//! fusion decisions, segments, and output bindings. Isolation slots, the admission points that feed their state owners,
+//! and the exits that carry those points' progress are marked; documents without them read as they always did.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,7 +10,7 @@ use serde_json::Value;
 
 use super::boundary_name;
 use crate::{
-    compile::{Frame, FrameSource, FrameTarget, FusionVerdict, Placement, Site, SlotId},
+    compile::{Frame, FrameSource, FrameTarget, FusionVerdict, Placement, Site, SlotId, SlotKind},
     extension::DeliveryPolicy,
     ir::{NodeId, OperatorName, OutputId, Plan, PortName, PortRef, RecipientId},
     operators::names,
@@ -73,6 +74,24 @@ pub struct AdmissionPointEntry {
 
     /// Where the port's physical edge leads, or `None` if the port has none.
     pub to: Option<String>,
+
+    /// Whether the point feeds a state owner: it sends heartbeats toward it, and a cut is armed over it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub feeds_state: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// What an isolation slot is: the region of one state owner, which owns its state, watermark, and flush ticks.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct IsolationEntry {
+    /// The ID that stamps the slot's time-driven output.
+    pub output_point: u32,
+
+    /// The admission points whose latest admission times make up its watermark.
+    pub upstream: Vec<u32>,
 }
 
 /// One slot.
@@ -82,7 +101,8 @@ pub struct SlotEntry {
     pub name: String,
 
     /// The estimated cost per event of the slot's boot nodes, in nanoseconds, which R1's cost model kept within its
-    /// budget. Documents written before it was added have none, read as zero.
+    /// budget. Documents written before it was added have none, read as zero. An isolation slot, which R1 never fuses,
+    /// is not priced: its cost is zero, whatever its state owner's work.
     #[serde(default)]
     pub cost: u32,
 
@@ -94,6 +114,10 @@ pub struct SlotEntry {
 
     /// The slot's exits, in order.
     pub exits: Vec<ExitEntry>,
+
+    /// What makes the slot an isolation slot, if it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<IsolationEntry>,
 }
 
 /// One entry of a slot: a logical edge entering it.
@@ -123,6 +147,11 @@ pub struct ExitEntry {
 
     /// Whether the explained plan leaves it idle.
     pub idle: bool,
+
+    /// The admission points whose progress the exit forwards toward a state owner, when a batch leaves the slot
+    /// without output on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub progress_points: Vec<u32>,
 }
 
 /// One physical edge.
@@ -148,7 +177,7 @@ pub struct FusionEntry {
     /// The input port the edge enters.
     pub to: PortRef,
 
-    /// `fused`, `fence`, `separated`, or `direct`.
+    /// `fused`, `fence`, `isolation`, `separated`, `pipelined`, or `direct`.
     pub decision: String,
 
     /// Why.
@@ -164,7 +193,8 @@ pub struct SegmentEntry {
     /// The admission point's port.
     pub from: PortRef,
 
-    /// `admit` or `readmit`.
+    /// `admit` or `readmit`, or `time-driven` for an isolation slot's output point, which stamps what a state owner
+    /// emits at its flush ticks.
     pub mode: String,
 
     /// The nodes the segment's batches reach, in plan order.
@@ -173,7 +203,8 @@ pub struct SegmentEntry {
     /// The slots those nodes run in, in slot order.
     pub slots: Vec<String>,
 
-    /// Where the segment ends: the fixed components it feeds, which re-admit, and the outputs it delivers to.
+    /// Where the segment ends: the fixed components it feeds, which re-admit, the state owners it feeds, whose
+    /// time-driven output is stamped anew, and the outputs it delivers to.
     pub ends: Vec<String>,
 }
 
@@ -233,6 +264,7 @@ impl PhysicalPlan {
                         port: point.port.clone(),
                         mode: mode_name(point.mode).to_string(),
                         to: point.route.as_ref().map(|target| frame.describe_target(target)),
+                        feeds_state: point.feeds_state,
                     })
                     .collect(),
             })
@@ -268,8 +300,16 @@ impl PhysicalPlan {
                             name: exit.name.to_string(),
                             to: frame.describe_target(&exit.target),
                             idle: placement.is_idle(slot.id, exit.index),
+                            progress_points: exit.progress_points.iter().map(|point| point.get()).collect(),
                         })
                         .collect(),
+                    isolation: match &slot.kind {
+                        SlotKind::Isolation { output_point, upstream } => Some(IsolationEntry {
+                            output_point: output_point.get(),
+                            upstream: upstream.iter().map(|point| point.get()).collect(),
+                        }),
+                        SlotKind::Fused => None,
+                    },
                 }
             })
             .collect();
@@ -328,6 +368,13 @@ impl PhysicalPlan {
                             budget,
                             slot_name(*from),
                             slot_name(*to)
+                        ),
+                    ),
+                    FusionVerdict::Isolation { slot } => (
+                        "isolation",
+                        format!(
+                            "the edge enters or leaves the isolation slot `{}`, which runs its state owner alone",
+                            slot_name(*slot)
                         ),
                     ),
                     FusionVerdict::Direct { fence } => (
@@ -394,7 +441,9 @@ impl PhysicalPlan {
     }
 }
 
-/// Returns the segment of every admission point of the frame whose fixed component the plan has.
+/// Returns the segment of every admission point of the frame whose fixed component the plan has, then the segment of
+/// every state owner the isolation slots run, which starts at its slot's output point: its time-driven output is
+/// stamped anew there.
 fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEntry> {
     let index = plan
         .nodes
@@ -409,60 +458,197 @@ fn segments(plan: &Plan, frame: &Frame, placement: &Placement) -> Vec<SegmentEnt
         leaving.insert(edge.from.clone(), &edge.to.node);
     }
 
-    frame
+    let segment = |admission_point: u32, from: PortRef, mode: &str| {
+        let mut reached = BTreeSet::new();
+        let mut ends = Vec::new();
+        let mut pending = leaving.get(&from).copied().into_iter().collect::<Vec<_>>();
+        while let Some(node) = pending.pop() {
+            let isolated = match placement.site(node) {
+                Some(Site::Slot(slot)) => frame.slot(slot).is_some_and(|slot| slot.is_isolation()),
+                _ => false,
+            };
+            if placement.site(node) == Some(Site::Fixed) || isolated {
+                let end = node.to_string();
+                if !ends.contains(&end) {
+                    ends.push(end);
+                }
+                continue;
+            }
+            if !reached.insert(node) {
+                continue;
+            }
+            let emitted = plan
+                .node(node)
+                .filter(|written| written.op.as_str() == names::EMIT)
+                .and_then(|written| written.params.get("output"))
+                .and_then(Value::as_str);
+            if let Some(output) = emitted {
+                let end = format!("output {}", output);
+                if !ends.contains(&end) {
+                    ends.push(end);
+                }
+            }
+            pending.extend(targets.get(node).into_iter().flatten().copied());
+        }
+        let mut nodes = reached.into_iter().cloned().collect::<Vec<_>>();
+        nodes.sort_by_key(|node| index.get(node).copied().unwrap_or(usize::MAX));
+        let slots = nodes
+            .iter()
+            .filter_map(|node| match placement.site(node) {
+                Some(Site::Slot(slot)) => Some(slot),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|slot| frame.describe_target(&FrameTarget::Slot(slot)))
+            .collect();
+        ends.sort();
+        SegmentEntry {
+            admission_point,
+            from,
+            mode: mode.to_string(),
+            nodes,
+            slots,
+            ends,
+        }
+    };
+
+    let mut segments = frame
         .admission_points()
         .iter()
         .filter(|point| index.contains_key(&point.node))
         .map(|point| {
             let from = PortRef::new(point.node.clone(), point.port.clone());
-            let mut reached = BTreeSet::new();
-            let mut ends = Vec::new();
-            let mut pending = leaving.get(&from).copied().into_iter().collect::<Vec<_>>();
-            while let Some(node) = pending.pop() {
-                if placement.site(node) == Some(Site::Fixed) {
-                    let end = node.to_string();
-                    if !ends.contains(&end) {
-                        ends.push(end);
-                    }
-                    continue;
-                }
-                if !reached.insert(node) {
-                    continue;
-                }
-                let emitted = plan
-                    .node(node)
-                    .filter(|written| written.op.as_str() == names::EMIT)
-                    .and_then(|written| written.params.get("output"))
-                    .and_then(Value::as_str);
-                if let Some(output) = emitted {
-                    let end = format!("output {}", output);
-                    if !ends.contains(&end) {
-                        ends.push(end);
-                    }
-                }
-                pending.extend(targets.get(node).into_iter().flatten().copied());
-            }
-            let mut nodes = reached.into_iter().cloned().collect::<Vec<_>>();
-            nodes.sort_by_key(|node| index.get(node).copied().unwrap_or(usize::MAX));
-            let slots = nodes
-                .iter()
-                .filter_map(|node| match placement.site(node) {
-                    Some(Site::Slot(slot)) => Some(slot),
-                    _ => None,
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .map(|slot| frame.describe_target(&FrameTarget::Slot(slot)))
-                .collect();
-            ends.sort();
-            SegmentEntry {
-                admission_point: point.id.get(),
-                from,
-                mode: mode_name(point.mode).to_string(),
-                nodes,
-                slots,
-                ends,
-            }
+            segment(point.id.get(), from, mode_name(point.mode))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    for (slot, placed) in frame.slots().iter().zip(placement.slots()) {
+        let SlotKind::Isolation { output_point, .. } = &slot.kind else {
+            continue;
+        };
+        for node in &placed.nodes {
+            // A state owner's time-driven output leaves by its output port; every edge from it starts the segment.
+            let ports = plan
+                .edges
+                .iter()
+                .filter(|edge| &edge.from.node == node)
+                .map(|edge| edge.from.clone())
+                .collect::<BTreeSet<_>>();
+            for from in ports {
+                segments.push(segment(output_point.get(), from, "time-driven"));
+            }
+        }
+    }
+    segments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        compile::compile,
+        explain::Explain,
+        ir::NativeComponentId,
+        operators::OperatorRegistry,
+        testing::{default_program_catalog, DEFAULT_PROGRAM_JSON},
+        validate::Validator,
+    };
+
+    fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
+        crate::testing::default_program_slot_name(nodes)
+    }
+
+    #[test]
+    fn an_isolation_slot_its_feeding_point_and_its_progress_exits_are_marked_and_end_the_segment() {
+        let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+        let registry = OperatorRegistry::native();
+        let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
+        let frame = Frame::compute(&plan, &registry, &namer).unwrap();
+        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let physical = PhysicalPlan::of(&compiled.plan, &frame, &compiled.placement);
+
+        let agg = physical.slots.iter().find(|slot| slot.name == "dsd_agg").unwrap();
+        assert_eq!(
+            agg.isolation,
+            Some(IsolationEntry {
+                output_point: 5,
+                upstream: vec![0],
+            })
+        );
+        assert!(physical
+            .slots
+            .iter()
+            .filter(|slot| slot.name != "dsd_agg")
+            .all(|slot| slot.isolation.is_none()));
+        let progress = physical
+            .slots
+            .iter()
+            .flat_map(|slot| slot.exits.iter().map(move |exit| (slot.name.as_str(), exit)))
+            .filter(|(_, exit)| !exit.progress_points.is_empty())
+            .map(|(slot, exit)| (slot.to_string(), exit.name.clone(), exit.progress_points.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            progress,
+            vec![
+                (
+                    "dsd_pre_aggregation".to_string(),
+                    "dsd_prefix_filter_region".to_string(),
+                    vec![0]
+                ),
+                (
+                    "dsd_prefix_filter_region".to_string(),
+                    "dsd_no_agg_split_region".to_string(),
+                    vec![0]
+                ),
+                ("dsd_no_agg_split_region".to_string(), "dsd_agg".to_string(), vec![0]),
+            ]
+        );
+        let feeding = physical
+            .fixed
+            .iter()
+            .flat_map(|fixed| {
+                fixed
+                    .admission_points
+                    .iter()
+                    .map(move |point| (fixed.node.to_string(), point))
+            })
+            .filter(|(_, point)| point.feeds_state)
+            .map(|(node, _)| node)
+            .collect::<Vec<_>>();
+        assert_eq!(feeding, vec!["dsd_in".to_string()]);
+        // DogStatsD's segment ends at aggregation, whose time-driven output is stamped anew, and at the outputs its
+        // passthrough delivers to.
+        let dogstatsd = physical
+            .segments
+            .iter()
+            .find(|segment| segment.admission_point == 0)
+            .unwrap();
+        assert!(dogstatsd.ends.contains(&"dsd_agg".to_string()), "{:?}", dogstatsd.ends);
+        assert!(dogstatsd.nodes.iter().all(|node| node.to_string() != "dsd_agg"));
+
+        // The text form says the same.
+        let text = Explain::of(&plan, &registry, &report)
+            .with_physical(&compiled.plan, &frame, &compiled.placement)
+            .to_text();
+        for line in [
+            "      admission point 0 metrics (admit) -> dsd_pre_aggregation, feeds state",
+            "      isolation slot, output point 5, watermark of admission points 0",
+            "      exit 0 dsd_agg -> dsd_agg, progress of admission points 0",
+        ] {
+            assert!(
+                text.lines().any(|candidate| candidate == line),
+                "no line {:?} in:\n{}",
+                line,
+                text
+            );
+        }
+
+        // A document written without the new fields reads as one without isolation slots.
+        let mut value = serde_json::to_value(&physical).unwrap();
+        for slot in value["slots"].as_array_mut().unwrap() {
+            slot.as_object_mut().unwrap().remove("isolation");
+        }
+        let read: PhysicalPlan = serde_json::from_value(value).unwrap();
+        assert!(read.slots.iter().all(|slot| slot.isolation.is_none()));
+    }
 }

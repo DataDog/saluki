@@ -10,9 +10,11 @@ use stringtheory::MetaString;
 use tracing::{debug, trace};
 
 use super::{
+    emission::{EmissionFilter, OutputKind, Suppressed},
     histogram::{HistogramConfiguration, HistogramStatistic},
     snapshot::{AggregateContextSnapshotEntry, AggregateMetricType},
     telemetry::AggregateTelemetry,
+    ContextBudget,
 };
 
 /// One context's aggregated values, the metadata of its first insertion, and when it was last updated.
@@ -30,57 +32,181 @@ type ContextHasher = foldhash::quality::RandomState;
 ///
 /// Contexts are held in a hash table keyed by context identity, its 64-bit hash, so colliding contexts merge into the
 /// first one inserted. The table is a [`HashTable`] rather than a map so that a flush can visit its entries one at a
-/// time by bucket position and resume between them; positions stay valid because nothing is inserted or removed while a
-/// flush is in progress.
+/// time by bucket position and resume between them. Positions stay valid because nothing is inserted while a flush is
+/// in progress, and the only entries removed then, by a drain or a discard, are the ones it visits: removing an entry
+/// leaves every other one where it is.
+///
+/// The state keeps only what defines its buckets, the bucket width. Every other parameter is passed to the call it
+/// applies to, so that one state can serve batches and flushes whose parameters differ: the context limit to each
+/// insertion and to the end of each flush, and the counter expiry, histogram statistics, final-flush setting, and
+/// emission filter to each flush.
+///
+/// A state either admits by its own context count, as native aggregation does, or shares budgets of contexts with
+/// other states (see [`ContextLimit`]). A state that shares budgets holds one unit of each budget per context, and
+/// releases them as it removes contexts; its owner releases what is left when it discards the state
+/// ([`release_all`][Self::release_all]).
 pub(super) struct AggregationState {
     contexts: HashTable<(Context, AggregatedMetric)>,
     hasher: ContextHasher,
     contexts_remove_buf: Vec<Context>,
-    context_limit: usize,
     bucket_width_secs: NonZeroU64,
-    counter_expire_secs: Option<NonZeroU64>,
     last_flush: u64,
-    hist_config: HistogramConfiguration,
     telemetry: AggregateTelemetry,
     /// Tracks whether the context limit has been breached. Starts out as `false`. Set to `true` on the first dropped
     /// metric. Reset to `false` when the context count drops below the limit during flush.
     context_limit_breached: bool,
 }
 
+/// The limit a state admits new contexts by, and clears its breach flag by.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ContextLimit<'a> {
+    /// The most contexts held: by the state itself, or, when it shares budgets, by every state of its node together.
+    pub(super) limit: usize,
+
+    /// The budgets the state shares with other states, or `None` if it admits by its own context count.
+    pub(super) shared: Option<&'a ContextBudget>,
+}
+
+impl<'a> ContextLimit<'a> {
+    /// The limit of a state that admits by its own context count.
+    pub(super) fn exclusive(limit: usize) -> Self {
+        Self { limit, shared: None }
+    }
+
+    /// The limit of a state that shares `budget`, where `limit` caps the contexts of every state of its node.
+    pub(super) fn shared(limit: usize, budget: &'a ContextBudget) -> Self {
+        Self {
+            limit,
+            shared: Some(budget),
+        }
+    }
+
+    /// Takes room for a new context in a state holding `len` contexts, or returns `false` if there is none.
+    ///
+    /// A state that admits by its own count has room below the limit. A state that shares budgets has room while its
+    /// node's budget counts fewer contexts than the limit and the global budget has a unit left; the new context then
+    /// holds one unit of each.
+    fn try_admit(&self, len: usize) -> bool {
+        let Some(budget) = self.shared else {
+            return len < self.limit;
+        };
+        if budget.node.used() >= limit_units(self.limit) || !budget.global.try_acquire(1) {
+            return false;
+        }
+        if !budget.node.try_acquire(1) {
+            // A node budget with a capacity of its own refused: give the global unit back.
+            budget.global.release(1);
+            return false;
+        }
+        true
+    }
+
+    /// Returns `true` if a state holding `len` contexts is below the limit, so that a flush clears its breach flag.
+    fn is_below(&self, len: usize) -> bool {
+        match self.shared {
+            None => len < self.limit,
+            Some(budget) => {
+                budget.node.used() < limit_units(self.limit) && budget.global.used() < budget.global.capacity()
+            }
+        }
+    }
+}
+
+/// Returns a context limit as budget units.
+fn limit_units(limit: usize) -> u64 {
+    u64::try_from(limit).unwrap_or(u64::MAX)
+}
+
+/// What inserting a metric did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Insertion {
+    /// The metric was for a new context and the limit left no room for it: it was dropped, and the breach flag set.
+    Rejected,
+
+    /// The metric was inserted. Its context held `replaced_points` points of another kind, or of a rate over another
+    /// interval, which the metric's values replaced.
+    Inserted { replaced_points: usize },
+}
+
+/// What a pass over the state counted as it visited contexts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct PassCounts {
+    /// The contexts a discard removed while they held points.
+    pub(super) discarded: usize,
+
+    /// The points those contexts held.
+    pub(super) discarded_points: usize,
+
+    /// The records the pass skipped because its emission filter drops them.
+    pub(super) suppressed: Suppressed,
+}
+
+/// What a pass over the state does with each context it visits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FlushMode {
+    /// A native flush: emits the closed buckets, adds idle-counter zeros, and removes the contexts it empties or
+    /// expires. It is recorded as the last flush.
+    Closed,
+
+    /// A drain: emits every point held, whatever its bucket, and removes every context. Afterwards the state is as if
+    /// it had never flushed.
+    All,
+
+    /// A discard: emits nothing, removes every context, and counts the contexts that held points and their points.
+    /// Afterwards the state is as if it had never flushed.
+    Discard,
+}
+
 /// What a flush computes once, before it visits each context.
+#[derive(Debug)]
 pub(super) struct FlushPlan {
+    mode: FlushMode,
     current_time: u64,
     split_timestamp: u64,
     counter_expire_secs: u64,
     zero_value_buckets: SmallVec<[(u64, MetricValues); 4]>,
 }
 
-/// A flush in progress: its plan, the position of the next table bucket to visit, and the context whose removal has
-/// yet to be queued.
+/// A pass in progress: its plan, the position of the next table bucket to visit, the context whose removal has yet to
+/// be queued, the contexts removed as they were visited, and what the pass has counted since its counts were last
+/// taken.
 ///
-/// A context is queued for removal only once its metrics have been emitted and the next context is visited, or the
-/// flush finishes, so a flush abandoned while its last context's metrics are being delivered leaves that context
-/// queued exactly as the native flush, which stopped at the failed delivery, did.
+/// In a native flush, a context is queued for removal only once its metrics have been emitted and the next context is
+/// visited, or the flush finishes, so a flush abandoned while its last context's metrics are being delivered leaves
+/// that context queued exactly as the native flush, which stopped at the failed delivery, did. A drain or a discard
+/// instead removes each context as it visits it, so that its removals, like its emissions, are spread over its steps.
+#[derive(Debug)]
 pub(super) struct FlushCursor {
     plan: FlushPlan,
     next_bucket: usize,
     pending_removal: Option<usize>,
+    removed: usize,
+    counts: PassCounts,
+}
+
+impl FlushCursor {
+    pub(super) fn mode(&self) -> FlushMode {
+        self.plan.mode
+    }
+
+    pub(super) fn current_time(&self) -> u64 {
+        self.plan.current_time
+    }
+
+    /// Takes what the pass has counted since its counts were last taken.
+    pub(super) fn take_counts(&mut self) -> PassCounts {
+        std::mem::take(&mut self.counts)
+    }
 }
 
 impl AggregationState {
-    pub(super) fn new(
-        bucket_width_secs: NonZeroU64, context_limit: usize, counter_expire_secs: Option<NonZeroU64>,
-        hist_config: HistogramConfiguration, telemetry: AggregateTelemetry,
-    ) -> Self {
+    pub(super) fn new(bucket_width_secs: NonZeroU64, telemetry: AggregateTelemetry) -> Self {
         Self {
             contexts: HashTable::new(),
             hasher: ContextHasher::default(),
             contexts_remove_buf: Vec::new(),
-            context_limit,
             bucket_width_secs,
-            counter_expire_secs,
             last_flush: 0,
-            hist_config,
             telemetry,
             context_limit_breached: false,
         }
@@ -94,8 +220,8 @@ impl AggregationState {
         self.contexts.len()
     }
 
-    pub(super) fn context_limit(&self) -> usize {
-        self.context_limit
+    pub(super) fn bucket_width_secs(&self) -> NonZeroU64 {
+        self.bucket_width_secs
     }
 
     pub(super) fn context_limit_breached(&self) -> bool {
@@ -104,6 +230,11 @@ impl AggregationState {
 
     pub(super) fn telemetry(&self) -> &AggregateTelemetry {
         &self.telemetry
+    }
+
+    /// Forgets every flush, as a drain or a discard does when it ends: the next flush is as the first one.
+    pub(super) fn forget_flushes(&mut self) {
+        self.last_flush = 0;
     }
 
     /// Returns the number of contexts holding values, and the number of points they hold.
@@ -128,7 +259,9 @@ impl AggregationState {
         snapshot
     }
 
-    pub(super) fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
+    /// Inserts `metric`, which arrived at `timestamp`, unless it is for a new context and `limit` leaves no room for
+    /// it.
+    pub(super) fn insert(&mut self, timestamp: u64, metric: Metric, limit: ContextLimit<'_>) -> Insertion {
         let hash = self.hasher.hash_one(metric.context());
 
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
@@ -136,10 +269,10 @@ impl AggregationState {
             .contexts
             .find(hash, |(context, _)| context == metric.context())
             .is_none()
-            && self.contexts.len() >= self.context_limit
+            && !limit.try_admit(self.contexts.len())
         {
             self.context_limit_breached = true;
-            return false;
+            return Insertion::Rejected;
         }
 
         let (context, mut values, metadata) = metric.into_parts();
@@ -163,7 +296,16 @@ impl AggregationState {
             Some((_, aggregated)) => {
                 // We ignore metadata changes within a flush interval to keep things simple.
                 aggregated.last_seen = timestamp;
+
+                // Values of another kind, or a rate over another interval, replace every point held, closed buckets
+                // included: those points are lost.
+                let replaced_points = if replaces(&aggregated.values, &values) {
+                    aggregated.values.len()
+                } else {
+                    0
+                };
                 aggregated.values.merge(values);
+                Insertion::Inserted { replaced_points }
             }
             None => {
                 self.telemetry.increment_contexts(&context, &values);
@@ -182,22 +324,76 @@ impl AggregationState {
                     |(context, _)| hasher.hash_one(context),
                 );
 
+                self.check_bounds(limit);
+                Insertion::Inserted { replaced_points: 0 }
+            }
+        }
+    }
+
+    /// Checks the bounds the context count keeps under `limit`, with Antithesis and, in debug builds, assertions.
+    ///
+    /// A state that admits by its own count holds at most `limit` contexts whenever it admits one. A state that shares
+    /// budgets is bounded by them instead, since a later call may pass a lower limit than the contexts it already
+    /// holds, which keep their units: the global budget never counts more than its capacity, and the node's budget
+    /// counts at least this state's contexts.
+    fn check_bounds(&self, limit: ContextLimit<'_>) {
+        let len = self.contexts.len();
+        match limit.shared {
+            None => {
+                let context_limit = limit.limit;
+                debug_assert!(
+                    len <= context_limit,
+                    "{} contexts held, over the limit of {}",
+                    len,
+                    context_limit
+                );
                 saluki_antithesis::always_le!(
-                    self.contexts.len(),
-                    self.context_limit,
+                    len,
+                    context_limit,
                     "aggregate context map within context_limit",
-                    { "len": self.contexts.len(), "limit": self.context_limit }
+                    { "len": len, "limit": context_limit }
+                );
+            }
+            Some(budget) => {
+                let (global_used, global_capacity) = (budget.global.used(), budget.global.capacity());
+                let (held, node_used) = (limit_units(len), budget.node.used());
+                debug_assert!(
+                    global_used <= global_capacity,
+                    "the global context budget counts {} contexts, over its capacity of {}",
+                    global_used,
+                    global_capacity
+                );
+                debug_assert!(
+                    held <= node_used,
+                    "{} contexts held, but the node budget counts {}",
+                    held,
+                    node_used
+                );
+                saluki_antithesis::always_le!(
+                    global_used,
+                    global_capacity,
+                    "aggregate global context budget within its capacity",
+                    { "used": global_used, "capacity": global_capacity }
+                );
+                saluki_antithesis::always_le!(
+                    held,
+                    node_used,
+                    "aggregate contexts held within the node context budget",
+                    { "len": held, "node_used": node_used }
                 );
             }
         }
-
-        true
     }
 
     /// Starts a flush at `current_time`: computes the split timestamp and the zero-value buckets for idle counters.
-    pub(super) fn start_flush(&self, current_time: u64, flush_open_buckets: bool) -> FlushCursor {
+    ///
+    /// `counter_expiry` is how long after it was last updated an idle counter keeps emitting zeros, or `None` to keep
+    /// counters forever.
+    pub(super) fn start_flush(
+        &self, current_time: u64, flush_open_buckets: bool, counter_expiry: Option<NonZeroU64>,
+    ) -> FlushCursor {
         let bucket_width_secs = self.bucket_width_secs;
-        let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
+        let counter_expire_secs = counter_expiry.map(|d| d.get()).unwrap_or(0);
 
         // We want our split timestamp to be before the start of the current bucket, which ensures any timestamp that is
         // less than or equal to `split_timestamp` resides in a closed bucket.
@@ -253,6 +449,7 @@ impl AggregationState {
 
         FlushCursor {
             plan: FlushPlan {
+                mode: FlushMode::Closed,
                 current_time,
                 split_timestamp,
                 counter_expire_secs,
@@ -260,6 +457,30 @@ impl AggregationState {
             },
             next_bucket: 0,
             pending_removal: None,
+            removed: 0,
+            counts: PassCounts::default(),
+        }
+    }
+
+    /// Starts a pass that removes every context: a drain, which emits every point held, or a discard, which emits
+    /// nothing.
+    ///
+    /// Neither adds idle-counter zeros, and neither depends on the time.
+    pub(super) fn start_drain(&self, mode: FlushMode) -> FlushCursor {
+        debug_assert!(mode != FlushMode::Closed, "a drain removes every context");
+        debug!(mode = ?mode, "Draining aggregation state.");
+        FlushCursor {
+            plan: FlushPlan {
+                mode,
+                current_time: self.last_flush,
+                split_timestamp: u64::MAX,
+                counter_expire_secs: 0,
+                zero_value_buckets: SmallVec::new(),
+            },
+            next_bucket: 0,
+            pending_removal: None,
+            removed: 0,
+            counts: PassCounts::default(),
         }
     }
 
@@ -273,21 +494,59 @@ impl AggregationState {
         }
     }
 
-    /// Flushes the next context of a flush in progress, emitting the metrics of its closed buckets into `sink`.
+    /// Flushes the next context of a flush in progress, emitting the metrics of its closed buckets into `sink`, with
+    /// histograms expanded by `hist_config`, except the records `filter` drops, which are counted instead.
     ///
-    /// Returns `false`, without emitting anything, once every context has been visited.
-    pub(super) fn flush_next<F>(&mut self, cursor: &mut FlushCursor, mut sink: F) -> bool
+    /// A drain or a discard removes the context it visits, and releases its units of `budget`, the budgets the state
+    /// shares, if any. Returns `false`, without emitting anything, once every context has been visited.
+    pub(super) fn flush_next<F>(
+        &mut self, cursor: &mut FlushCursor, hist_config: &HistogramConfiguration, filter: Option<&dyn EmissionFilter>,
+        budget: Option<&ContextBudget>, mut sink: F,
+    ) -> bool
     where
         F: FnMut(Metric),
     {
         self.queue_pending_removal(cursor);
 
         let plan = &cursor.plan;
-        let bucket_width_secs = self.bucket_width_secs;
+        let emission = Emission {
+            bucket_width_secs: self.bucket_width_secs,
+            hist_config,
+            filter,
+        };
         let num_buckets = self.contexts.num_buckets();
         while cursor.next_bucket < num_buckets {
             let index = cursor.next_bucket;
             cursor.next_bucket += 1;
+
+            if plan.mode != FlushMode::Closed {
+                let Ok(entry) = self.contexts.get_bucket_entry(index) else {
+                    continue;
+                };
+                // A drain or a discard takes the context out of the table first, and gives back what it held, so that
+                // nothing it emits can leave the state holding a context, or a budget unit, that it no longer counts.
+                let ((context, mut am), _) = entry.remove();
+                cursor.removed += 1;
+                self.telemetry.decrement_contexts(&context, &am.values);
+                if let Some(budget) = budget {
+                    budget.release(1);
+                }
+
+                if plan.mode == FlushMode::All {
+                    // A drain emits every timestamped point, whatever its bucket. Values are timestamped when they are
+                    // inserted, except at bucket start 0, which no real clock reaches.
+                    if let Some(values) = am.values.split_at_timestamp(plan.split_timestamp) {
+                        self.telemetry.increment_flushed(&values);
+                        let suppressed = emission.emit(&context, values, &am.metadata, &mut sink);
+                        cursor.counts.suppressed.add(suppressed);
+                    }
+                } else if !am.values.is_empty() {
+                    cursor.counts.discarded += 1;
+                    cursor.counts.discarded_points += am.values.len();
+                }
+                return true;
+            }
+
             let Some((context, am)) = self.contexts.get_bucket_mut(index) else {
                 continue;
             };
@@ -344,14 +603,8 @@ impl AggregationState {
                 self.telemetry.increment_flushed(&closed_bucket_values);
 
                 // We got some closed bucket values, so flush those out.
-                expand_flushed(
-                    context.clone(),
-                    closed_bucket_values,
-                    am.metadata.clone(),
-                    bucket_width_secs,
-                    &self.hist_config,
-                    &mut sink,
-                );
+                let suppressed = emission.emit(context, closed_bucket_values, &am.metadata, &mut sink);
+                cursor.counts.suppressed.add(suppressed);
             }
 
             if am.values.is_empty() && should_expire_if_empty {
@@ -362,16 +615,52 @@ impl AggregationState {
         false
     }
 
-    /// Completes a flush: removes the contexts it emptied or expired, and records it as the last flush.
-    pub(super) fn finish_flush(&mut self, mut cursor: FlushCursor) {
+    /// Completes a flush: removes the contexts it emptied or expired, releasing their budget units, clears the breach
+    /// flag if the state is below `limit`, and records the flush.
+    ///
+    /// A native flush is recorded as the last flush; after a drain or a discard, which removed every context as they
+    /// visited it, the state is as if it had never flushed. The owner of `cursor` takes what the pass counted from it
+    /// first.
+    pub(super) fn finish_flush(&mut self, mut cursor: FlushCursor, limit: ContextLimit<'_>) {
         debug_assert!(
             cursor.next_bucket >= self.contexts.num_buckets(),
             "a flush finished before visiting every context"
         );
         self.queue_pending_removal(&mut cursor);
 
-        // Remove any contexts that were marked as needing to be removed.
-        let contexts_len_before = self.contexts.len();
+        // Remove any contexts that were marked as needing to be removed. A drain or a discard queues none of its own,
+        // but may find the contexts an abandoned flush queued, which it has removed already.
+        let queued = self.remove_queued();
+        if let Some(budget) = limit.shared {
+            budget.release(queued);
+        }
+        let contexts_delta = queued + cursor.removed;
+        let contexts_len_after = self.contexts.len();
+
+        let target_contexts_capacity = contexts_len_after.saturating_add(contexts_delta / 2);
+        let hasher = &self.hasher;
+        self.contexts
+            .shrink_to(target_contexts_capacity, |(context, _)| hasher.hash_one(context));
+
+        if self.context_limit_breached && limit.is_below(self.contexts.len()) {
+            self.context_limit_breached = false;
+        }
+        if limit.shared.is_some() {
+            // A state that admits by its own count is bounded only when it admits: a later call may pass a lower limit.
+            self.check_bounds(limit);
+        }
+
+        match cursor.plan.mode {
+            FlushMode::Closed => self.last_flush = cursor.plan.current_time,
+            FlushMode::All | FlushMode::Discard => self.forget_flushes(),
+        }
+    }
+
+    /// Removes the contexts queued for removal, and returns how many it removed.
+    ///
+    /// A context can be queued twice, after an abandoned flush that the next flush visits again; it is removed once.
+    fn remove_queued(&mut self) -> usize {
+        let before = self.contexts.len();
         let hasher = &self.hasher;
         for context in self.contexts_remove_buf.drain(..) {
             let hash = hasher.hash_one(&context);
@@ -379,18 +668,85 @@ impl AggregationState {
                 entry.remove();
             }
         }
-        let contexts_len_after = self.contexts.len();
+        before - self.contexts.len()
+    }
 
-        let contexts_delta = contexts_len_before.saturating_sub(contexts_len_after);
-        let target_contexts_capacity = contexts_len_after.saturating_add(contexts_delta / 2);
-        self.contexts
-            .shrink_to(target_contexts_capacity, |(context, _)| hasher.hash_one(context));
-
-        if self.context_limit_breached && self.contexts.len() < self.context_limit {
-            self.context_limit_breached = false;
+    /// Removes every context, as a state discarded by its owner: decrements the context gauges of the contexts not yet
+    /// queued for removal, whose gauges were decremented when they were queued, and returns how many contexts it
+    /// removed, which hold budget units.
+    pub(super) fn release_all(&mut self) -> usize {
+        let queued = self.remove_queued();
+        for (context, aggregated) in &self.contexts {
+            self.telemetry.decrement_contexts(context, &aggregated.values);
         }
+        let held = self.contexts.len();
+        self.contexts.clear();
+        queued + held
+    }
+}
 
-        self.last_flush = cursor.plan.current_time;
+/// Returns `true` if merging `incoming` into `held` replaces `held` whole, as [`MetricValues::merge`] does: their kinds
+/// differ, or both are rates over different intervals.
+fn replaces(held: &MetricValues, incoming: &MetricValues) -> bool {
+    match (held, incoming) {
+        (MetricValues::Rate(_, held), MetricValues::Rate(_, incoming)) => held != incoming,
+        (held, incoming) => std::mem::discriminant(held) != std::mem::discriminant(incoming),
+    }
+}
+
+/// How a pass emits the values it takes from a context.
+struct Emission<'a> {
+    bucket_width_secs: NonZeroU64,
+    hist_config: &'a HistogramConfiguration,
+    filter: Option<&'a dyn EmissionFilter>,
+}
+
+impl Emission<'_> {
+    /// Emits the records `values`, taken from `context`, flush into, or, if the filter drops every one of them, skips
+    /// them and returns what it skipped.
+    fn emit<F>(&self, context: &Context, values: MetricValues, metadata: &MetricMetadata, sink: &mut F) -> Suppressed
+    where
+        F: FnMut(Metric),
+    {
+        if let Some(filter) = self.filter {
+            let suppressed = self.suppressed_by(filter, context, &values, metadata);
+            if !suppressed.is_empty() {
+                return suppressed;
+            }
+        }
+        expand_flushed(
+            context.clone(),
+            values,
+            metadata.clone(),
+            self.bucket_width_secs,
+            self.hist_config,
+            sink,
+        );
+        Suppressed::default()
+    }
+
+    /// Returns the records `filter` drops of those `values` flush into, which are all of them or none.
+    fn suppressed_by(
+        &self, filter: &dyn EmissionFilter, context: &Context, values: &MetricValues, metadata: &MetricMetadata,
+    ) -> Suppressed {
+        // Every record a context's values flush into carries one point per timestamp held.
+        let points = values.len() as u64;
+        let (records, drops) = match OutputKind::of(values) {
+            Some(kind) => (1, filter.drops(context, kind, metadata)),
+            None => {
+                let records =
+                    self.hist_config.statistics().len() as u64 + u64::from(self.hist_config.copy_to_distribution());
+                (records, records > 0 && filter.drops_histogram(context, metadata))
+            }
+        };
+        if drops {
+            Suppressed {
+                records,
+                points: records * points,
+            }
+        } else {
+            Suppressed::default()
+        }
     }
 }
 

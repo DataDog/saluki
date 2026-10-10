@@ -9,7 +9,7 @@ use super::Dispatchable;
 use crate::{
     components::ComponentContext,
     execution::{AdmissionPoint, OwnerToken},
-    topology::{EventsBuffer, OutputName},
+    topology::{ComponentId, EventsBuffer, OutputName},
 };
 
 // TODO: When we have support for additional static labels on a per-metric basis, add `discard_reason` to
@@ -57,6 +57,9 @@ pub trait DispatchBuffer: Dispatchable + Default {
 struct DispatchTarget<T> {
     metrics: DispatcherMetrics,
     senders: Vec<mpsc::Sender<T>>,
+
+    // The component each sender feeds, where it is known, so that heartbeats can go to some of them only.
+    sender_components: Vec<Option<ComponentId>>,
     admission: Option<Arc<AdmissionPoint>>,
 
     // Held while the dispatcher lives, so that the admission point sends no heartbeat once the component stops.
@@ -71,6 +74,7 @@ where
         Self {
             metrics: DispatcherMetrics::default_output(context),
             senders: Vec::new(),
+            sender_components: Vec::new(),
             admission: None,
             _admission_owner: None,
         }
@@ -80,13 +84,15 @@ where
         Self {
             metrics: DispatcherMetrics::named_output(context, output_name),
             senders: Vec::new(),
+            sender_components: Vec::new(),
             admission: None,
             _admission_owner: None,
         }
     }
 
-    fn add_sender(&mut self, sender: mpsc::Sender<T>) {
+    fn add_sender(&mut self, sender: mpsc::Sender<T>, component: Option<ComponentId>) {
         self.senders.push(sender);
+        self.sender_components.push(component);
     }
 
     async fn send(&self, mut item: T) -> Result<(), GenericError> {
@@ -315,6 +321,27 @@ where
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
+        self.attach_sender(output_name, sender, None)
+    }
+
+    /// Attaches a sender that feeds the component `component_id` to the given output.
+    ///
+    /// This is [`attach_sender_to_output`][Self::attach_sender_to_output] for a sender whose downstream component is
+    /// known, which an admission point needs in order to send heartbeats only to some of the components its output
+    /// feeds.
+    ///
+    /// # Errors
+    ///
+    /// If the output doesn't exist, or already has an admission point, an error is returned.
+    pub fn attach_component_sender_to_output(
+        &mut self, output_name: &OutputName, component_id: ComponentId, sender: mpsc::Sender<T>,
+    ) -> Result<(), GenericError> {
+        self.attach_sender(output_name, sender, Some(component_id))
+    }
+
+    fn attach_sender(
+        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>, component_id: Option<ComponentId>,
+    ) -> Result<(), GenericError> {
         let target = self.get_output_mut(output_name)?;
         if target.admission.is_some() {
             // The admission point captured the output's senders for its heartbeats, so a later sender would miss them.
@@ -324,7 +351,7 @@ where
                 output_name
             ));
         }
-        target.add_sender(sender);
+        target.add_sender(sender, component_id);
 
         Ok(())
     }
@@ -401,16 +428,20 @@ impl Dispatcher<EventsBuffer> {
     /// Makes the given output an admission point.
     ///
     /// From then on, every buffer sent on the output, including the buffers of buffered dispatchers, is stamped by
-    /// `point` before it is sent, and the point can send heartbeats through the output's senders. Outputs without an
-    /// admission point send buffers unchanged.
+    /// `point` before it is sent, and the point can send heartbeats through the output's senders: through every
+    /// sender, or, if the point has [heartbeat recipients][AdmissionPoint::heartbeat_recipients], through the senders
+    /// attached for those components with
+    /// [`attach_component_sender_to_output`][Self::attach_component_sender_to_output]. Outputs without an admission
+    /// point send buffers unchanged.
     ///
     /// Call this after attaching every sender to the output: the point captures the output's senders, holding them
     /// weakly.
     ///
     /// # Errors
     ///
-    /// If the output doesn't exist, if it already has an admission point, or if `point` is already attached to an
-    /// output, an error is returned.
+    /// If the output doesn't exist, if it already has an admission point, if `point` is already attached to an
+    /// output, or if one of the point's heartbeat recipients has no sender attached to the output, an error is
+    /// returned.
     pub fn set_admission_point(
         &mut self, output_name: &OutputName, point: Arc<AdmissionPoint>,
     ) -> Result<(), GenericError> {
@@ -422,7 +453,33 @@ impl Dispatcher<EventsBuffer> {
             ));
         }
 
-        let owner = point.attach_senders(target.senders.iter().map(mpsc::Sender::downgrade).collect())?;
+        let recipients = point.heartbeat_recipients();
+        if let Some(missing) = recipients
+            .iter()
+            .find(|recipient| !target.sender_components.iter().flatten().any(|fed| fed == *recipient))
+        {
+            return Err(generic_error!(
+                "Admission point {} sends heartbeats to '{}', but output '{}' has no sender to it. Attach a sender for \
+                 every heartbeat recipient before setting the admission point.",
+                point.id().get(),
+                missing,
+                output_name
+            ));
+        }
+        let heartbeat_senders = target
+            .senders
+            .iter()
+            .zip(&target.sender_components)
+            .filter(|(_, component)| {
+                recipients.is_empty()
+                    || component
+                        .as_ref()
+                        .is_some_and(|component| recipients.contains(component))
+            })
+            .map(|(sender, _)| sender.downgrade())
+            .collect();
+
+        let owner = point.attach_senders(heartbeat_senders)?;
         target.admission = Some(point);
         target._admission_owner = Some(owner);
 

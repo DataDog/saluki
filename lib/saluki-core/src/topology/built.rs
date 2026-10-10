@@ -395,7 +395,8 @@ impl ComponentInterconnects {
         Ok(interconnects)
     }
 
-    /// Creates the admission point of every marked output and attaches it to the output's dispatcher.
+    /// Creates the admission point of every marked output, attaches it to the output's dispatcher, and registers it in
+    /// the registry its configuration names, if any.
     ///
     /// This runs after every sender is attached, since each point captures its output's senders for heartbeats.
     fn set_admission_points(&mut self, admission_points: &[AdmissionPointBinding]) -> Result<(), GenericError> {
@@ -413,6 +414,11 @@ impl ComponentInterconnects {
             dispatcher
                 .set_admission_point(&binding.output.output(), Arc::clone(&point))
                 .with_error_context(|| format!("Failed to set the admission point of output '{}'.", binding.output))?;
+            if let Some(registry) = binding.config.registry() {
+                registry.register(&point).with_error_context(|| {
+                    format!("Failed to register the admission point of output '{}'.", binding.output)
+                })?;
+            }
 
             if point.heartbeat_period().is_some() {
                 self.heartbeat_drivers.entry(component_context).or_default().push(point);
@@ -508,15 +514,18 @@ impl ComponentInterconnects {
             let mut senders = Vec::new();
             for downstream_id in downstream_ids {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
+                let component_id = downstream_id.component_id().clone();
                 let sender = self.get_or_create_events_sender(downstream_id);
-                senders.push(sender);
+                senders.push((component_id, sender));
             }
 
             let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
             dispatcher.add_output(upstream_output_id.clone())?;
 
-            for sender in senders {
-                dispatcher.attach_sender_to_output(&upstream_output_id, sender)?;
+            // Each sender records the component it feeds, so that an admission point on the output can send its
+            // heartbeats to some of them only.
+            for (component_id, sender) in senders {
+                dispatcher.attach_component_sender_to_output(&upstream_output_id, component_id, sender)?;
             }
         }
 
@@ -695,10 +704,16 @@ fn build_health_handle(
 mod tests {
     use std::num::NonZeroUsize;
 
+    use futures::FutureExt as _;
+
     use super::*;
     use crate::data_model::event::EventType;
     use crate::data_model::payload::PayloadType;
-    use crate::topology::graph::Graph;
+    use crate::execution::{
+        AdmissionMode, AdmissionPointId, AdmissionRegistry, AdmissionSchedule, GenerationId, GenerationToken,
+        HeartbeatOutcome,
+    };
+    use crate::topology::{graph::Graph, ComponentId};
 
     #[test]
     fn component_interconnects_adds_output_before_attaching() {
@@ -722,6 +737,96 @@ mod tests {
         let interconnect_capacity = NonZeroUsize::new(10).unwrap();
         let _ = ComponentInterconnects::from_graph(interconnect_capacity, HashMap::new(), &topology_id, &graph, &[])
             .expect("should build interconnects successfully");
+    }
+
+    /// Builds the interconnects of `source -> {owner, tap}`, with an admission point on the source's output that
+    /// registers in `registry` and sends heartbeats only to `owner`.
+    fn interconnects_with_point(registry: &AdmissionRegistry) -> Result<ComponentInterconnects, GenericError> {
+        let mut graph = Graph::default();
+        graph
+            .with_source("source", EventType::Metric)
+            .with_destination("owner", EventType::Metric)
+            .with_destination("tap", EventType::Metric)
+            .with_edge("source", "owner")
+            .with_edge("source", "tap");
+        let schedule = AdmissionSchedule::Steady(Arc::new(GenerationToken::new(GenerationId::new(1)))).into_handle();
+        let config = AdmissionPointConfig::new(
+            AdmissionPointId::new(1),
+            AdmissionMode::Admit,
+            schedule,
+            Duration::from_secs(600),
+        )
+        .with_registry(registry.clone())
+        .with_heartbeat_recipients([ComponentId::try_from("owner").unwrap()]);
+        let binding = AdmissionPointBinding {
+            output: ComponentOutputId::try_from("source").unwrap(),
+            component_type: ComponentType::Source,
+            config,
+        };
+        ComponentInterconnects::from_graph(
+            NonZeroUsize::new(4).unwrap(),
+            HashMap::new(),
+            &SubsystemIdentifier::from_segments(["test"]),
+            &graph,
+            &[binding],
+        )
+    }
+
+    fn destination_context(id: &str) -> ComponentContext {
+        ComponentContext::new(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from(id).unwrap(),
+            ComponentType::Destination,
+        )
+    }
+
+    #[tokio::test]
+    async fn interconnects_register_admission_points_that_send_heartbeats_only_to_their_recipients() {
+        let registry = AdmissionRegistry::new();
+        let mut interconnects = interconnects_with_point(&registry).expect("should build interconnects");
+        let point = registry
+            .get(AdmissionPointId::new(1))
+            .expect("the point registers when its interconnects are built");
+        let mut owner = interconnects
+            .take_events_consumer(&destination_context("owner"))
+            .unwrap();
+        let mut tap = interconnects.take_events_consumer(&destination_context("tap")).unwrap();
+
+        // The dispatcher, which the interconnects still hold, keeps the point's output open.
+        assert_eq!(point.heartbeat().await, HeartbeatOutcome::Sent);
+        let heartbeat = owner
+            .next()
+            .now_or_never()
+            .flatten()
+            .expect("the owner receives the heartbeat");
+        assert!(heartbeat.is_empty() && heartbeat.header().is_stamped());
+        assert!(tap.next().now_or_never().is_none(), "the tap receives no heartbeat");
+
+        // Data still reaches both components.
+        let dispatcher = interconnects
+            .take_events_dispatcher(&ComponentContext::source(
+                &SubsystemIdentifier::from_segments(["test"]),
+                ComponentId::try_from("source").unwrap(),
+            ))
+            .unwrap();
+        dispatcher.dispatch(EventsBuffer::default()).await.unwrap();
+        assert!(owner.next().now_or_never().flatten().is_some());
+        assert!(tap.next().now_or_never().flatten().is_some());
+
+        // A second topology whose point uses an identifier the registry already holds fails to build, while the first
+        // point lives; once it is gone, the identifier is free.
+        let error = match interconnects_with_point(&registry) {
+            Ok(_) => panic!("a registered identifier is refused"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            format!("{:#}", error),
+            "Failed to register the admission point of output 'source'.: Admission point 1 is already registered. Give \
+             every admission point of one registry a unique ID."
+        );
+        drop((dispatcher, interconnects, point));
+        assert!(registry.get(AdmissionPointId::new(1)).is_none());
+        assert!(interconnects_with_point(&registry).is_ok());
     }
 
     /// Builds a component-less `BuiltTopology` carrying only the given worker-pool configuration, for exercising

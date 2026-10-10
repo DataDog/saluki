@@ -476,11 +476,13 @@ pub(super) async fn wait_until_healthy(health: &HealthRegistry) {
     tokio::time::timeout(PATIENCE, async {
         loop {
             let components = health_components(health);
-            let registered = ["dsd_pre_aggregation", "metrics_enrich"].iter().all(|region| {
-                components
-                    .iter()
-                    .any(|(component, _, _)| *component == format!("topology.primary.transforms.{}", region))
-            });
+            let registered = ["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"]
+                .iter()
+                .all(|region| {
+                    components
+                        .iter()
+                        .any(|(component, _, _)| *component == format!("topology.primary.transforms.{}", region))
+                });
             if registered
                 && ready(health).await == StatusCode::OK
                 && components.iter().all(|(_, live, ready)| *live && *ready)

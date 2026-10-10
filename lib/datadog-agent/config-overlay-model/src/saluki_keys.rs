@@ -673,9 +673,17 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     // ── aggregate.rs ─────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "aggregate_window_duration_seconds",
-        description: "Aggregation window size",
-        default: "",
-        documentation: None,
+        description: "Aggregation window size, in seconds: an allowed bucket width",
+        default: "10",
+        documentation: Some(concat!(
+            "### `aggregate_window_duration_seconds`\n\n",
+            "The width of DogStatsD aggregation buckets, in seconds. The default is 10 seconds.\n\n",
+            "The width must be one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120, 180, or 300 seconds: a divisor ",
+            "of 60 seconds, or 2, 3, or 5 minutes. Buckets of allowed widths line up at a common boundary every ",
+            "minute (or every 2, 3, or 5 minutes), so that a change of aggregation, such as a policy artifact's, can ",
+            "switch at a bucket boundary. Any other value, `0` included, fails startup with an error that names the ",
+            "nearest allowed width.\n",
+        )),
         value_type: "ValueType::Integer",
         schema_default: None,
         env_vars: &[],

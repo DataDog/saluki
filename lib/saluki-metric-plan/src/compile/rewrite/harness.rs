@@ -1124,6 +1124,7 @@ impl Case {
         match run.installs().first().map(|install| &install.outcome) {
             Some(InstallOutcome::Active { .. }) => Ok(run),
             Some(InstallOutcome::Rejected(rejection)) => Err(format!("the plan was rejected: {}", rejection)),
+            Some(other) => Err(format!("the plan was not installed at once: {:?}", other)),
             None => Err("the plan was not installed".to_string()),
         }
     }

@@ -1,0 +1,47 @@
+{
+  "ir_version": 1,
+  "scope": "dogstatsd_pre_aggregation",
+  "base": {
+    "program_hash": "sha256:69ffd4735014d43af8d9c56df397c52242faef1aa233d4a63932ebcb01337565"
+  },
+  "nodes": [
+    {"id": "dsd_enrich", "op": "dogstatsd_mapper", "params": {
+      "profiles": {"config": "dogstatsd.mapper.profiles"},
+      "cache_size": {"config": "dogstatsd.mapper.cache_size"},
+      "string_interner_bytes": {"config": "dogstatsd.mapper.string_interner_size_bytes"}}},
+    {"id": "dsd_prefix_filter", "op": "namespace_prefix", "params": {
+      "namespace": {"config": "dogstatsd.prefix_filter.metric_namespace"},
+      "exclusions": {"config": "dogstatsd.prefix_filter.metric_namespace_blocklist"}}},
+    {"id": "dsd_prefix_filter_blocklist", "op": "split", "params": {"predicate": {"intake_name": {"matches": {
+      "values": {"config": "dogstatsd.metric_filter.values"},
+      "prefix": {"config": "dogstatsd.metric_filter.match_prefix"}}}}}},
+    {"id": "dsd_prefix_filter_blocklist_true", "op": "drop"},
+    {"id": "dsd_no_agg_split", "op": "timestamp_split", "params": {
+      "window": {"config": "dogstatsd.aggregation.window_duration_seconds"}}},
+    {"id": "dsd_tag_filterlist", "op": "tag_projection", "params": {
+      "rules": {"config": "dogstatsd.tag_filterlist"},
+      "value_rules": {"config": "dogstatsd.tag_value_allowlist"},
+      "cache_capacity": {"config": "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity"}}},
+    {"id": "dsd_agg", "op": "aggregate", "params": {
+      "window": {"config": "dogstatsd.aggregation.window_duration_seconds"},
+      "flush_interval": {"config": "dogstatsd.aggregation.flush_interval"},
+      "context_limit": {"config": "dogstatsd.aggregation.context_limit"},
+      "counter_expiry": {"config": "dogstatsd.aggregation.counter_expiry_seconds"},
+      "flush_open_windows": {"config": "dogstatsd.aggregation.flush_open_windows"},
+      "histogram_aggregates": {"config": "metrics_encoding.histogram.aggregates"},
+      "histogram_percentiles": {"config": "metrics_encoding.histogram.percentiles"},
+      "copy_to_distribution": {"config": "metrics_encoding.histogram.copy_to_distribution"},
+      "copy_to_distribution_prefix": {"config": "metrics_encoding.histogram.copy_to_distribution_prefix"}}}
+  ],
+  "edges": [
+    {"from": "input.metrics", "to": "dsd_enrich.in"},
+    {"from": "dsd_enrich.out", "to": "dsd_prefix_filter.in"},
+    {"from": "dsd_prefix_filter.out", "to": "dsd_prefix_filter_blocklist.in"},
+    {"from": "dsd_prefix_filter_blocklist.true", "to": "dsd_prefix_filter_blocklist_true.in"},
+    {"from": "dsd_prefix_filter_blocklist.false", "to": "dsd_no_agg_split.in"},
+    {"from": "dsd_no_agg_split.default", "to": "dsd_tag_filterlist.in"},
+    {"from": "dsd_tag_filterlist.out", "to": "dsd_agg.in"},
+    {"from": "dsd_agg.out", "to": "exit.aggregated"},
+    {"from": "dsd_no_agg_split.passthrough", "to": "exit.passthrough"}
+  ]
+}

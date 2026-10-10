@@ -14,7 +14,7 @@
 //! | `namespace_prefix` | synchronous | `in`, `out` | Adds a namespace prefix to metric names. |
 //! | `timestamp_split` | synchronous | `in`; `default`, `passthrough` | Separates timestamped points. |
 //! | `tag_projection` | synchronous | `in`, `out` | Removes tags and restricts tag values, for counters and sketches. |
-//! | `aggregate` | opaque host | `in`, `out` | Native aggregation into time buckets. |
+//! | `aggregate` | isolated | `in`, `out` | Native aggregation into time buckets, as a kernel in an isolation slot. |
 //! | `host_enrichment` | synchronous | `in`, `out` | Leaves metrics unchanged. |
 //! | `host_tags` | synchronous | `in`, `out` | Adds host tags until a deadline. |
 //! | `opaque_host` | opaque host | `in`; named outputs | A native component without an extracted kernel. |
@@ -27,13 +27,14 @@
 //! Parameters whose values come from configuration are bindable: lowering writes them as configuration bindings with
 //! their resolved values. Parameters that structure the plan, such as port counts, are never bindable.
 
-use std::{fmt, sync::Arc};
+use std::{any::Any, fmt, sync::Arc, time::Duration};
 
 use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_core::{
     accounting::MemoryBoundsBuilder, components::ComponentContext, execution::Kernel, support::SubsystemIdentifier,
     topology::ComponentId,
 };
+use saluki_metric_kernels::aggregate::{ContextBudget, EmissionFilter};
 use snafu::Snafu;
 
 use crate::{
@@ -52,7 +53,7 @@ mod ports;
 pub use self::ports::{union_of, InputPort, KindMap, OutputPort, PortMapping, Ports, TimestampMap, IN, OUT};
 
 mod aggregate;
-pub use self::aggregate::{aggregate_params, histogram_params, Aggregate, HISTOGRAM_AGGREGATES};
+pub use self::aggregate::{aggregate_params, histogram_params, Aggregate, HISTOGRAM_AGGREGATES, MAX_HISTOGRAM_SERIES};
 
 mod dogstatsd;
 pub use self::dogstatsd::{
@@ -155,16 +156,28 @@ pub trait OperatorDef: Send + Sync {
     /// Declares the memory the operator's kernel needs.
     ///
     /// Operators that run inside a host component, such as opaque hosts, declare nothing here: the host declares its
-    /// own bounds. The default declares nothing.
+    /// own bounds. The memory of the state a state owner keeps in entries drawn from its host's state budget is not
+    /// declared here, but in [`specify_state_bounds`][Self::specify_state_bounds]. The default declares nothing.
     fn specify_bounds(&self, _params: &DecodedParams, _builder: &mut MemoryBoundsBuilder) {}
+
+    /// Declares the memory of the state the operator's kernel keeps in entries drawn from its host's state budget
+    /// ([`KernelBuildContext::state_budget`]), such as aggregation's contexts, at the node's own limit on them.
+    ///
+    /// Every state owner of a host draws on one budget, which bounds what they hold together whatever their own
+    /// limits say. So a host's memory bounds hold this state once, for its boot program, whose state owners' limits
+    /// set the budget's capacity; and the limit on the memory an artifact's nodes declare
+    /// ([`ARTIFACT_MEMORY`][crate::limits::ARTIFACT_MEMORY]) leaves it out, counting only what
+    /// [`specify_bounds`][Self::specify_bounds] declares. The default declares nothing.
+    fn specify_state_bounds(&self, _params: &DecodedParams, _builder: &mut MemoryBoundsBuilder) {}
 
     /// Returns an estimate of the work the operator does per event, in nanoseconds, for rewrite R1's cost model.
     ///
     /// The estimates come from the stage 3 measurements of the default program's kernels running in a region over a
     /// DogStatsD-like batch, release build, and are only compared with one another: R1 fuses synchronous neighbors
     /// into one region as long as the region's estimated cost stays within a budget (see
-    /// [`Frame`][crate::compile::Frame]). Operators that run in host components cost nothing here. The default is
-    /// zero, for operators whose work is negligible next to a kernel's.
+    /// [`Frame`][crate::compile::Frame]). Operators that run in host components, or alone in an isolation slot, which
+    /// R1 never fuses, are not priced: their cost counts nowhere. The default is zero, for those and for operators
+    /// whose work is negligible next to a kernel's.
     fn cost(&self, _params: &DecodedParams) -> u32 {
         0
     }
@@ -177,6 +190,42 @@ pub trait OperatorDef: Send + Sync {
     /// extracted from its native component. A kernel whose parameters are bound to configuration and not resolved
     /// fails to build.
     fn kernel(&self, _params: &DecodedParams) -> Option<KernelSpec> {
+        None
+    }
+
+    /// Returns the parameters a lineage of the operator's state is keyed by: those its state contract depends on, so
+    /// that two generations whose nodes have equal lineage parameters can share one instance of the state.
+    ///
+    /// The installer keys a state owner's kernel instance by its node and a hash of its operator and these parameters,
+    /// so that a `retain` transition keeps the instance even when other parameters change; those reach the kernel per
+    /// call instead (see [`step_params`][Self::step_params]). The default is every parameter, as decoded: an operator
+    /// without state, or whose every parameter belongs to its state contract, shares an instance only with equal
+    /// parameters.
+    fn lineage_params(&self, params: &DecodedParams) -> Params {
+        params.encode()
+    }
+
+    /// Returns the parameters a state owner's kernel takes with each call, from the generation the call runs under,
+    /// rather than from when the kernel was built: those a `retain` transition may change without a new lineage.
+    ///
+    /// A host passes them to the kernel through
+    /// [`Turn::with_param`][saluki_core::execution::Turn::with_param]; a kernel called without them uses the
+    /// parameters it was built with. `filter` is the emission filter a rewrite pushed into the state owner, if any,
+    /// which the kernel applies to what it emits. The default is `None`: the operator takes no per-call parameters.
+    fn step_params(
+        &self, _params: &DecodedParams, _filter: Option<Arc<dyn EmissionFilter>>,
+    ) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
+
+    /// Returns the interval between the flush ticks of a state owner's kernel, which the host of its isolation slot
+    /// schedules, or `None` if the operator has no time-driven work or the interval is bound to configuration and not
+    /// resolved.
+    ///
+    /// The host runs the kernel's [`advance_time`][saluki_core::execution::Kernel::advance_time] at each tick. After a
+    /// tick, the next one is due this interval later, as the generation the tick ran under says. The default is
+    /// `None`.
+    fn flush_interval(&self, _params: &DecodedParams) -> Option<Duration> {
         None
     }
 }
@@ -211,15 +260,15 @@ const DETACHED_TOPOLOGY: &str = "plan";
 /// builds or calls the kernel, so that the kernel is accounted for separately from the component that runs it, as a
 /// native component's sub-transforms are. Without one, the kernel is accounted to whatever group is current.
 ///
-/// # Missing
-///
-/// Stateful kernels will also find here the state budget they draw credits from, shared by every lineage of their
-/// state owner, once state lineages exist.
+/// A stateful kernel finds here the state budget it draws credits from
+/// ([`with_state_budget`][Self::with_state_budget]), shared by every lineage of its state owner and, through the
+/// global budget, by every state owner of the host.
 #[derive(Clone)]
 pub struct KernelBuildContext {
     node: NodeId,
     component: ComponentContext,
     resource_group: Option<ResourceGroupToken>,
+    state_budget: Option<ContextBudget>,
 }
 
 impl fmt::Debug for KernelBuildContext {
@@ -228,6 +277,7 @@ impl fmt::Debug for KernelBuildContext {
             .field("node", &self.node)
             .field("component", &self.component)
             .field("resource_group", &self.resource_group.is_some())
+            .field("state_budget", &self.state_budget)
             .finish()
     }
 }
@@ -239,6 +289,7 @@ impl KernelBuildContext {
             node,
             component,
             resource_group: None,
+            state_budget: None,
         }
     }
 
@@ -246,6 +297,20 @@ impl KernelBuildContext {
     pub fn with_resource_group(mut self, token: ResourceGroupToken) -> Self {
         self.resource_group = Some(token);
         self
+    }
+
+    /// Gives a stateful kernel the budgets its state draws on: the host's global budget and its node's.
+    pub fn with_state_budget(mut self, budget: ContextBudget) -> Self {
+        self.state_budget = Some(budget);
+        self
+    }
+
+    /// Returns the budgets the host gave a stateful kernel's state, if it gave any.
+    ///
+    /// A host that runs state owners gives every one a budget; a kernel built without one, outside any topology, owns
+    /// its state alone.
+    pub fn state_budget(&self) -> Option<&ContextBudget> {
+        self.state_budget.as_ref()
     }
 
     /// Creates a context for building the kernel of `node` outside any topology.
@@ -423,9 +488,16 @@ impl ConfiguredOperator {
         }
     }
 
-    /// Declares the memory the operator's kernel needs.
+    /// Declares the memory the operator's kernel needs, apart from the state it draws from its host's state budget;
+    /// see [`OperatorDef::specify_bounds`].
     pub fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         self.def.specify_bounds(&self.params, builder);
+    }
+
+    /// Declares the memory of the state the operator's kernel keeps in entries drawn from its host's state budget;
+    /// see [`OperatorDef::specify_state_bounds`].
+    pub fn specify_state_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        self.def.specify_state_bounds(&self.params, builder);
     }
 
     /// Returns the estimate of the work the operator does per event, in nanoseconds, for R1's cost model; see
@@ -437,6 +509,23 @@ impl ConfiguredOperator {
     /// Returns how to build the operator's kernel, or `None` if it has none.
     pub fn kernel(&self) -> Option<KernelSpec> {
         self.def.kernel(&self.params)
+    }
+
+    /// Returns the parameters a lineage of the operator's state is keyed by; see [`OperatorDef::lineage_params`].
+    pub fn lineage_params(&self) -> Params {
+        self.def.lineage_params(&self.params)
+    }
+
+    /// Returns the parameters the operator's kernel takes with each call, with the emission filter a rewrite pushed
+    /// into it, if any; see [`OperatorDef::step_params`].
+    pub fn step_params(&self, filter: Option<Arc<dyn EmissionFilter>>) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.def.step_params(&self.params, filter)
+    }
+
+    /// Returns the interval between the flush ticks of the operator's kernel, if it has time-driven work; see
+    /// [`OperatorDef::flush_interval`].
+    pub fn flush_interval(&self) -> Option<Duration> {
+        self.def.flush_interval(&self.params)
     }
 }
 
@@ -577,6 +666,31 @@ mod support {
             errors.push(error(name, "must be a whole number of seconds, such as \"10s\""));
         } else if value.is_zero() && !allow_zero {
             errors.push(error(name, "must be at least one second"));
+        }
+    }
+
+    /// Checks that a known bucket width is a whole number of seconds and one of the allowed bucket widths
+    /// ([`ALLOWED_BUCKET_WIDTHS`][crate::limits::ALLOWED_BUCKET_WIDTHS]).
+    ///
+    /// Buckets are aligned to Unix time, and the allowed widths line up at a common boundary every minute, or every 2,
+    /// 3, or 5 minutes, which is where a change of width takes effect.
+    pub(super) fn check_bucket_width(name: &str, value: Option<Duration>, errors: &mut Vec<ParamError>) {
+        let before = errors.len();
+        check_whole_seconds(name, value, false, errors);
+        let Some(value) = value.filter(|_| errors.len() == before) else {
+            return;
+        };
+        if !crate::limits::is_allowed_bucket_width(value) {
+            errors.push(error(
+                name,
+                format!(
+                    "must be one of {}, but is {} seconds: aggregation buckets must line up at a common boundary \
+                     every minute (or every 2, 3, or 5 minutes) so that aggregation changes can switch at a bucket \
+                     boundary",
+                    saluki_metric_kernels::params::describe_allowed_widths(),
+                    value.as_secs()
+                ),
+            ));
         }
     }
 }

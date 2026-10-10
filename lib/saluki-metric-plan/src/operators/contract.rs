@@ -168,10 +168,10 @@ pub enum StateTime {
     /// Buckets aligned to Unix time, `[k * width, (k + 1) * width)`, with untimestamped points assigned to the bucket
     /// containing their admission time, and closed once the state owner's watermark passes their end.
     ///
-    /// This is the contract of aggregation as a kernel, from the stage that extracts it. Until then aggregation runs in
-    /// its native host component, which assigns a point to the bucket containing the host's clock when its batch
-    /// arrives, and closes buckets by that clock. The two differ only for points admitted within their queueing delay
-    /// of a bucket boundary, as the specification's compatibility matrix records.
+    /// This is the contract of aggregation as a kernel. Native aggregation, in its host component, assigned a point to
+    /// the bucket containing the host's clock when its batch arrived, and closed buckets by that clock. The two differ
+    /// only for points admitted within their queueing delay of a bucket boundary, as the specification's compatibility
+    /// matrix records.
     Buckets {
         /// The bucket width, or `None` when it is bound to configuration and not yet resolved.
         width: Option<Duration>,
@@ -204,6 +204,13 @@ pub struct KeyedState {
 
     /// Whether new keys enter state.
     pub admission: AdmissionPolicy,
+
+    /// Whether the state owner's kernel can skip, as it emits, the records a filter below it would drop: rewrite R5b
+    /// pushes such a filter into the state owner as emission suppression, passed with each call's parameters
+    /// ([`OperatorDef::step_params`][crate::operators::OperatorDef::step_params]).
+    ///
+    /// It describes what the kernel can do, not the state, so it never affects a transition's class.
+    pub emission_filter: bool,
 }
 
 /// The state an operator keeps between batches.
@@ -267,7 +274,8 @@ impl Loss {
     }
 }
 
-/// Where an operator runs: in synchronous work that can be fused with its neighbors, or in a host.
+/// Where an operator runs: in synchronous work that can be fused with its neighbors, in a region of its own, or in a
+/// host.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Boundary {
     /// A synchronous kernel that can be fused with its neighbors.
@@ -279,12 +287,23 @@ pub enum Boundary {
     /// A host component without an extracted kernel, which is treated as reading and writing everything. It is a
     /// fence.
     OpaqueHost,
+
+    /// A stateful kernel behind a declared isolation fence: it is never fused with its neighbors, and runs in a region
+    /// host of its own, an isolation slot, which owns its state, its watermark, and its flush ticks. It is a fence,
+    /// but not a host: the region host runs its kernel, as it runs synchronous ones.
+    Isolated,
 }
 
 impl Boundary {
     /// Returns `true` if the boundary is a fence that rewrites and fusion never cross.
     pub const fn is_fence(self) -> bool {
         !matches!(self, Self::Synchronous)
+    }
+
+    /// Returns `true` if the operator runs in a host component of its own, which a plan's region never runs: an I/O
+    /// host or an opaque host.
+    pub const fn is_host(self) -> bool {
+        matches!(self, Self::IoHost | Self::OpaqueHost)
     }
 }
 
@@ -535,5 +554,12 @@ mod tests {
         assert!(!Boundary::Synchronous.is_fence());
         assert!(Boundary::IoHost.is_fence());
         assert!(Boundary::OpaqueHost.is_fence());
+        assert!(Boundary::Isolated.is_fence());
+
+        // Only I/O and opaque hosts run in host components; an isolated kernel runs in a region host.
+        assert!(!Boundary::Synchronous.is_host());
+        assert!(Boundary::IoHost.is_host());
+        assert!(Boundary::OpaqueHost.is_host());
+        assert!(!Boundary::Isolated.is_host());
     }
 }

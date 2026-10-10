@@ -14,8 +14,13 @@
 //!
 //! The status is read field by field (see [`AdpStatus::read`]), and the status in hand is kept, with when it was
 //! received, when a later request fails, so that the UI can show it as last known.
+//!
+//! The exports of the default program's other scopes ([`OTHER_SCOPES`]) are fetched with the policy scope's, and kept
+//! per scope with why one could not be read, if it could not; the editor checks an artifact against the export of the
+//! scope it replaces ([`ControlSurface::export_of_scope`]).
 
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -32,7 +37,7 @@ use crate::{
     adp_api::{routes, AdpApi, Surface, SurfaceState},
     clock::unix_millis,
     export::ExportBundle,
-    stub::protocol::AdpStatus,
+    stub::protocol::{AdpStatus, POLICY_SCOPE},
 };
 
 /// How often the watcher asks for ADP's status.
@@ -57,6 +62,37 @@ pub const NOT_EXPOSED_DETAIL: &str = "The control surface, the export bundle, an
 pub const EXPORT_NOT_EXPOSED_MESSAGE: &str = "No default program to load: ADP does not serve its export yet \
      (GET /programmable-metrics/export answered 404 Not Found).";
 
+/// The scopes of the demo's default program besides the policy scope, whose exports the watcher keeps too.
+pub const OTHER_SCOPES: &[&str] = &["dogstatsd_pre_aggregation"];
+
+/// The export of one scope besides the policy scope, as the watcher keeps it.
+#[derive(Clone, Default)]
+struct ScopeExport {
+    state: Option<SurfaceState>,
+    export: Option<Arc<ExportBundle>>,
+    error: Option<String>,
+    fetched_ms: Option<u64>,
+}
+
+/// What the watcher knows of one scope's export, as the UI shows it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ScopeExportView {
+    /// The scope.
+    pub scope: String,
+
+    /// Whether the export route answered for the scope.
+    pub state: SurfaceState,
+
+    /// The base program hash of the export in hand.
+    pub program_hash: Option<String>,
+
+    /// Why the export route, or reading the bundle, failed, if it did.
+    pub error: Option<String>,
+
+    /// When the export in hand was fetched.
+    pub fetched_ms: Option<u64>,
+}
+
 #[derive(Default)]
 struct ControlState {
     status_state: Option<SurfaceState>,
@@ -79,6 +115,8 @@ struct ControlState {
     /// The active plan, with its hash.
     active_plan: Option<(PlanHash, Arc<Plan>)>,
     active_plan_error: Option<String>,
+    /// The exports of the other scopes, by scope.
+    scope_exports: BTreeMap<String, ScopeExport>,
 }
 
 impl ControlState {
@@ -139,6 +177,9 @@ pub struct ControlView {
 
     /// Why the plan route, or reading its plan, failed, if it did.
     pub active_plan_error: Option<String>,
+
+    /// The exports of the other scopes, in scope order.
+    pub scope_exports: Vec<ScopeExportView>,
 }
 
 /// The control surface watcher's record.
@@ -171,6 +212,25 @@ impl ControlSurface {
         let state = self.lock();
         let export = state.export.clone()?;
         Some((export, state.default_program.clone()))
+    }
+
+    /// Returns the export bundle in hand of `scope` with the default program it was taken from, when ADP served that
+    /// program: the policy scope's, or that of another scope ([`OTHER_SCOPES`]), whose default program is the one kept
+    /// with the policy scope's export if its base of `scope` is the export's.
+    ///
+    /// A scope the default program does not declare gets the policy scope's: composition then says which scopes it
+    /// declares.
+    pub fn export_of_scope(&self, scope: &str) -> Option<(Arc<ExportBundle>, Option<Arc<Plan>>)> {
+        if scope == POLICY_SCOPE || !OTHER_SCOPES.contains(&scope) {
+            return self.export_with_default_program();
+        }
+        let state = self.lock();
+        let export = state.scope_exports.get(scope)?.export.clone()?;
+        let default_program = state
+            .default_program
+            .clone()
+            .filter(|plan| matching_base(plan, &export).is_ok());
+        Some((export, default_program))
     }
 
     /// Returns the active plan in hand, if its hash is `hash`.
@@ -208,7 +268,49 @@ impl ControlSurface {
             default_program_error: state.default_program_error.clone(),
             active_plan_hash: state.active_plan.as_ref().map(|(hash, _)| hash.to_string()),
             active_plan_error: state.active_plan_error.clone(),
+            scope_exports: state
+                .scope_exports
+                .iter()
+                .map(|(scope, export)| ScopeExportView {
+                    scope: scope.clone(),
+                    state: export.state.unwrap_or(SurfaceState::Unknown),
+                    program_hash: export.export.as_ref().map(|export| export.program_hash().to_string()),
+                    error: export.error.clone(),
+                    fetched_ms: export.fetched_ms,
+                })
+                .collect(),
         }
+    }
+
+    /// Records the answer of the export route for a scope other than the policy scope.
+    pub fn record_scope_export(&self, scope: &str, answer: Surface<Value>, at_ms: u64) -> Surface<Arc<ExportBundle>> {
+        let answer = answer.map(|value| ExportBundle::from_value(value).map(Arc::new));
+        let mut state = self.lock();
+        let kept = state.scope_exports.entry(scope.to_string()).or_default();
+        kept.state = Some(answer.state());
+        match &answer {
+            Surface::Available(export) => {
+                kept.export = Some(Arc::clone(export));
+                kept.fetched_ms = Some(at_ms);
+                kept.error = None;
+            }
+            Surface::NotExposed => {
+                kept.export = None;
+                kept.error = None;
+            }
+            Surface::Failed(error) => kept.error = Some(error.clone()),
+        }
+        answer
+    }
+
+    /// Fetches the export of a scope now and records it: the policy scope's with its default program, or that of
+    /// another scope.
+    pub async fn refresh_export_of(&self, api: &AdpApi, scope: &str) -> Surface<Arc<ExportBundle>> {
+        if scope == POLICY_SCOPE {
+            return self.refresh_export(api).await;
+        }
+        let answer = api.control_json::<Value>(&routes::export_of(scope)).await;
+        self.record_scope_export(scope, answer, unix_millis())
     }
 
     /// Records the answer of the status route, reading the status document field by field.
@@ -346,13 +448,18 @@ impl ControlSurface {
         }
     }
 
-    /// Fetches the export now, and the default program it was taken from, and records them.
+    /// Fetches the export now, and the default program it was taken from, and records them, with the exports of the
+    /// other scopes.
     pub async fn refresh_export(&self, api: &AdpApi) -> Surface<Arc<ExportBundle>> {
         let answer = api.control_json::<Value>(routes::EXPORT).await;
         let export = self.record_export(answer, unix_millis());
         if let Surface::Available(_) = export {
             let answer = api.control_json::<Value>(routes::DEFAULT_PROGRAM).await;
             self.record_default_program(answer);
+            for scope in OTHER_SCOPES {
+                let answer = api.control_json::<Value>(&routes::export_of(scope)).await;
+                self.record_scope_export(scope, answer, unix_millis());
+            }
         }
         export
     }
@@ -547,5 +654,68 @@ mod tests {
         assert_eq!(failed.state(), SurfaceState::Failed);
         assert!(control.view().export_error.unwrap().contains("export_version 9"));
         assert!(control.export().is_some());
+    }
+
+    #[test]
+    fn an_artifact_is_checked_against_the_export_of_the_scope_it_replaces() {
+        const PRE: &str = "dogstatsd_pre_aggregation";
+        let (plan, export) = crate::preview::tests::fixture_documents();
+        let control = ControlSurface::new();
+        control.record_export(Surface::Available(export.clone()), 1_000);
+        control.record_default_program(Surface::Available(serde_json::to_value(&plan).unwrap()));
+        let export_of = |scope| {
+            control
+                .export_of_scope(scope)
+                .map(|(export, default_program)| (export.scope.to_string(), default_program.is_some()))
+        };
+        assert_eq!(export_of(POLICY_SCOPE), Some((POLICY_SCOPE.to_string(), true)));
+        // A scope the default program does not declare gets the policy scope's: composition names the declared ones.
+        assert_eq!(export_of("no_such_scope"), Some((POLICY_SCOPE.to_string(), true)));
+
+        // Another scope's export, once in hand, with the default program only if the export was taken from it.
+        assert_eq!(export_of(PRE), None);
+        let mut bundle = export;
+        bundle["scope"] = PRE.into();
+        bundle["artifact"]["scope"] = PRE.into();
+        control.record_scope_export(PRE, Surface::Available(bundle.clone()), 2_000);
+        assert_eq!(export_of(PRE), Some((PRE.to_string(), false)));
+        let base = base(&plan, &PRE.parse().unwrap()).unwrap();
+        bundle["artifact"]["base"]["program_hash"] = base.program_hash.to_string().into();
+        control.record_scope_export(PRE, Surface::Available(bundle), 3_000);
+        assert_eq!(export_of(PRE), Some((PRE.to_string(), true)));
+    }
+
+    #[test]
+    fn every_other_scopes_export_is_kept_on_its_own_with_why_it_cannot_be_read() {
+        let control = ControlSurface::new();
+        let mut bundle = serde_json::from_str::<Value>(DEMO_EXPORT).unwrap();
+        bundle["scope"] = "dogstatsd_pre_aggregation".into();
+        bundle["artifact"]["scope"] = "dogstatsd_pre_aggregation".into();
+        let kept = control.record_scope_export("dogstatsd_pre_aggregation", Surface::Available(bundle), 1_000);
+        assert_eq!(kept.state(), SurfaceState::Available);
+        // The policy scope's export is not this one.
+        assert!(control.export().is_none());
+        let failed = control.record_scope_export(
+            "dogstatsd_pre_aggregation",
+            Surface::Available(serde_json::json!({"export_version": 9})),
+            2_000,
+        );
+        assert_eq!(failed.state(), SurfaceState::Failed);
+        let views = control.view().scope_exports;
+        assert_eq!(views.len(), 1);
+        let view = &views[0];
+        assert_eq!(
+            (view.scope.as_str(), view.state),
+            ("dogstatsd_pre_aggregation", SurfaceState::Failed)
+        );
+        // The export in hand stays, with when it was fetched, and the error says why the latest could not be read.
+        assert_eq!(view.fetched_ms, Some(1_000));
+        assert!(view.program_hash.is_some());
+        assert!(view.error.as_deref().unwrap().contains("export_version 9"));
+        assert_eq!(
+            routes::export_of("dogstatsd_pre_aggregation"),
+            "/programmable-metrics/export?scope=dogstatsd_pre_aggregation"
+        );
+        assert_eq!(routes::export_of(POLICY_SCOPE), routes::EXPORT);
     }
 }

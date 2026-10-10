@@ -166,7 +166,7 @@ fn check_bindings(graph: &Graph<'_>, catalog: &dyn Catalog, report: &mut Validat
                             ),
                         ));
                     }
-                    if known.liveness == Liveness::Live && op.contract().boundary.is_fence() {
+                    if known.liveness == Liveness::Live && op.contract().boundary.is_host() {
                         report.push(Finding::new(
                             Rule::LiveBindingOnHost,
                             at.clone(),
@@ -319,13 +319,20 @@ pub(super) fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut V
             }
         }
 
-        // The region: every node reachable from the inputs without entering an exit.
+        // The region: every node reachable from the inputs without entering an exit. An edge into a node whose operator
+        // does not configure leads somewhere unknown, so the region may extend beyond what the walk sees.
         let mut region = BTreeSet::new();
         let mut fed_exits = BTreeSet::new();
-        let mut pending = inputs
-            .iter()
-            .filter_map(|&(node, port)| graph.target(node, port))
-            .collect::<Vec<_>>();
+        let mut unknown = false;
+        let mut pending = Vec::new();
+        let mut follow =
+            |(node, port): (usize, usize), pending: &mut Vec<(usize, usize)>| match graph.target(node, port) {
+                Some(endpoint) => pending.push(endpoint),
+                None => unknown |= graph.leads_somewhere_unknown(node, port),
+            };
+        for &input in &inputs {
+            follow(input, &mut pending);
+        }
         while let Some(endpoint) = pending.pop() {
             if exits.contains_key(&endpoint) {
                 fed_exits.insert(endpoint);
@@ -336,7 +343,9 @@ pub(super) fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut V
                 continue;
             }
             let outputs = graph.op(node).map_or(0, |op| op.ports().outputs.len());
-            pending.extend((0..outputs).filter_map(|port| graph.target(node, port)));
+            for port in 0..outputs {
+                follow((node, port), &mut pending);
+            }
         }
 
         for &node in &region {
@@ -372,6 +381,8 @@ pub(super) fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut V
             }
         }
 
+        // What a node whose operator does not configure feeds is not known, so an exit behind it is not reported unfed:
+        // the node is reported where its operator is checked.
         for (endpoint, name) in &exits {
             let port = format!("{}.{}", graph.id(endpoint.0), graph.input_name(*endpoint));
             if region.contains(&endpoint.0) {
@@ -383,7 +394,7 @@ pub(super) fn check_scope_closure(graph: &Graph<'_>, plan: &Plan, report: &mut V
                         name, port
                     ),
                 ));
-            } else if !fed_exits.contains(endpoint) {
+            } else if !fed_exits.contains(endpoint) && !unknown {
                 report.push(Finding::new(
                     Rule::ScopeClosed,
                     at(),

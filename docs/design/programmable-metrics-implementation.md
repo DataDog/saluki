@@ -16,7 +16,7 @@ amendments](#proposed-spec-amendments) records what we do and why. Revision 2 in
 7. [ADP integration](#adp-integration)
 8. [Demo](#demo)
 9. [Stage plan](#stage-plan)
-10. [Stage 6 outline](#stage-6-outline)
+10. [Stage 6: stateful kernels](#stage-6-stateful-kernels)
 11. [Proposed spec amendments](#proposed-spec-amendments)
 12. [Risks](#risks)
 
@@ -41,8 +41,12 @@ lib/saluki-core/src/execution/        generic execution contracts (no metric or 
   header.rs        BatchHeader and its field types                                        [types 1, wired 2]
   clock.rs         AdmissionClock: max-latched wall clock, reset epochs                   [2]
   admission.rs     AdmissionPoint (per component output), AdmissionSchedule, heartbeats  [2]
+                   AdmissionRegistry, schedule transactions, heartbeat recipients        [6]
   generation.rs    GenerationId, GenerationToken (retirement notification), GenerationRef [types 1, wired 2]
+                   CutBoundary on the token                                               [6]
   kernel.rs        Kernel trait, Turn, Budget, Progress, DrainPolicy                      [1]
+                   per-call parameters, ClockReset, held                                  [6]
+  budget.rs        StateBudget, the shared context budget                                 [6]
   region/          RegionDriver trait, RegionHost transform, control mailbox, supervision [3]
 lib/saluki-core/benches/region_host.rs  a region host's per-buffer work vs a plain transform    [3]
 
@@ -59,9 +63,11 @@ lib/saluki-metric-kernels/            native metric semantics, extracted once   
                    histogram_statistic_entries, is_scalar_series (from metric_filter, the autoscaling gateway,
                    and dogstatsd_post_aggregate_filter)                                                     [2]
   aggregate/       AggregateCore: the state machine and its run-loop decisions, with a resumable flush
-                   (moved unchanged in 2, t_a and watermarks in 6)
+                   (moved unchanged in 2); kernel.rs (AggregateKernel), emission.rs (EmissionFilter),
+                   snapshot.rs (ContextSnapshot), shared budgets, drains and discards                     [6]
   params/          plan-owned parameter types (no agent-data-plane-config types): mapper profiles, namespace prefix,
                    tag rules and value rules (with their validation), histogram statistics                      [1]
+                   bucket_width.rs: the allowed bucket widths and the transition bound                          [6]
   testing.rs       `test-util`: metric strategies, shared with the plan crate's `testing`                  [2]
   <kernel>/reference.rs, <kernel>/tests.rs   frozen pre-extraction copies and kernel-vs-copy property tests  [2]
 
@@ -73,8 +79,11 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
             rewrite/: the logical rewrites' pipeline (mod.rs), r3.rs, r5a.rs, r6.rs, r7.rs,
             filters.rs (what R5a and R6 share), and the property tests' random plans
             (harness.rs, random_plans.rs, cfg(test))                                           [4]
-            R5b                                                                                [6]
+            rewrite/r5b.rs: R5b's analysis and PushedFilter                                     [6]
   runtime/  MetricRegionDriver implementing saluki-core RegionDriver, RegionBounds, telemetry  [3]
+            state/ (rules.rs shared with the interpreter, slab.rs), driver/isolation.rs (the
+            isolation slot), harness.rs (`test-util` FrameHarness), transition_tests.rs and
+            r5b_tests.rs (traces and R5b through the frame harness)                            [6]
   benches/  region_driver.rs: the default program's regions vs hand-written baselines         [3]
             selection.rs: endpoint routing selection vs hand-written selections, at 1, 3,
             and 7 policies: a one-region fan-out's decision and region, the stage 4
@@ -82,6 +91,10 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
   install/  diff.rs (plan diff, kernel reuse), lifecycle.rs, core.rs (InstallerCore, no I/O)   [3]
             core/artifacts.rs (snapshots, the policy in effect, acknowledgments, status
             summary), correspondence.rs, artifact_tests.rs (the lifecycle table and property)  [5]
+            core/cut.rs (the cut protocol), cut_tests.rs, scope_tests.rs                       [6]
+  interpret/  state.rs, drains.rs, installation.rs (lineages, resets, cuts), transition_tests.rs,
+              bucket_tests.rs, compatibility_tests.rs                                          [6]
+  validate/state.rs  widths, split windows, the state budget warning                          [6]
   channel/  snapshot.rs (products, configs, snapshots), envelope.rs, state.rs (acknowledgments
             and status summary, the stub protocol's wire form), feed.rs (the watch-based
             channel between a transport and the installer)                                     [5]
@@ -89,6 +102,7 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
               compose/tests.rs (accept and reject tables, property tests)                      [5]
   export.rs   the export bundle (export) and an artifact's base (base); export/tests.rs        [5]
   fixtures/export/default-program-post-enrich.json  the hand-written export of the fixture     [5]
+  fixtures/export/default-program-dogstatsd-pre-aggregation.json  the second scope's export     [6]
   testing/  `test-util`: metric strategies, fixtures, harnesses                               [1+]
 
 lib/saluki-metric-plan-syntax/        surface syntax: parser, printer, spans                    [demo]
@@ -105,6 +119,9 @@ bin/agent-data-plane/src/programmable_metrics/
                    region's input capacity (region_input_capacity); burst tests against the legacy
                    topology in topology/burst_tests.rs                                                 [3, 5]
   installer.rs     ProgrammableMetrics::boot, the supervised InstallerWorker, PlanStatus                 [3, 5]
+  installer/cut.rs the worker's cut actions (arm, cancel, poll); cut_tests.rs                           [6]
+  snapshot_bridge.rs  the supervised bridge from the context dump API to the dsd_agg region             [6]
+  topology/isolation_tests.rs  the dsd_agg isolation slot's identity, heartbeats, budgets, and bounds   [6]
   telemetry.rs     RegionTelemetry (RegisterTelemetry, kernel identities), InstallerTelemetry            [3]
   test_topology.rs test-only: the primary topology, legacy or plan-driven, with its I/O replaced by test
                    doubles in place (scripted sources, clocked, gated, or scripted aggregation,
@@ -1072,7 +1089,7 @@ reporting every problem, and returns a `ConfiguredOperator` with its ports and c
 | `namespace_prefix` | sync | `namespace`, `exclusions` | Map. `reads {name}`, `writes {name}`, `quotient`. Kernel: `NamespacePrefix`, in place. |
 | `timestamp_split` | sync | `window` (whole seconds, at least 1) | Ports `default` (`select(untimestamped)`) and `passthrough` (`select(timestamped)`, `Counter` to `Rate`), point-disjoint, `expand { max: 2 }`; writes `kind` for counters only. Kernel: `TimestampSplit`, sending a batch without timestamped points to `default` whole (`route_all`), counting non-metric events as `invalid`, and reporting the native passthrough metrics and one passthrough flush per batch under the component it is built for. |
 | `tag_projection` | sync | `rules` (`{metric_name, action, tags}`), `value_rules` (`{metric_prefix, tag_name, values, on_miss, replacement}`, replacement exactly when `on_miss` is `replace`, validated as natively), `cache_capacity` | Reads `kind` always; reads `name`, tags, origin tags and writes `tags`, `origin_tags` for `{Counter, Distribution}` only; `quotient` for those kinds; `lossy(policy)`. Firm bounds: 64 bytes per cache entry, as native. Kernel: `TagProjection`, with the kind guard inside it, the native `tag_filterlist_*` telemetry, and a context memo named `tag_filterlist/context_cache` for a reserved node (the native, unscoped identifier) and `<component>/tag_filterlist/context_cache` for a policy node. |
-| `aggregate` | `opaque_host` until stage 6 | `window`, `flush_interval`, `context_limit`, `counter_expiry` (`0s` never expires), `flush_open_windows`, `histogram_aggregates`, `histogram_percentiles` (whole percents, each statistic once), `copy_to_distribution`, `copy_to_distribution_prefix` | Output `{Rate, Gauge, Set, Distribution}`, timestamped. Writes `points` for every kind, plus `kind` for counters and `name`, `kind`, `metadata` for histograms; `opaque` identity for histograms; keyed state with the window as its time contract (the kernel's admission-time bucketing, from stage 6), so a window change is a `Cut`; lossy (policy: untimestamped gauges reduce to the latest and kind or rate-interval conflicts replace values; capacity: context limit; shutdown: open buckets). Declared precisely although an opaque host (amendment 32). Only its expansion maximum applies. |
+| `aggregate` | `opaque_host` until stage 6 | `window`, `flush_interval`, `context_limit`, `counter_expiry` (`0s` never expires), `flush_open_windows`, `histogram_aggregates`, `histogram_percentiles` (whole percents, each statistic once), `copy_to_distribution`, `copy_to_distribution_prefix` | Output `{Rate, Gauge, Set, Distribution}`, timestamped. Writes `points` for every kind, plus `kind` for counters and `name`, `kind`, `metadata` for histograms; `opaque` identity for histograms; keyed state with the window as its time contract (the kernel's admission-time bucketing, from stage 6), so a window change is a `Cut`; lossy (policy: untimestamped gauges reduce to the latest and kind or rate-interval conflicts replace values; capacity: context limit; shutdown: open buckets). Declared precisely since its opaque-host stages (amendment 32); since stage 6 its boundary is `isolated` and it runs as the kernel of its isolation slot. Only its expansion maximum applies. |
 | `host_enrichment` | sync | none | Passthrough. Kernel: `HostEnrichment`, which leaves batches as they are. |
 | `host_tags` | sync | `tags`, `deadline` (an instant, as a duration since the Unix epoch) | Reads `t_a`; writes `tags`; `quotient`. Kernel: `HostTags`, adding the tags (`merge_shared`, as native) to batches with `t_a < deadline`; an unstamped batch passes unchanged. |
 | `opaque_host` | `opaque_host` | `component`, `input` (accepted type), `outputs` (port name to type) | Reads and writes everything, copies, undeclared expansion, opaque state; `transition` rejects any change. |
@@ -1164,12 +1181,10 @@ never driven; their effects are unobservable). Each node runs one of four ways:
   `finish(HostFinish { now, policy }, ..)`) built per node by a registered factory from its `ConfiguredOperator`. A
   host without a factory is an error; a factory that fails rejects the installation. Adapters report what they lose
   with `HostOutput::record_loss(class, events, points)` (aggregation's context-limit and shutdown loss), which the
-  interpreter adds to the node's `RunOutput::loss`. `aggregate` nodes without a registered factory run through
-  `interpret::adapters::AggregateAdapter`, over the kernels crate's `AggregateCore`, the same core the native transform
-  runs: it admits each batch at `arrived_at` floored to seconds, because native aggregation buckets by the arrival
-  time; flushes at each tick's `now`, doing nothing while empty; ignores watermarks until stage 6; and at `finish`
-  runs the final flush and reports what is still held as shutdown loss (events are contexts, points their points).
-  Context-limit drops are capacity loss. Registering a factory for the node replaces it.
+  interpreter adds to the node's `RunOutput::loss`. Through stage 5, `aggregate` nodes ran through an aggregation
+  adapter over the kernels crate's `AggregateCore`; since stage 6 (the flip) `aggregate` is an isolated state owner
+  that runs as its kernel, `AggregateKernel`, under the interpreter's time rules (watermark, tick gate, resets, cuts;
+  see Stage 6), and the adapter is gone. Opaque hosts still run through registered factories.
 - **Sources** are where `admit` events enter.
 
 Time and admission:
@@ -1307,13 +1322,14 @@ transitions (6).
 on): artifact size 256 KiB, artifact nodes
 256, predicate leaves 1,024 per artifact, tee fan-out 32, worst-case work per input 4,096 node visits, prepare timeout
 10 s, drain deadline 30 s, overlap budget 4 live generations (active, last-known-good, and two draining), heartbeat period
-`min(5 s, smallest downstream flush interval)`, clock-reset threshold 600 s, blob size 64 KiB (each reference to a blob
+1 s (`min(1 s, smallest boot flush interval)`), clock-reset threshold 300 s (`CLOCK_RESET_THRESHOLD`, the one
+constant), blob size 64 KiB (each reference to a blob
 counts as a copy of it toward the artifact size, as composition inlines it), R4 memo 4,096 entries per
 decision, batch size 1,024, work per turn 8 batches, floating-point tolerance 1e-9 relative. Behavior-changing limits get
 decision-log entries. `source` is `Fixed` or `Parameter { operator, parameter }`: only the context limit comes from a
 parameter (`aggregate.context_limit`, which the default program binds to native configuration in ADP's `bindings.rs`),
-so the plan crate names no configuration path. The bucket-width restriction is described but not enforced until stage
-6 (see the stage 6 outline).
+so the plan crate names no configuration path. The bucket-width restriction is enforced from stage 6 (see [stage
+6](#stage-6-stateful-kernels)).
 
 ### Extracted kernels
 
@@ -1406,8 +1422,9 @@ inputs, so that rewiring the legacy component cannot make the comparison tautolo
   complete descriptions (name, host, tags and origin tags in order, values, metadata), as multisets where native
   filters reorder.
 - **Compatibility fixtures.** Hand-written expected results pin every aggregation row of the specification's
-  compatibility matrix and the recorded native quirks (amendment 11): as interpreter traces through the default
-  aggregation adapter (`interpret/adapters/compatibility_tests.rs`), and directly against the core for what a trace
+  compatibility matrix and the recorded native quirks (amendment 11): as interpreter traces through the aggregation
+  kernel (`interpret/compatibility_tests.rs`; through the default aggregation adapter until the stage 6 flip), and
+  directly against the core for what a trace
   cannot express, such as a wall clock moving back (`aggregate/compatibility_tests.rs` in the kernels crate). With all
   kernels, `interpret/default_program_tests.rs` runs the whole default-program fixture over a DogStatsD and OTLP trace
   against hand-derived outputs for all six outputs and the policy loss of each drop.
@@ -1920,8 +1937,9 @@ metrics_enrich_in (merge) -> metrics_enrich (host_enrichment) -> metrics_enrich_
 Frame for that program: with default estimates, slots `dsd_pre_aggregation` (mapper through tag filterlist) and
 `metrics_enrich` (enrichment and the whole policy region, one decision), the post-aggregation filter beside the policy
 region when it fits the budget and in `dsd_post_agg_filter_region` when the fan-out is wider (a routing group or more,
-see Physical frame); a mapper profile or a namespace pipelines the pre-aggregation chain; fixed components `dsd_in`,
-`dsd_agg` (opaque, readmit), the other sources, and the encoders. The `metrics_enrich` slot keeps the native ID that
+see Physical frame); a mapper profile or a namespace pipelines the pre-aggregation chain; fixed components `dsd_in`
+and the other sources (through stage 5 also `dsd_agg`, an opaque host that readmitted; since stage 6 aggregation runs in
+the `dsd_agg` isolation slot), and the encoders. The `metrics_enrich` slot keeps the native ID that
 upstream wiring uses. From stage 4 the gateways lower as drawn (through stage 3 they were `opaque_host` nodes backed by
 the native components, with `<gateway>_out` emits), and the policy region is one decision of `metrics_enrich` (see
 Pipelining). A routing group's filter is bound to its group by key,
@@ -2014,9 +2032,10 @@ that a change to a `Startup` input changes nothing.
   `autoscaling_failover_branch`, which return `MetricsBranch { encoder, forwarder }`; the Cluster Agent endpoint is the
   host fact; the legacy path adds the gateway components itself), `metrics_source`
   for each source's `metrics` output (plan: recorded; legacy: connected to `metrics_enrich`), `add_dogstatsd` once
-  `dsd_in` exists (plan: `dsd_agg` from `dogstatsd_aggregate_configuration`, with its context snapshot channel feeding
-  the context dump handler as before), and `finish` (plan: checks that the frame's fixed components (sources and
-  aggregation; no opaque host since stage 4) and sources are exactly what the native pipelines built, then a
+  `dsd_in` exists (plan: no component since stage 6; it creates the context snapshot channel, whose handle feeds the
+  context dump handler as before and whose requests the snapshot bridge answers from the `dsd_agg` region; through stage
+  5 it built `dsd_agg` from `dogstatsd_aggregate_configuration`), and `finish` (plan: checks that the frame's fixed
+  components (the sources since stage 6; no opaque host since stage 4) are exactly what the native pipelines built, then a
   `RegionHostBuilder<MetricRegionDriver>` per slot, a blueprint edge per frame edge, and an admission point per
   fixed-component output with `CLOCK_RESET_THRESHOLD` and no heartbeat). A source's port is its named output
   (`dsd_in.metrics`, `trace_sampler.metrics`); aggregation's one port is the default output of `dsd_agg`; a slot exit is
@@ -2486,7 +2505,7 @@ throughput, multiple platforms) are recorded as open, with the closest local evi
 | 4 | Gateways lowered to routing operators; decisions with derived per-node counts; R2–R4, R5a, R6, R7. | Rewrite property tests vs the interpreter, including capacity variants; routing and gateway differential tests vs legacy components; live MRF toggle both ways; selection bench vs a hand-written baseline in `benches/`. |
 | 5 | Channel, stub, export bundle, composition with correspondence, lifecycle, last-known-good, recovery, rich acknowledgments, stale base and fingerprints, provenance; stateful artifacts rejected. | Continuous-input test with non-aggregated sequence-numbered points across installs; recovery, stale, idempotency, multi-config, and fault suites. |
 | Demo | Syntax crate, demo server and UI, launcher, headless check. | `make demo-programmable-metrics-check` passes; manual run with screenshots. |
-| 6 | See [stage 6 outline](#stage-6-outline). | Same matrix fixtures rerun unchanged against the kernel; transition traces; R5b capacity tests; bucket assignment under a deterministic clock; demo check passes. |
+| 6 | Aggregation as a stateful kernel in its isolation slot, watermarks, heartbeats, progress, clock resets, the tick gate, lineages and transitions, the cut protocol, shared budgets, resumable drains, R5b as emission suppression, the pre-aggregation scope; see [stage 6](#stage-6-stateful-kernels). | Matrix fixtures rerun unchanged against the kernel (two documented rewrites); transition traces 1-15 in the interpreter and the frame harness; the width change live in ADP; R5b capacity property test; bucket assignment under a deterministic clock and tick parity; demo check passes (see [exit evidence](#exit-evidence)). |
 
 **Stage 3 exit evidence (stage 3E).** In ADP, over the primary topology as `run.rs` builds it (`test_topology.rs`),
 with every source and the trace sampler replaced by scripted components, every metrics encoder and the client
@@ -2756,34 +2775,1060 @@ reports the core's own refusal (`Rejection::Refused` with the composition error 
 5 review, not a stale revision the core never reports on that path. A native kernel's panic beside artifact nodes is
 covered since the review (Supervision and fallback).
 
-## Stage 6 outline
+## Stage 6: stateful kernels
 
-1. Aggregation becomes a stateful kernel in the `dsd_agg` slot behind a declared isolation fence, keeping component ID
-   `dsd_agg`, its telemetry, and the context-snapshot control (through `Kernel::control`). Buckets by `t_a`; resumable,
-   bounded flush drain with `Yielded`, yielding between the `Flush::emit_next` steps stage 2 introduced; the region
-   stops reading input while a drain is pending, as native does.
-2. Watermarks per (admission point, epoch), heartbeats enabled with the derived period, progress batches on exits to
-   state owners, clock resets closing buckets on a new epoch.
-3. `aggregate_window_duration_seconds` restricted to allowed widths at configuration deserialization, with an
-   actionable error. Validation gains the matching rules, which stage 1 only describes (`limits::BUCKET_WIDTHS`): an
-   `aggregate` or `timestamp_split` window must be an allowed width, a plan uses at most one width above 60 seconds,
-   and a `timestamp_split`'s window equals its aggregation's window.
-4. State lineages keyed by contract; `transition()` classification; `retain` shares the instance; `cut` computes `T` as
-   the first common boundary at or after `max(last t_a over affected points) + margin` and publishes
-   `AdmissionSchedule::Cut`; a point whose `AdmissionPoint::status()` shows `admitted_to_new` before `T` (it stamped
-   `t_a >= T`, or a clock reset moved it to `new`) raises a conflict, and the installer cancels and recomputes. A
-   reset-switched point raises it like one that reached `T` by time (amendment 42).
-5. Time-driven output is stamped at the state owner's output with its own admission point ID, its watermark as `t_a`,
-   and the generation from the schedule.
-6. Credits: one `StateBudget` per state owner node, shared by all its lineages, so both generations count against one
-   budget during a cut. Hosts pass it to the kernel factory in `KernelBuildContext`.
-7. Stateful artifacts: a `dogstatsd_pre_aggregation` scope from `dsd_in.metrics` with exits into the post-aggregation
-   merge, closed by `scope_closed`, with `ArtifactPortRef::Exit` (`exit.<name>`) for artifact edges; state owners placed
-   in the aggregation slot (per-branch widths travel as separate entries over the existing edge). One artifact replaces
-   one scope, so the policy product accepts one config per scope from this stage (through stage 5, more than one
-   config rejects all). New state owners elsewhere are rejected with a stage 7 capability error.
-8. R5b with partial push-down, using aggregation's kind-conditional writes (counters write `kind`; histograms write
-   `name`, `kind`, `metadata`).
+DogStatsD aggregation runs as a stateful kernel in a region of its own, buckets by admission time, closes buckets by
+watermarks, and changes live: a policy artifact may replace DogStatsD processing up to and including aggregation, and
+an aggregation change whose bucket width changes installs at a cut. This section is the stage 6 design as built. It was
+merged from two drafts and reviewed before implementation, built as two interface steps (I-A for `saluki-core` and the
+kernels crate, I-B for the plan crate, ADP, and the demo) and six parallel parts (P1 kernel and configuration, P2
+execution contracts, P3 frame, programs, and runtime, P4 semantics and R5b, P5 installation and composition, P6 ADP),
+and integrated in one step (I-Z) that also performed the flip below. Proposed spec amendments are 62 to 87.
+
+### Decisions
+
+1. **Aggregation is a kernel in an isolation slot named `dsd_agg`.** `aggregate`'s contract boundary is
+   `Boundary::Isolated`, a declared isolation fence: never fused, run by a region host of its own. The slot keeps the
+   native component ID `dsd_agg`, its health, resource group, bounds path `dsd_agg.aggregate_context_limit`, and every
+   `component_id:dsd_agg` series the Agent's `aggregator.*` remaps read. The native `Aggregate` transform leaves the
+   production path (it stays the legacy differential reference).
+2. **Bucketing by substitution.** The moved native state machine (`AggregateCore`) keeps its rules; stage 6 changes
+   the two times it is given: insertion time is `floor(t_a)`, and flush time is the tick's wall-clock second once the
+   state owner's watermark `W` has reached it (the **tick gate**, waiting at most `TICK_GRACE`, 2 s), else `floor(W)`.
+   Ticks keep native cadence on the monotonic timer, owned by the driver (amendment 62).
+3. **Watermarks** per isolation slot over its upstream admission points (exactly one: `dsd_in.metrics`; the frame
+   rejects more, amendment 84), fed in band by data, heartbeats (every second, carrying their scheduled generation,
+   sent only toward state owners), and header-only progress batches (throttled to 100 ms of `t_a`).
+4. **Clock resets** are detected in band (an epoch change). Every lineage fed by the point flushes at the pre-reset
+   watermark, emits everything it holds, and continues empty, before the triggering batch is admitted. The reset
+   threshold is 300 s, the spec's minimum (was 600 s; amendment 64).
+5. **Lineages** are keyed by node and state contract (for `aggregate`, the window). `retain` shares the instance even
+   when other parameters change: admission-time parameters come from each batch's generation, emission-time parameters
+   from the flush's stamping generation, both passed per call; the program fingerprint hashes them.
+6. **Cuts** are armed in one transaction under the affected admission points' locks only (1 s timeout, at most 10
+   attempts, put off while an affected clock runs ahead of its wall clock). `T` is the first instant aligned to the
+   `lcm` of the widths at least 1 s after the affected points' `max(latest t_a, wall clock)`, recorded with each
+   affected point's epoch on the new generation's token before publication. Phases: barrier, armed, irrevocable,
+   finalized. While a cut is in flight every schedule change goes through cut actions. A cancellation locks every
+   point (affected last) and succeeds only if no point stamped `new`; a lock timeout is a refusal.
+7. **Retirement at the crossing.** The retiring lineage holds the replaced generation (`owner`) and the new one (`by`)
+   strongly from `Prepare`. When the first header of `new` from every upstream point reaches the slot, the lineage
+   makes its final flush at `T` before that batch is admitted, so the two lineages never hold contexts at once.
+8. **Time-driven output** is stamped with the latched flush time as `t_a`, the slot's output point and reset count,
+   and a generation by rule (a retiring lineage emits under `owner`; others under the schedule's generation, where a
+   cut counts as `new` once every upstream point switched). It is delivered even when its generation failed.
+9. **Budgets.** One global context budget (the boot default program's `dsd_agg` limit) shared by every lineage, plus
+   per-node caps; with one lineage this is exactly native `len >= limit`.
+10. **Drains** are resumable and bounded (1,024 events or 4,096 contexts per turn), never split one context's
+    expansion, stop input while pending (as native does), and survive a panic in another instance.
+11. **Supervision of state.** A panic in a state kernel is charged to the generation whose call ran; the instance
+    restarts empty and every generation binding it continues on it (native restart). An artifact generation requests
+    rollback at once but keeps processing its input until replaced; only an exhausted panic budget drops its input.
+12. **R5b ships as emission suppression inside the state owner.** For the kinds where it commutes, the kernel skips
+    building and emitting the records the downstream filter would drop, judged with the flush generation's predicate.
+    It is exact on every trace (capacity, collisions, installations, live bindings), applies to native filters too
+    (the default program's `dsd_post_agg_filter`, for every kind but histograms), and counts the suppressed records in
+    the filter's own series, so native telemetry is unchanged. The spec's removal form is unsound for native
+    first-come admission (amendment 76).
+13. **Scopes.** A second replaceable scope, `dogstatsd_pre_aggregation` (`dsd_in.metrics` to the exits `aggregated` and
+    `passthrough`), one policy config per scope, `exit.<name>` artifact edges, one revision high-water mark across
+    scopes, and per-scope base hash and status.
+14. **Widths** are validated at configuration deserialization and by the validator; a transition whose affected
+    widths have an `lcm` above 300 s is rejected.
+
+Where the two drafts differed, the design took: the spec's isolation-fence kind as a contract boundary plus a frame
+role; the min-over-points watermark rule in the tracker with a one-point frame restriction; heartbeats that carry
+generations and go only toward state owners; a 100 ms progress throttle; `control(ClockReset)` with the instance kept
+(not a rebuild); the slot's reset count as output epoch; contract-only lineage keys with per-call parameters; `T` on
+the generation token (not a control message); retirement at the crossing (not at the next tick); a transaction over
+affected points only; cancellation over all points checking any `new` stamp; the `lcm <= 300 s` bound; a
+last-known-good *plan* (not generation) for cut rollbacks; a global budget plus per-node caps; driver-owned ticks;
+an ADP snapshot bridge; and emission suppression for R5b (neither draft's form).
+
+### Time, watermarks, heartbeats, progress, resets
+
+**Time domains.** `t_a` (`AdmissionTime`, nanoseconds) is the only time a stateful kernel reads; the insertion bucket
+uses `secs(t_a) = floor(t_a / 1e9)`, as native `as_secs()` reads the wall clock. A flush's "current time" is `now =
+secs(F)`, where `F` is the flush time the driver passes as the turn watermark, with `F <= W` always (closure safety).
+For a tick, `F` comes from the tick gate: normally the tick's wall-clock second, exactly native's `now`; `floor(W)`
+when the grace expired. Bucket ends are whole seconds, so flooring is exact for closure. With the native core
+unchanged, bucket `[s, s+w)` is emitted at the first tick with `s + w <= F`; an idle counter gains a zero at `b` exactly
+when `align(P) <= b`, `b + w <= F`, and `b < last_seen + E`, where `P` is the last flush that ran (a tick on an empty
+lineage is not a flush, amendment 11); a counter is removed at the first flush with `last_seen + E < floor(F)` that
+leaves it empty. Ticks (`RegionTurn::now`, Tokio monotonic) decide *when*, `F` decides *what*. Kernels never read a
+wall clock; the isolation driver reads its configured wall clock only for the tick gate, the shutdown time, and the
+lag gauge.
+
+**Watermarks** (`runtime::state::rules::WatermarkTracker`, shared with the interpreter). `U(S)` is the set of admission
+points whose route reaches isolation slot `S` through fused slots only, computed by `Frame::compute` and fixed at
+boot. Stage 6 requires one point (`FrameError::StateOwnerPoints`) on one physical path (`FrameError::StateOwnerPaths`,
+counted over the slot graph; FIFO holds only along one channel path); an isolation slot no point reaches (a state
+owner fed only by another state owner's output) is `FrameError::Unsupported` (stage 10). Every stage 6 frame
+satisfies these: the isolation slot's only input is the pre-aggregation slot, whose only input is `dsd_in.metrics`.
+The tracker keeps the general min rule, so stage 9 changes only the reset rule. Per point it keeps `PointProgress {
+epoch, latest, max_generation }`, updated from every header reaching `S` from that point, in arrival order: an
+unstamped header or one from a point outside `U(S)` is a wiring fault (`Observation::Fault`, counted `invalid`,
+ignored); the first header records the point; a different epoch (equality: epochs wrap) is a reset
+(`Observation::Reset { point, pre }`, `pre` unknown while another point sent nothing); otherwise `latest` takes the
+maximum (a smaller `t_a` in one epoch is impossible on one FIFO path, a `debug_assert!`), and `max_generation` takes the
+header's generation. `W(S)` is the minimum `latest` over `U(S)`, `None` while any point has no record (heartbeats bound
+this to one period after start). `switched(S, new)` holds when every point of `U(S)` has `max_generation >= new` (the
+ID invariant below); by FIFO, once a point delivered a header stamped after the cut's publication, every `old` batch
+from it has arrived. `in_publication_epoch(S, cut)` holds when every point is in the epoch the cut boundary records;
+headers from an earlier epoch belong to the pre-publication timeline, where `t_a` may numerically exceed `T`; they are
+pre-cut and never clamped.
+
+**Heartbeats.** Enabled for every point that feeds state (`AdmissionPointInfo::feeds_state`; in the default program
+only `dsd_in.metrics`), with period `min(HEARTBEAT_PERIOD, smallest flush interval of the boot plan's state owners
+downstream)`, at least `MIN_HEARTBEAT_PERIOD`; `HEARTBEAT_PERIOD` is 1 s (was 5 s). A candidate with a shorter flush
+interval than the frame's period can see idle closure lag up to that period (never wrong output). Heartbeats are sent
+only to the point's route toward state owners (`AdmissionPointConfig::with_heartbeat_recipients`), so the host taps
+`dsd_stats_out` and `dsd_debug_log_out` keep their native traffic and series. `Dispatcher::
+attach_component_sender_to_output` records the component each sender feeds, `set_admission_point` attaches only the
+recipients' senders to the heartbeat attachment (all senders when the point names none, the stage 2 behavior), and the
+blueprint rejects, when it is built, a recipient the output does not feed. A heartbeat is stamped through the same
+`PointState::stamp` as data: it carries the generation the schedule assigns (`generation_for(t_a, epoch,
+epoch_at_publish)`), counts in `admitted_to_new` like data, and so holds a strong `GenerationRef` while in flight
+(amendment 65). Heartbeats stay header-only and are never processed as data.
+
+**Progress batches** (every region driver). `Exit::progress_points` lists, for each exit on the path into an isolation
+slot, the points of `U` routed through it. After a call that handled a header `h` from point `p`, for each progress
+exit `x` listing `p`: if the call wrote a buffer on `x` with `p` in its header, `last_sent[x][p] = (h.epoch, h.t_a)`;
+else, if `h` is header-only, or its epoch differs, or `h.t_a >= last_sent.t_a + PROGRESS_PERIOD` (100 ms), the driver
+writes an empty buffer carrying `h` (and no entry) on `x`. Progress is written after the call's data on the same exit,
+so per-point FIFO holds, also after stage 4 `Decide` steps. Lag is bounded by `max(PROGRESS_PERIOD, heartbeat
+period)`; exits that are not progress exits absorb header-only input as in stage 3.
+
+**Region start.** `RegionDriver::start(&mut self, turn)` (default no-op) is called once by the host after
+`health.mark_ready()`. Isolation drivers schedule each instance's first tick at `start + flush_interval`, as native
+`interval_at(Instant::now() + interval)` does, not at build time. `start` is not supervised: it must not run kernel
+code, and a panic in it fails the component, as for `accepts_input` and `next_deadline`.
+
+**Clock resets.** Detected in band before the triggering batch is admitted: the driver stashes the batch, runs a reset
+drain over every instance fed by the point, then processes the batch in the new timeline. Each instance gets
+`Kernel::control(turn, &mut ClockReset)` (`saluki_core::execution::ClockReset`) with the pre-reset watermark `W_pre`
+as turn watermark (`min(W_pre, T)` for a retiring instance only when `W_pre` is in the cut's publication epoch): a
+normal flush at `floor(W_pre)`, then **every** point still held (open buckets and future-timestamped points), after
+which the instance holds nothing and has `last_flush = 0`, also when it held nothing or its own flush emptied it.
+A yielded reset is resumed by calling `control(&mut ClockReset)` again. Output is stamped as time-driven output at
+`W_pre`; then the slot's output epoch increments (when the last reset entry of a drain completes, before later entries
+are stamped) and its latch restarts. Consequences (amendment 64): idle counters stop emitting zeros until seen again,
+the first flush afterwards emits no zeros, and new-timeline bucket timestamps may repeat old ones, as natively after a
+backward jump; native's re-emission of zeros for already flushed buckets is unreachable. A reset after a cut's
+publication moves the point to `new` (amendment 42), so the crossing follows in band after the reset drain.
+`CLOCK_RESET_THRESHOLD` is one constant (`limits::values`, 300 s), which ADP's admission points and the interpreter
+read: a backward jump up to it is absorbed, so `t_a` stays at the point's latest stamp until the wall clock catches up,
+input over that time collapses into one bucket (a counter's rate is inflated by up to threshold over width, gauges
+keep their last value), nothing closes meanwhile, and then everything closes at once; arming is put off while this
+holds.
+
+**Shutdown close time.** When the isolation slot's input ends, every upstream point's data has arrived. The driver's
+`finish(Shutdown)` uses `S_end = max(max latest over U(S), wall.now())`, read from `RegionConfig::with_wall_clock`; a
+retiring instance with an armed cut uses `min(S_end, T)`. The bucket open at `S_end` is discarded as `shutdown` loss,
+native's "open bucket at the wall clock of the final flush" (amendment 63). The discard is a bounded pass of its own
+(`AggregateCore::begin_discard`, `FlushMode::Discard`), recording each call's loss as it goes.
+
+**Tick gate** (`runtime::state::rules::TickGate`, shared with the interpreter). The watermark lags the wall clock at a
+tick by queueing, batching, and, when idle, up to a heartbeat period. Flushing at `floor(W)` would make a tick within
+the lag of a bucket end close that bucket one tick late and start the next back-fill one bucket early, which changes
+idle-counter leading zeros. The gate removes this for every lag below the grace:
+
+```text
+deadline of instance L (Scheduled { at }):
+  no published generation binds L    -> skip: L.tick = Scheduled { at + interval(L) }
+                                        (later than the deadline that fired; a burst if it has also passed)
+  W is None                          -> L.tick = Scheduled { at + interval(L) }
+  s := floor(wall.now())             (the tick's wall-clock second: native's `now`)
+  floor(W) >= s                      -> fire with F = max(last_F(L), s)
+  else                               -> L.tick = Gated { at, s, until: now + TICK_GRACE }
+a header raises W (in `process`), L Gated and floor(W) >= s
+                                     -> stash the batch if it has events; fire with F = max(last_F(L), s); then admit
+deadline of a Gated L (until)        -> fire with F = max(last_F(L), floor(W));
+                                        count plan_state_tick_grace_expired_total
+after the fire completes             -> L.tick = Scheduled { at + interval(g) }  (keeps native phase; burst if past)
+```
+
+`TICK_GRACE` is twice the heartbeat period (2 s). Idle lag is at most one period plus queueing, so idle sources never
+delay a flush tick. While gated, input is read as usual (it raises `W`); a batch that raises `W` past `s` arrived after
+native's tick, so it is admitted after the flush, as natively. For a retiring instance `F` is clamped to `T` in the
+publication epoch; with one point and FIFO `W < T` there until the crossing, so the clamp is a guard (a
+`debug_assert!` on the time before clamping). `last_F(L)` keeps `F` from moving backward within an epoch, also when the
+wall clock stepped back by an absorbed jump. The remaining difference from native at a tick that fired by the gate: a
+batch with `t_a < s` that reached the slot after the tick's deadline is admitted before the flush (natively after);
+its points keep their `t_a` bucket, but its context's synthesized zeros, expiry, and metadata can differ (amendment
+86).
+
+**Deadlines** (the `RegionDriver` contract, enforced by the host). After `advance_time`, the work that was due at the
+deadline that fired is done or due later than it; a passed deadline is due at once (a burst, native
+`MissedTickBehavior::Burst`), and the next deadline may be earlier than the fired one when other work is due (an
+orphaned drain resumed at `now`). The host's `DeadlineGuard` disarms, logs, and debug-asserts on an idle call (nothing
+written, nothing charged) that keeps the fired deadline, so a driver bug never spins the host; the workspace `release`
+profile keeps debug assertions, so every test that runs a real host catches it. The stricter "later than
+`turn.now()`" was not adopted: the designed driver violates it legitimately (a skipped tick after the host was blocked
+for several intervals, an empty instance's fired tick, the orphan's `now` followed by an earlier due tick). The host
+arms no deadline while a call is yielded or after input ended; control messages are applied between the turns of a
+yielded call, and input is not read until it completes. After a panic that ends the finish, the host calls `finish`
+again until a call completes, and such a call resumes the ended work.
+
+### Lineages, transitions, parameters, budgets
+
+**Lineage key and instances.** `LineageKey { node, contract }` hashes `{op, lineage_params}`, where
+`OperatorDef::lineage_params` defaults to every parameter (stateless keys are unchanged) and `aggregate` returns its
+resolved `window`. A state owner's `KernelKey::params_hash` is its lineage's contract hash, so `kernel_reuse` reuses a
+retained instance even when other parameters change. An **instance** is a lineage plus the generation that created
+it: two instances with one key can coexist (a `Prepare` that restores a width can reach the slot before the retiring
+lineage of that width crossed, since the host serves control messages before input), so the isolation slot's
+instances live in a generic slab (`runtime/state/slab.rs`) with tagged handles: programs, bindings, and drain cursors
+hold `InstanceHandle { index, tag }`, the tag incrementing on every insert, and a stale handle is detected and skipped.
+
+**Transition classifier** (`install/diff.rs`), per state owner between the active plan and the candidate:
+
+| Active | Candidate | Class |
+|---|---|---|
+| keyed `k1` | keyed `k2`, same operator | `ConfiguredOperator::transition_to` (unchanged): reducer key or reducer differs → `reject`; time contract (width) or admission policy differs, or time unknown → `cut`; else `retain` |
+| absent, or stateless | keyed | `cut` (added: its lineage starts at `T`) |
+| keyed | absent | `cut` (removed: its lineage ends at `T`) |
+| keyed | other operator, or no keyed state | `reject` |
+| opaque | keyed | `reject` |
+| opaque | opaque | `transition_to` (stage 3 behavior) |
+
+`Aggregate::transition` keeps the default `Retain`. Added and removed owners are `cut` because otherwise a renamed
+aggregation would emit two partial points for one bucket of one series. `StateOwnerDiff { node, class, change:
+StateOwnerChange::{Kept, Added, Removed}, lineage, widths }`; `PlanDiff::cut() -> Option<CutPlan { owners, widths,
+unknown_widths }>` is `Some` exactly when the strictest class is `cut`. `CutPlan::{slots, affected_points,
+check_frame}`: the slots holding an owner, their points (`Frame::affected_points`), and a placement problem when the
+frame has a `Readmit` admission point (the transactions rely on every point being a source, which every stage 6 frame
+satisfies). All default-program aggregation parameters are `Startup` bindings, so default-program candidates are always
+`retain`, and so is a stage 5 re-composition of an artifact against the generation that serves it. **Width bound**
+(amendment 71): the `lcm` of the affected owners' old and new widths must be at most `MAX_TRANSITION_LCM` (300 s), else
+`Rejection::CutWidths { widths, message }`, which advises an intermediate width of at most 60 s and also covers an
+unknown width (120 s to 180 s would need 360 s).
+
+**Per-call parameters under `retain`:**
+
+| Parameter | Applies at | Taken from |
+|---|---|---|
+| `context_limit` (node cap) | each admitted batch | the batch's generation |
+| `counter_expiry`, `flush_open_windows`, histogram statistics, `copy_to_distribution*`, the R5b filter | each flush | the generation the flush is stamped with |
+| `flush_interval` | the deadline after each flush | the generation the flush was stamped with |
+
+`Turn::with_param(&(dyn Any + Send + Sync))` and `Turn::param::<T>()` carry per-call compiled plan data (never
+configuration). The driver sets it from `RegionProgram::state_params[Step::State.params]`, built by
+`OperatorDef::step_params(&DecodedParams, Option<Arc<dyn EmissionFilter>>)` (`AggregateStepParams { admit, flush,
+flush_interval }` for `aggregate`); the kernel falls back to its build-time defaults when it is absent. Each entry's
+hash (the owner's lineage hash plus the pushed filter's site, if any) is in the program fingerprint, so a `retain` that
+changes only `context_limit` is not reported unchanged. Per-call parameters that do not decode (a binding without a
+value) reject the candidate as a first installation would (`CompileError::StateOwner`), in the compiler and the
+interpreter alike. `OperatorDef::flush_interval` gives a state owner's interval to program compilation
+(`LineageInfo::flush_interval`); a state owner without one does not compile.
+
+**Budgets.** `saluki_core::execution::StateBudget` (`execution/budget.rs`): a shared `{ used, capacity }` with
+`try_acquire(n)` (compare and swap), `release`, `used`, `capacity`, `unlimited`, `is_unlimited`, `shares_with`.
+`runtime::StateBudgets` holds one **global** budget, sized from `AdpCatalog::state_budget()` (native
+`dogstatsd.aggregation.context_limit` at startup, equal by construction to the boot plan's `dsd_agg` limit; unlimited
+without DogStatsD), and one unlimited per-node counter per `NodeId`, created on demand and shared by every instance of
+the node. `ContextBudget { global, node }` reaches kernels through `KernelBuildContext::with_state_budget`, in the
+region factory and the installer's builds alike (a region with budgets refuses a state kernel built without them). A new
+context is admitted into an instance of node `n` for a batch of generation `g` only if `node.used() < limit(n, g)` and
+`global.try_acquire(1)` (a node refusal after the global unit was taken gives it back); existing contexts always admit.
+Units are released when contexts leave the table: at the end of a native flush, at each visit of a drain or discard (the
+step removes the entry, releases its unit and gauges, and only then emits), and on `Drop` for whatever remains. The
+breach flag clears at the end of a pass that leaves both the node and the global budget below their limits. With one
+instance this is native `len >= limit` exactly; limit 0 drops everything and never clears the breach. `AggregateCore::
+new` (the legacy transform) admits by its own `len`, keeps the exclusive Antithesis assertion, and its `Drop` does
+nothing; `with_budget` uses the budget rule and releases on `Drop`. During a cut both lineages draw on one budget, and
+with retirement at the crossing the old lineage has released every unit before the new one admits its first context.
+Artifact nodes whose `context_limit` exceeds the global capacity validate with the warning `state_budget`. Invariants:
+an exclusive core keeps `always_le!(len, context_limit)` at insertion; a budget-sharing core asserts the global budget
+within its capacity and its length within the node's units, at insertion and at the end of every pass, mirrored by
+`debug_assert!`s so that tests check them without the Antithesis feature.
+
+**State bindings.** `SlotPrepare::state: Vec<StateBinding>` (`install::state_bindings`, one list per slot, empty for
+fused slots) reaches the region through `PrepareRegion::with_state_bindings`: `Retain { node, key, from }` binds the
+candidate's kernel to the active generation's instance; `New { node, key }` inserts the installer-built empty instance;
+`Retire { node, key, from }` (cut installations) marks the active generation's instance `Retiring { owner, by }`, both
+strong: `owner` taken at `Prepare` while `from` is certainly alive, `by` the candidate's `GenerationRef`. `T` and the
+publication epochs are read from `by.cut()` whenever needed, which keeps `T` readable after a later commit replaces
+`by` in the schedule; this is the one exception to "drivers keep `Weak` tokens". Bindings are checked whole before they
+apply (`RegionError::StateBinding`). `Abort` clears the marks it set and frees the instances it created, except one a
+drain cursor references, which is marked `removed`, skipped, and freed when the drain ends. An instance is freed when
+no live program binds it, it is not retiring, and no cursor references it; a finally retired instance stays in the
+slab, binding nothing and never ticking, until the replaced generation's program is released. A freed instance that
+still holds points (an installation that removed a state owner without a cut) counts them as `invalid` loss and logs.
+
+### Time-driven output
+
+**Stamping.** Each isolation slot has an output point ID (`SlotKind::Isolation { output_point, upstream }`, numbered
+after every fixed component's points, in slot order; an ID in headers only, never registered). Every buffer of
+time-driven output (tick, reset drain, final retirement, shutdown) is stamped with `t_a = max(previous output t_a in
+this output epoch, F)` (`W_pre` for a reset drain, `S_end` at shutdown), the output point, the slot's reset count as
+epoch, and the generation of the rule below (a strong `GenerationRef` held by the drain step); the `StateOutput`
+program's `Exit` step sets the consumer's entry. The latch moves only when a step emits: a step that writes nothing
+(the empty final retirement after a post-publication reset that crosses) leaves it, so later output of the new epoch
+is not stamped at `T`. The latch keeps a future downstream state owner's FIFO assumption true; in stage 6 the
+consumers are stateless, and `host_tags` compares its deadline with this `t_a`, which the tick gate makes the tick's
+wall-clock second. Time-driven output is delivered whatever the supervision state of its generation: it holds data
+admitted under healthy generations, and downstream regions reject only a generation that failed in their own region.
+
+**The generation of a drain of instance `L`** is computed when the drain starts and kept across yields (one flush, one
+generation; natively a commit mid-flush split it), by `rules::stamping_generation`:
+
+1. `L` is retiring and `by.cut()` is set: `owner`. (Final retirements are always stamped with `owner`.)
+2. Otherwise, with `σ` the schedule: `Steady(s)` gives `[s]`, `Cut { old, new }` gives `[new, old]` if `switched(S,
+   new)`, else `[old, new]`; the first candidate whose program in this slot binds `L`. If none does, `L` was created by
+   a generation prepared but not yet published (no batch of it exists, so `L` holds nothing): the tick is skipped and
+   its deadline moves on by `L`'s interval, also when the drain step itself finds no binding generation.
+
+So after `Steady(new)` every flush of a retained lineage is stamped `new`, including data aggregated before (native
+"next flush uses new routing"); before any upstream point switched, no output of a retained lineage is stamped `new`,
+and a new lineage holds only `new` data, which exists only if a point stamped `new`, which makes cancellation
+impossible: cancellation never discards admitted or emitted data. `W >= T` in the publication epoch implies switched,
+since every affected stamp before publication in that epoch has `t_a < T`.
+
+**ID invariant.** After a cut to `new` is armed and not cancelled, every generation the schedule later holds has an ID
+of at least `new`'s: finalization stores `Steady(new)`, later installations allocate larger IDs, and an irrevocable cut
+releases the last-known-good generation, so no rollback stores an older one. `switched` relies on this.
+
+### The cut protocol
+
+**`saluki-core` support.** `AdmissionRegistry` (`Clone`) holds every admission point of a topology **weakly**, so it
+never extends the life of the points, schedules, or clocks of a stopped topology, and repeated installs leave
+registrations as they were. Points register when the topology starts (`ComponentInterconnects::set_admission_points`
+through `AdmissionPointConfig::with_registry`, or `AdmissionRegistry::register` in harnesses); another live point with
+the same ID is an error. It offers `get`, `ids`, `status_within(id, timeout)` (a point whose dispatcher is blocked on a
+full channel answers `None` after the timeout), and `transaction(lock_order, timeout) -> ScheduleTransaction`, which
+takes `lock_owned` guards in the given order within one deadline (Tokio's mutex is FIFO, so a busy point delays it only
+by the batches already queued on its lock), reports unknown and duplicate points before taking any lock
+(`TransactionError::{Timeout, UnknownPoint, DuplicatePoint}`), and on a timeout releases everything taken.
+`ScheduleTransaction::{statuses, publish, abandon}`: `publish` stores into every distinct schedule handle of the locked
+points while every guard is held. `AdmissionPointStatus` gains `passed_cut` (under `Cut { new, at }`: the point observed
+`new` and `latest >= at` or changed epoch since publication) and `wall_now` (the point's own wall clock, read under its
+lock). `GenerationToken::{set_cut, cut}` stores a `CutBoundary { at, replaces, epochs }` once (a `OnceLock`), `epochs`
+recording each affected point's epoch under the lock, which equals the `epoch_at_publish` the point records at its next
+stamp, also when that stamp resets its clock.
+
+**States** (`install/core.rs`, `install/core/cut.rs`, I/O-free):
+
+```text
+Preparing --barrier, cut plan--> Barrier --ArmCut ok--> Armed{T} --a point stamped new--> Irrevocable{T}
+                                    |                      |                                    |
+                                    |                      +--CancelCut ok--> Cancelled          +--every affected
+                                    |                      +--CancelCut refused--> Irrevocable      point passed-->
+                                    +--ArmCut deferred--> RetryAfter(1 s) --> ArmCut again           Finalized
+```
+
+At the barrier a candidate whose diff has a `CutPlan` is reported prepared and moves from `InstallerCore::preparing`
+into `InstallerCore::cut: Option<CutInFlight>` (phase `Barrier`, deferrals, the cancellation requested if any, a
+withdrawal message), and the core returns `Action::ArmCut { generation, old, widths, affected, margin }`. The ADP
+worker clears the preparation deadline when it performs `ArmCut`, and `prepare_timed_out`, `cancel_preparation`, and
+`restart_preparation` see only `preparing`, so none reaches an armed generation. One cut at a time: `try_start`
+reports `PendingReason::CutInProgress` while a cut is in flight.
+
+**Arming** (amendment 66). The worker runs the transaction over the **affected points only** (`dsd_in.metrics` in stage
+6): only their stamps decide which lineage data reaches, and a point's lock is held across its dispatcher's whole
+fan-out, so waiting on an unaffected source held up by backpressure while holding `dsd_in` would stall DogStatsD intake.
+A timeout reports `cut_deferred(generation, Timeout)`; the core answers `RetryAfter(CUT_ARM_RETRY)` (1 s) and its
+`retry()` re-issues `ArmCut`; after `CUT_ARM_ATTEMPTS` (10) consecutive timeouts an artifact candidate is rejected
+(`Rejection::CutNotArmed { attempts }`), while a rollback candidate keeps retrying. If some affected point's `latest`
+exceeds its `wall_now` by more than the margin (its clock is absorbing a backward jump), the transaction is abandoned
+and the arm put off (`ClockAhead { by }`, not counted as an attempt), since arming now would put `T` behind a frozen
+clock. Otherwise `now = max over affected points of max(latest, wall_now)`, `T = rules::cut_time(now, lcm, CUT_MARGIN)`
+(the smallest multiple of the `lcm` that is at least `now + 1 s`: now 95 with widths {10, 30} gives 120; 105 with {10}
+gives 110; 98.5 with {10} gives 100), then `set_cut` and `publish(Cut { old, new, at: T })` with nothing fallible
+between them, and `cut_armed(generation, T)`: the generation is acknowledged `prepared` with `cut_at` (milliseconds),
+and the core returns `WatchCut`. While the guards are held no affected point stamps, so every affected stamp before the
+store in the current epoch has `t_a <= latest <= now < T` and got `old`, and every affected stamp after reads the cut;
+earlier-epoch stamps are pre-cut by `CutBoundary::epochs`. A non-affected point reads the store lock-free and switches
+stateless processing at a batch boundary, which is allowed. The stage 6 outline's "publish, then recheck
+`admitted_to_new`" could not detect an `old` stamp with `t_a >= T` made between computing `T` and the store, so it is
+replaced. Re-issued arms are idempotent: a schedule already holding the cut reports `Armed` with its `T`; a token
+holding a boundary the schedule does not (an interrupted arm) publishes the same boundary if every affected point is
+still in the recorded epoch with its latest stamp before `T`, and is otherwise stranded: the worker reports
+`cut_arm_abandoned`, and the core aborts the generation and prepares its candidate again as a new generation. An arm
+that can never succeed (no affected point, an `lcm` error, an unknown or duplicate point) is logged once as a bug and
+reported as `generation_failed(generation, "its cut cannot be armed: ...")`, which aborts and fails the generation
+without retrying.
+
+**Watching, irrevocability, finalization.** While a cut is armed or irrevocable, the worker polls every frame point
+every `CUT_POLL` (100 ms) with `status_within(id, CUT_POLL)`, concurrently (a point that does not answer counts as
+neither this round, and the worker never blocks on a stalled dispatcher while it holds the installer state), and
+reports `cut_progress(generation, CutProgress { stamped_new, passed, affected })`; the core counts passed points against
+its own affected list. The first `stamped_new` (any point, data or heartbeat) makes the cut **irrevocable**: the cut
+generation becomes active (acknowledged `active`), the replaced one draining, and the kept last-known-good generation,
+if any, released. When every affected point passed, the core returns `FinalizeCut`: the worker stores `Steady(new)`
+without locks (every affected point's next stamp is `new` under either value), only if the schedule still holds that
+cut (a re-issue finding `Steady(new)` is a no-op; any other value is a core bug, logged and not stored); waiting
+candidates start. The replaced generation's `DRAIN_DEADLINE` (30 s) starts at finalization (amendment 73): while a cut
+is watched it is not armed, and the cut is overdue once a poll's wall clock reaches `T + DRAIN_DEADLINE` with an
+affected point not passed (`PlanStatus::overdue` lists the replaced generation, warned once). Status: `InstallerStatus
+::cut: Option<CutStatus { generation, at, phase, stamped_new, passed, total, deferred }>`, rendered as `cut to
+generation N not armed yet | armed at T | irrevocable at T, p of t admission points passed (put off ...)`. The active
+plan's binding gauges and `plan_rewrites_applied` are set once per activation, at a `Commit` or at the report that the
+cut generation is active, whichever comes first.
+
+**Cancellation, revocation, re-composition.** `CancelCut { generation, old }` runs a transaction over **every** point
+(`Frame::cancel_lock_order()`, unaffected points first, affected last): every point is a source, so a lock holder never
+waits on another point's lock, and `dsd_in` is held only for the check and the store. Under the guards, if no point has
+`admitted_to_new`, it publishes `Steady(old)` and reports `cut_cancelled`: every region aborts the generation (clearing
+the `Retiring` marks and new instances), the generation is rejected, and the core performs what the cancellation was
+for. Otherwise, or on a timeout, it reports `cut_cancel_refused`: the cut is irrevocable and whatever asked for the
+cancellation waits for finalization (the generation may then be acknowledged `active` before a batch carries it). A
+re-issued cancel finding `Steady(old)` is reported as cancelled and counted nowhere. What requests a cancellation, by
+phase (amendment 79):
+
+| Event | `Barrier` (not armed) | `Armed` | `Irrevocable` |
+|---|---|---|---|
+| Newer artifact revision | `Abort` the cut generation, prepare the newer | `CancelCut`, then prepare the newer | queue (latest wins), prepared after finalization against the cut generation |
+| Re-composition of the cut's own revision | replace it: `Abort`, prepare the re-composition | queue (latest wins): `retain` against the cut generation, committed right after finalization; `T` never moves | queue |
+| Default-program candidate | queue | queue | queue |
+| Revocation (empty snapshot, or the scope's config absent) | `Abort`, ask for the default program | `CancelCut`, then ask for the default program | ask for the default program after finalization; the artifact is acknowledged `active` with the error "revoked; active until replaced" |
+| The cut generation fails | `Abort`, failed | `CancelCut`: failed on success; on refusal active and failed | failed, keeps running; its rollback is queued at once and prepared after finalization |
+| The replaced generation fails | `Abort` and requeue the cut candidate, then the stage 3 rollback | `CancelCut`; on success requeue the cut candidate and roll back (commit of the last-known-good); on refusal recorded only | recorded only (it is draining) |
+| The active artifact generation fails while a cut serves one of its documents | `Abort`, rejected with the failure | the cancellation rejects the candidate with the failure instead of queueing it again | the cut generation is the active one |
+
+A newer revision is checked against the active plan before it cancels anything (`InstallerCore::cancel_check`, the
+same checks `start` makes: no `reject` transition, the cut's widths, and the widths back to the default program): one
+that could not follow the active plan neither aborts nor cancels the cut in flight (or a preparation), and waits for it
+if it can follow its plan, or is rejected at once, so that whether it installs never depends on whether a batch was
+stamped before a cancellation. An artifact whose widths do not line up within 300 s with the latest default program's
+is rejected (`Rejection::CutWidths`, naming both), so the default program can always replace it at a cut (amendment
+71); a revoked artifact that stays active because the default program was rejected anyway (a host whose default widths
+changed) is acknowledged "revoked; active until replaced: the default program was rejected: <why>".
+
+The core never emits `Commit { last-known-good }` or a preparation-scoped `Abort` for an armed or irrevocable
+generation. A candidate equal to the active plan when its turn comes (an artifact equal to the running plan that
+cancelled an armed cut, or one that waited behind a rejected preparation) is reported `Unchanged` and creates no
+generation; the active generation then serves it (amendment 57).
+
+**Conflicts and restarts.** An `old` stamp with `t_a >= T` in the publication epoch is impossible for affected points.
+A reset of a point after publication and before `T` stamps `new` (amendment 42): the cut is irrevocable, and the slot
+runs a reset drain, then the crossing. A reset before publication, during preparation, gives `T` and `epochs` from
+post-reset clocks; queued earlier-epoch batches are pre-cut and not clamped. A prepare timeout after the barrier is
+ignored. An affected point that never passes keeps the cut waiting and is reported overdue. After a worker restart
+`InstallerCore::resume_actions()` (performed first, before anything else the worker queues) re-issues the in-flight
+action: `ArmCut` at the barrier, `WatchCut` (plus an outstanding `CancelCut`) while armed or irrevocable, and
+`FinalizeCut` after finalization until the schedule changes again; the worker's watch, arming, and cut points live in
+the shared `InstallerState`. A boundary that was set but can no longer be published (an affected point stamped past
+it, or its epoch changed) is `ArmOutcome::Stranded`, which the ADP worker reports with
+`InstallerCore::cut_arm_abandoned`: the core aborts the generation and prepares its candidate again as a new one,
+never arming a generation at a second cut time.
+
+**Lifecycle and rollback.** A cut generation is `Prepared` at the barrier and while armed, `Active` at irrevocability
+(the replaced one `Draining`), `Rejected` on cancellation. A cut installation keeps no last-known-good **generation**
+once irrevocable (amendment 72): a `Steady(lkg)` rollback after the cut would run two lineages of one series without a
+boundary. A cancelled cut keeps it, so a failure of `old` while armed still rolls back with one store. The core keeps
+the replaced artifact's **plan** instead (`InstallerCore::rollback`; none when a default program was replaced): when a
+failed active artifact generation has no last-known-good generation but a rollback plan, and nothing in flight replaces
+it, the plan is proposed again under its own revision's `Origin::Artifact` (the high-water mark untouched; the
+candidate is marked in `InstallerCore::rollbacks`, so its arming is never given up), itself a cut if the lineages
+differ; a plan that predates the latest configuration change is followed by the default program, which re-composes the
+policy in effect. Until the rollback's own cut, the failed generation keeps processing its input on its restarted
+instance (the loss is that instance's state, as on a native restart); only with an exhausted panic budget (3 in 60 s,
+5 in all) are its batches dropped as `invalid` until then, at most `lcm + 1 s` (301 s for a 300 s width). The overlap
+budget counts the retiring owner.
+
+**Old-lineage retirement** (driver). Before the crossing, a retiring instance ticks through the gate with its flush
+time clamped to `T` in the publication epoch (not clamped in earlier epochs), and a reset drain uses `min(W_pre, T)`
+only if `W_pre` is in the publication epoch, so it never closes or zero-fills a bucket at or after `T` and never
+flushes backward across epochs. **The crossing**: in `process`, once `tracker.observe(header)` makes `switched(S,
+by.id())` true (a data batch, heartbeat, or progress batch of `new` or later), the driver stashes the batch if it has
+events and runs `FinalRetire` for every instance retiring by `by` (resumable; input not read meanwhile):
+`finish(DrainPolicy::Retire)` with turn watermark `T`, a final flush at `floor(T)` (every bucket ending by `T`, zeros
+only before `T`), then every remaining point (future-timestamped buckets), stamped with `owner`; then it processes the
+stash. A post-publication reset as the crossing runs the reset drain first, then the empty final retirement. Afterwards
+the instance holds nothing, its units are released, and `owner` and `by` are dropped. A batch of `owner` arriving later
+is impossible (counted `invalid`, `debug_assert!`). Values equal the tick form's; only emission time moves earlier, by
+at most one flush interval (amendment 70).
+
+**The ADP worker** (`installer/cut.rs`, private): `arm`, `cancel`, and `poll` are async functions over the registry and
+the schedule handle, called from `Installer::perform` (now async: only cut actions await, at most `CUT_LOCK_TIMEOUT`),
+each reporting its outcome to the core and queueing what the core returns. `plan_cuts_total{outcome}` counts each cut
+once when it ends: `completed` at a `FinalizeCut` that changed the schedule, `cancelled` at a `CancelCut` that
+published `Steady(old)`, and `not_armed` once when a generation whose arm was attempted and never succeeded is
+rejected or failed (the attempt cap, a cut that can never be armed, a newer proposal replacing it at the barrier). A
+refusal ends nothing: `plan_cut_cancellations_refused_total` counts refused cancellations. Every counter is registered
+at creation.
+
+### Drains
+
+The isolation slot's host runs with `with_turn_budget(Budget::unlimited().with_limit(Events, DRAIN_STEP_EVENTS =
+1_024).with_limit(StateWork, DRAIN_STEP_CONTEXTS = 4_096))`. `AggregateKernel` charges `StateWork` 1 per visited
+context and `Events` 1 per emitted metric, checks the budget only between contexts (one context's expansion, at most
+`MAX_HISTOGRAM_SERIES` = 108 metrics, is never split), keeps its `FlushState`, and returns `Progress::Yielded`; every
+call visits at least one context before it checks, so a drain progresses under any budget. `consume` never charges or
+yields. The host does the rest: a yielded `process`, `advance_time`, or `finish` is pending; after each call the host
+sends the call's output buffer by buffer; it resumes through `consume_budget`, reads no input while a call is pending
+(the driver also returns `accepts_input() == false` while draining), and still answers liveness and control messages;
+a deadline passed during a long drain fires at once afterwards. Memory in flight is one step (`DRAIN_STEP_EVENTS +
+MAX_HISTOGRAM_SERIES` events), added to the slot's firm bounds.
+
+Kernel contract amendments (`Kernel` docs): a read-only control message (documented as such by its type) may be
+delivered while another call is yielded and must not disturb it; a yielded `control` is resumed by calling `control`
+again with a message of the same type; after the host abandons a yielded call (a panic elsewhere), the next call of the
+same method resumes it; `Turn::watermark` moves forward within an epoch, and a `ClockReset` precedes any backward move.
+`Kernel::held(&self) -> LossCount` (default empty) reports what an instance holds (for aggregation, contexts holding
+points and their points), which the driver counts as `invalid` loss when a panic discards the instance.
+
+A drain started from `process` (reset, crossing, gated tick) keeps the triggering batch in the slot's stash; one header
+can start several kinds, queued in this order: reset (every instance), final retirement (instances retiring by a
+now-switched generation), gated ticks now due; then the stash is admitted. The cursor:
+
+```rust
+struct DrainCursor { queue: VecDeque<(InstanceHandle, DrainKind)>,
+                     current: Option<DrainStep { instance, kind, stamp: BatchHeader /* holds g */, params,
+                                                 flush_time, latch: OutputClock }>,
+                     reset: bool,      // bump the output epoch when the reset entries complete
+                     orphaned: bool }  // the host ended the call after a panic: resumed by the next advance_time,
+                                       // or by the next finish once input has ended
+enum DrainKind { Tick { scheduled }, Reset { pre }, FinalRetire, Shutdown { at } }
+```
+
+During a drain, `Prepare` adds programs and bindings; `Abort` marks referenced instances removed; `Release` never frees
+an instance a cursor references; a kernel control read is served between steps. A drain or discard step removes the
+entry it visits (`HashTable::get_bucket_entry(index).remove()`, which moves no other entry, so the remaining bucket
+positions in the `FlushState` stay valid); the end of the pass does O(1) work beyond the native shrink heuristic. So
+between calls of a yielded reset, retirement, or shutdown, `len()`, the budgets, and the context gauges fall as the
+drain goes, and a context snapshot lists only the contexts not yet drained. Native flushes keep their deferred removal
+queue (native fidelity under an abandoned flush). A drain is not counted in `aggregate_flushes_total` (a reset or
+retirement counts its flush pass once, so a cut adds one final flush); drained contexts count in
+`aggregate_flushed_total`. A discard at shutdown decrements the context gauges (natively the transform exits with them
+unchanged).
+
+### The aggregation slot
+
+**Boundary, roles, frame.** `Boundary::{Synchronous, IoHost, OpaqueHost, Isolated}`; `is_fence()` stays "not
+`Synchronous`" and `is_host()` is `IoHost | OpaqueHost`, which `compile::roles` (`Role::Fixed` for a host,
+`Role::Isolated` for an isolated node), the artifact host check (`validate/bounds.rs`, so artifacts may contain
+`aggregate`), and the live-binding-on-host check (`validate/references.rs`) use. `Frame::compute` accepts keyed state
+only behind `Isolated` (a node that keeps state without an isolation fence, or the reverse, is `Unsupported`, stage 10);
+isolated nodes never join a union, count as fences in the depth walk, are excluded from R1's costs, and each gets a slot
+of its own whose exits are only its boot edges' targets (`FusionVerdict::Isolation`). An `emit` straight after a state
+owner is a synchronous node in a fused slot of its own. With the default program, `dsd_pre_aggregation`'s exit `dsd_agg`
+keeps its name and targets the isolation slot; `dsd_agg`'s `Readmit` admission point disappears (later point IDs shift),
+and every stage 3 slot and pipeline keeps its nodes. Both ADP's and the testing crate's slot naming functions name the
+slot holding `dsd_agg` after it. Explain shows `isolation slot, output point N, watermark of admission points ...` for
+the slot, `progress of admission points ...` for progress exits, `feeds state` for points, and the slot's time-driven
+output as a segment of its own (mode `time-driven`, starting at the output point).
+
+**Placement** (`compile/placement.rs`). An isolated node runs in its boot slot if its inputs reach it, else in the
+unique isolation slot that its fed-from slots have an exit to; a state owner fed straight by an admission point whose
+route is a fused slot runs in the one isolation slot that slot has an exit to (a one-hop pass-through entry: the route
+slot gets the point's entry with the state owner's input port and forwards it by its exit). Otherwise it cannot be
+placed (`MissingCapability::ResourceGenerations`: adding an isolation slot when the frame has none, else a new exit
+from a region to an isolation slot, naming the regions its input comes from). A synchronous node never runs
+in an isolation slot, and isolation slots hold only isolated nodes. Per-branch widths are separate region entries over
+the one physical edge, with no topology change. A changed host component is a `ResourceGenerations` problem; aggregation
+changes are state transitions the installer classifies.
+
+**Programs** (`compile/program.rs`). `Step::State { kernel, register, params: StateParamsIndex }` feeds a register's
+buffers to `consume` with the batch header and the generation's per-call parameters. `EntryKey::StateOutput(
+KernelIndex)` is one entry per state owner whose register 0 holds the kernel's time-driven output, normally one `Exit {
+exit, entry }`. An isolation slot's program contains only `Step::State` and `Step::Exit`, and a state owner's kernel
+appears only as `Step::State` with exactly one `StateOutput` entry. `ProgramKernel::lineage: Option<LineageInfo { key,
+flush_interval }>`; `RegionProgram::state_params: Vec<StateParamsEntry { params, hash, pushed }>`, with `hash` the
+canonical hash of `{"params_hash", "pushed": [site]}` (no site: the stateless hash). The fingerprint adds each state
+step with its entry's hash, a kernel's lineage, and the parameter hashes, each only when present, so every stateless
+program's fingerprint is unchanged.
+
+**Driver state** (`runtime/driver/isolation.rs`, `runtime/state/`). `MetricRegionDriver::new` builds a state slot when
+`RegionConfig::for_slot` sees `SlotKind::Isolation`; such a region needs a schedule (`RegionError::StateConfig`
+otherwise), and takes a wall clock and the state budgets (`RegionConfig::{with_schedule, with_wall_clock,
+with_state_budgets}`). The slot keeps the watermark tracker, its `OutputClock`, the slab of instances (`Instance { key,
+created_by, kernel, users, interval, tick, last_flush, retiring, retired, removed }`, `TickState::{Unstarted,
+Scheduled, Gated, Off}`), the drain cursor, and the stash; `LiveGeneration::kernels` bind by slab index or instance
+handle, and `LiveGeneration::mode: GenerationMode::{Healthy, RollingBack, Dropping}` replaces `failed`.
+
+- `process`: take the header; observe it (a fault is `invalid`); queue resets (each live instance, the publication
+  epoch judged on the tracker before the observation; a reset with no instance bumps the output epoch at once),
+  crossings, and gated ticks the watermark releases; if the queue is not empty, stash the batch and drain; else admit
+  it through the batch generation's program, whose `Step::State` calls `consume` on the instance that program binds. A
+  batch of a generation in `Dropping` mode is rejected as stage 3 rejects a failed generation.
+- `start`: each instance's first tick at `now + interval`; an instance created later by a cut takes the tick phase of a
+  live instance of its node, a new node `now + interval`.
+- `next_deadline`: `now` while an orphaned drain remains; nothing while draining; else the earliest scheduled tick or
+  gate expiry.
+- `advance_time`: resume an orphaned drain; else, for each instance whose deadline passed, in slab order, skip (moving
+  the deadline on), gate, or queue a tick with its flush time and generation. A retired or removed instance never
+  ticks.
+- The drain loop (shared by `process`, `resume`, `advance_time`, `finish`) sets the supervision cursor's generation and
+  instance, builds the kernel turn with the stamp header, watermark `F`, and `g`'s per-call parameters, calls the
+  kernel (`advance_time`, `control(&mut ClockReset)`, or `finish`), moves port 0's buffers into register 0 of `g`'s
+  `StateOutput` entry and runs its steps, and stores the step's latch only if it emitted. After a tick, the next one is
+  scheduled at `at + interval(g)`.
+- `finish(Shutdown)`: a shutdown drain over every instance at `S_end` (regions finish only at shutdown, a
+  `debug_assert!`); with an orphaned cursor it resumes it first.
+- `control`: `Prepare` (with bindings), `Abort` (with undo), `Release` (free unbound instances), and
+  `RegionControl::Kernel(KernelControl { target: KernelTarget::{Node(NodeId), Stateful}, message, reply })`, which calls
+  `control` on every live instance the target selects that has not retired, in slab order, then replies with the
+  message.
+- `lineages()` lists each instance's node, creator, and whether it retired (for tests); `kernel_count()` counts state
+  instances too.
+
+**Supervision** (`reset_after_panic` for a state slot). The charged generation is the cursor's: the batch's for
+`consume`, `g` for a drain and its `StateOutput` steps, and for a kernel control read rule 3's generation for the
+instance (its creator if none is published). A zero budget (the default program) fails the region (native); an
+exhausted one puts the generation in `Dropping` (its later input is dropped as `invalid`). A panic in a state kernel
+counts what the instance held (`Kernel::held`, under `catch_unwind`, 0 if it panics) as `invalid` loss of its node,
+takes its R5b counts, rebuilds it empty (its `Drop` releases units and gauges), and keeps its key, creator, binders,
+retiring mark, and tick phase. **Every binder continues on the rebuilt instance**, a kept default program included: a
+panic under an artifact generation's parameters never fails the default program. A generation that can roll back is
+reported once and marked `RollingBack`: it keeps processing input. A failed rebuild fails every binder (and the
+region if one has a zero budget). A drain in progress when the host ended the call: the stash is dropped (the host
+counted it with the ended call), the panicking instance's current step completes as if it ran on the now-empty
+instance (tick moved on, reset forgotten, retirement done), and the rest of the queue stays with `orphaned` set, so
+instances that did not panic lose nothing, a partial reset still completes for every remaining instance before input is
+read, and the output epoch bumps once. A panic outside any state kernel rebuilds nothing; a panic in a fused slot keeps
+the stage 3 behavior.
+
+**Telemetry.** The driver registers nothing; `RegisterTelemetry::state(region) -> StateTelemetry` (default no-op
+handles, implemented by `PlanTelemetry` and ADP's `RegionTelemetry`) gives the isolation slot's
+`plan_state_watermark_lag_seconds` (wall minus `W` at publish) and `plan_state_lineages` gauges and the
+`plan_clock_resets_total` and `plan_state_tick_grace_expired_total` counters, tagged `component_id:<region>`. The
+kernel's series are its native ones; `plan_loss_total{component_id:<node>, class}` counts capacity, policy (kind and
+rate-interval conflicts), shutdown, and invalid loss (including state lost to a panic). ADP's telemetry profile
+`(dsd_agg, aggregate)` is `TelemetryProfile::Aggregation`, the kernel's 17 series under `component_id:dsd_agg`
+(`MetricSource::Kernel`; `Host` now means sources only). `runtime::kernel_accounting_in(&Slot, node)` accounts an
+isolation slot's kernel in the region's own resource group, with its bounds at the region's top level, when the slot
+is named after the node; fused slots keep `kernel_accounting_name`, so `metrics_enrich`'s kernel keeps its
+subcomponent. `RegionBounds::for_slot` uses the same rule and adds one drain step for isolation slots.
+`OperatorDef::specify_state_bounds` declares the state a kernel keeps in units of its host's budget (`aggregate`: firm
+`state_usage(context_limit)` plus `snapshot_usage(context_limit)`), which `RegionBounds` declares and validation's
+`artifact_memory` does not (it counts `specify_bounds`, the kernel struct), so an artifact's aggregation at any context
+limit is accounted by the shared budget rather than refused.
+
+**What `dsd_agg` keeps and changes:**
+
+| Native identity | Stage 6 |
+|---|---|
+| Component `dsd_agg`, `component_type:transform`, health, task series | The isolation slot's region host, named `dsd_agg`. |
+| `aggregate_active_contexts*`, `aggregate_flushes_total`, `aggregate_flushed_total`, `component_events_dropped_total{intentional:true}` (remapped `aggregator.*`) | Registered by the kernel under the native identity. Two instances of one node share the series: gauges sum; `aggregate_flushes_total` (remapped `aggregator.number_of_flush`) counts per lineage, so a cut adds one final flush. |
+| `component_events_received_total{component_id:dsd_agg}` (remapped `aggregator.processed`) | Host consumer; header-only buffers count 0 events: unchanged. |
+| Resource group `topology.primary.transforms.dsd_agg`; bounds `dsd_agg.aggregate_context_limit` (sizing guide) | Unchanged, through `kernel_accounting_in`. |
+| `component_events_sent_total{output:_default}`, send latency, discarded | **Changed**: one exit, named after the component it sends to (`metrics_enrich` by default, `dsd_post_agg_filter_region` with routing groups); values halve (regions do not use `BufferedDispatcher`, which double counts natively), and fall further by the records R5b suppresses. No remap reads these. |
+| — | **New**: `component_events_dropped_total{drop_reason:region_failure}`, `component_errors_total{error_type:panic}`, the plan series above; `component_events_received_size` gains zero-size samples for progress batches. |
+
+**Context snapshots** (amendment 80). The kernels crate's `aggregate::ContextSnapshot { entries }` is a read-only
+control message `AggregateKernel::control` answers from its core, also while a drain is pending.
+`AggregateContextSnapshotReceiver::into_requests()` (taken once) gives `AggregateContextSnapshotRequests::next()`, and
+`AggregateContextSnapshotPendingResponse::{respond, is_canceled, respond_with}` lose their `test-util` gate. ADP's
+`add_dogstatsd` keeps creating the snapshot channel (its handle goes to `DogStatsDContextDumpAPIHandler`, unchanged)
+and stores `SnapshotBridgeState::new(receiver)` in `BootTopology::snapshots`, outside any worker. The
+**snapshot bridge** (`snapshot_bridge.rs`, the supervised worker `programmable-metrics-snapshot-bridge`, added before
+the installer) locks the requests for its lifetime, skips canceled requests, sends each as `RegionControl::Kernel {
+target: Stateful, message: ContextSnapshot::default(), reply }` on the `dsd_agg` region's control sender, and awaits the
+acknowledgment (one request at a time, as natively). A restarted bridge re-locks the same requests (an `into_requests`
+in `initialize` would fail on restart, and the supervisor stops on a child initialization failure); a stopped region
+drops the reply, so the requester sees the native "owner stopped" error. During a cut, or with several aggregations,
+the dump lists every lineage's contexts (a context held twice appears twice).
+
+### R5b: emission suppression
+
+**Why not the removal form** (amendment 76). Moving the filter `F` above the state owner `O` violates the spec's
+capacity rule for native first-come admission with expiry. With limit 1, expiry 300 s, and `F` dropping `x`: the
+original admits gauge `x` at 1, drops counter `b` at 2, removes `x` at the 15 s tick, admits `d` at 16 and delivers it;
+the removal form admits `b` at 2, keeps idle `b` until after 302, and drops `d` at 16 and again at 310. `d` is
+policy-included and loses more, and the decision log's "occupied keys are a subset of the original's" is false (at 2:
+`{b}` against `{x}`). Two further breaks hold below capacity: native back-fill couples keys (a filtered `x` keeps state
+non-empty at a tick, so `last_flush` advances; without it the tick is skipped and a later counter gets leading zeros it
+would not, or the reverse), and on a 64-bit context collision the pushed filter judges each colliding context, not the
+first-inserted one whose name native emits. A's insertion form ("ghost entries") is exact only while the pushed
+predicate is unchanged: data admitted under generation 1 and flushed under generation 2 is judged natively by
+generation 2's filter. Both are pinned through the interpreter (`compile/rewrite/r5b/tests.rs`).
+
+**The rewrite.** `F` stays where it is (the residual for every kind and for other inputs of any merge in between). For
+the kinds `K` where it commutes, `O` skips the records `F` would drop **at emission**, evaluating `F`'s predicate as
+compiled in the flush's stamping generation. State dynamics (admission, capacity, removal, back-fill, conflicts,
+metadata) are untouched, so the result is exact on every trace. Applicability (`compile/rewrite/r5b.rs::analyze`, on
+the compiled logical plan after `optimize`, one record per candidate owner, applied or skipped with a reason):
+
+1. `F` is a `split` with one port straight to a `drop` (a `filter`-cardinality operator is not a predicate and is
+   skipped), reached by one path from `O`'s output through `merge`s and synchronous, stateless, signal-free,
+   identity-preserving one-to-one maps that write nothing `F` reads; no `tee`, copying port, `emit`, other `split`, or
+   dynamic node in between.
+2. `O` declares `KeyedState::emission_filter: true` (`aggregate` only), is not a host, and is not dynamic.
+3. `F` reads only name, intake name, host, tags, origin tags, kind, and metadata.
+4. `K`: the kinds of `O`'s input port type (from the candidate's validation report; a port a logical rewrite inserted
+   counts as carrying every kind) with `O.identity(k) = Preserving`, one output kind `k'` (`Counter` → `Rate`, others
+   identity), and `O.writes(k) ∩ F.reads ⊆ {kind}`; an output kind is judged only when every input kind leaving as it
+   commutes (`PushedFilterSite::emitted`). Histograms are in `K` when `F` reads none of name, intake name, kind, and
+   metadata (every expansion keeps host and tags). For a name filter after aggregation, `K` is every kind but
+   histograms: the spec's partial push-down. Host tags and tag projections, which merge contexts, are skipped.
+
+Provenance does not matter. The default program's `dsd_post_agg_filter` (`kind_in [counter, rate, gauge, set] ∧
+intake_name matches`, behind the `dsd_post_agg_filter_in` merge) qualifies with `K` = every kind but histograms, so
+histogram statistics such as `*.max` stay with the residual, and the default program's explain lists one applied R5b
+record. The effect is physical, like R2 and R4: the logical plan is unchanged.
+
+**In the kernel.** `PushedFilterSite { owner, filter, drop, drop_port, predicate, drops_matching, emitted, histograms }`
+compiles (`PushedFilterSite::compile(SiteIndex, resolver)`, from the plan's resolved values, numbered by its position
+among the plan's sites) into a `PushedFilter`, which implements the kernels crate's `EmissionFilter { drops(context,
+OutputKind, metadata), drops_histogram(context, metadata), site() }` by evaluating the predicate on
+`EventView::from_parts(&Context, Kind, &MetricMetadata)` (borrowed parts, no probe metric). `compile_placed` builds the
+filters (`site_filters`) and passes each to its owner's `OperatorDef::step_params`; a site whose owner gets no filter
+is recorded `Skipped` (`reconcile_pushed`), so explain, `plan_rewrites_applied`, and fingerprints never claim a
+suppression no kernel performs. In `flush_next`, before expanding a closed context, a filter that `drops` it (for a
+counter or rate, judged as `OutputKind::Rate`; a histogram only through `drops_histogram`) has the closed values split
+off as usual but not expanded or emitted; `aggregate_flushed_total` still counts the context, and the flush counts the
+suppressed records and points by site (`Suppressed { records, points }`; a histogram counts its statistics plus the
+copy as records). Drains apply the filter; discards emit nothing.
+
+**Telemetry attribution.** Each suppressed record is one record `F` would have received and sent to its drop port. The
+kernel commits its counts per call that returns (a yielded call's records are delivered before it resumes; a call that
+panics has everything it wrote discarded, so its skips are never counted), and the isolation driver takes them with the
+control message `aggregate::TakeSuppressed` after every drain step (and before dropping an instance), adding the records
+to `F`'s `port_events(F, split, drop_port)` (its native `PortEvents(drop_port)` profile series, for the default program
+`dogstatsd_post_aggregate_filtered_metrics_total`, and `plan_node_events_total{node:F, port:<drop>}`) and the points to
+the drop node's `plan_loss_total{class:policy}`, as the plan without R5b records them. Equal labels name the same series
+whichever region increments them, so `F`'s series equal those of the plan without R5b. What changes (the explain
+`TelemetryEffect`s): the input-side counts of the nodes between `O` and `F`, the `dsd_agg` exit's sent counts, and
+`component_events_received_total{component_id:metrics_enrich}`, all lower by the suppressed records. Savings: no context
+or metadata clones, histogram statistics, buffer pushes, exit traffic, or downstream evaluation for suppressed records;
+state memory is not reduced.
+
+### The reference interpreter
+
+The interpreter runs aggregation as a stateful kernel behind its isolation fence with the whole protocol, through the
+shared `runtime::state::rules` (amendment 81):
+
+- **Instances** (`interpret/state.rs`): `Instance { key, kernel, tracker, gated, last_flush, retiring, retired }` in a
+  slab whose indices are never reused; programs bind them through `Exec::State`, with the generation's per-call
+  parameters passed on every call (no R5b filter: the interpreter applies no rewrite). Several live programs
+  (`Run::programs`: the active one, and the replaced one while a cut is in flight) and an `AdmissionSchedule`: every
+  source stamp takes its generation from `generation_for` with the epoch the point had at publication.
+- **Time**: a stamp earlier than the point's latest by more than `CLOCK_RESET_THRESHOLD` is a reset (new epoch); by
+  less, `InterpretErrorKind::AdmissionTimeMovedBack`. Before a stamp's batch (`drains.rs`): every instance whose tracker
+  includes the point observes the header; reset drains, then the output epoch bumps; final retirements of instances
+  retiring by a generation every upstream point now switched to; gated ticks the watermark releases; then the batch;
+  then the cut's finalization check. At `advance`: optional heartbeats (`with_heartbeats_at_ticks`, every source of
+  every live program), expired gates, then each instance by `TickGate::due`; drains run grouped by stamping generation,
+  in ascending ID order, each generation's in plan order, and the isolation driver orders the drains of one event the
+  same way (`in_drain_order`), since the latch makes stamps depend on the order. A clock reset drops a gated tick, in
+  both. A lineage a cut starts takes its tracker from an instance over the same points, as the slot keeps one
+  watermark. One `OutputClock` per set of upstream admission points, as the isolation slot shares one latch across
+  every state owner over `dsd_in.metrics`; the latch moves only when a drain emits. (A frame computed from a plan with
+  two state owners over one point runs them in two isolation slots, each with a latch of its own, which the interpreter
+  does not model.) `close` uses
+  `shutdown_time`. `with_state_budget(capacity)` sizes the shared budget (default unlimited).
+- **Installations** (`installation.rs`): each `install` is validated and prepared at its event and rejected at once if
+  that fails. Isolated owners in both plans: `reject` rejects, `retain` with an equal key retains the instance, else
+  `cut`; added or removed isolated owners are `cut`. A cut computes `lcm_secs` (`InstallRejection::CutWidths` past 300
+  s), `T = cut_time(max(latest of the affected points, last advance clock), lcm, CUT_MARGIN)`, sets the boundary, marks
+  the retiring instances, publishes `Cut`, and records `InstallOutcome::Cut { generation, at }`; finalization stores
+  `Steady(new)` once every affected point passed. A valid `install` while a cut is in flight **waits** (latest wins;
+  the replaced one is `Superseded { by }`, one still waiting at the end `Waiting`) and starts at finalization against
+  the then-active plan. `cancel` cancels the cut only if no point stamped `new` (`Cancelled`) and discards the waiting
+  installation (`Superseded { by: the cancel }`); otherwise `CancelRefused`. So a newer revision is `cancel` +
+  `install`, and a revocation `cancel` + `install` of the default program. State owners outside an isolation fence keep
+  the earlier rules (no cut while one is in a plan, no reset upstream of one), reported as stage 7.
+- **Not modeled**: a reset at one of several points drains everything (the stage 9 rule is deferred); a gated tick is
+  not released by a host's readmission.
+
+`interpret/compatibility_tests.rs` (moved from `interpret/adapters/`, which the flip deleted) runs every
+compatibility fixture through the kernel in the no-queueing mode (`Timing::Prompt`), bodies and expectations unchanged
+except two intentional rewrites: `buckets_follow_the_admission_time_of_each_batch` is the "late batch, no cut" form
+(`Timing::Queued`), and `an_allowed_width_aligns_buckets_to_its_multiples_and_any_other_width_is_rejected` uses 12 s
+plus the rejection of 7 s. The kernel counts kind and rate-interval conflicts as policy loss (amendment 82), asserted
+in the two conflict fixtures. Opaque-host injection stays covered by `interpret::tests` (`with_opaque_host`).
+
+### Scopes, IR, composition, channel
+
+**The `dogstatsd_pre_aggregation` scope** (amendment 78). ADP lowering adds, when DogStatsD is enabled:
+
+```json
+"dogstatsd_pre_aggregation": {
+  "inputs": {"metrics": "dsd_in.metrics"},
+  "exits": {"aggregated": "dsd_post_agg_filter_in.0", "passthrough": "dsd_post_agg_filter_in.1"}
+}
+```
+
+Without the no-aggregation pipeline the exits are `{"aggregated": "dsd_post_agg_filter.in"}`. The region is the mapper,
+the prefix filter and blocklist split, the timestamp split, the tag filterlist, and `dsd_agg`; host taps are outside
+the plan. Constants `catalog::{DSD_PRE_AGGREGATION_SCOPE, DSD_PRE_AGGREGATION_INPUT, EXIT_AGGREGATED,
+EXIT_PASSTHROUGH}`; both plan fixtures and ADP's every-branch fixture carry it.
+
+**IR and catalog.** `ArtifactPortRef::Exit(ExitName)` reads and prints `exit.<name>` as an edge target;
+`PolicyArtifact::from_value` rejects an exit as an edge source (`IrError::EdgeFromExit`), and composition an undeclared
+exit. The syntax crate parses and prints `-> exit.<name>` in blocks and statements. `Catalog::{scope_exit,
+state_budget}` (provided, default `None`); `MemoryCatalog` documents a scope as the flat input map when it has no exits
+(stage 5 documents and export pins unchanged) or `{"inputs", "exits"}` otherwise, plus a `state_budget` member, which
+`export.rs` keeps when reading a bundle; `AdpCatalog::to_document` writes the pre-aggregation exits and the state
+budget. In explain, `ScopeEntry::exits` (skipped when empty) prints `<scope>: <inputs>; exits <exits>`.
+
+**Validation** (`validate/state.rs`): `widths_above_sixty` (at most one distinct known width above 60 s among state
+owners), `split_window` (a `timestamp_split`'s `window` equals the window of every aggregation its `default` port
+reaches first; equal bindings or unknown values pass), `state_budget` (warning: an artifact state owner whose
+`context_limit` exceeds the catalog's budget), and `bucket_width` through `check_params` of `aggregate` and
+`timestamp_split` ("must be one of 1, 2, ..., or 300 seconds, but is N seconds: aggregation buckets must line up at a
+common boundary every minute (or every 2, 3, or 5 minutes) so that aggregation changes can switch at a bucket
+boundary"). `limits::ALLOWED_BUCKET_WIDTHS` derives from the kernels crate's `ALLOWED_BUCKET_WIDTHS_SECS`.
+
+**Composition and export** (stage 5 deltas). `export::ScopeRegion::of` stops its walk at exit ports, and edges into an
+exit port become `exit.<name>` artifact edges (two exits of one port are not exportable); `post_enrich`'s base is
+unchanged. `compose_all(default, &[(artifact, approval)], catalog, registry)` composes one artifact per scope against
+the default program, splices them into one plan in scope order, and validates once; provenance lists every revision.
+`Composed::scopes` holds each scope's correspondence and stale flags. `ComposeError::Stateful` is gone: a state owner
+composes, and placement judges it (an `aggregate` in `post_enrich` cannot be placed: a new exit to an isolation slot
+needs resource generations). The `Composer` trait's required method is `compose_all`.
+
+**One config per scope** (`install/core/artifacts.rs`). The policy in effect is a per-scope map; candidates compose the
+whole policy, with the newest revision as origin. A snapshot is handled in order: configs equal to the last snapshot's
+keep their acknowledgment (the set of configs to read again is computed once per snapshot); a scope with an artifact in
+effect that no config names is revoked; a scope with more than one config rejects them all; configs of one snapshot
+that share a new revision are all rejected until one has its own (amendment 87); each remaining config is ordered
+against the mark the snapshot found, where a delivery equal to the policy in effect for its scope under that policy's
+own revision, or under a newer one, is a redelivery or re-approval, any other revision at or below the mark is stale,
+and the rest are acceptances. Several acceptances are composed and checked together (hash, validation, placement,
+compilation); if that fails, each is checked alone with the policy in effect, and those rejected alone are refused with
+their own reason. A generation composing several artifacts fails as a whole. One revision high-water mark spans the
+scopes (the protocol's `revision_high_water` member and its rule for the next revision stay).
+`StatusSummary::scopes: BTreeMap<ScopeName, ScopeStatus { default_program_hash, active_artifact, stale_base }>`
+carries every scope ADP reports a base for: ADP computes `export::base` of each scope (`DefaultProgramView::bases`)
+and reports with `InstallerCore::apply_states_with_bases`, so `scopes` is always written. A host that reports only the
+policy scope's base (`apply_states`) writes it only while a scope other than `post_enrich` has an active artifact, so
+its wire form is stage 5's otherwise; the top-level members keep meaning `post_enrich`'s. `/export?scope=dogstatsd_pre_aggregation` serves the second scope.
+
+**Demo.** The stub store (format 2; format 1 still reads) keeps one published config per scope (`demo` for
+`post_enrich`, `demo-<scope>` otherwise) under one revision counter; `POST /api/revoke {scope?}`; the control watcher
+fetches both scopes' exports; the preview composes the edited artifact with the artifacts ADP runs for the other scopes
+(read from the stub's envelopes when the hashes match) and says the plan is not placed. Guardrails: S5c is an
+aggregation without its parameters (`valid_parameters`), and S5d an aggregation in the policy scope, which ADP rejects
+with the placement message ("runs only in an isolation slot"). The protocol document describes the per-scope members.
+
+### ADP
+
+1. **Configuration** (`agent-data-plane-config-system`, `saluki_only.rs`): `aggregate_window_duration_seconds`
+   deserializes through `deserialize_bucket_width` (amendment 83). The message names the allowed widths and the nearest
+   one, and applies to the legacy path too: "... must be one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120, 180, or
+   300 seconds, but is 7: aggregation buckets must line up at a common boundary every minute (or every 2, 3, or 5
+   minutes) so that aggregation changes can switch at a bucket boundary. Use the nearest allowed width, 6 seconds."
+   (ties choose the smaller; `0` gets the same explanation).
+2. **Lowering and catalog**: the scope in both shapes; `AdpCatalog::{state_budget, pre_aggregation_exits}`.
+3. **Topology** (`topology.rs`): `add_dogstatsd` adds no aggregation transform (the frame always has the isolation slot
+   with DogStatsD), creates the snapshot channel, and stores its bridge state; `check_fixed_components` requires the
+   isolation slot `dsd_agg` exactly when DogStatsD is enabled. `add_regions` gives the isolation slot's `RegionConfig`
+   the schedule, a `SystemWallClock`, and the state budgets, and its host the drain turn budget, with `RegionBounds::
+   for_slot`; its input capacity is one native component's (128). `connect_frame` registers every point with the
+   registry and gives each point that feeds state its heartbeat and recipients (`[component of the point's route]`,
+   `dsd_pre_aggregation` by default), with the period of the boot programs' lineage kernels downstream.
+4. **`BootTopology`** gains the `AdmissionRegistry`, `StateBudgets`, the wall clock, the snapshot bridge state, and the
+   test-only `state_admission_clock` (a `ManualWallClock` for the points that feed state); the installer keeps the
+   frame's affected and cancel lock orders (`CutPoints::of(frame)`).
+5. **Installer** (`installer.rs`, `installer/cut.rs`): the cut actions and polling above; `region_preparation`
+   matches every field of `SlotPrepare` and passes the state bindings for every slot; `resume_actions()` first on
+   every start.
+6. **Telemetry** (`telemetry.rs`, `telemetry_profiles.rs`): `RegionTelemetry::with_state(budgets, frame)` attaches
+   each isolation slot kernel's budget and accounting; `RegionTelemetry::state` delegates to `PlanTelemetry`; the
+   aggregation profile; the cut counters.
+7. **Test topology** (`test_topology.rs`): the plan side always runs the kernel. `Aggregation::Clocked` lowers with a
+   1 h flush interval (lowering only, so the installer's later lowerings see the real interval), puts the points that
+   feed state on `ManualWallClock(ADMITTED_AT)` and the slot on `ManualWallClock(FLUSHED_AT)`, so the slot flushes only
+   when its input ends at `S_end = FLUSHED_AT`, as the legacy clocked transform does; `Options::aggregation_clock`
+   drives the legacy transform through `ClockedAggregateConfiguration` (`AggregateConfiguration::with_clock`,
+   `test-util`) for the tick-parity test. `Aggregation::{Gated, Scripted}` replace the `dsd_agg` region host with a
+   gated or scripted transform that stamps its output as time-driven output, so the burst tests run unchanged.
+8. **Release note**: bucketing by admission time with watermark closure and the tick gate; allowed widths; clock resets
+   at 300 s and the freeze of absorbed jumps; repeated histogram statistics emitted once (amendment 26); `dsd_agg`
+   series changes; R5b's effect on sent and received counts; live aggregation changes through artifacts with a cut and
+   its delay bound; the cut counters; the loss window of a failed cut generation.
+
+### Native behavior: preserved and changed
+
+| Row | Stage 6 | Evidence |
+|---|---|---|
+| Aggregation key (64-bit hash; a collision keeps the first context) | Preserved (core unchanged; R5b exact on collisions) | kernels matrix fixture |
+| Kind conflict replaces every bucket, closed-unflushed included | Preserved; now counted as `policy` loss | fixtures with loss assertions |
+| Metadata: first insertion wins | Preserved; fresh at a cut and after a reset | fixture; traces 3, 6 |
+| Rate interval mismatch | Preserved | fixture |
+| Bucket assignment | **Intentional change**: by `t_a`, closed by `W` at gated ticks | bucket property tests, tick parity |
+| Bucket width values | **Intentional change**: the allowed set, a startup error | configuration and `bucket_width` tests |
+| Wall-clock jumps | **Intentional change**: backward jumps up to 300 s absorbed, freezing `t_a`; larger ones reset | clock tests; trace 6 |
+| Flush ticks | Preserved: every interval, first one interval after start, burst, empty tick not a flush; a tick may wait up to 2 s for the watermark | fixtures; driver tick and gate tests |
+| Timestamped DogStatsD points | Preserved (split unchanged; they never reach aggregation in the default program) | existing |
+| Late timestamped points | Preserved (next flush; first-insertion quirk) | fixture; trace 8 |
+| Histogram flush | Preserved; a repeated statistic emitted once (amendment 26) | fixtures |
+| Counter expiry and idle zeros | Preserved against `F`: leading zeros, back-fill from the last flush that ran, no zeros on the first flush, last zero before `last seen + expiry`, expiry 0 never expires; paused at a cut and a reset | fixtures; traces 3, 6; bucket property tests |
+| Context limit | Preserved (budget rule); shared during a cut, with no overlap in held contexts | fixtures; budget tests; the 70% cut test |
+| Open buckets at shutdown; `flush_open_windows` no effect | Preserved (`S_end`) | shutdown tests |
+| Counters leave as `Rate(width)` | Preserved | fixture |
+
+Input is not read during a flush, and liveness and control are answered. A panic under the default program fails the
+component (zero budget); under an artifact it restarts the instance empty and keeps every generation running, as a
+native restart keeps the component. One `dsd_agg` component and the snapshot API are preserved. Remaining divergences:
+a tick flushes at native's time once `W` reaches the tick's wall-clock second within 2 s, so points differ only where
+`t_a` and arrival straddle a bucket boundary, and a context's synthesized zeros, expiry, and metadata can also differ
+when one of its batches crossed a tick in a queue, or at a tick whose grace expired (backlog over 2 s), where closure
+is one tick late (amendment 86); cuts and resets give fresh metadata and pause zeros; a final retirement emits the old
+lineage's last buckets at the crossing, up to one flush interval before native's tick would, with `t_a` `T`, which
+matters to `host_tags` only if its deadline falls in that window during a cut; `aggregator.number_of_flush` counts one
+extra flush per cut; a shutdown discard decrements the context gauges. Spec text still to correct (from the stage 6
+research): the histogram row (aggregation writes `kind` for counters too), the shutdown row (`flush_open_windows` has
+no observable effect), the expiry row (back-fill and first-flush rules), and the timestamped row
+(`dogstatsd_no_aggregation_pipeline` defaults to true).
+
+### Interfaces by crate
+
+- **`saluki-core`**: `Turn::{with_param, param}`; `ClockReset`; `Kernel::held`; the kernel contract amendments
+  (Drains); `StateBudget`; `CutBoundary` and `GenerationToken::{set_cut, cut}`; `AdmissionRegistry`,
+  `ScheduleTransaction`, `TransactionError`, `AdmissionPointConfig::{with_registry, with_heartbeat_recipients}`,
+  `AdmissionPoint::heartbeat_recipients`, `AdmissionPointStatus::{passed_cut, wall_now}`, heartbeats stamped with
+  generations; `AdmissionClock::{wall_now, epoch}`; `RegionDriver::start` and the deadline and finish contracts;
+  `Dispatcher::attach_component_sender_to_output`; blueprint validation of heartbeat recipients.
+- **`saluki-metric-kernels`**: `params/bucket_width.rs` (`ALLOWED_BUCKET_WIDTHS_SECS`, `is_allowed_bucket_width`,
+  `MAX_TRANSITION_LCM_SECS`, `describe_allowed_widths`); `aggregate::{AggregateParams::split() -> (LineageParams,
+  AdmitParams, FlushParams), AggregateStepParams, ContextBudget}`; `AggregateCore::{with_budget(AggregateParams,
+  ContextBudget, AggregateTelemetry), admit_with, begin_flush, begin_drain(&FlushParams), begin_discard(&FlushParams),
+  flush_step, end_flush, abandon_flush, held_points, shares_budget}`, `FlushState::take_counted`,
+  `AdmitOutcome::{replaced, replaced_points}`, `FlushOutcome::{suppressed, discarded, discarded_points}`;
+  `aggregate::kernel::AggregateKernel`; `aggregate::emission::{OutputKind, EmissionFilter, SiteIndex, Suppressed,
+  SuppressedBySite}`; `aggregate::{ContextSnapshot, TakeSuppressed}`.
+- **`saluki-components`**: split parameters (no behavior change); the snapshot request API;
+  `ClockedAggregateConfiguration` (`test-util`).
+- **`saluki-metric-plan`**: `Boundary::{Isolated, is_host}`; `OperatorDef::{lineage_params, step_params,
+  flush_interval, specify_state_bounds}`; `KeyedState::emission_filter`; `KernelBuildContext::{with_state_budget,
+  state_budget}`; `MAX_HISTOGRAM_SERIES`; `aggregate` as a kernel; the frame, placement, and program types above
+  (`SlotKind`, `Exit::progress_points`, `AdmissionPointInfo::feeds_state`, `Frame::{affected_points,
+  cancel_lock_order}`, `FusionVerdict::Isolation`, `FrameError::{StateOwnerPoints, StateOwnerPaths}`, `Step::State`,
+  `EntryKey::StateOutput`, `StateParamsIndex`, `StateParamsEntry`, `LineageKey`, `LineageInfo`,
+  `CompileError::StateOwner`); `rewrite::r5b`; `EventView::from_parts`; `runtime::{state::rules, StateBudgets,
+  StateTelemetry, RegionControl::Kernel, KernelControl, KernelTarget, kernel_accounting_in, kernel_accounting_path,
+  RegionBounds::for_slot, PrepareRegion::with_state_bindings, RegionError::{StateBinding, StateConfig}}`;
+  `runtime::harness` (`test-util`: `FrameHarness`, `HarnessOptions`, `RecordingTelemetry`, `HarnessClock`);
+  `install::{StateOwnerDiff, StateOwnerChange, CutPlan, StateBinding, SlotPrepare::state, state_bindings,
+  Action::{ArmCut, WatchCut, CancelCut, FinalizeCut}, CutPhase, CutStatus, CutProgress, CutDeferReason, AfterCancel,
+  Rejection::{CutWidths, CutNotArmed}, PendingReason::{CutInProgress, CutDeferred}}` and the core's cut events;
+  `interpret` (above); `validate/state.rs`; `ArtifactPortRef::Exit`; `compose_all`, `Composed::scopes`; the
+  per-scope status; and the limits `HEARTBEAT_PERIOD` (1 s), `CLOCK_RESET_THRESHOLD` (300 s), `PROGRESS_PERIOD` (100
+  ms), `TICK_GRACE` (2 s), `DRAIN_STEP_EVENTS` (1,024), `DRAIN_STEP_CONTEXTS` (4,096), `CUT_POLL` (100 ms),
+  `CUT_LOCK_TIMEOUT` (1 s), `CUT_ARM_RETRY` (1 s), `CUT_ARM_ATTEMPTS` (10), `MAX_TRANSITION_LCM` (300 s), each with a
+  decision-log note where it changes behavior.
+
+Deviations from the reviewed design, all small: no `Origin::Rollback` and no `Outcome::Prepared { cut_at }` (a
+rollback keeps the replaced artifact's origin and is marked in `InstallerCore::rollbacks`; `cut_at` reaches
+acknowledgments and the cut status), which avoids new exhaustive-match arms in ADP; `EntryKey::StateOutput` keyed by
+the state kernel's index; `SlotKind::Isolation::upstream` a `Vec`; `RegisterTelemetry::state` instead of three methods,
+and no `pushed_filter` method (the attribution uses the existing `port_events` and `loss` handles);
+`Rejection::CutWidths` carries a message rather than the `lcm`; the interrupted arm republishes its boundary or, when
+it cannot, is reported abandoned and queued again as a new generation (the stage 6 review; it failed the generation
+before); the rollback of a failed irrevocable cut generation is queued when the
+failure arrives; `plan_cuts_total` has no `cancel_refused` outcome (refusals have a counter of their own).
+
+### The flip
+
+The flip, in I-Z after every part was merged: `aggregate`'s contract boundary became `Isolated`;
+`interpret/adapters/` was deleted (its compatibility tests moved to `interpret/`, its users switched to the native
+registry); `operators/tests.rs` and `validate/default_program_tests.rs` assert `Isolated`; `testing::
+isolated_aggregate_registry` and `ProgrammableMetrics::with_registry` were deleted; and ADP's fixed `dsd_agg` path
+left `add_dogstatsd`. Consequences: the default program's frame gains the isolation slot (`dsd_agg`, its output point,
+progress points on the pre-aggregation exit), R5b applies to the default program, every plan-side ADP test runs the
+kernel, and `ValidationError::LiveBindingOnHost` can no longer be produced by a native operator (no native host has a
+live-bindable parameter); it stays for hosts of later stages.
+
+### Exit evidence
+
+The stage 6 exit gate, as I-Z ran it on the integrated tree (macOS, Apple Silicon, local; release mode for property
+tests, benches, and measurements):
+
+- **Compatibility fixtures** pass unchanged against the kernel, with the two documented rewrites: the kernels crate's
+  `aggregate::{tests, compatibility_tests}` and frozen-reference property tests (bodies unchanged over the wrappers),
+  and every fixture of `interpret::compatibility_tests` through the kernel in the no-queueing mode. New kernel property
+  tests: `property_test_resumable_flush_matches_whole_flush` (yields at every budget, random shared budgets and
+  emission filters, the frozen state machine as oracle, recreated at every reset),
+  `property_test_shared_budget_matches_native_with_one_lineage`, `property_test_emission_filter_equals_post_filter`.
+- **Bucket assignment**: `interpret::bucket_tests::property_test_bucket_assignment_differs_only_across_boundaries`
+  (512 cases: random stamps, FIFO delays up to 6 s, ticks with wall times, heartbeats; equal to native at arrival on
+  every point outside the three exclusions of amendment 86) and `property_test_bucket_assignment_is_native_without_
+  straddling_batches_or_an_expired_grace` (exactly equal, zeros included); mutation-checked (a flush at the watermark
+  without the gate fails both). In ADP, tick parity (`differential_tests::the_isolation_slots_flush_ticks_deliver_
+  what_native_aggregations_do_tick_by_tick`): legacy aggregation on a test clock and the plan topology on one
+  `ManualWallClock`, paused time, three configurations (defaults; histograms with a distribution copy; no counter
+  expiry with two contexts), every flush tick before the end of input equal per encoder input, idle zeros and expiry
+  included.
+- **Transition traces 1-15** in the interpreter (`interpret::transition_tests`, hand-written per output record as
+  generation, flush `t_a`, and record; plus a waiting installation finalized by a tick's heartbeat, `CutWidths` 120 to
+  180 s, cancels superseding waiting installations) and through the frame harness (`runtime::transition_tests`: each
+  trace replayed through every slot's driver, following the interpreter's installation outcomes: commit, arm at the
+  interpreter's `T` (asserted), wait, cancel, refusal; the same hand-written expectations against both; the queued
+  forms of traces 11 and 13 hold batches back between slots). Trace 14's irrevocable phase runs only in the
+  interpreter (it needs two upstream points). P3's `runtime::state_tests` add the coexisting instances of trace 7, a
+  `Prepare` overtaking queued batches, aborts during yielded drains, and the supervision cases of Drains (Supervision).
+- **The width change live in ADP** (`installer::lifecycle_tests`, clocked aggregation on a manual clock, the real core,
+  channel, worker, and regions): an artifact changing `dsd_agg`'s window from 10 to 30 s is armed at `B + 25` (the next
+  30 s boundary a second away), the counts before the cut arrive under generation 1 in 10 s buckets (`[0, 10)` 3, `[10,
+  20)` 2), those after it under generation 2 in the 30 s bucket (4), each once; revoking it while armed cancels the cut
+  (`plan_cuts_total{outcome:cancelled}` 1, generation 2 rejected as revoked, generation 1 kept with every count in 10 s
+  buckets); after two warm-up cuts, twenty cut installs alternating 30 and 10 s, each armed 30 s after the last at its
+  hand-derived `T`, finalized, and its predecessor retired, leave health registrations, resource groups, the bounds
+  tree, and metric series as they were, with `plan_cuts_total{outcome:completed}` 22 and every count once in the bucket
+  of the install that held it.
+- **R5b**: `runtime::r5b_tests::property_test_r5b_exact` (256 cases: source, optional kind split, aggregation with
+  context limits 0 to 3 or 1,000 and expiry 0, 5 s, or 5 min, optional merge, a filter on random name, intake name,
+  host, tag, origin-tag, kind, and metadata predicates dropping what it matches or what it does not; mixed kinds per
+  context, kind conflicts, timestamped points, installs that change the predicate): the frame harness with R5b equals
+  the interpreter and the frame without R5b on every output, the filter's port events and its drop's policy loss equal
+  without R5b and the interpreter's, and aggregation's capacity loss equals the interpreter's; a deterministic instance
+  pins that it applies and suppresses (2 of 4 records). `compile::rewrite::r5b::tests`: applicability, the default
+  program's applied record (`K` every kind but histograms), and the removal-form counterexamples through the
+  interpreter. ADP `telemetry::tests::aggregation_in_its_region_keeps_the_native_aggregation_components_series_and_
+  what_they_remap_to`: the profile series and every `aggregator.*` remap, `aggregator.dogstatsd_filtered_metrics`
+  included, equal to legacy with R5b on.
+- **Shared budgets** through the frame harness: a cut at 70% of the global budget loses no context to capacity, and two
+  state owners share the global budget while each keeps to its own limit (`runtime::transition_tests`); the interpreter
+  and kernel budget tests besides.
+- **Stage 3 suites with updated pins**: the twelve differential configurations with aggregation as a kernel, clocked
+  (`aggregation_as_a_kernel_in_its_region_delivers_what_native_aggregation_does_to_every_output`), and every earlier
+  differential, live-change, burst, telemetry, fault, and lifecycle test, with the isolation slot's identity, health,
+  resource group, bounds, sizing-guide inputs, heartbeats, and budget (`topology::isolation_tests`).
+- **Full runs**: `cargo nextest run` of `saluki-core`, `saluki-metric-kernels`, `saluki-components`,
+  `agent-data-plane-config-system`, `saluki-metric-plan`, `saluki-metric-plan-syntax`, `programmable-metrics-demo`,
+  and `agent-data-plane`: 3,258 tests, 3,254 passed, 8 skipped (the ignored measurements and others), and 4 failed: the
+  `saluki-components` proxy tests, which load the platform's root certificates and cannot in the sandbox (untouched
+  by stage 6). `saluki-metric-plan` alone, with and without `test-util`: 622 passed. Property tests in release (the
+  plan, syntax, kernels, and core crates): 58 passed.
+- **Measurements** (`topology/measurement_tests.rs`, release, five alternating rounds, medians, load about 7; all five
+  tests pass). Ratios are plan over legacy:
+
+  | Configuration, workers | Phase | Throughput | Worker time per metric | Allocated bytes per metric | p99, plan / legacy |
+  |---|---|---|---|---|---|
+  | mapper profile, 4 | saturated | 1.16 | 1.01 | 0.82 | (queueing) |
+  | mapper profile, 4 | paced | 1.00 | 0.99 | 0.82 | 2.39 / 3.28 ms |
+  | mapper profile, 4 | paced, live updates | 1.00 | 1.01 | 0.85 | 1.56 / 3.30 ms |
+  | mapper profile, 4 | paced, passthrough only | 1.00 | 1.00 | 0.83 | 1.43 / 2.33 ms |
+  | mapper profile, 1 | saturated | 1.12 | 0.90 | 0.82 | (queueing) |
+  | mapper profile, 1 | paced | 1.00 | 0.92 | 0.82 | 1.73 / 6.04 ms |
+  | mapper profile, 1 | paced, live updates | 1.00 | 0.93 | 0.89 | 2.10 / 6.19 ms |
+  | mapper profile, 1 | paced, passthrough only | 1.00 | 0.94 | 0.83 | 1.42 / 3.07 ms |
+  | gateways, 4 | saturated | 1.19 | 0.89 | 0.76 | (queueing) |
+  | gateways, 4 | paced | 1.00 | 0.91 | 0.76 | 2.19 / 3.42 ms |
+  | gateways, 4 | paced, live updates | 1.00 | 0.90 | 0.80 | 1.60 / 3.61 ms |
+  | gateways, 4 | paced, passthrough only | 1.00 | 0.65 | 0.56 | 1.38 / 2.45 ms |
+  | gateways, 1 | saturated | 1.21 | 0.85 | 0.76 | (queueing) |
+  | gateways, 1 | paced | 1.00 | 0.89 | 0.76 | 1.78 / 6.55 ms |
+  | gateways, 1 | paced, live updates | 1.00 | 0.90 | 0.85 | 3.93 / 6.58 ms |
+  | gateways, 1 | paced, passthrough only | 1.00 | 0.66 | 0.56 | 1.42 / 3.03 ms |
+
+  Legacy against itself stayed within the tolerances (throughput 1.07 saturated, worker time 0.97 to 1.05, p99 0.99).
+  Allocations per metric (reported, not checked) are 1.3 to 2.1 of legacy with live updates (each change lowers,
+  compiles, and prepares every region) and 1.01 otherwise (near zero on both paths for passthrough only). The gateway
+  configuration passed its gate on this run.
+- **Benches** (`region_driver`, release, criterion, load about 7), µs per batch, driver against the hand-written
+  baseline: pre-aggregation 1,024 metrics over 256 contexts 237.3 / 217.6, over 4,096 contexts 234.8 / 219.6, 128
+  metrics 28.7 / 27.1; post-aggregation 208.7 / 184.4 (stage 5 tree in the same conditions: 197.6 / 179.3); the
+  isolation slot admitting 1,024 metrics 33.5 through the driver against 32.6 for the kernel called directly, and a
+  flush of 100,000 contexts 21.3 ms in drain steps against 19.8 ms in one call.
+- **Golden files** regenerated (`SALUKI_METRIC_PLAN_UPDATE_EXPLAIN=1`) and reviewed line by line against the merged parts'
+  versions: aggregation's boundary `isolated`, the default program's applied R5b record, the `dsd_agg` isolation slot
+  with its output point and progress points, the renumbered fixed points (the readmit point is gone), isolation fusion
+  verdicts, and the time-driven segment. The schemas carry P4's `exit.<name>` descriptions (the schema tests pass).
+- **Gate commands**: `cargo check --workspace --tests`, `make fmt`, `make check-clippy`, `cargo machete`, the feature
+  check as `cargo hack --feature-powerset --package <p> check --tests` once per package of the workspace (`make
+  check-features` also reads the manifests of other trees under the repository, and was not run as is), `make
+  check-licenses`, `cargo doc` without features (`make generate-api-docs`), Vale on the changed documents, and `make
+  demo-programmable-metrics-check` twice: all clean. Both demo checks passed S0 to S6 (73.0 s each; canaries 1,299 sent and 1,299 received, and 1,299
+  and 1,300, over the whole run, 200 and 196 rolling ranges balanced), with S5d rejected by placement ("runs only in
+  an isolation slot").
+
+Not measured: the shadow comparison against a native core under load, histogram-heavy contexts, and a million
+contexts (see Risks).
 
 ## Proposed spec amendments
 
@@ -3016,6 +4061,11 @@ native behavior. Nothing in the specification is edited without the author.
     move one whole, which keeps its ID and counts. Stage 6's R5b partial push-down of the post-aggregation filter
     (the specification's own example) needs its native counter to sum the copy's and the residual's ports; until a
     telemetry profile can do that, this restriction stands.
+
+    **Resolved for R5b in stage 6.** R5b is emission suppression inside aggregation (amendment 76), and the isolation
+    driver adds the records it suppresses to the filter's own port events and its drop's policy loss, so the native
+    series stay those of the plan without it and R5b applies to the default program's post-aggregation filter. The
+    restriction stands for R5a and R6.
 51. **Decisions group only `split`s and `tee`s joined directly by edges** (stage 4). The specification's decision is "a
     maximal connected group of `split` and `tee` operators within one region, with no intervening map that writes a
     field one of its predicates reads", which allows a group to span a map that writes nothing its predicates read.
@@ -3074,6 +4124,92 @@ native behavior. Nothing in the specification is edited without the author.
     would change nothing. A structural change inside the region, or another binding of an output it emits to, does (an
     artifact that still emits to a rebound output is also invalid: a removed output). When the region extends upstream
     (stage 6), the base covers the extended region.
+62. **Bucketing by substitution** (stage 6). Aggregation inserts at `floor(t_a)` and flushes at the tick's wall-clock
+    second once the state owner's watermark has reached it, waiting at most `TICK_GRACE` (2 s), else at `floor(W)`;
+    ticks keep native cadence from region start; kernels never read a wall clock.
+63. **Shutdown discards the bucket open at `max(latest t_a over upstream points, wall clock at input end)`** (stage
+    6), native's open bucket at the wall clock of the final flush.
+64. **Clock reset** (stage 6): flush at the pre-reset watermark, emit everything held (open and future buckets), and
+    continue empty; zeros pause until a counter is seen again, and the next flush emits none. The threshold is 300 s
+    (the minimum the specification allows, "at least the largest bucket width"; it was 600 s); a backward jump up to
+    it freezes `t_a` and collapses its input into one bucket. A decision-log entry is proposed with it.
+65. **Heartbeats carry the generation the schedule assigns at their stamp** and count as admitted to it (stage 6); they
+    go only toward state owners, every `min(1 s, smallest boot flush interval)`; progress is throttled to 100 ms of
+    `t_a`.
+66. **Cut arming is one transaction** (stage 6) under the affected admission points' locks, with a 1 s timeout and at
+    most 10 attempts; `T` is the first `lcm` boundary at least the margin after the affected points' `max(latest, wall
+    clock)`; arming waits while an affected clock is ahead of its wall clock by more than the margin. This replaces
+    publishing and then checking again, which cannot detect an `old` stamp at or after `T` made between computing `T`
+    and the store.
+67. **Cut phases** (stage 6): armed (prepared with `T`; cancellable while no point stamped `new`, checked atomically
+    over all points; a cancellation that cannot take every lock in time is refused), irrevocable (the first `new`
+    stamp: active), finalized (every affected point passed: `Steady(new)`). One cut at a time.
+68. **The cut boundary travels with the generation** (stage 6): `T` and each affected point's epoch are recorded on the
+    new generation before publication; earlier-epoch input is pre-cut.
+69. **Time-driven generation** (stage 6): retiring lineages emit under the replaced generation; others under the
+    schedule's, a cut counting as `new` once every upstream point delivered a `new` header. Output of a failed
+    generation is delivered.
+70. **Retirement at the crossing** (stage 6): a retiring lineage never closes or zero-fills a bucket at or after `T`,
+    and makes its final flush at `T` (then emits future-timestamped points) when the first `new` header from every
+    upstream point arrives, before that input is admitted. This refines protocol item 3's "at the first flush tick":
+    values are equal, emission is earlier, and the two lineages' contexts never overlap.
+71. **The width bound applies to transitions** (stage 6): the affected old and new widths have an `lcm` of at most
+    300 s. An artifact's widths must also line up within 300 s with the latest default program's, so that the default
+    program can always replace it at a cut (after a revocation, or a failure with nothing to roll back to); a chain of
+    accepted artifacts could otherwise reach widths it cannot return from (120 s, then 60 s, then 180 s). The wait
+    bound holds from arming; arming itself may wait for a clock that is ahead.
+72. **Cut installations keep no last-known-good generation** (stage 6): the one kept is released when the cut becomes
+    irrevocable; a failed cut generation rolls back by installing the replaced plan again (the default program if none),
+    with its own cut.
+73. **A cut's replaced generation starts its drain deadline at finalization** (stage 6).
+74. **One global context budget** (stage 6), the default program's limit, shared by every lineage, with per-node
+    caps; admission-time parameters come from the batch's generation, emission-time parameters from the flush's.
+75. **Lineage key = node + state contract** (stage 6); instances are keyed by lineage and creating generation; added
+    and removed state owners are `cut`.
+76. **R5b is emission suppression inside the state owner** (stage 6). The removal form violates the capacity rule for
+    first-come admission with expiry, and exact equivalence below capacity; the decision log's "removing keys can only
+    reduce capacity loss" and "occupied keys are a subset" are withdrawn for this policy. Partial push-down per kind as
+    specified, for native and artifact filters; suppressed records count in the filter's own series (its port events
+    and its drop node's policy loss), so native telemetry is unchanged. With it, amendment 50's restriction no longer
+    holds for R5b; it stands for R5a and R6.
+77. **The aggregation slot** (stage 6): `Boundary::Isolated`; slot `dsd_agg`, exits only to its boot targets, its
+    kernel accounted in the region's group; interconnect series per exit, no longer double counted.
+78. **The pre-aggregation scope** `dogstatsd_pre_aggregation` (stage 6): input `metrics`, exits `aggregated` and
+    `passthrough`; one policy config per scope; `exit.<name>` artifact edges; one revision high-water mark across
+    scopes.
+79. **Proposals during a cut** (stage 6): a newer revision or a revocation cancels while cancellable, else waits for
+    finalization; a newer revision that could not follow the active plan (its transition or widths rejected) cancels
+    nothing: it waits for the cut if it can follow the cut's plan, and is rejected at once otherwise; a re-composition of the cut's own revision and default-program candidates wait (latest wins). A
+    candidate equal to the active plan when its turn comes creates no generation (amendment 57), also when it
+    cancelled an armed cut.
+80. **Context snapshots** (stage 6) cover every lineage of every aggregation in the slot and are served between drain
+    steps; one taken during a yielded reset, retirement, or shutdown lists only the contexts not yet drained (the
+    others were already emitted).
+81. **Interpreter time** (stage 6): a no-queueing mode (heartbeats at ticks) for native-parity fixtures; a backward
+    `t_a` within the reset threshold is ill-formed, beyond it a reset; ticks pass through the tick gate. An `install`
+    is validated when it is proposed; a valid `install` during a cut waits (latest wins); `cancel` is explicit, and a
+    successful one discards the waiting installation; their outcomes are `Superseded` (by an `install` or a
+    `cancel`), `Waiting`, and `CancelRefused` (also without a cut).
+82. **Kind and rate-interval conflicts are counted as aggregation policy loss** (stage 6): the events are the metrics
+    that replaced held points, the points those replaced.
+83. **Widths at configuration deserialization** (stage 6), with an error naming the nearest allowed width, and a
+    `timestamp_split`'s window equals its aggregation's window.
+84. **One upstream admission point per state owner through stage 8** (stage 6), on one physical path (a frame
+    check); a state owner no point reaches is unsupported until stage 10.
+85. **Supervision of state** (stage 6): a panic in a state kernel is charged to the generation whose call ran; the
+    instance restarts empty (what it held counted as `invalid` loss) and every generation using it continues; an
+    artifact generation requests rollback at once and keeps processing input until replaced, unless it exhausts its
+    panic budget. This replaces the implementation design's "any panic in a node that owns state fails the generation
+    at once".
+86. **Verification of bucket assignment** (stage 6) extends to synthesized zeros, expiry, and metadata: besides points
+    whose `t_a` and arrival straddle a bucket boundary, they may differ for a context with a batch admitted before a
+    tick's wall-clock second and arriving after the tick, and at a tick whose grace expired. The first exclusion
+    assumes the state is not empty at the crossed tick; otherwise that tick is a flush in one model only, which moves
+    every later counter's back-fill start.
+87. **New artifacts of one snapshot under one revision are all rejected** (stage 6). "Revisions strictly increase"
+    is read per snapshot: the configs of one snapshot are ordered against the high-water mark the snapshot found, and
+    two configs (for two scopes) that share a revision above it are rejected without moving the mark, until one is
+    delivered under a revision of its own, rather than one being accepted by a tie rule.
 
 ## Risks
 
@@ -3152,7 +4288,9 @@ native behavior. Nothing in the specification is edited without the author.
   region; reported, not gated). Those runs predate the integration's memo floor (25 ns), which leaves the
   post-aggregation filter unmemoized; rerun idle before the gate is called, and if live updates still cost more CPU and
   allocations than legacy, have regions reuse an unchanged program's translated code and telemetry
-  (`SlotKernels::unchanged` already hands them the active program).
+  (`SlotKernels::unchanged` already hands them the active program). In stage 6 (load about 7) both gateway tests
+  passed, with worker time 0.65 to 0.91 of legacy in every phase and allocations per metric with live updates 1.5 to
+  2.1 of legacy (see stage 6 [exit evidence](#exit-evidence)).
 - **R1 prices a memoized decision as a memo hit** (stage 4). With more contexts than the memo holds, most lookups
   miss, and the decision costs its predicates plus a probe and a write: a region R1 sized for hits can then be slower
   than its estimate. And a decision is never cut, so a wide policy fan-out runs in one region however many copies it
@@ -3201,8 +4339,8 @@ native behavior. Nothing in the specification is edited without the author.
   and 47.8 against the hand-written region's 26.2, 57.5, and 115.2; unmemoized, or with misses, the function is 1.1x to
   1.2x the hand-written selection and the region 1.2x to 1.4x the hand-written region.
 - **Partial push-down and copies never apply to native filters** (amendment 50), so R5a and R6 change nothing in the
-  default program and only optimize what artifacts add. R5b in stage 6 needs native telemetry that sums a filter's
-  copies before it can push the post-aggregation filter above aggregation. R5a also declines to move a filter above a
+  default program and only optimize what artifacts add. R5b, emission suppression since stage 6, does apply to the
+  default program's post-aggregation filter (amendment 76). R5a also declines to move a filter above a
   kernel when an R1 cut separates them (the kernel, fed from the filter's slot, would follow it there), so in pipelined
   plans a filter can stop below a cut; one in the same slot as the kernel still moves, and may then cross a cut into an
   earlier slot itself, since a decision has no resource group.
@@ -3235,7 +4373,9 @@ native behavior. Nothing in the specification is edited without the author.
 - **A transition rejection after a cancellation** (stage 6). An artifact cancels the preparation in flight before
   `start()` checks state-owner transitions, so a re-composition of the old policy that a `Transition` rejection
   cancels leaves the reverted policy behind the configuration until the next event. Unreachable through stage 5 (no
-  state owner is in a region); stage 6 should check transitions before cancelling.
+  state owner is in a region). Resolved in the stage 6 review: a newer artifact is checked against the active plan
+  before it cancels anything (transition classes and cut widths, `InstallerCore::cancel_check`), and one that could
+  not follow it cancels nothing, waiting for what is in flight if it can follow that.
 - **Stub tests under load** (resolved in the stage 5 review). Tests that build an `HttpClient` (the `channel_stub`
   tests, the control surface's, the demo's, and the lifecycle suite's stub test) failed to load the platform's root
   certificates under full-workspace parallel runs. The certificates were loaded for the proxy connector's own TLS,
@@ -3247,3 +4387,41 @@ native behavior. Nothing in the specification is edited without the author.
   long as that document carries everything composition and validation read. The headless check asserts it at every
   install (ADP's active plan hash equals the editor's composed plan hash). Compilation into the frame (capability
   errors, such as a new output) is not previewed: a plan the editor validates can still be refused by ADP's compile.
+- **Closure latency against native** (stage 6). The tick gate makes closure native's for lag below 2 s; above it (a
+  backlog) a tick closes one interval late, and the context's zeros and expiry can differ (amendment 86). Measured
+  only through the bucket property tests and tick parity; the shadow comparison under load (`with_arrival_probe`) the
+  design proposed is not built.
+- **Interpreter and driver diverging** (stage 6). Mitigated by `runtime::state::rules` (tracker, gate, stamping, cut
+  time), which both use, by the transition traces at both levels (`interpret/transition_tests.rs`,
+  `runtime/transition_tests.rs`), and by the R5b and bucket property tests. Known difference: the interpreter shares
+  one output latch per set of upstream points, while the frame gives each isolated node of a boot plan a slot of its
+  own, so comparisons over a boot plan with several isolated owners over one point should not compare their stamps.
+- **Transactions stall sources** (stage 6). Arming locks only `dsd_in` and waits only for its current fan-out;
+  cancellation can hold unaffected sources up to 1 s on a rare event. The admission tests show an arm completing while
+  an unaffected point's dispatcher is blocked; no ADP fault test measures a stall under load.
+- **Strong references in regions** (stage 6). A retiring lineage keeps the replaced and the new generation alive until
+  its crossing, so their retirement waits for the slot to receive one `new` header; heartbeats bound this to about a
+  period plus queueing, and overdue reports a stalled slot.
+- **The reset threshold is 300 s** (stage 6, amendment 64): jumps between 300 and 600 s now reset instead of freezing;
+  absorbed jumps still freeze up to 300 s.
+- **Long or failed cuts** (stage 6). A 300 s width holds two generations for up to about 5 minutes (overlap budget 4).
+  A failed cut generation loses its instance's state; only with an exhausted panic budget does it drop input until the
+  rollback's cut (up to 301 s). No ADP test fails a cut generation: native kernels do not panic, and the frame-harness
+  and driver tests cover the supervision rules.
+- **R5b saves emission work only** (stage 6): no state reduction. It fires on the default program, so the
+  post-aggregation filter's attribution must be exact; the telemetry test compares every `aggregator.*` remap with
+  legacy, and the R5b property test compares the filter's port events and its drop's loss with and without R5b.
+  `compare_under_capacity` is not part of that property test (outputs are compared exactly, and aggregation's own
+  capacity loss with the interpreter's).
+- **Telemetry deltas** for `dsd_agg` (the output label, halved and suppressed sent counts, one extra flush per cut):
+  release note.
+- **Several upstream points** are unsupported until stage 9 (a frame error); no stage 6 frame has them. So are
+  multi-hop pass-through placements: a state owner fed straight by an admission point whose route reaches the
+  isolation slot only through pipelined slots (a pre-aggregation artifact's aggregation when mapper profiles make R1
+  pipeline the chain) has no placement.
+- **Sub-second flush intervals** (accepted natively) make the heartbeat period and the grace sub-second; heartbeat
+  load rises accordingly (bounded by `MIN_HEARTBEAT_PERIOD`).
+- **Capability messages** (stage 6). `MissingCapability::State` still names stage 6 ("stage 6 state transitions") for
+  the two cases stage 6 leaves unsupported: a state owner without an isolation fence (placement) and a cut while the
+  frame readmits a host component's records (`CutPlan::check_frame`, unreachable in stage 6 frames). The frame names
+  stage 10 for the first; the capability should name the stage that provides each.

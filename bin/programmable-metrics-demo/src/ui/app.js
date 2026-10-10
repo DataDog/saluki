@@ -1116,9 +1116,15 @@
       }
     }
     const current = s.channel.current;
+    const configs = s.channel.configs || [];
     const parts = [`${s.channel.polls_total} polls`];
     if (s.channel.last_poll) parts.push(`last ${ago(s.channel.last_poll.received_ms)}`);
-    parts.push(current ? `serving rev ${current.revision}` : "serving an empty snapshot");
+    if (configs.length > 1 || (configs.length === 1 && !current)) {
+      // One config per scope: name each scope's revision.
+      parts.push(`serving ${configs.map((config) => `rev ${config.revision} (${config.scope})`).join(", ")}`);
+    } else {
+      parts.push(current ? `serving rev ${current.revision}` : "serving an empty snapshot");
+    }
     ui.ackSummary.textContent = parts.join(" · ");
   }
 

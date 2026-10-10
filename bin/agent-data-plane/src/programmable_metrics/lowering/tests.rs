@@ -25,7 +25,8 @@ use crate::{
         bindings,
         telemetry_profiles::native_telemetry,
         test_support::{
-            configuration, environment_provider, facts, layered_configuration, layered_configuration_system,
+            configuration, configuration_error, environment_provider, facts, layered_configuration,
+            layered_configuration_system,
         },
     },
 };
@@ -891,28 +892,19 @@ async fn lowering_fails_where_the_native_topology_fails_to_build() {
 
 #[tokio::test]
 async fn aggregation_durations_a_plan_cannot_represent_fail_with_the_setting_and_its_limit() {
-    // (configuration, error); 2^53 + 1 seconds is no whole number of minutes, so seconds are its largest unit.
-    let cases = [
-        (
-            "aggregate_window_duration_seconds: 9007199254740993",
-            "`aggregate_window_duration_seconds` is 9007199254740993 seconds, which the metrics plan cannot \
-             represent: a plan duration is a whole number of at most 9007199254740991 of the largest unit that \
-             divides it exactly. Set `aggregate_window_duration_seconds` to at most 9007199254740991 seconds.",
-        ),
-        (
-            "dogstatsd_expiry_seconds: 9007199254740993",
-            "`dogstatsd_expiry_seconds` is 9007199254740993 seconds, which the metrics plan cannot represent: a plan \
-             duration is a whole number of at most 9007199254740991 of the largest unit that divides it exactly. Set \
-             `dogstatsd_expiry_seconds` to at most 9007199254740991 seconds.",
-        ),
-    ];
-    for (yaml, expected) in cases {
-        let config = configuration(yaml).await;
-        let error = lowering_error(&config, facts(&config));
-        assert_eq!(error.to_string(), expected, "{}", yaml);
-    }
+    // 2^53 + 1 seconds is no whole number of minutes, so seconds are its largest unit. (An aggregation window that long
+    // never reaches lowering: loading the configuration accepts only the allowed bucket widths.)
+    let yaml = "dogstatsd_expiry_seconds: 9007199254740993";
+    let expected =
+        "`dogstatsd_expiry_seconds` is 9007199254740993 seconds, which the metrics plan cannot represent: a \
+                    plan duration is a whole number of at most 9007199254740991 of the largest unit that divides it \
+                    exactly. Set `dogstatsd_expiry_seconds` to at most 9007199254740991 seconds.";
+    let config = configuration(yaml).await;
+    let error = lowering_error(&config, facts(&config));
+    assert_eq!(error.to_string(), expected, "{}", yaml);
+
     // A longer duration that is a whole number of a larger unit is represented in that unit: 2^53 − 1 minutes.
-    let config = configuration("aggregate_window_duration_seconds: 540431955284459460").await;
+    let config = configuration("dogstatsd_expiry_seconds: 540431955284459460").await;
     lowering(&config)
         .lower(&config)
         .expect("9007199254740991 minutes lower");
@@ -1064,4 +1056,87 @@ async fn native_configurations_a_plan_cannot_express_lower_to_plans_that_do_not_
         ]
     );
     assert!(validate(&lowered.plan, &lowered.catalog).findings().is_empty());
+}
+
+/// Returns the scope `scope` of `plan`, with each input and exit as `<name>: <node>.<port>`.
+fn scope_ports(plan: &Plan, scope: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let scope = plan.scopes.get(scope)?;
+    let describe = |name: &dyn std::fmt::Display, port: &PortRef| format!("{}: {}.{}", name, port.node, port.port);
+    let inputs = scope.inputs.iter().map(|(name, port)| describe(name, port)).collect();
+    let exits = scope.exits.iter().map(|(name, port)| describe(name, port)).collect();
+    Some((inputs, exits))
+}
+
+#[tokio::test]
+async fn the_dogstatsd_pre_aggregation_scope_runs_from_the_source_to_the_post_aggregation_filter() {
+    // (configuration, the scope's exits); the scope's input is always the DogStatsD source's metrics, and without
+    // DogStatsD there is no such scope.
+    let cases = [
+        (
+            "",
+            Some(vec![
+                "aggregated: dsd_post_agg_filter_in.0",
+                "passthrough: dsd_post_agg_filter_in.1",
+            ]),
+        ),
+        // Without the no-aggregation pipeline, nothing passes by aggregation.
+        (
+            "dogstatsd_no_aggregation_pipeline: false",
+            Some(vec!["aggregated: dsd_post_agg_filter.in"]),
+        ),
+        ("data_plane: {dogstatsd: {enabled: false}, otlp: {enabled: true}}", None),
+    ];
+    for (yaml, exits) in cases {
+        let lowered = lowered(yaml).await;
+        let scope = scope_ports(&lowered.plan, DSD_PRE_AGGREGATION_SCOPE);
+        let expected = exits.map(|exits| {
+            (
+                vec!["metrics: dsd_in.metrics".to_string()],
+                exits.into_iter().map(String::from).collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(scope, expected, "{:?}", yaml);
+        // The policy region after enrichment is a scope of every default program.
+        assert!(scope_ports(&lowered.plan, POST_ENRICH_SCOPE).is_some(), "{:?}", yaml);
+    }
+}
+
+#[tokio::test]
+async fn the_catalogs_budget_of_state_is_native_aggregations_context_limit() {
+    // (configuration, budget): every lineage of every state owner shares what native aggregation holds.
+    let cases = [
+        ("aggregate_context_limit: 5000", Some(5_000)),
+        ("aggregate_context_limit: 0", Some(0)),
+        ("data_plane: {dogstatsd: {enabled: false}, otlp: {enabled: true}}", None),
+    ];
+    for (yaml, expected) in cases {
+        assert_eq!(lowered(yaml).await.catalog.state_budget(), expected, "{:?}", yaml);
+    }
+    let config = configuration("").await;
+    let limit = u64::try_from(config.domains.dogstatsd.aggregation.context_limit).unwrap();
+    assert_eq!(lowered("").await.catalog.state_budget(), Some(limit));
+}
+
+#[tokio::test]
+async fn aggregation_windows_that_are_not_allowed_bucket_widths_never_reach_lowering() {
+    // The configuration fails to load, naming the nearest allowed width, so no plan has such a window.
+    for (width, nearest) in [(7, "6 seconds"), (3_600, "300 seconds"), (0, "1 second")] {
+        let error = configuration_error(&format!("aggregate_window_duration_seconds: {}", width)).await;
+        assert!(
+            error.contains(&format!("but is {}", width)) && error.contains("Use the nearest allowed width"),
+            "{}: {}",
+            width,
+            error
+        );
+        assert!(error.contains(nearest), "{}: {}", width, error);
+    }
+    // Every allowed width lowers, the default and others alike.
+    for width in [1, 10, 60, 300] {
+        let lowered = lowered(&format!("aggregate_window_duration_seconds: {}", width)).await;
+        assert!(
+            validate(&lowered.plan, &lowered.catalog).findings().is_empty(),
+            "{}",
+            width
+        );
+    }
 }

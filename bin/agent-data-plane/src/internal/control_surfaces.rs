@@ -18,6 +18,14 @@ impl TopologyControlSurfaces {
         self.dogstatsd = Some(dsd_control_surface);
     }
 
+    /// Returns the handler of the DogStatsD context dump API, if DogStatsD is configured.
+    #[cfg(test)]
+    pub(crate) fn context_dump(&self) -> Option<&DogStatsDContextDumpAPIHandler> {
+        self.dogstatsd
+            .as_ref()
+            .map(|dogstatsd| &dogstatsd.context_dump_api_handler)
+    }
+
     /// Registers all configured control surfaces with the given API builder.
     pub fn register_control_surfaces(self, mut builder: APIBuilder) -> APIBuilder {
         if let Some(dogstatsd) = self.dogstatsd {

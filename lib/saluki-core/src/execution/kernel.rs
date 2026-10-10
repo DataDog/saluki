@@ -82,12 +82,36 @@ const PORT_BUFFER_INITIAL_CAPACITY: usize = 16;
 /// batch is delivered to a kernel whose [`advance_time`][Self::advance_time], [`control`][Self::control], or
 /// [`finish`][Self::finish] is yielded. Events the kernel already wrote to its ports may be delivered in between.
 ///
+/// Three refinements apply:
+///
+/// - **Read-only control messages.** A control message whose type documents it as read-only, such as a request for a
+///   snapshot of the kernel's state, may be delivered while another call of the kernel is yielded. The kernel answers
+///   it from its state as it stands, and answering must not disturb the yielded call, which resumes as if the message
+///   had not arrived.
+/// - **Resuming a yielded control message.** A yielded [`control`][Self::control] is resumed by calling `control`
+///   again with a message of the same type. The kernel tells a resumed message from a new one by the work it keeps
+///   pending, such as a pending [`ClockReset`]: a host never sends a new message of a type whose handling is still
+///   pending.
+/// - **Abandoned calls.** A host may end a yielded call without resuming it, for example after a panic in another
+///   kernel ended the host's own call. The kernel keeps its cursor, and the next call of the same method resumes the
+///   abandoned work before doing anything new.
+///
 /// # Time
 ///
 /// Kernels never decide anything by the time they run at. Per-batch decisions use the batch's admission time,
 /// [`Turn::admitted_at`]. Time-driven work, such as closing buckets of accumulated state, uses the turn's
 /// [watermark][Turn::watermark]: no input admitted before it can still arrive, so a bucket that ends at or before the
 /// watermark can be closed. [`Turn::now`] is a monotonic clock for scheduling only.
+///
+/// Watermarks move forward while the clocks of the admission points upstream stay in one epoch. When an upstream clock
+/// restarts in a new epoch, the host first sends a [`ClockReset`], which closes everything the kernel holds, and only
+/// then passes watermarks of the new epoch, which may be smaller than earlier ones.
+///
+/// # Parameters
+///
+/// A kernel is built with its parameters. A host that runs several revisions of a program over one kernel's state can
+/// also pass parameters per call with [`Turn::with_param`], which the kernel reads with [`Turn::param`] in place of the
+/// ones it was built with.
 pub trait Kernel: Send {
     /// Processes one batch.
     ///
@@ -118,9 +142,11 @@ pub trait Kernel: Send {
 
     /// Applies a kernel-specific control message.
     ///
-    /// Control messages carry requests that are not batches, such as a request for a snapshot of the kernel's state.
-    /// The kernel checks whether `control` is one of the message types it understands, and ignores any other. The
-    /// return value has the same meaning as for [`advance_time`][Self::advance_time].
+    /// Control messages carry requests that are not batches, such as a request for a snapshot of the kernel's state, or
+    /// a [`ClockReset`]. The kernel checks whether `control` is one of the message types it understands, and ignores
+    /// any other. The return value has the same meaning as for [`advance_time`][Self::advance_time]. See
+    /// [Yielding](Kernel#yielding) for how a yielded message is resumed, and which messages may arrive while another
+    /// call is yielded.
     fn control(&mut self, _turn: &mut Turn<'_>, _control: &mut dyn Any) -> Progress {
         Progress::Done
     }
@@ -134,7 +160,35 @@ pub trait Kernel: Send {
     fn finish(&mut self, _turn: &mut Turn<'_>, _policy: DrainPolicy) -> Progress {
         Progress::Done
     }
+
+    /// Returns what the kernel holds in its state and has not emitted yet: as events, the entries of its state that
+    /// hold data points, and the points they hold.
+    ///
+    /// A host that has to discard the kernel's state, such as when it rebuilds the kernel after a panic, records this
+    /// as lost. It only reads the kernel's state, and may take time proportional to the size of the state.
+    ///
+    /// The default holds nothing, which is correct for stateless kernels.
+    fn held(&self) -> LossCount {
+        LossCount::default()
+    }
 }
+
+/// A control message that tells a [`Kernel`] that the clock upstream of it restarted.
+///
+/// An admission point's clock restarts in a new epoch when the wall clock moves backward further than the clock absorbs
+/// (see [`AdmissionClock`][crate::execution::AdmissionClock]). Admission times of the new epoch may be smaller than
+/// those of the old one, so a kernel that keeps time-bucketed state cannot wait for the watermark to close what it
+/// holds. A host sends this message through [`Kernel::control`] before it delivers anything of the new epoch, with the
+/// turn's watermark set to the last watermark of the old epoch.
+///
+/// The kernel closes what it holds as of that watermark, as its time-driven work would, then emits every point it still
+/// holds, whatever its bucket, and continues empty, as a kernel that has never run time-driven work. Kernels without
+/// time-bucketed state ignore the message.
+///
+/// Handling the message may yield. The host then calls [`Kernel::control`] again with another `ClockReset`, which
+/// resumes the pending reset rather than starting a new one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClockReset;
 
 /// What a call into a [`Kernel`] achieved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -514,6 +568,7 @@ impl TurnCounters {
 pub struct Turn<'a> {
     header: &'a BatchHeader,
     watermark: Option<AdmissionTime>,
+    param: Option<&'a (dyn Any + Send + Sync)>,
     now: Instant,
     budget: &'a mut Budget,
     outputs: &'a mut PortOutputs,
@@ -527,8 +582,8 @@ impl<'a> Turn<'a> {
     /// [`Kernel::advance_time`], the host passes the header its time-driven output is stamped with. `now` is the host's
     /// monotonic clock reading for the turn.
     ///
-    /// The turn has no [watermark][Self::watermark]; hosts set one with [`with_watermark`][Self::with_watermark] for
-    /// time-driven calls.
+    /// The turn has no [watermark][Self::watermark] and no [per-call parameters][Self::param]; hosts set them with
+    /// [`with_watermark`][Self::with_watermark] and [`with_param`][Self::with_param].
     pub fn new(
         header: &'a BatchHeader, now: Instant, budget: &'a mut Budget, outputs: &'a mut PortOutputs,
         counters: &'a mut TurnCounters,
@@ -536,6 +591,7 @@ impl<'a> Turn<'a> {
         Self {
             header,
             watermark: None,
+            param: None,
             now,
             budget,
             outputs,
@@ -550,6 +606,26 @@ impl<'a> Turn<'a> {
     pub fn with_watermark(mut self, watermark: Option<AdmissionTime>) -> Self {
         self.watermark = watermark;
         self
+    }
+
+    /// Returns this turn with per-call parameters for the kernel.
+    ///
+    /// A host passes parameters per call when which parameters apply depends on the batch or on the call rather than on
+    /// the kernel: a host that runs several revisions of a program over one kernel's state, for example, passes the
+    /// parameters of the revision a batch belongs to. The kernel reads them with [`param`][Self::param], and uses the
+    /// parameters it was built with when the turn carries none, or none of the type it expects. Parameters are data
+    /// prepared ahead of time, never configuration read on the data path.
+    pub fn with_param(mut self, param: &'a (dyn Any + Send + Sync)) -> Self {
+        self.param = Some(param);
+        self
+    }
+
+    /// Returns the turn's per-call parameters, if the host passed parameters of type `T`.
+    ///
+    /// Returns `None` if the turn carries no parameters, or parameters of another type. See
+    /// [`with_param`][Self::with_param].
+    pub fn param<T: Any>(&self) -> Option<&'a T> {
+        self.param.and_then(|param| param.downcast_ref::<T>())
     }
 
     /// Returns the header of the batch being processed.
@@ -569,7 +645,8 @@ impl<'a> Turn<'a> {
     ///
     /// No input admitted before the watermark can still arrive, so time-driven work closes exactly the buckets that end
     /// at or before it. `None` means some admission point upstream has not admitted anything yet, so nothing can be
-    /// closed. Watermarks only move forward, and hosts set them only for time-driven calls; see
+    /// closed. Watermarks move forward within an epoch of the upstream clocks, and a [`ClockReset`] precedes any move
+    /// backward (see [Time](Kernel#time)). Hosts set them only for time-driven calls; see
     /// [`with_watermark`][Self::with_watermark].
     pub fn watermark(&self) -> Option<AdmissionTime> {
         self.watermark
@@ -914,8 +991,61 @@ mod tests {
         let mut kernel = DropFilter;
         assert_eq!(kernel.advance_time(&mut turn), Progress::Done);
         assert_eq!(kernel.control(&mut turn, &mut ()), Progress::Done);
+        assert_eq!(kernel.control(&mut turn, &mut ClockReset), Progress::Done);
         assert_eq!(kernel.finish(&mut turn, DrainPolicy::Shutdown), Progress::Done);
+        assert_eq!(kernel.held(), LossCount::default());
         assert!(harness.outputs.is_empty());
+    }
+
+    /// Admits gauges up to a limit, taken from the turn's parameters when it carries a `Limit`, and drops the rest.
+    struct Capped {
+        built_with: Limit,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct Limit(usize);
+
+    impl Kernel for Capped {
+        fn consume(&mut self, turn: &mut Turn<'_>, input: &mut EventsBuffer) -> Progress {
+            let limit = turn.param::<Limit>().unwrap_or(&self.built_with);
+            // The parameters borrow from the host, not from the turn, so they stay readable while the kernel writes.
+            turn.reserve(PortIndex::PRIMARY, 1);
+            let mut kept = 0;
+            input.retain(|_| {
+                kept += 1;
+                kept <= limit.0
+            });
+            Progress::Done
+        }
+    }
+
+    #[test]
+    fn per_call_parameters_override_the_ones_a_kernel_was_built_with() {
+        let header = BatchHeader::default();
+        let now = Instant::now();
+        let mut kernel = Capped { built_with: Limit(1) };
+        let mut budget = Budget::unlimited();
+        let mut counters = TurnCounters::default();
+
+        // (parameters the turn carries, events kept of three)
+        let per_call = Limit(2);
+        let other_type = 5u32;
+        let cases: [(Option<&(dyn Any + Send + Sync)>, usize); 3] =
+            [(None, 1), (Some(&per_call), 2), (Some(&other_type), 1)];
+        for (param, kept) in cases {
+            let mut outputs = PortOutputs::new(1);
+            let mut turn = Turn::new(&header, now, &mut budget, &mut outputs, &mut counters);
+            if let Some(param) = param {
+                turn = turn.with_param(param);
+            }
+            assert_eq!(
+                turn.param::<Limit>().is_some(),
+                param.is_some_and(|param| param.is::<Limit>())
+            );
+            let mut input = buffer_of(&["a", "b", "c"]);
+            assert_eq!(kernel.consume(&mut turn, &mut input), Progress::Done);
+            assert_eq!(input.len(), kept, "parameters {:?}", param.map(|param| param.type_id()));
+        }
     }
 
     #[test]

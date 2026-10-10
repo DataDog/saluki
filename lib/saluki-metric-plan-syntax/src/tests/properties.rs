@@ -16,6 +16,9 @@ use super::*;
 /// The outputs generated artifacts emit to.
 const OUTPUTS: &[&str] = &["dd_metrics_encode", "metrics_routing_encode_0", "mrf_metrics_encode"];
 
+/// The scope exits generated artifacts leave by.
+const EXITS: &[&str] = &["aggregated", "passthrough"];
+
 /// Strings that exercise escaping and the syntax's own punctuation.
 const TRICKY_STRINGS: &[&str] = &[
     "",
@@ -44,6 +47,8 @@ enum Shape {
     Emit { output: usize, inline: bool },
     /// A `drop`, named like an `emit`.
     Drop { inline: bool },
+    /// An edge out of the scope, into one of its exits.
+    Exit { exit: usize },
     /// A `split`, and what each of its ports leads to.
     Split {
         predicate: Value,
@@ -217,6 +222,7 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
     let leaf = prop_oneof![
         (0..OUTPUTS.len(), any::<bool>()).prop_map(|(output, inline)| Shape::Emit { output, inline }),
         any::<bool>().prop_map(|inline| Shape::Drop { inline }),
+        (0..EXITS.len()).prop_map(|exit| Shape::Exit { exit }),
     ];
     leaf.prop_recursive(4, 24, 3, |inner| {
         // Each arm is boxed, as `arb_chain` explains, or every level of a deep shape takes a frame of hundreds of
@@ -323,6 +329,7 @@ impl Builder {
                 self.edge(&from, &format!("{}.in", id));
                 self.node(&id, "drop", json!({}));
             }
+            Shape::Exit { exit } => self.edge(&from, &format!("exit.{}", EXITS[*exit])),
             Shape::Split {
                 predicate,
                 on_true,

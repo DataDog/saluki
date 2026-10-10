@@ -660,6 +660,72 @@ fn invalid_artifacts_print_and_parse_back_or_report_why() {
 }
 
 #[test]
+fn edges_leave_a_scope_that_ends_before_its_paths_do_by_its_exits() {
+    // A scope with exits, as the DogStatsD pre-aggregation scope is: an edge into an exit is written as its target,
+    // in a node's block or as a statement of its own, and never makes a node.
+    let source = format!(
+        r#"policy dogstatsd_pre_aggregation {{
+  base "{BASE}"
+
+  input.metrics -> blocklist
+
+  node blocklist = split(name starts_with "blocked.") {{
+    true  -> drop
+    false -> exit.aggregated
+  }}
+}}
+"#
+    );
+    let expected = artifact(json!({
+        "ir_version": 1,
+        "scope": "dogstatsd_pre_aggregation",
+        "base": {"program_hash": BASE},
+        "nodes": [
+            {"id": "blocklist", "op": "split", "params": {"predicate": {"name": {"prefix": "blocked."}}}},
+            {"id": "blocklist_true", "op": "drop"},
+        ],
+        "edges": [
+            {"from": "input.metrics", "to": "blocklist.in"},
+            {"from": "blocklist.true", "to": "blocklist_true.in"},
+            {"from": "blocklist.false", "to": "exit.aggregated"},
+        ],
+    }));
+    assert_round_trip(&source, &expected);
+    let parsed = parse_ok(&source);
+    assert_eq!(text(&source, parsed.spans.edge(2).unwrap()), "false -> exit.aggregated");
+
+    // A scope input may lead straight to an exit, and an edge statement may name one.
+    let source = format!(
+        r#"policy dogstatsd_pre_aggregation {{
+  base "{BASE}"
+
+  input.metrics -> exit.passthrough
+}}
+"#
+    );
+    let expected = artifact(json!({
+        "ir_version": 1,
+        "scope": "dogstatsd_pre_aggregation",
+        "base": {"program_hash": BASE},
+        "nodes": [],
+        "edges": [{"from": "input.metrics", "to": "exit.passthrough"}],
+    }));
+    assert_round_trip(&source, &expected);
+    let statement = source.replace(
+        "input.metrics -> exit.passthrough",
+        "input.metrics -> keep\n\n  node keep = tee(ports: 1)\n\n  keep.0 -> exit.passthrough",
+    );
+    let parsed = parse_ok(&statement);
+    assert_eq!(
+        serde_json::to_value(&parsed.artifact.edges).unwrap(),
+        json!([
+            {"from": "input.metrics", "to": "keep.in"},
+            {"from": "keep.0", "to": "exit.passthrough"},
+        ])
+    );
+}
+
+#[test]
 fn comments_and_whitespace_do_not_matter() {
     let spaced = routing_source()
         .replace('\n', "\n\n   # a comment line\n")

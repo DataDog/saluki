@@ -13,7 +13,10 @@ use saluki_metric_plan::{
 use serde_json::Value;
 
 use super::*;
-use crate::compile::{compile, default_program_source, CompileOutcome};
+use crate::{
+    compile::{compile, default_program_source, CompileOutcome},
+    stub::protocol::{ActiveArtifact, ScopeState},
+};
 
 /// Returns the host's catalog of a default program: the fixtures' catalog, with every binding the program resolves
 /// carrying the value it resolves to, as ADP's catalog carries the values lowering writes.
@@ -84,6 +87,7 @@ fn compile_against(source: &str, plan: &Plan, export: &ExportBundle) -> CompileO
             generation: Some(3),
             artifact_revision: None,
         }),
+        others: &[],
         revision: 7,
     };
     compile(source, Some(&context)).0
@@ -139,6 +143,7 @@ fn an_unmodified_export_composes_to_the_active_default_program_with_an_empty_dif
         export: &export,
         default_program: Some(&plan),
         active: None,
+        others: &[],
         revision: 1,
     };
     let (outcome, _) = compile(&source, Some(&context));
@@ -301,27 +306,168 @@ fn validation_findings_are_placed_at_the_artifact_nodes_they_are_about() {
 }
 
 #[test]
+fn an_aggregation_composes_and_validation_places_its_findings_at_its_node() {
+    // A state owner is no composition error: ADP composes it, and validation, then placement, judge it.
+    let (plan, export) = fixture();
+    let source = default_program_source(&export);
+    let source = with_node_after_input(
+        &source,
+        "rollup\n\n  node rollup = aggregate(window: 10s) {\n    -> metrics_policy\n  }\n",
+    );
+    let outcome = compile_against(&source, &plan, &export);
+    assert!(outcome.ok);
+    assert!(!outcome.diagnostics.is_empty());
+    for diagnostic in &outcome.diagnostics {
+        assert_eq!(
+            (diagnostic.severity, diagnostic.origin, diagnostic.rule),
+            (Severity::Error, Origin::Validation, Some("valid_parameters")),
+            "{:#?}",
+            diagnostic
+        );
+        assert!(
+            diagnostic.message.contains("missing required parameter"),
+            "{}",
+            diagnostic.message
+        );
+        assert_eq!(diagnostic.range.line, line_of(&source, "  node rollup"));
+    }
+    assert!(outcome.preview.available && !outcome.preview.valid);
+}
+
+/// A pre-aggregation artifact that drops every DogStatsD metric before aggregation, under the default program's base.
+fn pre_aggregation_document(plan: &Plan) -> Value {
+    let base = saluki_metric_plan::export::base(plan, &PRE_AGGREGATION.parse().unwrap()).unwrap();
+    serde_json::json!({
+        "ir_version": 1,
+        "scope": PRE_AGGREGATION,
+        "base": base,
+        "nodes": [{"id": "none", "op": "drop"}],
+        "edges": [{"from": "input.metrics", "to": "none.in"}]
+    })
+}
+
+const PRE_AGGREGATION: &str = "dogstatsd_pre_aggregation";
+
+#[test]
+fn an_artifact_composes_with_the_artifacts_adp_runs_for_the_other_scopes() {
+    let (plan, export) = fixture();
+    let registry = OperatorRegistry::native();
+    // ADP runs a pre-aggregation artifact, revision 5: its active plan composes it.
+    let other = ScopeArtifact {
+        artifact: receive_artifact(pre_aggregation_document(&plan)).unwrap(),
+        revision: 5,
+    };
+    let approval = Approval {
+        revision: 5,
+        approved_against: None,
+        active_plan_hash: None,
+    };
+    let active = compose_all(&plan, &[(&other.artifact, &approval)], &export.catalog, &registry)
+        .unwrap()
+        .plan;
+    let hash = active.hash(ResolvedValues::Include).unwrap();
+    let source = default_program_source(&export);
+    let context = CompileContext {
+        export: &export,
+        default_program: Some(&plan),
+        active: Some(ActivePlan {
+            plan: &active,
+            hash,
+            generation: Some(4),
+            artifact_revision: Some(5),
+        }),
+        others: std::slice::from_ref(&other),
+        revision: 6,
+    };
+
+    // The unmodified policy scope export changes nothing: the pre-aggregation artifact stays, and the plan hash is the
+    // one ADP reports once it installs the edited artifact.
+    let (outcome, _) = compile(&source, Some(&context));
+    let preview = &outcome.preview;
+    assert!(preview.available && preview.unchanged, "{:#?}", preview);
+    assert_eq!(preview.plan_hash, Some(hash.to_string()));
+    assert!(
+        preview
+            .reason
+            .contains("with the artifacts ADP runs for `dogstatsd_pre_aggregation` (revision 5)"),
+        "{}",
+        preview.reason
+    );
+    assert!(preview.reason.contains("not placed"), "{}", preview.reason);
+
+    // Composed alone, the edited artifact would revert the pre-aggregation scope to the default program's region.
+    let alone = CompileContext { others: &[], ..context };
+    let (outcome, _) = compile(&source, Some(&alone));
+    assert!(!outcome.preview.unchanged);
+    assert_eq!(
+        outcome.preview.plan_hash,
+        Some(plan.hash(ResolvedValues::Include).unwrap().to_string())
+    );
+}
+
+#[test]
+fn the_artifacts_adp_runs_for_the_other_scopes_are_read_from_the_configs_the_stub_serves() {
+    let (plan, export) = fixture();
+    let pre = pre_aggregation_document(&plan);
+    let post = serde_json::to_value(&export.artifact.artifact).unwrap();
+    let hash = |document: &Value| ReceivedArtifact::from_value(document.clone()).unwrap().hash.to_string();
+    let envelope = |revision, document: &Value| Envelope {
+        revision,
+        artifact_hash: hash(document),
+        approved_against: None,
+        artifact: document.clone(),
+    };
+    let active = |id: &str, revision, document: &Value| ActiveArtifact {
+        id: id.to_string(),
+        revision: Some(revision),
+        artifact_hash: Some(hash(document)),
+    };
+    let served = vec![
+        (PRE_AGGREGATION.to_string(), envelope(5, &pre)),
+        ("post_enrich".to_string(), envelope(6, &post)),
+    ];
+    let found = |status: &ChannelStatus, scope: &str| {
+        other_scope_artifacts(status, &served, scope)
+            .iter()
+            .map(|other| (other.artifact.artifact.scope.to_string(), other.revision))
+            .collect::<Vec<_>>()
+    };
+
+    // ADP names every scope's artifact in `scopes`.
+    let mut status = ChannelStatus {
+        active_artifact: Some(active("demo", 6, &post)),
+        ..ChannelStatus::default()
+    };
+    status.scopes.insert(
+        PRE_AGGREGATION.to_string(),
+        ScopeState {
+            active_artifact: Some(active("demo-dogstatsd_pre_aggregation", 5, &pre)),
+            ..ScopeState::default()
+        },
+    );
+    assert_eq!(found(&status, "post_enrich"), [(PRE_AGGREGATION.to_string(), 5)]);
+    // The policy scope's artifact comes from the top-level member when `scopes` does not describe it.
+    assert_eq!(found(&status, PRE_AGGREGATION), [("post_enrich".to_string(), 6)]);
+
+    // An artifact ADP runs that the stub no longer serves is left out, as ADP no longer composes it.
+    status.active_artifact = Some(ActiveArtifact {
+        artifact_hash: Some(format!("sha256:{}", "e".repeat(64))),
+        ..active("demo", 4, &post)
+    });
+    assert!(found(&status, PRE_AGGREGATION).is_empty());
+}
+
+#[test]
 fn composition_errors_are_one_finding_at_the_node_or_output_and_no_diff() {
     let (plan, export) = fixture();
     let source = default_program_source(&export);
-    let cases = [
-        (
-            "a stateful node",
-            with_node_after_input(
-                &source,
-                "rollup\n\n  node rollup = aggregate(window: 10s) {\n    -> metrics_policy\n  }\n",
-            ),
-            "  node rollup",
-            "keeps state",
-        ),
-        (
-            "an emit to an output ADP does not declare",
-            source.replacen("emit metrics_routing_encode_1\n", "emit metrics_routing_encode_99\n", 1),
-            "emit metrics_routing_encode_99",
-            "emits to output `metrics_routing_encode_99`, which the host does not declare. Emit to one of the outputs \
+    let cases = [(
+        "an emit to an output ADP does not declare",
+        source.replacen("emit metrics_routing_encode_1\n", "emit metrics_routing_encode_99\n", 1),
+        "emit metrics_routing_encode_99",
+        "emits to output `metrics_routing_encode_99`, which the host does not declare. Emit to one of the outputs \
              it declares: `",
-        ),
-    ];
+    )];
     for (case, source, place, fragment) in cases {
         let outcome = compile_against(&source, &plan, &export);
         assert!(outcome.ok, "{}", case);

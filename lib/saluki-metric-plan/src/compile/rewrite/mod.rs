@@ -10,7 +10,7 @@
 //! | R3 | Fold constant `split`s and remove unreachable subgraphs. | Here ([`r3`]) for `split`s that literal constants, or `kind_in` leaves for every kind their input carries, make constant, with the subgraphs they make unreachable; in [decision compilation](super::decision) for constants that configuration bindings give (`flag`, `is_empty`). |
 //! | R4 | Memoize a decision per interned context plus kind. | In [decision compilation](super::decision), which decides whether a decision may be memoized, and the region driver, which keeps the memo. |
 //! | R5a | Push a filter upstream across a stateless operator. | Here ([`r5a`]). |
-//! | R5b | Push a filter upstream across a stateful operator. | Stage 6. |
+//! | R5b | Push a filter upstream across a stateful operator. | In [program compilation](super::program), as emission suppression in the state owner ([`r5b`]). |
 //! | R6 | Hoist a drop that every path below a `tee` applies. | Here ([`r6`]). |
 //! | R7 | Reorder operands of pure `all` / `any`. | Here ([`r7`]). |
 //!
@@ -75,6 +75,7 @@ use crate::{
 mod filters;
 pub mod r3;
 pub mod r5a;
+pub mod r5b;
 pub mod r6;
 pub mod r7;
 
@@ -117,6 +118,9 @@ pub enum RewriteId {
     /// Push a filter upstream across a stateless operator.
     R5a,
 
+    /// Push a filter upstream across a stateful operator, as emission suppression inside the state owner.
+    R5b,
+
     /// Hoist a drop that every path below a `tee` applies.
     R6,
 
@@ -126,7 +130,7 @@ pub enum RewriteId {
 
 impl RewriteId {
     /// Every identifier, in the specification's order: what a host registers one series per rewrite for.
-    pub const ALL: [Self; 6] = [Self::R2, Self::R3, Self::R4, Self::R5a, Self::R6, Self::R7];
+    pub const ALL: [Self; 7] = [Self::R2, Self::R3, Self::R4, Self::R5a, Self::R5b, Self::R6, Self::R7];
 
     /// Returns the identifier as the specification writes it, such as `R5a`.
     pub const fn as_str(self) -> &'static str {
@@ -135,6 +139,7 @@ impl RewriteId {
             Self::R3 => "R3",
             Self::R4 => "R4",
             Self::R5a => "R5a",
+            Self::R5b => "R5b",
             Self::R6 => "R6",
             Self::R7 => "R7",
         }

@@ -31,7 +31,7 @@ use saluki_core::{
 use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 use serde_json::{json, Value};
 
-use super::{frame_tests::RecordingTelemetry, *};
+use super::{harness::RecordingTelemetry, *};
 use crate::{
     canonical::PlanHash,
     compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, KernelKey, RegionProgram, SharedPredicate, SlotId},
@@ -451,7 +451,7 @@ fn exits_carry_the_batch_header_with_the_consumers_entry_set_only_between_slots(
         .iter()
         .find_map(|entry| match entry.key {
             EntryKey::Region(entry) => Some(entry),
-            EntryKey::Admission(_) => None,
+            EntryKey::Admission(_) | EntryKey::StateOutput(_) => None,
         })
         .expect("region_m has an entry for region_d's batches");
     let telemetry = RecordingTelemetry::default();

@@ -938,9 +938,11 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
             )
         })
         .collect::<Vec<_>>();
+    // R5b's record comes first: it is found on the logical plan, before programs are compiled.
     assert_eq!(
         records,
         vec![
+            (RewriteId::R5b, strings(&["dsd_agg", "dsd_post_agg_filter"])),
             (RewriteId::R3, strings(&["mrf_metrics_gateway"])),
             (
                 RewriteId::R4,
@@ -954,7 +956,7 @@ fn the_default_programs_decisions_are_its_filters_its_fan_outs_and_its_gateways(
             ),
         ]
     );
-    let folded = &compiled.rewrites[0].justification;
+    let folded = &compiled.rewrites[1].justification;
     assert!(
         folded.starts_with(
             "The predicate is constant given the resolved values of \

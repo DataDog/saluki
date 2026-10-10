@@ -53,10 +53,19 @@ type ControlReceiver<C> = mpsc::UnboundedReceiver<ControlRequest<C>>;
 ///
 /// # Running
 ///
-/// The host waits for, and handles, in this order of priority: liveness probes, control messages, periodic
-/// telemetry publishing, resuming a yielded call, the driver's deadline, and input batches. It reads input only while
-/// no call is yielded and the driver [accepts input][RegionDriver::accepts_input], and processes up to
-/// `work_per_turn` batches back to back before it checks for control messages and timers again.
+/// Once it reports the region ready, the host calls [`RegionDriver::start`] once. It then waits for, and handles, in
+/// this order of priority: liveness probes, control messages, periodic telemetry publishing, resuming a yielded call,
+/// the driver's deadline, and input batches. It reads input only while no call is yielded and the driver [accepts
+/// input][RegionDriver::accepts_input], and processes up to `work_per_turn` batches back to back before it checks for
+/// control messages and timers again.
+///
+/// Control messages are handled while a call is yielded, between its turns. The driver's deadline is not armed while
+/// a call is yielded or the input has ended: a deadline that passed meanwhile is due as soon as the call completes,
+/// before any further input, and so is each other deadline the driver returns that has also passed, as a timer bursts
+/// to catch up. A driver that keeps the same past deadline after an [`advance_time`][RegionDriver::advance_time] that
+/// did no work, writing nothing and charging nothing to its budget, would be called again at once, forever: the host
+/// logs an error and does not arm that deadline again until the driver's deadline changes, and a debug build fails an
+/// assertion, so that tests catch the driver bug. See [`next_deadline`][RegionDriver::next_deadline] for the rule.
 ///
 /// After every call into the driver, the host sends what the call wrote, buffer by buffer, in the order it was
 /// written, awaiting each send: when a downstream component is slow, the region waits for it, as native components do,
@@ -65,7 +74,8 @@ type ControlReceiver<C> = mpsc::UnboundedReceiver<ControlRequest<C>>;
 ///
 /// When the input ends, the host completes any yielded call, calls [`RegionDriver::finish`] with
 /// [`DrainPolicy::Shutdown`], resumes it until it is done, sends its output, publishes telemetry a last time, and
-/// stops.
+/// stops. If a panic ends the finish before it is done and the driver continues, the host calls `finish` again, until
+/// a call completes it, so that the driver completes the work the panic ended.
 ///
 /// # Supervision
 ///
@@ -358,18 +368,26 @@ where
         let mut finishing = false;
 
         health.mark_ready();
+        runner.start();
         // From here on the mailbox is read: whoever controls the region can start timing its messages.
         running.send_replace(true);
         debug!(exits = exit_names.len(), "Region host started.");
 
         loop {
             if !input_open && runner.pending.is_none() {
-                if finishing {
+                if runner.finished {
                     break;
                 }
 
-                debug!("Region host input ended. Finishing the region...");
-                finishing = true;
+                if finishing {
+                    // A panic ended the finish before it was done, and the driver continues: call `finish` again, which
+                    // resumes the work the panic ended. Let other tasks run first, since nothing here waits.
+                    debug!("Region host finish was ended by a panic. Finishing the region again...");
+                    consume_budget().await;
+                } else {
+                    debug!("Region host input ended. Finishing the region...");
+                    finishing = true;
+                }
                 runner.finish()?;
                 dispatch(
                     &mut runner,
@@ -383,7 +401,7 @@ where
             }
 
             let wanted_deadline = if input_open && runner.pending.is_none() {
-                runner.driver.next_deadline().map(Instant::from_std)
+                runner.wanted_deadline().map(Instant::from_std)
             } else {
                 None
             };
@@ -430,8 +448,8 @@ where
                 },
 
                 _ = &mut deadline_timer, if armed_deadline.is_some() => {
-                    armed_deadline = None;
-                    runner.advance_time()?;
+                    let fired = armed_deadline.take().expect("armed per select guard");
+                    runner.advance_time(fired.into_std())?;
                     dispatch(&mut runner, context.dispatcher(), &exit_names, &mut health, &mut control).await?;
                 },
 
@@ -526,8 +544,11 @@ enum Pending {
     /// A call to `process`, for a batch of this many events.
     Batch { events: u64 },
 
-    /// A call that is not about one batch: `advance_time` or `finish`.
-    Work,
+    /// A call to `advance_time`.
+    Time,
+
+    /// A call to `finish`.
+    Finish,
 }
 
 /// How a supervised call into the driver ended.
@@ -549,6 +570,48 @@ where
     telemetry: HostTelemetry,
     last_publish: Instant,
     unpublished: bool,
+
+    // Whether a call to `finish` completed, itself or through `resume`, without a panic ending it.
+    finished: bool,
+
+    // Whether the last call that returned wrote anything to its exit sink or charged its budget.
+    last_call_worked: bool,
+    deadlines: DeadlineGuard,
+}
+
+/// Keeps the host from spinning on a past deadline that the driver kept after time-driven work that did nothing.
+///
+/// Such a deadline would be due again at once, forever, and the host polls deadlines before input. The guard does not
+/// arm it again until the driver's deadline changes.
+///
+/// Any other deadline is armed, including one that has also passed: a driver catching up on work that was due while
+/// the host was busy moves its deadline forward one period per call, and one that completes work a panic ended can
+/// next return an earlier deadline that is due too (see [`RegionDriver::next_deadline`]). The guard tells neither
+/// apart from a driver that moves back and forth between past deadlines, which the driver contract forbids.
+#[derive(Debug, Default)]
+pub(super) struct DeadlineGuard {
+    stalled: Option<std::time::Instant>,
+}
+
+impl DeadlineGuard {
+    /// Returns the deadline to arm the timer for, given the driver's: none if the driver stalled on it.
+    pub(super) fn arm(&mut self, deadline: Option<std::time::Instant>) -> Option<std::time::Instant> {
+        if self.stalled.is_some() && deadline == self.stalled {
+            return None;
+        }
+        self.stalled = None;
+        deadline
+    }
+
+    /// Records time-driven work that ran because the deadline `fired` passed, and returns whether the driver stalled
+    /// on it: the work did nothing (`idle`), and the driver's deadline is still `fired`.
+    pub(super) fn ran(&mut self, fired: std::time::Instant, idle: bool, next: Option<std::time::Instant>) -> bool {
+        let stalled = idle && next == Some(fired);
+        if stalled {
+            self.stalled = next;
+        }
+        stalled
+    }
 }
 
 impl<D> Runner<D>
@@ -565,6 +628,9 @@ where
             telemetry,
             last_publish: Instant::now(),
             unpublished: false,
+            finished: false,
+            last_call_worked: false,
+            deadlines: DeadlineGuard::default(),
         }
     }
 
@@ -578,25 +644,38 @@ where
         F: FnOnce(&mut D, &mut RegionTurn<'_>, &mut ExitSink) -> R,
     {
         let mut budget = self.turn_budget;
-        let mut turn = RegionTurn::new(Instant::now().into_std(), &mut budget);
         let driver = &mut self.driver;
         let sink = &mut self.sink;
+        let result = {
+            let mut turn = RegionTurn::new(Instant::now().into_std(), &mut budget);
+            catch_unwind(AssertUnwindSafe(|| call(driver, &mut turn, sink)))
+        };
 
-        match catch_unwind(AssertUnwindSafe(|| call(driver, &mut turn, sink))) {
+        match result {
             Ok(result) => {
+                self.last_call_worked = !self.sink.is_empty() || budget != self.turn_budget;
                 self.outbox.extend(self.sink.drain());
                 Called::Returned(result)
             }
             Err(payload) => {
                 let yielded_batch_events = match self.pending.take() {
                     Some(Pending::Batch { events }) => events,
-                    Some(Pending::Work) | None => 0,
+                    Some(Pending::Time | Pending::Finish) | None => 0,
                 };
                 let lost_events = batch_events.unwrap_or_else(|| self.sink.event_count() as u64 + yielded_batch_events);
                 self.sink.clear();
                 Called::Panicked(RegionPanic::new(site, panic_message(payload.as_ref()), lost_events))
             }
         }
+    }
+
+    /// Tells the driver the region has started.
+    ///
+    /// Starting runs no kernel code, so it is not supervised: a panic in it fails the component.
+    fn start(&mut self) {
+        let mut budget = self.turn_budget;
+        let mut turn = RegionTurn::new(Instant::now().into_std(), &mut budget);
+        self.driver.start(&mut turn);
     }
 
     /// Recovers from a panic, returning the error that fails the component if the driver decides so.
@@ -621,16 +700,17 @@ where
         }
     }
 
-    /// Records the outcome of a call that does work, remembering it if it yielded.
-    fn completed(&mut self, called: Called<Progress>, yielded: Pending) -> Result<(), GenericError> {
+    /// Records the outcome of a call that does work, remembering it as `call` if it yielded.
+    fn completed(&mut self, called: Called<Progress>, call: Pending) -> Result<(), GenericError> {
         self.unpublished = true;
         match called {
             Called::Returned(Progress::Yielded) => {
-                self.pending = Some(yielded);
+                self.pending = Some(call);
                 Ok(())
             }
             Called::Returned(_) => {
                 self.pending = None;
+                self.finished |= matches!(call, Pending::Finish);
                 Ok(())
             }
             Called::Panicked(panic) => self.recover(panic),
@@ -651,7 +731,7 @@ where
         };
         let batch_events = match pending {
             Pending::Batch { events } => Some(events),
-            Pending::Work => None,
+            Pending::Time | Pending::Finish => None,
         };
         let called = self.call(PanicSite::Resume, batch_events, |driver, turn, exits| {
             driver.resume(turn, exits)
@@ -659,18 +739,43 @@ where
         self.completed(called, pending)
     }
 
-    fn advance_time(&mut self) -> Result<(), GenericError> {
+    /// Returns the deadline to arm the timer for: the driver's, unless the driver stalled on it.
+    fn wanted_deadline(&mut self) -> Option<std::time::Instant> {
+        self.deadlines.arm(self.driver.next_deadline())
+    }
+
+    /// Runs time-driven work because the deadline `fired` passed.
+    ///
+    /// A driver whose `advance_time` did no work and kept that same deadline would have the host call it again at
+    /// once, forever: the host does not arm the deadline again until the driver changes it, and a debug build fails.
+    fn advance_time(&mut self, fired: std::time::Instant) -> Result<(), GenericError> {
         let called = self.call(PanicSite::AdvanceTime, None, |driver, turn, exits| {
             driver.advance_time(turn, exits)
         });
-        self.completed(called, Pending::Work)
+        let idle =
+            matches!(called, Called::Returned(Progress::Done | Progress::WaitUntil(_))) && !self.last_call_worked;
+        self.completed(called, Pending::Time)?;
+
+        let stalled = self.deadlines.ran(fired, idle, self.driver.next_deadline());
+        debug_assert!(
+            !stalled,
+            "the region driver kept a past deadline after time-driven work that did nothing, which would make the \
+             host call it again at once, forever; move the work that was due to a later deadline, or return none"
+        );
+        if stalled {
+            error!(
+                "Region driver kept a past deadline after time-driven work that did nothing. Not running time-driven \
+                 work again until the driver changes its deadline."
+            );
+        }
+        Ok(())
     }
 
     fn finish(&mut self) -> Result<(), GenericError> {
         let called = self.call(PanicSite::Finish, None, |driver, turn, exits| {
             driver.finish(turn, exits, DrainPolicy::Shutdown)
         });
-        self.completed(called, Pending::Work)
+        self.completed(called, Pending::Finish)
     }
 
     /// Applies a control message, acknowledges it, and publishes telemetry.

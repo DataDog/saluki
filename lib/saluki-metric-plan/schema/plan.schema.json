@@ -430,7 +430,7 @@
       ],
       "properties": {
         "exits": {
-          "description": "The scope's named exits, each mapped to the input port outside the scope that it feeds.\n\nExits let a scope end before the end of its paths, such as a region of processing before aggregation. Artifact edges will reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.",
+          "description": "The scope's named exits, each mapped to the input port outside the scope that it feeds.\n\nExits let a scope end before the end of its paths, such as a region of processing before aggregation. Artifact edges reach them as `exit.<name>`, so the artifact node ID `exit` is reserved.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/definitions/PortRef"

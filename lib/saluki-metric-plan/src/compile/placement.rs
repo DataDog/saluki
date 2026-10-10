@@ -12,6 +12,12 @@
 //!   inputs can reach that slot: R1's cost model may have put it in a later slot of a pipeline than its inputs. Any
 //!   other node's slot follows from its inputs: the slot an admission point's edge leads to, or the slot of the node
 //!   feeding it. When its inputs come from several slots, it runs in the one that every other of them has an exit to.
+//! - A state owner behind an isolation fence runs in an isolation slot, and nothing else does: its boot slot, or the
+//!   isolation slot that the slot its input comes from has an exit to, so that one artifact can aggregate each branch
+//!   with its own width in the one isolation slot. A state owner fed straight by an admission point whose edge leads to
+//!   a fused slot runs in the isolation slot that slot has an exit to: the fused slot passes the point's batches
+//!   through, unchanged. A node fed by a state owner runs in a fused slot that the state owner's isolation slot has an
+//!   exit to. A state owner outside the boot plan's isolation slots needs resource generations.
 //! - Every edge between slots, from a slot to a fixed component, and from a slot to an output must use one of the
 //!   slot's exits, and every edge leaving a fixed component must use its physical edge.
 //! - Every declared output must be an output of the frame, bound as at boot.
@@ -25,7 +31,9 @@
 //! A slot's program maps each batch it receives to a logical input of the slot: an **entry**. A batch from a fixed
 //! component is mapped by the admission point that stamped it ([`EntryKey::Admission`]). A batch from another slot
 //! carries the entry in its header, set by the slot that sent it ([`EntryKey::Region`]), since several logical edges
-//! can share one exit. Entry IDs are numbered per slot and per generation, in plan edge order.
+//! can share one exit. Entry IDs are numbered per slot and per generation, in plan edge order. A slot that passes an
+//! admission point's batches through to a state owner has an entry for the point whose input is the state owner's,
+//! in the isolation slot, which has the matching entry from the passing slot's exit.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -36,6 +44,7 @@ use saluki_core::execution::{AdmissionPointId, EntryId};
 
 use super::{
     frame::{ExitIndex, Frame, FrameSource, FrameTarget, Site, SlotId},
+    program::KernelIndex,
     resolve, Role,
 };
 use crate::{
@@ -176,6 +185,11 @@ pub enum EntryKey {
 
     /// A batch from another slot, by the entry the sending slot set in its header.
     Region(EntryId),
+
+    /// The time-driven output of the state owner whose kernel is at this index of the program's kernel table: what it
+    /// emits at a flush tick, a clock reset, its retirement, or shutdown. Only isolation slots have such entries; the
+    /// region runs them itself, never for a batch it receives.
+    StateOutput(KernelIndex),
 }
 
 impl fmt::Display for EntryKey {
@@ -183,6 +197,7 @@ impl fmt::Display for EntryKey {
         match self {
             Self::Admission(point) => write!(f, "admission point {}", point.get()),
             Self::Region(entry) => write!(f, "entry {}", entry.get()),
+            Self::StateOutput(kernel) => write!(f, "the time-driven output of kernel {}", kernel),
         }
     }
 }
@@ -199,7 +214,8 @@ pub struct PlacedEntry {
     /// The output port, outside the slot, that the logical edge leaves.
     pub from: PortRef,
 
-    /// The input port, inside the slot, that the logical edge enters.
+    /// The input port that the logical edge enters: inside the slot, or, for an entry the slot passes through to a
+    /// state owner, the state owner's, in the isolation slot it passes the batches to.
     pub input: PortRef,
 }
 
@@ -346,44 +362,37 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                         ),
                     )),
                     Some(fixed) if fixed.operator != written.op || fixed.params != written.params => {
-                        // A host component keeps the configuration it was built with. Aggregation stops being one when
-                        // it runs as a kernel; other hosts are reconfigured by resource generations.
-                        let (capability, what) = if matches!(op.contract().state, StateContract::Keyed(_)) {
-                            (
-                                MissingCapability::State,
-                                format!(
-                                    "changing a state owner that runs in a host component, which keeps the \
-                                     configuration it was built with, requires {}",
-                                    MissingCapability::State
-                                ),
-                            )
-                        } else {
-                            (
-                                MissingCapability::ResourceGenerations,
+                        // A host component keeps the configuration it was built with: reconfiguring it needs resource
+                        // generations. (Aggregation runs as a kernel in its isolation slot, so its changes are state
+                        // transitions the installer classifies, not host reconfigurations.)
+                        problems.push(PlacementProblem::new(
+                            Some(id),
+                            Some(MissingCapability::ResourceGenerations),
+                            format!(
+                                "its operator or parameters differ from the boot plan's: {}",
                                 needs(
                                     MissingCapability::ResourceGenerations,
                                     "reconfiguring a host component, which keeps the configuration it was built with,",
-                                ),
-                            )
-                        };
-                        problems.push(PlacementProblem::new(
-                            Some(id),
-                            Some(capability),
-                            format!("its operator or parameters differ from the boot plan's: {}", what),
+                                )
+                            ),
                         ));
                     }
                     Some(_) => {}
                 }
             }
-            Role::Synchronous => {
-                if op.contract().state != StateContract::None {
+            Role::Synchronous | Role::Isolated => {
+                // A state owner runs in a region only behind an isolation fence, which needs keyed state.
+                let keyed = matches!(op.contract().state, StateContract::Keyed(_));
+                let stateless = op.contract().state == StateContract::None;
+                if (*role == Role::Isolated && !keyed) || (*role == Role::Synchronous && !stateless) {
                     problems.push(PlacementProblem::new(
                         Some(id),
                         Some(MissingCapability::State),
                         format!(
-                            "this `{}` node keeps state: running a state owner in a region requires {}",
+                            "this `{}` node keeps state without an isolation fence, or declares an isolation fence \
+                             without keyed state: a region runs a state owner only behind an isolation fence, in an \
+                             isolation slot",
                             op.name(),
-                            MissingCapability::State
                         ),
                     ));
                 } else if op.contract().is_dynamic() {
@@ -454,8 +463,19 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
     };
     let mut slot_of: Vec<Option<SlotId>> = vec![None; graph.nodes.len()];
     let mut unplaced = vec![false; graph.nodes.len()];
+    let isolation = |slot: SlotId| frame.slot(slot).is_some_and(|slot| slot.is_isolation());
+    // A fused slot an admission point's edge leads to can pass the point's batches through, unchanged, to a state
+    // owner in an isolation slot it has an exit to.
+    let passes_through = |from: SlotId, to: SlotId| {
+        !isolation(from)
+            && isolation(to)
+            && frame
+                .slot(from)
+                .is_some_and(|from| from.exit_to(&FrameTarget::Slot(to)).is_some())
+    };
     for &node in &graph.order {
-        if roles[node] != Role::Synchronous {
+        let role = roles[node];
+        if !matches!(role, Role::Synchronous | Role::Isolated) {
             continue;
         }
         let id = graph.id(node);
@@ -495,7 +515,7 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     // A fixed node the frame does not have is reported above.
                     None => unplaced[node] = true,
                 },
-                Role::Synchronous => match slot_of[from] {
+                Role::Synchronous | Role::Isolated => match slot_of[from] {
                     Some(slot) => {
                         fed_from.insert(slot);
                     }
@@ -533,21 +553,60 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                         .is_some_and(|other| other.exit_to(&FrameTarget::Slot(slot)).is_some())
             })
         };
+        // A state owner runs only in an isolation slot, and every other node only in a fused one.
+        let fits = |slot: SlotId| isolation(slot) == (role == Role::Isolated);
+        // An admission point's route binds the node to the slot it leads to, or, for a state owner, to an isolation
+        // slot that slot passes the point's batches through to.
+        let reached_from =
+            |fixed: SlotId, slot: SlotId| fixed == slot || (role == Role::Isolated && passes_through(fixed, slot));
         // A node keeps the slot it has at boot when its inputs reach it, so that a candidate runs pipelined as the boot
-        // plan does; an admission point's route still binds.
+        // plan does.
         let boot_slot = match frame.site(id) {
             Some(Site::Slot(slot)) => Some(slot),
             _ => None,
         }
-        .filter(|&slot| fixed_slots.keys().all(|&fixed| fixed == slot) && receives_all(slot));
+        .filter(|&slot| fits(slot) && fixed_slots.keys().all(|&fixed| reached_from(fixed, slot)) && receives_all(slot));
         let chosen = match (boot_slot, fixed_slots.keys().next()) {
             (Some(slot), _) => Some(slot),
-            (None, Some(&slot)) => receives_all(slot).then_some(slot),
-            (None, None) => {
-                let sinks = fed_from
+            (None, Some(&slot)) if fits(slot) => receives_all(slot).then_some(slot),
+            (None, Some(&slot)) => {
+                // A state owner fed straight by a point whose route is a fused slot: the one isolation slot that slot
+                // has an exit to.
+                let exits = frame.slot(slot).map(|slot| slot.exits.as_slice()).unwrap_or_default();
+                let targets = exits
                     .iter()
-                    .copied()
-                    .filter(|&slot| receives_all(slot))
+                    .filter_map(|exit| match exit.target {
+                        FrameTarget::Slot(next) if fits(next) && reached_from(slot, next) && receives_all(next) => {
+                            Some(next)
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                match targets.into_iter().collect::<Vec<_>>().as_slice() {
+                    [target] => Some(*target),
+                    _ => None,
+                }
+            }
+            (None, None) => {
+                // The slots that can run the node: those its inputs come from, and those an isolation slot it is fed
+                // from has an exit to, since an isolation slot runs only its state owner; a state owner runs in an
+                // isolation slot its inputs' slots have an exit to.
+                let mut candidates = BTreeSet::new();
+                for &slot in &fed_from {
+                    if !isolation(slot) {
+                        candidates.insert(slot);
+                    }
+                    if isolation(slot) || role == Role::Isolated {
+                        let exits = frame.slot(slot).map(|slot| slot.exits.as_slice()).unwrap_or_default();
+                        candidates.extend(exits.iter().filter_map(|exit| match exit.target {
+                            FrameTarget::Slot(next) => Some(next),
+                            _ => None,
+                        }));
+                    }
+                }
+                let sinks = candidates
+                    .into_iter()
+                    .filter(|&slot| fits(slot) && receives_all(slot))
                     .collect::<Vec<_>>();
                 match sinks.as_slice() {
                     [slot] => Some(*slot),
@@ -557,6 +616,34 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         };
         match chosen {
             Some(slot) => slot_of[node] = Some(slot),
+            None if role == Role::Isolated => {
+                let regions = fixed_slots
+                    .keys()
+                    .chain(&fed_from)
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(region)
+                    .collect::<Vec<_>>();
+                // Without an isolation slot the topology cannot run a state owner at all; with one, it is not where the
+                // state owner's input can reach.
+                let what = if frame.slots().iter().any(|slot| slot.is_isolation()) {
+                    "a new exit from a region to an isolation slot"
+                } else {
+                    "adding an isolation slot"
+                };
+                problems.push(PlacementProblem::new(
+                    Some(id),
+                    Some(MissingCapability::ResourceGenerations),
+                    format!(
+                        "it is a state owner, which runs only in an isolation slot that the region its input comes \
+                         from has an exit to, and the topology built at boot has no such isolation slot for {}: {}",
+                        regions.join(", "),
+                        needs(MissingCapability::ResourceGenerations, what)
+                    ),
+                ));
+                unplaced[node] = true;
+            }
             None => {
                 let regions = fixed_slots
                     .keys()
@@ -599,6 +686,13 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                 };
                 let expected = match target_role {
                     Role::Fixed => Some(FrameTarget::Fixed(graph.id(to).clone())),
+                    Role::Isolated => match (slot_of[to], &point.route) {
+                        // The route's slot passes the point's batches through to the state owner.
+                        (Some(slot), Some(FrameTarget::Slot(route))) if passes_through(*route, slot) => continue,
+                        (Some(slot), _) => Some(FrameTarget::Slot(slot)),
+                        // An unplaced node is reported where its placement failed.
+                        (None, _) => continue,
+                    },
                     Role::Synchronous => match slot_of[to] {
                         Some(slot) => Some(FrameTarget::Slot(slot)),
                         // An unplaced node is reported where its placement failed.
@@ -631,11 +725,11 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
                     ));
                 }
             }
-            (Role::Synchronous, target_role) => {
+            (Role::Synchronous | Role::Isolated, target_role) => {
                 let Some(slot) = slot_of[from] else { continue };
                 let target = match target_role {
                     Role::Fixed => FrameTarget::Fixed(graph.id(to).clone()),
-                    Role::Synchronous => match slot_of[to] {
+                    Role::Synchronous | Role::Isolated => match slot_of[to] {
                         Some(other) if other == slot => match graph.op(to).and_then(emit_output) {
                             Some(output) => FrameTarget::Output(output.clone()),
                             None => continue,
@@ -690,8 +784,8 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         let site = match role {
             Role::Fixed => Site::Fixed,
             Role::Terminal => Site::Direct,
-            Role::Synchronous => {
-                let slot = slot_of[node].expect("every synchronous node of a placeable plan is placed");
+            Role::Synchronous | Role::Isolated => {
+                let slot = slot_of[node].expect("every node of a placeable plan that runs in a region is placed");
                 slots[slot.get()].nodes.push(graph.id(node).clone());
                 Site::Slot(slot)
             }
@@ -710,15 +804,37 @@ pub fn place_unvalidated(plan: &Plan, registry: &OperatorRegistry, frame: &Frame
         };
         match (roles[from], slot_of[from], slot_of[to]) {
             (Role::Fixed, _, Some(target)) => {
-                let point = route_of(from, from_port).expect("checked above").id;
-                slots[target.get()].entries.push(PlacedEntry {
-                    key: EntryKey::Admission(point),
-                    source: FrameSource::Admission(point),
+                let point = route_of(from, from_port).expect("checked above");
+                let entry = PlacedEntry {
+                    key: EntryKey::Admission(point.id),
+                    source: FrameSource::Admission(point.id),
                     from: edge.from.clone(),
                     input: edge.to.clone(),
-                });
+                };
+                match &point.route {
+                    Some(FrameTarget::Slot(route)) if *route != target => {
+                        // The route's slot passes the point's batches through to the state owner's isolation slot.
+                        let exit = frame
+                            .slot(*route)
+                            .and_then(|slot| slot.exit_to(&FrameTarget::Slot(target)))
+                            .expect("checked above")
+                            .index;
+                        slots[route.get()].entries.push(entry);
+                        exits_used[route.get()].insert(exit);
+                        region_entries.push((
+                            target,
+                            PlacedEntry {
+                                key: EntryKey::Region(EntryId::new(0)),
+                                source: FrameSource::Exit { slot: *route, exit },
+                                from: edge.from.clone(),
+                                input: edge.to.clone(),
+                            },
+                        ));
+                    }
+                    _ => slots[target.get()].entries.push(entry),
+                }
             }
-            (Role::Synchronous, Some(slot), target) => {
+            (Role::Synchronous | Role::Isolated, Some(slot), target) => {
                 let frame_slot = frame.slot(slot).expect("placed slots exist");
                 let exit_target = match (roles[to], target) {
                     (Role::Fixed, _) => Some(FrameTarget::Fixed(graph.id(to).clone())),

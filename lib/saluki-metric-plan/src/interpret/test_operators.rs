@@ -216,6 +216,7 @@ impl OperatorDef for TestHold {
                     width: Some(std::time::Duration::from_secs(10)),
                 },
                 admission: AdmissionPolicy::FirstCome,
+                emission_filter: false,
             }),
             loss: Loss::Lossy(vec![LossDecl {
                 class: LossClass::Shutdown,

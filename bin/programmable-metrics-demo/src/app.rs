@@ -2,13 +2,16 @@
 //!
 //! - `GET /` (and `/app.js`, `/app.css`): the UI, embedded in the binary.
 //! - `GET /api/state`: everything the UI shows, polled about once per second.
-//! - `POST /api/compile` `{source}`: parses a program, composes it into ADP's default program and validates the
-//!   composed plan as ADP will; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff
-//!   against the active plan.
+//! - `POST /api/compile` `{source}`: parses a program, composes it into ADP's default program, with the artifacts ADP
+//!   runs for the other scopes, and validates the composed plan as ADP will, against the export of the scope it
+//!   replaces; returns diagnostics, the artifact, its hash, its canonical source, and the plan diff against the active
+//!   plan.
 //! - `POST /api/publish` `{artifact_hash}`: publishes the last compiled artifact as the next revision, if
 //!   `artifact_hash` is its hash. An approval is used once: publishing again needs another compile.
-//! - `POST /api/revoke`: empties the snapshot, so that ADP goes back to the default program.
-//! - `GET /api/default-program`: the export bundle's artifact printed as source, with its legend, or why there is none.
+//! - `POST /api/revoke` (optionally `{scope}`): empties the snapshot, so that ADP goes back to the default program, or
+//!   removes one scope's config, so that ADP runs the default program's region there.
+//! - `GET /api/default-program[?scope=<scope>]`: the export bundle's artifact printed as source, with its legend, or
+//!   why there is none: of the policy scope, or of the scope named.
 //! - `POST /api/traffic` `{running?, rate?}`: starts, pauses, or changes the rate of the traffic generator.
 //! - `GET /api/intakes/{name}/recent`: the most recent series and requests an intake received.
 //! - `GET /api/canary?from_s=<s>&to_s=<s>`: the canary conservation check over a range of seconds (Unix seconds,
@@ -19,6 +22,7 @@
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -38,10 +42,10 @@ use crate::{
     export::Legend,
     intake::{IntakeRecorder, IntakeSummary},
     launcher::{Launch, LaunchView, Phase},
-    preview::{ActivePlan, CompileContext},
+    preview::{other_scope_artifacts, ActivePlan, CompileContext},
     settings::{DemoPorts, Recipient, RunSettings},
     stub::{
-        protocol::{ApprovedAgainst, ChannelStatus},
+        protocol::{ApprovedAgainst, ChannelStatus, POLICY_SCOPE},
         ChannelView, StubChannel,
     },
     telemetry::{TelemetryScraper, TelemetrySnapshot},
@@ -276,10 +280,20 @@ async fn compile_source(State(app): State<App>, Json(request): Json<CompileReque
             .map(|plan| (hash, plan)),
         None => None,
     };
-    let exported = app.control.export_with_default_program();
+    // The scope the source replaces, the policy scope's unless it names another: its export is the one to check
+    // against, and ADP composes it with the artifacts it runs for the other scopes.
+    let scope = saluki_metric_plan_syntax::parse(&request.source)
+        .map(|parsed| parsed.artifact.scope.to_string())
+        .unwrap_or_else(|_| POLICY_SCOPE.to_string());
+    let exported = app.control.export_of_scope(&scope);
+    let others = status
+        .as_ref()
+        .map(|status| other_scope_artifacts(status, &app.channel.envelopes(), &scope))
+        .unwrap_or_default();
     let context = exported.as_ref().map(|(export, default_program)| CompileContext {
         export,
         default_program: default_program.as_deref(),
+        others: &others,
         active: active_plan.as_ref().map(|(hash, plan)| ActivePlan {
             plan,
             hash: *hash,
@@ -326,14 +340,19 @@ async fn publish(State(app): State<App>, Json(request): Json<PublishRequest>) ->
         }
     };
     let Some(compiled) = taken else {
-        let message = match app.channel.current() {
-            Some(current) if current.artifact_hash == request.artifact_hash => format!(
+        let served = app
+            .channel
+            .configs()
+            .into_iter()
+            .find(|config| config.artifact_hash == request.artifact_hash);
+        let message = match served {
+            Some(current) => format!(
                 "This approval was already used: the stub serves {} as revision {}. Compile again to publish it as \
                  another revision.",
                 current.artifact_hash, current.revision
             ),
-            _ => "There is no compiled artifact to publish. Compile the program, review its hash, and publish that \
-                  hash."
+            None => "There is no compiled artifact to publish. Compile the program, review its hash, and publish that \
+                     hash."
                 .to_string(),
         };
         return error_response(StatusCode::CONFLICT, message);
@@ -365,17 +384,53 @@ async fn publish(State(app): State<App>, Json(request): Json<PublishRequest>) ->
     }
 }
 
-async fn revoke(State(app): State<App>) -> Response {
-    match app.channel.revoke(unix_millis()) {
-        Ok(true) => Json(json!({ "revoked": true })).into_response(),
-        Ok(false) => Json(json!({ "revoked": false, "message": "The snapshot is already empty: nothing to revoke." }))
-            .into_response(),
+/// A revocation: of one scope's config, or of the whole snapshot when the request names no scope or has no body.
+#[derive(Default, Deserialize)]
+struct RevokeRequest {
+    scope: Option<String>,
+}
+
+async fn revoke(State(app): State<App>, body: Bytes) -> Response {
+    let request = if body.is_empty() {
+        RevokeRequest::default()
+    } else {
+        match serde_json::from_slice::<RevokeRequest>(&body) {
+            Ok(request) => request,
+            Err(error) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "The revoke request is not a JSON object with an optional `scope`: {}. Send no body to revoke \
+                         every scope.",
+                        error
+                    ),
+                )
+            }
+        }
+    };
+    let scope = request.scope.as_deref();
+    match app.channel.revoke(scope, unix_millis()) {
+        Ok(true) => Json(json!({ "revoked": true, "scope": scope })).into_response(),
+        Ok(false) => {
+            let message = match scope {
+                Some(scope) => format!("The snapshot holds no config for scope `{}`: nothing to revoke.", scope),
+                None => "The snapshot is already empty: nothing to revoke.".to_string(),
+            };
+            Json(json!({ "revoked": false, "scope": scope, "message": message })).into_response()
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{:#}", error)),
     }
 }
 
-async fn default_program(State(app): State<App>) -> Json<Value> {
-    Json(match app.control.refresh_export(&app.api).await {
+/// Which scope of the default program to load: the policy scope unless named.
+#[derive(Deserialize)]
+struct DefaultProgramQuery {
+    scope: Option<String>,
+}
+
+async fn default_program(State(app): State<App>, Query(query): Query<DefaultProgramQuery>) -> Json<Value> {
+    let scope = query.scope.as_deref().unwrap_or(POLICY_SCOPE);
+    Json(match app.control.refresh_export_of(&app.api, scope).await {
         Surface::Available(export) => json!({
             "available": true,
             "source": default_program_source(&export),

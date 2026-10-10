@@ -19,12 +19,13 @@
 //!
 //! # The scope as an artifact
 //!
-//! A scope's **region** is every node reachable from the output ports its inputs name. The exported artifact has:
+//! A scope's **region** is every node reachable from the output ports its inputs name, without entering a port one of
+//! its exits names. The exported artifact has:
 //!
 //! - one node per region node, in plan order, whose local ID is the node's local ID (a reserved ID, for the default
 //!   program), with the node's operator and its parameters without resolved values, and without provenance;
-//! - every edge that enters a region node, in plan order, with an edge from a scope input's port written as leaving
-//!   `input.<name>`;
+//! - every edge that enters a region node or an exit's port, in plan order, with an edge from a scope input's port
+//!   written as leaving `input.<name>`, and an edge into an exit's port as entering `exit.<name>`;
 //! - a base whose `outputs` hold the fingerprint the plan declares for every output a region `emit` delivers to, and
 //!   whose `program_hash` is the hash of the artifact document itself without its `base.program_hash` member (see
 //!   [`base`]).
@@ -41,8 +42,8 @@ use snafu::Snafu;
 use crate::{
     canonical::{strip_resolved_values, CanonicalError, PlanHash},
     ir::{
-        ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, Blobs, InputName, NodeId, OutputId,
-        Params, Plan, PolicyArtifact, PortRef, ScopeName, ACCEPTED_IR_VERSIONS, IR_VERSION,
+        ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, Blobs, ExitName, InputName, NodeId,
+        OutputId, Params, Plan, PolicyArtifact, PortRef, ScopeName, ACCEPTED_IR_VERSIONS, IR_VERSION,
     },
     operators::names,
     validate::MemoryCatalog,
@@ -113,7 +114,7 @@ struct BundleDocument {
 }
 
 /// The members of a catalog document that [`MemoryCatalog`] reads.
-const CATALOG_MEMBERS: &[&str] = &["outputs", "bindings", "scopes"];
+const CATALOG_MEMBERS: &[&str] = &["outputs", "bindings", "scopes", "state_budget"];
 
 /// The members of a catalog output that [`MemoryCatalog`] reads.
 const CATALOG_OUTPUT_MEMBERS: &[&str] = &["accepts", "fingerprint", "recipients"];
@@ -284,7 +285,8 @@ pub(crate) struct ScopeRegion {
     /// The region's nodes as artifact nodes, in plan order: local IDs, no provenance, no resolved values.
     pub(crate) nodes: Vec<ArtifactNode>,
 
-    /// Every edge that enters a region node, in plan order, with edges from a scope input leaving `input.<name>`.
+    /// Every edge that enters a region node or an exit's port, in plan order, with edges from a scope input leaving
+    /// `input.<name>`, and edges into an exit's port entering `exit.<name>`.
     pub(crate) edges: Vec<ArtifactEdge>,
 
     /// The fingerprint of every output a region `emit` delivers to, as the plan declares it.
@@ -297,12 +299,15 @@ pub(crate) struct ScopeRegion {
 impl ScopeRegion {
     /// Finds the region of `scope` in `plan`, and writes it as an artifact's nodes and edges.
     ///
+    /// The region is every node reachable from the ports the scope's inputs name, without entering a port one of its
+    /// exits names: an edge into an exit's port is the region's edge to `exit.<name>`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the plan does not declare the scope, or the region cannot be written as an artifact: the
-    /// scope has exits (artifacts reach exits from stage 6), two inputs name one port, an edge enters a node the plan
-    /// does not have, a region node is fed from outside the region other than through an input, two region nodes have
-    /// the same local ID or one's is `input` or `exit`, or an `emit` delivers to an output the plan does not declare.
+    /// Returns an error if the plan does not declare the scope, or the region cannot be written as an artifact: two
+    /// inputs, or two exits, name one port, an edge enters a node the plan does not have, a region node is fed from
+    /// outside the region other than through an input, two region nodes have the same local ID or one's is `input` or
+    /// `exit`, or an `emit` delivers to an output the plan does not declare.
     pub(crate) fn of(plan: &Plan, scope: &ScopeName) -> Result<Self, ExportError> {
         let declaration = plan
             .scopes
@@ -312,12 +317,6 @@ impl ScopeRegion {
             scope: scope.clone(),
             message,
         };
-        if let Some(exit) = declaration.exits.keys().next() {
-            return Err(not_exportable(format!(
-                "it has the exit `{}`, and artifacts cannot reach a scope's exits yet",
-                exit
-            )));
-        }
 
         let mut inputs: BTreeMap<&PortRef, &InputName> = BTreeMap::new();
         for (name, port) in &declaration.inputs {
@@ -328,14 +327,22 @@ impl ScopeRegion {
                 )));
             }
         }
+        let mut exits: BTreeMap<&PortRef, &ExitName> = BTreeMap::new();
+        for (name, port) in &declaration.exits {
+            if let Some(other) = exits.insert(port, name) {
+                return Err(not_exportable(format!(
+                    "its exits `{}` and `{}` both name `{}`; an artifact edge enters one exit",
+                    other, name, port
+                )));
+            }
+        }
 
-        // The region: every node reachable from the inputs' ports. Without exits, every edge that leaves a region node
-        // enters one.
+        // The region: every node reachable from the inputs' ports, without entering an exit's port.
         let mut members = BTreeSet::new();
         let mut frontier = plan
             .edges
             .iter()
-            .filter(|edge| inputs.contains_key(&edge.from))
+            .filter(|edge| inputs.contains_key(&edge.from) && !exits.contains_key(&edge.to))
             .map(|edge| &edge.to.node)
             .collect::<Vec<_>>();
         while let Some(node) = frontier.pop() {
@@ -343,7 +350,7 @@ impl ScopeRegion {
                 frontier.extend(
                     plan.edges
                         .iter()
-                        .filter(|edge| &edge.from.node == node)
+                        .filter(|edge| &edge.from.node == node && !exits.contains_key(&edge.to))
                         .map(|edge| &edge.to.node),
                 );
             }
@@ -381,28 +388,41 @@ impl ScopeRegion {
 
         let local = |id: &NodeId| ArtifactNodeId::new(id.local().as_str()).ok();
         let mut edges = Vec::new();
-        for edge in plan.edges.iter().filter(|edge| members.contains(&edge.to.node)) {
-            let from = if let Some(input) = inputs.get(&edge.from) {
-                ArtifactPortRef::Input((*input).clone())
+        for edge in &plan.edges {
+            let source = if let Some(input) = inputs.get(&edge.from) {
+                Some(ArtifactPortRef::Input((*input).clone()))
             } else if members.contains(&edge.from.node) {
-                ArtifactPortRef::Node {
+                Some(ArtifactPortRef::Node {
                     node: local(&edge.from.node).expect("region nodes have artifact node IDs"),
                     port: edge.from.port.clone(),
+                })
+            } else {
+                None
+            };
+            let to = if let Some(exit) = exits.get(&edge.to) {
+                // An edge into an exit's port from outside the region is not the region's.
+                if source.is_none() {
+                    continue;
+                }
+                ArtifactPortRef::Exit((*exit).clone())
+            } else if members.contains(&edge.to.node) {
+                ArtifactPortRef::Node {
+                    node: local(&edge.to.node).expect("region nodes have artifact node IDs"),
+                    port: edge.to.port.clone(),
                 }
             } else {
+                // The region holds every node a region node's edge enters, but through an exit: this edge is not the
+                // region's.
+                continue;
+            };
+            let Some(from) = source else {
                 return Err(not_exportable(format!(
                     "`{}` is inside the scope, but is fed from `{}`, outside it; a scope is fed only through its \
                      inputs",
                     edge.to, edge.from
                 )));
             };
-            edges.push(ArtifactEdge {
-                from,
-                to: ArtifactPortRef::Node {
-                    node: local(&edge.to.node).expect("region nodes have artifact node IDs"),
-                    port: edge.to.port.clone(),
-                },
-            });
+            edges.push(ArtifactEdge { from, to });
         }
 
         let mut outputs = BTreeMap::new();

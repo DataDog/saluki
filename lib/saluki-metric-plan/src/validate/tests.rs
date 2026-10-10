@@ -701,7 +701,9 @@ fn reference_rules() {
             vec![(ConsistentBinding, "node `s2`")],
         ),
         (
-            "a host-owned node bound to live configuration is a warning",
+            // Aggregation was the one native host with bindable parameters; as a kernel in its isolation slot, its
+            // per-call parameters follow each generation, so a live binding is no host warning.
+            "a state owner that runs as a kernel applies live configuration",
             {
                 let mut node = aggregate("agg");
                 node["params"]["window"] = json!({"config": "test.live_window", "resolved": "10s"});
@@ -711,7 +713,7 @@ fn reference_rules() {
                     &["a"],
                 )
             },
-            vec![(LiveBindingOnHost, "node `agg`")],
+            vec![],
         ),
         (
             "a scope input refers to a declared input of the right type",
@@ -854,6 +856,23 @@ fn scopes_are_closed() {
                        "pre": {"inputs": {"metrics": "src.metrics"}, "exits": {"enriched": "y.in"}}}),
             ),
             vec![],
+        ),
+        (
+            "an exit behind a node whose parameters are wrong is not reported unfed as well",
+            with_scopes(
+                plan(
+                    vec![
+                        otlp("src"),
+                        n("x", "host_enrichment", json!({"extra": 1})),
+                        enrich("y"),
+                        emit("e", "a"),
+                    ],
+                    &["src.metrics -> x.in", "x.out -> y.in", "y.out -> e.in"],
+                    &["a"],
+                ),
+                json!({"pre": {"inputs": {"metrics": "src.metrics"}, "exits": {"enriched": "y.in"}}}),
+            ),
+            vec![(Rule::ValidParameters, "node `x`")],
         ),
     ];
     for (name, value, expected) in cases {
@@ -1475,6 +1494,190 @@ fn bounds_apply_to_artifact_nodes_only() {
     assert_findings("11 native stages", &validate(&ending_in_drop(11, n)), &[]);
 }
 
+/// An aggregation with native provenance and the given window, which may be a binding.
+fn aggregate_with_window(id: &str, window: Value) -> Value {
+    let mut node = aggregate(id);
+    node["params"]["window"] = window;
+    node
+}
+
+#[test]
+fn state_rules() {
+    use Rule::*;
+
+    // Two state owners fed by one source, each delivering to its own output.
+    let two_owners = |first: Value, second: Value| {
+        plan(
+            vec![
+                otlp("src"),
+                tee("t", 2),
+                aggregate_with_window("agg_1", first),
+                aggregate_with_window("agg_2", second),
+                emit("e1", "a"),
+                emit("e2", "b"),
+            ],
+            &[
+                "src.metrics -> t.in",
+                "t.0 -> agg_1.in",
+                "t.1 -> agg_2.in",
+                "agg_1.out -> e1.in",
+                "agg_2.out -> e2.in",
+            ],
+            &["a", "b"],
+        )
+    };
+    // A timestamp split whose untimestamped points go to an aggregation, through a map, and whose timestamped points
+    // bypass it.
+    let split_into = |split_window: Value, aggregation_window: Value| {
+        plan(
+            vec![
+                dogstatsd("src", "mixed"),
+                n("ts", "timestamp_split", json!({"window": split_window})),
+                n("hosts", "host_enrichment", json!({})),
+                aggregate_with_window("agg", aggregation_window),
+                emit("e1", "a"),
+                emit("e2", "b"),
+            ],
+            &[
+                "src.metrics -> ts.in",
+                "ts.default -> hosts.in",
+                "hosts.out -> agg.in",
+                "agg.out -> e1.in",
+                "ts.passthrough -> e2.in",
+            ],
+            &["a", "b"],
+        )
+    };
+    let bound = json!({"config": "test.window"});
+    let cases: Vec<Case> = vec![
+        (
+            "widths up to sixty seconds",
+            two_owners(json!("30s"), json!("1m")),
+            vec![],
+        ),
+        (
+            "one width above sixty seconds",
+            two_owners(json!("2m"), json!("1m")),
+            vec![],
+        ),
+        (
+            "one width above sixty seconds, twice",
+            two_owners(json!("5m"), json!("5m")),
+            vec![],
+        ),
+        (
+            "two widths above sixty seconds",
+            two_owners(json!("2m"), json!("3m")),
+            vec![(WidthsAboveSixty, "node `agg_2`")],
+        ),
+        // A width bound to configuration and not resolved is unknown, so nothing is compared.
+        ("an unknown width", two_owners(json!("2m"), bound.clone()), vec![]),
+        (
+            "a split with its aggregation's window",
+            split_into(json!("10s"), json!("10s")),
+            vec![],
+        ),
+        (
+            "a split with another window than its aggregation's",
+            split_into(json!("10s"), json!("30s")),
+            vec![(SplitWindow, "node `ts`")],
+        ),
+        // One binding has one value, whatever it is.
+        (
+            "a split bound to its aggregation's window",
+            split_into(bound.clone(), bound.clone()),
+            vec![],
+        ),
+        (
+            "a split bound to the resolved value of its aggregation's window",
+            split_into(json!({"config": "test.window", "resolved": "10s"}), json!("10s")),
+            vec![],
+        ),
+        (
+            "a split bound to another resolved value",
+            split_into(json!({"config": "test.window", "resolved": "20s"}), json!("10s")),
+            vec![(SplitWindow, "node `ts`")],
+        ),
+        (
+            "a split whose window is not known",
+            split_into(bound, json!("10s")),
+            vec![],
+        ),
+    ];
+    for (name, value, expected) in &cases {
+        assert_findings(name, &validate(value), expected);
+    }
+
+    let report = validate(&two_owners(json!("2m"), json!("3m")));
+    assert_eq!(
+        report.findings()[0].message,
+        "the node buckets by 180 s, and `agg_1` by 120 s: a plan uses at most one bucket width above 60 seconds, so \
+         that its widths line up at least every max(60 s, largest width); use 120 s here too, or a width of at most 60 \
+         seconds"
+    );
+    let report = validate(&split_into(json!("10s"), json!("30s")));
+    assert!(
+        report.findings()[0]
+            .message
+            .starts_with("the split gives timestamped counters a rate interval of 10 s, but `agg`"),
+        "{}",
+        report
+    );
+}
+
+#[test]
+fn an_artifacts_context_limit_above_the_hosts_state_budget_is_a_warning() {
+    use Rule::*;
+
+    // Aggregation behind an isolation fence, which artifacts may place; its context limit is 1,000.
+    let registry = crate::operators::OperatorRegistry::native();
+    let with_owner = |node: fn(&str, &str, Value) -> Value| {
+        let mut owner = aggregate("agg");
+        owner = node("agg", "aggregate", owner["params"].clone());
+        plan(
+            vec![otlp("src"), owner, emit("e", "a")],
+            &["src.metrics -> agg.in", "agg.out -> e.in"],
+            &["a"],
+        )
+    };
+    let validate_with = |value: &Value, catalog: &MemoryCatalog| {
+        Validator::new(&registry, catalog).validate(&Plan::from_value(value.clone()).unwrap())
+    };
+
+    let tight = test_catalog().with_state_budget(999);
+    let report = validate_with(&with_owner(a), &tight);
+    assert_findings(
+        "an artifact's limit above the budget",
+        &report,
+        &[(StateBudget, "node `agg`")],
+    );
+    assert!(report.is_valid(), "a warning leaves the plan valid");
+    assert_eq!(
+        report.findings()[0].message,
+        "the node's context limit is 1000, but the host's state owners hold at most 999 contexts together, so it holds \
+         at most that many, and fewer while other state owners hold some; lower the limit to at most 999"
+    );
+
+    let cases = [
+        (
+            "an artifact's limit at the budget",
+            with_owner(a),
+            test_catalog().with_state_budget(1000),
+        ),
+        // The budget is the default program's limit, so a native node is never above it, and the rule is about
+        // artifacts.
+        (
+            "a native limit above the budget",
+            with_owner(n),
+            test_catalog().with_state_budget(999),
+        ),
+        ("no budget", with_owner(a), test_catalog()),
+    ];
+    for (name, value, catalog) in &cases {
+        assert_findings(name, &validate_with(value, catalog), &[]);
+    }
+}
+
 #[test]
 fn authority_rules() {
     use Rule::*;
@@ -1646,7 +1849,8 @@ fn every_rule_has_a_stable_name() {
             "predicate_can_match",
             "port_can_carry",
             "unused_output",
-            "live_binding_on_host"
+            "live_binding_on_host",
+            "state_budget"
         ]
     );
 }

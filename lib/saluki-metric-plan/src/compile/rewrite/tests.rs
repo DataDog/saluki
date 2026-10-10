@@ -23,14 +23,15 @@ fn every_rewrite_identifier_is_listed_once_in_order() {
         RewriteId::R3 => 1,
         RewriteId::R4 => 2,
         RewriteId::R5a => 3,
-        RewriteId::R6 => 4,
-        RewriteId::R7 => 5,
+        RewriteId::R5b => 4,
+        RewriteId::R6 => 5,
+        RewriteId::R7 => 6,
     };
     for (index, id) in RewriteId::ALL.into_iter().enumerate() {
         assert_eq!(position(id), index, "{}", id);
     }
     let names = RewriteId::ALL.map(RewriteId::as_str);
-    assert_eq!(names, ["R2", "R3", "R4", "R5a", "R6", "R7"]);
+    assert_eq!(names, ["R2", "R3", "R4", "R5a", "R5b", "R6", "R7"]);
 }
 
 #[test]
@@ -51,11 +52,12 @@ fn optimizing_the_default_program_changes_nothing_while_no_rewrite_applies() {
 
     let compiled = compile(&plan, &report, &registry, &frame).unwrap();
     assert_eq!(*compiled.plan, plan);
-    // Only decision-time rewrites apply, which the programs' decisions record.
-    assert!(compiled
-        .rewrites
-        .iter()
-        .all(|record| matches!(record.id, RewriteId::R2 | RewriteId::R3 | RewriteId::R4)));
+    // Only the rewrites that change programs, not the plan, apply: the decision-time rewrites, which the programs'
+    // decisions record, and R5b, which pushes the post-aggregation filter into aggregation's per-call parameters.
+    assert!(compiled.rewrites.iter().all(|record| matches!(
+        record.id,
+        RewriteId::R2 | RewriteId::R3 | RewriteId::R4 | RewriteId::R5b
+    )));
 }
 
 #[test]

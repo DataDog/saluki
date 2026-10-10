@@ -352,6 +352,21 @@ fn common_mistakes_are_reported_at_the_offending_text() {
             "!",
             "Unexpected character `!`. Negate a predicate with `not`, as in `not name == \"a\"`; there is no `!=`.",
         ),
+        case(
+            lines("  exit.aggregated -> drop"),
+            3,
+            3,
+            "exit.aggregated",
+            "An edge cannot leave `exit.aggregated`, a scope exit: exits are where edges leave the scope, so an exit \
+             is only ever an edge's target, as in `<node>.<port> -> exit.aggregated`.",
+        ),
+        case(
+            lines("  input.metrics -> exit.0"),
+            3,
+            25,
+            "0",
+            "Expected a scope exit name after `exit.`",
+        ),
     ];
 
     for expected in cases {

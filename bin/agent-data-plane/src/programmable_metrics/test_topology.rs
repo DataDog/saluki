@@ -11,7 +11,13 @@
 //! - DogStatsD aggregation, when asked, with native aggregation on a test clock ([`Aggregation::Clocked`]): it admits
 //!   every metric at [`ADMITTED_AT`] and flushes once, when its input ends, at [`FLUSHED_AT`], past every bucket, so
 //!   that what it emits does not depend on when a test runs; or with a transform that reads nothing until its gate
-//!   opens ([`Aggregation::Gated`]), or one that sends what the test feeds it ([`Aggregation::Scripted`]);
+//!   opens ([`Aggregation::Gated`]), or one that sends what the test feeds it ([`Aggregation::Scripted`]). The
+//!   plan-driven path runs aggregation as a stateful kernel in its `dsd_agg` isolation slot: clocked aggregation then
+//!   puts the admission point of `dsd_in.metrics` on a wall clock that reads [`ADMITTED_AT`], the slot on one that
+//!   reads [`FLUSHED_AT`], and the flush interval at [`CLOCKED_FLUSH_INTERVAL`], so that the slot flushes once, when
+//!   its input ends, exactly as clocked native aggregation does. Gated and scripted aggregation replace the slot's
+//!   region, as they replace the native component on the legacy path: the scripted stand-in stamps what it sends as
+//!   the slot stamps its time-driven output, so the regions after it take it as aggregation's;
 //! - every metrics encoder, and the DogStatsD client telemetry destination, with a collector that records each buffer
 //!   it receives and encodes nothing;
 //! - every forwarder with one that drops what it receives, so nothing leaves the process.
@@ -33,6 +39,7 @@ use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::ConfigurationSystem;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use saluki_components::transforms::AggregateContextSnapshotEntry;
 use saluki_core::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
     components::{
@@ -47,6 +54,7 @@ use saluki_core::{
         event::{metric::Metric, Event, EventType},
         payload::PayloadType,
     },
+    execution::{AdmissionTime, BatchHeader, ManualWallClock, WallClock as _},
     health::{Health, HealthRegistry},
     observability::ComponentMetricsExt as _,
     runtime::{state::ResourceRegistry, Supervisor, SupervisorError},
@@ -54,7 +62,12 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::aggregate::{AggregateCore, AggregateParams, AggregateTelemetry};
-use saluki_metric_plan::{equivalence::OutputPoints, ir::OutputId, operators::OperatorRegistry};
+use saluki_metric_plan::{
+    compile::{EntryKey, SlotKind, Step},
+    equivalence::OutputPoints,
+    ir::OutputId,
+    operators::OperatorRegistry,
+};
 use saluki_metrics::MetricsBuilder;
 use tokio::{
     sync::{mpsc, oneshot, Semaphore},
@@ -65,10 +78,12 @@ use tokio::{
 use super::{
     installer::{BootTopology, InstallerWorker, PlanStatus, ProgrammableMetrics},
     test_support::{environment_provider, programmable_metrics_with_operators},
+    topology::aggregation_slot,
 };
 use crate::{
     cli::run::{create_legacy_topology, create_topology, dogstatsd_aggregate_configuration},
     config::remote_agent_client_configuration,
+    internal::TopologyControlSurfaces,
 };
 
 /// The longest a test waits for a topology to deliver, to start, or to stop.
@@ -81,6 +96,10 @@ pub(super) const ADMITTED_AT: u64 = 1_800_000_005;
 /// The time, in Unix seconds, at which clocked aggregation flushes, when its input ends: past the end of the bucket
 /// [`ADMITTED_AT`] falls in, for any window, and of every timestamped value the tests send.
 pub(super) const FLUSHED_AT: u64 = 1_900_000_000;
+
+/// The flush interval clocked aggregation in an isolation slot runs with: longer than any test, so that it flushes only
+/// when its input ends.
+pub(super) const CLOCKED_FLUSH_INTERVAL: Duration = Duration::from_secs(3_600);
 
 /// The components whose output carries metrics into the metrics path, besides the sources: the trace sampler, which
 /// reports its sampling telemetry as metrics.
@@ -181,6 +200,12 @@ pub(super) struct Options {
     /// The operators the plan-driven metrics path validates, composes, and compiles plans with: the native ones by
     /// default, which a test extends with operators of its own.
     pub operators: OperatorRegistry,
+
+    /// The wall clock native aggregation reads on the legacy path, instead of the system's, with
+    /// [`Aggregation::Native`]: its flush ticks keep the native timer, and read this clock, as a test that compares
+    /// ticks needs. The plan-driven path's clocks are those of the boot topology (see
+    /// [`before_topology`][Self::before_topology]).
+    pub aggregation_clock: Option<ManualWallClock>,
 }
 
 impl Options {
@@ -199,6 +224,7 @@ impl Options {
             keep: |_| true,
             environment_ready: None,
             operators: OperatorRegistry::native(),
+            aggregation_clock: None,
         }
     }
 }
@@ -232,6 +258,7 @@ pub(super) struct TestTopology {
     installer: Option<InstallerWorker>,
     gates: BTreeMap<String, Arc<Semaphore>>,
     snapshot: BlueprintSnapshot,
+    control_surfaces: TopologyControlSurfaces,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), SupervisorError>>,
 }
@@ -256,32 +283,56 @@ impl TestTopology {
             keep,
             environment_ready,
             operators,
+            aggregation_clock,
         } = options;
         let config = SalukiConfiguration::clone(&system.config());
         let env = environment_provider(&config).await;
-        let (mut blueprint, installer) = match path {
+        let mut isolated_aggregation = false;
+        // How the isolation slot of aggregation stamps its time-driven output, for a scripted stand-in.
+        let mut aggregation_stamp = None;
+        // The snapshot bridge, which `run.rs` runs beside the installer, answers the context dump API from the region
+        // running aggregation.
+        let mut bridge = None;
+        let (mut blueprint, control_surfaces, installer) = match path {
             MetricsPath::Legacy => {
                 let client = (!config.control.standalone_mode)
                     .then(|| remote_agent_client_configuration(&config).expect("the client configuration resolves"));
-                let (blueprint, _) = create_legacy_topology(system, client.as_ref(), &env, &registry)
+                let (blueprint, control_surfaces) = create_legacy_topology(system, client.as_ref(), &env, &registry)
                     .await
                     .expect("the legacy topology builds");
-                (blueprint, None)
+                (blueprint, control_surfaces, None)
             }
             MetricsPath::Plan => {
-                let mut metrics =
-                    programmable_metrics_with_operators(&config, system.live(|config| config), &registry, operators)
-                        .expect("a metrics pipeline is required");
+                let boot = |config: &SalukiConfiguration| {
+                    programmable_metrics_with_operators(config, system.live(|config| config), &registry, operators)
+                        .expect("a metrics pipeline is required")
+                };
+                let mut metrics = boot(&config);
+                isolated_aggregation = aggregation_slot(&metrics.boot_topology().frame).is_some();
+                if isolated_aggregation && aggregation == Aggregation::Clocked {
+                    // The slot flushes only when its input ends; only the boot program has this flush interval.
+                    let mut clocked = config.clone();
+                    clocked.domains.dogstatsd.aggregation.flush_interval = CLOCKED_FLUSH_INTERVAL;
+                    metrics = boot(&clocked);
+                    let topology = metrics.boot_topology();
+                    topology.state_admission_clock =
+                        Some(ManualWallClock::new(AdmissionTime::from_unix_secs(ADMITTED_AT)));
+                    topology.wall_clock = Arc::new(ManualWallClock::new(AdmissionTime::from_unix_secs(FLUSHED_AT)));
+                }
+                if isolated_aggregation {
+                    aggregation_stamp = Some(time_driven_stamp(metrics.boot_topology()));
+                }
                 if let Some(before_topology) = before_topology {
                     before_topology(metrics.boot_topology());
                 }
-                let (blueprint, _) = create_topology(system, &env, &registry, Some(&mut metrics))
+                let (blueprint, control_surfaces) = create_topology(system, &env, &registry, Some(&mut metrics))
                     .await
                     .expect("the plan-driven topology builds");
                 if let Some(before_install) = before_install {
                     before_install(&mut metrics);
                 }
-                (blueprint, Some(metrics.into_installer()))
+                bridge = metrics.snapshot_bridge();
+                (blueprint, control_surfaces, Some(metrics.into_installer()))
             }
         };
 
@@ -318,8 +369,40 @@ impl TestTopology {
                         .expect("a scripted transform declares what it replaces");
                     feeds.insert(format!("{}.metrics", id), feed);
                 }
+                // The kernel of aggregation in an isolation slot runs, clocked through its slot's clocks, unless gated
+                // or scripted aggregation stands in for the slot's region.
+                ComponentType::Transform if id == DSD_AGG && isolated_aggregation => match aggregation {
+                    Aggregation::Native | Aggregation::Clocked => {}
+                    Aggregation::Gated => {
+                        let gate = gates.get(DSD_AGG).cloned().expect("gated aggregation has a gate");
+                        blueprint
+                            .replace_transform(&id, GatedTransformBuilder::new(component, gate))
+                            .expect("gated aggregation declares what it replaces");
+                    }
+                    Aggregation::Scripted => {
+                        let (feed, batches, sent) = Feed::new();
+                        let output = first_output(component);
+                        let stamp = aggregation_stamp.clone();
+                        blueprint
+                            .replace_transform(
+                                &id,
+                                ScriptedTransformBuilder::new(component, output, batches, sent).stamped(stamp),
+                            )
+                            .expect("scripted aggregation declares what it replaces");
+                        feeds.insert(DSD_AGG.to_string(), feed);
+                    }
+                },
                 ComponentType::Transform if id == DSD_AGG => match aggregation {
-                    Aggregation::Native => {}
+                    Aggregation::Native => {
+                        if let Some(clock) = aggregation_clock.clone() {
+                            let (native, _) =
+                                dogstatsd_aggregate_configuration(&config).expect("aggregation is configured");
+                            let reading = Arc::new(move || clock.now().as_unix_secs());
+                            blueprint
+                                .replace_transform(&id, native.with_clock(reading))
+                                .expect("native aggregation on a test clock declares what it replaces");
+                        }
+                    }
                     Aggregation::Clocked => {
                         blueprint
                             .replace_transform(&id, ClockedAggregateBuilder::new(&config))
@@ -393,6 +476,9 @@ impl TestTopology {
         let mut supervisor = Supervisor::new("test-topology").expect("the supervisor is created");
         supervisor.add_worker(health.worker());
         supervisor.add_worker(blueprint);
+        if let Some(bridge) = bridge {
+            supervisor.add_worker(bridge);
+        }
         let installer = match installer {
             Some(installer) if supervise_installer => {
                 supervisor.add_worker(installer);
@@ -412,9 +498,17 @@ impl TestTopology {
             installer,
             gates,
             snapshot,
+            control_surfaces,
             shutdown: Some(shutdown),
             task,
         }
+    }
+
+    /// Returns the contexts DogStatsD aggregation holds, as the context dump API reads them: from the native component,
+    /// or, on the plan-driven path, through the snapshot bridge from the region running aggregation. Returns `None` if
+    /// the snapshot is unavailable, or without DogStatsD.
+    pub(super) async fn context_dump(&self) -> Option<Vec<AggregateContextSnapshotEntry>> {
+        self.control_surfaces.context_dump()?.snapshot().await
     }
 
     /// Returns the blueprint of the topology, as it was built, before any component was replaced.
@@ -619,6 +713,42 @@ fn event_outputs(component: &ComponentSnapshot) -> Vec<OutputDefinition<EventTyp
 }
 
 /// Returns the metrics as one buffer, sized to them.
+/// Returns the name of a component's first output, which the stand-ins that replace it send on.
+fn first_output(component: &ComponentSnapshot) -> OutputName {
+    component
+        .outputs()
+        .first()
+        .map(|output| output.name().clone())
+        .unwrap_or(OutputName::Default)
+}
+
+/// Returns the header the isolation slot of aggregation stamps on its time-driven output in the boot generation: its
+/// output point, the boot generation, and the entry its `StateOutput` program leads to in the region after it, at
+/// [`FLUSHED_AT`].
+fn time_driven_stamp(boot: &BootTopology) -> BatchHeader {
+    let slot = aggregation_slot(&boot.frame).expect("aggregation runs in an isolation slot");
+    let SlotKind::Isolation { output_point, .. } = &slot.kind else {
+        unreachable!("aggregation's slot is an isolation slot");
+    };
+    let entry = boot.programs[slot.id.get()]
+        .entries()
+        .iter()
+        .filter(|entry| matches!(entry.key, EntryKey::StateOutput(_)))
+        .flat_map(|entry| &entry.steps)
+        .find_map(|step| match step {
+            Step::Exit { entry, .. } => *entry,
+            _ => None,
+        })
+        .expect("aggregation's time-driven output leads to a region");
+    BatchHeader {
+        admitted_at: Some(AdmissionTime::from_unix_secs(FLUSHED_AT)),
+        admission_point: Some(*output_point),
+        epoch: 0,
+        generation: Some(boot.generation.clone()),
+        entry: Some(entry),
+    }
+}
+
 fn buffer_of(events: Vec<Event>) -> EventsBuffer {
     let mut buffer = EventsBuffer::with_capacity(events.len());
     for event in events {
@@ -713,6 +843,7 @@ struct ScriptedTransformBuilder {
     output: OutputName,
     batches: StdMutex<Option<mpsc::UnboundedReceiver<Vec<Event>>>>,
     sent: Arc<AtomicUsize>,
+    stamp: Option<BatchHeader>,
 }
 
 impl ScriptedTransformBuilder {
@@ -726,7 +857,14 @@ impl ScriptedTransformBuilder {
             output,
             batches: StdMutex::new(Some(batches)),
             sent,
+            stamp: None,
         }
+    }
+
+    /// Stamps every buffer the transform sends with `stamp`, as a region stamps what it sends.
+    fn stamped(mut self, stamp: Option<BatchHeader>) -> Self {
+        self.stamp = stamp;
+        self
     }
 }
 
@@ -751,6 +889,7 @@ impl TransformBuilder for ScriptedTransformBuilder {
             output: self.output.clone(),
             batches,
             sent: Arc::clone(&self.sent),
+            stamp: self.stamp.clone(),
         }))
     }
 }
@@ -763,6 +902,7 @@ struct ScriptedTransform {
     output: OutputName,
     batches: mpsc::UnboundedReceiver<Vec<Event>>,
     sent: Arc<AtomicUsize>,
+    stamp: Option<BatchHeader>,
 }
 
 #[async_trait]
@@ -777,7 +917,10 @@ impl Transform for ScriptedTransform {
                 events = context.events().next(), if input_open => input_open = events.is_some(),
                 batch = self.batches.recv(), if feed_open => match batch {
                     Some(events) => {
-                        let buffer = buffer_of(events);
+                        let mut buffer = buffer_of(events);
+                        if let Some(stamp) = &self.stamp {
+                            buffer.set_header(stamp.clone());
+                        }
                         match &self.output {
                             OutputName::Default => context.dispatcher().dispatch(buffer).await?,
                             OutputName::Given(name) => context.dispatcher().dispatch_named(name, buffer).await?,
@@ -793,10 +936,11 @@ impl Transform for ScriptedTransform {
 }
 
 /// Builds a transform that reads nothing until its gate opens, answering liveness probes meanwhile, and then sends
-/// every buffer it reads on its default output unchanged, until its input closes.
+/// every buffer it reads on the first output of the component it replaces unchanged, until its input closes.
 struct GatedTransformBuilder {
     input: EventType,
     outputs: Vec<OutputDefinition<EventType>>,
+    output: OutputName,
     gate: Arc<Semaphore>,
 }
 
@@ -805,6 +949,7 @@ impl GatedTransformBuilder {
         Self {
             input: event_input(replaced),
             outputs: event_outputs(replaced),
+            output: first_output(replaced),
             gate,
         }
     }
@@ -822,6 +967,7 @@ impl TransformBuilder for GatedTransformBuilder {
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(GatedTransform {
+            output: self.output.clone(),
             gate: Arc::clone(&self.gate),
         }))
     }
@@ -832,6 +978,7 @@ impl MemoryBounds for GatedTransformBuilder {
 }
 
 struct GatedTransform {
+    output: OutputName,
     gate: Arc<Semaphore>,
 }
 
@@ -844,9 +991,10 @@ impl Transform for GatedTransform {
         loop {
             tokio::select! {
                 _ = health.live() => {}
-                events = context.events().next() => match events {
-                    Some(events) => context.dispatcher().dispatch(events).await?,
-                    None => return Ok(()),
+                events = context.events().next() => match (events, &self.output) {
+                    (Some(events), OutputName::Default) => context.dispatcher().dispatch(events).await?,
+                    (Some(events), OutputName::Given(name)) => context.dispatcher().dispatch_named(name, events).await?,
+                    (None, _) => return Ok(()),
                 },
             }
         }

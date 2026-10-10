@@ -181,17 +181,22 @@ fn the_default_programs_explain_describes_its_graph() {
         .find(|output| output.id.as_str() == "dd_metrics_encode")
         .unwrap();
     assert_eq!(output.emitted_by, vec!["metrics_policy_0".parse::<NodeId>().unwrap()]);
-    assert_eq!(explain.graph.scopes.len(), 1);
-    assert_eq!(explain.graph.scopes[0].name.as_str(), "post_enrich");
+    let scopes = explain
+        .graph
+        .scopes
+        .iter()
+        .map(|scope| scope.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(scopes, ["dogstatsd_pre_aggregation", "post_enrich"]);
 }
 
 #[test]
 fn the_default_programs_explain_summarizes_every_nodes_contract() {
     // Derived by hand from the specification's operator families and loss table, one row per node of the fixture, in
-    // plan order: (node, operator, boundary, state, loss classes). Sources are I/O hosts; aggregation is an opaque
-    // host with keyed state, losing by policy (gauge reduction and value replacement), capacity, and shutdown; tag
-    // projection removes tags and restricts values, which is policy loss; `drop` is policy loss; everything else is
-    // synchronous, stateless, and lossless.
+    // plan order: (node, operator, boundary, state, loss classes). Sources are I/O hosts; aggregation is a state owner
+    // behind an isolation fence with keyed state, losing by policy (gauge reduction and value replacement), capacity,
+    // and shutdown; tag projection removes tags and restricts values, which is policy loss; `drop` is policy loss;
+    // everything else is synchronous, stateless, and lossless.
     const SYNC: &str = "synchronous";
     const NONE: &[&str] = &[];
     const POLICY: &[&str] = &["policy"];
@@ -206,7 +211,7 @@ fn the_default_programs_explain_summarizes_every_nodes_contract() {
         (
             "dsd_agg",
             "aggregate",
-            "opaque_host",
+            "isolated",
             "keyed",
             &["policy", "capacity", "shutdown"],
         ),
@@ -653,7 +658,12 @@ mod physical {
         let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
         let (explain, compiled) = in_the_boot_frame(&plan);
         assert_eq!(*compiled.plan, plan);
-        assert!(compiled.logical_rewrites().is_empty());
+        // R5b pushes the post-aggregation filter into aggregation: it changes programs, not the plan, and its record
+        // is listed with the logical ones, before the decisions'.
+        assert_eq!(
+            records(compiled.logical_rewrites()),
+            vec![(RewriteId::R5b, true, strings(&["dsd_agg", "dsd_post_agg_filter"]))]
+        );
         let policy = strings(&[
             "metrics_policy",
             "metrics_routing_filter_0",
@@ -669,7 +679,7 @@ mod physical {
             ]
         );
         let text = explain.to_text();
-        let section = &text[text.find("rewrites (2)\n").expect("the section is rendered")..];
+        let section = &text[text.find("rewrites (3)\n").expect("the section is rendered")..];
         let headers = section
             .lines()
             .filter(|line| line.starts_with("  R"))
@@ -677,6 +687,7 @@ mod physical {
         assert_eq!(
             headers,
             vec![
+                "  R5b applied: dsd_agg, dsd_post_agg_filter",
                 "  R3 applied: mrf_metrics_gateway",
                 "  R4 applied: metrics_policy, metrics_routing_filter_0, metrics_routing_filter_1, \
                  mrf_metrics_gateway, af_metrics_gateway",
@@ -693,7 +704,8 @@ mod physical {
 
         // In pipeline order: R3 folds the canary switch; R5a moves the primary path's filter above the tag
         // projection; R6 hoists the five `debug` filters above the fan-out as one copy; R7 reorders the moved filter's
-        // predicate. A second pass finds nothing more: the hoisted copy cannot cross host tags, which write tags.
+        // predicate. A second pass finds nothing more: the hoisted copy cannot cross host tags, which write tags. Then
+        // R5b, on the plan the logical rewrites left, pushes the post-aggregation filter into aggregation.
         let logical = records(compiled.logical_rewrites());
         let ids = logical
             .iter()
@@ -706,6 +718,7 @@ mod physical {
                 (RewriteId::R5a, true),
                 (RewriteId::R6, true),
                 (RewriteId::R7, true),
+                (RewriteId::R5b, true),
             ]
         );
         assert_eq!(logical[0].2, strings(&["policy/canary", "policy/canary_dropped"]));
@@ -751,7 +764,7 @@ mod physical {
             vec![(RewriteId::R3, true), (RewriteId::R4, true)]
         );
         assert_eq!(decision[0].2, strings(&["mrf_metrics_gateway"]));
-        assert_eq!(explain.rewrites.as_ref().unwrap().len(), 6);
+        assert_eq!(explain.rewrites.as_ref().unwrap().len(), 7);
     }
 
     #[test]
@@ -771,32 +784,30 @@ mod physical {
             .iter()
             .map(|fixed| (fixed.node.to_string(), fixed.boundary.as_str(), fixed.input.clone()))
             .collect::<Vec<_>>();
-        assert_eq!(fixed.len(), 10);
+        // Aggregation runs in its isolation slot, not in a fixed component.
+        assert_eq!(fixed.len(), 9);
         assert_eq!(fixed[0], ("dsd_in".to_string(), "io_host", None));
         assert_eq!(
-            fixed[1],
-            (
-                "dsd_agg".to_string(),
-                "opaque_host",
-                Some("dsd_no_agg_split_region.dsd_agg".to_string())
-            )
-        );
-        assert_eq!(
-            fixed[8],
+            fixed[7],
             (
                 "mrf_metrics_gateway".to_string(),
                 "opaque_host",
                 Some("metrics_enrich.mrf_metrics_gateway".to_string())
             )
         );
-        assert_eq!(physical.fixed[1].admission_points[0].mode, "readmit");
+        // The DogStatsD source's point feeds aggregation's state; the gateways' re-admit what they emit.
+        assert!(physical.fixed[0].admission_points[0].feeds_state);
+        assert_eq!(physical.fixed[7].admission_points[0].mode, "readmit");
         assert_eq!(
-            physical.fixed[1].admission_points[0].to.as_deref(),
-            Some("dsd_post_agg_filter_region")
+            physical.fixed[7].admission_points[0].to.as_deref(),
+            Some("output mrf_metrics_encode")
         );
         assert_eq!(
-            physical.fixed[8].admission_points[0].to.as_deref(),
-            Some("output mrf_metrics_encode")
+            physical.slots[3].isolation,
+            Some(crate::explain::IsolationEntry {
+                output_point: 9,
+                upstream: vec![0],
+            })
         );
 
         let idle = |slot: usize| {
@@ -806,8 +817,9 @@ mod physical {
                 .map(|exit| exit.idle)
                 .collect::<Vec<_>>()
         };
-        // Every slot but enrichment has an exit to the next one and idle exits to every output; enrichment to its
-        // primary output and the four gateways, and idle ones to the gateways' outputs.
+        // Every fused slot but enrichment has an exit to the next one and idle exits to every output; aggregation's
+        // isolation slot only its exit to the post-aggregation filter; enrichment to its primary output and the four
+        // gateways, and idle ones to the gateways' outputs.
         let names = physical.slots.iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>();
         assert_eq!(
             names,
@@ -815,6 +827,7 @@ mod physical {
                 "dsd_pre_aggregation",
                 "dsd_prefix_filter_region",
                 "dsd_no_agg_split_region",
+                "dsd_agg",
                 "dsd_post_agg_filter_region",
                 "metrics_enrich"
             ]
@@ -824,24 +837,25 @@ mod physical {
             exits.extend(vec![true; idle]);
             exits
         };
-        let all_idle = (0..5).map(idle).collect::<Vec<_>>();
+        let all_idle = (0..6).map(idle).collect::<Vec<_>>();
         assert_eq!(
             all_idle,
             vec![
                 busy_then_idle(1, 6),
                 busy_then_idle(1, 6),
                 busy_then_idle(2, 6),
+                busy_then_idle(1, 0),
                 busy_then_idle(2, 5),
                 busy_then_idle(5, 4),
             ]
         );
-        assert_eq!(physical.slots[4].entries.len(), 5);
-        assert_eq!(physical.slots[4].entries[4].key, "entry 0");
+        assert_eq!(physical.slots[5].entries.len(), 5);
+        assert_eq!(physical.slots[5].entries[4].key, "entry 0");
 
-        // 10 admission points (4 of them direct edges to encoders) and 7 + 7 + 8 + 7 + 9 exits.
+        // 9 admission points (4 of them direct edges to encoders) and 7 + 7 + 8 + 1 + 7 + 9 exits.
         assert_eq!(physical.edges.len(), 48);
         let kinds = |kind: &str| physical.edges.iter().filter(|edge| edge.kind == kind).count();
-        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (6, 4, 38));
+        assert_eq!((kinds("admission"), kinds("direct"), kinds("exit")), (5, 4, 39));
 
         assert_eq!(physical.fusion.len(), 30);
         let separated = physical
@@ -954,19 +968,22 @@ mod physical {
         ends.sort();
         assert_eq!(dogstatsd.ends, ends);
 
-        let aggregated = segment(1);
-        assert_eq!(aggregated.mode, "readmit");
+        // Aggregation's time-driven output is stamped anew at its isolation slot's output point, after every fixed
+        // component's points.
+        let aggregated = segment(9);
+        assert_eq!(aggregated.mode, "time-driven");
+        assert_eq!(aggregated.from.to_string(), "dsd_agg.out");
         assert_eq!(aggregated.nodes, ids(&enrich));
         assert_eq!(
             aggregated.ends,
             gateways_and(&["dd_metrics_encode", "dsd_client_telemetry"])
         );
 
-        let otlp = segment(2);
+        let otlp = segment(1);
         assert_eq!(otlp.nodes, ids(&enrich[5..]));
         assert_eq!(otlp.ends, gateways_and(&["dd_metrics_encode"]));
 
-        let mirrored = segment(8);
+        let mirrored = segment(7);
         assert!(mirrored.slots.is_empty());
         assert_eq!(mirrored.nodes, ids(&["mrf_metrics_gateway_out"]));
         assert_eq!(mirrored.ends, strings(&["output mrf_metrics_encode"]));

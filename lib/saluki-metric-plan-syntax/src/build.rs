@@ -134,6 +134,14 @@ pub(crate) fn build(source: &str, policy: Policy) -> Result<(PolicyArtifact, Spa
                 }
             },
             ArtifactPortRef::Node { node, port } => (node.to_string(), port.clone()),
+            // The parser reads no edge from an exit: it reports one as a syntax error.
+            ArtifactPortRef::Exit(_) => {
+                builder.errors.push(Error::new(
+                    edge.from_span,
+                    "an edge cannot leave a scope's exit".to_string(),
+                ));
+                continue;
+            }
         };
         let Some(to) = builder.target(&parent, &port, edge.target) else {
             continue;
@@ -352,6 +360,7 @@ impl Builder<'_> {
         let (op, params, output_span, span, what) = match target {
             Target::Node { id, port, span } => return Some(PendingTarget::Node { id, port, span }),
             Target::Input { name, .. } => return Some(PendingTarget::Resolved(ArtifactPortRef::Input(name))),
+            Target::Exit { name, .. } => return Some(PendingTarget::Resolved(ArtifactPortRef::Exit(name))),
             Target::Emit {
                 output,
                 output_span,

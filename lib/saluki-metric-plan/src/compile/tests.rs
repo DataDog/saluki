@@ -156,10 +156,15 @@ const POST_AGGREGATION: [(&str, &[&str]); 2] = [
     ),
 ];
 
+/// Aggregation's isolation slot: a declared isolation fence runs alone, in a slot named after its node, which costs
+/// nothing in R1's model (it never fuses).
+const AGGREGATION: (&str, &[&str]) = ("dsd_agg", &["dsd_agg"]);
+
 /// The slots of the stage 3 default program, with their nodes, in slot order.
 fn designed_slots() -> Vec<(String, Vec<NodeId>)> {
     PRE_AGGREGATION
         .iter()
+        .chain([&AGGREGATION])
         .chain(&POST_AGGREGATION)
         .map(|(name, nodes)| (name.to_string(), ids(nodes)))
         .collect()
@@ -173,9 +178,8 @@ fn slots_of(frame: &Frame) -> Vec<(String, Vec<NodeId>)> {
         .collect()
 }
 
-const FIXED: [&str; 10] = [
+const FIXED: [&str; 9] = [
     "dsd_in",
-    "dsd_agg",
     "otlp_in",
     "checks_ipc_in",
     "liveness_in",
@@ -223,46 +227,53 @@ fn enrich_exits() -> Vec<(String, FrameTarget)> {
 }
 
 /// The admission points of either default program: every output port of every fence, in plan order, with where its
-/// physical edge leads. Both programs have five slots, and the same two after aggregation.
+/// physical edge leads. Both programs have six slots: three before aggregation, aggregation's isolation slot, and the
+/// same two after it. Aggregation runs in a region, so it has no admission point: its time-driven output is stamped
+/// at its slot's output point, an ID after every fixed component's, in headers only.
 fn expected_admission_points() -> Vec<(u32, &'static str, &'static str, AdmissionMode, Option<FrameTarget>)> {
     use AdmissionMode::{Admit, Readmit};
     vec![
         (0, "dsd_in", "metrics", Admit, Some(to_slot(0))),
-        (1, "dsd_agg", "out", Readmit, Some(to_slot(3))),
-        (2, "otlp_in", "metrics", Admit, Some(to_slot(4))),
-        (3, "checks_ipc_in", "metrics", Admit, Some(to_slot(4))),
-        (4, "liveness_in", "metrics", Admit, Some(to_slot(4))),
-        (5, "trace_sampler", "metrics", Admit, Some(to_slot(4))),
+        (1, "otlp_in", "metrics", Admit, Some(to_slot(5))),
+        (2, "checks_ipc_in", "metrics", Admit, Some(to_slot(5))),
+        (3, "liveness_in", "metrics", Admit, Some(to_slot(5))),
+        (4, "trace_sampler", "metrics", Admit, Some(to_slot(5))),
         // The gateways' outputs connect straight to their encoders: their `emit`s run in no region.
         (
-            6,
+            5,
             "metrics_routing_filter_0",
             "out",
             Readmit,
             Some(to_output("metrics_routing_encode_0")),
         ),
         (
-            7,
+            6,
             "metrics_routing_filter_1",
             "out",
             Readmit,
             Some(to_output("metrics_routing_encode_1")),
         ),
         (
-            8,
+            7,
             "mrf_metrics_gateway",
             "out",
             Readmit,
             Some(to_output("mrf_metrics_encode")),
         ),
         (
-            9,
+            8,
             "af_metrics_gateway",
             "out",
             Readmit,
             Some(to_output("af_metrics_encode")),
         ),
     ]
+}
+
+/// The exit of aggregation's isolation slot in either default program: only its boot edge's target, the
+/// post-aggregation filter's slot. An isolation slot has no idle exits to outputs.
+fn aggregation_exits() -> Vec<(String, FrameTarget)> {
+    named(&[("dsd_post_agg_filter_region", to_slot(4))])
 }
 
 fn admission_points(frame: &Frame) -> Vec<(u32, String, String, AdmissionMode, Option<FrameTarget>)> {
@@ -298,24 +309,39 @@ fn the_default_programs_frame_has_the_designed_slots_and_fixed_components() {
     // The listener filterlist (one intake-name leaf, 20 ns) and the post-aggregation filter (the kind and one
     // intake-name leaf, 21 ns) cost less than `MEMO_COST_FLOOR`, so R1 prices them evaluated, as regions run them: the
     // prefix filter's slot costs 90 + 20 ns, and the post-aggregation filter's 21 ns beside its fan-out's copy (15 ns).
+    // Aggregation's isolation slot is outside R1's model.
     let costs = frame.slots().iter().map(|slot| slot.cost).collect::<Vec<_>>();
-    assert_eq!(costs, vec![65, 110, 25, 36, 90]);
+    assert_eq!(costs, vec![65, 110, 25, 0, 36, 90]);
     let fixed_nodes = frame.fixed().iter().map(|fixed| fixed.node.clone()).collect::<Vec<_>>();
     assert_eq!(fixed_nodes, ids(&FIXED));
     let outputs = frame.outputs().iter().map(|decl| decl.id.clone()).collect::<Vec<_>>();
     assert_eq!(outputs, OUTPUTS.map(output).to_vec());
 
-    // Sources are I/O hosts; aggregation and the gateways are opaque hosts.
+    // Sources are I/O hosts and the gateways opaque hosts; aggregation runs in its isolation slot, whose watermark is
+    // the DogStatsD source's admission point's, the only point upstream of it, which therefore feeds state.
     let boundaries = frame
         .fixed()
         .iter()
         .map(|fixed| (fixed.node.to_string(), fixed.boundary, fixed.state_owner))
         .collect::<Vec<_>>();
     assert_eq!(
+        frame.slots()[3].kind,
+        SlotKind::Isolation {
+            output_point: point(9),
+            upstream: vec![point(0)],
+        }
+    );
+    let feeds_state = frame
+        .admission_points()
+        .iter()
+        .filter(|point| point.feeds_state)
+        .map(|point| point.id)
+        .collect::<Vec<_>>();
+    assert_eq!(feeds_state, vec![point(0)]);
+    assert_eq!(
         boundaries,
         vec![
             ("dsd_in".to_string(), Boundary::IoHost, false),
-            ("dsd_agg".to_string(), Boundary::OpaqueHost, true),
             ("otlp_in".to_string(), Boundary::IoHost, false),
             ("checks_ipc_in".to_string(), Boundary::IoHost, false),
             ("liveness_in".to_string(), Boundary::IoHost, false),
@@ -328,7 +354,7 @@ fn the_default_programs_frame_has_the_designed_slots_and_fixed_components() {
     );
     assert_eq!(admission_points(&frame), owned(expected_admission_points()));
 
-    // What feeds each fixed component: aggregation and the gateways are fed by exits of the slots before them.
+    // What feeds each fixed component: the gateways are fed by exits of enrichment's slot.
     let inputs = frame
         .fixed()
         .iter()
@@ -338,15 +364,14 @@ fn the_default_programs_frame_has_the_designed_slots_and_fixed_components() {
         inputs,
         vec![
             ("dsd_in".to_string(), None),
-            ("dsd_agg".to_string(), Some(exit_of(2, 0))),
             ("otlp_in".to_string(), None),
             ("checks_ipc_in".to_string(), None),
             ("liveness_in".to_string(), None),
             ("trace_sampler".to_string(), None),
-            ("metrics_routing_filter_0".to_string(), Some(exit_of(4, 1))),
-            ("metrics_routing_filter_1".to_string(), Some(exit_of(4, 2))),
-            ("mrf_metrics_gateway".to_string(), Some(exit_of(4, 3))),
-            ("af_metrics_gateway".to_string(), Some(exit_of(4, 4))),
+            ("metrics_routing_filter_0".to_string(), Some(exit_of(5, 1))),
+            ("metrics_routing_filter_1".to_string(), Some(exit_of(5, 2))),
+            ("mrf_metrics_gateway".to_string(), Some(exit_of(5, 3))),
+            ("af_metrics_gateway".to_string(), Some(exit_of(5, 4))),
         ]
     );
     for (index, fixed) in frame.fixed().iter().enumerate() {
@@ -358,19 +383,17 @@ fn the_default_programs_frame_has_the_designed_slots_and_fixed_components() {
 fn the_default_programs_slots_have_an_exit_for_every_edge_leaving_them_and_every_output_downstream() {
     let frame = frame_of(&stage3_default_program());
     let slots = frame.slots();
-    assert_eq!(slots.len(), 5);
+    assert_eq!(slots.len(), 6);
 
-    // Each slot of the pre-aggregation pipeline leaves to the next, and its last to aggregation and, for timestamped
-    // points, to the post-aggregation merge; every output is downstream of each, so each has an idle exit to every
-    // output.
+    // Each slot of the pre-aggregation pipeline leaves to the next, and its last to aggregation's isolation slot and,
+    // for timestamped points, to the post-aggregation merge; every output is downstream of each, so each has an idle
+    // exit to every output. Aggregation's isolation slot has only its boot edge's exit.
     let expected = [
         then_every_output(&[("dsd_prefix_filter_region", to_slot(1))]),
         then_every_output(&[("dsd_no_agg_split_region", to_slot(2))]),
-        then_every_output(&[
-            ("dsd_agg", fixed("dsd_agg")),
-            ("dsd_post_agg_filter_region", to_slot(3)),
-        ]),
-        post_aggregation_exits(4),
+        then_every_output(&[("dsd_agg", to_slot(3)), ("dsd_post_agg_filter_region", to_slot(4))]),
+        aggregation_exits(),
+        post_aggregation_exits(5),
         enrich_exits(),
     ];
     for (slot, exits_expected) in slots.iter().zip(&expected) {
@@ -380,6 +403,22 @@ fn the_default_programs_slots_have_an_exit_for_every_edge_leaving_them_and_every
         }
     }
 
+    // The exits on the one path from the DogStatsD source's point to aggregation carry its progress: header-only
+    // batches that move aggregation's watermark when a region forwards no data.
+    let progress = slots
+        .iter()
+        .flat_map(|slot| {
+            slot.exits
+                .iter()
+                .filter(|exit| !exit.progress_points.is_empty())
+                .map(move |exit| (slot.id.get(), exit.index.get(), exit.progress_points.clone()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        progress,
+        vec![(0, 0, vec![point(0)]), (1, 0, vec![point(0)]), (2, 0, vec![point(0)])]
+    );
+
     let inputs = slots.iter().map(|slot| slot.inputs.clone()).collect::<Vec<_>>();
     assert_eq!(
         inputs,
@@ -387,13 +426,14 @@ fn the_default_programs_slots_have_an_exit_for_every_edge_leaving_them_and_every
             vec![FrameSource::Admission(point(0))],
             vec![exit_of(0, 0)],
             vec![exit_of(1, 0)],
-            vec![FrameSource::Admission(point(1)), exit_of(2, 1)],
+            vec![exit_of(2, 0)],
+            vec![exit_of(2, 1), exit_of(3, 0)],
             vec![
+                FrameSource::Admission(point(1)),
                 FrameSource::Admission(point(2)),
                 FrameSource::Admission(point(3)),
                 FrameSource::Admission(point(4)),
-                FrameSource::Admission(point(5)),
-                exit_of(3, 1),
+                exit_of(4, 1),
             ],
         ]
     );
@@ -419,8 +459,15 @@ fn the_default_programs_slots_have_an_exit_for_every_edge_leaving_them_and_every
         frame.describe_source(&exit_of(2, 1)),
         "dsd_no_agg_split_region.dsd_post_agg_filter_region"
     );
-    assert_eq!(frame.describe_source(&FrameSource::Admission(point(1))), "dsd_agg.out");
-    assert_eq!(frame.describe_target(&to_slot(4)), "metrics_enrich");
+    assert_eq!(
+        frame.describe_source(&exit_of(3, 0)),
+        "dsd_agg.dsd_post_agg_filter_region"
+    );
+    assert_eq!(
+        frame.describe_source(&FrameSource::Admission(point(1))),
+        "otlp_in.metrics"
+    );
+    assert_eq!(frame.describe_target(&to_slot(5)), "metrics_enrich");
 }
 
 #[test]
@@ -471,23 +518,19 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
     assert_eq!(verdict("dsd_no_agg_split.default", "dsd_tag_filterlist.in"), fused(2));
     assert_eq!(
         verdict("dsd_post_agg_filter_fanout.1", "metrics_enrich_in.0"),
-        pipelined(3, 4)
+        pipelined(4, 5)
     );
-    assert_eq!(
-        verdict("dsd_tag_filterlist.out", "dsd_agg.in"),
-        fence("dsd_agg", Boundary::OpaqueHost)
-    );
-    assert_eq!(
-        verdict("dsd_agg.out", "dsd_post_agg_filter_in.0"),
-        fence("dsd_agg", Boundary::OpaqueHost)
-    );
+    // Both edges of aggregation cross its isolation fence, into and out of its isolation slot.
+    let isolation = FusionVerdict::Isolation { slot: SlotId::new(3) };
+    assert_eq!(verdict("dsd_tag_filterlist.out", "dsd_agg.in"), isolation);
+    assert_eq!(verdict("dsd_agg.out", "dsd_post_agg_filter_in.0"), isolation);
     // The passthrough is between synchronous nodes, but aggregation's output also reaches the merge, so fusing them
     // would form a cycle through `dsd_agg`.
     assert_eq!(
         verdict("dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
         FusionVerdict::Separated {
             from: SlotId::new(2),
-            to: SlotId::new(3),
+            to: SlotId::new(4),
             through: Some(id("dsd_agg")),
         }
     );
@@ -495,7 +538,7 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
         verdict("otlp_in.metrics", "metrics_enrich_in.1"),
         fence("otlp_in", Boundary::IoHost)
     );
-    assert_eq!(verdict("metrics_policy.0", "metrics_policy_0.in"), fused(4));
+    assert_eq!(verdict("metrics_policy.0", "metrics_policy_0.in"), fused(5));
     assert_eq!(
         verdict("metrics_policy.3", "mrf_metrics_gateway.in"),
         fence("mrf_metrics_gateway", Boundary::OpaqueHost)
@@ -509,7 +552,8 @@ fn the_default_programs_fusion_decisions_name_each_edges_fence_or_slot() {
 
     assert_eq!(frame.site(&id("dsd_in")), Some(Site::Fixed));
     assert_eq!(frame.site(&id("dsd_tag_filterlist")), Some(Site::Slot(SlotId::new(2))));
-    assert_eq!(frame.site(&id("metrics_policy_0")), Some(Site::Slot(SlotId::new(4))));
+    assert_eq!(frame.site(&id("dsd_agg")), Some(Site::Slot(SlotId::new(3))));
+    assert_eq!(frame.site(&id("metrics_policy_0")), Some(Site::Slot(SlotId::new(5))));
     assert_eq!(frame.site(&id("af_metrics_gateway_out")), Some(Site::Direct));
     assert_eq!(frame.site(&id("nonexistent")), None);
 }
@@ -524,6 +568,7 @@ fn without_the_no_aggregation_pipeline_the_slots_are_joined_only_through_aggrega
         ("dsd_pre_aggregation".to_string(), ids(&["dsd_enrich"])),
         ("dsd_prefix_filter_region".to_string(), ids(PRE_AGGREGATION[1].1)),
         ("dsd_tag_filterlist_region".to_string(), ids(&["dsd_tag_filterlist"])),
+        (AGGREGATION.0.to_string(), ids(AGGREGATION.1)),
         (
             "dsd_post_agg_filter_region".to_string(),
             ids(&POST_AGGREGATION[0].1[1..]),
@@ -535,17 +580,12 @@ fn without_the_no_aggregation_pipeline_the_slots_are_joined_only_through_aggrega
     assert_eq!(fixed_nodes, ids(&FIXED));
     assert_eq!(admission_points(&frame), owned(expected_admission_points()));
 
-    assert_eq!(
-        exits(&frame.slots()[2]),
-        then_every_output(&[("dsd_agg", fixed("dsd_agg"))])
-    );
-    assert_eq!(exits(&frame.slots()[3]), post_aggregation_exits(4));
-    assert_eq!(exits(&frame.slots()[4]), enrich_exits());
-    assert_eq!(frame.slots()[3].inputs, vec![FrameSource::Admission(point(1))]);
-    assert_eq!(
-        frame.fixed_component(&id("dsd_agg")).unwrap().input,
-        Some(exit_of(2, 0))
-    );
+    assert_eq!(exits(&frame.slots()[2]), then_every_output(&[("dsd_agg", to_slot(3))]));
+    assert_eq!(exits(&frame.slots()[3]), aggregation_exits());
+    assert_eq!(exits(&frame.slots()[4]), post_aggregation_exits(5));
+    assert_eq!(exits(&frame.slots()[5]), enrich_exits());
+    assert_eq!(frame.slots()[3].inputs, vec![exit_of(2, 0)]);
+    assert_eq!(frame.slots()[4].inputs, vec![exit_of(3, 0)]);
 }
 
 #[test]
@@ -553,7 +593,7 @@ fn with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as
     let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
     let frame = frame_of(&plan);
     let fixed_nodes = frame.fixed().iter().map(|fixed| fixed.node.clone()).collect::<Vec<_>>();
-    assert_eq!(fixed_nodes, ids(&FIXED[..6]));
+    assert_eq!(fixed_nodes, ids(&FIXED[..5]));
     assert!(frame.edges().iter().all(|edge| !matches!(
         (edge.from, &edge.to),
         (FrameSource::Admission(_), FrameTarget::Output(_))
@@ -575,11 +615,11 @@ fn with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as
         enrichment.extend(gateway(node));
     }
     let mut expected = designed_slots();
-    expected[4].1 = enrichment;
+    expected[5].1 = enrichment;
     assert_eq!(slots_of(&frame), expected);
     assert_eq!(frame.cost_budget(), 110);
     let costs = frame.slots().iter().map(|slot| slot.cost).collect::<Vec<_>>();
-    assert_eq!(costs, vec![65, 110, 25, 36, 105]);
+    assert_eq!(costs, vec![65, 110, 25, 0, 36, 105]);
 
     let outputs = [
         "dd_metrics_encode",
@@ -589,7 +629,7 @@ fn with_gateways_as_routing_operators_enrichment_runs_the_whole_policy_region_as
         "af_metrics_encode",
     ];
     let expected = outputs.map(|output_id| (output_id, to_output(output_id)));
-    assert_eq!(exits(&frame.slots()[4]), named(&expected));
+    assert_eq!(exits(&frame.slots()[5]), named(&expected));
 }
 
 /// A plan of sources, opaque hosts, `host_enrichment` maps, routing operators, and one output `out`, written as
@@ -1129,14 +1169,15 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
             .collect::<Vec<_>>()
     };
     let admission = |id| (EntryKey::Admission(point(id)), FrameSource::Admission(point(id)));
-    let from_region = |slot, exit, from: &str, input: &str| {
+    let from_region_as = |entry, slot, exit, from: &str, input: &str| {
         (
-            EntryKey::Region(EntryId::new(0)),
+            EntryKey::Region(EntryId::new(entry)),
             exit_of(slot, exit),
             from.to_string(),
             input.to_string(),
         )
     };
+    let from_region = |slot, exit, from: &str, input: &str| from_region_as(0, slot, exit, from, input);
 
     let (key, source) = admission(0);
     assert_eq!(
@@ -1157,35 +1198,36 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
             "dsd_no_agg_split.in"
         )]
     );
-    // The post-aggregation filter's region: from aggregation, and the passthrough from the pipeline's last region.
-    let (key, source) = admission(1);
+    // Aggregation's isolation slot: from the pipeline's last region.
     assert_eq!(
         entries(3),
+        vec![from_region(2, 0, "dsd_tag_filterlist.out", "dsd_agg.in")]
+    );
+    // The post-aggregation filter's region: from aggregation's isolation slot, and the passthrough from the pipeline's
+    // last region, its entries 0 and 1.
+    assert_eq!(
+        entries(4),
         vec![
-            (
-                key,
-                source,
-                "dsd_agg.out".to_string(),
-                "dsd_post_agg_filter_in.0".to_string()
-            ),
-            from_region(2, 1, "dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
+            from_region(3, 0, "dsd_agg.out", "dsd_post_agg_filter_in.0"),
+            from_region_as(1, 2, 1, "dsd_no_agg_split.passthrough", "dsd_post_agg_filter_in.1"),
         ]
     );
     let mut expected = Vec::new();
     for (id, from, input) in [
-        (2, "otlp_in.metrics", "metrics_enrich_in.1"),
-        (3, "checks_ipc_in.metrics", "metrics_enrich_in.2"),
-        (4, "liveness_in.metrics", "metrics_enrich_in.3"),
-        (5, "trace_sampler.metrics", "metrics_enrich_in.4"),
+        (1, "otlp_in.metrics", "metrics_enrich_in.1"),
+        (2, "checks_ipc_in.metrics", "metrics_enrich_in.2"),
+        (3, "liveness_in.metrics", "metrics_enrich_in.3"),
+        (4, "trace_sampler.metrics", "metrics_enrich_in.4"),
     ] {
         let (key, source) = admission(id);
         expected.push((key, source, from.to_string(), input.to_string()));
     }
-    expected.push(from_region(3, 1, "dsd_post_agg_filter_fanout.1", "metrics_enrich_in.0"));
-    assert_eq!(entries(4), expected);
+    expected.push(from_region(4, 1, "dsd_post_agg_filter_fanout.1", "metrics_enrich_in.0"));
+    assert_eq!(entries(5), expected);
 
-    // Each slot uses the exits its edges leave by: to the next region, to aggregation, to the client telemetry tap,
-    // and from enrichment to the primary output and the four gateways. Every other exit is idle.
+    // Each slot uses the exits its edges leave by: to the next region, to aggregation, from aggregation to the
+    // post-aggregation filter, to the client telemetry tap, and from enrichment to the primary output and the four
+    // gateways. Every other exit is idle.
     let used = |slot: usize| {
         placement.slots()[slot]
             .exits_used
@@ -1193,14 +1235,14 @@ fn the_default_programs_entries_and_exits_follow_its_edges() {
             .map(|exit| exit.get())
             .collect::<Vec<_>>()
     };
-    let all_used = (0..5).map(used).collect::<Vec<_>>();
+    let all_used = (0..6).map(used).collect::<Vec<_>>();
     assert_eq!(
         all_used,
-        vec![vec![0], vec![0], vec![0, 1], vec![0, 1], vec![0, 1, 2, 3, 4]]
+        vec![vec![0], vec![0], vec![0, 1], vec![0], vec![0, 1], vec![0, 1, 2, 3, 4]]
     );
     assert!(placement.is_idle(SlotId::new(0), ExitIndex::new(1)));
-    assert!(!placement.is_idle(SlotId::new(4), ExitIndex::new(4)));
-    assert!(placement.is_idle(SlotId::new(4), ExitIndex::new(8)));
+    assert!(!placement.is_idle(SlotId::new(5), ExitIndex::new(4)));
+    assert!(placement.is_idle(SlotId::new(5), ExitIndex::new(8)));
 }
 
 /// Applies `edit` to the JSON of the stage 3 default program.
@@ -1242,14 +1284,14 @@ fn removing_a_branch_leaves_its_exit_and_host_idle() {
     assert_eq!(placement.idle_fixed(), &[id("af_metrics_gateway")]);
     // Enrichment's exit 4 led to the autoscaling failover gateway.
     assert_eq!(
-        placement.slots()[4]
+        placement.slots()[5]
             .exits_used
             .iter()
             .map(|exit| exit.get())
             .collect::<Vec<_>>(),
         vec![0, 1, 2, 3]
     );
-    assert!(placement.is_idle(SlotId::new(4), ExitIndex::new(4)));
+    assert!(placement.is_idle(SlotId::new(5), ExitIndex::new(4)));
 }
 
 #[test]
@@ -1274,8 +1316,8 @@ fn removing_a_branch_of_routing_operators_leaves_its_output_exit_idle() {
     let plan = Plan::from_value(value).unwrap();
     let placement = placed(&plan, &frame).unwrap();
     // `mrf_metrics_encode` is the enrichment slot's exit 3, where the Multi-Region Failover gateway runs.
-    assert_eq!(exits(&frame.slots()[4])[3].0, "mrf_metrics_encode");
-    assert!(placement.is_idle(SlotId::new(4), ExitIndex::new(3)));
+    assert_eq!(exits(&frame.slots()[5])[3].0, "mrf_metrics_encode");
+    assert!(placement.is_idle(SlotId::new(5), ExitIndex::new(3)));
     assert!(placement.idle_fixed().is_empty());
 }
 
@@ -1374,8 +1416,13 @@ fn a_new_fence_crossing_is_rejected_naming_resource_generations() {
         ]
     );
 
-    // OTLP metrics enter the enrichment slot; sending them through the DogStatsD chain needs a new physical edge.
+    // OTLP metrics enter the enrichment slot; sending them through the DogStatsD chain needs a new physical edge. (The
+    // DogStatsD scope is fed only by DogStatsD, so the edit drops it.)
     let rerouted = edited(|value| {
+        value["scopes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("dogstatsd_pre_aggregation");
         value["nodes"].as_array_mut().unwrap().push(json!({
             "id": "dsd_enrich_in", "op": "merge", "params": {"inputs": 2}, "provenance": {"native": "dsd_enrich"}
         }));
@@ -1421,20 +1468,14 @@ fn host_components_keep_their_boot_configuration() {
     let frame = frame_of(&stage3_default_program());
     let catalog = default_program_catalog();
 
-    // Aggregation runs in its host component until it becomes a kernel: changing it needs state transitions.
+    // Aggregation is no host component: it runs as a kernel in its isolation slot, so a change of its parameters
+    // places as the boot plan does, and the installer classifies it as a state transition.
     let wider = edited(|value| {
         node_mut(value, "dsd_agg")["params"]["flush_interval"]["resolved"] = json!("30s");
     });
-    let (problems, capabilities) = unplaceable(&wider, &catalog, &frame);
-    assert_eq!(capabilities, vec![MissingCapability::State]);
     assert_eq!(
-        problems,
-        vec![
-            "node `dsd_agg`: its operator or parameters differ from the boot plan's: changing a state owner that runs \
-             in a host component, which keeps the configuration it was built with, requires stage 6 state \
-             transitions"
-                .to_string()
-        ]
+        placed(&wider, &frame).unwrap(),
+        placed(&stage3_default_program(), &frame).unwrap()
     );
 
     // A gateway is an opaque host: reconfiguring it needs resource generations.
@@ -1536,10 +1577,14 @@ fn decide(decision: u16, input: u16, targets: Vec<Route>) -> Step {
 }
 
 fn to_next(register: u16, exit: u16) -> Step {
+    to_entry(register, exit, 0)
+}
+
+fn to_entry(register: u16, exit: u16, entry: u16) -> Step {
     Step::Exit {
         register: reg(register),
         exit: ExitIndex::new(exit),
-        entry: Some(EntryId::new(0)),
+        entry: Some(EntryId::new(entry)),
     }
 }
 
@@ -1605,7 +1650,8 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
                 ],
                 2
             ),
-            // Passthrough points leave for the post-aggregation filter's region, carrying its entry for the merge.
+            // Passthrough points leave for the post-aggregation filter's region, carrying its entry for the merge's
+            // second input; the rest for aggregation's isolation slot, as its entry 0.
             (
                 EntryKey::Region(EntryId::new(0)),
                 "dsd_no_agg_split.in".to_string(),
@@ -1615,9 +1661,9 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
                         input: reg(0),
                         ports: vec![to(1), to(2)],
                     },
-                    to_next(2, 1),
+                    to_entry(2, 1, 1),
                     map(1, 1),
-                    exit(1, 0),
+                    to_next(1, 0),
                 ],
                 3
             ),
@@ -1631,17 +1677,80 @@ fn the_pre_aggregation_programs_map_split_and_hand_each_batch_to_the_next_region
 }
 
 #[test]
+fn aggregations_program_hands_each_batch_to_its_kernel_and_its_flushes_to_the_post_aggregation_filter() {
+    let plan = stage3_default_program();
+    let frame = frame_of(&plan);
+    let compiled = compiled(&plan, &frame);
+    let program = &compiled.programs[3];
+    assert_eq!(program.slot(), SlotId::new(3));
+
+    // One kernel, aggregation's, whose state is a lineage keyed by its window, with the default flush interval.
+    assert_eq!(kernel_nodes(program), vec![("dsd_agg".to_string(), "aggregate", 1)]);
+    let lineage = program.kernels()[0].lineage.as_ref().expect("a state owner's lineage");
+    assert_eq!(lineage.key.node, id("dsd_agg"));
+    assert_eq!(lineage.flush_interval, std::time::Duration::from_secs(15));
+    assert!(decision_nodes(program).is_empty());
+
+    // Batches from the pipeline's last region are a state step; what the kernel emits at its flush ticks enters the
+    // post-aggregation filter's region as its entry 0.
+    let entries = program
+        .entries()
+        .iter()
+        .map(|entry| (entry.key, entry.input.to_string(), entry.steps.clone(), entry.registers))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries,
+        vec![
+            (
+                EntryKey::Region(EntryId::new(0)),
+                "dsd_agg.in".to_string(),
+                vec![Step::State {
+                    kernel: KernelIndex::new(0),
+                    register: reg(0),
+                    params: StateParamsIndex::new(0),
+                }],
+                1
+            ),
+            (
+                EntryKey::StateOutput(KernelIndex::new(0)),
+                "dsd_agg.out".to_string(),
+                vec![to_next(0, 0)],
+                1
+            ),
+        ]
+    );
+
+    // R5b pushes the post-aggregation filter into it: its `true` port drops into `dsd_post_agg_filter_true`, and it
+    // judges every kind it emits but histograms' statistics.
+    let [state] = program.state_params() else {
+        panic!("one state parameter entry")
+    };
+    let site = state.pushed.as_ref().expect("the post-aggregation filter is pushed");
+    assert_eq!(
+        (&site.owner, &site.filter, site.drop_port.as_str(), &site.drop),
+        (
+            &id("dsd_agg"),
+            &id("dsd_post_agg_filter"),
+            "true",
+            &id("dsd_post_agg_filter_true")
+        )
+    );
+    assert!(site.drops_matching && !site.histograms);
+    assert_eq!(compiled.pushed_filters, vec![site.clone()]);
+}
+
+#[test]
 fn the_enrichment_program_has_one_entry_per_logical_input() {
     let plan = stage3_default_program();
     let frame = frame_of(&plan);
     let compiled = compiled(&plan, &frame);
-    let filter = &compiled.programs[3];
-    let program = &compiled.programs[4];
+    let filter = &compiled.programs[4];
+    let program = &compiled.programs[5];
 
     // The post-aggregation filter's region: no kernel; the filter and the client telemetry tap's copy, joined by an
-    // edge, are one decision, whose exits are the filter's `true` port and both ports of the copy. From aggregation,
-    // and from the passthrough, the whole slot: the merge before the filter is no step, since one batch only ever
-    // reaches one of its inputs.
+    // edge, are one decision, whose exits are the filter's `true` port and both ports of the copy. From aggregation's
+    // isolation slot, and from the passthrough, the whole slot: the merge before the filter is no step, since one batch
+    // only ever reaches one of its inputs.
     assert!(kernel_nodes(filter).is_empty());
     assert_eq!(
         decision_nodes(filter),
@@ -1686,13 +1795,13 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
         filter_entries,
         vec![
             (
-                EntryKey::Admission(point(1)),
+                EntryKey::Region(EntryId::new(0)),
                 "dsd_post_agg_filter_in.0".to_string(),
                 filtered.clone(),
                 3
             ),
             (
-                EntryKey::Region(EntryId::new(0)),
+                EntryKey::Region(EntryId::new(1)),
                 "dsd_post_agg_filter_in.1".to_string(),
                 filtered,
                 3
@@ -1731,10 +1840,10 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for (point_id, input) in [
-        (2, "metrics_enrich_in.1"),
-        (3, "metrics_enrich_in.2"),
-        (4, "metrics_enrich_in.3"),
-        (5, "metrics_enrich_in.4"),
+        (1, "metrics_enrich_in.1"),
+        (2, "metrics_enrich_in.2"),
+        (3, "metrics_enrich_in.3"),
+        (4, "metrics_enrich_in.4"),
     ] {
         expected.push((
             EntryKey::Admission(point(point_id)),
@@ -1758,10 +1867,10 @@ fn the_enrichment_program_has_one_entry_per_logical_input() {
         ..BatchHeader::default()
     };
     let found = |header: BatchHeader| program.entry_for(&header).map(|entry| entry.input.to_string());
-    assert_eq!(found(header(None, Some(2))), Some("metrics_enrich_in.1".to_string()));
-    assert_eq!(found(header(Some(0), Some(1))), Some("metrics_enrich_in.0".to_string()));
-    assert_eq!(found(header(Some(1), Some(1))), None);
-    assert_eq!(found(header(None, Some(1))), None);
+    assert_eq!(found(header(None, Some(1))), Some("metrics_enrich_in.1".to_string()));
+    assert_eq!(found(header(Some(0), Some(0))), Some("metrics_enrich_in.0".to_string()));
+    assert_eq!(found(header(Some(1), Some(0))), None);
+    assert_eq!(found(header(None, Some(0))), None);
     assert_eq!(found(header(None, None)), None);
 }
 

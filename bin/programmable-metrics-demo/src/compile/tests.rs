@@ -11,6 +11,7 @@ fn structural(export: &ExportBundle) -> CompileContext<'_> {
         export,
         default_program: None,
         active: None,
+        others: &[],
         revision: 1,
     }
 }
@@ -388,32 +389,33 @@ fn without_an_export_sources_are_parsed_but_not_checked() {
 }
 
 #[test]
-fn stateful_operators_are_reported_as_rejected_until_stage_6() {
+fn state_owners_are_checked_for_their_parameters_only() {
     let export = demo_export();
-    // Aggregation with its parameters missing: the missing parameters, and that it keeps state.
+    // Aggregation with its parameters missing: each missing parameter is reported, at the node. That it keeps state is
+    // no finding: ADP composes state owners, and placement decides where they run.
     let source = replaced(
         "  input.metrics -> metrics_policy\n",
         "  input.metrics -> rollup\n\n  node rollup = aggregate {\n    -> metrics_policy\n  }\n",
     );
     let (outcome, compiled) = compile(&source, Some(&structural(&export)));
     assert!(outcome.ok && compiled.is_some(), "{:#?}", outcome.diagnostics);
-    let stateful = outcome
+    assert!(!outcome.diagnostics.is_empty());
+    for diagnostic in &outcome.diagnostics {
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert_eq!(diagnostic.range.line, 6);
+        assert!(
+            diagnostic
+                .message
+                .starts_with("Node `rollup` (`aggregate`): parameter `")
+                && diagnostic.message.ends_with("`: missing required parameter"),
+            "{}",
+            diagnostic.message
+        );
+    }
+    assert!(outcome
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.message.contains("keeps state between batches"))
-        .collect::<Vec<_>>();
-    assert_eq!(stateful.len(), 1, "{:#?}", outcome.diagnostics);
-    assert_eq!(stateful[0].severity, Severity::Error);
-    assert_eq!(stateful[0].range.line, 6);
-    assert!(stateful[0]
-        .message
-        .contains("does not accept stateful operators in artifacts yet"));
-    // Stateless operators are not reported.
-    let (outcome, _) = compile(DEFAULT_SOURCE, Some(&structural(&export)));
-    assert!(!outcome
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.message.contains("keeps state")));
+        .any(|diagnostic| diagnostic.message.contains("parameter `window`")));
 }
 
 #[test]

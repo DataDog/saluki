@@ -77,6 +77,7 @@ impl FakeAdp {
                 stale_review: Some(false),
                 degraded: None,
                 live_generations: Some(1),
+                scopes: Default::default(),
             }),
         }
     }
@@ -252,7 +253,7 @@ async fn revoking_empties_the_snapshot_and_adp_returns_to_the_default_program() 
     poll(&channel, &mut adp).await;
     assert!(adp.active.is_some());
 
-    assert!(channel.revoke(2_000).unwrap());
+    assert!(channel.revoke(None, 2_000).unwrap());
     let body = poll(&channel, &mut adp).await;
     let response: PollResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(response.products.get(POLICY_PRODUCT), Some(&Vec::new()));
@@ -280,8 +281,8 @@ async fn revoking_empties_the_snapshot_and_adp_returns_to_the_default_program() 
     );
 
     // Revoking an empty snapshot changes nothing and records nothing.
-    assert!(channel.revoke(4_000).unwrap());
-    assert!(!channel.revoke(5_000).unwrap());
+    assert!(channel.revoke(None, 4_000).unwrap());
+    assert!(!channel.revoke(None, 5_000).unwrap());
     let actions = channel
         .view(10, None)
         .history
@@ -464,7 +465,7 @@ fn a_failed_store_write_changes_nothing_and_a_failed_history_line_does_not_undo_
     // The store file cannot be written: the publish fails and the store still serves revision 1.
     std::fs::create_dir(dir.path().join("store.json.tmp")).unwrap();
     assert!(store.publish(other_artifact(), None, None, 2_000).is_err());
-    assert!(store.revoke(2_000).is_err());
+    assert!(store.revoke(None, 2_000).is_err());
     assert_eq!(store.current(), Some(&first));
     assert_eq!(store.revision_counter(), 1);
     assert_eq!(store.snapshot(), vec![first.entry()]);
@@ -529,4 +530,138 @@ async fn the_acknowledgment_timeline_folds_polls_that_report_the_same_state() {
     // Most recent first.
     assert_eq!(timeline, [(3, Some("active".to_string()), Some(2)), (4, None, Some(1))]);
     assert!(view.timeline[0].first_ms <= view.timeline[0].last_ms);
+}
+
+/// An artifact of the pre-aggregation scope.
+fn pre_aggregation_artifact(prefix: &str) -> Value {
+    json!({
+        "ir_version": 1,
+        "scope": "dogstatsd_pre_aggregation",
+        "base": {"program_hash": format!("sha256:{}", "0".repeat(64))},
+        "nodes": [{"id": "keep", "op": "split", "params": {"predicate": {"name": {"prefix": prefix}}}}],
+        "edges": [{"from": "input.metrics", "to": "keep.in"}]
+    })
+}
+
+/// Returns the config IDs and revisions of the snapshot a poll gets.
+async fn served(channel: &StubChannel) -> Vec<(String, u64)> {
+    let (status, body) = post_poll(
+        channel,
+        serde_json::to_vec(&FakeAdp::new("adp-1").poll_request()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let response: PollResponse = serde_json::from_slice(&body).unwrap();
+    response.products[POLICY_PRODUCT]
+        .iter()
+        .map(|config| {
+            let envelope: Envelope = serde_json::from_str(&config.payload).unwrap();
+            (config.id.clone(), envelope.revision)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn each_scope_has_one_config_under_one_revision_counter() {
+    let dir = tempfile::tempdir().unwrap();
+    let channel = channel_in(dir.path());
+    channel.publish(artifact(), None, None, 1_000).unwrap();
+    let pre = channel
+        .publish(pre_aggregation_artifact("a."), None, None, 2_000)
+        .unwrap();
+    assert_eq!(
+        (pre.id.as_str(), pre.scope.as_str(), pre.revision),
+        ("demo-dogstatsd_pre_aggregation", "dogstatsd_pre_aggregation", 2)
+    );
+    // The snapshot holds one config per scope, in scope order.
+    assert_eq!(
+        served(&channel).await,
+        [
+            ("demo-dogstatsd_pre_aggregation".to_string(), 2),
+            ("demo".to_string(), 1)
+        ]
+    );
+    // A publish replaces its own scope's config, under the next revision of the one counter.
+    channel.publish(other_artifact(), None, None, 3_000).unwrap();
+    assert_eq!(
+        served(&channel).await,
+        [
+            ("demo-dogstatsd_pre_aggregation".to_string(), 2),
+            ("demo".to_string(), 3)
+        ]
+    );
+    let view = channel.view(10, None);
+    assert_eq!(view.current.as_ref().map(|current| current.revision), Some(3));
+    let configs = view
+        .configs
+        .iter()
+        .map(|config| (config.scope.as_str(), config.revision))
+        .collect::<Vec<_>>();
+    assert_eq!(configs, [("dogstatsd_pre_aggregation", 2), ("post_enrich", 3)]);
+
+    // Revoking one scope removes its config alone; revoking it again changes nothing.
+    assert!(channel.revoke(Some("dogstatsd_pre_aggregation"), 4_000).unwrap());
+    assert!(!channel.revoke(Some("dogstatsd_pre_aggregation"), 5_000).unwrap());
+    assert_eq!(served(&channel).await, [("demo".to_string(), 3)]);
+    // Revoking every scope empties the snapshot.
+    assert!(channel.revoke(None, 6_000).unwrap());
+    assert!(served(&channel).await.is_empty());
+    let history = channel
+        .view(10, None)
+        .history
+        .iter()
+        .map(|entry| (entry.action, entry.scope.clone(), entry.revision))
+        .collect::<Vec<_>>();
+    let scope = |scope: &str| Some(scope.to_string());
+    assert_eq!(
+        history,
+        [
+            (store::HistoryAction::Revoke, None, None),
+            (store::HistoryAction::Revoke, scope("dogstatsd_pre_aggregation"), None),
+            (store::HistoryAction::Publish, scope("post_enrich"), Some(3)),
+            (
+                store::HistoryAction::Publish,
+                scope("dogstatsd_pre_aggregation"),
+                Some(2)
+            ),
+            (store::HistoryAction::Publish, scope("post_enrich"), Some(1)),
+        ]
+    );
+
+    // The store keeps every scope's config across a restart.
+    channel
+        .publish(pre_aggregation_artifact("b."), None, None, 7_000)
+        .unwrap();
+    let reopened = channel_in(dir.path());
+    assert_eq!(
+        served(&reopened).await,
+        [("demo-dogstatsd_pre_aggregation".to_string(), 4)]
+    );
+}
+
+#[test]
+fn a_store_the_first_version_of_the_demo_wrote_still_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = {
+        let mut store = ArtifactStore::open(dir.path()).unwrap();
+        store.publish(artifact(), None, None, 1_000).unwrap()
+    };
+    // The first version wrote one config, for the policy scope, without its scope.
+    let mut one_scope = serde_json::to_value(&config).unwrap();
+    one_scope.as_object_mut().unwrap().remove("scope");
+    let file = json!({"format": 1, "revision_counter": 5, "current": one_scope});
+    std::fs::write(dir.path().join("store.json"), file.to_string()).unwrap();
+    let store = ArtifactStore::open(dir.path()).unwrap();
+    assert_eq!(store.current(), Some(&config));
+    assert_eq!(store.revision_counter(), 5);
+    assert_eq!(store.snapshot(), vec![config.entry()]);
+
+    // Another format is refused, with what to do.
+    std::fs::write(dir.path().join("store.json"), json!({"format": 9}).to_string()).unwrap();
+    let error = ArtifactStore::open(dir.path()).err().unwrap().to_string();
+    assert!(
+        error.contains("it has format 9, but this demo reads formats 1 and 2. Use a new run directory."),
+        "{}",
+        error
+    );
 }

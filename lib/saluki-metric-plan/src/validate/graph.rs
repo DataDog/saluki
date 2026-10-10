@@ -392,6 +392,12 @@ impl<'p> Graph<'p> {
         self.out_edges[node][port].and_then(|edge| self.edge_to[edge])
     }
 
+    /// Returns `true` if an edge leaves one output port but does not resolve where it enters, as an edge into a node
+    /// whose operator does not configure: where the port leads is not known.
+    pub fn leads_somewhere_unknown(&self, node: usize, port: usize) -> bool {
+        self.out_edges[node][port].is_some_and(|edge| self.edge_to[edge].is_none())
+    }
+
     /// Returns the output port that feeds one input port, if the edge between them resolved on both ends.
     pub fn source(&self, node: usize, port: usize) -> Option<Endpoint> {
         self.in_edges[node][port].and_then(|edge| self.edge_from[edge])

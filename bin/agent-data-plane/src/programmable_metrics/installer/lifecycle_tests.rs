@@ -49,6 +49,7 @@ use super::*;
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
+        catalog::POST_ENRICH_SCOPE,
         channel_stub::{ClientInfo, StubChannelConfig, StubChannelWorker, POLL_PATH},
         test_support::{connected_configuration_system, facts},
         test_topology::{Aggregation, Delivery, MetricsPath, Options, TestTopology, PATIENCE},
@@ -1137,15 +1138,63 @@ fn refused() -> Vec<Refused> {
             authentic: true,
         },
         Refused {
-            what: "a stateful operator",
+            // A state owner composes like any node; its parameters are validation's to judge.
+            what: "a state owner without its parameters",
             configs: |export, revision| {
                 let mut artifact = export.clone();
                 in_front_of_the_main_output(&mut artifact, json!({"id": "agg", "op": "aggregate"}), "out");
                 vec![config(revision, &artifact)]
             },
             error: |_, _| {
-                "Artifact node `agg` runs `aggregate`, which keeps state: artifacts cannot contain stateful operators \
-                 yet. Remove the node, or keep the processing in native configuration."
+                let missing = [
+                    "window",
+                    "flush_interval",
+                    "context_limit",
+                    "counter_expiry",
+                    "flush_open_windows",
+                    "histogram_aggregates",
+                    "histogram_percentiles",
+                    "copy_to_distribution",
+                    "copy_to_distribution_prefix",
+                ]
+                .map(|param| {
+                    format!(
+                        "error[valid_parameters] node `policy/agg`: `aggregate` parameter `{}`: missing required \
+                         parameter",
+                        param
+                    )
+                });
+                format!("the plan is not valid: {}", missing.join("; "))
+            },
+            read: true,
+            authentic: true,
+        },
+        Refused {
+            // A state owner with every parameter, where the frame cannot run it: the policy scope runs ahead of no
+            // isolation slot, so placement refuses it with the capability it lacks.
+            what: "a state owner in the policy scope",
+            configs: |export, revision| {
+                let mut artifact = export.clone();
+                let node = json!({"id": "agg", "op": "aggregate", "params": {
+                    "window": "10s",
+                    "flush_interval": "10s",
+                    "context_limit": 1000,
+                    "counter_expiry": "5m",
+                    "flush_open_windows": false,
+                    "histogram_aggregates": ["max", "count"],
+                    "histogram_percentiles": [95],
+                    "copy_to_distribution": false,
+                    "copy_to_distribution_prefix": "",
+                }});
+                in_front_of_the_main_output(&mut artifact, node, "out");
+                vec![config(revision, &artifact)]
+            },
+            error: |_, _| {
+                "The candidate plan cannot run in the physical structure built at boot, and needs a restart: node \
+                 `policy/agg`: it is a state owner, which runs only in an isolation slot that the region its input \
+                 comes from has an exit to, and the topology built at boot has no such isolation slot for \
+                 `metrics_enrich`: a new exit from a region to an isolation slot requires stage 7 resource \
+                 generations, which change physical structure without a restart."
                     .to_string()
             },
             read: true,
@@ -1195,7 +1244,7 @@ fn refused() -> Vec<Refused> {
             authentic: false,
         },
         Refused {
-            what: "a snapshot of two configs",
+            what: "a snapshot of two configs for one scope",
             configs: |export, revision| {
                 vec![
                     config(revision, export),
@@ -1203,8 +1252,8 @@ fn refused() -> Vec<Refused> {
                 ]
             },
             error: |_, _| {
-                "the policy snapshot holds 2 configs (`demo`, `other`), but one policy replaces the policy region: \
-                 every config is rejected until the snapshot holds one"
+                "the policy snapshot holds 2 configs (`demo`, `other`) for scope `post_enrich`, but one artifact \
+                 replaces a scope: every config for it is rejected until the snapshot holds one"
                     .to_string()
             },
             read: false,
@@ -1507,9 +1556,9 @@ impl ArtifactPaths for NativeFault {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        core.apply_states(default_program_hash, degraded)
+        core.apply_states_with_bases(bases, degraded)
     }
 }
 
@@ -1647,8 +1696,8 @@ struct WithNativeFault<'a> {
 }
 
 impl Composer for WithNativeFault<'_> {
-    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
-        let composed = self.composer.compose(artifact, approval)?;
+    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
+        let composed = self.composer.compose_all(artifacts)?;
         let mut plan = serde_json::to_value(&composed.plan).unwrap();
         let node = json!({
             "id": "native_fault", "op": "test_panic", "params": {"on": PANIC_NATIVE},
@@ -1687,9 +1736,9 @@ impl ArtifactPaths for NativeFaultBesideArtifacts {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        core.apply_states(default_program_hash, degraded)
+        core.apply_states_with_bases(bases, degraded)
     }
 }
 
@@ -1886,4 +1935,353 @@ async fn a_hundred_installs_leave_health_accounting_metric_series_and_acknowledg
         0 => routing(&[KEPT, ORDERS, APP], &[ORDERS]),
         _ => routing(&[KEPT, ORDERS, DEBUG], &[ORDERS]),
     });
+}
+
+// A live cut: an artifact that changes aggregation's window.
+
+/// Waits until the DogStatsD source has sent `sent` batches: each was stamped by its admission point.
+async fn wait_sent(topology: &TestTopology, sent: usize) {
+    tokio::time::timeout(PATIENCE, async {
+        while topology.sent("dsd_in.metrics") < sent {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the source never sent {} batches", sent));
+}
+
+/// Returns the aggregated counts of the counter `name` that `output` received, as `(generation, interval in seconds,
+/// bucket start, value)`, sorted.
+fn aggregated_counts(deliveries: &[Delivery], output: &str, name: &str) -> Vec<(u64, u64, u64, f64)> {
+    let mut counts = Vec::new();
+    for delivery in deliveries.iter().filter(|delivery| delivery.output == output) {
+        for metric in delivery.metrics.iter().filter(|metric| metric.context().name() == name) {
+            let saluki_core::data_model::event::metric::MetricValues::Rate(points, interval) = metric.values() else {
+                panic!("`{}` leaves aggregation as a rate: {:?}", name, metric.values());
+            };
+            for (timestamp, value) in points {
+                let generation = delivery.generation.expect("aggregated output carries a generation");
+                let bucket = timestamp.expect("aggregated points are timestamped").get();
+                counts.push((generation, interval.as_secs(), bucket, value));
+            }
+        }
+    }
+    counts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    counts
+}
+
+/// Starts the topology with clocked aggregation, as `options` says otherwise: the DogStatsD source's admission point
+/// reads a manual wall clock, which the test moves, the slot flushes only when its input ends, and the topology runs
+/// the whole cut protocol in between. Returns the topology and its clock.
+async fn start_clocked(mut options: Options) -> (Lifecycle, ManualWallClock) {
+    assert_eq!(options.aggregation, Aggregation::Clocked);
+    let clock = Arc::new(StdMutex::new(None));
+    options.before_topology = Some(Box::new({
+        let clock = Arc::clone(&clock);
+        move |boot: &mut BootTopology| *clock.lock().unwrap() = boot.state_admission_clock.clone()
+    }));
+    let lifecycle = Lifecycle::start_with(Start::new(options)).await;
+    let clock = clock
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("clocked aggregation's admission point runs on a manual clock");
+    (lifecycle, clock)
+}
+
+/// Returns the export of the pre-aggregation scope with aggregation over `window`, and the timestamp split before it
+/// with the same window, as validation requires; it flushes only at the end of input, as clocked aggregation does.
+fn pre_aggregation_over(status: &PlanStatus, window: &str) -> Value {
+    use crate::programmable_metrics::catalog::DSD_PRE_AGGREGATION_SCOPE;
+
+    let scope = ScopeName::new(DSD_PRE_AGGREGATION_SCOPE).unwrap();
+    let bundle = status.exports[&scope]
+        .clone()
+        .expect("the pre-aggregation scope exports");
+    let mut artifact = serde_json::to_value(&bundle.artifact).unwrap();
+    for node in nodes(&mut artifact) {
+        match node["id"].as_str() {
+            Some("dsd_agg") => {
+                node["params"]["window"] = json!(window);
+                node["params"]["flush_interval"] = json!("1h");
+            }
+            Some("dsd_no_agg_split") => node["params"]["window"] = json!(window),
+            _ => {}
+        }
+    }
+    artifact
+}
+
+/// Returns the cut, once the installer has armed it.
+async fn armed_cut(lifecycle: &Lifecycle) -> saluki_metric_plan::install::CutStatus {
+    let armed = lifecycle
+        .status_where(|status| {
+            status
+                .installer
+                .cut
+                .as_ref()
+                .is_some_and(|cut| matches!(cut.phase, CutPhase::Armed { .. }))
+        })
+        .await;
+    armed.installer.cut.unwrap()
+}
+
+/// Feeds `count` batches of one count of the counter `agg.c` each, and waits until the source has sent them: once it
+/// has, the admission point stamped each at the time its clock read.
+async fn feed_counts(lifecycle: &mut Lifecycle, count: usize, sent: &mut usize) {
+    for _ in 0..count {
+        lifecycle.topology.feed(
+            "dsd_in.metrics",
+            vec![Metric::counter(Context::from_static_name("agg.c"), 1.0)],
+        );
+    }
+    *sent += count;
+    wait_sent(&lifecycle.topology, *sent).await;
+}
+
+#[tokio::test]
+async fn an_artifact_that_changes_aggregations_window_installs_at_a_cut_and_every_count_arrives_once() {
+    use crate::programmable_metrics::{catalog::DSD_PRE_AGGREGATION_SCOPE, test_topology::ADMITTED_AT};
+
+    let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
+    let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
+    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let mut sent = 0;
+
+    // Three counts at 5 seconds past `B`, in the old lineage's bucket [0, 10).
+    feed_counts(&mut lifecycle, 3, &mut sent).await;
+
+    // Arming: the latest stamp is at 5, so the cut takes effect at 30, the first multiple of lcm(10, 30) a second away.
+    lifecycle.deliver(vec![config(1, &artifact)]);
+    let cut = armed_cut(&lifecycle).await;
+    assert_eq!(cut.generation, GenerationId::new(2));
+    assert_eq!(
+        cut.at,
+        Some(at(25)),
+        "the cut is at the next 30-second boundary at least a second away"
+    );
+
+    // Two counts at 15, before the cut: the old generation's, in [10, 20).
+    clock.set(at(10));
+    feed_counts(&mut lifecycle, 2, &mut sent).await;
+
+    // Four counts at 40, after the cut: the new generation's, in its bucket [30, 60). The first of their stamps makes
+    // the cut irrevocable, and passes the only affected point: the cut completes, and generation 2 runs alone.
+    clock.set(at(35));
+    feed_counts(&mut lifecycle, 4, &mut sent).await;
+    let installed = lifecycle
+        .status_where(|status| active(status) == Some(2) && status.installer.cut.is_none())
+        .await;
+
+    // The status names each scope's base program hash, that of its export, and the artifact active in the
+    // pre-aggregation scope; the policy scope runs the default program's region.
+    let scopes = &installed.apply_states.status.scopes;
+    for (scope, bundle) in &installed.exports {
+        let bundle = bundle.as_ref().expect("every scope exports");
+        assert_eq!(
+            scopes.get(scope).and_then(|status| status.default_program_hash),
+            Some(bundle.artifact.base.program_hash),
+            "{}",
+            scope
+        );
+    }
+    let active_in = |scope: &str| {
+        let scope = ScopeName::new(scope).unwrap();
+        scopes[&scope]
+            .active_artifact
+            .as_ref()
+            .map(|artifact| artifact.revision)
+    };
+    assert_eq!(active_in(DSD_PRE_AGGREGATION_SCOPE), Some(1));
+    assert_eq!(active_in(POST_ENRICH_SCOPE), None);
+    assert_eq!(
+        installed.apply_states.status.default_program_hash,
+        scopes[&ScopeName::new(POST_ENRICH_SCOPE).unwrap()].default_program_hash
+    );
+
+    // Every count arrives once: the old lineage's buckets through [20, 30), under generation 1, at its final flush at
+    // the crossing; the new lineage's from [30, 60), under generation 2, at the end of input.
+    let deliveries = lifecycle.topology.stop().await;
+    let bucket = |relative: i64| (ADMITTED_AT as i64 - 5 + relative) as u64;
+    assert_eq!(
+        aggregated_counts(&deliveries, MAIN, "agg.c"),
+        vec![
+            (1, 10, bucket(0), 3.0),
+            (1, 10, bucket(10), 2.0),
+            (2, 30, bucket(30), 4.0),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn revoking_an_artifact_while_its_cut_is_armed_cancels_the_cut_and_the_old_lineage_keeps_every_count() {
+    use crate::programmable_metrics::{telemetry::PLAN_CUTS_TOTAL, test_topology::ADMITTED_AT};
+
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let (mut lifecycle, clock) = start_clocked(Options::new(MetricsPath::Plan, Aggregation::Clocked)).await;
+    let at = |relative: u64| AdmissionTime::from_unix_secs(ADMITTED_AT + relative);
+    let artifact = pre_aggregation_over(&lifecycle.status.load(), "30s");
+    let mut sent = 0;
+
+    // Three counts at 5, and the cut armed at 30, as in the width change above.
+    feed_counts(&mut lifecycle, 3, &mut sent).await;
+    lifecycle.deliver(vec![config(1, &artifact)]);
+    let cut = armed_cut(&lifecycle).await;
+    assert_eq!((cut.generation, cut.at), (GenerationId::new(2), Some(at(25))));
+
+    // Two counts at 15, then the revocation, before any point stamped generation 2: the cut is cancelled, the cut
+    // generation rejected as revoked, and the default program asked for again.
+    clock.set(at(10));
+    feed_counts(&mut lifecycle, 2, &mut sent).await;
+    lifecycle.deliver(Vec::new());
+    let cancelled = lifecycle
+        .status_where(|status| {
+            status.installer.cut.is_none()
+                && record(status, 2).is_some_and(|(state, _)| state == GenerationState::Rejected)
+        })
+        .await;
+    assert_eq!(
+        active(&cancelled),
+        Some(1),
+        "the old generation stays active through the cancellation"
+    );
+    assert_eq!(
+        record(&cancelled, 2),
+        Some((
+            GenerationState::Rejected,
+            Some("the channel revoked the policy before the artifact was installed".to_string())
+        ))
+    );
+    assert_eq!(
+        recorder.counter(metrics::Key::from_parts(PLAN_CUTS_TOTAL, &[("outcome", "cancelled")])),
+        Some(1)
+    );
+
+    // Four counts at 40, past the cut that never was: the old lineage's, in its 10-second bucket [40, 50).
+    clock.set(at(35));
+    feed_counts(&mut lifecycle, 4, &mut sent).await;
+    let settled = lifecycle
+        .status_where(|status| {
+            let installer = &status.installer;
+            installer.cut.is_none() && installer.preparing.is_none() && installer.pending.is_none()
+        })
+        .await;
+    // The default program asked for is the one generation 1 runs: nothing to install.
+    assert_eq!((active(&settled), live(&settled)), (Some(1), vec![1]));
+
+    // Every count arrives once, in 10-second buckets, at the end of input: none in a 30-second bucket, and none twice.
+    let deliveries = lifecycle.topology.stop().await;
+    let bucket = |relative: i64| (ADMITTED_AT as i64 - 5 + relative) as u64;
+    assert_eq!(
+        aggregated_counts(&deliveries, MAIN, "agg.c"),
+        vec![
+            (1, 10, bucket(0), 3.0),
+            (1, 10, bucket(10), 2.0),
+            (1, 10, bucket(40), 4.0)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn twenty_cut_installs_leave_health_registrations_resource_groups_bounds_and_metric_series_as_they_were() {
+    use super::fault_tests::{bounds_tree, health_components, ready, resource_groups, series, wait_until_healthy};
+    use crate::programmable_metrics::{telemetry::PLAN_CUTS_TOTAL, test_topology::ADMITTED_AT};
+
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+    let (health, registry) = (options.health.clone(), options.registry.clone());
+    let (mut lifecycle, clock) = start_clocked(options).await;
+    // Installs alternate between aggregation over 30 seconds and over 10 (flushing only at the end of input, so unlike
+    // the default program's): each changes the window, so each installs at a cut.
+    let artifacts = [
+        pre_aggregation_over(&lifecycle.status.load(), "30s"),
+        pre_aggregation_over(&lifecycle.status.load(), "10s"),
+    ];
+    let registrations = |health: &HealthRegistry| {
+        health_components(health)
+            .into_iter()
+            .map(|(component, _, ready)| (component, ready))
+            .collect::<BTreeSet<_>>()
+    };
+    let mut sent = 0;
+
+    // One count at 5 seconds past `B`; then each install `k` is armed at `T_k`, the first multiple of 30 seconds at
+    // least a second after the latest stamp, and completes with one count 5 seconds past it, which the new lineage
+    // holds in its bucket starting at `T_k`. `T_1` is `B + 25`, and each cut is 30 seconds after the one before.
+    feed_counts(&mut lifecycle, 1, &mut sent).await;
+    let cut_at = |install: u64| ADMITTED_AT + 25 + 30 * (install - 1);
+    let cut_install = async |lifecycle: &mut Lifecycle, sent: &mut usize, install: u64| {
+        let generation = install + 1;
+        lifecycle.deliver(vec![config(install, &artifacts[(install as usize - 1) % 2])]);
+        let cut = armed_cut(lifecycle).await;
+        assert_eq!(cut.generation, GenerationId::new(generation), "install {}", install);
+        assert_eq!(
+            cut.at,
+            Some(AdmissionTime::from_unix_secs(cut_at(install))),
+            "install {}",
+            install
+        );
+        clock.set(AdmissionTime::from_unix_secs(cut_at(install) + 5));
+        feed_counts(lifecycle, 1, sent).await;
+        lifecycle
+            .status_where(|status| {
+                active(status) == Some(generation) && status.installer.cut.is_none() && live(status) == [generation]
+            })
+            .await;
+    };
+
+    // Once each artifact has been installed, everything a cut install registers exists.
+    for install in 1..=2 {
+        cut_install(&mut lifecycle, &mut sent, install).await;
+    }
+    wait_until_healthy(&health).await;
+    let before = (
+        registrations(&health),
+        resource_groups(),
+        bounds_tree(&registry.as_bounds()),
+        series(&recorder),
+    );
+
+    // Twenty cut installs more, each committed at its cut, its cut finalized, and its predecessor retired before the
+    // next.
+    const INSTALLS: u64 = 20;
+    for install in 3..=INSTALLS + 2 {
+        cut_install(&mut lifecycle, &mut sent, install).await;
+    }
+    wait_until_healthy(&health).await;
+    let after = (
+        registrations(&health),
+        resource_groups(),
+        bounds_tree(&registry.as_bounds()),
+        series(&recorder),
+    );
+    assert_eq!(after.0, before.0, "health registrations");
+    assert_eq!(after.1, before.1, "resource groups");
+    assert_eq!(after.2, before.2, "memory bounds");
+    assert_eq!(
+        (
+            after.3.difference(&before.3).collect::<Vec<_>>(),
+            before.3.difference(&after.3).collect::<Vec<_>>()
+        ),
+        (Vec::<&String>::new(), Vec::<&String>::new()),
+        "metric series added and removed"
+    );
+    assert_eq!(ready(&health).await, StatusCode::OK);
+    assert_eq!(
+        recorder.counter(metrics::Key::from_parts(PLAN_CUTS_TOTAL, &[("outcome", "completed")])),
+        Some(INSTALLS + 2)
+    );
+
+    // Every count arrives once, under the generation whose lineage held it: the first in the default program's bucket,
+    // each later one in its install's bucket starting at its cut, flushed at the next cut's crossing (or, for the last,
+    // at the end of input).
+    let deliveries = lifecycle.topology.stop().await;
+    let mut expected = vec![(1, 10, ADMITTED_AT - 5, 1.0)];
+    expected.extend((1..=INSTALLS + 2).map(|install| {
+        let width = if install % 2 == 1 { 30 } else { 10 };
+        (install + 1, width, cut_at(install), 1.0)
+    }));
+    assert_eq!(aggregated_counts(&deliveries, MAIN, "agg.c"), expected);
 }

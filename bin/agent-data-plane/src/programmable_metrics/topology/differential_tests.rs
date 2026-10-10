@@ -335,6 +335,36 @@ async fn the_plan_driven_topology_delivers_what_the_legacy_one_does_to_every_out
     }
 }
 
+/// Runs the plan-driven path of a configuration's primary topology over the differential input, with aggregation as a
+/// stateful kernel in its isolation slot, clocked as native aggregation is (see [`Aggregation::Clocked`]).
+async fn run_isolated(name: &str, yaml: &'static str) -> (Vec<Delivery>, BTreeSet<String>) {
+    let system = layered_configuration_system(&layers(name, yaml)).await;
+    let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+    let topology = TestTopology::start(&system, options, |_| {}).await;
+    let outputs = collected_outputs(topology.snapshot());
+    for feed in topology.feeds() {
+        for batch in differential_batches(&feed) {
+            topology.feed(&feed, batch);
+        }
+    }
+    (topology.stop().await, outputs)
+}
+
+#[tokio::test]
+async fn aggregation_as_a_kernel_in_its_region_delivers_what_native_aggregation_does_to_every_output() {
+    for (name, yaml) in DIFFERENTIAL_MATRIX {
+        let (legacy, legacy_outputs) = run(name, yaml, MetricsPath::Legacy).await;
+        let (plan, plan_outputs) = run_isolated(name, yaml).await;
+        assert_eq!(plan_outputs, legacy_outputs, "{}: the outputs", name);
+        if let Err(mismatch) = compare(&output_points(&legacy), &output_points(&plan)) {
+            panic!(
+                "{}: aggregation in its region differs from native aggregation:\n{}",
+                name, mismatch
+            );
+        }
+    }
+}
+
 /// Returns the expected points of each name per output, from a table of `(output, [(name, points)])`.
 fn expected(table: &[(&str, &[(&str, usize)])]) -> BTreeMap<String, BTreeMap<String, usize>> {
     table
@@ -727,5 +757,135 @@ async fn each_gateway_selects_what_its_native_rules_select() {
             "{:?}",
             path
         );
+    }
+}
+
+// Tick parity: native aggregation's flush ticks against the isolation slot's, on one wall clock.
+
+/// The configurations the tick parity runs: the defaults, histograms with a distribution copy, and counters that never
+/// expire with a context limit of two.
+const TICK_PARITY: &[(&str, &str)] = &[
+    ("defaults", ""),
+    (
+        "histograms with a distribution copy",
+        "histogram_copy_to_distribution: true\nhistogram_copy_to_distribution_prefix: dist.",
+    ),
+    (
+        "no counter expiry and two contexts",
+        "dogstatsd_expiry_seconds: 0\naggregate_context_limit: 2",
+    ),
+];
+
+/// One step of the tick parity's script: the wall clock moves to `B + at` seconds, then the source sends `batch`, or
+/// a flush interval of the paused clock passes, which runs one flush tick.
+enum TickStep {
+    Send(u64, Vec<Metric>),
+    Tick(u64),
+}
+
+/// The base time of the tick parity, a multiple of the 10-second window.
+const TICKS_AT: u64 = 1_800_000_000;
+
+fn tick_script() -> Vec<TickStep> {
+    let counter = |name: &'static str, value: f64| Metric::counter(Context::from_static_name(name), value);
+    let gauge = |name: &'static str, value: f64| Metric::gauge(Context::from_static_name(name), value);
+    let histogram = |name: &'static str| Metric::histogram(Context::from_static_name(name), [1.0, 2.0, 5.0]);
+    vec![
+        TickStep::Send(
+            3,
+            vec![counter("requests", 1.0), gauge("load", 0.5), histogram("latency")],
+        ),
+        TickStep::Send(8, vec![counter("requests", 2.0), counter("errors", 1.0)]),
+        // Closes [0, 10); `requests` and `errors` stay as counters that may synthesize zeros.
+        TickStep::Tick(15),
+        TickStep::Send(22, vec![counter("requests", 4.0), gauge("load", 0.7)]),
+        // Closes [10, 20) and [20, 30): `errors` gains zeros, `requests` one for [10, 20).
+        TickStep::Tick(30),
+        TickStep::Send(41, vec![histogram("latency"), counter("late", 1.0)]),
+        TickStep::Tick(45),
+        // Idle ticks: counters keep synthesizing zeros until they expire, unless expiry is off.
+        TickStep::Tick(60),
+        TickStep::Tick(75),
+    ]
+}
+
+/// Runs the tick script through one path's topology of `yaml`, with the source's admission point, the isolation
+/// slot, and native aggregation all on one manual wall clock, on paused Tokio time, and returns what every output
+/// received.
+async fn run_ticks(yaml: &str, path: MetricsPath) -> (Vec<Delivery>, BTreeSet<String>) {
+    use std::{sync::Arc, time::Duration};
+
+    use saluki_core::execution::{AdmissionTime, ManualWallClock};
+
+    let clock = ManualWallClock::new(AdmissionTime::from_unix_secs(TICKS_AT));
+    let system = layered_configuration_system(&[FLUSH_PASSTHROUGH_ON_STOP, yaml]).await;
+    let mut options = Options::new(path, Aggregation::Native);
+    options.aggregation_clock = Some(clock.clone());
+    options.before_topology = Some(Box::new({
+        let clock = clock.clone();
+        move |boot| {
+            boot.state_admission_clock = Some(clock.clone());
+            boot.wall_clock = Arc::new(clock.clone());
+        }
+    }));
+    let topology = TestTopology::start(&system, options, |_| {}).await;
+    let outputs = collected_outputs(topology.snapshot());
+    let mut sent = 0;
+    for step in tick_script() {
+        match step {
+            TickStep::Send(at, batch) => {
+                clock.set(AdmissionTime::from_unix_secs(TICKS_AT + at));
+                topology.feed("dsd_in.metrics", batch);
+                sent += 1;
+                while topology.sent("dsd_in.metrics") < sent {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+            TickStep::Tick(at) => {
+                // The wall clock reads the tick's time before the tick: native aggregation flushes at it, and the
+                // source's heartbeat, every second, raises the slot's watermark to it before the tick, so the tick gate
+                // fires at once, at the same second.
+                clock.set(AdmissionTime::from_unix_secs(TICKS_AT + at));
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+        }
+    }
+    (topology.stop().await, outputs)
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_isolation_slots_flush_ticks_deliver_what_native_aggregations_do_tick_by_tick() {
+    for (name, yaml) in TICK_PARITY {
+        let (legacy, legacy_outputs) = run_ticks(yaml, MetricsPath::Legacy).await;
+        let (plan, plan_outputs) = run_ticks(yaml, MetricsPath::Plan).await;
+        assert_eq!(plan_outputs, legacy_outputs, "{}: the outputs", name);
+        let expected = output_points(&legacy);
+        assert!(
+            expected.count(&"dd_metrics_encode".parse().unwrap()) > 5,
+            "{}: the script delivers",
+            name
+        );
+        if let Err(mismatch) = compare(&expected, &output_points(&plan)) {
+            panic!(
+                "{}: the isolation slot's ticks differ from native aggregation's:\n{}",
+                name, mismatch
+            );
+        }
+        // The ticks ran before the end of input: the main output received a flush at each of the first three ticks
+        // (aggregated output only, as the script has no timestamped points), on both paths.
+        let flushes = |deliveries: &[Delivery]| {
+            deliveries
+                .iter()
+                .filter(|delivery| delivery.output == "dd_metrics_encode" && !delivery.metrics.is_empty())
+                .map(|delivery| delivery.at)
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
+        assert!(
+            flushes(&legacy) >= 3,
+            "{}: native aggregation flushed at its ticks",
+            name
+        );
+        assert!(flushes(&plan) >= 3, "{}: the isolation slot flushed at its ticks", name);
     }
 }

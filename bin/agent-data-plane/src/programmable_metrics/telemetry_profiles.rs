@@ -113,8 +113,14 @@ pub enum TelemetryProfile {
     /// for a component's output fan-out.
     Silent,
 
-    /// The node is a host component (a source or aggregation), which reports its own telemetry as it does natively.
+    /// The node is a host component (a source), which reports its own telemetry as it does natively.
     Host,
+
+    /// DogStatsD aggregation, whose kernel registers the native aggregation component's telemetry: what the
+    /// aggregation transform reports natively, and what the Datadog Agent's `aggregator.*` metrics are remapped from.
+    /// Every lineage of the node reports under the same series: its context gauges add up, and each lineage counts its
+    /// own flushes.
+    Aggregation,
 
     /// The DogStatsD mapper, whose context resolver and result cache are named `<component>/dsd_mapper/primary` and
     /// `<component>/dsd_mapper/result_cache`.
@@ -176,6 +182,54 @@ const TAG_FILTERLIST_METRICS: &[NativeMetric] = {
     ]
 };
 
+/// One gauge of aggregation's per-type context gauges, for one metric type.
+const fn by_type(name: &'static str, tags: &'static [&'static str]) -> NativeMetric {
+    NativeMetric {
+        tags,
+        ..gauge(name, MetricSource::Kernel)
+    }
+}
+
+const AGGREGATION_METRICS: &[NativeMetric] = {
+    use MetricSource::*;
+    const COUNTER: &[&str] = &["metric_type:counter"];
+    const GAUGE: &[&str] = &["metric_type:gauge"];
+    const RATE: &[&str] = &["metric_type:rate"];
+    const SET: &[&str] = &["metric_type:set"];
+    const HISTOGRAM: &[&str] = &["metric_type:histogram"];
+    const DISTRIBUTION: &[&str] = &["metric_type:distribution"];
+    &[
+        gauge("aggregate_active_contexts", Kernel),
+        by_type("aggregate_active_contexts_by_type", COUNTER),
+        by_type("aggregate_active_contexts_by_type", GAUGE),
+        by_type("aggregate_active_contexts_by_type", RATE),
+        by_type("aggregate_active_contexts_by_type", SET),
+        by_type("aggregate_active_contexts_by_type", HISTOGRAM),
+        by_type("aggregate_active_contexts_by_type", DISTRIBUTION),
+        by_type("aggregate_active_contexts_bytes_by_type", COUNTER),
+        by_type("aggregate_active_contexts_bytes_by_type", GAUGE),
+        by_type("aggregate_active_contexts_bytes_by_type", RATE),
+        by_type("aggregate_active_contexts_bytes_by_type", SET),
+        by_type("aggregate_active_contexts_bytes_by_type", HISTOGRAM),
+        by_type("aggregate_active_contexts_bytes_by_type", DISTRIBUTION),
+        // The metrics the context limit keeps out.
+        NativeMetric {
+            tags: &["intentional:true"],
+            ..counter("component_events_dropped_total", Kernel)
+        },
+        // Remapped `aggregator.number_of_flush`.
+        counter("aggregate_flushes_total", Kernel),
+        NativeMetric {
+            tags: &["data_type:series"],
+            ..counter("aggregate_flushed_total", Kernel)
+        },
+        NativeMetric {
+            tags: &["data_type:sketches"],
+            ..counter("aggregate_flushed_total", Kernel)
+        },
+    ]
+};
+
 const POST_AGGREGATE_FILTER_METRICS: &[NativeMetric] = &[counter(
     "dogstatsd_post_aggregate_filtered_metrics_total",
     MetricSource::PortEvents("true"),
@@ -216,6 +270,7 @@ impl TelemetryProfile {
     pub const fn metrics(self) -> &'static [NativeMetric] {
         match self {
             Self::Silent | Self::Host | Self::Mapper => &[],
+            Self::Aggregation => AGGREGATION_METRICS,
             Self::ListenerFilterlist => LISTENER_FILTERLIST_METRICS,
             Self::TimestampSplit => TIMESTAMP_SPLIT_METRICS,
             Self::TagFilterlist => TAG_FILTERLIST_METRICS,
@@ -312,7 +367,7 @@ static PROFILES: &[ProfileEntry] = {
             Transform,
             TagFilterlist,
         ),
-        entry("dsd_agg", names::AGGREGATE, "dsd_agg", Transform, Host),
+        entry("dsd_agg", names::AGGREGATE, "dsd_agg", Transform, Aggregation),
         entry(
             "dsd_post_agg_filter_in",
             names::MERGE,

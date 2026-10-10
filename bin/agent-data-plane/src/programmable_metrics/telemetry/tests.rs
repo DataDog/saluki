@@ -1,7 +1,10 @@
 //! The telemetry of the plan-driven topology against the legacy one's: the native metrics each fused component
 //! reported, and what the Datadog Agent and its compatibility endpoint see of them through ADP's remappings.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use saluki_core::{
     data_model::event::{
@@ -14,13 +17,19 @@ use saluki_core::{
     },
     support::SubsystemIdentifier,
 };
-use saluki_metric_plan::compile::{RewriteId, RewriteOutcome, RewriteRecord};
+use saluki_metric_plan::{
+    compile::{RewriteId, RewriteOutcome, RewriteRecord},
+    ir::NodeId,
+};
 use saluki_metrics::test::TestRecorder;
 
-use super::{InstallerTelemetry, PLAN_REWRITES_APPLIED};
+use super::{
+    CutOutcome, InstallerTelemetry, PLAN_CUTS_TOTAL, PLAN_CUT_CANCELLATIONS_REFUSED_TOTAL, PLAN_REWRITES_APPLIED,
+};
 use crate::{
     programmable_metrics::{
-        test_support::layered_configuration_system,
+        telemetry_profiles::TelemetryProfile,
+        test_support::{configuration, layered_configuration_system, programmable_metrics, ConfigCell},
         test_topology::{Aggregation, MetricsPath, Options, TestTopology},
     },
     state::metrics::{get_compat_remappings, get_datadog_agent_remappings},
@@ -70,11 +79,16 @@ fn batches() -> Vec<Vec<Metric>> {
 /// Runs `path` with the configuration `config` over the batches with `recorder` as the metrics recorder, and returns
 /// every series it registered, with its value.
 async fn telemetry(path: MetricsPath, config: &str) -> BTreeMap<Series, String> {
+    telemetry_with(Options::new(path, Aggregation::Clocked), config).await
+}
+
+/// Runs a topology started with `options` as [`telemetry`] does.
+async fn telemetry_with(options: Options, config: &str) -> BTreeMap<Series, String> {
     let recorder = TestRecorder::default();
     {
         let _recorder = metrics::set_default_local_recorder(&recorder);
         let system = layered_configuration_system(&[config]).await;
-        let topology = TestTopology::start(&system, Options::new(path, Aggregation::Clocked), |_| {}).await;
+        let topology = TestTopology::start(&system, options, |_| {}).await;
         for batch in batches() {
             topology.feed("dsd_in.metrics", batch);
         }
@@ -188,8 +202,8 @@ fn component_series(id: &str, outputs: &[&str]) -> BTreeSet<Series> {
 
 /// The series of the legacy topology that the plan-driven one does not report, written by hand: everything the
 /// topology reports about a fused transform as a component of its own (its interconnects, its health, its task), the
-/// one output `metrics_enrich` had before it had one per exit, and the no-aggregation split's passthrough batcher,
-/// which the plan does not have.
+/// one output `metrics_enrich` and `dsd_agg` had before each had one per exit, and the no-aggregation split's
+/// passthrough batcher, which the plan does not have.
 fn removed_series() -> BTreeSet<Series> {
     let mut removed = BTreeSet::new();
     for id in FUSED {
@@ -204,14 +218,12 @@ fn removed_series() -> BTreeSet<Series> {
         "component_send_latency_seconds",
         "component_events_discarded_total",
     ] {
-        removed.insert(series(
-            name,
-            &[
-                "component_id:metrics_enrich",
-                "component_type:transform",
-                "output:_default",
-            ],
-        ));
+        for component in ["component_id:metrics_enrich", "component_id:dsd_agg"] {
+            removed.insert(series(
+                name,
+                &[component, "component_type:transform", "output:_default"],
+            ));
+        }
     }
     removed.insert(series(
         "aggregate_passthrough_batch_duration_secs",
@@ -235,13 +247,15 @@ fn removed_series() -> BTreeSet<Series> {
 const NEW_REGIONS: [&str; 2] = ["dsd_pre_aggregation", "dsd_prefix_filter_region"];
 
 /// Returns `true` if a series the plan-driven topology adds is one it is expected to add: what the topology reports
-/// about each of the regions `new_regions` as a component, the enrichment region's outputs (one per exit) and the
-/// region hosts' failure counters, the plan-level metrics, and the installer's task.
+/// about each of the regions `new_regions` as a component, the outputs (one per exit) of the regions that keep a
+/// native ID, enrichment's and aggregation's, and the region hosts' failure counters, the plan-level metrics, the
+/// installer's task, the snapshot bridge's task, and the heartbeat task of the admission point that feeds aggregation's
+/// state.
 fn expected_addition(new_regions: &[&str], (name, tags): &Series) -> bool {
     let has = |tag: &str| tags.iter().any(|candidate| candidate == tag);
     let region = new_regions
         .iter()
-        .chain(&["metrics_enrich"])
+        .chain(&["metrics_enrich", "dsd_agg"])
         .any(|region| has(&format!("component_id:{}", region)));
     let new_component = new_regions.iter().any(|region| {
         let identity = format!("topology.primary.transforms.{}", region);
@@ -253,6 +267,8 @@ fn expected_addition(new_regions: &[&str], (name, tags): &Series) -> bool {
         || (region && name.starts_with("component_"))
         || new_component
         || has("task_name:test_topology.programmable_metrics_installer")
+        || has("task_name:test_topology.programmable_metrics_snapshot_bridge")
+        || has("task_name:topology.primary.sources.dsd_in.admission_heartbeat")
 }
 
 /// Returns the value of a series, which must exist.
@@ -632,6 +648,68 @@ async fn each_fused_kernel_is_accounted_in_a_resource_group_of_its_own_under_its
     }
 }
 
+#[tokio::test]
+async fn a_kernel_of_an_isolation_slot_named_after_its_node_is_accounted_in_its_regions_own_group_and_draws_on_state() {
+    // How much a kernel's build allocates, at least, in the group its context names.
+    const HELD: usize = 8 << 20;
+    let registry = saluki_core::accounting::ComponentRegistry::default();
+    let config = configuration("").await;
+    let cell = ConfigCell::new(config.clone());
+    let mut path = programmable_metrics(&config, cell.live(), &registry).expect("a metrics pipeline is required");
+    let boot = path.boot_topology();
+    // The `metrics_enrich` slot is named after the node of its one kernel, as the `dsd_agg` isolation slot is after
+    // aggregation's: run as one, the kernel stands for the native component, as aggregation's does in `dsd_agg`.
+    let slot = boot
+        .frame
+        .slots()
+        .iter()
+        .find(|slot| slot.name.as_str() == "metrics_enrich")
+        .expect("the frame has the `metrics_enrich` slot")
+        .id;
+    let program = Arc::clone(&boot.programs[slot.get()]);
+    let node = "metrics_enrich".parse::<NodeId>().unwrap();
+    let region = "topology.primary.transforms.metrics_enrich".to_string();
+    let own = format!("{}.metrics_enrich", region);
+
+    // (the name of the isolation slot the program runs in, if it runs in one; the group its kernel is accounted in;
+    // whether the kernel draws on the budgets of state)
+    let cases = [
+        (None, &own, false),
+        (Some("metrics_enrich"), &region, true),
+        (Some("metrics_enrich_region"), &own, true),
+    ];
+    for (isolation, group, stateful) in cases {
+        let what = format!("isolation slot {:?}", isolation);
+        let mut telemetry = boot.telemetry.clone();
+        telemetry.isolation = isolation.map(|name| (slot, name.to_string())).into_iter().collect();
+        let context = telemetry.kernel_context(&program, &node);
+        match context.state_budget() {
+            Some(budget) => {
+                assert!(stateful, "{}", what);
+                assert!(budget.global.shares_with(boot.state_budgets.global()), "{}", what);
+                assert!(budget.node.shares_with(&boot.state_budgets.node(&node)), "{}", what);
+            }
+            None => assert!(!stateful, "{}", what),
+        }
+        let token = context.resource_group().expect("kernels are accounted");
+        let before = memory_status(&registry).get(group).map_or(0, |(_, _, live)| *live);
+        let held = {
+            let _entered = token.enter();
+            vec![1u8; HELD]
+        };
+        let after = memory_status(&registry).get(group).map_or(0, |(_, _, live)| *live);
+        assert!(
+            after >= before + HELD as u64,
+            "{}: `{}` holds {} bytes, {} before",
+            what,
+            group,
+            after,
+            before
+        );
+        drop(held);
+    }
+}
+
 #[test]
 fn the_installer_counts_the_rewrites_applied_to_the_active_generation_by_rewrite() {
     let recorder = TestRecorder::default();
@@ -681,4 +759,219 @@ fn the_installer_counts_the_rewrites_applied_to_the_active_generation_by_rewrite
     for rewrite in rewrites {
         assert_eq!(applied(rewrite), Some(0.0), "{}", rewrite);
     }
+}
+
+#[test]
+fn the_installer_reports_every_cut_outcome_from_creation() {
+    let recorder = TestRecorder::default();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let telemetry = InstallerTelemetry::new(SubsystemIdentifier::from_segments(["primary"]));
+    let cuts =
+        |outcome: &'static str| recorder.counter(metrics::Key::from_parts(PLAN_CUTS_TOTAL, &[("outcome", outcome)]));
+    let refused = || recorder.counter(metrics::Key::from_name(PLAN_CUT_CANCELLATIONS_REFUSED_TOTAL));
+    for outcome in ["completed", "cancelled", "not_armed"] {
+        assert_eq!(cuts(outcome), Some(0), "{}", outcome);
+    }
+    assert_eq!(refused(), Some(0));
+
+    // A refused cancellation ends no cut: the cut it was refused for completes, and only that is counted as its end.
+    telemetry.cut_cancellation_refused();
+    telemetry.cut_cancellation_refused();
+    telemetry.cut(CutOutcome::Completed);
+    telemetry.cut(CutOutcome::NotArmed);
+    assert_eq!(
+        CutOutcome::ALL.map(|outcome| cuts(outcome.as_str())),
+        [Some(1), Some(0), Some(1)]
+    );
+    assert_eq!(refused(), Some(2));
+    assert_eq!(cuts("cancel_refused"), None, "a refusal is no outcome of a cut");
+}
+
+#[tokio::test]
+async fn aggregation_in_its_region_keeps_the_native_aggregation_components_series_and_what_they_remap_to() {
+    let legacy = telemetry(MetricsPath::Legacy, CONFIG).await;
+    let options = Options::new(MetricsPath::Plan, Aggregation::Clocked);
+    let plan = telemetry_with(options, CONFIG).await;
+
+    // The aggregation kernel reports every series of the native component, with the native values.
+    for metric in TelemetryProfile::Aggregation.metrics() {
+        let mut labels = vec!["component_id:dsd_agg", "component_type:transform"];
+        labels.extend(metric.tags);
+        let series = series(metric.name, &labels);
+        assert!(legacy.contains_key(&series), "native aggregation reports {:?}", series);
+        assert_eq!(plan.get(&series), legacy.get(&series), "{:?}", series);
+    }
+    // So does every metric the Datadog Agent's `aggregator.*` metrics are remapped from, the post-aggregation filter's
+    // among them: aggregation emits nothing the filter would drop (R5b), and counts what it suppressed as the filter's.
+    let aggregator = |rendered: String| {
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("aggregator__"))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    let remapped = aggregator(render(get_datadog_agent_remappings(), &plan));
+    assert!(!remapped.is_empty());
+    assert_eq!(remapped, aggregator(render(get_datadog_agent_remappings(), &legacy)));
+
+    // The region's one output is named after the component it feeds, where the native transform had a default one.
+    let dsd_agg_outputs = |telemetry: &BTreeMap<Series, String>| {
+        telemetry
+            .keys()
+            .filter(|(name, tags)| {
+                name == "component_events_sent_total" && tags.iter().any(|tag| tag == "component_id:dsd_agg")
+            })
+            .flat_map(|(_, tags)| tags.iter().filter_map(|tag| tag.strip_prefix("output:")))
+            .map(String::from)
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(dsd_agg_outputs(&legacy), ["_default".to_string()].into_iter().collect());
+    assert_eq!(dsd_agg_outputs(&plan).len(), 1);
+    assert!(!dsd_agg_outputs(&plan).contains("_default"));
+}
+
+/// Runs `path` on the connected configuration path with clocked aggregation: the DogStatsD source receives the gauge
+/// `foo.max`, the gauge `kept`, and the counter `bar.avg`; then a live update sets the metric filterlist to `foo.max`
+/// and `bar.avg`, and input ends, which flushes aggregation. Returns every counter, and the names the main output
+/// received.
+async fn filtered_live(path: MetricsPath) -> (BTreeMap<Series, u64>, Vec<String>) {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use crate::{
+        internal::ConfigUpdatesWorker,
+        programmable_metrics::test_support::{connected_configuration_system, update},
+    };
+
+    let recorder = TestRecorder::default();
+    let deliveries = {
+        let _recorder = metrics::set_default_local_recorder(&recorder);
+        let (system, updates, stream) = connected_configuration_system("").await;
+        let topology = TestTopology::start(&system, Options::new(path, Aggregation::Clocked), |supervisor| {
+            supervisor.add_worker(ConfigUpdatesWorker::new(updates))
+        })
+        .await;
+        topology.feed(
+            "dsd_in.metrics",
+            vec![
+                Metric::gauge(Context::from_static_name("foo.max"), 1.0),
+                Metric::gauge(Context::from_static_name("kept"), 2.0),
+                Metric::counter(Context::from_static_name("bar.avg"), 3.0),
+            ],
+        );
+        let patience = tokio::time::Instant::now() + Duration::from_secs(30);
+        while topology.sent("dsd_in.metrics") < 1 {
+            assert!(
+                tokio::time::Instant::now() < patience,
+                "the source never sent its batch"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        stream
+            .send(update("metric_filterlist", json!(["foo.max", "bar.avg"])))
+            .await
+            .unwrap();
+        // The configuration changes; the plan's installer then commits a generation that filters by it, and the
+        // legacy filter reads it from its watch.
+        while system.config().domains.dogstatsd.metric_filter.values.is_empty() {
+            assert!(tokio::time::Instant::now() < patience, "the update never applied");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        match topology.status() {
+            Some(status) => loop {
+                let status = status.load();
+                let committed = status
+                    .installer
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.id.get() > 1);
+                if committed && status.installer.preparing.is_none() && status.installer.pending.is_none() {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < patience,
+                    "the change never committed: {}",
+                    status
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            },
+            None => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+        topology.stop().await
+    };
+    let names = deliveries
+        .iter()
+        .filter(|delivery| delivery.output == "dd_metrics_encode")
+        .flat_map(|delivery| {
+            delivery
+                .metrics
+                .iter()
+                .map(|metric| metric.context().name().to_string())
+        })
+        .collect();
+    let counters = recorder
+        .counters()
+        .into_iter()
+        .map(|(key, value)| {
+            let mut labels = key
+                .labels()
+                .map(|label| format!("{}:{}", label.key(), label.value()))
+                .collect::<Vec<_>>();
+            labels.sort();
+            ((key.name().to_string(), labels), value)
+        })
+        .collect();
+    (counters, names)
+}
+
+#[tokio::test]
+async fn aggregated_metrics_a_live_filterlist_update_filters_count_in_the_post_aggregation_filters_series() {
+    let (legacy, legacy_names) = filtered_live(MetricsPath::Legacy).await;
+    let (plan, plan_names) = filtered_live(MetricsPath::Plan).await;
+    let counter = |counters: &BTreeMap<Series, u64>, name: &str, tags: &[&str]| {
+        counters
+            .get(&series(name, tags))
+            .copied()
+            .unwrap_or_else(|| panic!("no series {} {:?}", name, tags))
+    };
+
+    // The filterlist names the gauge `foo.max` and the counter `bar.avg`, both kinds the post-aggregation filter judges
+    // whatever their name says: only `kept` reaches the main output.
+    assert_eq!(legacy_names, ["kept"]);
+    assert_eq!(plan_names, ["kept"]);
+
+    // The filter's native counter counts both, as natively.
+    let filtered = |counters: &BTreeMap<Series, u64>| {
+        counter(
+            counters,
+            "dogstatsd_post_aggregate_filtered_metrics_total",
+            &["component_id:dsd_post_agg_filter", "component_type:transform"],
+        )
+    };
+    assert_eq!(filtered(&legacy), 2);
+    assert_eq!(filtered(&plan), 2);
+
+    // Aggregation emitted only `kept`: it suppressed the two records the filter drops (R5b), under the live binding's
+    // new value, and counted them as the filter's: what its `true` port sent, and its drop's policy loss.
+    assert_eq!(
+        counter(&plan, "plan_node_events_total", &["component_id:dsd_agg", "port:out"]),
+        1
+    );
+    assert_eq!(
+        counter(
+            &plan,
+            "plan_node_events_total",
+            &["component_id:dsd_post_agg_filter", "port:true"]
+        ),
+        2
+    );
+    assert_eq!(
+        counter(
+            &plan,
+            "plan_loss_total",
+            &["class:policy", "component_id:dsd_post_agg_filter_true"]
+        ),
+        2
+    );
 }

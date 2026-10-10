@@ -169,7 +169,7 @@ pub(crate) fn canonical_order(nodes: &[ArtifactNode], edges: &[ArtifactEdge], sh
     }
     let node_of = |port: &ArtifactPortRef| match port {
         ArtifactPortRef::Node { node, .. } => index.get(node.as_str()).copied(),
-        ArtifactPortRef::Input(_) => None,
+        ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => None,
     };
 
     let mut remaining = vec![0usize; nodes.len()];
@@ -186,6 +186,8 @@ pub(crate) fn canonical_order(nodes: &[ArtifactNode], edges: &[ArtifactEdge], sh
                 Some(source) => leaving[source].push((i, port)),
                 None => dangling.push(i),
             },
+            // An edge never leaves an exit: such an edge is invalid, and kept with the other dangling ones.
+            ArtifactPortRef::Exit(_) => dangling.push(i),
         }
     }
     // Edges with the same ends are invalid; they keep their relative order.

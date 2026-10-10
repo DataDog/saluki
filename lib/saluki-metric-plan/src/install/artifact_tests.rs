@@ -1,7 +1,12 @@
 //! The installer core's artifact paths, driven by snapshots as the channel delivers them, with the acknowledgments and
 //! status expected after each step written by hand.
 
-use std::{cell::Cell, collections::BTreeSet, fmt::Write as _, time::Duration};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    time::Duration,
+};
 
 use proptest::prelude::*;
 use saluki_core::execution::{GenerationId, GenerationRef};
@@ -15,7 +20,7 @@ use crate::{
     canonical::{PlanHash, ResolvedValues},
     channel::{ApplyState, ArtifactConfig, ArtifactConfigId, ArtifactProduct, ArtifactSnapshot, ConfigAcknowledgment},
     compile::SlotId,
-    compose::{Approval, ComposeError, Composed, Composer},
+    compose::{Approval, ComposeError, Composed, Composer, ScopeComposition},
     ir::{OutputId, Plan, ReceivedArtifact},
     operators::OperatorRegistry,
     runtime::PanicBudget,
@@ -27,14 +32,14 @@ use crate::{
 const BOOT_LISTENER: &str = "tenant.raw.blocked";
 
 /// The post-aggregation filter of the boot default program.
-const BOOT_POST_AGGREGATION: &str = "tenant.checkout.latency.max";
+pub(super) const BOOT_POST_AGGREGATION: &str = "tenant.checkout.latency.max";
 
 /// Why the test host fails a generation under supervision.
 const PANICS: &str = "3 panics in 60 seconds";
 
 /// The default program with its listener filterlist and post-aggregation filter set to one value each. In these tests,
 /// an artifact's policy is its listener filterlist, and configuration changes set the post-aggregation filter.
-fn program(listener: &str, post_aggregation: &str) -> Plan {
+pub(super) fn program(listener: &str, post_aggregation: &str) -> Plan {
     edited(|value| {
         node_mut(value, "dsd_prefix_filter_blocklist")["params"]["predicate"]["intake_name"]["matches"]["values"]
             ["resolved"] = json!([listener]);
@@ -73,16 +78,16 @@ fn marker_of(artifact: &ReceivedArtifact) -> String {
 /// `unmodified` composes to the default program itself, as an unmodified export does; `invalid` composes to a plan
 /// that does not validate; `uncomposable` cannot be composed; and `fragile` cannot be composed once the configuration
 /// changed, as an artifact whose output was removed.
-struct TestComposer {
+pub(super) struct TestComposer {
     /// The post-aggregation filter of the default program the host last lowered.
-    configuration: Cell<&'static str>,
+    pub(super) configuration: Cell<&'static str>,
 
     /// Whether the default program changed structurally since the artifacts' export.
     structural: Cell<bool>,
 }
 
 impl TestComposer {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             configuration: Cell::new(BOOT_POST_AGGREGATION),
             structural: Cell::new(false),
@@ -91,7 +96,12 @@ impl TestComposer {
 }
 
 impl Composer for TestComposer {
-    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
+    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
+        let [(artifact, approval)] = artifacts else {
+            return Err(ComposeError::Malformed {
+                message: format!("the test composes one artifact, not {}", artifacts.len()),
+            });
+        };
         let configuration = self.configuration.get();
         let marker = marker_of(artifact);
         let (plan, catalog) = match marker.as_str() {
@@ -111,14 +121,22 @@ impl Composer for TestComposer {
             listener => (program(listener, configuration), default_program_catalog()),
         };
         let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
+        let stale_base = self.structural.get();
+        let stale_review = approval
+            .approved_against
+            .is_some_and(|approved| Some(approved) != approval.active_plan_hash);
+        let scope = ScopeComposition {
+            correspondence: Correspondence::new(),
+            stale_base,
+            stale_review,
+        };
         Ok(Composed {
             plan,
             report,
             correspondence: Correspondence::new(),
-            stale_base: self.structural.get(),
-            stale_review: approval
-                .approved_against
-                .is_some_and(|approved| Some(approved) != approval.active_plan_hash),
+            stale_base,
+            stale_review,
+            scopes: BTreeMap::from([(artifact.artifact.scope.clone(), scope)]),
         })
     }
 }
@@ -138,7 +156,7 @@ enum Damage {
 
 /// A policy config, as a publisher builds it.
 #[derive(Clone, Debug)]
-struct Policy {
+pub(super) struct Policy {
     id: String,
     version: u64,
     revision: u64,
@@ -148,7 +166,7 @@ struct Policy {
 }
 
 /// The `demo` config at version and revision `revision`, with the artifact `marker`.
-fn policy(revision: u64, marker: &'static str) -> Policy {
+pub(super) fn policy(revision: u64, marker: &'static str) -> Policy {
     Policy {
         id: "demo".to_string(),
         version: revision,
@@ -214,7 +232,7 @@ impl Policy {
     }
 }
 
-fn snapshot(policies: &[Policy]) -> ArtifactSnapshot {
+pub(super) fn snapshot(policies: &[Policy]) -> ArtifactSnapshot {
     ArtifactSnapshot::new(ArtifactProduct::Policy, policies.iter().map(Policy::config).collect())
 }
 
@@ -1252,6 +1270,26 @@ fn cases() -> Vec<Case> {
             ],
         },
         Case {
+            name:
+                "the artifact in effect delivered again under its own revision acknowledges the current state, after \
+                   a newer artifact was rejected too",
+            steps: vec![
+                (
+                    Deliver(vec![policy(7, "a")]),
+                    "g1 default hw7 preparing g2 | demo v7 r7 pending g2",
+                ),
+                (Acknowledge, "g2 demo@7 hw7 kept g1 | demo v7 r7 active g2"),
+                (
+                    Deliver(vec![policy(8, "invalid")]),
+                    "g2 demo@7 hw8 kept g1 | demo v8 r8 rejected g- (invalid)",
+                ),
+                (
+                    Deliver(vec![policy(7, "a")]),
+                    "g2 demo@7 hw8 kept g1 | demo v7 r7 active g2",
+                ),
+            ],
+        },
+        Case {
             name: "a released last-known-good artifact stays prepared until its generation retires",
             steps: vec![
                 (
@@ -1447,7 +1485,7 @@ fn a_revoked_policy_leaves_effect_at_once_while_its_generation_runs_until_replac
         vec![
             "install the default program".to_string(),
             "prepare 3 [0:unchanged reuse 1 build 0, 1:changed reuse 1 build 0, 2:unchanged reuse 2 build 0, \
-             3:unchanged reuse 0 build 0, 4:unchanged reuse 2 build 0]"
+             3:unchanged reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0]"
                 .to_string(),
             "candidate 3 generation 3: pending".to_string(),
         ]
@@ -1547,8 +1585,9 @@ fn a_snapshot_with_many_configs_is_rejected_with_a_message_that_names_a_few() {
     let states = host.core().config_states();
     assert_eq!(states.len(), 30);
     let expected = "the policy snapshot holds 30 configs (`config-00`, `config-01`, `config-02`, `config-03`, \
-                    `config-04`, `config-05`, `config-06`, `config-07`, `config-08`, `config-09`, and 20 more), but \
-                    one policy replaces the policy region: every config is rejected until the snapshot holds one";
+                    `config-04`, `config-05`, `config-06`, `config-07`, `config-08`, `config-09`, and 20 more) for \
+                    scope `post_enrich`, but one artifact replaces a scope: every config for it is rejected until the \
+                    snapshot holds one";
     for ack in &states {
         assert_eq!(
             (ack.state, ack.error.as_deref()),
@@ -1650,17 +1689,33 @@ struct Model {
 
     /// The generations supervision failed while they were active or kept.
     failed_generations: BTreeSet<GenerationId>,
+
+    /// The configs of the snapshot the core handled last.
+    last: Vec<Policy>,
 }
 
 impl Model {
     /// Records a delivery the core handles, while `active` is the active generation.
+    ///
+    /// Every test artifact replaces the policy scope. The configs that pass their integrity checks are counted for it:
+    /// one is handled, unless it was handled alone in the last snapshot and is held unchanged, and more are all
+    /// rejected.
     fn deliver(&mut self, policies: &[Policy], active: GenerationId) {
-        match policies {
-            [] => {
+        let last = std::mem::replace(&mut self.last, policies.to_vec());
+        let checked = |policies: &[Policy]| {
+            policies
+                .iter()
+                .filter(|policy| policy.damage.is_none())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let crowded = checked(&last).len() > 1;
+        match (policies, checked(policies).as_slice()) {
+            ([], _) => {
                 self.revoked.extend(self.accepted.iter().map(|(_, hash)| *hash));
                 self.revoked_running = Some(active);
             }
-            [policy] if policy.damage.is_none() => {
+            (_, [policy]) if crowded || !last.iter().any(|earlier| earlier.config() == policy.config()) => {
                 let hash = artifact_hash(policy.marker);
                 if self.high_water.is_none_or(|high_water| policy.revision > high_water) {
                     self.accepted.insert((policy.revision, hash));

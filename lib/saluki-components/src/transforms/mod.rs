@@ -6,12 +6,12 @@ pub use self::autoscaling_failover_gateway::AutoscalingFailoverGatewayConfigurat
 mod aggregate;
 pub use self::aggregate::{
     aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotEntry,
-    AggregateContextSnapshotHandle, AggregateContextSnapshotReceiver, AggregateMetricType, HistogramConfiguration,
+    AggregateContextSnapshotHandle, AggregateContextSnapshotPendingResponse, AggregateContextSnapshotReceiver,
+    AggregateContextSnapshotRequests, AggregateMetricType, HistogramConfiguration,
 };
 #[cfg(feature = "test-util")]
 pub use self::aggregate::{
-    aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotPendingResponse,
-    AggregateContextSnapshotResponder,
+    aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotResponder, ClockedAggregateConfiguration,
 };
 
 mod chained;

@@ -34,6 +34,11 @@ pub mod routes {
     /// The export bundle of the default program's policy scope.
     pub const EXPORT: &str = "/programmable-metrics/export?scope=post_enrich";
 
+    /// Returns the route of the export bundle of one scope of the default program.
+    pub fn export_of(scope: &str) -> String {
+        format!("/programmable-metrics/export?scope={}", scope)
+    }
+
     /// The active composed logical plan.
     pub const PLAN: &str = "/programmable-metrics/plan";
 

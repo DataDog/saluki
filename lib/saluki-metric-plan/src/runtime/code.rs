@@ -55,6 +55,24 @@ pub(super) enum Op {
 
     /// Buffers discarded as policy loss of a `drop` node, by its index in the program's [`Layout`].
     Drop { register: usize, drop: usize },
+
+    /// Buffers handed to a state owner's kernel, with the per-call parameters at `params` in the program's state
+    /// parameter table.
+    State {
+        kernel: usize,
+        register: usize,
+        params: usize,
+    },
+}
+
+/// What a region runs a state owner's kernel with: its per-call parameters, and the entry its time-driven output runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StateKernelCode {
+    /// The kernel's entry of the program's state parameter table, as the steps that feed it say.
+    pub params: Option<usize>,
+
+    /// The position, among the program's entries, of the entry its time-driven output runs.
+    pub output: usize,
 }
 
 /// The ops of one entry.
@@ -83,21 +101,28 @@ pub(super) struct ProgramCode {
     pub registers: usize,
     /// Every decision of the program that a step runs, by decision index.
     pub decisions: Vec<Option<DecisionCode>>,
+    /// What each state owner's kernel runs with, by kernel index; `None` for a stateless kernel.
+    pub state_kernels: Vec<Option<StateKernelCode>>,
 }
 
 impl ProgramCode {
-    /// Translates a program for a region with `exit_count` exits.
+    /// Translates a program for a region with `exit_count` exits, which is an isolation slot's if `isolation`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the program refers to a kernel, decision, register, or exit it does not have, if a
-    /// decision is malformed, or if a decision's targets do not match its exits: a program the region cannot run.
-    pub fn translate(program: &RegionProgram, layout: &Layout, exit_count: usize) -> Result<Self, RegionError> {
+    /// Returns an error if the program refers to a kernel, decision, register, exit, or state parameters it does not
+    /// have, if a decision is malformed, if a decision's targets do not match its exits, if a state owner's kernel runs
+    /// outside an isolation slot, as a stateless step, or without exactly one entry for its time-driven output, or if
+    /// an isolation slot's program has any step but state steps and exits: a program the region cannot run.
+    pub fn translate(
+        program: &RegionProgram, layout: &Layout, exit_count: usize, isolation: bool,
+    ) -> Result<Self, RegionError> {
         let malformed = |entry: &EntryKey, message: String| RegionError::MalformedProgram {
             slot: program.slot(),
             entry: *entry,
             message,
         };
+        let stateful = |index: KernelIndex| program.kernel(index).is_some_and(|kernel| kernel.lineage.is_some());
 
         // Every decision a step runs compiles to its function once, here, rather than for every batch.
         let mut decisions = vec![None; program.decisions().len()];
@@ -129,6 +154,15 @@ impl ProgramCode {
                 let kernel = program
                     .kernel(index)
                     .ok_or_else(|| malformed(key, format!("a step uses kernel {}, which the program lacks", index)))?;
+                if kernel.lineage.is_some() {
+                    return Err(malformed(
+                        key,
+                        format!(
+                            "the state owner `{}` runs as a stateless step; its batches are handed to its state",
+                            kernel.key.node
+                        ),
+                    ));
+                }
                 match ports {
                     Some(ports) if ports != kernel.ports.len() => Err(malformed(
                         key,
@@ -145,6 +179,12 @@ impl ProgramCode {
 
             let mut ops = Vec::with_capacity(entry.steps.len());
             for step in &entry.steps {
+                if isolation && !matches!(step, Step::State { .. } | Step::Exit { .. }) {
+                    return Err(malformed(
+                        key,
+                        "a stateless step runs in an isolation slot, which runs only state owners".to_string(),
+                    ));
+                }
                 let op = match step {
                     Step::Map {
                         kernel: index,
@@ -264,6 +304,41 @@ impl ProgramCode {
                             .drop_index(node)
                             .ok_or_else(|| malformed(key, format!("drop node `{}` has no counts", node)))?,
                     },
+                    Step::State {
+                        kernel: index,
+                        register: id,
+                        params,
+                    } => {
+                        let Some(found) = program.kernel(*index).filter(|_| stateful(*index)) else {
+                            return Err(malformed(
+                                key,
+                                format!("a step feeds kernel {} its state, which is no state owner's", index),
+                            ));
+                        };
+                        if !isolation {
+                            return Err(malformed(
+                                key,
+                                format!(
+                                    "a step feeds the state owner `{}`, which runs only in an isolation slot",
+                                    found.key.node
+                                ),
+                            ));
+                        }
+                        if program.state_param(*params).is_none() {
+                            return Err(malformed(
+                                key,
+                                format!(
+                                    "the state owner `{}` takes state parameters {}, which the program lacks",
+                                    found.key.node, params
+                                ),
+                            ));
+                        }
+                        Op::State {
+                            kernel: index.get(),
+                            register: register(*id)?,
+                            params: params.get(),
+                        }
+                    }
                 };
                 ops.push(op);
             }
@@ -277,16 +352,58 @@ impl ProgramCode {
             });
         }
 
+        // Each state owner's kernel has its parameters, as its steps name them, and exactly one entry for its output.
+        let mut state_kernels = vec![None; program.kernels().len()];
+        for (index, kernel) in program.kernels().iter().enumerate() {
+            if kernel.lineage.is_none() {
+                continue;
+            }
+            let output_key = EntryKey::StateOutput(KernelIndex::new(index as u16));
+            let outputs = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.key == output_key)
+                .map(|(position, _)| position)
+                .collect::<Vec<_>>();
+            let [output] = outputs.as_slice() else {
+                return Err(malformed(
+                    &output_key,
+                    format!(
+                        "the state owner `{}` has {} entries for its time-driven output, and needs exactly one",
+                        kernel.key.node,
+                        outputs.len()
+                    ),
+                ));
+            };
+            let params = entries.iter().flat_map(|entry| &entry.ops).find_map(|op| match op {
+                Op::State {
+                    kernel: fed, params, ..
+                } if *fed == index => Some(*params),
+                _ => None,
+            });
+            state_kernels[index] = Some(StateKernelCode {
+                params,
+                output: *output,
+            });
+        }
+
         let registers = entries.iter().map(|entry| entry.registers).max().unwrap_or(0);
         Ok(Self {
             entries,
             registers,
             decisions,
+            state_kernels,
         })
     }
 
+    /// Returns what a state owner's kernel runs with, if the kernel at `kernel` is a state owner's.
+    pub fn state_kernel(&self, kernel: usize) -> Option<&StateKernelCode> {
+        self.state_kernels.get(kernel)?.as_ref()
+    }
+
     /// Returns the position of the entry a batch belongs to: by the entry its header carries, set by the slot that
-    /// sent it, or otherwise by the admission point that stamped it.
+    /// sent it, or otherwise by the admission point that stamped it. No batch belongs to the entry of a state owner's
+    /// time-driven output.
     pub fn entry_index(&self, header: &BatchHeader) -> Option<usize> {
         let key = match (header.entry, header.admission_point) {
             (Some(entry), _) => EntryKey::Region(entry),

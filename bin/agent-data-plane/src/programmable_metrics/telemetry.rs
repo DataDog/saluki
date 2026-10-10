@@ -6,11 +6,14 @@
 //!   `plan_loss_total`, and the native metrics that a node's [telemetry profile](super::telemetry_profiles) says the
 //!   region host counts on a port of the node (`MetricSource::PortEvents`). It also names the component each kernel
 //!   reports its own telemetry as, and the resource group each kernel's memory and CPU time are accounted to:
-//!   `<region>.<node>`, under the region's own, as a native component's sub-transforms are.
+//!   `<region>.<node>`, under the region's own, as a native component's sub-transforms are. A state owner in an
+//!   isolation slot named after it, as DogStatsD aggregation runs in `dsd_agg`, stands for the native component itself:
+//!   its kernel is accounted in the region's own group, and draws on the host's budgets of state.
 //! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the active artifact's revision,
-//!   the live generations, the installations by outcome, and the rewrites applied in compiling the active generation,
-//!   and the native metrics that telemetry profiles say the installer records from the plan a generation runs
-//!   (`MetricSource::BindingLength`, `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
+//!   the live generations, the installations by outcome, the cut installations by how they ended and the refused
+//!   cancellations of cuts, and the rewrites applied in compiling the active generation, and the native metrics that
+//!   telemetry profiles say the installer records from the plan a generation runs (`MetricSource::BindingLength`,
+//!   `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
 
 use std::collections::BTreeMap;
 
@@ -27,10 +30,12 @@ use saluki_metric_kernels::{
     tag_projection::{TagProjectionRules, ValueRules},
 };
 use saluki_metric_plan::{
-    compile::{RegionProgram, RewriteId, RewriteRecord},
+    compile::{Frame, RegionProgram, RewriteId, RewriteRecord, SlotId},
     ir::{BindingName, Namespace, Node, NodeId, Plan, PortName},
     operators::{decode_tag_filter_rules, decode_tag_value_rules, KernelBuildContext, OperatorRegistry},
-    runtime::{kernel_accounting_name, PlanTelemetry, RegisterTelemetry},
+    runtime::{
+        kernel_accounting_name, kernel_accounting_path, PlanTelemetry, RegisterTelemetry, StateBudgets, StateTelemetry,
+    },
 };
 use saluki_metrics::{Counter, Gauge, MetricsBuilder};
 use serde_json::Value;
@@ -54,6 +59,43 @@ pub const PLAN_INSTALLS_TOTAL: &str = "plan_installs_total";
 
 /// The name of the gauge of the rewrites applied in compiling the active generation, tagged `rewrite`.
 pub const PLAN_REWRITES_APPLIED: &str = "plan_rewrites_applied";
+
+/// The name of the counter of cut installations by how they ended, tagged `outcome`: each cut is counted once, when it
+/// ends, so the counts add up to the cuts that ended.
+pub const PLAN_CUTS_TOTAL: &str = "plan_cuts_total";
+
+/// The name of the counter of cancellations of a cut that were refused, because an admission point had stamped the
+/// cut's new generation or the locks were not free in time. A refusal ends nothing: the cut then completes, and
+/// `plan_cuts_total` counts it as such.
+pub const PLAN_CUT_CANCELLATIONS_REFUSED_TOTAL: &str = "plan_cut_cancellations_refused_total";
+
+/// How a cut installation ended, as `plan_cuts_total` counts it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CutOutcome {
+    /// Every affected admission point passed the cut, and the schedule holds the new generation alone.
+    Completed,
+
+    /// The cut was cancelled before any admission point stamped its new generation.
+    Cancelled,
+
+    /// The cut's generation was given up before the cut was ever armed: arming was put off too many times, the cut
+    /// could not be armed, or a newer proposal replaced it first.
+    NotArmed,
+}
+
+impl CutOutcome {
+    /// Every outcome, in the order the installer registers their counters.
+    pub const ALL: [Self; 3] = [Self::Completed, Self::Cancelled, Self::NotArmed];
+
+    /// Returns the outcome's tag value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::NotArmed => "not_armed",
+        }
+    }
+}
 
 /// What became of a candidate plan, as `plan_installs_total` counts it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,6 +154,9 @@ pub struct RegionTelemetry {
     plan: PlanTelemetry,
     topology: SubsystemIdentifier,
     accounting: Option<Accounting>,
+    state_budgets: StateBudgets,
+    /// The isolation slots of the frame, by slot, with their region's name.
+    isolation: BTreeMap<SlotId, String>,
 }
 
 impl RegionTelemetry {
@@ -121,6 +166,8 @@ impl RegionTelemetry {
             plan: PlanTelemetry::new(MetricsBuilder::default()),
             topology,
             accounting: None,
+            state_budgets: StateBudgets::unlimited(),
+            isolation: BTreeMap::new(),
         }
     }
 
@@ -128,6 +175,19 @@ impl RegionTelemetry {
     /// the identities of the regions, in slot order.
     pub fn with_accounting(mut self, registry: ComponentRegistry, regions: Vec<SubsystemIdentifier>) -> Self {
         self.accounting = Some(Accounting { registry, regions });
+        self
+    }
+
+    /// Builds the kernels of the isolation slots of `frame` with the budgets of state of `budgets`, which every lineage
+    /// of every state owner shares, and accounts each in its region's own group when the region is named after it.
+    pub fn with_state(mut self, budgets: StateBudgets, frame: &Frame) -> Self {
+        self.state_budgets = budgets;
+        self.isolation = frame
+            .slots()
+            .iter()
+            .filter(|slot| slot.is_isolation())
+            .map(|slot| (slot.id, slot.name.to_string()))
+            .collect();
         self
     }
 
@@ -152,6 +212,11 @@ impl RegionTelemetry {
     /// Returns the context to build the kernel of `node`, of `program`, in: reported as [`component`][Self::component]
     /// says, and accounted to the resource group `<region>.<node>` (`<region>.policy` for a node in the policy
     /// namespace), whose bounds `RegionBounds` declares under the same name.
+    ///
+    /// A kernel of an isolation slot draws on the budgets of state ([`with_state`][Self::with_state]): the global
+    /// budget and its node's. If the slot is named after the kernel's node, as `dsd_agg` is after DogStatsD
+    /// aggregation, the region stands for the node's native component, and the kernel is accounted in the region's own
+    /// group (see `kernel_accounting_path`).
     pub fn kernel_context(&self, program: &RegionProgram, node: &NodeId) -> KernelBuildContext {
         let operator = program
             .kernels()
@@ -159,9 +224,21 @@ impl RegionTelemetry {
             .find(|kernel| &kernel.key.node == node)
             .map_or("", |kernel| kernel.operator);
         let context = KernelBuildContext::new(node.clone(), self.component(node, operator));
+        let isolation = self.isolation.get(&program.slot());
+        let context = match isolation {
+            Some(_) => context.with_state_budget(self.state_budgets.context_budget(node)),
+            None => context,
+        };
         let group = self.accounting.as_ref().and_then(|accounting| {
-            let region = accounting.regions.get(program.slot().get())?;
-            let group = region.clone().child(kernel_accounting_name(node));
+            let region = accounting.regions.get(program.slot().get())?.clone();
+            let name = match isolation {
+                Some(region_name) => kernel_accounting_path(region_name, node),
+                None => Some(kernel_accounting_name(node)),
+            };
+            let group = match name {
+                Some(name) => region.child(name),
+                None => region,
+            };
             Some(accounting.registry.get_resource_group_token(&group))
         });
         match group {
@@ -191,6 +268,10 @@ impl RegisterTelemetry for RegionTelemetry {
     fn loss(&self, component_id: &str, class: LossClass) -> Counter {
         self.plan.loss(component_id, class)
     }
+
+    fn state(&self, region: &str) -> StateTelemetry {
+        self.plan.state(region)
+    }
 }
 
 /// The identity of one native metric the installer records: its name, and its labels and tags.
@@ -206,6 +287,8 @@ pub struct InstallerTelemetry {
     active_revision: Gauge,
     live_generations: Gauge,
     installs: Vec<(InstallOutcome, Counter)>,
+    cuts: Vec<(CutOutcome, Counter)>,
+    cut_cancellations_refused: Counter,
     rewrites: Vec<(RewriteId, Gauge)>,
     native_gauges: BTreeMap<NativeKey, Gauge>,
     native_counters: BTreeMap<NativeKey, Counter>,
@@ -228,11 +311,20 @@ impl InstallerTelemetry {
             (outcome, counter)
         })
         .collect();
+        let cuts = CutOutcome::ALL
+            .into_iter()
+            .map(|outcome| {
+                let counter = builder.register_counter_with_tags(PLAN_CUTS_TOTAL, [("outcome", outcome.as_str())]);
+                (outcome, counter)
+            })
+            .collect();
         Self {
             active_generation: builder.register_gauge(PLAN_ACTIVE_GENERATION),
             active_revision: builder.register_gauge(PLAN_ACTIVE_REVISION),
             live_generations: builder.register_gauge(PLAN_LIVE_GENERATIONS),
             installs,
+            cuts,
+            cut_cancellations_refused: builder.register_counter(PLAN_CUT_CANCELLATIONS_REFUSED_TOTAL),
             rewrites: Vec::new(),
             topology,
             native_gauges: BTreeMap::new(),
@@ -245,6 +337,18 @@ impl InstallerTelemetry {
         if let Some((_, counter)) = self.installs.iter().find(|(counted, _)| *counted == outcome) {
             counter.increment(1);
         }
+    }
+
+    /// Counts how a cut installation ended. Call it once per cut.
+    pub fn cut(&self, outcome: CutOutcome) {
+        if let Some((_, counter)) = self.cuts.iter().find(|(counted, _)| *counted == outcome) {
+            counter.increment(1);
+        }
+    }
+
+    /// Counts a cancellation of a cut that was refused: the cut continues.
+    pub fn cut_cancellation_refused(&self) {
+        self.cut_cancellations_refused.increment(1);
     }
 
     /// Sets the active generation and the number of live generations.

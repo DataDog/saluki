@@ -12,6 +12,11 @@
 //!   gateways), against a baseline that filters with the compiled predicate, copies the buffer for the tap, calls both
 //!   kernels, and copies the buffer for each gateway.
 //!
+//! - **Aggregation**: the default program's isolation slot `dsd_agg`, with aggregation as a stateful kernel behind its
+//!   isolation fence: admitting a batch of 1,024 metrics over 256 contexts, and a flush tick that closes the buckets
+//!   of 100,000 contexts, run in drain steps of the limits table's size, as the region host runs them, against the
+//!   kernel called directly in one call.
+//!
 //! Setup checks that each side delivers the same events to each destination. The baselines are what hand-written
 //! components would do, with no program, no registers, and no telemetry.
 
@@ -25,13 +30,14 @@ use saluki_core::{
     },
     data_model::tags::{Tag, TagSet},
     execution::{
-        AdmissionPointId, AdmissionTime, BatchHeader, Budget, ExitSink, GenerationId, GenerationRef, GenerationToken,
-        Kernel, PortIndex, PortOutputs, RegionDriver, RegionTurn, Turn, TurnCounters,
+        AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, Budget, ExitSink, GenerationId, GenerationRef,
+        GenerationToken, Kernel, PortIndex, PortOutputs, Progress, RegionDriver, RegionTurn, Turn, TurnCounters,
+        WallClock, WorkKind,
     },
     topology::EventsBuffer,
 };
 use saluki_metric_plan::{
-    compile::{compile, CompiledPlan, Frame, FrameTarget, RegionProgram, SlotId},
+    compile::{compile, CompiledPlan, EntryKey, Frame, FrameTarget, RegionProgram, SlotId, SlotKind, Step},
     ir::{NativeComponentId, NodeId, Plan},
     model::EventView,
     operators::{KernelBuildContext, OperatorRegistry},
@@ -414,7 +420,7 @@ fn bench_pre_aggregation(c: &mut Criterion) {
         slot_named(&frame, "dsd_prefix_filter_region"),
         slot_named(&frame, "dsd_no_agg_split_region"),
     ];
-    let aggregation = FrameTarget::Fixed("dsd_agg".parse().unwrap());
+    let aggregation = FrameTarget::Slot(slot_named(&frame, "dsd_agg"));
     let merge = FrameTarget::Slot(slot_named(&frame, "dsd_post_agg_filter_region"));
     let now = Instant::now();
 
@@ -478,8 +484,26 @@ fn bench_post_aggregation(c: &mut Criterion) {
     ];
     let mut pipeline = Pipeline::new(&frame, &compiled, &generation, &slots);
     let mut baseline = PostAggregationBaseline::new(&compiled, &frame);
-    // Batches from aggregation are admitted again at its output, admission point 1.
-    let batch = aggregated_input(header(&generation, 1));
+    // Batches from aggregation carry its isolation slot's output point, which stamps its time-driven output, and the
+    // entry of the post-aggregation filter's region that its exit sets.
+    let aggregation = slot_named(&frame, "dsd_agg");
+    let SlotKind::Isolation { output_point, .. } = frame.slot(aggregation).unwrap().kind else {
+        panic!("aggregation runs in an isolation slot");
+    };
+    let entry = compiled.programs[aggregation.get()]
+        .entries()
+        .iter()
+        .filter(|entry| matches!(entry.key, EntryKey::StateOutput(_)))
+        .flat_map(|entry| &entry.steps)
+        .find_map(|step| match step {
+            Step::Exit { entry, .. } => *entry,
+            _ => None,
+        })
+        .expect("aggregation's output leads to the post-aggregation filter's region");
+    let mut batch = aggregated_input(header(&generation, output_point.get()));
+    let mut stamped = batch.take_header();
+    stamped.entry = Some(entry);
+    batch.set_header(stamped);
     let now = Instant::now();
 
     // Equal delivered work: the same events leave toward the tap, the gateways, and the primary output.
@@ -512,5 +536,279 @@ fn bench_post_aggregation(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_pre_aggregation, bench_post_aggregation);
+/// The default program's isolation slot `dsd_agg`: its driver, the generation and point
+/// its batches carry, and its number of exits.
+struct Aggregation {
+    driver: MetricRegionDriver,
+    generation: GenerationRef,
+    point: AdmissionPointId,
+    exits: usize,
+    wall: Arc<BenchClock>,
+}
+
+/// A wall clock the benchmark sets.
+#[derive(Debug, Default)]
+struct BenchClock(std::sync::atomic::AtomicU64);
+
+impl WallClock for BenchClock {
+    fn now(&self) -> AdmissionTime {
+        AdmissionTime::from_unix_nanos(self.0.load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Aggregation {
+    fn new(now: Instant) -> Self {
+        let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+        let registry = OperatorRegistry::native();
+        let report = Validator::new(&registry, &default_program_catalog()).validate(&plan);
+        assert!(report.is_valid(), "{}", report);
+        let frame = Frame::compute(&plan, &registry, &namer).unwrap();
+        let compiled = compile(&plan, &report, &registry, &frame).unwrap();
+        let slot = frame.slot(slot_named(&frame, "dsd_agg")).unwrap().clone();
+        let program = Arc::clone(&compiled.programs[slot.id.get()]);
+        let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+        let keys = program.kernels().iter().map(|kernel| &kernel.key);
+        let kernels = build_kernels(&program, keys, KernelBuildContext::detached).unwrap();
+        let boot = PrepareRegion::new(
+            Arc::clone(&generation),
+            program,
+            kernels,
+            PanicBudget::DEFAULT_PROGRAM,
+            &NoTelemetry,
+        );
+        let wall = Arc::new(BenchClock::default());
+        let config = RegionConfig::for_slot(&slot, &NoTelemetry)
+            .with_schedule(AdmissionSchedule::Steady(Arc::clone(&generation)).into_handle())
+            .with_wall_clock(Arc::clone(&wall) as Arc<dyn WallClock>);
+        let mut driver = MetricRegionDriver::new(config, boot).unwrap();
+        driver.start(&mut RegionTurn::new(now, &mut Budget::unlimited()));
+        Self {
+            driver,
+            generation,
+            // DogStatsD's point is the one upstream of aggregation.
+            point: AdmissionPointId::new(0),
+            exits: slot.exits.len(),
+            wall,
+        }
+    }
+
+    fn header(&self, at: AdmissionTime) -> BatchHeader {
+        BatchHeader {
+            admitted_at: Some(at),
+            admission_point: Some(self.point),
+            epoch: 0,
+            generation: Some(Arc::clone(&self.generation)),
+            entry: Some(saluki_core::execution::EntryId::new(0)),
+        }
+    }
+
+    /// Admits 100,000 contexts, a counter and a gauge per 2, at `at`.
+    fn hold_contexts(&mut self, at: AdmissionTime, now: Instant) {
+        for buffer in held_contexts(self.header(at)) {
+            let mut sink = ExitSink::new(self.exits);
+            self.driver
+                .process(&mut RegionTurn::new(now, &mut Budget::unlimited()), buffer, &mut sink);
+        }
+    }
+
+    /// Raises the watermark to `at` with a heartbeat, and runs the flush tick due at `due`, with the wall clock at
+    /// `at`, in drain steps of the limits table's size; returns the events it emitted.
+    fn flush(&mut self, at: AdmissionTime, due: Instant) -> usize {
+        self.wall
+            .0
+            .store(at.as_unix_nanos(), std::sync::atomic::Ordering::Relaxed);
+        let mut sink = ExitSink::new(self.exits);
+        let heartbeat = EventsBuffer::with_capacity(0).with_header(self.header(at));
+        self.driver.process(
+            &mut RegionTurn::new(due, &mut Budget::unlimited()),
+            heartbeat,
+            &mut sink,
+        );
+        let step = || {
+            Budget::unlimited()
+                .with_limit(WorkKind::Events, saluki_metric_plan::limits::values::DRAIN_STEP_EVENTS)
+                .with_limit(
+                    WorkKind::StateWork,
+                    saluki_metric_plan::limits::values::DRAIN_STEP_CONTEXTS,
+                )
+        };
+        let mut emitted = 0;
+        let mut budget = step();
+        let mut progress = self
+            .driver
+            .advance_time(&mut RegionTurn::new(due, &mut budget), &mut sink);
+        emitted += sink.event_count();
+        sink.clear();
+        while progress == Progress::Yielded {
+            let mut budget = step();
+            progress = self.driver.resume(&mut RegionTurn::new(due, &mut budget), &mut sink);
+            emitted += sink.event_count();
+            sink.clear();
+        }
+        emitted
+    }
+}
+
+/// Returns 100,000 contexts, a counter and a gauge per 2, in batches of 1,000 with `header`.
+fn held_contexts(header: BatchHeader) -> Vec<EventsBuffer> {
+    (0..(100_000 / 1_000))
+        .map(|chunk| {
+            let mut buffer = EventsBuffer::default().with_header(header.clone());
+            for index in 0..1_000 {
+                let context = Context::from_parts(format!("held.{}.{}", chunk, index), TagSet::default());
+                let metric = if index % 2 == 0 {
+                    Metric::counter(context, 1.0)
+                } else {
+                    Metric::gauge(context, 1.0)
+                };
+                assert!(buffer.try_push(Event::Metric(metric)).is_none());
+            }
+            buffer
+        })
+        .collect()
+}
+
+/// The default program's aggregation kernel, built outside any region, as the baseline calls it.
+fn aggregation_kernel() -> Box<dyn Kernel> {
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let node = plan.node(&"dsd_agg".parse().unwrap()).unwrap();
+    let operator = OperatorRegistry::native()
+        .configure(node.op.as_str(), &node.params)
+        .unwrap();
+    operator
+        .kernel()
+        .unwrap()
+        .build(&KernelBuildContext::detached(&node.id))
+        .unwrap()
+}
+
+/// The aggregation kernel called directly, holding 100,000 contexts admitted with `header`.
+struct HeldKernel {
+    kernel: Box<dyn Kernel>,
+    ports: PortOutputs,
+    counters: TurnCounters,
+}
+
+impl HeldKernel {
+    fn new(header: &BatchHeader, now: Instant) -> Self {
+        let mut held = Self {
+            kernel: aggregation_kernel(),
+            ports: PortOutputs::new(1),
+            counters: TurnCounters::default(),
+        };
+        for mut buffer in held_contexts(header.clone()) {
+            in_place(
+                &mut held.kernel,
+                header,
+                now,
+                &mut held.ports,
+                &mut held.counters,
+                &mut buffer,
+            );
+        }
+        held
+    }
+
+    /// Runs one flush at `at` in one call with no budget, as the kernel runs outside any region; returns the events it
+    /// emitted.
+    fn flush(&mut self, header: &BatchHeader, at: AdmissionTime, now: Instant) -> usize {
+        let mut budget = Budget::unlimited();
+        let progress = {
+            let mut turn =
+                Turn::new(header, now, &mut budget, &mut self.ports, &mut self.counters).with_watermark(Some(at));
+            self.kernel.advance_time(&mut turn)
+        };
+        assert_eq!(
+            progress,
+            Progress::Done,
+            "a flush without a budget completes in one call"
+        );
+        self.ports.drain(PortIndex::PRIMARY).map(|buffer| buffer.len()).sum()
+    }
+}
+
+fn bench_aggregation(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let _guard = runtime.enter();
+    let start = Instant::now();
+    let admitted = AdmissionTime::from_unix_secs(1_700_000_003);
+    let flushed = AdmissionTime::from_unix_secs(1_700_000_015);
+    let due = start + std::time::Duration::from_secs(15);
+    let mut group = c.benchmark_group("aggregation_isolation_slot");
+
+    // Admitting 1,024 metrics over 256 contexts, through the slot's state step and directly into the kernel.
+    let mut aggregation = Aggregation::new(start);
+    let batch = aggregated_input(aggregation.header(admitted));
+    let mut kernel = aggregation_kernel();
+    group.throughput(Throughput::Elements(1024));
+    group.bench_function("admit_1024/region_driver", |b| {
+        b.iter_batched(
+            || batch.clone(),
+            |batch| {
+                let mut sink = ExitSink::new(aggregation.exits);
+                aggregation
+                    .driver
+                    .process(&mut RegionTurn::new(start, &mut Budget::unlimited()), batch, &mut sink)
+            },
+            BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("admit_1024/kernel", |b| {
+        let header = aggregation.header(admitted);
+        let mut ports = PortOutputs::new(1);
+        let mut counters = TurnCounters::default();
+        b.iter_batched(
+            || batch.clone(),
+            |mut batch| in_place(&mut kernel, &header, start, &mut ports, &mut counters, &mut batch),
+            BatchSize::SmallInput,
+        )
+    });
+
+    // A flush tick over 100,000 contexts: the drain runs in bounded steps; every bucket closes, and every gauge leaves.
+    // The kernel called directly flushes them all in one call.
+    let mut check = Aggregation::new(start);
+    check.hold_contexts(admitted, start);
+    assert_eq!(
+        check.flush(flushed, due),
+        100_000,
+        "every context's bucket is emitted once"
+    );
+    let held_header = check.header(admitted);
+    assert_eq!(
+        HeldKernel::new(&held_header, start).flush(&held_header, flushed, due),
+        100_000,
+        "the kernel emits what the region does"
+    );
+    group.throughput(Throughput::Elements(100_000));
+    group.sample_size(10);
+    group.bench_function("flush_100000_contexts/region_driver", |b| {
+        b.iter_batched(
+            || {
+                let mut aggregation = Aggregation::new(start);
+                aggregation.hold_contexts(admitted, start);
+                aggregation
+            },
+            |mut aggregation| aggregation.flush(flushed, due),
+            BatchSize::PerIteration,
+        )
+    });
+    group.bench_function("flush_100000_contexts/kernel", |b| {
+        b.iter_batched(
+            || HeldKernel::new(&held_header, start),
+            |mut held| held.flush(&held_header, flushed, due),
+            BatchSize::PerIteration,
+        )
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_pre_aggregation,
+    bench_post_aggregation,
+    bench_aggregation
+);
 criterion_main!(benches);

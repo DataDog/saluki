@@ -2,10 +2,10 @@
 //!
 //! These checks are what can be said about an artifact before it is composed into a plan: that it replaces the
 //! exported scope, was written against the current default program, refers only to outputs, configuration bindings,
-//! and scope inputs the catalog declares (with matching fingerprints), gives every node parameters its operator
-//! accepts, and keeps no state (ADP does not accept stateful operators in artifacts yet). They are not validation:
-//! whether the composed plan is valid (types, duplicate contributions, bounds, authority) is the validator's to say, on
-//! the composed plan, so an artifact that passes them can still be rejected.
+//! and scope inputs the catalog declares (with matching fingerprints), and gives every node parameters its operator
+//! accepts. They are not validation: whether the composed plan is valid (types, duplicate contributions, bounds,
+//! authority) is the validator's to say, on the composed plan, and whether ADP can run its state owners where the
+//! artifact puts them is placement's, so an artifact that passes them can still be rejected.
 //!
 //! They are the fallback for an ADP that does not serve its default program (`GET
 //! /programmable-metrics/default-program`, since stage 5): with the default program in hand, compiling composes the
@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use saluki_metric_plan::{
     canonical::BINDING_MEMBER,
     ir::{ArtifactPortRef, BindingName, OutputId},
-    operators::{names, ConfigureError, OperatorRegistry, StateContract},
+    operators::{names, ConfigureError, OperatorRegistry},
     validate::Catalog as _,
 };
 use saluki_metric_plan_syntax::{Parsed, Span};
@@ -194,26 +194,11 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
     let registry = OperatorRegistry::native();
     for node in &artifact.nodes {
         let node_span = parsed.spans.node(node.id.as_str());
-        // A node the artifact keeps from the export as it is, operator and parameters, is the default program's own,
-        // which ADP does not check for state.
-        let exported = export
-            .artifact
-            .artifact
-            .nodes
-            .iter()
-            .any(|exported| exported.id == node.id && exported.op == node.op && exported.params == node.params);
-        // Whether the node keeps state between batches: from its contract when its parameters configure, and by its
-        // operator otherwise (aggregation is the stateful operator an author is likely to write). An opaque host's
-        // state is its host component's: whether an artifact may place one is the validator's to say, on the
-        // composed plan.
-        let stateful = match registry.configure(node.op.as_str(), &node.params) {
-            Err(ConfigureError::UnknownOperator { name, known }) => {
-                findings.push(Finding::error(
-                    format!("`{}` is not a registered operator. The operators are: {}.", name, known),
-                    node_span,
-                ));
-                false
-            }
+        match registry.configure(node.op.as_str(), &node.params) {
+            Err(ConfigureError::UnknownOperator { name, known }) => findings.push(Finding::error(
+                format!("`{}` is not a registered operator. The operators are: {}.", name, known),
+                node_span,
+            )),
             Err(ConfigureError::InvalidParams { operator, errors }) => {
                 for error in errors {
                     findings.push(Finding::error(
@@ -224,23 +209,8 @@ pub fn check_against_export(source: &str, parsed: &Parsed, export: &ExportBundle
                         parsed.spans.param(node.id.as_str(), &error.path).or(node_span),
                     ));
                 }
-                node.op.as_str() == names::AGGREGATE
             }
-            Ok(configured) => {
-                let contract = configured.contract();
-                let host_owned = contract.state == StateContract::Opaque && contract.boundary.is_fence();
-                contract.state != StateContract::None && !host_owned
-            }
-        };
-        if stateful && !exported {
-            findings.push(Finding::error(
-                format!(
-                    "Node `{}` (`{}`) keeps state between batches, and ADP does not accept stateful operators in \
-                     artifacts yet. Remove the node, or keep the processing in native configuration.",
-                    node.id, node.op
-                ),
-                node_span,
-            ));
+            Ok(_) => {}
         }
 
         if node.op.as_str() == names::EMIT {

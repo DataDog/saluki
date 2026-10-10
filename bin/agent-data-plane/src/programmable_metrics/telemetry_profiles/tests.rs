@@ -66,6 +66,13 @@ fn reserved_nodes_report_as_the_native_component_they_stand_for() {
             names::SOURCE,
             telemetry("trace_sampler", ComponentType::Transform, TelemetryProfile::Host),
         ),
+        // Aggregation keeps the native aggregation component's identity, which its kernel reports under.
+        (
+            "dsd_agg",
+            names::AGGREGATE,
+            telemetry("dsd_agg", ComponentType::Transform, TelemetryProfile::Aggregation),
+        ),
+        ("policy/dsd_agg", names::AGGREGATE, None),
         (
             "metrics_policy_0",
             names::EMIT,
@@ -144,6 +151,27 @@ fn profiles_kept_by_native_components_name_their_metrics() {
         ]
     );
     assert_eq!(names(TelemetryProfile::PostAggregateFilter), [FILTERED_METRICS_METRIC]);
+    // What the Datadog Agent's `aggregator.*` metrics are remapped from, and the context limit's drops.
+    let aggregation = names(TelemetryProfile::Aggregation)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        aggregation,
+        [
+            "aggregate_active_contexts",
+            "aggregate_active_contexts_by_type",
+            "aggregate_active_contexts_bytes_by_type",
+            "aggregate_flushed_total",
+            "aggregate_flushes_total",
+            "component_events_dropped_total",
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert!(TelemetryProfile::Aggregation
+        .metrics()
+        .iter()
+        .all(|metric| metric.source == MetricSource::Kernel));
     assert_eq!(
         names(TelemetryProfile::EndpointAllowlist),
         [
@@ -230,12 +258,22 @@ fn kernels_built_as_their_profile_says_register_exactly_its_kernel_metrics() {
     let recorder = Registrations::default();
     let _recorder = metrics::set_default_local_recorder(&recorder);
 
+    // Aggregation's parameters as the default program binds them.
+    let default_program = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let aggregation = default_program
+        .node(&"dsd_agg".parse().unwrap())
+        .expect("the default program aggregates");
     let cases = [
         ("dsd_no_agg_split", names::TIMESTAMP_SPLIT, json!({"window": "10s"})),
         (
             "dsd_tag_filterlist",
             names::TAG_PROJECTION,
             json!({"rules": [], "value_rules": [], "cache_capacity": 10}),
+        ),
+        (
+            "dsd_agg",
+            names::AGGREGATE,
+            serde_json::to_value(&aggregation.params).unwrap(),
         ),
     ];
     for (node, operator, params) in cases {

@@ -37,11 +37,21 @@ use crate::{
 /// The host runs every method that can run kernel code under [`catch_unwind`][std::panic::catch_unwind]. When one
 /// panics, the host discards whatever the call wrote to the exit sink, counts the lost events, and calls
 /// [`reset_after_panic`][Self::reset_after_panic], which decides whether the region continues or fails.
-/// [`accepts_input`][Self::accepts_input] and [`next_deadline`][Self::next_deadline] are plain reads of driver state:
-/// they must not run kernel code, and a panic in either of them, or in `reset_after_panic` itself, fails the component.
+/// [`start`][Self::start], [`accepts_input`][Self::accepts_input], and [`next_deadline`][Self::next_deadline] only
+/// set or read driver state: they must not run kernel code, and a panic in any of them, or in `reset_after_panic`
+/// itself, fails the component.
 pub trait RegionDriver: Send + 'static {
     /// The control messages this driver understands, such as preparing or aborting a generation.
     type Control: Send + 'static;
+
+    /// Prepares the driver to run, once the region has started.
+    ///
+    /// The host calls this once, after it reports the region ready and before it calls anything else, with the time
+    /// the region started. A driver that schedules time-driven work measures its first deadline from here rather than
+    /// from when it was built, which can be much earlier. It must not run kernel code, and writes nothing.
+    ///
+    /// The default does nothing.
+    fn start(&mut self, _turn: &mut RegionTurn<'_>) {}
 
     /// Returns `true` if the driver can take another input batch now.
     ///
@@ -89,9 +99,22 @@ pub trait RegionDriver: Send + 'static {
 
     /// Returns the instant at which the driver wants [`advance_time`][Self::advance_time] to run, if any.
     ///
-    /// The host reads this after every call. The deadline is on the clock of [`RegionTurn::now`]. After
-    /// `advance_time` runs, the driver returns a later deadline or `None`; returning the same past deadline again makes
-    /// the host call `advance_time` again immediately.
+    /// The host reads this after every call. The deadline is on the clock of [`RegionTurn::now`]. A deadline that has
+    /// passed is due at once, as the next deadline of a timer that bursts to catch up: one that passed while a call
+    /// was yielded is due as soon as the call completes, and one that `advance_time` returns has the host call
+    /// `advance_time` again immediately.
+    ///
+    /// After `advance_time` runs, the work that was due at the deadline that made the host call it is done, or is due
+    /// later than that deadline. A driver that skips scheduled work therefore moves its deadline forward, for example
+    /// by its period, which keeps its phase and, if that deadline has also passed, catches up one period per call. It
+    /// never keeps the deadline that fired, and never moves back and forth between past deadlines, either of which
+    /// would make the host call it again and again while nothing changes. The next deadline may still be earlier than
+    /// the one that fired when other work is due: for example, once a driver has completed work that a panic ended,
+    /// which it scheduled for the time of the panic, its next deadline can be that of work that was due before.
+    ///
+    /// The host checks the likeliest mistake: an `advance_time` that did no work, writing nothing to its exit sink and
+    /// charging nothing to its budget, and kept the deadline that fired. It logs an error, does not call `advance_time`
+    /// for that deadline again until the driver's deadline changes, and a debug build fails an assertion.
     ///
     /// The default has no deadline.
     fn next_deadline(&self) -> Option<Instant> {
@@ -107,8 +130,17 @@ pub trait RegionDriver: Send + 'static {
 
     /// Finishes the region after its input has ended, following `policy`.
     ///
-    /// The host calls this once, with [`DrainPolicy::Shutdown`], after its input stream closes and any yielded call has
-    /// completed, then resumes it until it returns anything other than [`Progress::Yielded`], and then stops.
+    /// The host calls this with [`DrainPolicy::Shutdown`] after its input stream closes and any yielded call has
+    /// completed, resumes it until it returns anything other than [`Progress::Yielded`], and then stops. After the
+    /// input ends, the host runs no time-driven work, even for a deadline that has passed: the driver completes
+    /// whatever it still owes, such as work a panic ended, as part of finishing.
+    ///
+    /// If a panic ends the finish before it completes, whether in this call, in [`resume`][Self::resume], or in a call
+    /// the host makes while the finish is yielded, and [`reset_after_panic`][Self::reset_after_panic] lets the region
+    /// continue, the host calls `finish` again with the same policy, and so on until a call completes it. A call after
+    /// such a panic resumes the work the panic ended rather than starting over, so that what the panic did not lose is
+    /// still delivered. Since the host calls `finish` again after every panic the driver recovers from, each such
+    /// recovery must leave less to finish, for example by dropping the state that panicked, or fail the region.
     ///
     /// The default does nothing.
     fn finish(&mut self, _turn: &mut RegionTurn<'_>, _exits: &mut ExitSink, _policy: DrainPolicy) -> Progress {
@@ -123,7 +155,8 @@ pub trait RegionDriver: Send + 'static {
     /// and decides what happens next:
     ///
     /// - [`PanicOutcome::Continue`]: the region keeps running. Any yielded call is over, whichever call panicked: the
-    ///   host does not resume it.
+    ///   host does not resume it. If the region was finishing and the finish had not completed, the host calls
+    ///   [`finish`][Self::finish] again, which resumes the work the panic ended.
     /// - [`PanicOutcome::Fail`]: the host stops, and the component fails with the given error, exactly as any other
     ///   component failure does.
     fn reset_after_panic(&mut self, panic: &RegionPanic) -> PanicOutcome;

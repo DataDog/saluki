@@ -2,8 +2,8 @@
   "explain_version": 1,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:0803dbedd60a7d16e40f51419e4399ce92797d2b0613e7db7ae0e85390d8f8f8",
-    "structural_hash": "sha256:97dbc94c8d3a6ad90066d4599fc042fadf8152b9770da6b678be54c4d05cc0f0",
+    "hash": "sha256:7059ee443aa854a2bd73abf3fde57f3356f2143b885f1ac8aab9dde00edf8d92",
+    "structural_hash": "sha256:44613794d8a96eab70bf387629d4fd044f94f0fa8c6ed72c5dc0d96a9d6db462",
     "valid": true
   },
   "graph": {
@@ -487,7 +487,7 @@
       {
         "id": "dsd_agg",
         "op": "aggregate",
-        "boundary": "opaque_host",
+        "boundary": "isolated",
         "state": "keyed",
         "loss": [
           "policy",
@@ -2227,6 +2227,16 @@
       }
     ],
     "scopes": [
+      {
+        "name": "dogstatsd_pre_aggregation",
+        "inputs": {
+          "metrics": "dsd_in.metrics"
+        },
+        "exits": {
+          "aggregated": "dsd_post_agg_filter_in.0",
+          "passthrough": "dsd_post_agg_filter_in.1"
+        }
+      },
       {
         "name": "post_enrich",
         "inputs": {

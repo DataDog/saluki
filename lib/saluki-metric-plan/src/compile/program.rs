@@ -29,6 +29,9 @@
 //! - [`Step::Exit`] hands a register's buffers to one of the slot's exits, with the consumer's entry set in their
 //!   header when the exit leads to another slot, and cleared otherwise. Exit buffers leave by value.
 //! - [`Step::Drop`] discards a register's buffers, counting their events and points as policy loss of the node.
+//! - [`Step::State`] hands a register's buffers to a state owner's kernel in an isolation slot, with the per-call
+//!   parameters of the batch's generation. What the kernel emits later, at its flush ticks, runs the steps of its
+//!   [`EntryKey::StateOutput`] entry.
 //!
 //! An entry's steps cover only what its batch can reach: a `merge` whose other inputs the entry cannot reach is no
 //! step at all, and its output is its one reachable input's register.
@@ -38,14 +41,24 @@
 //! Each kernel is identified by a [`KernelKey`]: its node and a hash of its operator and parameters, resolved values
 //! included. Two generations whose programs for one slot have a kernel with the same key share one instance, with its
 //! caches, as the specification's plan diff requires; any parameter change makes a new key, and a new instance.
+//!
+//! A state owner's kernel also belongs to a **lineage** ([`LineageKey`]): its node and a hash of its operator and the
+//! parameters its state contract depends on ([`OperatorDef::lineage_params`]). Its other parameters reach it per call,
+//! from the program's [state parameter table][RegionProgram::state_params], whose entries the program's fingerprint
+//! covers.
+//!
+//! [`OperatorDef::lineage_params`]: crate::operators::OperatorDef::lineage_params
 
 use std::{
+    any::Any,
     collections::{BTreeMap, BTreeSet},
     fmt,
     sync::Arc,
+    time::Duration,
 };
 
 use saluki_core::execution::{BatchHeader, EntryId};
+use saluki_metric_kernels::aggregate::EmissionFilter;
 use serde_json::{json, Value};
 use snafu::Snafu;
 
@@ -56,12 +69,14 @@ use super::{
     },
     frame::{ExitIndex, Frame, FrameTarget, SlotId},
     placement::{EntryKey, Placement},
-    resolve, Role,
+    resolve,
+    rewrite::r5b::PushedFilterSite,
+    Role,
 };
 use crate::{
     canonical::PlanHash,
     ir::{Node, NodeId, Plan, PortName, PortRef},
-    operators::{names, KernelSpec, OperatorRegistry},
+    operators::{names, ConfiguredOperator, KernelSpec, OperatorRegistry},
     predicate::{NoBindings, PredicateError},
     validate::graph::{emit_output, Graph},
 };
@@ -95,6 +110,16 @@ pub enum CompileError {
     ))]
     Unhashable {
         /// The node.
+        node: NodeId,
+
+        /// Why.
+        message: String,
+    },
+
+    /// A state owner's kernel cannot be compiled.
+    #[snafu(display("Cannot compile the state owner `{}`: {}.", node, message))]
+    StateOwner {
+        /// The state owner.
         node: NodeId,
 
         /// Why.
@@ -139,10 +164,16 @@ index!(
     /// A register of an entry program: a place holding buffers between steps. Register 0 holds the entry's batch.
     RegisterId
 );
+index!(
+    /// The index of an entry in its program's state parameter table.
+    StateParamsIndex
+);
 
 /// The identity of a kernel instance: its node, and a hash of its operator and parameters, resolved values included.
 ///
-/// Programs of different generations share a kernel instance when their keys are equal.
+/// Programs of different generations share a kernel instance when their keys are equal. A state owner's kernel is
+/// keyed by its lineage instead ([`LineageKey`]): its hash is the lineage's contract hash, so that generations whose
+/// state owners share a lineage share its instance, whatever their other parameters, which reach it per call.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct KernelKey {
     /// The node the kernel runs.
@@ -177,6 +208,56 @@ impl fmt::Display for KernelKey {
     }
 }
 
+/// The identity of one lineage of a state owner's state: its node, and a hash of its operator and the parameters its
+/// state contract depends on.
+///
+/// Generations whose state owners have the same lineage key can share one instance of the state: a `retain`
+/// transition keeps the instance even when the node's other parameters change, since those reach the kernel per call.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LineageKey {
+    /// The state owner's node.
+    pub node: NodeId,
+
+    /// The hash of `{"op": <operator>, "lineage": <lineage parameters>}`, with resolved values.
+    pub contract: PlanHash,
+}
+
+impl LineageKey {
+    /// Returns the lineage key of a state owner: its node, and the hash of its operator and the parameters its
+    /// [`OperatorDef::lineage_params`][crate::operators::OperatorDef::lineage_params] returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lineage parameters have no canonical form.
+    pub fn of(node: &NodeId, op: &ConfiguredOperator) -> Result<Self, CompileError> {
+        let value = json!({"op": op.name(), "lineage": op.lineage_params()});
+        let contract = PlanHash::of_value(&value).map_err(|error| CompileError::Unhashable {
+            node: node.clone(),
+            message: error.to_string(),
+        })?;
+        Ok(Self {
+            node: node.clone(),
+            contract,
+        })
+    }
+}
+
+impl fmt::Display for LineageKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}@{}", self.node, self.contract)
+    }
+}
+
+/// The lineage a program's state kernel belongs to, and when it ticks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageInfo {
+    /// The lineage.
+    pub key: LineageKey,
+
+    /// The interval between the kernel's flush ticks under this program's generation.
+    pub flush_interval: Duration,
+}
+
 /// One kernel of a program.
 #[derive(Clone, Debug)]
 pub struct ProgramKernel {
@@ -191,6 +272,36 @@ pub struct ProgramKernel {
 
     /// How to build the kernel.
     pub spec: KernelSpec,
+
+    /// The lineage of the kernel's state, for a state owner in an isolation slot, and `None` for a stateless kernel.
+    pub lineage: Option<LineageInfo>,
+}
+
+/// One entry of a program's state parameter table: the per-call parameters of one state owner under the program's
+/// generation, which the region passes to its kernel with every call.
+#[derive(Clone)]
+pub struct StateParamsEntry {
+    /// The parameters, as the state owner's operator built them
+    /// ([`OperatorDef::step_params`][crate::operators::OperatorDef::step_params]); the kernel reads them as its own
+    /// type.
+    pub params: Arc<dyn Any + Send + Sync>,
+
+    /// The canonical hash of what the parameters were built from, which the program's fingerprint covers, so that a
+    /// change of per-call parameters alone changes the fingerprint.
+    pub hash: PlanHash,
+
+    /// The filter R5b pushed into the state owner, if any, whose own series count the records the kernel suppresses
+    /// at emission ([`PushedFilterSite`]).
+    pub pushed: Option<PushedFilterSite>,
+}
+
+impl fmt::Debug for StateParamsEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StateParamsEntry")
+            .field("hash", &self.hash)
+            .field("pushed", &self.pushed)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Where one target of a decision or one port of a kernel leads.
@@ -271,6 +382,20 @@ pub enum Step {
         /// The `drop` node.
         node: NodeId,
     },
+
+    /// Hands a register's buffers to a state owner's kernel, with the batch's header and the per-call parameters of
+    /// the batch's generation. The kernel emits nothing during the call: what it emits at its flush ticks runs the
+    /// steps of its [`EntryKey::StateOutput`] entry.
+    State {
+        /// The state owner's kernel.
+        kernel: KernelIndex,
+
+        /// The register it consumes.
+        register: RegisterId,
+
+        /// The kernel's per-call parameters under the program's generation.
+        params: StateParamsIndex,
+    },
 }
 
 /// The steps that run a batch arriving at one entry of a slot.
@@ -297,6 +422,7 @@ pub struct RegionProgram {
     entries: Vec<EntryProgram>,
     kernels: Vec<ProgramKernel>,
     decisions: Vec<Decision>,
+    state_params: Vec<StateParamsEntry>,
 }
 
 impl RegionProgram {
@@ -305,7 +431,7 @@ impl RegionProgram {
         self.slot
     }
 
-    /// Returns the program's fingerprint: a hash of its entries, steps, kernel keys, and decisions.
+    /// Returns the program's fingerprint: a hash of its entries, steps, kernel keys, decisions, and state parameters.
     ///
     /// Two programs with equal fingerprints do the same thing with the same kernels, so a region can keep running the
     /// one it has.
@@ -366,6 +492,17 @@ impl RegionProgram {
         self.decisions.get(index.get())
     }
 
+    /// Returns the state parameter table: the per-call parameters of the program's state owners, which its
+    /// [`Step::State`] steps refer to.
+    pub fn state_params(&self) -> &[StateParamsEntry] {
+        &self.state_params
+    }
+
+    /// Returns one entry of the state parameter table.
+    pub fn state_param(&self, index: StateParamsIndex) -> Option<&StateParamsEntry> {
+        self.state_params.get(index.get())
+    }
+
     /// Returns the largest number of registers any entry uses.
     pub fn register_count(&self) -> usize {
         self.entries.iter().map(|entry| entry.registers).max().unwrap_or(0)
@@ -383,6 +520,10 @@ pub(crate) struct DecisionRewrites {
     /// R2 and R3: share equal predicates within a decision, and fold predicates constant given their resolved values.
     #[cfg(test)]
     pub predicates: bool,
+
+    /// R5b: push filters into the emission of the state owners above them, which changes programs, not the plan.
+    #[cfg(test)]
+    pub pushed_filters: bool,
 }
 
 impl DecisionRewrites {
@@ -391,14 +532,34 @@ impl DecisionRewrites {
         memoize: true,
         #[cfg(test)]
         predicates: true,
+        #[cfg(test)]
+        pushed_filters: true,
     };
 
-    /// No decision-time rewrite: each `split`'s predicate is evaluated as written, and nothing is memoized.
+    /// No decision-time rewrite: each `split`'s predicate is evaluated as written, and nothing is memoized. Filters
+    /// are still pushed into state owners.
     #[cfg(test)]
     pub const NONE: Self = Self {
         memoize: false,
         predicates: false,
+        pushed_filters: true,
     };
+
+    /// Every decision-time rewrite, but no filter pushed into a state owner: the original R5b's property tests compare
+    /// with.
+    #[cfg(test)]
+    pub const WITHOUT_PUSHED_FILTERS: Self = Self {
+        pushed_filters: false,
+        ..Self::ALL
+    };
+
+    /// Returns whether R5b pushes filters into state owners: always, outside this crate's own tests.
+    pub fn pushes_filters(&self) -> bool {
+        #[cfg(test)]
+        return self.pushed_filters;
+        #[cfg(not(test))]
+        return true;
+    }
 }
 
 /// Compiles the program of every slot of a frame for a placed candidate plan, in slot order.
@@ -411,13 +572,33 @@ impl DecisionRewrites {
 pub fn compile_programs(
     plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement,
 ) -> Result<Vec<RegionProgram>, CompileError> {
-    compile_programs_with(plan, registry, frame, placement, DecisionRewrites::ALL)
+    compile_programs_with(plan, registry, frame, placement, &[], DecisionRewrites::ALL)
 }
 
-/// Compiles the program of every slot of a frame for a placed candidate plan, in slot order, applying the given
-/// decision-time rewrites.
+/// A site R5b pushed a filter to, with the filter its state owner judges the records it emits with.
+#[derive(Clone)]
+pub(crate) struct SiteFilter {
+    /// Where R5b pushed the filter.
+    pub site: PushedFilterSite,
+
+    /// What the state owner's kernel judges records with, from the parameters of its call
+    /// ([`OperatorDef::step_params`][crate::operators::OperatorDef::step_params]).
+    pub filter: Arc<dyn EmissionFilter>,
+}
+
+impl fmt::Debug for SiteFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SiteFilter")
+            .field("site", &self.site)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Compiles the program of every slot of a frame for a placed candidate plan, in slot order, with the filters R5b
+/// pushed into its state owners, applying the given decision-time rewrites.
 pub(crate) fn compile_programs_with(
-    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, rewrites: DecisionRewrites,
+    plan: &Plan, registry: &OperatorRegistry, frame: &Frame, placement: &Placement, pushed: &[SiteFilter],
+    rewrites: DecisionRewrites,
 ) -> Result<Vec<RegionProgram>, CompileError> {
     let graph = resolve(plan, registry).map_err(|problems| CompileError::Internal {
         message: format!("a placed plan has structural problems: {}", problems.join("; ")),
@@ -435,6 +616,7 @@ pub(crate) fn compile_programs_with(
         slot_of: &slot_of,
         frame,
         placement,
+        pushed,
         rewrites,
     };
     frame.slots().iter().map(|slot| context.compile_slot(slot.id)).collect()
@@ -446,6 +628,7 @@ struct Context<'a, 'p> {
     slot_of: &'a [Option<SlotId>],
     frame: &'a Frame,
     placement: &'a Placement,
+    pushed: &'a [SiteFilter],
     rewrites: DecisionRewrites,
 }
 
@@ -472,6 +655,8 @@ impl Context<'_, '_> {
         };
         let mut kernels = Vec::new();
         let mut kernel_of = vec![None; graph.nodes.len()];
+        let mut state_params = Vec::new();
+        let mut params_of = vec![None; graph.nodes.len()];
         for &node in &members {
             let op = graph.op(node).expect("a resolved plan configures every node");
             let id = graph.id(node);
@@ -485,14 +670,29 @@ impl Context<'_, '_> {
                             op.name()
                         ),
                     })?;
-                    kernel_of[node] = Some(KernelIndex(
-                        u16::try_from(kernels.len()).map_err(|_| too_large("kernels"))?,
-                    ));
+                    let index = KernelIndex(u16::try_from(kernels.len()).map_err(|_| too_large("kernels"))?);
+                    kernel_of[node] = Some(index);
+                    let (key, lineage) = if self.roles[node] == Role::Isolated {
+                        let (lineage, params) = self.state_owner(node, op)?;
+                        params_of[node] = Some(StateParamsIndex(
+                            u16::try_from(state_params.len()).map_err(|_| too_large("state parameters"))?,
+                        ));
+                        state_params.push(params);
+                        // A state owner's instance is shared by every generation whose state owner has its lineage.
+                        let key = KernelKey {
+                            node: id.clone(),
+                            params_hash: lineage.key.contract,
+                        };
+                        (key, Some(lineage))
+                    } else {
+                        (KernelKey::of(graph.nodes[node].node)?, None)
+                    };
                     kernels.push(ProgramKernel {
-                        key: KernelKey::of(graph.nodes[node].node)?,
+                        key,
                         operator: op.name(),
                         ports: op.ports().outputs.iter().map(|port| port.name.clone()).collect(),
                         spec,
+                        lineage,
                     });
                 }
             }
@@ -514,10 +714,31 @@ impl Context<'_, '_> {
                     .ok_or_else(|| CompileError::Internal {
                         message: format!("entry input `{}` does not resolve", entry.input),
                     })?;
+            if self.slot_of[start] != Some(slot) {
+                // The slot passes the entry's batches through, unchanged, to the state owner they enter.
+                let (exit, next) = self.exit_for(slot, start, port).ok_or_else(|| CompileError::Internal {
+                    message: format!(
+                        "slot {} passes batches through to `{}`, which none of its exits leads to",
+                        slot, entry.input
+                    ),
+                })?;
+                entries.push(EntryProgram {
+                    key: entry.key,
+                    input: entry.input.clone(),
+                    steps: vec![Step::Exit {
+                        register: RegisterId(0),
+                        exit,
+                        entry: next,
+                    }],
+                    registers: 1,
+                });
+                continue;
+            }
             let builder = EntryBuilder {
                 context: self,
                 slot,
                 kernel_of: &kernel_of,
+                params_of: &params_of,
                 decision_of: &decision_of,
                 decision_exits: &decision_exits,
                 steps: Vec::new(),
@@ -534,16 +755,152 @@ impl Context<'_, '_> {
             });
         }
 
-        let fingerprint =
-            fingerprint(slot, &entries, &kernels, &decisions).map_err(|message| CompileError::Internal {
+        // What each state owner emits at its flush ticks leaves the slot from its output port, as the node's edges say.
+        for &node in &members {
+            if self.roles[node] != Role::Isolated {
+                continue;
+            }
+            let kernel = kernel_of[node].expect("every state owner has a kernel");
+            entries.push(self.state_output(slot, node, kernel)?);
+        }
+
+        let fingerprint = fingerprint(slot, &entries, &kernels, &decisions, &state_params).map_err(|message| {
+            CompileError::Internal {
                 message: format!("the program of slot {} has no canonical form: {}", slot, message),
-            })?;
+            }
+        })?;
         Ok(RegionProgram {
             slot,
             fingerprint,
             entries,
             kernels,
             decisions,
+            state_params,
+        })
+    }
+
+    /// Returns the lineage of a state owner's kernel and its entry of the state parameter table: its per-call
+    /// parameters, with the filters R5b pushed into it, and their hash.
+    fn state_owner(
+        &self, node: usize, op: &ConfiguredOperator,
+    ) -> Result<(LineageInfo, StateParamsEntry), CompileError> {
+        let graph = self.graph;
+        let id = graph.id(node);
+        let key = LineageKey::of(id, op)?;
+        let flush_interval = op.flush_interval().ok_or_else(|| CompileError::StateOwner {
+            node: id.clone(),
+            message: "it declares no flush interval, or its flush interval is bound to configuration and has no \
+                      resolved value"
+                .to_string(),
+        })?;
+
+        // A state owner judges the records it emits with at most one filter: the one below its output port.
+        let mut sites = self.pushed.iter().filter(|pushed| &pushed.site.owner == id);
+        let pushed = sites.next();
+        if sites.next().is_some() {
+            return Err(CompileError::Internal {
+                message: format!(
+                    "R5b pushed more than one filter into `{}`, which judges its records with one",
+                    id
+                ),
+            });
+        }
+
+        // The hash covers the node's full parameters, with resolved values, and the filter pushed into it, so that a
+        // change of per-call parameters alone changes the program's fingerprint.
+        let site = pushed
+            .map(|pushed| {
+                let site = &pushed.site;
+                let filter = graph
+                    .nodes
+                    .iter()
+                    .find(|written| written.node.id == site.filter)
+                    .ok_or_else(|| CompileError::Internal {
+                        message: format!(
+                            "R5b pushed filter `{}` into `{}`, but the plan has no such node",
+                            site.filter, id
+                        ),
+                    })?;
+                let filter = KernelKey::of(filter.node)?;
+                Ok(json!({
+                    "filter": site.filter.to_string(),
+                    "params_hash": filter.params_hash.to_string(),
+                    "drop_port": site.drop_port.to_string(),
+                }))
+            })
+            .transpose()?;
+        let params_hash = KernelKey::of(graph.nodes[node].node)?.params_hash;
+        let pushed_sites = site.into_iter().collect::<Vec<_>>();
+        let hash = PlanHash::of_value(&json!({"params_hash": params_hash.to_string(), "pushed": pushed_sites}))
+            .map_err(|error| CompileError::Unhashable {
+                node: id.clone(),
+                message: error.to_string(),
+            })?;
+        let params = match op.step_params(pushed.map(|pushed| Arc::clone(&pushed.filter))) {
+            Some(params) => params,
+            // A filter the state owner's parameters cannot carry would suppress nothing while its site claims it does.
+            None if pushed.is_some() => {
+                return Err(CompileError::Internal {
+                    message: format!(
+                        "R5b pushed a filter into `{}`, whose operator takes no per-call parameters to carry it",
+                        id
+                    ),
+                })
+            }
+            // Per-call parameters that do not build because a parameter has no value would leave a retained instance
+            // running on the parameters it was built with, so the state owner is refused, as its kernel would be.
+            None => {
+                if let Some((name, _)) = op.params().iter().find(|(_, value)| value.known().is_none()) {
+                    return Err(CompileError::StateOwner {
+                        node: id.clone(),
+                        message: format!(
+                            "its `{}` parameter is bound to configuration and has no resolved value, so its per-call \
+                             parameters cannot be built",
+                            name
+                        ),
+                    });
+                }
+                // An operator without per-call parameters gets the unit value, which its kernel never reads.
+                Arc::new(()) as Arc<dyn Any + Send + Sync>
+            }
+        };
+        let pushed = pushed.map(|pushed| pushed.site.clone());
+        Ok((
+            LineageInfo { key, flush_interval },
+            StateParamsEntry { params, hash, pushed },
+        ))
+    }
+
+    /// Compiles the entry that runs what a state owner's kernel emits at its flush ticks: from register 0, through the
+    /// state owner's output port, to the exit its edge leaves the slot by.
+    fn state_output(&self, slot: SlotId, node: usize, kernel: KernelIndex) -> Result<EntryProgram, CompileError> {
+        let graph = self.graph;
+        let id = graph.id(node);
+        let op = graph.op(node).expect("a resolved plan configures every node");
+        let internal = |what: &str| CompileError::Internal {
+            message: format!("state owner `{}` {}", id, what),
+        };
+        let [port] = op.ports().outputs.as_slice() else {
+            return Err(internal("does not have exactly one output port"));
+        };
+        let (to, to_port) = graph
+            .target(node, 0)
+            .ok_or_else(|| internal("has an unconnected output port"))?;
+        if self.slot_of[to] == Some(slot) && self.roles[to] != Role::Fixed {
+            return Err(internal("feeds a node in its own isolation slot"));
+        }
+        let (exit, entry) = self
+            .exit_for(slot, to, to_port)
+            .ok_or_else(|| internal("feeds a node its isolation slot has no exit to"))?;
+        Ok(EntryProgram {
+            key: EntryKey::StateOutput(kernel),
+            input: PortRef::new(id.clone(), port.name.clone()),
+            steps: vec![Step::Exit {
+                register: RegisterId(0),
+                exit,
+                entry,
+            }],
+            registers: 1,
         })
     }
 
@@ -757,7 +1114,7 @@ impl Context<'_, '_> {
                 let input = PortRef::new(graph.id(to).clone(), graph.op(to)?.ports().inputs[port].name.clone());
                 match self.placement.slot(other)?.entry_at(&input)?.key {
                     EntryKey::Region(entry) => Some(entry),
-                    EntryKey::Admission(_) => return None,
+                    EntryKey::Admission(_) | EntryKey::StateOutput(_) => return None,
                 }
             }
             _ => None,
@@ -771,6 +1128,8 @@ struct EntryBuilder<'c, 'a, 'p> {
     context: &'c Context<'a, 'p>,
     slot: SlotId,
     kernel_of: &'c [Option<KernelIndex>],
+    /// The state parameter table entry of each state owner, by graph position.
+    params_of: &'c [Option<StateParamsIndex>],
     /// The decision each node is the first node of.
     decision_of: &'c [Option<DecisionIndex>],
     /// The output port behind each exit of each decision.
@@ -842,6 +1201,16 @@ impl EntryBuilder<'_, '_, '_> {
                         decision,
                         input: first,
                         targets,
+                    });
+                }
+                _ if self.context.roles[node] == Role::Isolated => {
+                    // A state owner's kernel takes the batch into its state; what it emits later runs its own entry.
+                    let kernel = self.kernel_of[node].expect("every state owner has a kernel");
+                    let params = self.params_of[node].expect("every state owner has state parameters");
+                    self.steps.push(Step::State {
+                        kernel,
+                        register: first,
+                        params,
                     });
                 }
                 _ => {
@@ -955,7 +1324,13 @@ impl EntryBuilder<'_, '_, '_> {
 /// Returns the fingerprint of a program: the hash of a JSON description of everything it does.
 fn fingerprint(
     slot: SlotId, entries: &[EntryProgram], kernels: &[ProgramKernel], decisions: &[Decision],
+    state_params: &[StateParamsEntry],
 ) -> Result<PlanHash, String> {
+    let params_hash = |index: StateParamsIndex| {
+        state_params
+            .get(index.get())
+            .map_or(Value::Null, |entry| json!(entry.hash.to_string()))
+    };
     let route = |route: &Route| match route {
         Route::Register(register) => json!({"register": register.0}),
         Route::Drop(node) => json!({"drop": node.to_string()}),
@@ -979,10 +1354,16 @@ fn fingerprint(
             "register": register.0, "exit": exit.get(), "entry": entry.map(|entry| entry.get())
         }}),
         Step::Drop { register, node } => json!({"drop": {"register": register.0, "node": node.to_string()}}),
+        Step::State {
+            kernel,
+            register,
+            params,
+        } => json!({"state": {"kernel": kernel.0, "register": register.0, "params": params_hash(*params)}}),
     };
     let entry_key = |key: &EntryKey| match key {
         EntryKey::Admission(point) => json!({"admission": point.get()}),
         EntryKey::Region(entry) => json!({"region": entry.get()}),
+        EntryKey::StateOutput(kernel) => json!({"state_output": kernel.0}),
     };
     let decisions = decisions
         .iter()
@@ -1024,11 +1405,25 @@ fn fingerprint(
             }))
         })
         .collect::<Result<Vec<Value>, String>>()?;
-    let description = json!({
+    let kernels = kernels
+        .iter()
+        .map(|kernel| {
+            let mut description = json!({
+                "node": kernel.key.node.to_string(), "params_hash": kernel.key.params_hash.to_string()
+            });
+            // Stateless kernels have no lineage, and their description stays what it was before lineages existed.
+            if let Some(lineage) = &kernel.lineage {
+                description["lineage"] = json!({
+                    "contract": lineage.key.contract.to_string(),
+                    "flush_interval_nanos": u64::try_from(lineage.flush_interval.as_nanos()).unwrap_or(u64::MAX),
+                });
+            }
+            description
+        })
+        .collect::<Vec<_>>();
+    let mut description = json!({
         "slot": slot.get(),
-        "kernels": kernels.iter().map(|kernel| json!({
-            "node": kernel.key.node.to_string(), "params_hash": kernel.key.params_hash.to_string()
-        })).collect::<Vec<_>>(),
+        "kernels": kernels,
         "decisions": decisions,
         "entries": entries.iter().map(|entry| json!({
             "key": entry_key(&entry.key),
@@ -1036,5 +1431,13 @@ fn fingerprint(
             "steps": entry.steps.iter().map(step).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     });
+    // Programs without state parameters keep the description they had before state parameters existed.
+    if !state_params.is_empty() {
+        description["state_params"] = state_params
+            .iter()
+            .map(|entry| json!(entry.hash.to_string()))
+            .collect::<Vec<_>>()
+            .into();
+    }
     PlanHash::of_value(&description).map_err(|error| error.to_string())
 }

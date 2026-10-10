@@ -2,8 +2,11 @@
 //!
 //! The executor below runs a frame's programs literally, as the steps document them: one batch at a time, every step
 //! over every buffer of its registers, with no budgets and no channels. Fixed components run through the interpreter's
-//! opaque-host adapters. It is the smallest host that exercises the compiled steps, entries, exits, and admission
-//! routes, so comparing it with the interpreter checks compilation, not a region host.
+//! opaque-host adapters. A state step hands its buffers to the state owner's kernel with the step's state parameters,
+//! and every flush tick runs each state owner's time-driven work at the tick's whole second, as if every source
+//! heartbeat at the tick, through the entry of its time-driven output. It is the smallest host that exercises the
+//! compiled steps, entries, exits, and admission routes, so comparing it with the interpreter checks compilation, not
+//! a region host.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -29,11 +32,9 @@ use super::{
 };
 use crate::{
     equivalence::{compare, OutputPoints},
-    interpret::{
-        adapters::AggregateAdapter, HostBatch, HostOutput, HostTick, Interpreter, OpaqueHostAdapter, Trace, TraceEvent,
-    },
+    interpret::{HostBatch, HostOutput, HostTick, Interpreter, OpaqueHostAdapter, Trace, TraceEvent},
     ir::{NativeComponentId, NodeId, Plan},
-    operators::{names, KernelBuildContext, OperatorRegistry},
+    operators::{KernelBuildContext, OperatorRegistry},
     testing::{default_program_catalog, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
     validate::Validator,
 };
@@ -72,22 +73,17 @@ struct Executor {
 }
 
 impl Executor {
-    /// Compiles a default program with the native registry, and runs its aggregation through the interpreter's
-    /// adapter.
+    /// Compiles a default program with the native registry: its aggregation runs as a kernel in an isolation slot.
     fn new(plan: &Plan) -> Self {
         let registry = OperatorRegistry::native();
         let report = Validator::new(&registry, &default_program_catalog()).validate(plan);
         let frame = Frame::compute(plan, &registry, &namer).unwrap();
         let compiled = compile(plan, &report, &registry, &frame).unwrap();
-        let mut hosts = BTreeMap::new();
-        for fixed in frame.fixed() {
-            if fixed.operator.as_str() == names::AGGREGATE {
-                let op = registry.configure(fixed.operator.as_str(), &fixed.params).unwrap();
-                let adapter = Box::new(AggregateAdapter::from_operator(&op).unwrap()) as Box<dyn OpaqueHostAdapter>;
-                hosts.insert(fixed.node.clone(), (adapter, op.ports().outputs.len()));
-            }
-        }
-        Self::of(frame, compiled, hosts)
+        assert!(
+            frame.slots().iter().any(Slot::is_isolation),
+            "aggregation runs in an isolation slot"
+        );
+        Self::of(frame, compiled, BTreeMap::new())
     }
 
     /// Runs a plan's compiled programs in its frame, with `hosts`: an adapter, and its number of output ports, for each
@@ -136,6 +132,61 @@ impl Executor {
                         host.tick(HostTick { now, watermark: None }, &mut output);
                         self.readmit(&node, output, now);
                     }
+                    self.tick_state_owners(now);
+                }
+            }
+        }
+    }
+
+    /// Runs every state owner's flush at the whole second of `now`, and its output through its time-driven entry.
+    fn tick_state_owners(&mut self, now: AdmissionTime) {
+        let flush = AdmissionTime::from_unix_secs(now.as_unix_secs());
+        let slots = self
+            .frame
+            .slots()
+            .iter()
+            .filter(|slot| slot.is_isolation())
+            .map(|slot| slot.id)
+            .collect::<Vec<_>>();
+        for slot in slots {
+            let program = Arc::clone(&self.programs[slot.get()]);
+            for (index, kernel) in program.kernels().iter().enumerate() {
+                if kernel.lineage.is_none() {
+                    continue;
+                }
+                let kernel = KernelIndex::new(index as u16);
+                let header = BatchHeader {
+                    admitted_at: Some(flush),
+                    ..BatchHeader::default()
+                };
+                let params = program
+                    .entries()
+                    .iter()
+                    .flat_map(|entry| &entry.steps)
+                    .find_map(|step| match step {
+                        Step::State {
+                            kernel: fed, params, ..
+                        } if *fed == kernel => Some(*params),
+                        _ => None,
+                    })
+                    .and_then(|params| program.state_param(params))
+                    .map(|entry| Arc::clone(&entry.params));
+                let mut budget = Budget::unlimited();
+                let mut ports = PortOutputs::new(1);
+                let mut counters = TurnCounters::default();
+                let instance = &mut self.kernels[slot.get()][kernel.get()];
+                let mut turn = Turn::new(&header, Instant::now(), &mut budget, &mut ports, &mut counters)
+                    .with_watermark(Some(flush));
+                if let Some(params) = &params {
+                    turn = turn.with_param(params.as_ref());
+                }
+                instance.advance_time(&mut turn);
+                let output = ports.drain(PortIndex::PRIMARY).collect::<Vec<_>>();
+                let entry = program
+                    .entry(EntryKey::StateOutput(kernel))
+                    .expect("every state owner has a time-driven output entry");
+                for (target, buffer) in self.run_entry(slot, &program, entry, header.clone(), output) {
+                    self.deliver(Some(target), buffer, now);
                 }
             }
         }
@@ -238,8 +289,16 @@ impl Executor {
             .entry_for(batch.header())
             .expect("every batch reaching a slot has an entry");
         let header = batch.take_header();
+        self.run_entry(slot, &program, entry, header, vec![batch])
+    }
+
+    /// Runs an entry's steps over the buffers it starts with, in register 0, returning what it hands to its exits.
+    fn run_entry(
+        &mut self, slot: SlotId, program: &RegionProgram, entry: &EntryProgram, header: BatchHeader,
+        batches: Vec<EventsBuffer>,
+    ) -> Vec<(FrameTarget, EventsBuffer)> {
         let mut registers: Vec<Vec<EventsBuffer>> = (0..entry.registers).map(|_| Vec::new()).collect();
-        registers[0].push(batch);
+        registers[0].extend(batches);
         let mut exits = Vec::new();
 
         for step in &entry.steps {
@@ -308,6 +367,29 @@ impl Executor {
                 Step::Drop { register, node } => {
                     let buffers = std::mem::take(&mut registers[register.get()]);
                     self.count_loss(node, &buffers);
+                }
+                Step::State {
+                    kernel,
+                    register,
+                    params,
+                } => {
+                    let params = Arc::clone(
+                        &program
+                            .state_param(*params)
+                            .expect("the step's state parameters")
+                            .params,
+                    );
+                    for mut buffer in std::mem::take(&mut registers[register.get()]) {
+                        let mut budget = Budget::unlimited();
+                        let mut ports = PortOutputs::new(1);
+                        let mut counters = TurnCounters::default();
+                        let instance = &mut self.kernels[slot.get()][kernel.get()];
+                        let mut turn = Turn::new(&header, Instant::now(), &mut budget, &mut ports, &mut counters)
+                            .with_param(params.as_ref());
+                        instance.consume(&mut turn, &mut buffer);
+                        ports.complete(buffer);
+                        assert!(ports.is_empty(), "a state owner emits nothing while it admits a batch");
+                    }
                 }
             }
         }
@@ -420,12 +502,18 @@ fn trace(plan: Plan, events: &[TraceStep]) -> Trace {
 
 #[test]
 fn compiled_programs_deliver_what_the_interpreter_delivers() {
+    // Aggregation runs as a kernel in its isolation slot: its batches are state steps, and its flushes run its
+    // time-driven output entry. The interpreter's sources heartbeat at every tick, so its watermark has reached each
+    // tick when it fires, as the executor's flushes assume; the last tick closes every bucket the trace filled.
     for (json, timestamped) in [(DEFAULT_PROGRAM_JSON, true), (NO_AGGREGATION_PIPELINE_OFF_JSON, false)] {
         let plan = Plan::from_json(json).unwrap();
         let registry = OperatorRegistry::native();
         let catalog = default_program_catalog();
+        let mut steps = events(timestamped);
+        steps.push(TraceStep::Advance(t(315)));
         let run = Interpreter::new(&registry, &catalog)
-            .run(&trace(plan.clone(), &events(timestamped)))
+            .with_heartbeats_at_ticks()
+            .run(&trace(plan.clone(), &steps))
             .unwrap();
 
         // Kernels with caches need a Tokio runtime to be built in, as the interpreter's are.
@@ -435,7 +523,7 @@ fn compiled_programs_deliver_what_the_interpreter_delivers() {
             .unwrap();
         let _guard = runtime.enter();
         let mut executor = Executor::new(&plan);
-        executor.run(events(timestamped));
+        executor.run(steps);
 
         let expected = OutputPoints::from_run(&run);
         assert!(

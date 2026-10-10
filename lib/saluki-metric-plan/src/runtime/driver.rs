@@ -1,9 +1,9 @@
 //! The region driver of one slot.
 
 use std::{
+    any::Any,
     collections::{BTreeMap, BTreeSet},
     fmt,
-    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Weak},
     time::Instant,
 };
@@ -11,8 +11,9 @@ use std::{
 use saluki_core::{
     data_model::event::Event,
     execution::{
-        BatchHeader, ExitSink, GenerationId, GenerationRef, GenerationToken, LossClass, LossCount, PanicOutcome,
-        PortIndex, Progress, RegionDriver, RegionFailure, RegionPanic, RegionTurn, Turn, TurnCounters,
+        AdmissionPointId, AdmissionTime, BatchHeader, DrainPolicy, ExitId, ExitSink, GenerationId, GenerationRef,
+        GenerationToken, LossClass, LossCount, PanicOutcome, PortIndex, Progress, RegionDriver, RegionFailure,
+        RegionPanic, RegionTurn, ScheduleHandle, SystemWallClock, Turn, TurnCounters, WallClock,
     },
     topology::EventsBuffer,
 };
@@ -23,18 +24,23 @@ use tracing::{debug, error, warn};
 use super::{
     code::{DecisionCode, EntryCode, Op, ProgramCode, Target},
     kernels::{KernelSlab, KernelSlot, PreparedKernel},
+    state::{slab::InstanceHandle, StateBudgets},
     supervision::{PanicBudget, PanicHistory},
-    telemetry::{add_loss, Layout, ProgramCounts, ProgramTelemetry, RegisterTelemetry, LOSS_CLASSES},
+    telemetry::{add_loss, Layout, ProgramCounts, ProgramTelemetry, RegisterTelemetry, StateTelemetry, LOSS_CLASSES},
     RegionError,
 };
 use crate::{
     compile::{
-        DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, RegionProgram, Slot, SlotId,
-        COUNTED_EXIT_SETS,
+        DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, RegionProgram, Slot, SlotId, SlotKind,
+        StateParamsEntry, COUNTED_EXIT_SETS,
     },
+    install::StateBinding,
     ir::{NativeComponentId, NodeId},
-    limits::values::DECISION_MEMO_ENTRIES,
+    limits::values::{DECISION_MEMO_ENTRIES, PROGRESS_PERIOD},
 };
+
+mod isolation;
+use self::isolation::{StateResolution, StateSlot};
 
 /// The most times a kernel may yield on one batch before the driver treats it as broken.
 ///
@@ -69,11 +75,40 @@ pub struct RegionConfig {
     /// The number of entries of the memo the region keeps for each memoized decision (R4) of each generation:
     /// [`DECISION_MEMO_ENTRIES`] from the limits table.
     pub(crate) memo_entries: usize,
+
+    /// The schedule of the topology, which an isolation slot reads to stamp its time-driven output.
+    pub(crate) schedule: Option<ScheduleHandle>,
+
+    /// The wall clock an isolation slot reads for its tick gate, its shutdown time, and its watermark lag.
+    pub(crate) wall_clock: Option<Arc<dyn WallClock>>,
+
+    /// The budgets an isolation slot's state owners draw their state from.
+    pub(crate) state_budgets: Option<StateBudgets>,
+
+    /// What kind of slot the region runs.
+    pub(crate) kind: SlotKind,
+
+    /// The exits that forward the progress of admission points upstream of state owners, with those points.
+    pub(crate) progress: Vec<(ExitId, Vec<AdmissionPointId>)>,
+
+    /// The handles an isolation slot publishes its own telemetry to.
+    pub(crate) state_telemetry: Option<StateTelemetry>,
 }
 
 impl RegionConfig {
-    /// Returns the configuration of the region of a frame's slot, registering its counter with `telemetry`.
+    /// Returns the configuration of the region of a frame's slot, registering its counters with `telemetry`: its
+    /// invalid loss, and an isolation slot's own telemetry ([`RegisterTelemetry::state`]).
+    ///
+    /// An isolation slot's region also needs the schedule of the topology ([`with_schedule`][Self::with_schedule]), and
+    /// takes the wall clock and the host's state budgets ([`with_wall_clock`][Self::with_wall_clock],
+    /// [`with_state_budgets`][Self::with_state_budgets]).
     pub fn for_slot(slot: &Slot, telemetry: &dyn RegisterTelemetry) -> Self {
+        let progress = slot
+            .exits
+            .iter()
+            .filter(|exit| !exit.progress_points.is_empty())
+            .map(|exit| (ExitId::new(exit.index.get() as u16), exit.progress_points.clone()))
+            .collect();
         Self {
             slot: slot.id,
             name: slot.name.clone(),
@@ -82,7 +117,50 @@ impl RegionConfig {
             failures: None,
             // The limit is a count of entries, which every platform's memory addresses.
             memo_entries: DECISION_MEMO_ENTRIES as usize,
+            schedule: None,
+            wall_clock: None,
+            state_budgets: None,
+            kind: slot.kind.clone(),
+            progress,
+            state_telemetry: slot.is_isolation().then(|| telemetry.state(slot.name.as_str())),
         }
+    }
+
+    /// Gives the region the schedule handle of the topology, read only: an isolation slot decides from it which
+    /// generation its time-driven output belongs to. An isolation slot's region needs it.
+    pub fn with_schedule(mut self, schedule: ScheduleHandle) -> Self {
+        self.schedule = Some(schedule);
+        self
+    }
+
+    /// Gives the region the wall clock an isolation slot reads for its tick gate, the time it closes at when its input
+    /// ends, and its watermark lag; the operating system's by default. Kernels never read it.
+    pub fn with_wall_clock(mut self, wall_clock: Arc<dyn WallClock>) -> Self {
+        self.wall_clock = Some(wall_clock);
+        self
+    }
+
+    /// Gives the region the host's state budgets, which an isolation slot's state owners draw their state from.
+    ///
+    /// A region given budgets refuses a preparation whose state owners' kernels were built without them.
+    pub fn with_state_budgets(mut self, budgets: StateBudgets) -> Self {
+        self.state_budgets = Some(budgets);
+        self
+    }
+
+    /// Returns the schedule handle the region was given, if any.
+    pub fn schedule(&self) -> Option<&ScheduleHandle> {
+        self.schedule.as_ref()
+    }
+
+    /// Returns the wall clock the region was given, if any.
+    pub fn wall_clock(&self) -> Option<&Arc<dyn WallClock>> {
+        self.wall_clock.as_ref()
+    }
+
+    /// Returns the state budgets the region was given, if any.
+    pub fn state_budgets(&self) -> Option<&StateBudgets> {
+        self.state_budgets.as_ref()
     }
 
     /// Reports the generations the region fails to `failures`.
@@ -111,6 +189,11 @@ impl fmt::Debug for RegionConfig {
             .field("exits", &self.exits)
             .field("failures", &self.failures.is_some())
             .field("memo_entries", &self.memo_entries)
+            .field("schedule", &self.schedule.is_some())
+            .field("wall_clock", &self.wall_clock)
+            .field("state_budgets", &self.state_budgets)
+            .field("kind", &self.kind)
+            .field("progress", &self.progress)
             .finish_non_exhaustive()
     }
 }
@@ -124,6 +207,8 @@ pub struct PrepareRegion {
     budget: PanicBudget,
     /// The nodes whose panics the budget covers, or `None` for every node.
     budgeted: Option<BTreeSet<NodeId>>,
+    /// How the program's state owners bind to instances of their state, in an isolation slot.
+    state: Vec<StateBinding>,
     layout: Layout,
     telemetry: ProgramTelemetry,
 }
@@ -149,9 +234,21 @@ impl PrepareRegion {
             kernels,
             budget,
             budgeted: None,
+            state: Vec::new(),
             layout,
             telemetry,
         }
+    }
+
+    /// Says how the program's state owners bind to instances of their state, in an isolation slot: retain an instance
+    /// another generation uses, take a new one from the preparation's kernels, or retire an instance another generation
+    /// uses at the preparing generation's cut.
+    ///
+    /// Without bindings, a state owner binds to the region's instance of its lineage that is not retiring, if there is
+    /// one, and otherwise to the new instance the preparation brings: what a preparation without a cut needs.
+    pub fn with_state_bindings(mut self, bindings: Vec<StateBinding>) -> Self {
+        self.state = bindings;
+        self
     }
 
     /// Limits the panic budget to the given nodes: those of the generation's plan with an artifact's provenance.
@@ -179,6 +276,13 @@ impl PrepareRegion {
         &self.program
     }
 
+    /// Returns how the program's state owners bind to instances of their state ([`with_state_bindings`]).
+    ///
+    /// [`with_state_bindings`]: Self::with_state_bindings
+    pub fn state_bindings(&self) -> &[StateBinding] {
+        &self.state
+    }
+
     /// Returns the generation's panic budget.
     pub fn budget(&self) -> PanicBudget {
         self.budget
@@ -194,6 +298,7 @@ impl fmt::Debug for PrepareRegion {
             .field("kernels", &self.kernels)
             .field("budget", &self.budget)
             .field("budgeted", &self.budgeted)
+            .field("state", &self.state)
             .finish_non_exhaustive()
     }
 }
@@ -219,6 +324,48 @@ pub enum RegionControl {
     /// but never while it processes a batch. The installer sends this once a generation retires, so that a region
     /// that receives no batches releases it too.
     Release,
+
+    /// Delivers a control message to the kernels it targets, then replies with the message.
+    Kernel(KernelControl),
+}
+
+/// Called with a [`KernelControl`]'s message once every kernel it targets has handled it.
+pub type KernelReply = Box<dyn FnOnce(Box<dyn Any + Send>) + Send>;
+
+/// Which kernels of a region a [`KernelControl`] goes to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KernelTarget {
+    /// Every live instance of the kernel of one node, in every lineage.
+    Node(NodeId),
+
+    /// Every live instance of every state owner's kernel in the region: every lineage of every node.
+    Stateful,
+}
+
+/// A control message for a region's kernels, such as a request for a state owner's contexts.
+///
+/// The region delivers `message` to each kernel `target` selects, in turn, through
+/// [`Kernel::control`][saluki_core::execution::Kernel::control], then calls `reply` with it, so that each kernel
+/// can add to it, as a snapshot request collects every lineage's contexts. A read-only message may be delivered while a
+/// kernel's flush is yielded. A region that stops, or a kernel that panics, drops the reply without calling it, which
+/// the requester sees as its sender dropped.
+pub struct KernelControl {
+    /// The kernels the message goes to.
+    pub target: KernelTarget,
+
+    /// The message, which each kernel reads as the type it handles.
+    pub message: Box<dyn Any + Send>,
+
+    /// Called with the message once every target handled it.
+    pub reply: KernelReply,
+}
+
+impl fmt::Debug for KernelControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KernelControl")
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a region keeps for one decision of one generation's program.
@@ -229,6 +376,38 @@ struct DecisionState {
     counts: ExitSetCounts,
 }
 
+/// Where one of a program's kernels lives in the region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KernelBinding {
+    /// A stateless kernel's instance, by its index in the kernel slab.
+    Slab(usize),
+
+    /// An instance of a state owner's state, in an isolation slot.
+    Instance(InstanceHandle),
+}
+
+/// How a region treats a generation after its program panicked.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenerationMode {
+    /// Its batches are processed.
+    Healthy,
+
+    /// A state owner's kernel panicked under it, and the installer was asked to roll it back: its batches are still
+    /// processed, on the rebuilt instance, until a replacement takes over.
+    RollingBack,
+
+    /// It exceeded its panic budget, or a kernel it uses could not be rebuilt: its batches are dropped as invalid
+    /// loss.
+    Dropping,
+}
+
+impl GenerationMode {
+    /// Returns `true` if the generation's batches are processed.
+    fn processes(self) -> bool {
+        !matches!(self, Self::Dropping)
+    }
+}
+
 /// A generation the region can process batches of.
 struct LiveGeneration {
     id: GenerationId,
@@ -236,8 +415,8 @@ struct LiveGeneration {
     program: Arc<RegionProgram>,
     code: ProgramCode,
     layout: Layout,
-    /// The slab index of each of the program's kernels, by kernel index.
-    kernels: Vec<usize>,
+    /// Where each of the program's kernels lives, by kernel index.
+    kernels: Vec<KernelBinding>,
     /// The memo and counts of each of the program's decisions, by decision index.
     decisions: Vec<DecisionState>,
     counts: ProgramCounts,
@@ -249,8 +428,8 @@ struct LiveGeneration {
     /// Whether each of the program's decisions, by decision index, has only nodes the budget does not cover.
     native_decisions: Vec<bool>,
     panics: PanicHistory,
-    /// Whether the generation exceeded its panic budget: its batches are dropped.
-    failed: bool,
+    /// What the region does with the generation's batches after its program panicked.
+    mode: GenerationMode,
 }
 
 impl LiveGeneration {
@@ -290,11 +469,13 @@ enum NodeRef {
     Decision(usize),
 }
 
-/// What the driver is running, recorded as it goes so that a panic can be charged to its generation and node.
+/// What the driver is running, recorded as it goes so that a panic can be charged to its generation, node, and, for a
+/// state owner, the instance whose kernel ran.
 #[derive(Clone, Copy, Debug, Default)]
 struct Cursor {
     generation: Option<GenerationId>,
     node: Option<NodeRef>,
+    instance: Option<InstanceHandle>,
 }
 
 /// Storage reused by every batch.
@@ -304,6 +485,8 @@ struct Scratch {
     pending: Vec<EventsBuffer>,
     decide: DecideScratch,
     counters: TurnCounters,
+    /// Whether the call wrote to each exit, for progress forwarding.
+    written: Vec<bool>,
 }
 
 impl Scratch {
@@ -314,6 +497,7 @@ impl Scratch {
         self.pending.clear();
         self.decide.clear();
         self.counters = TurnCounters::default();
+        self.written.fill(false);
     }
 }
 
@@ -343,10 +527,11 @@ enum Fault {
     UnknownGeneration,
     NoEntry,
     FailedGeneration,
+    NotUpstream,
 }
 
 impl Fault {
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     const fn index(self) -> usize {
         match self {
@@ -354,8 +539,17 @@ impl Fault {
             Self::UnknownGeneration => 1,
             Self::NoEntry => 2,
             Self::FailedGeneration => 3,
+            Self::NotUpstream => 4,
         }
     }
+}
+
+/// One exit that forwards the progress of admission points upstream of a state owner, and the progress it last
+/// forwarded for each, as `(epoch, admission time)`.
+struct ProgressExit {
+    exit: ExitId,
+    points: Vec<AdmissionPointId>,
+    last: Vec<Option<(u32, AdmissionTime)>>,
 }
 
 /// Points lost to wiring faults, outside any node.
@@ -431,6 +625,54 @@ struct InvalidLoss {
 ///
 /// The driver builds, calls, and rebuilds each kernel inside the resource group its build context names, if any, so
 /// that each kernel's memory and CPU time are accounted under its own node, as a native component's are.
+///
+/// # Progress
+///
+/// An exit that leads toward a state owner forwards the progress of the admission points upstream of it
+/// ([`Exit::progress_points`][crate::compile::Exit::progress_points]), so that the state owner's watermark advances
+/// even when a batch leaves the slot without output, as when a filter drops all of it. After each batch from such a
+/// point, if the call wrote nothing to the exit, the driver writes a header-only batch with the batch's header and no
+/// entry: always for a header-only batch, such as a heartbeat, and otherwise when the point's epoch changed or its
+/// admission time moved at least [`PROGRESS_PERIOD`] past what the exit last carried. Progress follows the call's data
+/// on the same exit, so each point's batches stay in stamping order.
+///
+/// # Isolation slots
+///
+/// The region of an isolation slot runs one or more lineages of its state owners' state: **instances**, keyed by their
+/// lineage and the generation that created them, named by tagged handles that a freed instance's place never reuses,
+/// and bound by every live generation whose program has a state owner of that lineage. A batch's [state
+/// step][crate::compile::Step::State] hands it to the instance its generation binds, with that generation's per-call
+/// parameters.
+///
+/// - **Watermark.** Every header that reaches the slot, data or progress, advances the progress of its admission point
+///   by the shared [time rules][crate::runtime::state::rules]; a header of another epoch is a clock reset.
+/// - **Ticks.** Each instance ticks every flush interval on the host's clock, from one interval after the region
+///   starts, in the phase of the instance of its node it replaces when a cut creates it. At a tick the [tick
+///   gate][crate::runtime::state::rules::TickGate] decides: fire at the tick's wall-clock second once the watermark
+///   reached it, wait for it at most the grace, or skip, moving the deadline on, when no published generation binds
+///   the instance or the watermark is unknown.
+/// - **Before a batch.** A header can start work that runs before its batch is admitted, in this order: a clock reset
+///   of every instance (a flush at the watermark before the reset, then everything held, continuing empty), the final
+///   retirement of every instance retiring by a generation every upstream point has now switched to (a flush at the
+///   cut's time, then everything held), and gated ticks the header's watermark releases.
+/// - **Drains.** Time-driven work runs as a **drain**: a queue of instances, each called with its kernel's time-driven
+///   method, a turn watermark of its flush time, and the per-call parameters of the generation its output is stamped
+///   with, decided when its drain starts and held until it ends ([`stamping_generation`]). The output runs that
+///   generation's entry for the state owner's time-driven output, stamped by the slot's [output
+///   clock][crate::runtime::state::rules::OutputClock], which moves only when an instance's drain emits something. A
+///   drain yields when the turn's budget runs out, and the host
+///   resumes it; no input is read until it completes, and the batch that started it is admitted afterwards.
+/// - **Shutdown.** When input ends, every instance makes its final flush at the later of the latest admission time and
+///   the wall clock, and discards its open buckets as shutdown loss.
+///
+/// A panic in a state owner's kernel is charged to the generation whose call ran: the batch's for a batch, and the
+/// drain's for time-driven work. The instance restarts empty, its points counted as invalid loss, and every
+/// generation binding it continues on it. Under a zero budget the region fails; an artifact's generation asks to be
+/// rolled back and keeps processing its input until it is replaced, and only one that exceeds its budget has its
+/// batches dropped. A drain the panic ended keeps the rest of its queue, and the next `advance_time`, or `finish` once
+/// input has ended, resumes it.
+///
+/// [`stamping_generation`]: crate::runtime::state::rules::stamping_generation
 pub struct MetricRegionDriver {
     slot: SlotId,
     name: NativeComponentId,
@@ -443,6 +685,10 @@ pub struct MetricRegionDriver {
     cursor: Cursor,
     now: Option<Instant>,
     failures: Option<GenerationFailureReporter>,
+    /// The exits that forward the progress of admission points toward state owners.
+    progress: Vec<ProgressExit>,
+    /// The state of an isolation slot, which only an isolation slot's region has.
+    state: Option<Box<StateSlot>>,
 }
 
 impl fmt::Debug for MetricRegionDriver {
@@ -465,7 +711,7 @@ impl MetricRegionDriver {
     /// # Errors
     ///
     /// Returns an error if the boot program is for another slot, cannot run in a region with the configured number of
-    /// exits, or lacks a kernel.
+    /// exits, or lacks a kernel, or if the region runs an isolation slot and was given no schedule.
     pub fn new(config: RegionConfig, boot: PrepareRegion) -> Result<Self, RegionError> {
         let RegionConfig {
             slot,
@@ -474,7 +720,41 @@ impl MetricRegionDriver {
             invalid_loss,
             failures,
             memo_entries,
+            schedule,
+            wall_clock,
+            state_budgets,
+            kind,
+            progress,
+            state_telemetry,
         } = config;
+        let state = match kind {
+            SlotKind::Fused => None,
+            SlotKind::Isolation { output_point, upstream } => {
+                let schedule = schedule.ok_or_else(|| RegionError::StateConfig {
+                    region: name.to_string(),
+                    message: "it runs an isolation slot, which needs the topology's schedule to decide which \
+                              generation its time-driven output belongs to; give its configuration the schedule \
+                              with `RegionConfig::with_schedule`"
+                        .to_string(),
+                })?;
+                Some(Box::new(StateSlot::new(
+                    output_point,
+                    upstream,
+                    schedule,
+                    wall_clock.unwrap_or_else(|| Arc::new(SystemWallClock)),
+                    state_budgets,
+                    state_telemetry.unwrap_or_else(StateTelemetry::noop),
+                )))
+            }
+        };
+        let progress = progress
+            .into_iter()
+            .map(|(exit, points)| ProgressExit {
+                exit,
+                last: vec![None; points.len()],
+                points,
+            })
+            .collect();
         let mut driver = Self {
             slot,
             name,
@@ -491,7 +771,10 @@ impl MetricRegionDriver {
             cursor: Cursor::default(),
             now: None,
             failures,
+            progress,
+            state,
         };
+        driver.scratch.written = vec![false; exits];
         driver.prepare(boot)?;
         Ok(driver)
     }
@@ -506,9 +789,22 @@ impl MetricRegionDriver {
         self.generations.iter().map(|generation| generation.id).collect()
     }
 
-    /// Returns the number of kernel instances the driver holds.
+    /// Returns the number of kernel instances the driver holds: stateless kernels' and, in an isolation slot, the
+    /// instances of its state owners' state.
     pub fn kernel_count(&self) -> usize {
-        self.kernels.len()
+        self.kernels.len() + self.state.as_ref().map_or(0, |state| state.instances.len())
+    }
+
+    /// Returns the instances of the isolation slot's state, as `(state owner, generation that created it, retired)`, in
+    /// the order the region drives them; none for a fused slot.
+    pub fn lineages(&self) -> Vec<(NodeId, GenerationId, bool)> {
+        self.state.as_ref().map_or_else(Vec::new, |state| {
+            state
+                .instances
+                .iter()
+                .map(|(_, instance)| (instance.key.node.clone(), instance.created_by, instance.retired))
+                .collect()
+        })
     }
 
     /// Prepares a generation.
@@ -520,6 +816,7 @@ impl MetricRegionDriver {
             kernels,
             budget,
             budgeted,
+            state: bindings,
             layout,
             telemetry,
         } = prepare;
@@ -536,7 +833,12 @@ impl MetricRegionDriver {
                 generation: id,
             });
         }
-        let code = ProgramCode::translate(&program, &layout, self.exit_count)?;
+        let code = ProgramCode::translate(&program, &layout, self.exit_count, self.state.is_some())?;
+        let state_error = |message: String| RegionError::StateBinding {
+            region: self.name.to_string(),
+            generation: id,
+            message,
+        };
 
         // Resolve every kernel before changing anything, so that a rejected preparation leaves the region as it was.
         let mut supplied = kernels
@@ -545,6 +847,17 @@ impl MetricRegionDriver {
             .collect::<BTreeMap<_, _>>();
         let mut resolved = Vec::with_capacity(program.kernels().len());
         for kernel in program.kernels() {
+            if kernel.lineage.is_some() {
+                // Translation lets a state owner's kernel run only in an isolation slot.
+                let resolution = self
+                    .resolve_state(kernel, &bindings, &mut supplied)
+                    .map_err(state_error)?;
+                if let StateResolution::New(prepared, _) = &resolution {
+                    self.check_budget(prepared).map_err(state_error)?;
+                }
+                resolved.push(Resolved::State(resolution));
+                continue;
+            }
             match self.kernels.find(&kernel.key) {
                 Some(index) => resolved.push(Resolved::Reuse(index)),
                 None => match supplied.remove(&kernel.key) {
@@ -567,17 +880,66 @@ impl MetricRegionDriver {
                 "Dropping prepared kernels the region already holds or the program does not use."
             );
         }
+        // At a cut, the instances the generation replaces retire, holding both generations until their final flush.
+        let mut retiring = Vec::new();
+        for binding in &bindings {
+            let StateBinding::Retire { node, key, from } = binding else {
+                continue;
+            };
+            let found = self.state.as_ref().and_then(|_| self.instance_of(*from, key));
+            let owner = self
+                .generations
+                .iter()
+                .find(|live| live.id == *from)
+                .and_then(|live| live.token.upgrade());
+            let (Some(handle), Some(owner)) = (found, owner) else {
+                return Err(state_error(format!(
+                    "the preparation retires the instance of `{}` that generation {} uses, which the region does not \
+                     hold",
+                    node, from
+                )));
+            };
+            retiring.push((handle, owner));
+        }
 
+        let now = self.now.unwrap_or_else(Instant::now);
         let kernels = resolved
             .into_iter()
-            .map(|resolved| match resolved {
+            .zip(program.kernels())
+            .map(|(resolved, kernel)| match resolved {
                 Resolved::Reuse(index) => {
                     self.kernels.acquire(index);
-                    index
+                    KernelBinding::Slab(index)
                 }
-                Resolved::New(prepared, ports) => self.kernels.insert(*prepared, ports),
+                Resolved::New(prepared, ports) => KernelBinding::Slab(self.kernels.insert(*prepared, ports)),
+                Resolved::State(StateResolution::Retain(handle)) => {
+                    if let Some(instance) = self
+                        .state
+                        .as_deref_mut()
+                        .and_then(|state| state.instances.get_mut(handle))
+                    {
+                        instance.users += 1;
+                        if let Some(lineage) = &kernel.lineage {
+                            instance.interval = lineage.flush_interval;
+                        }
+                    }
+                    KernelBinding::Instance(handle)
+                }
+                Resolved::State(StateResolution::New(prepared, ports)) => {
+                    KernelBinding::Instance(self.insert_instance(id, kernel, *prepared, ports, now))
+                }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if let Some(state) = self.state.as_deref_mut() {
+            for (handle, owner) in retiring {
+                if let Some(instance) = state.instances.get_mut(handle) {
+                    instance.retiring = Some(isolation::Retiring {
+                        owner,
+                        by: Arc::clone(&generation),
+                    });
+                }
+            }
+        }
         // Each memoized decision's memo is allocated here, off the data path, and lives as long as its generation.
         let decisions = code
             .decisions
@@ -616,7 +978,7 @@ impl MetricRegionDriver {
             native_kernels,
             native_decisions,
             panics: PanicHistory::default(),
-            failed: false,
+            mode: GenerationMode::Healthy,
         };
         if self.scratch.registers.len() < live.code.registers {
             self.scratch.registers.resize_with(live.code.registers, Vec::new);
@@ -627,9 +989,11 @@ impl MetricRegionDriver {
         Ok(())
     }
 
-    /// Drops a generation that was never committed.
+    /// Drops a generation that was never committed, with the retiring marks its preparation set and the instances of
+    /// state it created.
     fn abort(&mut self, id: GenerationId) {
         if let Some(position) = self.generations.iter().position(|live| live.id == id) {
+            self.abort_state(id);
             let generation = self.generations.remove(position);
             self.release(generation);
             debug!(region = %self.name, generation = %id, "Aborted a generation.");
@@ -654,12 +1018,15 @@ impl MetricRegionDriver {
         }
     }
 
-    /// Publishes what a generation counted, and releases its kernels.
+    /// Publishes what a generation counted, and releases its kernels and instances of state.
     fn release(&mut self, mut generation: LiveGeneration) {
         generation.publish();
-        for index in generation.kernels {
-            self.kernels.release(index);
+        for binding in &generation.kernels {
+            if let KernelBinding::Slab(index) = *binding {
+                self.kernels.release(index);
+            }
         }
+        self.release_instances(&generation.kernels);
     }
 
     /// Drops a batch no program can process, counting it as invalid loss of the region.
@@ -699,35 +1066,41 @@ impl MetricRegionDriver {
                 "Region received a batch of a generation that failed after exceeding its panic budget. Dropping it as \
                  invalid loss; later such batches are dropped without a warning."
             ),
+            Fault::NotUpstream => warn!(
+                region = %self.name,
+                admission_point = ?header.admission_point,
+                "Isolation slot received a batch that no admission point upstream of it stamped, which only a wiring \
+                 fault produces: its state owner's watermark cannot account for it. Dropping it as invalid loss; \
+                 later such batches are dropped without a warning."
+            ),
         }
     }
 
-    /// Rebuilds the kernels of the generation at `index` from their specs, after a panic in its program.
+    /// Rebuilds the stateless kernels of the generation at `index` from their specs, after a panic in its program.
     ///
     /// The call that panicked ran only that generation's program, so only its kernels can have been left inconsistent.
     /// Generations that share a kernel with it share the rebuilt instance. Returns the slab index and the reason of the
     /// first kernel that could not be rebuilt, because its factory failed or panicked; that kernel keeps the instance
-    /// that panicked.
+    /// that panicked. Instances of state owners' state are rebuilt only when their own kernel panicked.
     fn rebuild_kernels(&mut self, index: usize) -> Result<(), (usize, String)> {
-        for &kernel in &self.generations[index].kernels {
-            let slot = self.kernels.get_mut(kernel);
-            let rebuilt = catch_unwind(AssertUnwindSafe(|| {
-                slot.context.accounted(|| slot.spec.build(&slot.context))
-            }));
-            slot.kernel = match rebuilt {
-                Ok(Ok(rebuilt)) => rebuilt,
-                Ok(Err(error)) => return Err((kernel, error.to_string())),
-                Err(payload) => return Err((kernel, format!("its factory panicked: {}", panic_message(&*payload)))),
+        for binding in &self.generations[index].kernels {
+            let KernelBinding::Slab(kernel) = *binding else {
+                continue;
             };
+            self.kernels
+                .get_mut(kernel)
+                .rebuild()
+                .map_err(|reason| (kernel, reason))?;
         }
         Ok(())
     }
 
     /// Fails the live generation at `index`: its later batches are dropped as invalid loss, and the failure is
-    /// reported.
+    /// reported, unless it was reported already.
     fn fail_generation(&mut self, index: usize, reason: &str) {
         let generation = &mut self.generations[index];
-        if std::mem::replace(&mut generation.failed, true) {
+        let previous = std::mem::replace(&mut generation.mode, GenerationMode::Dropping);
+        if previous == GenerationMode::Dropping {
             return;
         }
         error!(
@@ -736,57 +1109,54 @@ impl MetricRegionDriver {
             reason,
             "Generation failed; its batches are dropped as invalid loss from now on."
         );
-        if let Some(failures) = &self.failures {
-            failures(generation.id, reason);
+        if previous == GenerationMode::Healthy {
+            if let Some(failures) = &self.failures {
+                failures(generation.id, reason);
+            }
         }
     }
-}
 
-/// Returns the message a panic carried.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|message| (*message).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<panic payload that is not a string>".to_owned())
-}
-
-/// How a preparation gets one of its program's kernels: an instance the region holds, by slab index, or a new one, with
-/// its number of ports.
-enum Resolved {
-    Reuse(usize),
-    New(Box<PreparedKernel>, usize),
-}
-
-impl RegionDriver for MetricRegionDriver {
-    type Control = RegionControl;
-
-    fn process(&mut self, turn: &mut RegionTurn<'_>, mut batch: EventsBuffer, exits: &mut ExitSink) -> Progress {
-        // Retired generations are released off the data path: a batch holds its own generation, so the program it
-        // needs is never released under it.
-        self.now = Some(turn.now());
-        // A header-only batch, such as a heartbeat, carries nothing to process.
-        if batch.is_empty() {
-            return Progress::Done;
+    /// Asks for the live generation at `index` to be rolled back, once, while the region keeps processing its batches.
+    fn roll_back_generation(&mut self, index: usize, node: &str, reason: &str) {
+        if self.generations[index].mode != GenerationMode::Healthy {
+            return;
         }
-        let header = batch.take_header();
+        self.generations[index].mode = GenerationMode::RollingBack;
+        self.log_rolling_back(index, node, reason);
+        if let Some(failures) = &self.failures {
+            failures(self.generations[index].id, reason);
+        }
+    }
+
+    /// Returns the live generation a batch runs under, or rejects the batch: one without a generation, of a generation
+    /// the region was never prepared for, or of a generation whose batches are dropped.
+    fn live_index_for(&mut self, header: &BatchHeader, batch: &EventsBuffer) -> Option<usize> {
         let Some(id) = header.generation_id() else {
-            self.reject(Fault::NoGeneration, &header, &batch);
-            return Progress::Done;
+            self.reject(Fault::NoGeneration, header, batch);
+            return None;
         };
         let Some(index) = self.generations.iter().position(|live| live.id == id) else {
-            self.reject(Fault::UnknownGeneration, &header, &batch);
-            return Progress::Done;
+            self.reject(Fault::UnknownGeneration, header, batch);
+            return None;
         };
-        if self.generations[index].failed {
-            self.reject(Fault::FailedGeneration, &header, &batch);
-            return Progress::Done;
+        if !self.generations[index].mode.processes() {
+            self.reject(Fault::FailedGeneration, header, batch);
+            return None;
         }
-        let Some(entry) = self.generations[index].code.entry_index(&header) else {
-            self.reject(Fault::NoEntry, &header, &batch);
-            return Progress::Done;
-        };
+        Some(index)
+    }
 
+    /// Runs a batch through a fused slot's program.
+    fn run_fused(
+        &mut self, turn: &mut RegionTurn<'_>, header: &BatchHeader, batch: EventsBuffer, exits: &mut ExitSink,
+    ) {
+        let Some(index) = self.live_index_for(header, &batch) else {
+            return;
+        };
+        let Some(entry) = self.generations[index].code.entry_index(header) else {
+            self.reject(Fault::NoEntry, header, &batch);
+            return;
+        };
         let Self {
             kernels,
             generations,
@@ -795,6 +1165,8 @@ impl RegionDriver for MetricRegionDriver {
             ..
         } = self;
         let LiveGeneration {
+            id,
+            program,
             code,
             layout,
             kernels: kernel_slots,
@@ -802,7 +1174,7 @@ impl RegionDriver for MetricRegionDriver {
             counts,
             ..
         } = &mut generations[index];
-        cursor.generation = Some(id);
+        cursor.generation = Some(*id);
         Run {
             layout,
             kernel_slots,
@@ -810,44 +1182,52 @@ impl RegionDriver for MetricRegionDriver {
             decisions,
             counts,
             slab: kernels,
+            instances: None,
+            state_params: program.state_params(),
             scratch,
             cursor,
-            header: &header,
+            header,
             turn,
             exits,
         }
-        .entry(&code.entries[entry], batch);
+        .entry(&code.entries[entry], std::iter::once(batch));
         *cursor = Cursor::default();
-        Progress::Done
     }
 
-    fn control(
-        &mut self, turn: &mut RegionTurn<'_>, message: RegionControl, _exits: &mut ExitSink,
-    ) -> Result<(), RegionFailure> {
-        self.now = Some(turn.now());
-        match message {
-            RegionControl::Prepare(prepare) => self
-                .prepare(*prepare)
-                .map_err(|error| RegionFailure::new(GenericError::from(error))),
-            RegionControl::Abort { generation } => {
-                self.abort(generation);
-                Ok(())
+    /// Forwards the progress of the batch's admission point on every exit toward a state owner that the call wrote
+    /// nothing to, as a header-only batch, when it is due (see [Progress](Self#progress)).
+    fn forward_progress(&mut self, header: &BatchHeader, header_only: bool, exits: &mut ExitSink) {
+        if self.progress.is_empty() {
+            return;
+        }
+        let (Some(point), Some(admitted_at)) = (header.admission_point, header.admitted_at) else {
+            return;
+        };
+        for exit in &mut self.progress {
+            let Some(position) = exit.points.iter().position(|upstream| *upstream == point) else {
+                continue;
+            };
+            let last = &mut exit.last[position];
+            if self.scratch.written.get(exit.exit.get()).copied().unwrap_or(false) {
+                *last = Some((header.epoch, admitted_at));
+                continue;
             }
-            RegionControl::Release => {
-                self.prune();
-                Ok(())
+            let due = header_only
+                || last.is_none_or(|(epoch, sent)| {
+                    epoch != header.epoch || admitted_at >= sent.saturating_add(PROGRESS_PERIOD)
+                });
+            if due {
+                let mut progress = header.clone();
+                progress.entry = None;
+                exits.emit(exit.exit, EventsBuffer::with_capacity(0).with_header(progress));
+                *last = Some((header.epoch, admitted_at));
             }
         }
     }
 
-    fn reset_after_panic(&mut self, panic: &RegionPanic) -> PanicOutcome {
-        let cursor = std::mem::take(&mut self.cursor);
-        self.scratch.clear();
-        for slot in self.kernels.iter_mut() {
-            slot.ports.clear();
-        }
-        let now = self.now.unwrap_or_else(Instant::now);
-
+    /// Recovers a fused slot from a panic in its program: charges it to the generation and node that ran, and rebuilds
+    /// the generation's kernels.
+    fn recover_fused(&mut self, panic: &RegionPanic, cursor: Cursor, now: Instant) -> PanicOutcome {
         let Some(index) = cursor
             .generation
             .and_then(|id| self.generations.iter().position(|live| live.id == id))
@@ -857,6 +1237,79 @@ impl RegionDriver for MetricRegionDriver {
                 self.name
             ));
         };
+        if let Some(outcome) = self.charge(index, panic, &cursor, now) {
+            return outcome;
+        }
+
+        // A kernel that cannot be rebuilt keeps the instance that panicked, which no generation can trust: every
+        // generation using it fails, and the region fails with it if one of them is the default program's.
+        let Err((kernel, reason)) = self.rebuild_kernels(index) else {
+            return PanicOutcome::Continue;
+        };
+        let node = self.kernels.get_mut(kernel).key.node.clone();
+        let reason = format!(
+            "the kernel of node `{}` could not be rebuilt after a panic: {}",
+            node, reason
+        );
+        let users = (0..self.generations.len())
+            .filter(|&other| self.generations[other].kernels.contains(&KernelBinding::Slab(kernel)))
+            .collect::<Vec<_>>();
+        self.fail_users(&users, &reason)
+    }
+
+    /// Recovers an isolation slot from a panic: charges it to the generation whose call ran, rebuilds the instance
+    /// whose kernel panicked, and keeps the rest of a drain the panic ended.
+    fn recover_isolated(&mut self, panic: &RegionPanic, cursor: Cursor, now: Instant) -> PanicOutcome {
+        let panicked = self.recover_state(&cursor);
+        let Some(index) = cursor
+            .generation
+            .and_then(|id| self.generations.iter().position(|live| live.id == id))
+        else {
+            return PanicOutcome::Fail(generic_error!(
+                "Region `{}` panicked outside the program of any generation, which it cannot recover from.",
+                self.name
+            ));
+        };
+        if let Some(outcome) = self.charge(index, panic, &cursor, now) {
+            return outcome;
+        }
+        let Some(handle) = panicked else {
+            // The region's own steps panicked, and no state owner's kernel: every instance is as it was.
+            return PanicOutcome::Continue;
+        };
+
+        let node = self
+            .state
+            .as_ref()
+            .and_then(|state| state.instances.get(handle))
+            .map_or_else(String::new, |instance| instance.key.node.to_string());
+        let rebuilt = self.rebuild_instance(handle, index);
+        let users = self.binders(handle);
+        match rebuilt {
+            Ok(()) => {
+                // Every generation binding the instance continues on it, empty: a panic under an artifact's parameters
+                // never fails the default program. An artifact's generation asks to be rolled back.
+                if self.generations[index].budget != PanicBudget::Zero {
+                    let reason = format!("a state owner's kernel, of node `{}`, panicked: {}", node, panic);
+                    self.roll_back_generation(index, &node, &reason);
+                }
+                PanicOutcome::Continue
+            }
+            Err(reason) => {
+                let reason = format!(
+                    "the state of node `{}` could not be rebuilt after a panic: {}",
+                    node, reason
+                );
+                self.fail_users(&users, &reason)
+            }
+        }
+    }
+
+    /// Records a panic against the budget of the live generation at `index`, as charged to the node the cursor names.
+    ///
+    /// Returns the outcome if the region fails: a zero budget, or a native node's panic. A generation that exceeds a
+    /// limited budget fails, and the region continues.
+    fn charge(&mut self, index: usize, panic: &RegionPanic, cursor: &Cursor, now: Instant) -> Option<PanicOutcome> {
         let generation = &mut self.generations[index];
         let node = match cursor.node {
             Some(NodeRef::Kernel(kernel)) => generation
@@ -881,23 +1334,23 @@ impl RegionDriver for MetricRegionDriver {
 
         if !generation.panics.record(budget, now) {
             if native && generation.budget != PanicBudget::Zero {
-                return PanicOutcome::Fail(generic_error!(
+                return Some(PanicOutcome::Fail(generic_error!(
                     "Region `{}` panicked in {} of generation {}, which native configuration placed: a native node's \
                      panic budget is zero, as the default program's is, even in an artifact's generation, so the \
                      region fails as a native component does.",
                     self.name,
                     node,
                     generation.id
-                ));
+                )));
             }
             if budget == PanicBudget::Zero {
-                return PanicOutcome::Fail(generic_error!(
+                return Some(PanicOutcome::Fail(generic_error!(
                     "Region `{}` panicked in {} of generation {}, whose panic budget is zero, as the default \
                      program's is, so the region fails as a native component does.",
                     self.name,
                     node,
                     generation.id
-                ));
+                )));
             }
             let reason = format!(
                 "it exceeded its panic budget, with {} panics, the last in {}",
@@ -910,25 +1363,17 @@ impl RegionDriver for MetricRegionDriver {
                 region = %self.name,
                 generation = %generation.id,
                 lost_events = panic.lost_events(),
-                "Region recovered from a panic in {} by rebuilding its kernels: {}",
+                "Region recovered from a panic in {}: {}",
                 node,
                 panic
             );
         }
+        None
+    }
 
-        // A kernel that cannot be rebuilt keeps the instance that panicked, which no generation can trust: every
-        // generation using it fails, and the region fails with it if one of them is the default program's.
-        let Err((kernel, reason)) = self.rebuild_kernels(index) else {
-            return PanicOutcome::Continue;
-        };
-        let node = self.kernels.get_mut(kernel).key.node.clone();
-        let reason = format!(
-            "the kernel of node `{}` could not be rebuilt after a panic: {}",
-            node, reason
-        );
-        let users = (0..self.generations.len())
-            .filter(|&other| self.generations[other].kernels.contains(&kernel))
-            .collect::<Vec<_>>();
+    /// Fails every listed generation, after a kernel or instance they use could not be rebuilt, and the region if one
+    /// of them has a zero budget.
+    fn fail_users(&mut self, users: &[usize], reason: &str) -> PanicOutcome {
         if let Some(zero) = users
             .iter()
             .find(|&&user| self.generations[user].budget == PanicBudget::Zero)
@@ -940,10 +1385,132 @@ impl RegionDriver for MetricRegionDriver {
                 reason
             ));
         }
-        for user in users {
-            self.fail_generation(user, &reason);
+        for &user in users {
+            self.fail_generation(user, reason);
         }
         PanicOutcome::Continue
+    }
+}
+
+/// How a preparation gets one of its program's kernels: an instance the region holds, by slab index, a new one, with
+/// its number of ports, or a state owner's instance of its state.
+enum Resolved {
+    Reuse(usize),
+    New(Box<PreparedKernel>, usize),
+    State(StateResolution),
+}
+
+impl RegionDriver for MetricRegionDriver {
+    type Control = RegionControl;
+
+    fn start(&mut self, turn: &mut RegionTurn<'_>) {
+        self.now = Some(turn.now());
+        if self.state.is_some() {
+            self.start_isolated(turn);
+        }
+    }
+
+    fn accepts_input(&self) -> bool {
+        self.state.is_none() || self.accepts_isolated()
+    }
+
+    fn process(&mut self, turn: &mut RegionTurn<'_>, mut batch: EventsBuffer, exits: &mut ExitSink) -> Progress {
+        // Retired generations are released off the data path: a batch holds its own generation, so the program it
+        // needs is never released under it.
+        self.now = Some(turn.now());
+        if self.state.is_some() {
+            return self.process_isolated(turn, batch, exits);
+        }
+        self.scratch.written.fill(false);
+        // A header-only batch, such as a heartbeat, carries nothing to process, only its progress.
+        let header_only = batch.is_empty();
+        let header = batch.take_header();
+        if !header_only {
+            self.run_fused(turn, &header, batch, exits);
+        }
+        self.forward_progress(&header, header_only, exits);
+        Progress::Done
+    }
+
+    fn resume(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
+        self.now = Some(turn.now());
+        if self.state.is_some() {
+            return self.continue_isolated(turn, exits);
+        }
+        Progress::Done
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        if self.state.is_some() {
+            return self.next_deadline_isolated();
+        }
+        None
+    }
+
+    fn advance_time(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
+        self.now = Some(turn.now());
+        if self.state.is_some() {
+            return self.advance_isolated(turn, exits);
+        }
+        Progress::Done
+    }
+
+    fn finish(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink, policy: DrainPolicy) -> Progress {
+        self.now = Some(turn.now());
+        // A region finishes only when the process shuts down: a retiring generation's state retires at its cut.
+        debug_assert_eq!(policy, DrainPolicy::Shutdown, "regions finish only at shutdown");
+        if self.state.is_some() {
+            return self.finish_isolated(turn, exits);
+        }
+        Progress::Done
+    }
+
+    fn control(
+        &mut self, turn: &mut RegionTurn<'_>, message: RegionControl, _exits: &mut ExitSink,
+    ) -> Result<(), RegionFailure> {
+        self.now = Some(turn.now());
+        match message {
+            RegionControl::Prepare(prepare) => self
+                .prepare(*prepare)
+                .map_err(|error| RegionFailure::new(GenericError::from(error))),
+            RegionControl::Abort { generation } => {
+                self.abort(generation);
+                Ok(())
+            }
+            RegionControl::Release => {
+                self.prune();
+                Ok(())
+            }
+            RegionControl::Kernel(control) => {
+                if self.state.is_some() {
+                    self.kernel_control_isolated(turn, control);
+                } else {
+                    // A stateless kernel handles no control message, so nothing here adds to the message.
+                    let KernelControl { target, message, reply } = control;
+                    debug!(
+                        region = %self.name,
+                        target = ?target,
+                        "No kernel of the region handles the control message."
+                    );
+                    reply(message);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn reset_after_panic(&mut self, panic: &RegionPanic) -> PanicOutcome {
+        let cursor = std::mem::take(&mut self.cursor);
+        self.scratch.clear();
+        for slot in self.kernels.iter_mut() {
+            slot.ports.clear();
+        }
+        let now = self.now.unwrap_or_else(Instant::now);
+        if self.state.is_some() {
+            self.recover_isolated(panic, cursor, now)
+        } else {
+            self.recover_fused(panic, cursor, now)
+        }
     }
 
     fn publish_telemetry(&mut self) {
@@ -955,9 +1522,9 @@ impl RegionDriver for MetricRegionDriver {
         if invalid.points > 0 {
             self.invalid.counter.increment(invalid.points);
         }
+        self.publish_state();
     }
 }
-
 /// Returns the number of points of the metrics in a buffer.
 fn points_in(buffer: &EventsBuffer) -> u64 {
     buffer.into_iter().map(points_of).sum()
@@ -1017,14 +1584,63 @@ fn consume(
     ports.complete(buffer);
 }
 
+/// Hands one buffer to a state owner's kernel, with the per-call parameters of the batch's generation.
+///
+/// A state owner takes what it receives into its state and emits nothing while it does: anything it leaves in its
+/// input or writes to its ports is counted as invalid loss and dropped.
+fn consume_state(
+    slot: &mut KernelSlot, header: &BatchHeader, turn: &mut RegionTurn<'_>, counters: &mut TurnCounters,
+    param: &(dyn Any + Send + Sync), mut buffer: EventsBuffer,
+) {
+    let KernelSlot {
+        key,
+        context,
+        kernel,
+        ports,
+        ..
+    } = slot;
+    context.accounted(|| {
+        let mut yields = 0;
+        loop {
+            let progress = {
+                let mut kernel_turn =
+                    Turn::new(header, turn.now(), turn.budget_mut(), ports, counters).with_param(param);
+                kernel.consume(&mut kernel_turn, &mut buffer)
+            };
+            if progress != Progress::Yielded {
+                break;
+            }
+            yields += 1;
+            assert!(
+                yields < MAX_YIELDS,
+                "state owner `{}` yielded {} times on one batch, but a state owner admits every batch in one call",
+                key.node,
+                yields
+            );
+        }
+    });
+    ports.complete(buffer);
+    if !ports.is_empty() {
+        debug_assert!(false, "state owner `{}` emitted while admitting a batch", key.node);
+        for buffer in ports.drain(PortIndex::PRIMARY) {
+            counters.record_loss(LossClass::Invalid, buffer.len() as u64, points_in(&buffer));
+        }
+        ports.clear();
+    }
+}
+
 /// The execution of one batch through one entry's ops.
 struct Run<'a, 't> {
     layout: &'a Layout,
-    kernel_slots: &'a [usize],
+    kernel_slots: &'a [KernelBinding],
     functions: &'a [Option<DecisionCode>],
     decisions: &'a mut [DecisionState],
     counts: &'a mut ProgramCounts,
     slab: &'a mut KernelSlab,
+    /// The instances of an isolation slot's state, which its state steps feed.
+    instances: Option<&'a mut crate::runtime::state::slab::Slab<isolation::Instance>>,
+    /// The program's state parameter table.
+    state_params: &'a [StateParamsEntry],
     scratch: &'a mut Scratch,
     cursor: &'a mut Cursor,
     header: &'a BatchHeader,
@@ -1032,8 +1648,26 @@ struct Run<'a, 't> {
     exits: &'a mut ExitSink,
 }
 
+impl KernelBinding {
+    /// Returns the slab index of a stateless kernel's instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics for a state owner's instance: translation lets only stateless kernels run as stateless steps.
+    fn slab(self) -> usize {
+        match self {
+            Self::Slab(index) => index,
+            Self::Instance(handle) => panic!("a stateless step runs the state owner's instance {}", handle),
+        }
+    }
+}
+
 impl Run<'_, '_> {
-    fn entry(self, entry: &EntryCode, batch: EventsBuffer) {
+    /// Runs an entry's ops over the buffers it starts with, in register 0.
+    fn entry<I>(self, entry: &EntryCode, batches: I)
+    where
+        I: IntoIterator<Item = EventsBuffer>,
+    {
         let Run {
             layout,
             kernel_slots,
@@ -1041,6 +1675,8 @@ impl Run<'_, '_> {
             decisions,
             counts,
             slab,
+            mut instances,
+            state_params,
             scratch,
             cursor,
             header,
@@ -1052,17 +1688,18 @@ impl Run<'_, '_> {
             pending,
             decide,
             counters,
+            written,
         } = scratch;
         if registers.len() < entry.registers {
             registers.resize_with(entry.registers, Vec::new);
         }
-        registers[0].push(batch);
+        registers[0].extend(batches);
 
         for op in &entry.ops {
             match op {
                 Op::Map { kernel, register } => {
                     cursor.node = Some(NodeRef::Kernel(*kernel));
-                    let slot = slab.get_mut(kernel_slots[*kernel]);
+                    let slot = slab.get_mut(kernel_slots[*kernel].slab());
                     std::mem::swap(pending, &mut registers[*register]);
                     for buffer in pending.drain(..) {
                         consume(slot, header, turn, counters, buffer);
@@ -1077,7 +1714,7 @@ impl Run<'_, '_> {
                 }
                 Op::Expand { kernel, input, ports } => {
                     cursor.node = Some(NodeRef::Kernel(*kernel));
-                    let slot = slab.get_mut(kernel_slots[*kernel]);
+                    let slot = slab.get_mut(kernel_slots[*kernel].slab());
                     let base = layout.kernel_ports[*kernel];
                     std::mem::swap(pending, &mut registers[*input]);
                     for buffer in pending.drain(..) {
@@ -1143,6 +1780,9 @@ impl Run<'_, '_> {
                         let mut stamped = header.clone();
                         stamped.entry = *entry;
                         buffer.set_header(stamped);
+                        if let Some(written) = written.get_mut(exit.get()) {
+                            *written = true;
+                        }
                         exits.emit(*exit, buffer);
                     }
                 }
@@ -1151,6 +1791,35 @@ impl Run<'_, '_> {
                     for buffer in registers[*register].drain(..) {
                         add_loss(&mut counts.drops[*drop], buffer.len() as u64, points_in(&buffer));
                     }
+                }
+                Op::State {
+                    kernel,
+                    register,
+                    params,
+                } => {
+                    cursor.node = Some(NodeRef::Kernel(*kernel));
+                    // Translation lets state steps run only in an isolation slot, whose generations bind instances.
+                    let instance = match (instances.as_deref_mut(), kernel_slots[*kernel]) {
+                        (Some(instances), KernelBinding::Instance(handle)) => {
+                            instances.get_mut(handle).map(|instance| (handle, instance))
+                        }
+                        _ => None,
+                    };
+                    let Some((handle, instance)) = instance else {
+                        debug_assert!(false, "a state step's generation binds an instance");
+                        for buffer in registers[*register].drain(..) {
+                            counters.record_loss(LossClass::Invalid, buffer.len() as u64, points_in(&buffer));
+                        }
+                        continue;
+                    };
+                    cursor.instance = Some(handle);
+                    let param = state_params[*params].params.as_ref();
+                    std::mem::swap(pending, &mut registers[*register]);
+                    for buffer in pending.drain(..) {
+                        consume_state(&mut instance.kernel, header, turn, counters, param, buffer);
+                    }
+                    cursor.instance = None;
+                    fold_loss(&mut counts.kernel_loss[*kernel], counters);
                 }
             }
         }

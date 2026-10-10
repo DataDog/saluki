@@ -85,7 +85,10 @@ use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTr
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
-use saluki_metric_kernels::params::{validate_tag_value_rule_keys, InvalidTagValueRules};
+use saluki_metric_kernels::params::{
+    describe_allowed_widths, is_allowed_bucket_width, validate_tag_value_rule_keys, InvalidTagValueRules,
+    ALLOWED_BUCKET_WIDTHS_SECS,
+};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
 
@@ -250,9 +253,11 @@ pub struct SalukiOnly {
     metric_tag_value_allowlist: Option<JsonSequence<MetricTagValueAllowlistEntry>>,
 
     // ── aggregation keys (all top-level) ──────────────────────────────────────
-    /// Aggregation window size, in seconds (`aggregate_window_duration_seconds`).
+    /// Aggregation window size, in seconds (`aggregate_window_duration_seconds`). Defaults to 10 seconds.
     ///
-    /// A window of zero seconds cannot be aggregated into, so `0` is rejected here.
+    /// Only the allowed bucket widths are accepted: a divisor of 60 seconds, or 120, 180, or 300 seconds. Any other
+    /// value, `0` included, is rejected here, with an error that names the allowed widths and the nearest one.
+    #[serde(deserialize_with = "deserialize_bucket_width")]
     pub aggregate_window_duration_seconds: Option<NonZeroU64>,
     /// Maximum contexts per aggregation window (`aggregate_context_limit`).
     pub aggregate_context_limit: Option<usize>,
@@ -551,6 +556,48 @@ where
     D: Deserializer<'de>,
 {
     byte_size_to_bounded_nonzero_usize(ByteSize::deserialize(deserializer)?)
+}
+
+/// Deserializes `aggregate_window_duration_seconds`, accepting only the allowed bucket widths.
+fn deserialize_bucket_width<'de, D>(deserializer: D) -> Result<Option<NonZeroU64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer)?
+        .map(|secs| bucket_width(secs).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
+/// Returns `secs` as an aggregation bucket width, or the error that explains why it is not an allowed one.
+fn bucket_width(secs: u64) -> Result<NonZeroU64, String> {
+    match NonZeroU64::new(secs).filter(|width| is_allowed_bucket_width(width.get())) {
+        Some(width) => Ok(width),
+        None => Err(format!(
+            "`aggregate_window_duration_seconds` must be one of {}, but is {}: aggregation buckets must line up at a \
+             common boundary every minute (or every 2, 3, or 5 minutes) so that aggregation changes can switch at a \
+             bucket boundary. Use the nearest allowed width, {}.",
+            describe_allowed_widths(),
+            secs,
+            describe_seconds(nearest_allowed_bucket_width(secs))
+        )),
+    }
+}
+
+/// Returns `secs` as a number of seconds, in words.
+fn describe_seconds(secs: u64) -> String {
+    if secs == 1 {
+        "1 second".to_string()
+    } else {
+        format!("{} seconds", secs)
+    }
+}
+
+/// Returns the allowed bucket width nearest to `secs`, the smaller of two equally near ones.
+fn nearest_allowed_bucket_width(secs: u64) -> u64 {
+    ALLOWED_BUCKET_WIDTHS_SECS
+        .into_iter()
+        .min_by_key(|width| width.abs_diff(secs))
+        .expect("at least one width is allowed")
 }
 
 /// `otlp_config.traces.*`.
@@ -1288,6 +1335,106 @@ mod tests {
             result.is_err(),
             "a zero-length aggregation window must be a deserialization error"
         );
+    }
+
+    /// Every allowed bucket width is accepted and reaches the model.
+    #[test]
+    fn every_allowed_aggregation_window_is_accepted() {
+        for secs in [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120, 180, 300] {
+            let saluki_only: SalukiOnly = serde_json::from_value(json!({ "aggregate_window_duration_seconds": secs }))
+                .unwrap_or_else(|error| panic!("{} seconds should be accepted: {}", secs, error));
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.domains.dogstatsd.aggregation.window_duration_seconds.get(), secs);
+        }
+    }
+
+    /// Any other width is rejected with an error that names the setting, the allowed widths, why
+    /// they are restricted, and the nearest allowed width (the smaller of two equally near ones).
+    #[test]
+    fn an_aggregation_window_that_is_not_an_allowed_width_is_rejected_with_the_nearest_one() {
+        for (secs, nearest) in [
+            (0, "1 second"),
+            (7, "6 seconds"),
+            (8, "6 seconds"),
+            (9, "10 seconds"),
+            (45, "30 seconds"),
+            (90, "60 seconds"),
+            (240, "180 seconds"),
+            (3600, "300 seconds"),
+        ] {
+            let error = serde_json::from_value::<SalukiOnly>(json!({ "aggregate_window_duration_seconds": secs }))
+                .expect_err("a width that is not allowed is a deserialization error");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "`aggregate_window_duration_seconds` must be one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, \
+                     120, 180, or 300 seconds, but is {}: aggregation buckets must line up at a common boundary \
+                     every minute (or every 2, 3, or 5 minutes) so that aggregation changes can switch at a bucket \
+                     boundary. Use the nearest allowed width, {}.",
+                    secs, nearest
+                )
+            );
+        }
+    }
+
+    /// Loading the local configuration fails on a width that is not allowed, whether the file or
+    /// the environment sets it, and the error carries the explanation.
+    #[test]
+    fn loading_a_configuration_with_a_width_that_is_not_allowed_fails() {
+        let load = |path: &std::path::Path| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime builds")
+                .block_on(crate::LoadedConfiguration::load(path, crate::EnvPrecedence::AfterFile))
+        };
+        let _guard = saluki_config::test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_bucket_width_{}.yaml", std::process::id()));
+        for (file, env) in [("aggregate_window_duration_seconds: 7\n", None), ("{}\n", Some("7"))] {
+            std::fs::write(&path, file).unwrap();
+            if let Some(env) = env {
+                std::env::set_var("DD_AGGREGATE_WINDOW_DURATION_SECONDS", env);
+            }
+            let result = load(&path);
+            std::env::remove_var("DD_AGGREGATE_WINDOW_DURATION_SECONDS");
+            let error = match result {
+                Ok(_) => panic!("a width of 7 seconds must fail to load ({file:?}, {env:?})"),
+                Err(error) => error,
+            };
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("but is 7") && message.contains("Use the nearest allowed width, 6 seconds."),
+                "{message}"
+            );
+
+            // An allowed width loads.
+            std::fs::write(&path, "aggregate_window_duration_seconds: 12\n").unwrap();
+            let loaded = load(&path).expect("an allowed width loads");
+            assert_eq!(
+                loaded
+                    .local()
+                    .domains
+                    .dogstatsd
+                    .aggregation
+                    .window_duration_seconds
+                    .get(),
+                12
+            );
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// An unset width keeps the model default, which is itself an allowed width.
+    #[test]
+    fn an_unset_aggregation_window_keeps_the_allowed_default() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
+        assert_eq!(saluki_only.aggregate_window_duration_seconds, None);
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        let window = config.domains.dogstatsd.aggregation.window_duration_seconds;
+        assert_eq!(window, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS);
+        assert!(is_allowed_bucket_width(window.get()));
     }
 
     #[test]

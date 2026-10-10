@@ -148,12 +148,26 @@ pub fn undeclared_output(source: &str, outputs: &Outputs) -> Result<String, Gene
     )
 }
 
-/// S5, stateful node: an aggregation in front of the policy, which artifacts may not have until stage 6.
-pub fn stateful_node(source: &str) -> Result<String, GenericError> {
+/// S5, aggregation without parameters: an aggregation in front of the policy that names only its window, while
+/// validation requires every parameter of an aggregation.
+pub fn aggregation_without_parameters(source: &str) -> Result<String, GenericError> {
     insert_after_input(
         source,
         "rollup",
         "  node rollup = aggregate(window: 10s) {\n    -> {next}\n  }\n",
+    )
+}
+
+/// S5, an aggregation in the policy scope: an aggregation with every parameter, in front of the policy. The frame runs
+/// state owners only in their isolation slot, ahead of the policy scope, so ADP refuses it when it places the plan.
+pub fn aggregation_in_the_policy_scope(source: &str) -> Result<String, GenericError> {
+    insert_after_input(
+        source,
+        "rollup",
+        "  node rollup = aggregate(\n    window: 10s,\n    flush_interval: 10s,\n    context_limit: 1000,\n    \
+         counter_expiry: 5m,\n    flush_open_windows: false,\n    histogram_aggregates: [\"max\", \"count\"],\n    \
+         histogram_percentiles: [95],\n    copy_to_distribution: false,\n    copy_to_distribution_prefix: \"\",\n  ) \
+         {\n    -> {next}\n  }\n",
     )
 }
 
@@ -215,7 +229,7 @@ mod tests {
     fn each_edit_changes_the_lines_its_scenario_describes() {
         let outputs = outputs();
         type Edit = fn(&str, &Outputs) -> Result<String, GenericError>;
-        let cases: [(&str, Edit, &[&str], &[&str]); 7] = [
+        let cases: [(&str, Edit, &[&str], &[&str]); 8] = [
             (
                 "S1",
                 |source, _| drop_debug(source),
@@ -258,11 +272,30 @@ mod tests {
                 &["    true  -> emit metrics_routing_encode_0"],
             ),
             (
-                "S5 stateful node",
-                |source, _| stateful_node(source),
+                "S5 aggregation without parameters",
+                |source, _| aggregation_without_parameters(source),
                 &[
                     "  input.metrics -> rollup",
                     "  node rollup = aggregate(window: 10s) {",
+                    "    -> metrics_policy",
+                ],
+                &["  input.metrics -> metrics_policy"],
+            ),
+            (
+                "S5 aggregation in the policy scope",
+                |source, _| aggregation_in_the_policy_scope(source),
+                &[
+                    "  input.metrics -> rollup",
+                    "  node rollup = aggregate(",
+                    "    window: 10s,",
+                    "    flush_interval: 10s,",
+                    "    context_limit: 1000,",
+                    "    counter_expiry: 5m,",
+                    "    flush_open_windows: false,",
+                    "    histogram_aggregates: [\"max\", \"count\"],",
+                    "    histogram_percentiles: [95],",
+                    "    copy_to_distribution: false,",
+                    "    copy_to_distribution_prefix: \"\",",
                     "    -> metrics_policy",
                 ],
                 &["  input.metrics -> metrics_policy"],

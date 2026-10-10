@@ -10,10 +10,10 @@ use saluki_core::{
 
 use super::RegionError;
 use crate::{
-    compile::{DecisionMemo, ExitSet, ExitSetCounts, RegionProgram, SharedPredicate, COUNTED_EXIT_SETS},
+    compile::{DecisionMemo, ExitSet, ExitSetCounts, RegionProgram, SharedPredicate, Slot, COUNTED_EXIT_SETS},
     ir::{Namespace, NodeId, Plan},
     limits,
-    operators::{ConfiguredOperator, OperatorRegistry},
+    operators::{ConfiguredOperator, OperatorRegistry, MAX_HISTOGRAM_SERIES},
 };
 
 /// Returns the name, under its region's component, of the subcomponent whose bounds and resource group a kernel's
@@ -23,6 +23,33 @@ pub fn kernel_accounting_name(node: &NodeId) -> String {
     match node.namespace() {
         Namespace::Reserved => node.local().to_string(),
         Namespace::Policy => "policy".to_string(),
+    }
+}
+
+/// Returns the name, under the component of the isolation slot `region`, of the subcomponent a state owner's kernel is
+/// accounted under, or `None` if the kernel is accounted in the region's own group, with its bounds at the region's
+/// top level.
+///
+/// An isolation slot named after the reserved state owner it runs stands for that node's native component, as the
+/// isolation slot of aggregation stands for the native `dsd_agg` transform: its kernel keeps that component's resource
+/// group and bounds path, such as `dsd_agg.aggregate_context_limit`. Every other kernel is accounted under
+/// [`kernel_accounting_name`]. Fused slots account every kernel under [`kernel_accounting_name`], even one named
+/// after the node it runs, as host enrichment's `metrics_enrich` is; [`kernel_accounting_in`] applies both rules.
+pub fn kernel_accounting_path(region: &str, node: &NodeId) -> Option<String> {
+    match node.namespace() {
+        Namespace::Reserved if node.local().as_str() == region => None,
+        _ => Some(kernel_accounting_name(node)),
+    }
+}
+
+/// Returns the name, under the component of `slot`'s region, of the subcomponent the kernel of `node` is accounted
+/// under, or `None` if it is accounted in the region's own group: [`kernel_accounting_path`] in an isolation slot,
+/// and [`kernel_accounting_name`] in a fused one.
+pub fn kernel_accounting_in(slot: &Slot, node: &NodeId) -> Option<String> {
+    if slot.is_isolation() {
+        kernel_accounting_path(slot.name.as_str(), node)
+    } else {
+        Some(kernel_accounting_name(node))
     }
 }
 
@@ -40,8 +67,10 @@ struct PredicateBounds {
     matchers: usize,
 }
 
-/// The memory bounds of a region driver running a program: each kernel's, as its operator declares them, under the
-/// subcomponent its node is accounted under ([`kernel_accounting_name`]); each predicate of its decisions, its values
+/// The memory bounds of a region driver running a program: each kernel's, as its operator declares them, with the state
+/// a state owner draws from its host's state budget
+/// ([`specify_state_bounds`][crate::operators::OperatorDef::specify_state_bounds]), under the subcomponent its node is
+/// accounted under ([`kernel_accounting_name`]); each predicate of its decisions, its values
 /// and its compiled matchers' entries, under the subcomponent of the first `split` using it; one full events buffer
 /// per register of the program, which the driver may hold between steps; and what its decisions keep. The driver
 /// allocates, with its generation, the memo of each memoized decision (R4) and the counts per exit set of every
@@ -51,9 +80,17 @@ struct PredicateBounds {
 /// A region host adds these to its own bounds (see `RegionHostBuilder::with_bounds`). They describe the boot program:
 /// the kernels, predicates, memos, and counts of a later generation that the boot program does not have, and lists
 /// that grow in later generations, are not accounted for.
+///
+/// An isolation slot's bounds ([`for_slot`][Self::for_slot]) also hold one step of a drain of its state owners'
+/// time-driven output, which the region holds at once: at most [`DRAIN_STEP_EVENTS`][limits::values::DRAIN_STEP_EVENTS]
+/// events, and one context's whole expansion beyond them; and its state owner's kernel is accounted at the region's
+/// top level when the region is named after it ([`kernel_accounting_in`]).
 #[derive(Clone, Debug)]
 pub struct RegionBounds {
-    kernels: Vec<(NodeId, ConfiguredOperator)>,
+    /// Each kernel's node, operator, and the subcomponent it is accounted under, if not the region's own group.
+    kernels: Vec<(NodeId, ConfiguredOperator, Option<String>)>,
+    /// Whether the region drains state owners' time-driven output.
+    drains: bool,
     predicates: Vec<PredicateBounds>,
     registers: usize,
     /// The bytes of the memos of the program's memoized decisions.
@@ -72,6 +109,31 @@ impl RegionBounds {
     /// Returns an error if a kernel's node is not in the plan, or its operator cannot be configured with the node's
     /// parameters.
     pub fn new(plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram) -> Result<Self, RegionError> {
+        Self::accounted(plan, registry, program, |node| Some(kernel_accounting_name(node)))
+    }
+
+    /// Returns the bounds of the region of `slot` running `program`, a program compiled from `plan`: those of
+    /// [`new`][Self::new], with each kernel accounted as [`kernel_accounting_in`] says and, for an isolation slot, one
+    /// drain step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a kernel's node is not in the plan, or its operator cannot be configured with the node's
+    /// parameters.
+    pub fn for_slot(
+        plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram, slot: &Slot,
+    ) -> Result<Self, RegionError> {
+        let mut bounds = Self::accounted(plan, registry, program, |node| kernel_accounting_in(slot, node))?;
+        bounds.drains = slot.is_isolation();
+        Ok(bounds)
+    }
+
+    fn accounted<A>(
+        plan: &Plan, registry: &OperatorRegistry, program: &RegionProgram, accounting: A,
+    ) -> Result<Self, RegionError>
+    where
+        A: Fn(&NodeId) -> Option<String>,
+    {
         let kernels = program
             .kernels()
             .iter()
@@ -85,7 +147,7 @@ impl RegionBounds {
                         source,
                     }
                 })?;
-                Ok((node.id.clone(), operator))
+                Ok((node.id.clone(), operator, accounting(&node.id)))
             })
             .collect::<Result<_, RegionError>>()?;
         let memos = program
@@ -110,6 +172,7 @@ impl RegionBounds {
             .collect();
         Ok(Self {
             kernels,
+            drains: false,
             predicates,
             registers: program.register_count(),
             memos,
@@ -126,8 +189,29 @@ impl RegionBounds {
 
 impl MemoryBounds for RegionBounds {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        for (node, operator) in &self.kernels {
-            operator.specify_bounds(&mut builder.subcomponent(kernel_accounting_name(node)));
+        for (_, operator, accounted) in &self.kernels {
+            // The boot program's state owners set the capacity of the state budget every later state owner draws on,
+            // so their state, at their own limits, bounds what the region's state owners ever hold together.
+            let specify = |builder: &mut MemoryBoundsBuilder| {
+                operator.specify_bounds(builder);
+                operator.specify_state_bounds(builder);
+            };
+            match accounted {
+                Some(name) => specify(&mut builder.subcomponent(name)),
+                None => specify(builder),
+            }
+        }
+        if self.drains {
+            // One drain step's output: what one call of a state owner's time-driven work emits, at most the step's
+            // events and one context's whole expansion beyond them.
+            builder.firm().with_expr(UsageExpr::product(
+                "drain step",
+                UsageExpr::struct_size::<Event>("event"),
+                UsageExpr::constant(
+                    "events per drain step",
+                    limits::values::DRAIN_STEP_EVENTS as usize + MAX_HISTOGRAM_SERIES as usize,
+                ),
+            ));
         }
         for predicate in &self.predicates {
             builder
@@ -178,6 +262,63 @@ impl MemoryBounds for RegionBounds {
                     ),
                 ),
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_isolation_slot_named_after_its_state_owner_accounts_it_in_its_own_group() {
+        // `dsd_agg` stands for the native transform of that name; `metrics_enrich` is a fused slot named after host
+        // enrichment, whose kernel keeps its own subcomponent.
+        let plan = Plan::from_json(crate::testing::DEFAULT_PROGRAM_JSON).unwrap();
+        let frame = crate::compile::Frame::compute(
+            &plan,
+            &crate::operators::OperatorRegistry::native(),
+            &crate::testing::default_program_slot_name,
+        )
+        .unwrap();
+        let slot = |name: &str| {
+            frame
+                .slots()
+                .iter()
+                .find(|slot| slot.name.as_str() == name)
+                .unwrap()
+                .clone()
+        };
+        let node = |id: &str| id.parse::<NodeId>().unwrap();
+        assert_eq!(kernel_accounting_in(&slot("dsd_agg"), &node("dsd_agg")), None);
+        assert_eq!(
+            kernel_accounting_in(&slot("dsd_agg"), &node("policy/dsd_agg")),
+            Some("policy".to_string())
+        );
+        assert_eq!(
+            kernel_accounting_in(&slot("metrics_enrich"), &node("metrics_enrich")),
+            Some("metrics_enrich".to_string())
+        );
+    }
+
+    #[test]
+    fn a_kernel_is_accounted_in_its_region_only_when_the_region_is_named_after_its_reserved_node() {
+        // (region, node, subcomponent)
+        let cases = [
+            ("dsd_agg", "dsd_agg", None),
+            ("dsd_pre_aggregation", "dsd_enrich", Some("dsd_enrich")),
+            ("dsd_agg", "policy/dsd_agg", Some("policy")),
+            ("dsd_agg", "policy/agg", Some("policy")),
+        ];
+        for (region, node, expected) in cases {
+            let node: NodeId = node.parse().unwrap();
+            assert_eq!(
+                kernel_accounting_path(region, &node).as_deref(),
+                expected,
+                "{} in {}",
+                node,
+                region
+            );
         }
     }
 }

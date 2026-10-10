@@ -7,18 +7,19 @@
 //!    supported IR version and migrated to the current one, and refused if any node or blob carries a resolved
 //!    configuration value or its blob table is inconsistent. The result is a [`ReceivedArtifact`], with the hash of the
 //!    document as received, which approval binds to.
-//! 2. **Composition** ([`compose`]): the artifact replaces its scope in the current default program. Each artifact
-//!    node gets its plan ID by correspondence (see [`Correspondence`]) and its provenance: native for a reserved node
-//!    the artifact keeps unmodified (and, if it can lose records or runs in a host, fed as the default program feeds
-//!    it), the artifact's revision otherwise. Bindings resolve from the catalog, and the composed plan is validated,
-//!    with the artifact limits applied to artifact-provenance nodes. Composition also reports whether the artifact's
-//!    base no longer matches the default program (a stale base: it still installs) and whether it was approved against
-//!    another active plan (a stale review: it still installs).
+//! 2. **Composition** ([`compose`], or [`compose_all`] for one artifact per scope): each artifact replaces its scope in
+//!    the current default program, reaching the scope's inputs as `input.<name>` and its exits as `exit.<name>`. Each
+//!    artifact node gets its plan ID by correspondence (see [`Correspondence`]) and its provenance: native for a
+//!    reserved node the artifact keeps unmodified (and, if it can lose records or runs in a host, fed as the default
+//!    program feeds it), the artifact's revision otherwise. Bindings resolve from the catalog, and the composed plan is
+//!    validated, with the artifact limits applied to artifact-provenance nodes. Composition also reports whether each
+//!    artifact's base no longer matches the default program (a stale base: it still installs) and whether it was
+//!    approved against another active plan (a stale review: it still installs).
 //!
-//! Artifacts reference native outputs only, and an artifact with a stateful operator is rejected, until the installer
-//! can transition state (stage 6).
+//! Artifacts reference native outputs only. An artifact may hold state owners, such as `aggregate`: whether the frame
+//! can run them where the artifact puts them is placement's to decide, and installing a change to one is a cut.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 use snafu::Snafu;
@@ -36,7 +37,7 @@ use crate::{
         PortRef, Provenance, ReceivedArtifact, ScopeDecl, ScopeName, BLOB_MEMBER,
     },
     limits::values::{ARTIFACT_NODES, ARTIFACT_SIZE, BLOB_SIZE, PREDICATE_LEAVES},
-    operators::{names, OperatorRegistry, StateContract},
+    operators::{names, OperatorRegistry},
     validate::{predicate_leaves, Catalog, ValidationReport, Validator},
 };
 
@@ -296,7 +297,7 @@ pub struct Approval {
     pub active_plan_hash: Option<PlanHash>,
 }
 
-/// An artifact composed into the default program.
+/// Artifacts composed into the default program, one per scope.
 #[derive(Clone, Debug)]
 pub struct Composed {
     /// The composed plan, with every configuration binding resolved and every node's provenance set.
@@ -305,27 +306,64 @@ pub struct Composed {
     /// The composed plan's validation report. An artifact whose report has errors is rejected.
     pub report: ValidationReport,
 
+    /// Which plan node each artifact node became, and which reserved nodes of the scope the artifact left out, when
+    /// one artifact was composed. When several were, it is empty: each artifact's is in [`scopes`][Self::scopes], since
+    /// artifacts of different scopes can name their nodes alike.
+    pub correspondence: Correspondence,
+
+    /// Whether an artifact's `base.program_hash` differs from the default program's current base of its scope: the
+    /// scope changed structurally, or an output it emits to was rebound, since the artifact's export. The artifact
+    /// still installs, reported stale.
+    pub stale_base: bool,
+
+    /// Whether an artifact was approved against an active plan other than the one it is composed against. The artifact
+    /// still installs, with its review reported stale.
+    pub stale_review: bool,
+
+    /// How each scope was composed, by scope: one entry per artifact.
+    pub scopes: BTreeMap<ScopeName, ScopeComposition>,
+}
+
+/// How one artifact was composed into its scope.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScopeComposition {
     /// Which plan node each artifact node became, and which reserved nodes of the scope the artifact left out.
     pub correspondence: Correspondence,
 
-    /// Whether the artifact's `base.program_hash` differs from the default program's current base: the default
-    /// program's scope changed structurally, or an output it emits to was rebound, since the artifact's export. The
-    /// artifact still installs, reported stale.
+    /// Whether the artifact's `base.program_hash` differs from the default program's current base of the scope.
     pub stale_base: bool,
 
-    /// Whether the artifact was approved against an active plan other than the one it is composed against. The
-    /// artifact still installs, with its review reported stale.
+    /// Whether the artifact was approved against an active plan other than the one it is composed against.
     pub stale_review: bool,
 }
 
 /// Composes a received artifact into the default program, replacing the artifact's scope.
 ///
-/// `default_plan` is the default program as lowered, with its bindings resolved, and `catalog` the host's catalog of
-/// the same configuration.
+/// This is [`compose_all`] of one artifact; see there.
 ///
-/// - The artifact must replace a scope the default program declares, and reach its inputs as `input.<name>`. Its nodes
-///   replace the scope's region (every node reachable from the scope's inputs), and its edges replace the edges that
-///   enter the region; the rest of the default program, its outputs, and its scopes stay as they are.
+/// # Errors
+///
+/// Returns an error if the artifact cannot be composed at all; see [`ComposeError`].
+pub fn compose(
+    default_plan: &Plan, artifact: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
+    registry: &OperatorRegistry,
+) -> Result<Composed, ComposeError> {
+    compose_all(default_plan, &[(artifact, approval)], catalog, registry)
+}
+
+/// Composes received artifacts, at most one per scope, each with its approval, into the default program, each
+/// replacing its scope.
+///
+/// `default_plan` is the default program as lowered, with its bindings resolved, and `catalog` the host's catalog of
+/// the same configuration. Each scope is composed on its own, against the default program, with its own correspondence
+/// and base check; scopes never share a node, so the order does not matter, and they are composed in scope order. Then
+/// the plan is validated once.
+///
+/// - An artifact must replace a scope the default program declares, and reach its inputs as `input.<name>` and its
+///   exits as `exit.<name>` (only as an edge's target). Its nodes replace the scope's region (every node reachable from
+///   the scope's inputs without entering one of its exits' ports), and its edges replace the edges that enter the
+///   region and those that leave it into an exit; the rest of the default program, its outputs, and its scopes stay as
+///   they are.
 /// - An artifact node whose local ID equals a reserved ID inside the scope keeps that ID. If its operator and
 ///   parameters are the default program's (parameters compared without resolved values, as their operator decodes
 ///   them, so that a set written in another order is the same set), the node is the default program's node exactly,
@@ -338,26 +376,113 @@ pub struct Composed {
 /// - Blob references are replaced with their content, and the configuration bindings of artifact-provenance nodes
 ///   resolve from `catalog`. A binding the catalog does not declare is left unresolved, for validation to report; one
 ///   it declares without a value is rejected.
-/// - Every output an `emit` of the artifact delivers to must be recorded in the artifact's base, and declared by the
+/// - Every output an `emit` of an artifact delivers to must be recorded in the artifact's base, and declared by the
 ///   catalog with the fingerprint the base records; one that is not declared, or declared with another fingerprint,
 ///   is a removed output, and one that is neither recorded nor declared is an undeclared output.
-/// - An artifact-provenance node of a stateful operator, such as `aggregate`, is rejected, whether or not its
-///   parameters are valid, until the installer can transition state (stage 6). An opaque host, whose state is its host
-///   component's, is left to validation, which rejects host components in artifacts.
-/// - The composed plan's provenance lists the artifact's revision, and its nodes and edges are in the default
-///   program's order, the artifact's taking the places of the region's in order (any left over follow the last of
-///   them), so that composing an unmodified export gives the default program again, with the same hash.
+/// - State owners, such as `aggregate`, compose like any node: placement decides whether the frame can run them where
+///   the artifact puts them, and validation rejects host components in artifacts.
+/// - The composed plan's provenance lists every artifact's revision, in scope order, and its nodes and edges are in the
+///   default program's order, each artifact's taking the places of its region's in order (any left over follow the last
+///   of them), so that composing an unmodified export gives the default program again, with the same hash.
 /// - The composed plan is validated with `registry` and `catalog`; the report is returned, not judged, so the caller
 ///   rejects an artifact with errors as it does any candidate.
 ///
 /// # Errors
 ///
-/// Returns an error if the artifact cannot be composed at all; see [`ComposeError`].
-pub fn compose(
-    default_plan: &Plan, artifact: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
+/// Returns an error if no artifact, or more than one for a scope, is given, or if an artifact cannot be composed at
+/// all; see [`ComposeError`].
+pub fn compose_all(
+    default_plan: &Plan, artifacts: &[(&ReceivedArtifact, &Approval)], catalog: &dyn Catalog,
     registry: &OperatorRegistry,
 ) -> Result<Composed, ComposeError> {
-    let received = artifact;
+    let mut by_scope = BTreeMap::new();
+    for &(artifact, approval) in artifacts {
+        let scope = &artifact.artifact.scope;
+        if by_scope.insert(scope, (artifact, approval)).is_some() {
+            return Err(ComposeError::Malformed {
+                message: format!(
+                    "more than one artifact replaces scope `{}`; compose one artifact per scope",
+                    scope
+                ),
+            });
+        }
+    }
+    if by_scope.is_empty() {
+        return Err(ComposeError::Malformed {
+            message: "no artifact was given to compose".to_string(),
+        });
+    }
+
+    let mut nodes = default_plan.nodes.clone();
+    let mut edges = default_plan.edges.clone();
+    let mut revisions = Vec::with_capacity(by_scope.len());
+    let mut scopes = BTreeMap::new();
+    for (scope, (artifact, approval)) in by_scope {
+        let part = compose_scope(default_plan, artifact, approval, catalog, registry)?;
+        let members = &part.members;
+        nodes = splice(&nodes, |node| members.contains(&node.id), part.nodes);
+        edges = splice(
+            &edges,
+            |edge| members.contains(&edge.to.node) || members.contains(&edge.from.node),
+            part.edges,
+        );
+        revisions.push(part.revision);
+        scopes.insert(scope.clone(), part.composition);
+    }
+
+    let plan = Plan {
+        ir_version: default_plan.ir_version,
+        provenance: Some(PlanProvenance {
+            config_change: default_plan
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.config_change),
+            artifacts: revisions,
+        }),
+        nodes,
+        edges,
+        outputs: default_plan.outputs.clone(),
+        scopes: default_plan.scopes.clone(),
+    };
+    let report = Validator::new(registry, catalog).validate(&plan);
+    let stale_base = scopes.values().any(|scope| scope.stale_base);
+    let stale_review = scopes.values().any(|scope| scope.stale_review);
+    let correspondence = match scopes.values().collect::<Vec<_>>()[..] {
+        [only] => only.correspondence.clone(),
+        _ => Correspondence::new(),
+    };
+    Ok(Composed {
+        plan,
+        report,
+        correspondence,
+        stale_base,
+        stale_review,
+        scopes,
+    })
+}
+
+/// One artifact composed into its scope, before the composition is spliced into the plan.
+struct ScopePart {
+    /// The artifact's nodes, as composed, in artifact order.
+    nodes: Vec<Node>,
+
+    /// The artifact's edges, with plan ports, in artifact order.
+    edges: Vec<Edge>,
+
+    /// The default program's nodes of the scope's region, which the artifact's replace.
+    members: BTreeSet<NodeId>,
+
+    /// The artifact's revision, as provenance names it.
+    revision: ArtifactRevision,
+
+    composition: ScopeComposition,
+}
+
+/// Composes one artifact against the default program's region of its scope.
+fn compose_scope(
+    default_plan: &Plan, received: &ReceivedArtifact, approval: &Approval, catalog: &dyn Catalog,
+    registry: &OperatorRegistry,
+) -> Result<ScopePart, ComposeError> {
     let artifact = &received.artifact;
     let scope = &artifact.scope;
     let declaration = default_plan
@@ -443,7 +568,6 @@ pub fn compose(
             Some(default) => (default.clone(), CorrespondenceKind::Unmodified),
             None => {
                 let params = resolve_bindings(params, catalog, &node.id)?;
-                check_stateless(&node.id, &node.op, &params, registry)?;
                 let kind = if region_nodes.contains_key(&id) {
                     CorrespondenceKind::Modified
                 } else {
@@ -474,32 +598,16 @@ pub fn compose(
         }
     }
 
-    let plan = Plan {
-        ir_version: default_plan.ir_version,
-        provenance: Some(PlanProvenance {
-            config_change: default_plan
-                .provenance
-                .as_ref()
-                .and_then(|provenance| provenance.config_change),
-            artifacts: vec![revision],
-        }),
-        nodes: splice(&default_plan.nodes, |node| region.members.contains(&node.id), nodes),
-        edges: splice(
-            &default_plan.edges,
-            |edge| region.members.contains(&edge.to.node),
-            edges,
-        ),
-        outputs: default_plan.outputs.clone(),
-        scopes: default_plan.scopes.clone(),
-    };
-    let report = Validator::new(registry, catalog).validate(&plan);
-
-    Ok(Composed {
-        plan,
-        report,
-        correspondence,
-        stale_base,
-        stale_review,
+    Ok(ScopePart {
+        nodes,
+        edges,
+        members: region.members,
+        revision,
+        composition: ScopeComposition {
+            correspondence,
+            stale_base,
+            stale_review,
+        },
     })
 }
 
@@ -542,12 +650,13 @@ enum End {
     To,
 }
 
-/// Returns the plan port an artifact edge's end refers to.
+/// Returns the plan port an artifact edge's end refers to: a scope input's port, a scope exit's port, or a port of an
+/// artifact node, under its plan ID.
 ///
 /// # Errors
 ///
-/// Returns an error if the end is a scope input the scope does not declare, a scope input the edge enters, or a port
-/// of a node the artifact does not have.
+/// Returns an error if the end is a scope input or exit the scope does not declare, a scope input the edge enters, a
+/// scope exit the edge leaves, or a port of a node the artifact does not have.
 fn plan_port(
     reference: &ArtifactPortRef, index: usize, end: End, scope: &ScopeDecl, ids: &BTreeMap<&ArtifactNodeId, NodeId>,
 ) -> Result<PortRef, ComposeError> {
@@ -567,6 +676,20 @@ fn plan_port(
         (ArtifactPortRef::Input(_), End::To) => Err(ComposeError::Malformed {
             message: format!(
                 "edge {} enters `{}`, which is a scope input; edges leave a scope's inputs",
+                index, reference
+            ),
+        }),
+        (ArtifactPortRef::Exit(exit), End::To) => {
+            scope.exits.get(exit).cloned().ok_or_else(|| ComposeError::Malformed {
+                message: format!(
+                    "edge {} enters `{}`, but the scope has no exit `{}`",
+                    index, reference, exit
+                ),
+            })
+        }
+        (ArtifactPortRef::Exit(_), End::From) => Err(ComposeError::Malformed {
+            message: format!(
+                "edge {} leaves `{}`, which is a scope exit; edges enter a scope's exits",
                 index, reference
             ),
         }),
@@ -804,45 +927,6 @@ fn resolve_value(value: &mut Value, catalog: &dyn Catalog, node: &ArtifactNodeId
     }
 }
 
-/// Checks that an artifact-provenance node keeps no state.
-///
-/// The node's contract says whether it keeps state. A node whose parameters its operator does not accept has no
-/// contract: it is refused if its operator keeps keyed state whatever its parameters (see [`keeps_keyed_state`]), so
-/// that its author is not asked to complete parameters for a node that cannot be installed, and left to validation,
-/// which reports its parameters, otherwise. An opaque host, whose state is its host component's and undescribed, is
-/// left to validation too, which rejects host components in artifacts whatever their state.
-///
-/// # Errors
-///
-/// Returns an error if the node's operator keeps state.
-fn check_stateless(
-    node: &ArtifactNodeId, op: &OperatorName, params: &Params, registry: &OperatorRegistry,
-) -> Result<(), ComposeError> {
-    let stateful = match registry.configure(op.as_str(), params) {
-        Ok(configured) => {
-            let contract = configured.contract();
-            let host_owned = contract.state == StateContract::Opaque && contract.boundary.is_fence();
-            contract.state != StateContract::None && !host_owned
-        }
-        Err(_) => keeps_keyed_state(op),
-    };
-    if stateful {
-        return Err(ComposeError::Stateful {
-            node: node.clone(),
-            op: op.clone(),
-        });
-    }
-    Ok(())
-}
-
-/// Returns `true` if the operator keeps keyed state with any parameters it accepts: `aggregate`.
-///
-/// An operator's contract depends on its parameters, so this is what can be said of a node whose parameters do not
-/// configure. Every other native operator either keeps no state or is an opaque host.
-fn keeps_keyed_state(op: &OperatorName) -> bool {
-    op.as_str() == names::AGGREGATE
-}
-
 /// Checks the output an `emit` node of the artifact delivers to against the artifact's base and the catalog.
 ///
 /// An `emit` that names no valid output is left to validation, which reports its parameters.
@@ -918,14 +1002,24 @@ fn splice<T: Clone>(default: &[T], in_region: impl Fn(&T) -> bool, replacement: 
 /// Composes artifacts into the host's current default program.
 ///
 /// The installer core composes the artifacts it accepts through this, without knowing the default program or the
-/// catalog: the host implements it over [`compose`], with the default program it last lowered and its catalog.
+/// catalog: the host implements it over [`compose_all`], with the default program it last lowered and its catalog.
 pub trait Composer {
-    /// Composes a received artifact into the current default program.
+    /// Composes received artifacts, at most one per scope, each with its approval, into the current default program:
+    /// each scope is composed on its own, with its own correspondence and base check, and the plan is validated once.
     ///
     /// # Errors
     ///
-    /// Returns an error if the artifact cannot be composed; see [`compose`].
-    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError>;
+    /// Returns an error if any artifact cannot be composed; see [`compose_all`].
+    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError>;
+
+    /// Composes one received artifact into the current default program.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact cannot be composed; see [`compose_all`].
+    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
+        self.compose_all(&[(artifact, approval)])
+    }
 }
 
 /// An artifact that cannot be composed into the default program.
@@ -966,22 +1060,6 @@ pub enum ComposeError {
 
         /// The artifact's scope.
         scope: ScopeName,
-    },
-
-    /// An artifact node runs a stateful operator, which artifacts cannot contain yet: installing one needs state
-    /// transitions.
-    #[snafu(display(
-        "Artifact node `{}` runs `{}`, which keeps state: artifacts cannot contain stateful operators yet. Remove the \
-         node, or keep the processing in native configuration.",
-        node,
-        op
-    ))]
-    Stateful {
-        /// The artifact node.
-        node: ArtifactNodeId,
-
-        /// Its operator.
-        op: OperatorName,
     },
 
     /// An artifact node is bound to a configuration binding that the host declares without a value.

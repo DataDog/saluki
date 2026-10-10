@@ -27,7 +27,7 @@ use super::{
     contract::{Cardinality, EffectContract, Identity, Loss, LossClass, LossDecl, PerKind},
     names,
     ports::{InputPort, KindMap, OutputPort, PortMapping, Ports, TimestampMap, IN},
-    support::{check_whole_seconds, error, error_chain, unresolved},
+    support::{check_bucket_width, error, error_chain, unresolved},
     KernelBuildContext, KernelBuildError, KernelSpec, OperatorDef,
 };
 use crate::{
@@ -343,8 +343,9 @@ const RATE: KindSet = KindSet::of(&[Kind::Rate]);
 
 /// The `timestamp_split` operator: separates the timestamped points of each metric from its untimestamped points.
 ///
-/// Parameters: `window` (bindable; a whole number of seconds, at least one), the rate interval timestamped counters
-/// are given, which must equal the aggregation width.
+/// Parameters: `window` (bindable; an allowed bucket width,
+/// [`ALLOWED_BUCKET_WIDTHS`][crate::limits::ALLOWED_BUCKET_WIDTHS]), the rate interval timestamped counters are given,
+/// which must equal the aggregation width.
 ///
 /// Untimestamped points leave on `default` and timestamped points on `passthrough`, so the ports are point-disjoint,
 /// and a metric with both kinds of point becomes two records. On `passthrough`, counters become rates over `window`;
@@ -370,7 +371,8 @@ impl OperatorDef for TimestampSplit {
 
     fn check_params(&self, params: &DecodedParams) -> Vec<ParamError> {
         let mut errors = Vec::new();
-        check_whole_seconds("window", params.duration("window"), false, &mut errors);
+        // The window is the aggregation's bucket width, which timestamped counters are converted to rates over.
+        check_bucket_width("window", params.duration("window"), &mut errors);
         errors
     }
 

@@ -716,7 +716,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `aggregate_context_limit`                                          | Max contexts per aggregation window                                         |                |
 | `aggregate_flush_interval`                                         | Aggregator flush period                                                     |                |
 | `aggregate_passthrough_idle_flush_timeout`                         | Passthrough buffer flush delay                                              |                |
-| `aggregate_window_duration_seconds`                                | Aggregation window size                                                     |                |
+| `aggregate_window_duration_seconds`                                | Aggregation window size, in seconds: an allowed bucket width                | 10             |
 | `apm_config.obfuscation.sql.dbms`                                  | SQL obfuscation DBMS dialect                                                |                |
 | `apm_config.obfuscation.sql.dollar_quoted_func`                    | Preserve dollar-quoted SQL functions                                        |                |
 | `apm_config.obfuscation.sql.keep_sql_alias`                        | Preserve SQL aliases in obfuscation                                         |                |
@@ -896,6 +896,12 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `aggregate_window_duration_seconds`
+
+The width of DogStatsD aggregation buckets, in seconds. The default is 10 seconds.
+
+The width must be one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120, 180, or 300 seconds: a divisor of 60 seconds, or 2, 3, or 5 minutes. Buckets of allowed widths line up at a common boundary every minute (or every 2, 3, or 5 minutes), so that a change of aggregation, such as a policy artifact's, can switch at a bucket boundary. Any other value, `0` included, fails startup with an error that names the nearest allowed width.
 
 ### `dogstatsd_mapper_string_interner_size`
 

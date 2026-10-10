@@ -32,8 +32,8 @@ use crate::{
     compile::{RewriteOutcome, RewriteRecord},
     extension::DeliveryPolicy,
     ir::{
-        ArtifactRevision, BindingName, InputName, NodeId, OperatorName, OutputId, ParamName, Plan, PlanProvenance,
-        PortName, PortRef, Provenance, RecipientId, ScopeName,
+        ArtifactRevision, BindingName, ExitName, InputName, NodeId, OperatorName, OutputId, ParamName, Plan,
+        PlanProvenance, PortName, PortRef, Provenance, RecipientId, ScopeName,
     },
     model::PortType,
     operators::{Boundary, Loss, LossClass, OperatorRegistry, StateContract},
@@ -42,8 +42,8 @@ use crate::{
 
 mod physical;
 pub use self::physical::{
-    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, OutputBindingEntry, PhysicalEdgeEntry, PhysicalPlan,
-    SegmentEntry, SlotEntry, SlotInputEntry,
+    AdmissionPointEntry, ExitEntry, FixedEntry, FusionEntry, IsolationEntry, OutputBindingEntry, PhysicalEdgeEntry,
+    PhysicalPlan, SegmentEntry, SlotEntry, SlotInputEntry,
 };
 
 mod text;
@@ -232,6 +232,11 @@ pub struct ScopeEntry {
 
     /// The scope's inputs, each with the port that feeds it.
     pub inputs: BTreeMap<InputName, PortRef>,
+
+    /// The scope's exits, each with the port outside the scope that it feeds: where a scope that ends before its paths
+    /// do leaves off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exits: BTreeMap<ExitName, PortRef>,
 }
 
 /// What a bound covers.
@@ -460,6 +465,7 @@ impl Explain {
             .map(|(name, scope)| ScopeEntry {
                 name: name.clone(),
                 inputs: scope.inputs.clone(),
+                exits: scope.exits.clone(),
             })
             .collect();
 
@@ -586,6 +592,7 @@ fn boundary_name(boundary: Boundary) -> &'static str {
         Boundary::Synchronous => "synchronous",
         Boundary::IoHost => "io_host",
         Boundary::OpaqueHost => "opaque_host",
+        Boundary::Isolated => "isolated",
     }
 }
 

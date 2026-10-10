@@ -173,5 +173,11 @@
      "fingerprint": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
      "recipients": ["cluster_agent_out/primary/0"], "delivery": "native"}
   ],
-  "scopes": {"post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}}
+  "scopes": {
+    "dogstatsd_pre_aggregation": {
+      "inputs": {"metrics": "dsd_in.metrics"},
+      "exits": {"aggregated": "dsd_post_agg_filter.in"}
+    },
+    "post_enrich": {"inputs": {"metrics": "metrics_enrich_host_tags.out"}}
+  }
 }

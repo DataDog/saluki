@@ -2,8 +2,8 @@
   "explain_version": 1,
   "plan": {
     "ir_version": 1,
-    "hash": "sha256:3a24de98bc7495136f3ac9ebf338cbed91c79da804e6a987f86f88388fe5f97a",
-    "structural_hash": "sha256:9a541e8818e10daf6b946427ee08f7ba7f22b5c31933ab8e57d83a1be2403fa9",
+    "hash": "sha256:88423e3e5d7aa48e4cd81f2fabb07c9e92b57851c0c3a613fe852e8eea50b469",
+    "structural_hash": "sha256:c7f880711839b0ce7de981b732fbf7685b788187cf224b93a90192e40d380ab0",
     "valid": true
   },
   "graph": {
@@ -487,7 +487,7 @@
       {
         "id": "dsd_agg",
         "op": "aggregate",
-        "boundary": "opaque_host",
+        "boundary": "isolated",
         "state": "keyed",
         "loss": [
           "policy",
@@ -1944,6 +1944,16 @@
     ],
     "scopes": [
       {
+        "name": "dogstatsd_pre_aggregation",
+        "inputs": {
+          "metrics": "dsd_in.metrics"
+        },
+        "exits": {
+          "aggregated": "dsd_post_agg_filter_in.0",
+          "passthrough": "dsd_post_agg_filter_in.1"
+        }
+      },
+      {
         "name": "post_enrich",
         "inputs": {
           "metrics": "metrics_enrich_host_tags.out"
@@ -1986,7 +1996,35 @@
     }
   ],
   "findings": [],
-  "rewrites": [],
+  "rewrites": [
+    {
+      "id": "R5b",
+      "outcome": "applied",
+      "nodes": [
+        "dsd_agg",
+        "dsd_post_agg_filter"
+      ],
+      "justification": "path: `dsd_agg` feeds the filter `dsd_post_agg_filter` through `dsd_post_agg_filter_in`, which neither copies nor changes what it reads; reads: the filter reads {name, kind}, all known when a record is built; kinds: `dsd_agg` judges the records it emits of {rate, gauge, set, distribution} with the filter's predicate, as the filter receives them, and skips those its `true` port would drop; the filter stays for every other record, and state is unchanged, so every output is the same on every trace",
+      "capacity_rule": false,
+      "telemetry": [
+        {
+          "node": "dsd_agg",
+          "change": "changed",
+          "detail": "it sends fewer records downstream: none that `dsd_post_agg_filter` drops, which count in `dsd_post_agg_filter`'s own series of its `true` port and its policy loss, as if it had received them"
+        },
+        {
+          "node": "dsd_post_agg_filter_in",
+          "change": "changed",
+          "detail": "`plan_node_events_total{component_id:dsd_post_agg_filter_in}` of its input counts fewer records: those `dsd_agg` suppresses"
+        },
+        {
+          "node": "dsd_post_agg_filter",
+          "change": "changed",
+          "detail": "`plan_node_events_total{component_id:dsd_post_agg_filter}` of its input counts fewer records: those `dsd_agg` suppresses"
+        }
+      ]
+    }
+  ],
   "physical": {
     "fixed": [
       {
@@ -2000,22 +2038,8 @@
             "id": 0,
             "port": "metrics",
             "mode": "admit",
-            "to": "dsd_pre_aggregation"
-          }
-        ]
-      },
-      {
-        "node": "dsd_agg",
-        "op": "aggregate",
-        "boundary": "opaque_host",
-        "input": "dsd_no_agg_split_region.dsd_agg",
-        "idle": false,
-        "admission_points": [
-          {
-            "id": 1,
-            "port": "out",
-            "mode": "readmit",
-            "to": "dsd_post_agg_filter_region"
+            "to": "dsd_pre_aggregation",
+            "feeds_state": true
           }
         ]
       },
@@ -2027,7 +2051,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 2,
+            "id": 1,
             "port": "metrics",
             "mode": "admit",
             "to": "metrics_enrich"
@@ -2042,7 +2066,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 3,
+            "id": 2,
             "port": "metrics",
             "mode": "admit",
             "to": "metrics_enrich"
@@ -2057,7 +2081,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 4,
+            "id": 3,
             "port": "metrics",
             "mode": "admit",
             "to": "metrics_enrich"
@@ -2072,7 +2096,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 5,
+            "id": 4,
             "port": "metrics",
             "mode": "admit",
             "to": "metrics_enrich"
@@ -2087,7 +2111,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 6,
+            "id": 5,
             "port": "out",
             "mode": "readmit",
             "to": "output metrics_routing_encode_0"
@@ -2102,7 +2126,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 7,
+            "id": 6,
             "port": "out",
             "mode": "readmit",
             "to": "output metrics_routing_encode_1"
@@ -2117,7 +2141,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 8,
+            "id": 7,
             "port": "out",
             "mode": "readmit",
             "to": "output mrf_metrics_encode"
@@ -2132,7 +2156,7 @@
         "idle": false,
         "admission_points": [
           {
-            "id": 9,
+            "id": 8,
             "port": "out",
             "mode": "readmit",
             "to": "output af_metrics_encode"
@@ -2159,7 +2183,10 @@
             "index": 0,
             "name": "dsd_prefix_filter_region",
             "to": "dsd_prefix_filter_region",
-            "idle": false
+            "idle": false,
+            "progress_points": [
+              0
+            ]
           },
           {
             "index": 1,
@@ -2219,7 +2246,10 @@
             "index": 0,
             "name": "dsd_no_agg_split_region",
             "to": "dsd_no_agg_split_region",
-            "idle": false
+            "idle": false,
+            "progress_points": [
+              0
+            ]
           },
           {
             "index": 1,
@@ -2278,7 +2308,10 @@
             "index": 0,
             "name": "dsd_agg",
             "to": "dsd_agg",
-            "idle": false
+            "idle": false,
+            "progress_points": [
+              0
+            ]
           },
           {
             "index": 1,
@@ -2325,6 +2358,34 @@
         ]
       },
       {
+        "name": "dsd_agg",
+        "cost": 0,
+        "nodes": [
+          "dsd_agg"
+        ],
+        "entries": [
+          {
+            "key": "entry 0",
+            "from": "dsd_tag_filterlist.out",
+            "input": "dsd_agg.in"
+          }
+        ],
+        "exits": [
+          {
+            "index": 0,
+            "name": "dsd_post_agg_filter_region",
+            "to": "dsd_post_agg_filter_region",
+            "idle": false
+          }
+        ],
+        "isolation": {
+          "output_point": 9,
+          "upstream": [
+            0
+          ]
+        }
+      },
+      {
         "name": "dsd_post_agg_filter_region",
         "cost": 36,
         "nodes": [
@@ -2336,12 +2397,12 @@
         ],
         "entries": [
           {
-            "key": "admission point 1",
+            "key": "entry 0",
             "from": "dsd_agg.out",
             "input": "dsd_post_agg_filter_in.0"
           },
           {
-            "key": "entry 0",
+            "key": "entry 1",
             "from": "dsd_no_agg_split.passthrough",
             "input": "dsd_post_agg_filter_in.1"
           }
@@ -2403,22 +2464,22 @@
         ],
         "entries": [
           {
-            "key": "admission point 2",
+            "key": "admission point 1",
             "from": "otlp_in.metrics",
             "input": "metrics_enrich_in.1"
           },
           {
-            "key": "admission point 3",
+            "key": "admission point 2",
             "from": "checks_ipc_in.metrics",
             "input": "metrics_enrich_in.2"
           },
           {
-            "key": "admission point 4",
+            "key": "admission point 3",
             "from": "liveness_in.metrics",
             "input": "metrics_enrich_in.3"
           },
           {
-            "key": "admission point 5",
+            "key": "admission point 4",
             "from": "trace_sampler.metrics",
             "input": "metrics_enrich_in.4"
           },
@@ -2490,11 +2551,6 @@
       {
         "from": "dsd_in.metrics",
         "to": "dsd_pre_aggregation",
-        "kind": "admission"
-      },
-      {
-        "from": "dsd_agg.out",
-        "to": "dsd_post_agg_filter_region",
         "kind": "admission"
       },
       {
@@ -2648,6 +2704,11 @@
         "kind": "exit"
       },
       {
+        "from": "dsd_agg.dsd_post_agg_filter_region",
+        "to": "dsd_post_agg_filter_region",
+        "kind": "exit"
+      },
+      {
         "from": "dsd_post_agg_filter_region.dsd_client_telemetry",
         "to": "output dsd_client_telemetry",
         "kind": "exit"
@@ -2768,14 +2829,14 @@
       {
         "from": "dsd_tag_filterlist.out",
         "to": "dsd_agg.in",
-        "decision": "fence",
-        "reason": "`dsd_agg` is an opaque_host, a fence that fusion never crosses"
+        "decision": "isolation",
+        "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
       },
       {
         "from": "dsd_agg.out",
         "to": "dsd_post_agg_filter_in.0",
-        "decision": "fence",
-        "reason": "`dsd_agg` is an opaque_host, a fence that fusion never crosses"
+        "decision": "isolation",
+        "reason": "the edge enters or leaves the isolation slot `dsd_agg`, which runs its state owner alone"
       },
       {
         "from": "dsd_no_agg_split.passthrough",
@@ -2952,8 +3013,144 @@
       },
       {
         "admission_point": 1,
-        "from": "dsd_agg.out",
+        "from": "otlp_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "af_metrics_gateway",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_1",
+          "mrf_metrics_gateway",
+          "output dd_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 2,
+        "from": "checks_ipc_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "af_metrics_gateway",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_1",
+          "mrf_metrics_gateway",
+          "output dd_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 3,
+        "from": "liveness_in.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "af_metrics_gateway",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_1",
+          "mrf_metrics_gateway",
+          "output dd_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 4,
+        "from": "trace_sampler.metrics",
+        "mode": "admit",
+        "nodes": [
+          "metrics_enrich_in",
+          "metrics_enrich",
+          "metrics_enrich_host_tags",
+          "metrics_policy",
+          "metrics_policy_0"
+        ],
+        "slots": [
+          "metrics_enrich"
+        ],
+        "ends": [
+          "af_metrics_gateway",
+          "metrics_routing_filter_0",
+          "metrics_routing_filter_1",
+          "mrf_metrics_gateway",
+          "output dd_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 5,
+        "from": "metrics_routing_filter_0.out",
         "mode": "readmit",
+        "nodes": [
+          "metrics_routing_filter_0_out"
+        ],
+        "slots": [],
+        "ends": [
+          "output metrics_routing_encode_0"
+        ]
+      },
+      {
+        "admission_point": 6,
+        "from": "metrics_routing_filter_1.out",
+        "mode": "readmit",
+        "nodes": [
+          "metrics_routing_filter_1_out"
+        ],
+        "slots": [],
+        "ends": [
+          "output metrics_routing_encode_1"
+        ]
+      },
+      {
+        "admission_point": 7,
+        "from": "mrf_metrics_gateway.out",
+        "mode": "readmit",
+        "nodes": [
+          "mrf_metrics_gateway_out"
+        ],
+        "slots": [],
+        "ends": [
+          "output mrf_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 8,
+        "from": "af_metrics_gateway.out",
+        "mode": "readmit",
+        "nodes": [
+          "af_metrics_gateway_out"
+        ],
+        "slots": [],
+        "ends": [
+          "output af_metrics_encode"
+        ]
+      },
+      {
+        "admission_point": 9,
+        "from": "dsd_agg.out",
+        "mode": "time-driven",
         "nodes": [
           "dsd_post_agg_filter_in",
           "dsd_post_agg_filter",
@@ -2977,142 +3174,6 @@
           "mrf_metrics_gateway",
           "output dd_metrics_encode",
           "output dsd_client_telemetry"
-        ]
-      },
-      {
-        "admission_point": 2,
-        "from": "otlp_in.metrics",
-        "mode": "admit",
-        "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
-        ],
-        "slots": [
-          "metrics_enrich"
-        ],
-        "ends": [
-          "af_metrics_gateway",
-          "metrics_routing_filter_0",
-          "metrics_routing_filter_1",
-          "mrf_metrics_gateway",
-          "output dd_metrics_encode"
-        ]
-      },
-      {
-        "admission_point": 3,
-        "from": "checks_ipc_in.metrics",
-        "mode": "admit",
-        "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
-        ],
-        "slots": [
-          "metrics_enrich"
-        ],
-        "ends": [
-          "af_metrics_gateway",
-          "metrics_routing_filter_0",
-          "metrics_routing_filter_1",
-          "mrf_metrics_gateway",
-          "output dd_metrics_encode"
-        ]
-      },
-      {
-        "admission_point": 4,
-        "from": "liveness_in.metrics",
-        "mode": "admit",
-        "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
-        ],
-        "slots": [
-          "metrics_enrich"
-        ],
-        "ends": [
-          "af_metrics_gateway",
-          "metrics_routing_filter_0",
-          "metrics_routing_filter_1",
-          "mrf_metrics_gateway",
-          "output dd_metrics_encode"
-        ]
-      },
-      {
-        "admission_point": 5,
-        "from": "trace_sampler.metrics",
-        "mode": "admit",
-        "nodes": [
-          "metrics_enrich_in",
-          "metrics_enrich",
-          "metrics_enrich_host_tags",
-          "metrics_policy",
-          "metrics_policy_0"
-        ],
-        "slots": [
-          "metrics_enrich"
-        ],
-        "ends": [
-          "af_metrics_gateway",
-          "metrics_routing_filter_0",
-          "metrics_routing_filter_1",
-          "mrf_metrics_gateway",
-          "output dd_metrics_encode"
-        ]
-      },
-      {
-        "admission_point": 6,
-        "from": "metrics_routing_filter_0.out",
-        "mode": "readmit",
-        "nodes": [
-          "metrics_routing_filter_0_out"
-        ],
-        "slots": [],
-        "ends": [
-          "output metrics_routing_encode_0"
-        ]
-      },
-      {
-        "admission_point": 7,
-        "from": "metrics_routing_filter_1.out",
-        "mode": "readmit",
-        "nodes": [
-          "metrics_routing_filter_1_out"
-        ],
-        "slots": [],
-        "ends": [
-          "output metrics_routing_encode_1"
-        ]
-      },
-      {
-        "admission_point": 8,
-        "from": "mrf_metrics_gateway.out",
-        "mode": "readmit",
-        "nodes": [
-          "mrf_metrics_gateway_out"
-        ],
-        "slots": [],
-        "ends": [
-          "output mrf_metrics_encode"
-        ]
-      },
-      {
-        "admission_point": 9,
-        "from": "af_metrics_gateway.out",
-        "mode": "readmit",
-        "nodes": [
-          "af_metrics_gateway_out"
-        ],
-        "slots": [],
-        "ends": [
-          "output af_metrics_encode"
         ]
       }
     ],

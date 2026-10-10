@@ -10,32 +10,34 @@
 //!   host carries its bindings' values, so an exported program, whose bindings are unresolved, can be previewed.
 //! - Operators with a [kernel][crate::operators::KernelSpec] run it, with an unlimited budget. Every synchronous native
 //!   operator other than the routing operators has one, extracted from its native component.
+//! - State owners behind an isolation fence ([`Boundary::Isolated`][crate::operators::Boundary]), such as
+//!   aggregation, run their stateful kernels as an isolation slot runs them: see
+//!   [isolated state owners](#isolated-state-owners).
 //! - Opaque hosts run through an [`OpaqueHostAdapter`] registered per node, whose output is **re-admitted** downstream.
-//!   `aggregate` nodes run through [`AggregateAdapter`], over native aggregation's own state machine, unless an adapter
-//!   is registered for them.
 //! - Sources are where `admit` events enter.
 //!
 //! # Trace events
 //!
 //! | Event | Effect |
 //! |---|---|
-//! | `admit(source, t_a, batch)` | Delivers the batch from the source through the plan; see [admission](#admission). |
-//! | `heartbeat(source, t_a)` | Advances the source's latest admission time without delivering anything. |
-//! | `advance(clock)` | Runs one flush tick for every state owner at host time `clock`, in topological order. |
-//! | `install(plan)` | Validates the plan and, if it is valid, makes it the active plan from the next event on. |
+//! | `admit(source, t_a, batch)` | Stamps the batch at the source and delivers it; see [admission](#admission). |
+//! | `heartbeat(source, t_a)` | Stamps a header without events, which moves watermarks but delivers nothing. |
+//! | `advance(clock)` | Runs a flush tick at host time `clock`; see [state owners](#isolated-state-owners). |
+//! | `install(plan)` | Makes a valid plan active, at once or at a cut; see [installations](#installations). |
+//! | `cancel` | Cancels the cut in flight, if it can be; see [installations](#installations). |
 //! | `close` | Ends input: every kernel and host finishes under [`DrainPolicy::Shutdown`]. |
 //! | `signal(name, value)` | Records the signal's value. No operator reads signals yet, so it has no effect. |
 //! | `capacity(output, n)` | Bounds the output to `n` more records until the next bound; see [capacity](#capacity). |
-//! | `cancel` | Not supported until cuts (stage 6). |
 //!
 //! # Delivery order
 //!
 //! Each trace event that moves records (`admit`, `advance`, `close`, and the retirement of an installation's old plan)
-//! is one **pass** over the plan. Nodes run in topological order, choosing among ready nodes in plan order, with the
-//! `emit`s last, in plan order. When its turn comes, a node runs every batch waiting at it, input port by input port,
-//! and in arrival order within a port; a state owner then runs its tick or finish, if the event calls for one. A
-//! `merge` therefore passes its inputs on in port order, as a region's `concat` step does, and every port carries the
-//! records of its node's input ports in that order, each path keeping its own order.
+//! is one **pass** over the plan, or, where it moves records of several generations, one pass over each generation's
+//! plan, the oldest first. Nodes run in topological order, choosing among ready nodes in plan order, with the `emit`s
+//! last, in plan order. When its turn comes, a node runs every batch waiting at it, input port by input port, and in
+//! arrival order within a port; a state owner then runs its tick or finish, if the event calls for one. A `merge`
+//! therefore passes its inputs on in port order, as a region's `concat` step does, and every port carries the records
+//! of its node's input ports in that order, each path keeping its own order.
 //!
 //! The order in which an output receives records thus follows from the plan's dataflow alone: from what each node
 //! does to the order of its input, from `merge` port order, and from the plan order of the `emit`s. It never depends on
@@ -49,19 +51,22 @@
 //! # Time
 //!
 //! The trace states two clocks. Each `admit` carries the admission time its source stamped, and each `advance` the
-//! host time of a flush tick. Ticks follow a monotonic timer, so `advance` clocks never decrease. A batch may be
-//! stamped earlier than the last tick, as a batch that waited in a queue would be: it **arrives** at the later of the
-//! last tick and its admission time.
+//! host time of a flush tick, which is also the wall clock the tick reads. Ticks follow a monotonic timer, so `advance`
+//! clocks never decrease. A batch may be stamped earlier than the last tick, as a batch that waited in a queue would
+//! be: it **arrives** at the later of the last tick and its admission time.
 //!
-//! A source's admission times never decrease either: an earlier stamp can only come from a clock reset, which is not
-//! supported until stage 6.
+//! A source's admission clock stamps the later of its latest time and the wall clock, so its admission times never
+//! decrease, except at a **clock reset**: a stamp more than the
+//! [clock-reset threshold][crate::limits::values::CLOCK_RESET_THRESHOLD] earlier than the point's latest one resets
+//! its clock, which continues in a new epoch. A stamp earlier by no more than the threshold is an error: the clock
+//! would have stamped its latest time again, so the trace states that time instead.
 //!
 //! # Watermarks
 //!
-//! There are no queues, so every state owner's watermark is the earliest of the latest admission times of the
-//! admission points upstream of it: sources, and the outputs of opaque hosts, which re-admit. An admission point that
-//! has admitted nothing holds the watermark back. Opaque hosts receive their watermark at every tick, and a stateful
-//! kernel's time-driven output, from its ticks and its finish, is stamped with its watermark as `t_a`.
+//! There are no queues, so every state owner sees every stamp at its upstream admission points at once, and its
+//! watermark is the earliest of the latest admission times of the admission points upstream of it: sources, and the
+//! outputs of opaque hosts, which re-admit. An admission point that has admitted nothing holds the watermark back.
+//! Opaque hosts receive their watermark at every tick.
 //!
 //! # Capacity
 //!
@@ -71,12 +76,46 @@
 //! `capacity` loss of the `emit` node that delivered it and kept in [`RunOutput::refused`], so that two executions'
 //! losses can be compared with [`compare_under_capacity`][crate::equivalence::compare_under_capacity].
 //!
+//! # Isolated state owners
+//!
+//! A state owner behind an isolation fence runs its stateful kernel as an isolation slot's region does, by the shared
+//! [time rules][crate::runtime::state::rules]. Its state belongs to a **lineage**, keyed by its node and its state
+//! contract (for aggregation, its window), not to a generation: generations whose plans keep the lineage share one
+//! instance of it, and each call passes the kernel the parameters of the generation it runs under
+//! ([`OperatorDef::step_params`][crate::operators::OperatorDef::step_params]): a batch's, or a flush's.
+//!
+//! - Its watermark comes from a [watermark tracker][crate::runtime::state::rules::WatermarkTracker] over the
+//!   admission points upstream of it, which observes every stamp at those points as it is made.
+//! - `advance(clock)` is a flush tick with wall time `clock`, decided by the [`TickGate`]: it fires at the tick's whole
+//!   second once the watermark reached it, and is otherwise gated. A gated tick fires before the batch of the first
+//!   later `admit` or `heartbeat` that raises the watermark to that second, or, at the latest, before the tick of the
+//!   first later `advance` whose clock is at least the grace past the gated one, at the watermark's whole second.
+//!   [`Interpreter::with_heartbeats_at_ticks`] makes every source heartbeat at each `advance`'s clock first, so that
+//!   every tick fires at once: the no-queueing mode, in which a tick flushes exactly as native aggregation's would.
+//! - A clock reset at an upstream point runs a reset drain before the batch that caused it: the kernel flushes at the
+//!   pre-reset watermark, emits everything it holds, and continues empty, in the new timeline.
+//! - `close` finishes it at the later of the latest admission time it saw and the last tick's clock.
+//! - Its time-driven output, from ticks, reset drains, final retirements, and `close`, is stamped as an admission
+//!   point of its own would stamp it: at the flush time, never earlier than its previous output in the same epoch,
+//!   which a reset drain ends. It belongs to the generation the shared rules choose when the flush starts
+//!   ([`stamping_generation`][crate::runtime::state::rules::stamping_generation]): the one a retiring lineage served,
+//!   or else the schedule's, the new generation of a cut once every upstream point has switched to it. It flows through
+//!   that generation's plan.
+//! - Every lineage of every state owner draws its contexts from one state budget
+//!   ([`Interpreter::with_state_budget`]), and every lineage of one node from that node's.
+//!
+//! Every isolated state owner fed by the same admission points stamps its time-driven output by one output clock, as
+//! the isolation slot that runs every state owner over a point in a host does: a slot's latch is one, whichever of its
+//! state owners flushed last. The frame gives each state owner of a boot plan a slot of its own, so a region compared
+//! with the interpreter over a boot plan with several state owners over one point latches each owner apart.
+//!
 //! # Opaque hosts and segments
 //!
 //! An opaque host's output is re-admitted at the host's output: stamped by the host's own admission clock, which reads
 //! the arrival time for output emitted while admitting a batch and the tick's clock for output emitted at a tick, and
 //! with the generation active at that moment. At every tick, every output of the host either re-admits output or
-//! heartbeats at the tick's clock.
+//! heartbeats at the tick's clock. Isolated state owners downstream observe those stamps for their watermark, but a
+//! gated tick waits for the next stamp at a source, or the next `advance`, to fire.
 //!
 //! # Admission
 //!
@@ -84,14 +123,52 @@
 //! there against the port's type, which validation computed from the source's binding or the host's declared outputs.
 //! A record outside it is an error: no host produces it, and validation's typing assumes it never arrives.
 //!
+//! A source's stamp is assigned a generation by the schedule, as an admission point's is: the active generation, or,
+//! while a cut is in flight, the old generation for a stamp before the cut's time and the new one from it on (and
+//! after a clock reset since the cut was armed, which counts as reaching it). The batch then runs through that
+//! generation's plan.
+//!
 //! # Installations
 //!
-//! Every installation commits at once: there are no queues, so no batch is in flight when it does. An invalid plan is
-//! rejected and the active plan stays, as a failed preparation leaves the active generation unchanged. State owners
-//! correspond by node ID: one that is unchanged keeps its instance and its state, so its time-driven output flows
-//! through the new plan; one whose transition is `reject` makes the installation rejected. Adding or removing a state
-//! owner, changing one's parameters, or a `cut` transition is not supported yet. The kernels of the old plan that are
-//! not carried over finish under [`DrainPolicy::Retire`], in the old generation.
+//! An invalid plan is rejected and the active plan stays, as a failed preparation leaves the active generation
+//! unchanged. State owners correspond by node ID, and each one's transition is classified by contract, as the installer
+//! classifies it:
+//!
+//! - **`retain`**: a state owner whose lineage the new plan keeps, whatever its other parameters, keeps its instance
+//!   and its state; time-driven output then flows through the newest generation that binds it.
+//! - **`cut`**: a lineage the new plan changes (a changed window), adds, or removes. The installation **arms a cut** at
+//!   `T`, the first instant at least the [cut margin][crate::limits::values::CUT_MARGIN] after the latest of the
+//!   affected admission points' latest stamps and the last tick's clock that is a multiple of the least common
+//!   multiple of the widths involved, which must be at most
+//!   [`MAX_TRANSITION_LCM`][crate::limits::values::MAX_TRANSITION_LCM]. Stamps before `T` run in the old generation and
+//!   stamps from it on in the new one. A retiring lineage keeps flushing, never at or after `T`, until the first stamp
+//!   of the new generation reaches it from every upstream point: then, before that batch is admitted, it makes its
+//!   final flush at `T` and emits every point it still holds, under the old generation. The cut **finalizes** once
+//!   every affected point stamps only the new generation: the old plan then retires.
+//! - **`reject`**: the installation is rejected.
+//!
+//! An installation without a cut commits at once: there are no queues, so no batch is in flight when it does. The
+//! kernels of the old plan that are not carried over finish under [`DrainPolicy::Retire`], in the old generation.
+//!
+//! An `install` is validated and prepared when it is proposed, and rejected at once if it is invalid. While a cut is
+//! in flight, a valid one waits: it starts when the cut finalizes, classified against the plan then active, and a later
+//! valid `install` replaces it ([`InstallOutcome::Superseded`]). A `cancel` cancels the cut if no admission point
+//! stamped a batch or heartbeat with the new generation yet: the old generation stays active, and the installation
+//! waiting for the cut, if any, is superseded by the cancel, since what cancels a cut proposes its own installation
+//! next. A cancel that is refused changes nothing. The installer's proposals map onto these events: a newer revision is
+//! a `cancel` followed by an `install`; a re-composition of the revision in flight, or a default-program change, is an
+//! `install`, which waits; a revocation is a `cancel` followed by an `install` of the default program. Either way, a
+//! refused cancel leaves the `install` that follows it waiting for the cut, replacing what waited before it.
+//!
+//! # Missing
+//!
+//! - State owners outside an isolation fence, such as aggregation in its host component, keep their earlier rules:
+//!   they carry over only unchanged, a clock reset upstream of one is not supported, and no cut is armed while a plan
+//!   has one.
+//! - A clock reset at one of several admission points upstream of a state owner drains everything it holds, as a reset
+//!   at its only point does; how resets at several points combine arrives with the frame's repartition edges.
+//! - A gated tick does not fire before a batch an opaque host re-admits upstream of it: it fires at the next stamp of a
+//!   source, or the next `advance`.
 //!
 //! # Runtime
 //!
@@ -100,43 +177,51 @@
 //! unobservable.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    any::Any,
+    collections::BTreeMap,
     fmt,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 use saluki_core::{
     data_model::event::{metric::Metric, Event},
     execution::{
-        AdmissionTime, BatchHeader, Budget, DrainPolicy, GenerationId, GenerationToken, LossClass, PortIndex,
-        PortOutputs, Progress, Turn, TurnCounters,
+        AdmissionPointId, AdmissionSchedule, AdmissionTime, BatchHeader, Budget, DrainPolicy, GenerationId,
+        GenerationRef, LossClass, PortIndex, PortOutputs, Progress, Turn, TurnCounters,
     },
     topology::EventsBuffer,
 };
 use snafu::Snafu;
 
 use crate::{
+    compile::LineageKey,
     extension::TransitionClass,
-    ir::{NodeId, OutputId, Plan, PortName, SignalName},
+    ir::{NodeId, OutputId, PortName, SignalName},
     limits,
     model::{EventView, Kind, TimestampForm},
-    operators::{names, ConfiguredOperator, KernelBuildError, OperatorRegistry},
+    operators::{ConfiguredOperator, KernelBuildError, OperatorRegistry},
     predicate::PredicateError,
-    validate::{describe_port_type, Catalog, ValidationReport, Validator},
+    runtime::state::{
+        rules::{CutError, OutputClock, TickGate},
+        StateBudgets,
+    },
+    validate::{describe_port_type, Catalog, ValidationReport},
 };
-
-pub mod adapters;
-use self::adapters::AggregateAdapter;
 
 mod capacity;
 use self::capacity::OutputCapacity;
+
+mod drains;
+mod installation;
 
 mod host;
 pub use self::host::{AdapterError, HostBatch, HostFactory, HostFinish, HostOutput, HostTick, OpaqueHostAdapter};
 
 mod program;
-use self::program::{build_kernel, AdmissionPoints, Exec, PrepareError, Program};
+use self::program::{AdmissionPoints, Exec, PrepareError, Program, Stamp};
+
+mod state;
+use self::state::{CutInFlight, Instance, Instances, Retiring};
 
 mod trace;
 pub use self::trace::{SignalValue, Trace, TraceEvent};
@@ -175,6 +260,12 @@ pub enum InstallRejection {
 
         /// The transition class.
         class: TransitionClass,
+    },
+
+    /// The installation needs a cut whose bucket widths line up less often than a cut may wait for.
+    CutWidths {
+        /// Why no cut time can be computed.
+        source: CutError,
     },
 
     /// A predicate's configuration binding has no value: the plan has not resolved it, and the catalog carries none.
@@ -217,6 +308,7 @@ impl fmt::Display for InstallRejection {
                 "node `{}` keeps state, and its transition to the new plan is `{}`",
                 node, class
             ),
+            Self::CutWidths { source } => write!(f, "the installation needs a cut: {}", source),
             Self::UnresolvedBinding { node, source } => write!(f, "node `{}`: {}", node, source),
             Self::KernelBuild { node, source } => write!(f, "node `{}`: {}", node, source),
             Self::HostBuild { node, source } => write!(f, "node `{}`: {}", node, source),
@@ -224,23 +316,53 @@ impl fmt::Display for InstallRejection {
     }
 }
 
-/// What happened to one `install` event.
+/// What happened to one `install` or `cancel` event.
 #[derive(Debug)]
 pub enum InstallOutcome {
-    /// The plan became active, as the given generation.
+    /// The plan became active at once, as the given generation.
     Active {
         /// The new generation.
         generation: GenerationId,
     },
 
+    /// The plan's state owners change their lineages, so the plan becomes active at a cut: batches stamped from `at`
+    /// on run as the given generation, earlier ones as the generation it replaces.
+    Cut {
+        /// The new generation.
+        generation: GenerationId,
+
+        /// The cut time.
+        at: AdmissionTime,
+    },
+
+    /// A `cancel` event cancelled the cut in flight before any admission point stamped a batch or heartbeat with its
+    /// generation: the generation it replaced stays active, and the installation waiting for the cut, if any, is
+    /// superseded by the cancel.
+    Cancelled,
+
+    /// A `cancel` event cancelled nothing: an admission point had already stamped a batch or heartbeat with the
+    /// generation of the cut in flight, so the cut proceeds, or no cut was in flight.
+    CancelRefused,
+
+    /// The installation waited for a cut in flight to finish, and a later event, at the given position in the trace,
+    /// replaced it before it started: a valid `install`, since the latest proposal wins, or a `cancel` that cancelled
+    /// the cut, since what cancels a cut proposes its own installation next.
+    Superseded {
+        /// The position of the replacing `install` or `cancel` event in the trace.
+        by: usize,
+    },
+
+    /// The trace ended while the installation waited for a cut in flight to finish.
+    Waiting,
+
     /// The installation was rejected.
     Rejected(InstallRejection),
 }
 
-/// One `install` event and its outcome.
+/// One `install` or `cancel` event and its outcome.
 #[derive(Debug)]
 pub struct InstallRecord {
-    /// The position of the `install` event in the trace, counting from zero.
+    /// The position of the event in the trace, counting from zero.
     pub event: usize,
 
     /// What happened.
@@ -256,8 +378,9 @@ pub struct EmittedRecord {
     /// The position in the trace of the `install` event that created that generation.
     pub install: usize,
 
-    /// The admission time of the batch that carried the record: the time its last admission point stamped. `None`
-    /// for time-driven kernel output when no upstream admission point has stamped anything.
+    /// The admission time of the batch that carried the record: the time its last admission point stamped, or, for
+    /// a state owner's time-driven output, its flush time. `None` for time-driven output of a kernel that is not
+    /// isolated when no upstream admission point has stamped anything.
     pub admitted_at: Option<AdmissionTime>,
 
     /// The record.
@@ -297,7 +420,7 @@ impl RunOutput {
         self.refused.iter().map(|(id, records)| (id, records.as_slice()))
     }
 
-    /// Returns every `install` event's outcome, in trace order.
+    /// Returns every `install` and `cancel` event's outcome, in trace order.
     pub fn installs(&self) -> &[InstallRecord] {
         &self.installs
     }
@@ -346,7 +469,7 @@ pub enum InterpretErrorKind {
         last_rejection: Option<String>,
     },
 
-    /// An `admit` or `heartbeat` names a node that is not a source of the active plan.
+    /// An `admit` or `heartbeat` names a node that is not a source of the plan its stamp runs in.
     #[snafu(display(
         "`{}` is not a `source` node of the active plan; `admit` and `heartbeat` events name the source a batch \
          enters at",
@@ -370,6 +493,32 @@ pub enum InterpretErrorKind {
 
         /// The clock of this tick.
         clock: AdmissionTime,
+    },
+
+    /// A source's admission time moves back by no more than the clock-reset threshold, which an admission clock never
+    /// stamps.
+    #[snafu(display(
+        "Admission point `{}` stamps {} after {}, a backward jump of at most the clock-reset threshold of {} s, which \
+         an admission clock absorbs by stamping its latest time again: state the batch's admission time as {}, or \
+         make the jump larger than the threshold, which resets the clock",
+        point,
+        admitted_at,
+        previous,
+        threshold.as_secs(),
+        previous
+    ))]
+    AdmissionTimeMovedBack {
+        /// The admission point, as `node.port`.
+        point: String,
+
+        /// The point's latest admission time.
+        previous: AdmissionTime,
+
+        /// The stamp the trace states.
+        admitted_at: AdmissionTime,
+
+        /// The clock-reset threshold.
+        threshold: Duration,
     },
 
     /// An `admit` carries more events than one batch holds.
@@ -500,6 +649,8 @@ pub struct Interpreter<'a> {
     registry: &'a OperatorRegistry,
     catalog: &'a dyn Catalog,
     hosts: BTreeMap<NodeId, Box<HostFactory<'a>>>,
+    heartbeats_at_ticks: bool,
+    state_budget: Option<u64>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -509,14 +660,31 @@ impl<'a> Interpreter<'a> {
             registry,
             catalog,
             hosts: BTreeMap::new(),
+            heartbeats_at_ticks: false,
+            state_budget: None,
         }
+    }
+
+    /// Makes every source of the live plans send a heartbeat at each `advance`'s clock before the tick, unless it
+    /// already stamped a later time, as an idle source's admission point does: every isolated state owner's watermark
+    /// then reaches the tick's clock, so every tick fires at once instead of waiting at the tick gate.
+    pub fn with_heartbeats_at_ticks(mut self) -> Self {
+        self.heartbeats_at_ticks = true;
+        self
+    }
+
+    /// Bounds the contexts every lineage of every isolated state owner holds together to `capacity`, as a host's
+    /// state budget does. Without it, each lineage is bounded by its own context limit, and every lineage of one node
+    /// by that node's.
+    pub fn with_state_budget(mut self, capacity: u64) -> Self {
+        self.state_budget = Some(capacity);
+        self
     }
 
     /// Registers how to build the adapter for the opaque host node `node`.
     ///
     /// The factory is called when a plan containing the node is first installed in a run. A later installation that
-    /// keeps the node unchanged keeps its adapter, and its state. An `aggregate` node without a registered factory runs
-    /// through [`AggregateAdapter`]; registering one replaces it.
+    /// keeps the node unchanged keeps its adapter, and its state.
     pub fn with_opaque_host<F>(mut self, node: NodeId, factory: F) -> Self
     where
         F: Fn(&ConfiguredOperator) -> Result<Box<dyn OpaqueHostAdapter>, AdapterError> + 'a,
@@ -529,10 +697,10 @@ impl<'a> Interpreter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the trace is malformed, such as an `admit` before any plan is active or a batch larger than
-    /// the batch size; if it needs a capability a later stage adds, such as a clock reset or an operator without a
-    /// kernel; or if an opaque host has no adapter. A rejected installation is not an error: it is recorded in the
-    /// output's [installs][RunOutput::installs].
+    /// Returns an error if the trace is malformed, such as an `admit` before any plan is active, a batch larger than
+    /// the batch size, or an admission time that moves back within the clock-reset threshold; if it needs a capability
+    /// a later stage adds, such as an operator without a kernel; or if an opaque host has no adapter. A rejected
+    /// installation is not an error: it is recorded in the output's [installs][RunOutput::installs].
     pub fn run(&self, trace: &Trace) -> Result<RunOutput, InterpretError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -599,15 +767,88 @@ impl Pending {
     }
 }
 
+/// What an isolated state owner's instance does in a drain: one call of time-driven work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DrainKind {
+    /// A flush tick.
+    Tick,
+
+    /// A clock reset's drain: a flush at the pre-reset watermark, then everything held.
+    Reset,
+
+    /// The final flush of a retiring lineage at its cut, then everything held.
+    FinalRetire,
+
+    /// The end of input.
+    Shutdown,
+}
+
+/// One drain of one instance: its kind, the flush time its kernel runs at, the time its output is stamped at, and the
+/// generation it runs under, decided when it starts.
+struct Drain {
+    instance: usize,
+    kind: DrainKind,
+    flush: Option<AdmissionTime>,
+    stamp_at: AdmissionTime,
+    generation: GenerationRef,
+}
+
+/// An installation waiting for the cut in flight to finish: the position of its `install` event, and its plan,
+/// validated and prepared when it was proposed.
+struct Queued {
+    event: usize,
+    program: Program,
+}
+
+/// How the state owners of a candidate correspond to those of the active plan.
+#[derive(Default)]
+struct Transition {
+    /// The `(old, new)` positions of the state owners that are not isolated whose instances carry over.
+    carried_local: Vec<(usize, usize)>,
+
+    /// The candidate positions of isolated state owners that keep a lineage, with its instance.
+    retained: Vec<(usize, usize)>,
+
+    /// The candidate positions of isolated state owners that start a new lineage.
+    added: Vec<usize>,
+
+    /// The instances whose lineages end: those of state owners the candidate changes or removes.
+    retiring: Vec<usize>,
+
+    /// The bucket widths of the lineages that start and end.
+    widths: Vec<Duration>,
+
+    /// Whether there is an active plan to change from.
+    replaces: bool,
+}
+
+impl Transition {
+    /// Returns `true` if the transition needs a cut: a lineage starts or ends while another plan is active.
+    fn is_cut(&self) -> bool {
+        self.replaces && (!self.added.is_empty() || !self.retiring.is_empty())
+    }
+}
+
 /// The state of one run.
 struct Run<'r, 'a> {
     interpreter: &'r Interpreter<'a>,
     points: AdmissionPoints,
+    gate: TickGate,
     /// The host clock: the clock of the last flush tick.
     clock: AdmissionTime,
     /// The instant the host clock's Unix epoch maps to, for the `now` of turns.
     origin: Instant,
-    active: Option<Program>,
+    /// The live programs, by generation: the active one, and, while a cut is in flight, the one it replaces.
+    programs: BTreeMap<GenerationId, Program>,
+    /// The schedule that assigns generations to stamps, once a plan is active.
+    schedule: Option<AdmissionSchedule>,
+    instances: Instances,
+    budgets: StateBudgets,
+    /// The output clocks of the isolated state owners, by the admission points upstream of them, in ID order: every
+    /// lineage of every state owner fed by the same points shares one, as the isolation slot running them does.
+    output_clocks: BTreeMap<Vec<AdmissionPointId>, OutputClock>,
+    cut: Option<CutInFlight>,
+    queued: Option<Queued>,
     generations: u64,
     closed: bool,
     last_rejection: Option<String>,
@@ -620,9 +861,18 @@ impl<'r, 'a> Run<'r, 'a> {
         Self {
             interpreter,
             points: AdmissionPoints::default(),
+            gate: TickGate::default(),
             clock: AdmissionTime::UNIX_EPOCH,
             origin: Instant::now(),
-            active: None,
+            programs: BTreeMap::new(),
+            schedule: None,
+            instances: Instances::default(),
+            budgets: interpreter
+                .state_budget
+                .map_or_else(StateBudgets::unlimited, StateBudgets::new),
+            output_clocks: BTreeMap::new(),
+            cut: None,
+            queued: None,
             generations: 0,
             closed: false,
             last_rejection: None,
@@ -638,15 +888,27 @@ impl<'r, 'a> Run<'r, 'a> {
                 kind,
             })?;
         }
+        if let Some(queued) = self.queued.take() {
+            self.record(queued.event, InstallOutcome::Waiting);
+        }
 
-        if let Some(program) = &self.active {
-            for node in 0..program.nodes.len() {
-                if program.nodes[node].is_stateful() {
-                    let watermark = self.watermark(program, node);
-                    self.output.watermarks.insert(program.nodes[node].id.clone(), watermark);
+        if let Some(program) = self.active_id().and_then(|id| self.programs.get(&id)) {
+            for (position, node) in program.nodes.iter().enumerate() {
+                if !node.is_stateful() {
+                    continue;
                 }
+                let watermark = match node.instance() {
+                    Some(instance) => self
+                        .instances
+                        .get(instance)
+                        .and_then(|instance| instance.tracker.watermark()),
+                    None => self.watermark(program, position),
+                };
+                self.output.watermarks.insert(node.id.clone(), watermark);
             }
         }
+        // Records are made when installations are decided, which a cut can delay; they are reported in trace order.
+        self.output.installs.sort_by_key(|record| record.event);
         Ok(self.output)
     }
 
@@ -673,11 +935,7 @@ impl<'r, 'a> Run<'r, 'a> {
                 Ok(())
             }
             TraceEvent::Close => self.close(),
-            TraceEvent::Cancel => Err(InterpretErrorKind::Unsupported {
-                capability: "cancelling an installation, which can only be pending while it waits for a `cut`,"
-                    .to_string(),
-                stage: 6,
-            }),
+            TraceEvent::Cancel => self.cancel(position),
         }
     }
 
@@ -687,25 +945,25 @@ impl<'r, 'a> Run<'r, 'a> {
         }
     }
 
-    /// Admits a batch at a source; an empty batch is a heartbeat.
+    /// Returns the active generation: the schedule's newest.
+    fn active_id(&self) -> Option<GenerationId> {
+        match self.schedule.as_ref()? {
+            AdmissionSchedule::Steady(generation) => Some(generation.id()),
+            AdmissionSchedule::Cut { new, .. } => Some(new.id()),
+        }
+    }
+
+    fn record(&mut self, event: usize, outcome: InstallOutcome) {
+        self.output.installs.push(InstallRecord { event, outcome });
+    }
+
+    // Admission.
+
+    /// Stamps a batch at a source and delivers it; an empty batch is a heartbeat.
     fn admit(
         &mut self, source: &NodeId, admitted_at: AdmissionTime, batch: &[Metric],
     ) -> Result<(), InterpretErrorKind> {
-        let mut program = self.active.take().ok_or_else(|| self.no_active_plan())?;
-        let result = self.admit_into(&mut program, source, admitted_at, batch);
-        self.active = Some(program);
-        result
-    }
-
-    fn admit_into(
-        &mut self, program: &mut Program, source: &NodeId, admitted_at: AdmissionTime, batch: &[Metric],
-    ) -> Result<(), InterpretErrorKind> {
-        let node = program
-            .index
-            .get(source)
-            .copied()
-            .filter(|&node| matches!(program.nodes[node].exec, Exec::Source))
-            .ok_or_else(|| InterpretErrorKind::UnknownSource { node: source.clone() })?;
+        let active = self.active_id().ok_or_else(|| self.no_active_plan())?;
         let limit = batch_size();
         if batch.len() > limit {
             return Err(InterpretErrorKind::BatchTooLarge {
@@ -713,306 +971,93 @@ impl<'r, 'a> Run<'r, 'a> {
                 limit,
             });
         }
-        check_port_type(program, node, 0, batch)?;
-        let Some(point) = program.points[node].first().copied().flatten() else {
-            return Err(InterpretErrorKind::Internal {
-                message: format!("source `{}` has no admission point", source),
-            });
-        };
-        if let Err(previous) = self.points.admit(point, admitted_at) {
-            return Err(InterpretErrorKind::Unsupported {
-                capability: format!(
-                    "a clock reset at admission point `{}`, whose admission time moves back from {} to {},",
-                    self.points.name(point),
-                    previous,
-                    admitted_at
-                ),
-                stage: 6,
-            });
-        }
+        // The source's admission point is the host's, whichever live plan names it.
+        let point = std::iter::once(active)
+            .chain(self.programs.keys().copied().filter(|id| *id != active))
+            .find_map(|id| {
+                let program = self.programs.get(&id)?;
+                let node = program
+                    .index
+                    .get(source)
+                    .copied()
+                    .filter(|&node| matches!(program.nodes[node].exec, Exec::Source))?;
+                program.points[node].first().copied().flatten()
+            })
+            .ok_or_else(|| InterpretErrorKind::UnknownSource { node: source.clone() })?;
 
+        let stamp =
+            self.points
+                .admit(point, admitted_at)
+                .map_err(|previous| InterpretErrorKind::AdmissionTimeMovedBack {
+                    point: self.points.name(point),
+                    previous,
+                    admitted_at,
+                    threshold: self.points.reset_threshold(),
+                })?;
+        let generation = self.generation_for(point, &stamp)?;
         let header = BatchHeader {
-            admitted_at: Some(admitted_at),
+            admitted_at: Some(stamp.admitted_at),
             admission_point: Some(point),
-            epoch: 0,
-            generation: Some(program.generation.clone()),
+            epoch: stamp.epoch,
+            generation: Some(generation.clone()),
             entry: None,
         };
+        let arrival = self.clock.max(admitted_at);
+
+        self.before_admission(&header, &stamp, arrival)?;
+
+        if !batch.is_empty() {
+            let Some(mut program) = self.programs.remove(&generation.id()) else {
+                return Err(InterpretErrorKind::Internal {
+                    message: format!("generation {} has no plan", generation.id()),
+                });
+            };
+            let result = self.deliver(&mut program, source, header, batch, arrival);
+            self.programs.insert(generation.id(), program);
+            result?;
+        }
+        self.check_finalization(arrival)
+    }
+
+    /// Returns the generation the schedule assigns to a stamp at `point`, and records a stamp of a cut's new
+    /// generation, which makes the cut irrevocable.
+    fn generation_for(&mut self, point: AdmissionPointId, stamp: &Stamp) -> Result<GenerationRef, InterpretErrorKind> {
+        let Some(schedule) = &self.schedule else {
+            return Err(self.no_active_plan());
+        };
+        let epoch_at_publish = self.cut.as_ref().map_or(stamp.epoch, |cut| cut.epoch_at_publish(point));
+        let generation = schedule
+            .generation_for(stamp.admitted_at, stamp.epoch, epoch_at_publish)
+            .clone();
+        if let Some(cut) = &mut self.cut {
+            if generation.id() == cut.new.id() {
+                cut.admitted_to_new.insert(point);
+            }
+        }
+        Ok(generation)
+    }
+
+    /// Delivers a stamped batch from a source through `program`.
+    fn deliver(
+        &mut self, program: &mut Program, source: &NodeId, header: BatchHeader, batch: &[Metric],
+        arrival: AdmissionTime,
+    ) -> Result<(), InterpretErrorKind> {
+        let node = program
+            .index
+            .get(source)
+            .copied()
+            .filter(|&node| matches!(program.nodes[node].exec, Exec::Source))
+            .ok_or_else(|| InterpretErrorKind::UnknownSource { node: source.clone() })?;
+        check_port_type(program, node, 0, batch)?;
         let mut queue = Queue::new();
         forward(program, &mut queue, node, 0, header, batch.to_vec())?;
-        let arrival = self.clock.max(admitted_at);
         self.pass(program, queue, arrival, |_, _, _| Ok(Queue::new()))
     }
 
-    /// Runs one flush tick for every state owner, in topological order.
-    fn advance(&mut self, clock: AdmissionTime) -> Result<(), InterpretErrorKind> {
-        if clock < self.clock {
-            return Err(InterpretErrorKind::ClockWentBackward {
-                previous: self.clock,
-                clock,
-            });
-        }
-        self.clock = clock;
-        let Some(mut program) = self.active.take() else {
-            return Ok(());
-        };
-        let result = self.tick(&mut program);
-        self.active = Some(program);
-        result
-    }
+    // Execution.
 
-    /// Runs one flush tick for every state owner in one pass: each ticks once what its upstream state owners' ticks
-    /// sent it in this pass has reached it.
-    fn tick(&mut self, program: &mut Program) -> Result<(), InterpretErrorKind> {
-        let clock = self.clock;
-        self.pass(program, Queue::new(), clock, |run, program, node| {
-            if !program.nodes[node].is_stateful() {
-                return Ok(Queue::new());
-            }
-            let watermark = run.watermark(program, node);
-            with_exec(program, node, |program, exec| match exec {
-                Exec::Kernel {
-                    kernel: Some(kernel), ..
-                } => {
-                    let header = time_driven_header(program, watermark);
-                    let mut call = KernelCall::new(&header, run.instant(clock), port_count(program, node))
-                        .with_watermark(watermark);
-                    call.repeat(&program.nodes[node].id, |turn| kernel.advance_time(turn))?;
-                    run.kernel_output(program, node, call, &header)
-                }
-                Exec::Host(Some(adapter)) => {
-                    let mut output = HostOutput::new(port_count(program, node));
-                    adapter.tick(HostTick { now: clock, watermark }, &mut output);
-                    run.readmit(program, node, output, clock, true)
-                }
-                _ => Ok(Queue::new()),
-            })
-        })
-    }
-
-    /// Finishes every kernel and host under the shutdown policy, in topological order, and ends the input.
-    fn close(&mut self) -> Result<(), InterpretErrorKind> {
-        self.closed = true;
-        let Some(mut program) = self.active.take() else {
-            return Ok(());
-        };
-        let result = self.finish(&mut program, DrainPolicy::Shutdown, &BTreeSet::new());
-        self.active = Some(program);
-        result
-    }
-
-    /// Finishes every kernel and host of `program` except the nodes in `keep`, in one pass: each finishes once what
-    /// its upstream nodes' finishes sent it in this pass has reached it.
-    fn finish(
-        &mut self, program: &mut Program, policy: DrainPolicy, keep: &BTreeSet<usize>,
-    ) -> Result<(), InterpretErrorKind> {
-        let clock = self.clock;
-        self.pass(program, Queue::new(), clock, |run, program, node| {
-            if keep.contains(&node) {
-                return Ok(Queue::new());
-            }
-            let watermark = run.watermark(program, node);
-            with_exec(program, node, |program, exec| match exec {
-                Exec::Kernel {
-                    kernel: Some(kernel), ..
-                } => {
-                    let header = time_driven_header(program, watermark);
-                    let mut call = KernelCall::new(&header, run.instant(clock), port_count(program, node))
-                        .with_watermark(watermark);
-                    call.repeat(&program.nodes[node].id, |turn| kernel.finish(turn, policy))?;
-                    run.kernel_output(program, node, call, &header)
-                }
-                Exec::Host(Some(adapter)) => {
-                    let mut output = HostOutput::new(port_count(program, node));
-                    adapter.finish(HostFinish { now: clock, policy }, &mut output);
-                    run.readmit(program, node, output, clock, false)
-                }
-                _ => Ok(Queue::new()),
-            })
-        })
-    }
-
-    fn reject(&mut self, position: usize, rejection: InstallRejection) {
-        self.last_rejection = Some(rejection.to_string());
-        self.output.installs.push(InstallRecord {
-            event: position,
-            outcome: InstallOutcome::Rejected(rejection),
-        });
-    }
-
-    fn install(&mut self, position: usize, plan: &Plan) -> Result<(), InterpretErrorKind> {
-        let report = Validator::new(self.interpreter.registry, self.interpreter.catalog).validate(plan);
-        if !report.is_valid() {
-            self.reject(position, InstallRejection::Invalid { report });
-            return Ok(());
-        }
-
-        // Nothing is stamped with a generation until it commits, so a rejected candidate's ID is never seen.
-        let generation = GenerationId::new(self.generations + 1);
-        let prepared = Program::prepare(
-            plan,
-            self.interpreter.registry,
-            &report,
-            self.interpreter.catalog,
-            &mut self.points,
-            position,
-            Arc::new(GenerationToken::new(generation)),
-        );
-        let mut program = match prepared {
-            Ok(program) => program,
-            Err(PrepareError::Rejected(rejection)) => {
-                self.reject(position, rejection);
-                return Ok(());
-            }
-            Err(PrepareError::Fatal(kind)) => return Err(kind),
-        };
-
-        let carried = match self.correspond(&program) {
-            Ok(carried) => carried,
-            Err(PrepareError::Rejected(rejection)) => {
-                self.reject(position, rejection);
-                return Ok(());
-            }
-            Err(PrepareError::Fatal(kind)) => return Err(kind),
-        };
-        let carried_new = carried.iter().map(|(_, new)| *new).collect::<BTreeSet<_>>();
-        if let Err(error) = self.instantiate(&mut program, &carried_new) {
-            match error {
-                PrepareError::Rejected(rejection) => {
-                    self.reject(position, rejection);
-                    return Ok(());
-                }
-                PrepareError::Fatal(kind) => return Err(kind),
-            }
-        }
-
-        // Commit: the old program's kernels that are not carried over finish in the old generation, and the carried
-        // state owners move to the new one.
-        if let Some(mut old) = self.active.take() {
-            let carried_old = carried.iter().map(|(old, _)| *old).collect::<BTreeSet<_>>();
-            self.finish(&mut old, DrainPolicy::Retire, &carried_old)?;
-            for (from, to) in carried {
-                let exec = std::mem::replace(&mut old.nodes[from].exec, Exec::Drop);
-                program.nodes[to].exec = exec;
-            }
-        }
-        self.generations += 1;
-        for output in &program.outputs {
-            self.output.outputs.entry(output.clone()).or_default();
-        }
-        self.active = Some(program);
-        self.output.installs.push(InstallRecord {
-            event: position,
-            outcome: InstallOutcome::Active { generation },
-        });
-        Ok(())
-    }
-
-    /// Matches the state owners of a candidate program with those of the active one, returning the `(old, new)`
-    /// positions of the state owners whose instances carry over.
-    fn correspond(&self, new: &Program) -> Result<Vec<(usize, usize)>, PrepareError> {
-        let Some(old) = &self.active else {
-            return Ok(Vec::new());
-        };
-        let unsupported = |capability: String, stage| {
-            Err(PrepareError::Fatal(InterpretErrorKind::Unsupported {
-                capability,
-                stage,
-            }))
-        };
-
-        let mut carried = Vec::new();
-        for (to, node) in new.nodes.iter().enumerate() {
-            let previous = old.index.get(&node.id).map(|&from| (from, &old.nodes[from]));
-            match previous {
-                Some((from, previous)) if previous.is_stateful() || node.is_stateful() => {
-                    match previous.op.transition_to(&node.op) {
-                        TransitionClass::Reject => {
-                            return Err(PrepareError::Rejected(InstallRejection::Transition {
-                                node: node.id.clone(),
-                                class: TransitionClass::Reject,
-                            }))
-                        }
-                        TransitionClass::Cut => {
-                            return unsupported(format!("the `cut` transition of state owner `{}`", node.id), 6)
-                        }
-                        TransitionClass::Retain if previous.op.params() == node.op.params() => {
-                            carried.push((from, to));
-                        }
-                        TransitionClass::Retain => {
-                            return unsupported(
-                                format!(
-                                    "changing the parameters of state owner `{}` while it keeps its state",
-                                    node.id
-                                ),
-                                6,
-                            )
-                        }
-                    }
-                }
-                Some(_) => {}
-                None if node.is_stateful() => {
-                    let (what, stage) = if node.is_host() {
-                        ("adding the host component", 7)
-                    } else {
-                        ("adding the state owner", 6)
-                    };
-                    return unsupported(format!("{} `{}` at an installation", what, node.id), stage);
-                }
-                None => {}
-            }
-        }
-        for node in &old.nodes {
-            if node.is_stateful() && !new.index.contains_key(&node.id) {
-                let (what, stage) = if node.is_host() {
-                    ("removing the host component", 7)
-                } else {
-                    ("removing the state owner", 6)
-                };
-                return unsupported(format!("{} `{}` at an installation", what, node.id), stage);
-            }
-        }
-        Ok(carried)
-    }
-
-    /// Builds the instances of the stateful kernels and opaque hosts that do not carry over.
-    fn instantiate(&self, program: &mut Program, carried: &BTreeSet<usize>) -> Result<(), PrepareError> {
-        for (position, node) in program.nodes.iter_mut().enumerate() {
-            if carried.contains(&position) {
-                continue;
-            }
-            match &mut node.exec {
-                Exec::Kernel {
-                    spec,
-                    kernel: kernel @ None,
-                } => *kernel = Some(build_kernel(&node.id, spec)?),
-                Exec::Host(adapter @ None) => {
-                    let built = match self.interpreter.hosts.get(&node.id) {
-                        Some(factory) => factory(&node.op),
-                        // Native aggregation runs through its own adapter unless one is injected.
-                        None if node.op.name() == names::AGGREGATE => AggregateAdapter::from_operator(&node.op)
-                            .map(|adapter| Box::new(adapter) as Box<dyn OpaqueHostAdapter>),
-                        None => {
-                            return Err(PrepareError::Fatal(InterpretErrorKind::MissingAdapter {
-                                node: node.id.clone(),
-                            }))
-                        }
-                    };
-                    let built = built.map_err(|source| {
-                        PrepareError::Rejected(InstallRejection::HostBuild {
-                            node: node.id.clone(),
-                            source,
-                        })
-                    })?;
-                    *adapter = Some(built);
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns a state owner's watermark: the earliest latest admission time of its upstream admission points.
+    /// Returns the watermark of a state owner that is not isolated: the earliest latest admission time of its upstream
+    /// admission points.
     fn watermark(&self, program: &Program, node: usize) -> Option<AdmissionTime> {
         let upstream = &program.upstream[node];
         if upstream.is_empty() {
@@ -1152,6 +1197,24 @@ impl<'r, 'a> Run<'r, 'a> {
                 call.outputs.complete(input);
                 queue = self.kernel_output(program, node, call, &header)?;
             }
+            Exec::State {
+                instance: Some(index),
+                step,
+                ..
+            } => {
+                let mut input = to_buffer(metrics)?;
+                let step = step.clone();
+                let mut call = KernelCall::new(&header, self.instant(now), ports).with_param(step.as_deref());
+                let Some(instance) = self.instances.get_mut(*index) else {
+                    return Err(InterpretErrorKind::Internal {
+                        message: format!("node `{}` binds instance {}, which is gone", id, index),
+                    });
+                };
+                let kernel = &mut instance.kernel;
+                call.repeat(id, |turn| kernel.consume(turn, &mut input))?;
+                call.outputs.complete(input);
+                queue = self.kernel_output(program, node, call, &header)?;
+            }
             Exec::Host(Some(adapter)) => {
                 let mut output = HostOutput::new(ports);
                 adapter.admit(
@@ -1164,7 +1227,7 @@ impl<'r, 'a> Run<'r, 'a> {
                 );
                 queue = self.readmit(program, node, output, now, false)?;
             }
-            Exec::Kernel { kernel: None, .. } | Exec::Host(None) => {
+            Exec::Kernel { kernel: None, .. } | Exec::Host(None) | Exec::State { instance: None, .. } => {
                 return Err(InterpretErrorKind::Internal {
                     message: format!("node `{}` has no instance", id),
                 })
@@ -1213,6 +1276,7 @@ impl<'r, 'a> Run<'r, 'a> {
     /// Re-admits an opaque host's output at its output ports, at host time `now`, and collects the loss it reported.
     ///
     /// With `heartbeat`, every port's admission clock reads `now`, whether or not it emitted anything, as at a tick.
+    /// Isolated state owners downstream observe each stamp for their watermark.
     fn readmit(
         &mut self, program: &Program, node: usize, mut output: HostOutput, now: AdmissionTime, heartbeat: bool,
     ) -> Result<Queue, InterpretErrorKind> {
@@ -1234,10 +1298,19 @@ impl<'r, 'a> Run<'r, 'a> {
             let header = BatchHeader {
                 admitted_at: Some(stamped),
                 admission_point: Some(point),
-                epoch: 0,
+                epoch: self.points.epoch(point),
                 generation: Some(program.generation.clone()),
                 entry: None,
             };
+            for index in self.instances.indices() {
+                if let Some(instance) = self
+                    .instances
+                    .get_mut(index)
+                    .filter(|instance| instance.observes(point))
+                {
+                    instance.tracker.observe(&header);
+                }
+            }
             let mut metrics = metrics.into_iter().peekable();
             while metrics.peek().is_some() {
                 let chunk = metrics.by_ref().take(limit).collect();
@@ -1246,6 +1319,52 @@ impl<'r, 'a> Run<'r, 'a> {
         }
         Ok(queue)
     }
+}
+
+/// The work an event gives the nodes of a plan that are not isolated state owners.
+#[derive(Clone, Copy, Debug)]
+struct LocalWork {
+    /// `None` for a tick of every state owner, or the policy every kernel and host finishes under.
+    policy: Option<DrainPolicy>,
+
+    /// Whether every kernel takes part, not only the state owners: true when finishing.
+    all_kernels: bool,
+}
+
+impl LocalWork {
+    fn tick() -> Self {
+        Self {
+            policy: None,
+            all_kernels: false,
+        }
+    }
+
+    fn finish(policy: DrainPolicy) -> Self {
+        Self {
+            policy: Some(policy),
+            all_kernels: true,
+        }
+    }
+}
+
+/// Describes a state owner that keeps its state in its own program, outside an isolation fence.
+fn local(node: &program::ProgramNode) -> String {
+    if node.is_host() {
+        format!("the host component `{}`", node.id)
+    } else {
+        format!("the state owner `{}` outside an isolation fence", node.id)
+    }
+}
+
+/// Returns the lineage key of a state owner.
+fn lineage_key(node: &NodeId, op: &ConfiguredOperator) -> Result<LineageKey, PrepareError> {
+    LineageKey::of(node, op).map_err(|error| internal(&format!("state owner `{}` has no lineage: {}", node, error)))
+}
+
+fn internal(message: &str) -> PrepareError {
+    PrepareError::Fatal(InterpretErrorKind::Internal {
+        message: message.to_string(),
+    })
 }
 
 /// Runs `run` with a node's execution state taken out of the program, so that it can read the rest of the program,
@@ -1331,7 +1450,8 @@ fn check_port_type(program: &Program, node: usize, port: usize, metrics: &[Metri
     Ok(())
 }
 
-/// The header of a state owner's time-driven output: its watermark as `t_a`, under the program's generation.
+/// The header of the time-driven output of a state owner that is not isolated: its watermark as `t_a`, under the
+/// program's generation.
 fn time_driven_header(program: &Program, watermark: Option<AdmissionTime>) -> BatchHeader {
     BatchHeader {
         admitted_at: watermark,
@@ -1358,6 +1478,7 @@ fn to_buffer(metrics: Vec<Metric>) -> Result<EventsBuffer, InterpretErrorKind> {
 struct KernelCall<'h> {
     header: &'h BatchHeader,
     watermark: Option<AdmissionTime>,
+    param: Option<&'h (dyn Any + Send + Sync)>,
     now: Instant,
     budget: Budget,
     outputs: PortOutputs,
@@ -1369,6 +1490,7 @@ impl<'h> KernelCall<'h> {
         Self {
             header,
             watermark: None,
+            param: None,
             now,
             budget: Budget::unlimited(),
             outputs: PortOutputs::new(port_count),
@@ -1379,6 +1501,12 @@ impl<'h> KernelCall<'h> {
     /// Returns this call with the watermark its turns carry, for time-driven calls.
     fn with_watermark(mut self, watermark: Option<AdmissionTime>) -> Self {
         self.watermark = watermark;
+        self
+    }
+
+    /// Returns this call with the per-call parameters its turns carry, from the generation it runs under.
+    fn with_param(mut self, param: Option<&'h (dyn Any + Send + Sync)>) -> Self {
+        self.param = param;
         self
     }
 
@@ -1397,6 +1525,9 @@ impl<'h> KernelCall<'h> {
                 &mut self.counters,
             )
             .with_watermark(self.watermark);
+            if let Some(param) = self.param {
+                turn = turn.with_param(param);
+            }
             match step(&mut turn) {
                 Progress::Yielded => continue,
                 Progress::Done | Progress::WaitUntil(_) => return Ok(()),
@@ -1410,8 +1541,16 @@ impl<'h> KernelCall<'h> {
 }
 
 #[cfg(test)]
+mod bucket_tests;
+#[cfg(test)]
+mod compatibility_tests;
+#[cfg(test)]
 mod default_program_tests;
+#[cfg(test)]
+mod isolated_tests;
 #[cfg(test)]
 pub(crate) mod test_operators;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transition_tests;

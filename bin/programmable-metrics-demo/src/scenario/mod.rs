@@ -14,9 +14,11 @@
 //! - **S2**: team B's route widened with `or tag("team") == "platform"`: team B also receives the platform family.
 //! - **S3**: exclusive tag routing: the metrics tagged `team:checkout` reach team B only, not the primary endpoint.
 //! - **S4**: mirroring with `true` and a literal allowlist: the failover endpoint receives the allowlisted family only.
-//! - **S5**: guardrails, each flagged by the editor and published anyway: a duplicate `tee` branch to the primary
-//!   output, an emit to an output ADP does not declare, and an aggregation node are each rejected by ADP with an error
-//!   that says so, and S4's generation keeps running, endpoints unchanged.
+//! - **S5**: guardrails, each published anyway: a duplicate `tee` branch to the primary output, an emit to an output
+//!   ADP does not declare, and an aggregation without its parameters, each flagged by the editor, and a fully
+//!   parameterized aggregation in the policy scope, which the frame cannot run there (the editor does not place plans,
+//!   so it may not flag it), are each rejected by ADP with an error that says so, and S4's generation keeps running,
+//!   endpoints unchanged.
 //! - **S6**: revoking (an empty snapshot) brings the default program back: the active plan is the boot plan again, and
 //!   the endpoints receive what they did in S0.
 //!
@@ -388,15 +390,22 @@ enum Compiled {
 
     /// An error whose message (or validation rule) has this fragment.
     Flagged { fragment: &'static str },
+
+    /// An artifact, with findings or without: what refuses it is ADP's placement, which the editor does not run.
+    Unplaced,
 }
+
+/// The fragment of ADP's refusal of an aggregation in the policy scope: placement refuses it with the capability it
+/// lacks, since a state owner runs only in an isolation slot, and none is behind the policy scope.
+const AGGREGATION_OUTSIDE_ITS_SLOT: &[&str] = &["runs only in an isolation slot"];
 
 /// What a scenario expects ADP to do with a publish.
 enum Installed {
     /// Activate the artifact; with `new_generation` false, in the generation already active.
     Active { new_generation: bool, routing: Routing },
 
-    /// Reject it with an error that has this fragment, and keep the active generation running.
-    Rejected { fragment: &'static str },
+    /// Reject it with an error that has one of these fragments, and keep the active generation running.
+    Rejected { fragments: &'static [&'static str] },
 }
 
 struct Runner {
@@ -514,36 +523,41 @@ impl Runner {
         )
         .await?;
 
-        let guardrails = [
+        let guardrails: [(_, _, _, &[&str]); 3] = [
             (
                 "S5a",
                 "guardrail: a duplicate branch to the primary output",
                 edits::duplicate_branch(&source, &outputs)?,
-                "duplicate_contribution",
+                &["duplicate_contribution"],
             ),
             (
                 "S5b",
                 "guardrail: an emit to an undeclared output",
                 edits::undeclared_output(&source, &outputs)?,
-                UNDECLARED_OUTPUT,
+                &[UNDECLARED_OUTPUT],
             ),
             (
                 "S5c",
-                "guardrail: a stateful node",
-                edits::stateful_node(&source)?,
-                "keeps state",
+                "guardrail: an aggregation without its parameters",
+                edits::aggregation_without_parameters(&source)?,
+                &["valid_parameters"],
             ),
         ];
-        for (id, title, source, fragment) in guardrails {
-            self.step(
-                id,
-                title,
-                source,
-                Compiled::Flagged { fragment },
-                Installed::Rejected { fragment },
-            )
-            .await?;
+        for (id, title, source, fragments) in guardrails {
+            let compiled = Compiled::Flagged { fragment: fragments[0] };
+            self.step(id, title, source, compiled, Installed::Rejected { fragments })
+                .await?;
         }
+        self.step(
+            "S5d",
+            "guardrail: an aggregation in the policy scope",
+            edits::aggregation_in_the_policy_scope(&source)?,
+            Compiled::Unplaced,
+            Installed::Rejected {
+                fragments: AGGREGATION_OUTSIDE_ITS_SLOT,
+            },
+        )
+        .await?;
         // The previous generation keeps running: the endpoints still receive what S4 routes.
         self.expect_routing("S5", &mirrored, Instant::now()).await?;
 
@@ -615,6 +629,8 @@ impl Runner {
                     ));
                 }
             }
+            // The editor validates without placing the plan: what it finds does not decide the step.
+            Compiled::Unplaced => {}
             Compiled::Flagged { fragment } => {
                 let flagged = diagnostics.iter().any(|diagnostic| {
                     diagnostic["severity"] == "error"
@@ -707,7 +723,7 @@ impl Runner {
                 let visible = self.expect_routing(step.id, &routing, published).await?;
                 step.visible_ms = Some(visible.as_millis() as u64);
             }
-            Installed::Rejected { fragment } => {
+            Installed::Rejected { fragments } => {
                 if state != "rejected" {
                     return Err(generic_error!(
                         "ADP acknowledged revision {} as `{}`, not `rejected`.",
@@ -715,11 +731,11 @@ impl Runner {
                         state
                     ));
                 }
-                if !error.contains(fragment) {
+                if !fragments.iter().any(|fragment| error.contains(fragment)) {
                     return Err(generic_error!(
                         "ADP rejected revision {}, but its error does not say `{}`: {}",
                         revision,
-                        fragment,
+                        fragments.join("` or `"),
                         error
                     ));
                 }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7773db5d9390055f67d11bb8fc1957c97eb25dacb133e7ba63c79efb9c7ed062 # shrinks to generated = GeneratedParams { window: 1, context_limit: 1, counter_expiry: None, flush_open_windows: false, aggregates: [], percentiles: [], copy_to_distribution: false, copy_to_distribution_prefix: "" }, start = 0, steps = [Core(Admit { after: 0, metrics: [] }), Core(Admit { after: 0, metrics: [GeneratedMetric { name: "a", tags: [], unit: "", kind: 1, interval: 0, sample_rate: None, pieces: [(None, [0])] }] }), Core(Admit { after: 0, metrics: [] }), Core(Admit { after: 0, metrics: [] }), Core(Admit { after: 1, metrics: [] }), Reset { after: 0 }, Core(Admit { after: 1, metrics: [GeneratedMetric { name: "a", tags: [], unit: "", kind: 0, interval: 0, sample_rate: None, pieces: [(None, [0])] }] }), Core(Tick { after: 0 })], budgets = [(1, 1)], capacity = None, filter = None, retire = false

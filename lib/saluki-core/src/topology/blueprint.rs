@@ -452,8 +452,10 @@ impl TopologyBlueprint {
     /// When the topology runs, every buffer the component sends on that output is stamped with an admission time, the
     /// point's identifier and clock epoch, and a generation from the point's schedule, according to the point's
     /// [mode][crate::execution::AdmissionMode]. If the configuration enables heartbeats, a heartbeat driver runs
-    /// beside the component for as long as the component runs. Outputs that are not admission points send buffers
-    /// unchanged.
+    /// beside the component for as long as the component runs, sending heartbeats to the configuration's
+    /// [heartbeat recipients][AdmissionPointConfig::with_heartbeat_recipients], or to every component the output feeds
+    /// if it lists none. If the configuration names a [registry][AdmissionPointConfig::with_registry], the point
+    /// registers in it when the topology starts. Outputs that are not admission points send buffers unchanged.
     ///
     /// # Errors
     ///
@@ -461,7 +463,9 @@ impl TopologyBlueprint {
     /// payloads rather than events, if the output is already an admission point, if another output already uses the
     /// configuration's admission point ID, or if the heartbeat period is shorter than
     /// [`MIN_HEARTBEAT_PERIOD`][crate::execution::MIN_HEARTBEAT_PERIOD] (1 ms) or longer than
-    /// [`MAX_HEARTBEAT_PERIOD`][crate::execution::MAX_HEARTBEAT_PERIOD] (1 hour), an error is returned.
+    /// [`MAX_HEARTBEAT_PERIOD`][crate::execution::MAX_HEARTBEAT_PERIOD] (1 hour), an error is returned. Connections
+    /// may be made in any order, so heartbeat recipients are checked when the topology is built, which fails if the
+    /// output does not feed every recipient directly.
     pub fn with_admission_point<O>(
         &mut self, output: O, config: AdmissionPointConfig,
     ) -> Result<&mut Self, GenericError>
@@ -782,6 +786,27 @@ impl TopologyBuildState {
         Ok(())
     }
 
+    /// Checks that every heartbeat recipient of every admission point is a component its output feeds directly.
+    fn check_heartbeat_recipients(&self) -> Result<(), GenericError> {
+        let (_, edges) = self.graph.snapshot(&|component_id| self.input_capacity(component_id));
+        for binding in &self.admission_points {
+            let unfed = binding.config.heartbeat_recipients().iter().find(|recipient| {
+                !edges
+                    .iter()
+                    .any(|edge| edge.from() == &binding.output && edge.to() == *recipient)
+            });
+            if let Some(recipient) = unfed {
+                return Err(generic_error!(
+                    "Admission point '{}' sends heartbeats to '{}', which the output does not feed. List only \
+                     components connected to the output as heartbeat recipients.",
+                    binding.output,
+                    recipient
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn snapshot(&self) -> BlueprintSnapshot {
         let (components, edges) = self.graph.snapshot(&|component_id| self.input_capacity(component_id));
         let admission_points = self
@@ -1051,9 +1076,11 @@ impl TopologyBuildState {
     ///
     /// # Errors
     ///
-    /// If any of the components couldn't be built, an error is returned.
+    /// If the graph is invalid, if an admission point lists a heartbeat recipient its output does not feed, or if any
+    /// of the components couldn't be built, an error is returned.
     async fn build(self, name: String, resource_registry: &ResourceRegistry) -> Result<BuiltTopology, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
+        self.check_heartbeat_recipients()?;
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
@@ -1319,8 +1346,8 @@ mod tests {
     use crate::data_model::event::{metric::Metric, Event};
     use crate::data_model::payload::PayloadType;
     use crate::execution::{
-        AdmissionMode, AdmissionPointConfig, AdmissionPointId, AdmissionSchedule, AdmissionTime, GenerationId,
-        GenerationToken, ManualWallClock, ScheduleHandle,
+        AdmissionMode, AdmissionPointConfig, AdmissionPointId, AdmissionRegistry, AdmissionSchedule, AdmissionTime,
+        GenerationId, GenerationToken, ManualWallClock, ScheduleHandle,
     };
     use crate::runtime::{self, state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
@@ -2812,11 +2839,122 @@ mod tests {
         let result = join_topology(handle).await;
         assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
 
+        // Heartbeats carry the generation the schedule assigns, as data does.
         for heartbeat in summarize(&received) {
-            assert_eq!(heartbeat, (Some(1_000), Some(3), None, 0));
+            assert_eq!(heartbeat, (Some(1_000), Some(3), Some(1), 0));
         }
         // Heartbeats only travel on the admission point's own output.
         assert!(other.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_running_topology_registers_its_points_and_sends_heartbeats_only_to_their_recipients() {
+        // src (admit, point 4, heartbeats to `owner` only) -> owner
+        //                                                  -> tap
+        let schedule = steady_schedule(1);
+        let registry = AdmissionRegistry::new();
+        let script = vec![ScriptStep {
+            output: None,
+            events: 2,
+            at: AdmissionTime::from_unix_secs(1_000),
+        }];
+        let wall = ManualWallClock::new(AdmissionTime::from_unix_secs(1_000));
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("src", ScriptedSourceBuilder::new(script, wall.clone()))
+            .unwrap();
+        let owner = add_collector(&mut blueprint, "owner");
+        let tap = add_collector(&mut blueprint, "tap");
+        blueprint
+            .connect_components("src", ["owner", "tap"])
+            .unwrap()
+            .connect_components("src.other", "tap")
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(4, AdmissionMode::Admit, &schedule)
+                    .with_heartbeat(Duration::from_millis(10))
+                    .with_heartbeat_recipients([ComponentId::try_from("owner").unwrap()])
+                    .with_registry(registry.clone())
+                    .with_wall_clock(wall),
+            )
+            .unwrap()
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+        assert!(registry.ids().is_empty(), "points register when the topology starts");
+
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+        wait_until("the owner received heartbeats", || owner.lock().unwrap().len() >= 3).await;
+        assert_eq!(registry.ids(), vec![AdmissionPointId::new(4)]);
+        let status = registry
+            .status_within(AdmissionPointId::new(4), Duration::from_secs(1))
+            .await
+            .expect("the registered point reports its status");
+        assert_eq!(status.last_admitted_at, Some(AdmissionTime::from_unix_secs(1_000)));
+
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+        // The registry does not keep a stopped topology's points.
+        assert!(registry.ids().is_empty());
+
+        // The owner received the data and then heartbeats; the tap received only the data.
+        let owner = summarize(&owner);
+        assert_eq!(owner[0], (Some(1_000), Some(4), Some(1), 2));
+        assert!(owner[1..]
+            .iter()
+            .all(|heartbeat| *heartbeat == (Some(1_000), Some(4), Some(1), 0)));
+        assert_eq!(summarize(&tap), vec![(Some(1_000), Some(4), Some(1), 2)]);
+    }
+
+    #[tokio::test]
+    async fn a_heartbeat_recipient_that_the_output_does_not_feed_fails_the_build() {
+        // `tap` is fed by `src.other`, not by `src`, whose admission point lists it.
+        let schedule = steady_schedule(1);
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "src",
+                ScriptedSourceBuilder::new(Vec::new(), ManualWallClock::default()),
+            )
+            .unwrap();
+        add_collector(&mut blueprint, "owner");
+        add_collector(&mut blueprint, "tap");
+        blueprint
+            .connect_components("src", "owner")
+            .unwrap()
+            .connect_components("src.other", "tap")
+            .unwrap()
+            .with_admission_point(
+                "src",
+                admission_config(1, AdmissionMode::Admit, &schedule)
+                    .with_heartbeat(Duration::from_secs(1))
+                    .with_heartbeat_recipients([ComponentId::try_from("tap").unwrap()]),
+            )
+            .unwrap()
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
+
+        let result = run_blueprint_until_exit(
+            blueprint,
+            RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)),
+        )
+        .await;
+        match result {
+            Err(SupervisorError::FailedToInitialize {
+                source: InitializationError::Failed { source },
+                ..
+            }) => assert_eq!(
+                format!("{:#}", source),
+                "Admission point 'src' sends heartbeats to 'tap', which the output does not feed. List only components \
+                 connected to the output as heartbeat recipients."
+            ),
+            other => panic!("the topology should fail to build, got: {:?}", other),
+        }
     }
 
     /// A destination builder that declares `bytes` of minimum memory and builds a destination that drains its input.

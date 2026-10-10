@@ -25,7 +25,10 @@ use tokio::{
     time::{sleep, sleep_until, timeout, Instant},
 };
 
-use super::{host::RegionHost, *};
+use super::{
+    host::{DeadlineGuard, RegionHost},
+    *,
+};
 use crate::{
     accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
     components::{
@@ -91,15 +94,30 @@ enum Command {
 
     /// Writes one event, then panics.
     Panic,
+
+    /// Asks for `advance_time` this long from now.
+    TickIn(Duration),
 }
 
 /// The calls a scripted driver received, shared with the test.
+///
+/// Calls to `start` are recorded apart from the others, as the number of other calls before each and the turn's clock
+/// reading, so that tests of everything else see only the calls they are about.
 #[derive(Clone, Default)]
-struct Log(Arc<Mutex<Vec<Call>>>);
+struct Log(Arc<Mutex<Vec<Call>>>, Arc<Mutex<Vec<(usize, std::time::Instant)>>>);
 
 impl Log {
     fn push(&self, call: Call) {
         self.0.lock().unwrap().push(call);
+    }
+
+    fn started(&self, now: std::time::Instant) {
+        let before = self.0.lock().unwrap().len();
+        self.1.lock().unwrap().push((before, now));
+    }
+
+    fn starts(&self) -> Vec<(usize, std::time::Instant)> {
+        self.1.lock().unwrap().clone()
     }
 
     fn calls(&self) -> Vec<Call> {
@@ -117,6 +135,7 @@ impl Log {
 }
 
 const FINISH_EVENTS: [&str; 3] = ["finish.0", "finish.1", "finish.2"];
+const TICK_EVENTS: [&str; 3] = ["tick", "tick.1", "tick.2"];
 
 /// A driver whose behavior the test scripts.
 ///
@@ -132,9 +151,15 @@ struct ScriptedDriver {
     accepting: bool,
     deadline: Option<std::time::Instant>,
     tick_period: Option<Duration>,
+    tick_in_phase: bool,
+    tick_events: usize,
+    keeps_its_deadline: bool,
+    first_tick_after_start: Option<Duration>,
     finish_events: usize,
-    panic_in: Option<PanicSite>,
+    panics: VecDeque<PanicSite>,
     fail_on_panic: bool,
+    keeps_its_drain_on_panic: bool,
+    orphaned: bool,
     pokes: Option<ControlSender<Command>>,
     spin: Option<Spin>,
 }
@@ -155,9 +180,15 @@ impl ScriptedDriver {
             accepting: true,
             deadline: None,
             tick_period: None,
+            tick_in_phase: false,
+            tick_events: 1,
+            keeps_its_deadline: false,
+            first_tick_after_start: None,
             finish_events: 0,
-            panic_in: None,
+            panics: VecDeque::new(),
             fail_on_panic: false,
+            keeps_its_drain_on_panic: false,
+            orphaned: false,
             pokes: None,
             spin: None,
         }
@@ -175,19 +206,55 @@ impl ScriptedDriver {
         self
     }
 
+    /// Asks for `advance_time` at `delay` from now, and then every `period` after each deadline, whenever it runs,
+    /// as a timer that bursts to catch up does.
+    fn ticking_in_phase(mut self, delay: Duration, period: Duration) -> Self {
+        self = self.ticking(delay, Some(period));
+        self.tick_in_phase = true;
+        self
+    }
+
+    /// Makes every `advance_time` write `events` events, one per unit of the turn's event budget; with none, it does
+    /// no work at all.
+    fn ticking_with(mut self, events: usize) -> Self {
+        self.tick_events = events;
+        self
+    }
+
+    /// Makes `advance_time` leave the deadline as it was, which is a bug in a driver that does no work in it.
+    fn keeping_its_deadline(mut self) -> Self {
+        self.keeps_its_deadline = true;
+        self
+    }
+
+    /// Asks for `advance_time` at `delay` after the region starts, as `start` measures it.
+    fn ticking_after_start(mut self, delay: Duration) -> Self {
+        self.first_tick_after_start = Some(delay);
+        self
+    }
+
     fn finishing_with(mut self, events: usize) -> Self {
         self.finish_events = events;
         self
     }
 
-    /// Makes the given call write one event named `doomed`, and then panic, until the driver is reset.
+    /// Makes the given call write one event named `doomed`, and then panic, until the driver is reset after it.
+    ///
+    /// Given more than once, the sites take turns: after the reset that follows each panic, the next site panics.
     fn panicking_in(mut self, site: PanicSite) -> Self {
-        self.panic_in = Some(site);
+        self.panics.push_back(site);
         self
     }
 
     fn failing_on_panic(mut self) -> Self {
         self.fail_on_panic = true;
+        self
+    }
+
+    /// Makes a reset keep the events a panic left unwritten, as a driver that rebuilds only the part that panicked
+    /// does, and makes the next `finish` resume writing them rather than start over.
+    fn keeping_its_drain_on_panic(mut self) -> Self {
+        self.keeps_its_drain_on_panic = true;
         self
     }
 
@@ -223,7 +290,7 @@ impl ScriptedDriver {
     }
 
     fn panic_if(&self, site: PanicSite, exits: &mut ExitSink) {
-        if self.panic_in == Some(site) {
+        if self.panics.front() == Some(&site) {
             exits.emit(ExitId::new(0), batch(&["doomed"]));
             panic!("boom in {}", site);
         }
@@ -232,6 +299,13 @@ impl ScriptedDriver {
 
 impl RegionDriver for ScriptedDriver {
     type Control = Command;
+
+    fn start(&mut self, turn: &mut RegionTurn<'_>) {
+        self.log.started(turn.now());
+        if let Some(delay) = self.first_tick_after_start {
+            self.deadline = Some(turn.now() + delay);
+        }
+    }
 
     fn accepts_input(&self) -> bool {
         self.accepting
@@ -285,7 +359,7 @@ impl RegionDriver for ScriptedDriver {
     }
 
     fn control(
-        &mut self, _turn: &mut RegionTurn<'_>, message: Command, exits: &mut ExitSink,
+        &mut self, turn: &mut RegionTurn<'_>, message: Command, exits: &mut ExitSink,
     ) -> Result<(), RegionFailure> {
         match message {
             Command::Note(label) => self.log.push(Call::Control(label)),
@@ -306,6 +380,10 @@ impl RegionDriver for ScriptedDriver {
                 exits.emit(ExitId::new(0), batch(&["doomed"]));
                 panic!("boom in control");
             }
+            Command::TickIn(delay) => {
+                self.log.push(Call::Control("tick in"));
+                self.deadline = Some(turn.now() + delay);
+            }
         }
         Ok(())
     }
@@ -317,16 +395,25 @@ impl RegionDriver for ScriptedDriver {
     fn advance_time(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink) -> Progress {
         self.log.push(Call::AdvanceTime);
         self.panic_if(PanicSite::AdvanceTime, exits);
-        self.deadline = self.tick_period.map(|period| turn.now() + period);
-        self.queue.push_back(metric("tick"));
+        if !self.keeps_its_deadline {
+            self.deadline = match self.tick_period {
+                Some(period) if self.tick_in_phase => self.deadline.map(|deadline| deadline + period),
+                Some(period) => Some(turn.now() + period),
+                None => None,
+            };
+        }
+        self.queue
+            .extend(TICK_EVENTS[..self.tick_events].iter().map(|name| metric(name)));
         self.write(turn, exits)
     }
 
     fn finish(&mut self, turn: &mut RegionTurn<'_>, exits: &mut ExitSink, policy: DrainPolicy) -> Progress {
         self.log.push(Call::Finish(policy));
         self.panic_if(PanicSite::Finish, exits);
-        self.queue
-            .extend(FINISH_EVENTS[..self.finish_events].iter().map(|name| metric(name)));
+        if !std::mem::take(&mut self.orphaned) {
+            self.queue
+                .extend(FINISH_EVENTS[..self.finish_events].iter().map(|name| metric(name)));
+        }
         if self.spin.is_some() {
             return Progress::Yielded;
         }
@@ -340,10 +427,17 @@ impl RegionDriver for ScriptedDriver {
             message: panic.message().to_owned(),
         });
 
-        // A rebuilt driver holds nothing, has no deadline, and does not panic again.
-        self.queue.clear();
+        // A rebuilt driver has no deadline, holds nothing unless it keeps the rest of its drain, and moves on to the
+        // next scripted panic.
+        if self.keeps_its_drain_on_panic {
+            self.orphaned = !self.queue.is_empty();
+        } else {
+            self.queue.clear();
+        }
         self.deadline = None;
-        self.panic_in = None;
+        if self.panics.front() == Some(&panic.site()) {
+            self.panics.pop_front();
+        }
         if self.fail_on_panic {
             PanicOutcome::Fail(generic_error!("The region has no panic budget."))
         } else {
@@ -353,7 +447,7 @@ impl RegionDriver for ScriptedDriver {
 
     fn publish_telemetry(&mut self) {
         self.log.push(Call::Publish);
-        if self.panic_in == Some(PanicSite::PublishTelemetry) {
+        if self.panics.front() == Some(&PanicSite::PublishTelemetry) {
             panic!("boom in publish_telemetry");
         }
     }
@@ -818,6 +912,40 @@ async fn time_driven_work_runs_when_the_drivers_deadline_passes() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_driver_starts_once_before_any_other_call_and_schedules_from_its_start() {
+    let built = Instant::now();
+    let log = Log::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(16);
+    let driver = ScriptedDriver::new(&log).ticking_after_start(Duration::from_secs(10));
+
+    // The region starts five seconds after its driver was built, with a control message and a batch already waiting.
+    sleep(Duration::from_secs(5)).await;
+    let mut region = start(Setup::new(&["out"]).connect(0, &out), mailbox, driver).await;
+    let ack = control.send(Command::Note("early"));
+    region.send(batch(&["a"]));
+    acknowledged(ack).await.unwrap();
+    assert_eq!(receive_names(&mut out_rx, 1).await, expected(&[&["a"]]));
+
+    // `start` ran once, before either, at the time the region started.
+    let starts = log.starts();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].0, 0, "start precedes every other call");
+    assert_eq!(starts[0].1, (built + Duration::from_secs(5)).into_std());
+    assert_eq!(log.work(), vec![Call::Control("early"), process(&["a"])]);
+
+    // The deadline the driver set in `start` is measured from the start, not from when it was built.
+    sleep_until(built + Duration::from_millis(14_900)).await;
+    assert!(!log.work().contains(&Call::AdvanceTime));
+    sleep_until(built + Duration::from_millis(15_100)).await;
+    assert_eq!(log.work().last(), Some(&Call::AdvanceTime));
+
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+    assert_eq!(log.starts().len(), 1, "start runs once in the region's life");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_deadline_the_driver_withdraws_never_runs() {
     let started = Instant::now();
     let log = Log::default();
@@ -834,8 +962,255 @@ async fn a_deadline_the_driver_withdraws_never_runs() {
     acknowledged(control.send(Command::Note("still here"))).await.unwrap();
     assert_eq!(log.work(), vec![Call::AdvanceTime, Call::Control("still here")]);
 
+    // A deadline the driver sets in any call is armed when that call returns.
+    acknowledged(control.send(Command::TickIn(Duration::from_secs(5))))
+        .await
+        .unwrap();
+    sleep_until(started + Duration::from_millis(104_900)).await;
+    assert_eq!(log.work().last(), Some(&Call::Control("tick in")));
+    sleep_until(started + Duration::from_millis(105_100)).await;
+    assert_eq!(log.work().last(), Some(&Call::AdvanceTime));
+
     region.close_input();
     region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn control_messages_are_applied_while_a_call_is_yielded_and_input_waits_until_it_completes() {
+    let started = Instant::now();
+    let log = Log::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(1);
+    let driver = ScriptedDriver::new(&log)
+        .ticking(Duration::from_secs(1), None)
+        .ticking_with(3);
+    let setup = Setup::new(&["out"])
+        .connect(0, &out)
+        .events_per_turn(1)
+        .work_per_turn(8);
+    let mut region = start(setup, mailbox, driver).await;
+
+    // One event per turn: at the deadline, `tick` is delivered, `tick.1` waits to be sent, and the call is yielded
+    // with `tick.2` left. A batch waits on the input meanwhile.
+    sleep_until(started + Duration::from_millis(1_100)).await;
+    region.send(batch(&["a"]));
+    settle().await;
+    assert_eq!(log.work(), vec![Call::AdvanceTime, Call::Resume]);
+
+    // A control message is applied and acknowledged while the call is yielded, and the input is not read.
+    acknowledged(control.send(Command::Emit("late"))).await.unwrap();
+    assert_eq!(log.work(), vec![Call::AdvanceTime, Call::Resume, Call::Control("emit")]);
+    assert_eq!(region.waiting_input(), 1);
+
+    // The message's output follows what was already waiting to be sent; the yielded call then completes, and only
+    // then is the batch processed.
+    assert_eq!(
+        receive_names(&mut out_rx, 5).await,
+        expected(&[&["tick"], &["tick.1"], &["late"], &["tick.2"], &["a"]])
+    );
+    assert_eq!(
+        log.work(),
+        vec![
+            Call::AdvanceTime,
+            Call::Resume,
+            Call::Control("emit"),
+            Call::Resume,
+            process(&["a"]),
+        ]
+    );
+
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_finish_that_yields_again_and_again_completes_with_control_served_and_no_time_driven_work() {
+    let log = Log::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(1);
+    let driver = ScriptedDriver::new(&log)
+        .ticking(Duration::from_secs(1), Some(Duration::from_secs(1)))
+        .finishing_with(3);
+    let setup = Setup::new(&["out"]).connect(0, &out).events_per_turn(1);
+    let mut region = start(setup, mailbox, driver).await;
+
+    // The input ends at once: `finish.0` is delivered, `finish.1` waits to be sent, and the call is yielded.
+    region.close_input();
+    settle().await;
+    assert_eq!(log.work(), vec![Call::Finish(DrainPolicy::Shutdown), Call::Resume]);
+
+    // Deadlines that pass while the region finishes never run, and control messages are still served.
+    sleep(Duration::from_secs(5)).await;
+    acknowledged(control.send(Command::Emit("late"))).await.unwrap();
+    assert_eq!(
+        log.work(),
+        vec![Call::Finish(DrainPolicy::Shutdown), Call::Resume, Call::Control("emit")]
+    );
+
+    assert_eq!(
+        receive_names(&mut out_rx, 4).await,
+        expected(&[&["finish.0"], &["finish.1"], &["late"], &["finish.2"]])
+    );
+    region.stopped().await.expect("the region should stop cleanly");
+    assert_eq!(
+        log.calls(),
+        vec![
+            Call::Finish(DrainPolicy::Shutdown),
+            Call::Resume,
+            Call::Control("emit"),
+            Call::Publish,
+            Call::Resume,
+            Call::Publish,
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn deadlines_that_pass_while_a_call_is_yielded_run_at_once_and_catch_up_before_more_input() {
+    let started = Instant::now();
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(1);
+    let driver = ScriptedDriver::new(&log).ticking_in_phase(Duration::from_secs(1), Duration::from_secs(1));
+    let setup = Setup::new(&["out"])
+        .connect(0, &out)
+        .events_per_turn(1)
+        .work_per_turn(8);
+    let mut region = start(setup, mailbox, driver).await;
+
+    // One event per turn, and room for one buffer downstream: the batch's call is yielded, waiting to send `b`, while
+    // the deadlines at 1, 2, and 3 seconds pass. Another batch waits on the input.
+    region.send(batch(&["a", "b", "c"]));
+    region.send(batch(&["d"]));
+    sleep_until(started + Duration::from_millis(3_500)).await;
+    assert_eq!(log.work(), vec![process(&["a", "b", "c"]), Call::Resume]);
+
+    // Once the call completes, the passed deadlines run one after another, before the waiting batch.
+    assert_eq!(
+        receive_names(&mut out_rx, 7).await,
+        expected(&[&["a"], &["b"], &["c"], &["tick"], &["tick"], &["tick"], &["d"]])
+    );
+    assert_eq!(
+        log.work(),
+        vec![
+            process(&["a", "b", "c"]),
+            Call::Resume,
+            Call::Resume,
+            Call::AdvanceTime,
+            Call::AdvanceTime,
+            Call::AdvanceTime,
+            process(&["d"]),
+        ]
+    );
+
+    // The next deadline keeps the timer's phase.
+    sleep_until(started + Duration::from_millis(3_900)).await;
+    assert_eq!(log.work().iter().filter(|call| **call == Call::AdvanceTime).count(), 3);
+    sleep_until(started + Duration::from_millis(4_100)).await;
+    assert_eq!(log.work().iter().filter(|call| **call == Call::AdvanceTime).count(), 4);
+
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_time_driven_work_that_moves_its_deadline_forward_catches_up_without_spinning() {
+    // A driver whose scheduled work is skipped does nothing at its deadlines, but moves each one a period forward,
+    // even when the next one has also passed: the host runs it once per passed deadline, and then waits.
+    let started = Instant::now();
+    let log = Log::default();
+    let (control, mailbox) = control_mailbox();
+    let (out, mut out_rx) = downstream(1);
+    let driver = ScriptedDriver::new(&log)
+        .ticking_in_phase(Duration::from_secs(1), Duration::from_secs(1))
+        .ticking_with(0);
+    let setup = Setup::new(&["out"]).connect(0, &out).events_per_turn(1);
+    let mut region = start(setup, mailbox, driver).await;
+
+    region.send(batch(&["a", "b", "c"]));
+    sleep_until(started + Duration::from_millis(3_500)).await;
+    assert_eq!(receive_names(&mut out_rx, 3).await, expected(&[&["a"], &["b"], &["c"]]));
+    acknowledged(control.send(Command::Note("caught up"))).await.unwrap();
+    assert_eq!(
+        log.work(),
+        vec![
+            process(&["a", "b", "c"]),
+            Call::Resume,
+            Call::Resume,
+            Call::AdvanceTime,
+            Call::AdvanceTime,
+            Call::AdvanceTime,
+            Call::Control("caught up"),
+        ]
+    );
+
+    region.close_input();
+    region.stopped().await.expect("the region should stop cleanly");
+}
+
+#[test]
+fn the_host_disarms_only_a_past_deadline_that_the_driver_kept_after_doing_nothing() {
+    let base = std::time::Instant::now();
+    let at = |secs| base + Duration::from_secs(secs);
+
+    // (whether the work did nothing, the driver's next deadline, whether the driver stalled on the fired deadline)
+    let cases = [
+        (true, Some(at(1)), true),
+        // Work that did something may ask to run again at once, as a burst.
+        (false, Some(at(1)), false),
+        // Idle work that moves its deadline forward, even to one that has also passed, catches up.
+        (true, Some(at(2)), false),
+        // An earlier deadline is other work that is also due, such as work that was due before the driver completed
+        // what a panic ended, at a deadline it had set to the time of the panic.
+        (true, Some(at(0)), false),
+        (true, None, false),
+    ];
+    for (idle, next, stalled) in cases {
+        let mut guard = DeadlineGuard::default();
+        assert_eq!(guard.ran(at(1), idle, next), stalled, "{:?}", (idle, next));
+        assert_eq!(guard.arm(next), if stalled { None } else { next }, "{:?}", (idle, next));
+    }
+
+    // A stalled deadline stays disarmed for as long as the driver keeps it, and is forgotten once it changes.
+    let mut guard = DeadlineGuard::default();
+    assert!(guard.ran(at(1), true, Some(at(1))));
+    assert_eq!(guard.arm(Some(at(1))), None);
+    assert_eq!(guard.arm(Some(at(1))), None);
+    assert_eq!(guard.arm(Some(at(5))), Some(at(5)));
+    assert_eq!(guard.arm(Some(at(1))), Some(at(1)));
+}
+
+// The workspace's test and release profiles both enable debug assertions, so tests catch the driver bug. A build
+// without them only stops arming the deadline, which the test above covers.
+#[cfg(debug_assertions)]
+#[tokio::test(start_paused = true)]
+async fn a_driver_that_keeps_a_past_deadline_after_doing_nothing_fails_a_debug_assertion() {
+    let log = Log::default();
+    let (_control, mailbox) = control_mailbox();
+    let (out, _out_rx) = downstream(16);
+    let driver = ScriptedDriver::new(&log)
+        .ticking(Duration::from_secs(1), None)
+        .ticking_with(0)
+        .keeping_its_deadline();
+    let region = start(Setup::new(&["out"]).connect(0, &out), mailbox, driver).await;
+
+    let payload = timeout(PATIENCE, region.task)
+        .await
+        .expect("the region should stop")
+        .expect_err("the host should fail its assertion")
+        .into_panic();
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|message| message.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned());
+    assert!(
+        message
+            .as_deref()
+            .is_some_and(|message| message.contains("kept a past deadline")),
+        "unexpected panic: {:?}",
+        message
+    );
+    assert_eq!(log.work(), vec![Call::AdvanceTime]);
 }
 
 #[tokio::test]
@@ -1014,9 +1389,10 @@ async fn panics_in_every_supervised_call_discard_its_output_and_the_region_recov
             PanicTrigger::EndOfInput => {}
         }
 
-        // The region keeps running after the panic, unless the panic was in finishing it.
-        let finished_by_the_panic = matches!(case.trigger, PanicTrigger::EndOfInput);
-        if !finished_by_the_panic {
+        // The region keeps running after the panic. A panic in finishing it makes the host finish it again, which the
+        // rebuilt driver does from the start, since the panic came before it wrote anything that survived.
+        let in_finish = matches!(case.trigger, PanicTrigger::EndOfInput);
+        if !in_finish {
             region.send(batch(&["after"]));
         }
         region.close_input();
@@ -1026,10 +1402,10 @@ async fn panics_in_every_supervised_call_discard_its_output_and_the_region_recov
             .expect("the region should recover and stop cleanly");
 
         let mut delivered = delivered_before;
-        if !finished_by_the_panic {
+        if !in_finish {
             delivered.push(vec!["after".to_string()]);
-            delivered.push(vec!["finish.0".to_string()]);
         }
+        delivered.push(vec!["finish.0".to_string()]);
         assert_eq!(names_of_all(&waiting(&mut out_rx)), delivered, "{:?}", case.site);
 
         let resets = log
@@ -1154,6 +1530,142 @@ async fn at_the_end_of_input_the_region_completes_yielded_work_finishes_and_stop
         acknowledged(control.send(Command::Note("late"))).await,
         Err(ControlError::Stopped)
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panic_that_ends_the_finish_makes_the_host_finish_again_until_a_call_completes_it() {
+    struct Case {
+        name: &'static str,
+        // The calls that panic, in turn, and whether a control message panics while the finish is yielded.
+        panics: &'static [PanicSite],
+        control_panics: bool,
+        fails: bool,
+        work: Vec<Call>,
+        delivered: Vec<Vec<String>>,
+    }
+
+    let reset = |site: PanicSite| Call::Reset {
+        site,
+        lost_events: 1,
+        message: format!("boom in {}", site),
+    };
+    let finish = Call::Finish(DrainPolicy::Shutdown);
+    let cases = [
+        Case {
+            name: "a panic in resuming the yielded finish",
+            panics: &[PanicSite::Resume],
+            control_panics: false,
+            fails: false,
+            work: vec![
+                finish.clone(),
+                Call::Resume,
+                reset(PanicSite::Resume),
+                finish.clone(),
+                Call::Resume,
+            ],
+            delivered: expected(&[&["finish.0"], &["finish.1"], &["finish.2"]]),
+        },
+        Case {
+            name: "a panic in a control message while the finish is yielded",
+            panics: &[],
+            control_panics: true,
+            fails: false,
+            work: vec![
+                finish.clone(),
+                Call::Resume,
+                Call::Control("panic"),
+                reset(PanicSite::Control),
+                finish.clone(),
+            ],
+            delivered: expected(&[&["finish.0"], &["finish.1"], &["finish.2"]]),
+        },
+        Case {
+            name: "a panic in finishing, and another in resuming the finish called again",
+            panics: &[PanicSite::Finish, PanicSite::Resume],
+            control_panics: false,
+            fails: false,
+            work: vec![
+                finish.clone(),
+                reset(PanicSite::Finish),
+                finish.clone(),
+                Call::Resume,
+                reset(PanicSite::Resume),
+                finish.clone(),
+                Call::Resume,
+            ],
+            delivered: expected(&[&["finish.0"], &["finish.1"], &["finish.2"]]),
+        },
+        Case {
+            name: "a panic that fails the region",
+            panics: &[PanicSite::Resume],
+            control_panics: false,
+            fails: true,
+            work: vec![finish.clone(), Call::Resume, reset(PanicSite::Resume)],
+            delivered: expected(&[&["finish.0"]]),
+        },
+    ];
+
+    for case in cases {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let log = Log::default();
+        let (control, mailbox) = control_mailbox();
+        let (out, mut out_rx) = downstream(1);
+        let mut driver = ScriptedDriver::new(&log).finishing_with(3).keeping_its_drain_on_panic();
+        for site in case.panics {
+            driver = driver.panicking_in(*site);
+        }
+        if case.fails {
+            driver = driver.failing_on_panic();
+        }
+        let setup = Setup::new(&["out"]).connect(0, &out).events_per_turn(1);
+        let mut region = start(setup, mailbox, driver).await;
+
+        // One event per turn, and room for one buffer downstream: once the input ends, `finish.0` is delivered,
+        // `finish.1` waits to be sent, and the finish is yielded with `finish.2` left.
+        region.close_input();
+        if case.control_panics {
+            settle().await;
+            assert_eq!(log.work(), vec![finish.clone(), Call::Resume], "{}", case.name);
+            let ack = acknowledged(control.send(Command::Panic)).await;
+            assert!(
+                matches!(&ack, Err(ControlError::Panicked { .. })),
+                "{}: unexpected acknowledgment {:?}",
+                case.name,
+                ack
+            );
+        }
+
+        // What the panics did not lose is delivered: the finish called again resumes the drain the panic ended.
+        assert_eq!(
+            receive_names(&mut out_rx, case.delivered.len()).await,
+            case.delivered,
+            "{}",
+            case.name
+        );
+        let stopped = region.stopped().await;
+        if case.fails {
+            let error = stopped.expect_err("the region should fail");
+            assert_eq!(
+                format!("{:#}", error),
+                "Region panicked in resume: boom in resume: The region has no panic budget.",
+                "{}",
+                case.name
+            );
+        } else {
+            stopped.expect("the region should recover and stop cleanly");
+        }
+        assert!(waiting(&mut out_rx).is_empty(), "{}", case.name);
+        assert_eq!(log.work(), case.work, "{}", case.name);
+
+        let resets = case
+            .work
+            .iter()
+            .filter(|call| matches!(call, Call::Reset { .. }))
+            .count() as u64;
+        assert_eq!(lost_events(&recorder), Some(resets), "{}", case.name);
+        assert_eq!(panics(&recorder), Some(resets), "{}", case.name);
+    }
 }
 
 #[tokio::test]

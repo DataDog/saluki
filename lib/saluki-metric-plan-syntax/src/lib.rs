@@ -35,7 +35,9 @@
 //!   block, as `<port> -> <target>`, or as a statement of its own, `<node>.<port> -> <target>`. A node with exactly one
 //!   output port may leave the port out: `-> <target>`.
 //! - **Targets** are a node, as `<node>` or `<node>.<port>` (the port may be left out when the node has exactly one
-//!   input port; a `merge` names its ports, as `joined.0`), or an inline terminal: `emit <output>` or `drop`. An inline
+//!   input port; a `merge` names its ports, as `joined.0`), one of the scope's exits, as `exit.aggregated`, where the
+//!   edge leaves a scope that ends before its paths do (an exit is never an edge's source), or an inline terminal:
+//!   `emit <output>` or `drop`. An inline
 //!   terminal is a node of its own, with the ID [`derived_terminal_id`](saluki_metric_plan::ir::derived_terminal_id)
 //!   gives it, `<parent>_<port>`: `split` port `true` leading to `drop` is the node `<split>_true`. For an edge from a
 //!   scope input, the parent is `input`.

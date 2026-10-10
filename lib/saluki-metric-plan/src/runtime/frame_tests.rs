@@ -1,53 +1,30 @@
 //! Frames of region drivers, wired together in process, deliver what the reference interpreter delivers.
 //!
-//! [`FrameHarness`] runs every slot of a frame through a [`MetricRegionDriver`] and every fixed component through the
-//! interpreter's opaque-host adapters, synchronously and without channels: a batch admitted at a source is stamped as
-//! its admission point stamps it, runs through every region and host it reaches, and what reaches an output is
+//! The [`FrameHarness`] runs every slot of a frame through a [`MetricRegionDriver`] and every fixed component through
+//! the interpreter's opaque-host adapters, synchronously and without channels: a batch admitted at a source is stamped
+//! as its admission point stamps it, runs through every region and host it reaches, and what reaches an output is
 //! recorded. A host's output is re-admitted at its own admission point, with the generation the schedule holds then.
 //! Generations are installed as the installer installs them: every region prepares the candidate's program, with the
 //! kernels the installer would build, and then the commit replaces the generation that admission points stamp.
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
-    time::Instant,
-};
+use std::collections::BTreeMap;
 
 use proptest::{collection::vec, prelude::*, sample::select};
 use saluki_core::{
-    data_model::event::{
-        metric::{context::Context, Metric, ScalarPoints},
-        Event,
-    },
-    execution::{
-        AdmissionPointId, AdmissionTime, BatchHeader, Budget, ExitSink, GenerationId, GenerationRef, GenerationToken,
-        LossClass, PortIndex, Progress, RegionDriver, RegionTurn,
-    },
-    topology::EventsBuffer,
+    data_model::event::metric::{context::Context, Metric, ScalarPoints},
+    execution::{AdmissionTime, LossClass, PortIndex},
 };
-use saluki_metrics::Counter;
 use serde_json::{json, Value};
 
-use super::*;
+use super::harness::{FrameHarness, HarnessOptions};
 use crate::{
     canonical::PlanHash,
-    compile::{
-        compile, compile_without_decision_rewrites, CompiledPlan, Frame, FrameTarget, FusionVerdict, Placement,
-        RegionProgram, Site,
-    },
-    equivalence::{compare, compare_under_capacity, CapacityOutcome, OutputPoints},
-    explain::loss_class_name,
-    install::kernel_reuse,
-    interpret::{
-        adapters::AggregateAdapter, AdapterError, HostBatch, HostOutput, HostTick, Interpreter, OpaqueHostAdapter,
-        Trace,
-    },
-    ir::{NativeComponentId, NodeId, OutputId, Plan, PortName, RecipientId},
+    compile::{compile, Frame, FusionVerdict, Site},
+    equivalence::{compare, compare_under_capacity, OutputPoints},
+    interpret::{AdapterError, HostBatch, HostOutput, Interpreter, OpaqueHostAdapter, Trace},
+    ir::{NativeComponentId, NodeId, OutputId, Plan, RecipientId},
     model::{Field, Kind, PortType},
-    operators::{names, ConfiguredOperator, KernelBuildContext, OperatorRegistry},
+    operators::{names, ConfiguredOperator, OperatorRegistry},
     predicate::{Predicate, StringMatch},
     testing::{
         arb_metric, arb_metrics_with_kind_siblings, arb_predicate, default_program_catalog, predicate_json,
@@ -63,52 +40,6 @@ fn id(value: &str) -> NodeId {
 
 fn out(value: &str) -> OutputId {
     OutputId::new(value).unwrap()
-}
-
-/// Counters by component and tag.
-type Counters = BTreeMap<(String, String), Arc<AtomicU64>>;
-
-/// Telemetry that records into counters the test can read, keyed by component and tag.
-#[derive(Clone, Default)]
-pub(super) struct RecordingTelemetry {
-    counters: Arc<Mutex<Counters>>,
-}
-
-impl RecordingTelemetry {
-    fn counter(&self, component: String, tag: String) -> Counter {
-        let mut counters = self.counters.lock().unwrap();
-        Counter::from_arc(Arc::clone(counters.entry((component, tag)).or_default()))
-    }
-
-    /// Returns the value of the counter of `component` with `tag` (`port:<port>` or `class:<class>`), or 0 if nothing
-    /// registered it.
-    pub fn value(&self, component: &str, tag: &str) -> u64 {
-        self.counters
-            .lock()
-            .unwrap()
-            .get(&(component.to_string(), tag.to_string()))
-            .map_or(0, |counter| counter.load(Ordering::Relaxed))
-    }
-
-    /// Returns the points `component` lost in `class`.
-    pub fn loss(&self, component: &str, class: LossClass) -> u64 {
-        self.value(component, &format!("class:{}", loss_class_name(class)))
-    }
-
-    /// Returns the events `node` sent on `port`.
-    pub fn port_events(&self, node: &str, port: &str) -> u64 {
-        self.value(node, &format!("port:{}", port))
-    }
-}
-
-impl RegisterTelemetry for RecordingTelemetry {
-    fn port_events(&self, node: &NodeId, _operator: &'static str, port: &PortName) -> Vec<Counter> {
-        vec![self.counter(node.to_string(), format!("port:{}", port))]
-    }
-
-    fn loss(&self, component_id: &str, class: LossClass) -> Counter {
-        self.counter(component_id.to_string(), format!("class:{}", loss_class_name(class)))
-    }
 }
 
 /// An opaque host that forwards everything it admits unchanged, as an opaque native filter that keeps everything
@@ -127,390 +58,9 @@ fn echo(_operator: &ConfiguredOperator) -> Result<Box<dyn OpaqueHostAdapter>, Ad
     Ok(Box::new(EchoHost))
 }
 
-/// Builds the adapter of a fixed component: native aggregation for `aggregate`, and [`EchoHost`] for opaque hosts.
-fn host_for(operator: &ConfiguredOperator) -> Box<dyn OpaqueHostAdapter> {
-    if operator.name() == names::AGGREGATE {
-        Box::new(AggregateAdapter::from_operator(operator).unwrap())
-    } else {
-        Box::new(EchoHost)
-    }
-}
-
 /// Names a slot after the first of its boot nodes.
 fn namer(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
     NativeComponentId::new(format!("region_{}", nodes[0].local())).map_err(|error| error.to_string())
-}
-
-fn buffer_of(header: BatchHeader, metrics: Vec<Metric>) -> EventsBuffer {
-    let mut buffer = EventsBuffer::with_capacity(metrics.len()).with_header(header);
-    for metric in metrics {
-        assert!(
-            buffer.try_push(Event::Metric(metric)).is_none(),
-            "test batches fit one buffer"
-        );
-    }
-    buffer
-}
-
-/// How a [`FrameHarness`] compiles and runs its programs.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct HarnessOptions {
-    /// Whether programs are compiled with the decision-time rewrites (R2, R3's folding of bound constants, R4), as
-    /// production compiles them.
-    pub decision_rewrites: bool,
-
-    /// The entries of each memoized decision's memo; zero memoizes nothing.
-    pub memo_entries: usize,
-
-    /// The most records each output accepts; it refuses the rest, as an output under capacity pressure does.
-    pub output_capacity: Option<usize>,
-}
-
-impl Default for HarnessOptions {
-    fn default() -> Self {
-        Self {
-            decision_rewrites: true,
-            memo_entries: crate::limits::values::DECISION_MEMO_ENTRIES as usize,
-            output_capacity: None,
-        }
-    }
-}
-
-/// A frame whose slots run through region drivers, wired together in process.
-pub(super) struct FrameHarness {
-    options: HarnessOptions,
-    registry: OperatorRegistry,
-    frame: Frame,
-    placement: Placement,
-    programs: Vec<Arc<RegionProgram>>,
-    drivers: Vec<MetricRegionDriver>,
-    hosts: BTreeMap<NodeId, (Box<dyn OpaqueHostAdapter>, usize)>,
-    stamps: BTreeMap<AdmissionPointId, AdmissionTime>,
-    active: GenerationRef,
-    prepared: Option<(GenerationRef, CompiledPlan)>,
-    next_generation: u64,
-    last_tick: Option<AdmissionTime>,
-    outputs: OutputPoints,
-    /// The records each output accepted, and the points of those it refused.
-    accepted: BTreeMap<OutputId, usize>,
-    refused: OutputPoints,
-    telemetry: RecordingTelemetry,
-    /// Whether buffers one slot sends another are held, as a queue between two regions holds them, rather than
-    /// delivered at once.
-    holding: bool,
-    held: VecDeque<(FrameTarget, EventsBuffer, AdmissionTime)>,
-    /// The generation hosts re-admit with while held buffers are delivered: the held batch's own.
-    readmit_as: Option<GenerationRef>,
-}
-
-impl FrameHarness {
-    /// Computes the frame of a valid boot plan, and creates a driver for each slot, prepared for generation 1.
-    pub fn new(plan: &Plan, report: &ValidationReport, registry: OperatorRegistry) -> Self {
-        Self::with_options(plan, report, registry, HarnessOptions::default())
-    }
-
-    /// Computes the frame of a valid boot plan, and creates a driver for each slot, prepared for generation 1, compiled
-    /// and run as `options` say.
-    pub fn with_options(
-        plan: &Plan, report: &ValidationReport, registry: OperatorRegistry, options: HarnessOptions,
-    ) -> Self {
-        let frame = Frame::compute(plan, &registry, &namer).unwrap();
-        let compiled = compiled_with(plan, report, &registry, &frame, options);
-        let active: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
-        let telemetry = RecordingTelemetry::default();
-        let drivers = frame
-            .slots()
-            .iter()
-            .zip(&compiled.programs)
-            .map(|(slot, program)| {
-                let keys = program.kernels().iter().map(|kernel| &kernel.key);
-                let kernels = build_kernels(program, keys, KernelBuildContext::detached).unwrap();
-                let boot = PrepareRegion::new(
-                    Arc::clone(&active),
-                    Arc::clone(program),
-                    kernels,
-                    PanicBudget::DEFAULT_PROGRAM,
-                    &telemetry,
-                );
-                let config = RegionConfig::for_slot(slot, &telemetry).with_memo_entries(options.memo_entries);
-                MetricRegionDriver::new(config, boot).unwrap()
-            })
-            .collect();
-        let hosts = frame
-            .fixed()
-            .iter()
-            .filter(|fixed| fixed.operator.as_str() != names::SOURCE)
-            .map(|fixed| {
-                let operator = registry.configure(fixed.operator.as_str(), &fixed.params).unwrap();
-                let ports = operator.ports().outputs.len();
-                (fixed.node.clone(), (host_for(&operator), ports))
-            })
-            .collect();
-        Self {
-            options,
-            registry,
-            frame,
-            placement: compiled.placement,
-            programs: compiled.programs,
-            drivers,
-            hosts,
-            stamps: BTreeMap::new(),
-            active,
-            prepared: None,
-            next_generation: 2,
-            last_tick: None,
-            outputs: OutputPoints::new(),
-            accepted: BTreeMap::new(),
-            refused: OutputPoints::new(),
-            telemetry,
-            holding: false,
-            held: VecDeque::new(),
-            readmit_as: None,
-        }
-    }
-
-    /// Holds every buffer one slot sends another from now on, until [`stop_holding`][Self::stop_holding]: what is in
-    /// flight between two regions when a generation commits.
-    pub fn hold_between_slots(&mut self) {
-        self.holding = true;
-    }
-
-    /// Stops holding buffers between slots; what is held stays held until [`release`][Self::release].
-    pub fn stop_holding(&mut self) {
-        self.holding = false;
-    }
-
-    /// Delivers the buffers held between slots, in the order they were sent.
-    ///
-    /// A held batch runs whole in its own generation, as the reference interpreter runs it: a host it reaches
-    /// re-admits it with that generation, as if the host had drained its queue before the commit. What the hold
-    /// changes is when the regions below run it: after a later generation committed, and after later batches.
-    pub fn release(&mut self) {
-        while let Some((target, buffer, arrival)) = self.held.pop_front() {
-            self.readmit_as = buffer.header().generation.clone();
-            self.deliver(Some(target), buffer, arrival);
-            self.readmit_as = None;
-        }
-    }
-
-    /// Returns the number of buffers held between slots.
-    pub fn held(&self) -> usize {
-        self.held.len()
-    }
-
-    /// Prepares a candidate plan in every region, reusing the kernels the active programs have, as the installer
-    /// does before its barrier. Admission points keep stamping the active generation until [`commit`][Self::commit].
-    pub fn prepare(&mut self, plan: &Plan, report: &ValidationReport) {
-        let compiled = compiled_with(plan, report, &self.registry, &self.frame, self.options);
-        let reuse = kernel_reuse(Some(&self.programs), &compiled.programs);
-        let generation: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(self.next_generation)));
-        self.next_generation += 1;
-        for ((driver, program), kernels) in self.drivers.iter_mut().zip(&compiled.programs).zip(&reuse) {
-            let built = build_kernels(program, &kernels.build, KernelBuildContext::detached).unwrap();
-            let prepare = PrepareRegion::new(
-                Arc::clone(&generation),
-                Arc::clone(program),
-                built,
-                PanicBudget::DEFAULT_PROGRAM,
-                &self.telemetry,
-            );
-            let mut budget = Budget::unlimited();
-            let mut sink = ExitSink::new(0);
-            driver
-                .control(
-                    &mut RegionTurn::new(Instant::now(), &mut budget),
-                    RegionControl::Prepare(Box::new(prepare)),
-                    &mut sink,
-                )
-                .unwrap();
-        }
-        self.prepared = Some((generation, compiled));
-    }
-
-    /// Commits the prepared generation: admission points stamp it from now on, and nothing in the harness holds the
-    /// one it replaces any more.
-    pub fn commit(&mut self) {
-        let (generation, compiled) = self.prepared.take().expect("a generation is prepared");
-        self.active = generation;
-        self.programs = compiled.programs;
-        self.placement = compiled.placement;
-    }
-
-    /// Admits a batch at a source's `metrics` output.
-    pub fn admit(&mut self, source: &str, at: AdmissionTime, metrics: Vec<Metric>) {
-        let point = self
-            .frame
-            .admission_point_at(&id(source), &"metrics".parse().unwrap())
-            .unwrap()
-            .clone();
-        let header = BatchHeader {
-            admitted_at: Some(at),
-            admission_point: Some(point.id),
-            epoch: 0,
-            generation: Some(Arc::clone(&self.active)),
-            entry: None,
-        };
-        let arrival = self.last_tick.map_or(at, |tick| tick.max(at));
-        self.deliver(point.route.clone(), buffer_of(header, metrics), arrival);
-    }
-
-    /// Runs a flush tick of every host.
-    pub fn advance(&mut self, now: AdmissionTime) {
-        self.last_tick = Some(now);
-        let nodes = self.hosts.keys().cloned().collect::<Vec<_>>();
-        for node in nodes {
-            let (host, ports) = self.hosts.get_mut(&node).unwrap();
-            let mut output = HostOutput::new(*ports);
-            host.tick(HostTick { now, watermark: None }, &mut output);
-            self.readmit(&node, output, now);
-        }
-    }
-
-    /// Publishes every region's telemetry.
-    pub fn publish(&mut self) {
-        for driver in &mut self.drivers {
-            driver.publish_telemetry();
-        }
-    }
-
-    /// Re-admits what a host emitted, at its output's admission point, with the host's clock, which never moves back.
-    fn readmit(&mut self, node: &NodeId, mut output: HostOutput, now: AdmissionTime) {
-        let (ports, _) = output.take();
-        let fixed = self.frame.fixed_component(node).unwrap().clone();
-        for (port, metrics) in ports.into_iter().enumerate() {
-            if metrics.is_empty() {
-                continue;
-            }
-            let point = self
-                .frame
-                .admission_point(fixed.admission_points[port])
-                .unwrap()
-                .clone();
-            let stamped = self.stamps.get(&point.id).map_or(now, |previous| (*previous).max(now));
-            self.stamps.insert(point.id, stamped);
-            let generation = self.readmit_as.clone().unwrap_or_else(|| Arc::clone(&self.active));
-            let header = BatchHeader {
-                admitted_at: Some(stamped),
-                admission_point: Some(point.id),
-                epoch: 0,
-                generation: Some(generation),
-                entry: None,
-            };
-            self.deliver(point.route.clone(), buffer_of(header, metrics), now);
-        }
-    }
-
-    fn deliver(&mut self, target: Option<FrameTarget>, buffer: EventsBuffer, arrival: AdmissionTime) {
-        let mut queue = VecDeque::from([(target, buffer)]);
-        while let Some((target, buffer)) = queue.pop_front() {
-            match target {
-                None => {}
-                Some(FrameTarget::Output(output)) => {
-                    for event in buffer {
-                        let metric = event.try_into_metric().unwrap();
-                        let accepted = self.accepted.entry(output.clone()).or_default();
-                        if self
-                            .options
-                            .output_capacity
-                            .is_some_and(|capacity| *accepted >= capacity)
-                        {
-                            self.refused.insert(&output, &metric);
-                        } else {
-                            *accepted += 1;
-                            self.outputs.insert(&output, &metric);
-                        }
-                    }
-                }
-                Some(FrameTarget::Slot(slot)) => {
-                    let exits = &self.frame.slot(slot).unwrap().exits;
-                    let mut sink = ExitSink::new(exits.len());
-                    let mut budget = Budget::unlimited();
-                    let progress = self.drivers[slot.get()].process(
-                        &mut RegionTurn::new(Instant::now(), &mut budget),
-                        buffer,
-                        &mut sink,
-                    );
-                    assert_eq!(progress, Progress::Done);
-                    for (exit, buffer) in sink.drain() {
-                        let target = exits[exit.get()].target.clone();
-                        // Every buffer leaves stamped, with an entry exactly when it goes to another slot.
-                        assert!(buffer.header().generation.is_some(), "exit buffers keep the generation");
-                        assert_eq!(
-                            buffer.header().entry.is_some(),
-                            matches!(target, FrameTarget::Slot(_)),
-                            "exit to {:?} has entry {:?}",
-                            target,
-                            buffer.header().entry
-                        );
-                        if self.holding && matches!(target, FrameTarget::Slot(_)) {
-                            self.held.push_back((target, buffer, arrival));
-                        } else {
-                            queue.push_back((Some(target), buffer));
-                        }
-                    }
-                }
-                Some(FrameTarget::Fixed(node)) => {
-                    let admitted_at = buffer.header().admitted_at;
-                    let events = buffer.into_iter().filter_map(Event::try_into_metric).collect();
-                    let (host, ports) = self.hosts.get_mut(&node).expect("every fixed target has a host");
-                    let mut output = HostOutput::new(*ports);
-                    host.admit(
-                        HostBatch {
-                            admitted_at,
-                            arrived_at: arrival,
-                            events,
-                        },
-                        &mut output,
-                    );
-                    self.readmit(&node, output, arrival);
-                }
-            }
-        }
-    }
-
-    /// Returns what every output received.
-    pub fn outputs(&self) -> &OutputPoints {
-        &self.outputs
-    }
-
-    /// Returns what every output received and refused.
-    pub fn capacity_outcome(&self) -> CapacityOutcome {
-        CapacityOutcome {
-            delivered: self.outputs.clone(),
-            refused: self.refused.clone(),
-        }
-    }
-
-    /// Returns the recorded telemetry.
-    pub fn telemetry(&self) -> &RecordingTelemetry {
-        &self.telemetry
-    }
-
-    /// Returns the `drop` nodes that run in a slot, whose loss a region counts.
-    pub fn drops_in_slots(&self, plan: &Plan) -> Vec<NodeId> {
-        plan.nodes
-            .iter()
-            .filter(|node| node.op.as_str() == names::DROP)
-            .filter(|node| matches!(self.placement.site(&node.id), Some(Site::Slot(_))))
-            .map(|node| node.id.clone())
-            .collect()
-    }
-
-    /// Returns the drivers.
-    pub fn drivers(&self) -> &[MetricRegionDriver] {
-        &self.drivers
-    }
-}
-
-/// Compiles a plan into a frame, with or without the decision-time rewrites.
-fn compiled_with(
-    plan: &Plan, report: &ValidationReport, registry: &OperatorRegistry, frame: &Frame, options: HarnessOptions,
-) -> CompiledPlan {
-    if options.decision_rewrites {
-        compile(plan, report, registry, frame).unwrap()
-    } else {
-        compile_without_decision_rewrites(plan, report, registry, frame).unwrap()
-    }
 }
 
 /// Checks that the harness's outputs and the policy loss its regions counted equal the interpreter's.
@@ -600,9 +150,10 @@ fn the_default_program_runs_through_a_frame_of_region_drivers_as_the_interpreter
             .unwrap();
         let _guard = runtime.enter();
         let mut harness = FrameHarness::new(&plan, &report, registry);
-        // R1's cost model cuts the default program into five slots: three before aggregation, the post-aggregation
-        // filter's, and enrichment with the whole policy region, one decision.
-        assert_eq!(harness.drivers().len(), 5, "the default program's frame has five slots");
+        // R1's cost model cuts the default program into five fused slots: three before aggregation, the
+        // post-aggregation filter's, and enrichment with the whole policy region, one decision; aggregation runs in
+        // an isolation slot of its own between them.
+        assert_eq!(harness.drivers().len(), 6, "the default program's frame has six slots");
         harness.admit("dsd_in", t(3), dogstatsd);
         harness.admit("otlp_in", t(4), otlp);
         harness.advance(t(15));
@@ -1373,11 +924,11 @@ fn decision_port_events(harness: &FrameHarness, plan: &Plan) -> BTreeMap<(String
     let mut events = BTreeMap::new();
     for node in &plan.nodes {
         if !matches!(node.op.as_str(), names::SPLIT | names::TEE)
-            || !matches!(harness.placement.site(&node.id), Some(Site::Slot(_)))
+            || !matches!(harness.placement().site(&node.id), Some(Site::Slot(_)))
         {
             continue;
         }
-        let operator = harness.registry.configure(node.op.as_str(), &node.params).unwrap();
+        let operator = harness.registry().configure(node.op.as_str(), &node.params).unwrap();
         for port in &operator.ports().outputs {
             let (node, port) = (node.id.to_string(), port.name.to_string());
             let count = harness.telemetry().port_events(&node, &port);

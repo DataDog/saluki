@@ -36,6 +36,34 @@
 //! previous one stopped: with the same core, schedule, acknowledgments still awaited, deadlines, and actions not yet
 //! performed. Standalone mode never changes configuration, so there the worker only waits for artifacts.
 //!
+//! # Cuts
+//!
+//! A candidate whose state owners cannot carry their state over at a batch boundary, such as one that changes
+//! aggregation's bucket width, is installed with a cut: the old and new generations switch at a cut time that every
+//! bucket width involved shares. Once every region acknowledged the preparation, the worker performs the core's cut
+//! actions against the [`AdmissionRegistry`] of the topology (see the `cut` module):
+//!
+//! 1. **Arm.** In one transaction over the locks of the admission points upstream of the changing state owners, it
+//!    computes the cut time from their latest stamps and wall clocks, records the cut on the new generation's token,
+//!    and publishes `Cut { old, new, at }`. A lock that is not free within the lock timeout, or a clock running ahead
+//!    of its wall clock, puts arming off, and the core tries again after a delay. A cut that can never be armed, which
+//!    only a bug leaves, fails its generation, and the active one keeps running.
+//! 2. **Watch.** While the cut is in flight, it polls every admission point every `CUT_POLL`, without waiting on a busy
+//!    one, and reports whether any point stamped the new generation (the cut is then irrevocable) and how many affected
+//!    points passed the cut.
+//! 3. **Cancel.** A newer proposal before any point stamped the new generation cancels the cut: under every point's
+//!    lock, those feeding no state owner first, it publishes `Steady(old)`, or refuses if a point stamped the new
+//!    generation or a lock is not free in time.
+//! 4. **Finalize.** Once every affected point passed the cut, one store of `Steady(new)`. The replaced generation's
+//!    drain deadline starts then; before, a cut whose affected points have not passed its time plus the drain deadline
+//!    is reported overdue.
+//!
+//! Each step is idempotent by the schedule's value, and a restarted worker performs again the cut step the core has in
+//! flight ([`InstallerCore::resume_actions`]).
+//!
+//! When aggregation runs in an isolation slot, a second worker, the [snapshot bridge](super::snapshot_bridge), answers
+//! the DogStatsD context dump API from that region.
+//!
 //! # Artifacts
 //!
 //! With an artifact channel [connected](ProgrammableMetrics::connect_artifact_channel), the worker also wakes on every
@@ -77,12 +105,14 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt as _};
 use saluki_common::sync::shutdown::ShutdownHandle;
+#[cfg(test)]
+use saluki_core::execution::ManualWallClock;
 use saluki_core::{
     accounting::ComponentRegistry,
     components::ComponentContext,
     execution::{
-        control_mailbox, AdmissionSchedule, ControlMailbox, ControlSender, GenerationId, GenerationRef, RetireNotifier,
-        ScheduleHandle,
+        control_mailbox, AdmissionPointId, AdmissionRegistry, AdmissionSchedule, AdmissionTime, ControlMailbox,
+        ControlSender, GenerationId, GenerationRef, RetireNotifier, ScheduleHandle, SystemWallClock, WallClock,
     },
     runtime::{InitializationError, Supervisable, SupervisorFuture},
     topology::{topology_identifier, ComponentId},
@@ -92,17 +122,19 @@ use saluki_metric_plan::{
     canonical::PlanHash,
     channel::{artifact_channel, ApplyStates, ArtifactSnapshot, InstallerEnd, TransportEnd},
     compile::{compile, compile_unvalidated, place_unvalidated, Frame, RegionProgram, SlotId},
-    compose::{compose, Approval, ComposeError, Composed, Composer},
+    compose::{compose_all, Approval, ComposeError, Composed, Composer},
     explain::Explain,
     export::{base, export, ExportBundle},
     install::{
-        Action, Candidate, CandidateId, GenerationState, InstallerConfig, InstallerCore, InstallerStatus, Origin,
-        Outcome, PendingReason, Prepare, Report,
+        Action, ArmCut, Candidate, CandidateId, CutDeferReason, CutPhase, GenerationState, InstallerConfig,
+        InstallerCore, InstallerStatus, Origin, Outcome, PendingReason, Prepare, Report, SlotPrepare,
     },
     ir::{NodeId, OutputId, Plan, Provenance, ReceivedArtifact, ScopeName},
     limits,
     operators::OperatorRegistry,
-    runtime::{build_kernels, GenerationFailureReporter, PanicBudget, PrepareRegion, RegionControl},
+    runtime::{
+        build_kernels, GenerationFailureReporter, PanicBudget, PrepareRegion, RegionControl, RegionError, StateBudgets,
+    },
     validate::{ValidationReport, Validator},
 };
 use tokio::{
@@ -110,15 +142,17 @@ use tokio::{
     sync::{mpsc, Mutex},
     time::{sleep_until, Instant},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
+use self::cut::{ArmOutcome, CancelOutcome, Polled};
 use super::{
-    catalog::{AdpCatalog, POST_ENRICH_SCOPE},
+    catalog::AdpCatalog,
     host_facts::HostFacts,
     lowering::Lowering,
     outputs::{NativeOutputs, OutputKind},
-    telemetry::{InstallOutcome, InstallerTelemetry, RegionTelemetry},
-    topology::slot_name,
+    snapshot_bridge::{SnapshotBridge, SnapshotBridgeState},
+    telemetry::{CutOutcome, InstallOutcome, InstallerTelemetry, RegionTelemetry},
+    topology::{aggregation_slot, slot_name},
 };
 use crate::{cli::run::PRIMARY_TOPOLOGY, config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
 
@@ -156,6 +190,27 @@ pub struct BootTopology {
 
     /// Where regions report the generations they fail, for the installer.
     pub failures: GenerationFailureReporter,
+
+    /// The registry every admission point of the frame registers in when the topology starts, through which the
+    /// installer arms, watches, and cancels cuts.
+    pub admission: AdmissionRegistry,
+
+    /// The budgets of state every lineage of every state owner draws on: one global budget, the boot program's context
+    /// limit of DogStatsD aggregation, and one per state owner.
+    pub state_budgets: StateBudgets,
+
+    /// The wall clock isolation slots read for their tick gates, the time they close at when their input ends, and
+    /// their watermark lag: the operating system's.
+    pub wall_clock: Arc<dyn WallClock>,
+
+    /// DogStatsD aggregation's context snapshot requests, when aggregation runs in an isolation slot: taken when the
+    /// DogStatsD pipeline is added, and answered by the [snapshot bridge](ProgrammableMetrics::snapshot_bridge).
+    pub snapshots: Option<SnapshotBridgeState>,
+
+    /// The wall clock the admission points that feed state owners read in place of the operating system's, for tests
+    /// that clock aggregation.
+    #[cfg(test)]
+    pub state_admission_clock: Option<ManualWallClock>,
 }
 
 /// The programmable metrics path of one process: what the metrics path of the topology is built from, and the
@@ -280,8 +335,15 @@ impl ProgrammableMetrics {
                 Ok(ComponentContext::transform(&topology_root, component_id).identity())
             })
             .collect::<Result<Vec<_>, GenericError>>()?;
-        let region_telemetry =
-            RegionTelemetry::new(topology_root.clone()).with_accounting(component_registry.clone(), region_identities);
+        // Every lineage of every state owner, in every generation, draws on the same budgets, which native
+        // aggregation's context limit sizes.
+        let state_budgets = match lowered.catalog.state_budget() {
+            Some(capacity) => StateBudgets::new(capacity),
+            None => StateBudgets::unlimited(),
+        };
+        let region_telemetry = RegionTelemetry::new(topology_root.clone())
+            .with_accounting(component_registry.clone(), region_identities)
+            .with_state(state_budgets.clone(), &frame);
         // Runs on a region's task, possibly mid-turn: it only queues.
         let (failures_tx, failures_rx) = mpsc::unbounded_channel();
         let failures: GenerationFailureReporter = Arc::new(move |generation, reason: &str| {
@@ -295,14 +357,21 @@ impl ProgrammableMetrics {
         let labels = output_labels(lowering.outputs());
         let default_program = DefaultProgramView::of(&plan, lowered.catalog, &labels);
         let outputs = lowering.outputs().clone();
+        let admission = AdmissionRegistry::new();
+        let cut_points = CutPoints::of(&frame);
         let mut installer = Installer {
             core,
             lowering,
             registry,
             schedule: Arc::clone(&schedule),
+            admission: admission.clone(),
+            cut_points,
+            arming: None,
+            cut: None,
             regions,
             region_telemetry: region_telemetry.clone(),
             telemetry,
+            gauges_describe: Some(boot.generation.id()),
             retired: retired_rx,
             failures: failures_rx,
             config,
@@ -339,6 +408,12 @@ impl ProgrammableMetrics {
                 mailboxes,
                 telemetry: region_telemetry,
                 failures,
+                admission,
+                state_budgets,
+                wall_clock: Arc::new(SystemWallClock),
+                snapshots: None,
+                #[cfg(test)]
+                state_admission_clock: None,
             },
             installer,
             status,
@@ -375,6 +450,17 @@ impl ProgrammableMetrics {
     /// Returns the installer's status, kept current as it changes, for the control surface.
     pub fn status(&self) -> Arc<ArcSwap<PlanStatus>> {
         Arc::clone(&self.status)
+    }
+
+    /// Returns the worker that answers DogStatsD aggregation's context snapshot requests from the isolation slot that
+    /// runs aggregation, `dsd_agg`, or `None` if the topology has no DogStatsD pipeline.
+    ///
+    /// Call it once the topology is built: the topology takes the requests when it adds the DogStatsD pipeline.
+    pub fn snapshot_bridge(&self) -> Option<SnapshotBridge> {
+        let state = self.topology.snapshots.clone()?;
+        let slot = aggregation_slot(&self.topology.frame)?.id;
+        let region = self.installer.regions.get(slot.get())?.clone();
+        Some(SnapshotBridge::new(state, region))
     }
 
     /// Returns the installer worker, to run once the topology is built.
@@ -463,6 +549,28 @@ impl fmt::Display for PlanStatus {
         if let Some(preparing) = &self.installer.preparing {
             write!(f, ", generation {} preparing", preparing.id)?;
         }
+        if let Some(cut) = &self.installer.cut {
+            write!(f, ", cut to generation {}", cut.generation)?;
+            match cut.phase {
+                CutPhase::Barrier => f.write_str(" not armed yet")?,
+                CutPhase::Armed { at } => write!(f, " armed at {}", at)?,
+                CutPhase::Irrevocable { at } => write!(
+                    f,
+                    " irrevocable at {}, {} of {} admission points passed",
+                    at, cut.passed, cut.total
+                )?,
+            }
+            if let Some((reason, times)) = cut.deferred {
+                let reason = match reason {
+                    CutDeferReason::Timeout => "admission points busy".to_string(),
+                    CutDeferReason::ClockAhead { by } => format!("a clock {:?} ahead of its wall clock", by),
+                };
+                match times {
+                    1 => write!(f, " (put off once: {})", reason)?,
+                    times => write!(f, " (put off {} times: {})", times, reason)?,
+                }
+            }
+        }
         if self.installer.pending.is_some() {
             f.write_str(", a candidate pending")?;
         }
@@ -521,6 +629,9 @@ impl Supervisable for InstallerWorker {
             if let Some(channel) = &mut installer.channel {
                 channel.restart();
             }
+            // The cut step the previous run was performing when it stopped is performed again, first: every cut step
+            // is idempotent by the schedule's value.
+            installer.resume_cut();
             // A topology builds its region hosts long before it runs them: it waits for its environment to be ready
             // first, which can take a while. A preparation sent before a region reads its mailbox would only time
             // out, so the installer starts once every region runs, and installs the configuration current then.
@@ -530,7 +641,7 @@ impl Supervisable for InstallerWorker {
                 () = wait_for_regions(installer.regions.clone()) => {}
             }
             loop {
-                installer.perform_actions();
+                installer.perform_actions().await;
                 installer.publish(&state.status);
                 let event = select! {
                     biased;
@@ -560,15 +671,16 @@ pub(super) trait ArtifactPaths: Send {
         &mut self, core: &mut InstallerCore, candidate: Candidate, composer: &dyn Composer,
     ) -> (CandidateId, Vec<Action>);
 
-    /// Returns every config's acknowledgment and the status summary, with the default program's base program hash and
-    /// why the host is degraded, if it is: what the installer reports, and the artifact in effect it reports.
+    /// Returns every config's acknowledgment and the status summary, with the base program hash of each scope of the
+    /// default program and why the host is degraded, if it is: what the installer reports, and the artifacts in effect
+    /// it reports.
     fn apply_states(
-        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
     ) -> ApplyStates;
 }
 
 /// The core's own artifact paths: [`InstallerCore::on_snapshot`], [`InstallerCore::on_default_program`], and
-/// [`InstallerCore::apply_states`].
+/// [`InstallerCore::apply_states_with_bases`].
 struct CoreArtifactPaths;
 
 impl ArtifactPaths for CoreArtifactPaths {
@@ -585,9 +697,9 @@ impl ArtifactPaths for CoreArtifactPaths {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
-        core.apply_states(default_program_hash, degraded)
+        core.apply_states_with_bases(bases, degraded)
     }
 }
 
@@ -599,8 +711,8 @@ struct DefaultProgramComposer<'a> {
 }
 
 impl Composer for DefaultProgramComposer<'_> {
-    fn compose(&self, artifact: &ReceivedArtifact, approval: &Approval) -> Result<Composed, ComposeError> {
-        compose(self.plan, artifact, approval, self.catalog, self.registry)
+    fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
+        compose_all(self.plan, artifacts, self.catalog, self.registry)
     }
 }
 
@@ -633,9 +745,9 @@ struct DefaultProgramView {
     catalog: AdpCatalog,
     /// The export of every scope of the default program, or why the scope cannot be exported.
     exports: BTreeMap<ScopeName, Result<Arc<ExportBundle>, String>>,
-    /// The base program hash an artifact derived from the export of the `post_enrich` scope records, if the base can
+    /// The base program hash an artifact derived from the export of each scope records, for every scope whose base can
     /// be computed.
-    program_hash: Option<PlanHash>,
+    bases: BTreeMap<ScopeName, PlanHash>,
 }
 
 impl DefaultProgramView {
@@ -652,18 +764,25 @@ impl DefaultProgramView {
                 (scope.clone(), bundle)
             })
             .collect();
-        let post_enrich = ScopeName::new(POST_ENRICH_SCOPE).expect("scope names are identifiers");
-        let program_hash = match base(plan, &post_enrich) {
-            Ok(base) => Some(base.program_hash),
-            Err(error) => {
-                debug!(error = %error, "The default program's base program hash cannot be computed.");
-                None
-            }
-        };
+        let bases = plan
+            .scopes
+            .keys()
+            .filter_map(|scope| match base(plan, scope) {
+                Ok(base) => Some((scope.clone(), base.program_hash)),
+                Err(error) => {
+                    debug!(
+                        scope = %scope,
+                        error = %error,
+                        "The base program hash of a scope of the default program cannot be computed."
+                    );
+                    None
+                }
+            })
+            .collect();
         Self {
             catalog,
             exports,
-            program_hash,
+            bases,
         }
     }
 }
@@ -714,6 +833,9 @@ enum Event {
     /// A generation has been draining for the drain deadline.
     DrainDeadline(GenerationId),
 
+    /// A poll of the admission points found what they say about the cut in flight to a generation.
+    CutPolled(GenerationId, Polled),
+
     /// The artifact channel delivered a snapshot.
     Snapshot(Arc<ArtifactSnapshot>),
 
@@ -730,16 +852,73 @@ struct Draining {
     overdue: bool,
 }
 
+/// The admission points of the frame, as cuts lock and poll them.
+#[derive(Clone, Debug)]
+struct CutPoints {
+    /// Every admission point, in the order a cancellation locks them: those that feed no state owner first.
+    every: Vec<AdmissionPointId>,
+
+    /// The admission points upstream of every isolation slot: those a cut of their state owners is armed over.
+    affected: Vec<AdmissionPointId>,
+}
+
+impl CutPoints {
+    fn of(frame: &Frame) -> Self {
+        let isolation = frame
+            .slots()
+            .iter()
+            .filter(|slot| slot.is_isolation())
+            .map(|slot| slot.id)
+            .collect::<Vec<_>>();
+        Self {
+            every: frame.cancel_lock_order(),
+            affected: frame.affected_points(&isolation),
+        }
+    }
+}
+
+/// A cut the installer arms: the last [`Action::ArmCut`] it performed.
+struct Arming {
+    generation: GenerationId,
+    old: GenerationId,
+    affected: Vec<AdmissionPointId>,
+    armed: bool,
+}
+
+/// A cut in flight that the installer watches, polling the admission points, from [`Action::WatchCut`] until it is
+/// finalized or cancelled.
+struct CutWatch {
+    generation: GenerationId,
+    /// The generation the cut replaces, which stays in flight until the cut is finalized.
+    old: Option<GenerationId>,
+    at: AdmissionTime,
+    /// The admission points the cut is armed over.
+    affected: Vec<AdmissionPointId>,
+    next_poll: Instant,
+    /// Whether an affected point has not passed the cut by its time plus the drain deadline.
+    overdue: bool,
+}
+
 /// The installer: its core and everything it needs to perform the core's actions.
 struct Installer {
     core: InstallerCore,
     lowering: Lowering,
     registry: OperatorRegistry,
     schedule: ScheduleHandle,
+    /// The registry the frame's admission points register in, which cuts lock and poll.
+    admission: AdmissionRegistry,
+    cut_points: CutPoints,
+    /// The cut the installer last armed or tried to.
+    arming: Option<Arming>,
+    /// The cut in flight the installer watches.
+    cut: Option<CutWatch>,
     /// The sending side of every region's control mailbox, in slot order.
     regions: Vec<ControlSender<RegionControl>>,
     region_telemetry: RegionTelemetry,
     telemetry: InstallerTelemetry,
+    /// The generation whose activation last set the gauges that describe the active plan: the binding gauges and the
+    /// rewrites applied.
+    gauges_describe: Option<GenerationId>,
     retired: mpsc::UnboundedReceiver<GenerationId>,
     failures: mpsc::UnboundedReceiver<(GenerationId, String)>,
     /// The configuration view the installer wakes on.
@@ -805,12 +984,18 @@ impl Installer {
     async fn next_event(&mut self) -> Event {
         let prepare_deadline = self.prepare_deadline;
         let retry_at = self.retry_at;
+        // The generation a cut in flight replaces drains from the cut's finalization on (see `finalize_cut`).
+        let replaced = self.cut.as_ref().and_then(|cut| cut.old);
         let drain_deadline = self
             .draining
             .iter()
-            .filter(|(_, draining)| !draining.overdue)
+            .filter(|(generation, draining)| !draining.overdue && Some(**generation) != replaced)
             .map(|(generation, draining)| (*generation, draining.since + limits::values::DRAIN_DEADLINE))
             .min_by_key(|(_, at)| *at);
+        let poll = self
+            .cut
+            .as_ref()
+            .map(|cut| (cut.generation, cut.next_poll, cut.affected.clone()));
         select! {
             biased;
             Some(generation) = self.retired.recv() => Event::Retired(generation),
@@ -819,6 +1004,9 @@ impl Installer {
             generation = at(prepare_deadline) => Event::TimedOut(generation),
             () = at(retry_at.map(|at| ((), at))) => Event::Retry,
             generation = at(drain_deadline) => Event::DrainDeadline(generation),
+            (generation, polled) = poll_cut(&self.admission, &self.cut_points.every, poll) => {
+                Event::CutPolled(generation, polled)
+            }
             snapshot = next_snapshot(self.channel.as_mut()) => match snapshot {
                 Some(snapshot) => Event::Snapshot(snapshot),
                 None => Event::ChannelClosed,
@@ -861,6 +1049,7 @@ impl Installer {
                 }
                 Vec::new()
             }
+            Event::CutPolled(generation, polled) => self.cut_polled(generation, polled),
             Event::Snapshot(snapshot) => {
                 debug!(
                     product = %snapshot.product,
@@ -948,13 +1137,15 @@ impl Installer {
     }
 
     /// Performs every queued action, in order, including those that performing them queues.
-    fn perform_actions(&mut self) {
+    async fn perform_actions(&mut self) {
         while let Some(action) = self.actions.pop_front() {
-            self.perform(action);
+            self.perform(action).await;
         }
     }
 
-    fn perform(&mut self, action: Action) {
+    /// Performs one action. Only the actions of a cut wait: for the locks of admission points, at most the cut lock
+    /// timeout.
+    async fn perform(&mut self, action: Action) {
         match action {
             Action::Prepare(prepare) => self.prepare(prepare),
             Action::Abort { generation, slots } => {
@@ -978,10 +1169,7 @@ impl Installer {
                 if self.prepare_deadline.is_some_and(|(preparing, _)| preparing == id) {
                     self.prepare_deadline = None;
                 }
-                if let Some(plan) = self.core.active_plan() {
-                    self.telemetry.set_binding_gauges(plan);
-                }
-                self.telemetry.rewrites(self.core.active_rewrites());
+                self.describe_active_plan(id);
             }
             Action::RetryAfter(delay) => self.retry_at = Some(Instant::now() + delay),
             Action::InstallDefaultProgram => {
@@ -990,6 +1178,265 @@ impl Installer {
                 self.actions.extend(actions);
             }
             Action::Report(report) => self.report(report),
+            Action::ArmCut(arm) => self.arm_cut(arm).await,
+            Action::WatchCut { generation, at } => self.watch_cut(generation, at),
+            Action::CancelCut { generation, old } => self.cancel_cut(generation, old).await,
+            Action::FinalizeCut { generation } => self.finalize_cut(generation),
+        }
+    }
+
+    /// Queues the cut step the core has in flight, ahead of every other action, for a worker that restarted while it
+    /// may have been performing it.
+    fn resume_cut(&mut self) {
+        for action in self.core.resume_actions().into_iter().rev() {
+            self.actions.push_front(action);
+        }
+    }
+
+    /// Arms a cut over its affected admission points (see [`cut::arm`]), and reports the outcome to the core.
+    async fn arm_cut(&mut self, arm: ArmCut) {
+        let id = arm.generation.id();
+        // Every region acknowledged the preparation, so it no longer times out: the cut may wait for its locks, and
+        // then for its time, longer than any preparation does.
+        if self.prepare_deadline.is_some_and(|(preparing, _)| preparing == id) {
+            self.prepare_deadline = None;
+        }
+        let armed_before = self
+            .arming
+            .as_ref()
+            .is_some_and(|arming| arming.generation == id && arming.armed);
+        self.arming = Some(Arming {
+            generation: id,
+            old: arm.old.id(),
+            affected: arm.affected.clone(),
+            armed: armed_before,
+        });
+
+        let outcome = cut::arm(&self.admission, &self.schedule, &arm, limits::values::CUT_LOCK_TIMEOUT).await;
+        let actions = match outcome {
+            ArmOutcome::Armed { at } => {
+                if let Some(arming) = &mut self.arming {
+                    arming.armed = true;
+                }
+                info!(
+                    generation = id.get(),
+                    replaces = arm.old.id().get(),
+                    at = %at,
+                    "Armed the cut of a new generation of the metrics plan: batches admitted from the cut time on \
+                     belong to it."
+                );
+                self.core.cut_armed(id, at)
+            }
+            ArmOutcome::Deferred(reason) => {
+                debug!(
+                    generation = id.get(),
+                    ?reason,
+                    "Arming the cut of a generation of the metrics plan was put off."
+                );
+                self.core.cut_deferred(id, reason)
+            }
+            ArmOutcome::Stranded(error) => {
+                // Regions may have read the boundary the token records, so the core aborts the generation and prepares
+                // its candidate again as a new one.
+                warn!(
+                    generation = id.get(),
+                    error = %error,
+                    "The cut of a generation of the metrics plan was interrupted before it was published, and can no \
+                     longer be: the generation is aborted, and the change prepared again."
+                );
+                self.core.cut_arm_abandoned(id)
+            }
+            ArmOutcome::Failed(error) => {
+                // Only a bug leaves a cut that cannot be armed: the core checked its widths when it planned it, and the
+                // frame lists its admission points. Trying again would fail the same way, so the generation fails: the
+                // core aborts it in every region, as it does a cut generation that fails before it is armed, and the
+                // active generation keeps running.
+                error!(
+                    generation = id.get(),
+                    error = %error,
+                    "The cut of a generation of the metrics plan cannot be armed; this is a bug. The generation \
+                     fails, and the active one keeps running."
+                );
+                self.core
+                    .generation_failed(id, &format!("its cut cannot be armed: {}", error))
+            }
+        };
+        self.actions.extend(actions);
+    }
+
+    /// Starts watching the cut of `generation` at `at`: the admission points are polled every `CUT_POLL` until it is
+    /// finalized or cancelled.
+    fn watch_cut(&mut self, generation: GenerationId, at: AdmissionTime) {
+        let (old, affected) = match &self.arming {
+            Some(arming) if arming.generation == generation => (Some(arming.old), arming.affected.clone()),
+            // A cut armed by an earlier run of the installer than the one that remembers it: its replaced generation
+            // is the one the schedule names, and it is armed over the points upstream of every isolation slot.
+            _ => {
+                let old = match &**self.schedule.load() {
+                    AdmissionSchedule::Cut { old, new, .. } if new.id() == generation => Some(old.id()),
+                    _ => None,
+                };
+                (old, self.cut_points.affected.clone())
+            }
+        };
+        let overdue = self
+            .cut
+            .as_ref()
+            .is_some_and(|watched| watched.generation == generation && watched.overdue);
+        self.cut = Some(CutWatch {
+            generation,
+            old,
+            at,
+            affected,
+            next_poll: Instant::now(),
+            overdue,
+        });
+    }
+
+    /// Reports what a poll of the admission points found about the cut in flight to the core.
+    fn cut_polled(&mut self, generation: GenerationId, polled: Polled) -> Vec<Action> {
+        let Some(watched) = self.cut.as_mut().filter(|watched| watched.generation == generation) else {
+            return Vec::new();
+        };
+        watched.next_poll = Instant::now() + limits::values::CUT_POLL;
+        // The replaced generation drains from the cut's finalization, which waits for every affected point to pass
+        // the cut: one that has not passed it by the drain deadline after the cut time holds the replaced generation
+        // in flight past it.
+        let now = polled.wall.unwrap_or_else(|| SystemWallClock.now());
+        let deadline = watched.at.saturating_add(limits::values::DRAIN_DEADLINE);
+        if !watched.overdue && !polled.progress.all_passed() && now >= deadline {
+            watched.overdue = true;
+            warn!(
+                generation = generation.get(),
+                at = %watched.at,
+                passed = polled.progress.passed,
+                affected = polled.progress.affected,
+                "The cut of a generation of the metrics plan is still waiting {:?} after its time for admission \
+                 points to pass it: the generation it replaces is still in flight.",
+                limits::values::DRAIN_DEADLINE
+            );
+        }
+        self.core.cut_progress(generation, polled.progress)
+    }
+
+    /// Cancels the cut of `generation` (see [`cut::cancel`]), and reports the outcome to the core.
+    async fn cancel_cut(&mut self, generation: GenerationId, old: GenerationRef) {
+        let outcome = cut::cancel(
+            &self.admission,
+            &self.schedule,
+            &self.cut_points.every,
+            generation,
+            &old,
+            limits::values::CUT_LOCK_TIMEOUT,
+        )
+        .await;
+        let actions = match outcome {
+            CancelOutcome::Cancelled | CancelOutcome::AlreadyCancelled => {
+                // A cut ends once: a cancellation performed again, by a restarted worker, finds it cancelled already.
+                if outcome == CancelOutcome::Cancelled {
+                    self.telemetry.cut(CutOutcome::Cancelled);
+                    info!(
+                        generation = generation.get(),
+                        keeps = old.id().get(),
+                        "Cancelled the cut of a generation of the metrics plan before any batch was admitted to it."
+                    );
+                }
+                if self
+                    .cut
+                    .as_ref()
+                    .is_some_and(|watched| watched.generation == generation)
+                {
+                    self.cut = None;
+                }
+                if self
+                    .arming
+                    .as_ref()
+                    .is_some_and(|arming| arming.generation == generation)
+                {
+                    self.arming = None;
+                }
+                self.core.cut_cancelled(generation)
+            }
+            CancelOutcome::Refused(reason) => {
+                self.telemetry.cut_cancellation_refused();
+                info!(
+                    generation = generation.get(),
+                    reason = %reason,
+                    "The cut of a generation of the metrics plan cannot be cancelled, and completes."
+                );
+                self.core.cut_cancel_refused(generation)
+            }
+        };
+        self.actions.extend(actions);
+    }
+
+    /// Finalizes the cut of `generation`: one store of `Steady(generation)`, which every affected admission point,
+    /// having passed the cut, stamps alike.
+    fn finalize_cut(&mut self, generation: GenerationRef) {
+        let id = generation.id();
+        let replaced = match &**self.schedule.load() {
+            AdmissionSchedule::Cut { old, new, .. } if new.id() == id => Some(old.id()),
+            // Finalized already, by an earlier run of the installer.
+            AdmissionSchedule::Steady(steady) if steady.id() == id => None,
+            AdmissionSchedule::Steady(other) | AdmissionSchedule::Cut { new: other, .. } => {
+                // Storing would replace another generation, or another generation's cut: never.
+                error!(
+                    generation = id.get(),
+                    schedule = other.id().get(),
+                    "The installer core asked to finalize the cut of a generation of the metrics plan that the \
+                     schedule does not hold; this is a bug. The schedule is unchanged."
+                );
+                None
+            }
+        };
+        if let Some(replaced) = replaced {
+            self.schedule.store(Arc::new(AdmissionSchedule::Steady(generation)));
+            self.telemetry.cut(CutOutcome::Completed);
+            // The replaced generation's drain deadline starts now: batches stamped with it were admitted up to the cut
+            // time, which every affected point has just passed.
+            if let Some(draining) = self.draining.get_mut(&replaced) {
+                draining.since = Instant::now();
+                draining.overdue = false;
+            }
+            info!(
+                generation = id.get(),
+                replaced = replaced.get(),
+                "The cut of a new generation of the metrics plan is complete."
+            );
+        }
+        if self.cut.as_ref().is_some_and(|watched| watched.generation == id) {
+            self.cut = None;
+        }
+        if self.arming.as_ref().is_some_and(|arming| arming.generation == id) {
+            self.arming = None;
+        }
+    }
+
+    /// Sets the gauges that describe the active plan, the binding gauges and the rewrites applied, from the core's
+    /// active plan, for the activation of `generation`: at its commit, or, for a cut's generation, which becomes active
+    /// with no commit, when the core reports it active. Whichever of the two comes first sets them, once per
+    /// activation.
+    fn describe_active_plan(&mut self, generation: GenerationId) {
+        if self.gauges_describe == Some(generation) {
+            return;
+        }
+        if let Some(plan) = self.core.active_plan() {
+            self.telemetry.set_binding_gauges(plan);
+        }
+        self.telemetry.rewrites(self.core.active_rewrites());
+        self.gauges_describe = Some(generation);
+    }
+
+    /// Counts a cut the core gave up on, rejecting its generation, before it was ever armed: arming was put off too
+    /// many times, the cut could not be armed, or a newer proposal replaced it first.
+    fn cut_given_up(&mut self, generation: GenerationId) {
+        if self
+            .arming
+            .as_ref()
+            .is_some_and(|arming| arming.generation == generation && !arming.armed)
+        {
+            self.arming = None;
+            self.telemetry.cut(CutOutcome::NotArmed);
         }
     }
 
@@ -1005,49 +1452,70 @@ impl Installer {
         let (budgets, artifact_nodes) = self.preparing_budgets(id);
 
         for slot in slots {
+            let slot_id = slot.slot;
             let budget = budgets
-                .get(slot.slot.get())
+                .get(slot_id.get())
                 .copied()
                 .unwrap_or(PanicBudget::DEFAULT_PROGRAM);
-            let Some(region) = self.regions.get(slot.slot.get()) else {
+            let Some(region) = self.regions.get(slot_id.get()) else {
                 let failure = Err("the topology has no region for the slot".to_string());
-                let actions = self.core.prepare_acknowledged(id, slot.slot, failure);
+                let actions = self.core.prepare_acknowledged(id, slot_id, failure);
                 self.actions.extend(actions);
                 return;
             };
-            // Kernels are built off the data path, each in its own resource group under its region's.
-            let kernels = build_kernels(&slot.program, &slot.build, |node| {
-                self.region_telemetry.kernel_context(&slot.program, node)
-            });
-            match kernels {
-                Ok(kernels) => {
-                    // The budget covers the artifact's nodes only: a native node's panic fails the region.
-                    let message = PrepareRegion::new(
-                        generation.clone(),
-                        slot.program,
-                        kernels,
-                        budget,
-                        &self.region_telemetry,
-                    )
-                    .with_artifact_nodes(artifact_nodes.iter().cloned());
+            match self.region_preparation(&generation, slot, budget, &artifact_nodes) {
+                Ok(message) => {
                     let ack = region.send(RegionControl::Prepare(Box::new(message)));
-                    let slot = slot.slot;
                     self.acks.push(Box::pin(async move {
                         Acknowledgment {
                             generation: id,
-                            slot,
+                            slot: slot_id,
                             outcome: ack.await.map_err(|error| error.to_string()),
                         }
                     }));
                 }
                 Err(error) => {
                     // A kernel that fails to build fails the preparation at once: no other region needs it.
-                    let actions = self.core.prepare_acknowledged(id, slot.slot, Err(error.to_string()));
+                    let actions = self.core.prepare_acknowledged(id, slot_id, Err(error.to_string()));
                     self.actions.extend(actions);
                     return;
                 }
             }
         }
+    }
+
+    /// Returns what the region of `slot` prepares for `generation`: the slot's program, the kernels it lacks, built
+    /// here, its panic budget and the nodes the budget covers, and how its state owners bind to instances of their
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a kernel fails to build.
+    fn region_preparation(
+        &self, generation: &GenerationRef, slot: SlotPrepare, budget: PanicBudget, artifact_nodes: &BTreeSet<NodeId>,
+    ) -> Result<PrepareRegion, RegionError> {
+        // Every part of the core's preparation of the slot is named, so that none is left behind: a region reuses the
+        // instances it holds for the kernels the preparation does not list to build, whether or not the program is
+        // unchanged, and an isolation slot needs its bindings of state to carry, start, or retire its state owners'
+        // state.
+        let SlotPrepare {
+            slot: _,
+            program,
+            unchanged: _,
+            reuse: _,
+            build,
+            state,
+        } = slot;
+        // Kernels are built off the data path, each in its own resource group under its region's.
+        let kernels = build_kernels(&program, &build, |node| {
+            self.region_telemetry.kernel_context(&program, node)
+        })?;
+        // The budget covers the artifact's nodes only: a native node's panic fails the region.
+        Ok(
+            PrepareRegion::new(generation.clone(), program, kernels, budget, &self.region_telemetry)
+                .with_artifact_nodes(artifact_nodes.iter().cloned())
+                .with_state_bindings(state),
+        )
     }
 
     /// Returns the panic budget of every slot, in slot order, for generation `id`, which the core is preparing (see
@@ -1107,6 +1575,9 @@ impl Installer {
             Outcome::Rejected(rejection) => {
                 self.telemetry.installed(InstallOutcome::Rejected);
                 self.degraded.remove(&candidate);
+                if let Some(generation) = generation {
+                    self.cut_given_up(generation);
+                }
                 let error = rejection.to_string();
                 warn!(
                     candidate = candidate.get(),
@@ -1129,10 +1600,15 @@ impl Installer {
                         self.telemetry.installed(InstallOutcome::Committed);
                         // Only a default program runs despite validation errors: an artifact must validate. The errors
                         // stay with the candidate, which can be active again after a rollback to it.
-                        self.active_degraded = match origin {
-                            Origin::DefaultProgram { .. } => self.degraded.get(&candidate).cloned().unwrap_or_default(),
-                            Origin::Artifact { .. } => Vec::new(),
+                        self.active_degraded = if matches!(origin, Origin::DefaultProgram { .. }) {
+                            self.degraded.get(&candidate).cloned().unwrap_or_default()
+                        } else {
+                            Vec::new()
                         };
+                        // A cut's generation becomes active with no commit, when the first batch is admitted to it: the
+                        // report sets the gauges that describe the active plan, whether or not the cut is finalized
+                        // yet.
+                        self.describe_active_plan(id);
                         self.last_error = None;
                         info!(generation = generation_id, %origin, "A new generation of the metrics plan is active.");
                         if !self.active_degraded.is_empty() {
@@ -1154,6 +1630,7 @@ impl Installer {
                     }
                     GenerationState::Rejected | GenerationState::Failed => {
                         self.draining.remove(&id);
+                        self.cut_given_up(id);
                         let reason = self
                             .core
                             .status()
@@ -1226,15 +1703,24 @@ impl Installer {
             .chain(installer.pending.map(|(candidate, _)| candidate))
             .collect::<BTreeSet<_>>();
         self.degraded.retain(|candidate, _| held.contains(candidate));
+        // A generation that a cut in flight replaces is still in flight past the deadline if the cut is overdue.
+        let replaced = self
+            .cut
+            .as_ref()
+            .filter(|watched| watched.overdue)
+            .and_then(|watched| watched.old);
         let overdue = self
             .draining
             .iter()
             .filter(|(_, draining)| draining.overdue)
             .map(|(generation, _)| *generation)
+            .chain(replaced)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         let apply_states =
             self.artifact_paths
-                .apply_states(&self.core, self.default_program.program_hash, self.degraded_reason());
+                .apply_states(&self.core, &self.default_program.bases, self.degraded_reason());
         PlanStatus {
             active: self.active_plan(installer.active.as_ref().map(|active| active.id)),
             installer,
@@ -1367,6 +1853,22 @@ fn slot_budgets(plan: &Plan, origin: &Origin, registry: &OperatorRegistry, frame
     }
 }
 
+/// Polls the admission points once the next poll of the cut in flight is due, returning the cut's generation and what
+/// the poll found, or never, without a cut in flight.
+///
+/// Dropping the returned future before it completes, as another event does, takes no lock: the next call polls again.
+async fn poll_cut(
+    registry: &AdmissionRegistry, every: &[AdmissionPointId],
+    in_flight: Option<(GenerationId, Instant, Vec<AdmissionPointId>)>,
+) -> (GenerationId, Polled) {
+    let Some((generation, next_poll, affected)) = in_flight else {
+        return std::future::pending().await;
+    };
+    sleep_until(next_poll).await;
+    let polled = cut::poll(registry, every, &affected, limits::values::CUT_POLL).await;
+    (generation, polled)
+}
+
 /// Returns the payload of a deadline once it passes, or never, without one.
 async fn at<T>(deadline: Option<(T, Instant)>) -> T {
     match deadline {
@@ -1383,8 +1885,12 @@ fn errors(report: &ValidationReport) -> Vec<String> {
     report.errors().map(ToString::to_string).collect()
 }
 
+mod cut;
+
 #[cfg(test)]
 mod artifact_tests;
+#[cfg(test)]
+mod cut_tests;
 #[cfg(test)]
 mod fault_tests;
 #[cfg(test)]

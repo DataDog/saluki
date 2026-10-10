@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::*;
 use crate::{
@@ -280,13 +280,14 @@ fn scopes_that_cannot_be_written_as_artifacts_are_not_exported() {
     // (what, mutation, fragment of the error)
     let cases: Vec<(&str, Mutation, &str)> = vec![
         (
-            "a scope with an exit",
+            "two exits of one port",
             |plan| {
-                let exit = ExitName::new("aggregated").unwrap();
-                let port = "dsd_agg.in".parse().unwrap();
-                plan.scopes.get_mut("post_enrich").unwrap().exits.insert(exit, port);
+                let exits = &mut plan.scopes.get_mut("post_enrich").unwrap().exits;
+                for exit in ["first", "second"] {
+                    exits.insert(ExitName::new(exit).unwrap(), "dsd_agg.in".parse().unwrap());
+                }
             },
-            "has the exit `aggregated`",
+            "its exits `first` and `second` both name `dsd_agg.in`",
         ),
         (
             "two inputs of one port",
@@ -356,6 +357,24 @@ fn scopes_that_cannot_be_written_as_artifacts_are_not_exported() {
 
     let error = base(&default_program(), &"pre_aggregation".parse().unwrap()).unwrap_err();
     assert!(matches!(error, ExportError::UnknownScope { .. }), "{}", error);
+
+    // An edge that leaves the pre-aggregation scope other than through an exit takes what it enters into the region,
+    // which is then fed from outside.
+    let mut plan = default_program();
+    let edge = plan
+        .edges
+        .iter_mut()
+        .find(|edge| edge.to.to_string() == "dsd_post_agg_filter_in.1")
+        .unwrap();
+    edge.to = "metrics_enrich_in.0".parse().unwrap();
+    let error = base(&plan, &"dogstatsd_pre_aggregation".parse().unwrap()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("is inside the scope, but is fed from `dsd_post_agg_filter_fanout.1`, outside it"),
+        "{}",
+        error
+    );
 }
 
 /// Renames a node and every edge at its ports.
@@ -372,4 +391,116 @@ fn rename(plan: &mut Plan, from: &str, to: &str) {
             }
         }
     }
+}
+
+/// The export of the default program's `dogstatsd_pre_aggregation` scope, written by hand from
+/// `fixtures/default-program.json`, with its program hash computed as [`DEFAULT_PROGRAM_EXPORT_JSON`]'s was. Its edges
+/// reach the scope's exits (`exit.<name>`).
+const PRE_AGGREGATION_EXPORT_JSON: &str =
+    include_str!("../../fixtures/export/default-program-dogstatsd-pre-aggregation.json");
+
+fn pre_aggregation() -> ScopeName {
+    "dogstatsd_pre_aggregation".parse().unwrap()
+}
+
+fn edges(artifact: &PolicyArtifact) -> Vec<String> {
+    artifact
+        .edges
+        .iter()
+        .map(|edge| format!("{} -> {}", edge.from, edge.to))
+        .collect()
+}
+
+#[test]
+fn the_pre_aggregation_scope_exports_up_to_its_exits_as_the_hand_written_artifact() {
+    let bundle = export(
+        &default_program(),
+        &pre_aggregation(),
+        &default_program_catalog(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let expected = serde_json::from_str::<Value>(PRE_AGGREGATION_EXPORT_JSON).unwrap();
+    assert_eq!(serde_json::to_value(&bundle.artifact).unwrap(), expected);
+    // The document reads back as an artifact, its edges into the exits included, and is the export's.
+    assert_eq!(PolicyArtifact::from_value(expected).unwrap(), bundle.artifact);
+    // Its records leave through the exits, not through `emit`s: the base records no output.
+    assert!(bundle.artifact.base.outputs.is_empty());
+    assert_eq!(
+        base(&default_program(), &pre_aggregation()).unwrap(),
+        bundle.artifact.base
+    );
+    // The policy scope's base is what it was before the pre-aggregation scope existed.
+    assert_eq!(
+        base(&default_program(), &post_enrich()).unwrap(),
+        expected_export().base
+    );
+}
+
+#[test]
+fn without_the_no_aggregation_pipeline_the_pre_aggregation_scope_ends_at_one_exit() {
+    let plan = Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap();
+    let artifact = export(&plan, &pre_aggregation(), &MemoryCatalog::new(), &BTreeMap::new())
+        .unwrap()
+        .artifact;
+    let nodes = artifact
+        .nodes
+        .iter()
+        .map(|node| node.id.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        nodes,
+        [
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_prefix_filter_blocklist",
+            "dsd_prefix_filter_blocklist_true",
+            "dsd_tag_filterlist",
+            "dsd_agg",
+        ]
+    );
+    assert_eq!(
+        edges(&artifact),
+        [
+            "input.metrics -> dsd_enrich.in",
+            "dsd_enrich.out -> dsd_prefix_filter.in",
+            "dsd_prefix_filter.out -> dsd_prefix_filter_blocklist.in",
+            "dsd_prefix_filter_blocklist.true -> dsd_prefix_filter_blocklist_true.in",
+            "dsd_prefix_filter_blocklist.false -> dsd_tag_filterlist.in",
+            "dsd_tag_filterlist.out -> dsd_agg.in",
+            "dsd_agg.out -> exit.aggregated",
+        ]
+    );
+}
+
+#[test]
+fn a_change_past_a_scopes_exits_changes_neither_its_export_nor_its_base() {
+    // The post-aggregation filter is past the exits of the pre-aggregation scope.
+    let mut changed = default_program();
+    let filter = changed
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.to_string() == "dsd_post_agg_filter")
+        .unwrap();
+    filter.params = Params::new();
+    let before = export(
+        &default_program(),
+        &pre_aggregation(),
+        &MemoryCatalog::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let after = export(&changed, &pre_aggregation(), &MemoryCatalog::new(), &BTreeMap::new()).unwrap();
+    assert_eq!(before.artifact, after.artifact);
+
+    // An exit's port fed from outside the region too: that edge is not the region's.
+    let mut fed = default_program();
+    fed.edges.push(crate::ir::Edge {
+        from: "otlp_in.metrics".parse().unwrap(),
+        to: "dsd_post_agg_filter_in.0".parse().unwrap(),
+    });
+    let artifact = export(&fed, &pre_aggregation(), &MemoryCatalog::new(), &BTreeMap::new())
+        .unwrap()
+        .artifact;
+    assert_eq!(artifact, before.artifact);
 }

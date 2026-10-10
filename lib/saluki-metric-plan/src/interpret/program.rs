@@ -1,8 +1,14 @@
 //! Programs: a validated plan prepared for the interpreter, with its operators configured and its graph resolved.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::{
+    any::Any,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use saluki_core::execution::{AdmissionPointId, AdmissionTime, GenerationRef, Kernel};
+use saluki_metric_kernels::aggregate::ContextBudget;
 
 use super::{host::OpaqueHostAdapter, InstallRejection, InterpretErrorKind};
 use crate::{
@@ -10,7 +16,7 @@ use crate::{
     model::PortType,
     operators::{
         names, Boundary, ConfiguredOperator, KernelBuildContext, KernelSpec, OperatorRegistry, StateContract,
-        FALSE_PORT, TRUE_PORT,
+        StateTime, FALSE_PORT, TRUE_PORT,
     },
     predicate::{BindingResolver, CompiledPredicate},
     validate::ValidationReport,
@@ -60,6 +66,15 @@ pub(super) enum Exec {
 
     /// An opaque host. The adapter is missing only while an installation is being prepared.
     Host(Option<Box<dyn OpaqueHostAdapter>>),
+
+    /// A state owner behind an isolation fence, whose state lives in the run's instances: the index of the instance
+    /// this generation binds, missing only while an installation is being prepared, and the per-call parameters its
+    /// kernel takes from this generation.
+    State {
+        spec: KernelSpec,
+        instance: Option<usize>,
+        step: Option<Arc<dyn Any + Send + Sync>>,
+    },
 }
 
 /// One node of a program.
@@ -79,17 +94,75 @@ impl ProgramNode {
     pub fn is_host(&self) -> bool {
         matches!(self.exec, Exec::Host(_))
     }
+
+    /// Returns `true` if the node is a state owner behind an isolation fence, whose watermark and flush ticks follow
+    /// the shared [time rules][crate::runtime::state::rules].
+    pub fn is_isolated(&self) -> bool {
+        matches!(self.exec, Exec::State { .. })
+    }
+
+    /// Returns `true` if the node keeps state of its own in this program: a state owner that is not isolated, such as
+    /// an opaque host.
+    pub fn is_local_state(&self) -> bool {
+        self.is_stateful() && !self.is_isolated()
+    }
+
+    /// Returns the instance an isolated state owner binds, once bound.
+    pub fn instance(&self) -> Option<usize> {
+        match self.exec {
+            Exec::State { instance, .. } => instance,
+            _ => None,
+        }
+    }
+
+    /// Returns the per-call parameters an isolated state owner's kernel takes in this generation.
+    pub fn step(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        match &self.exec {
+            Exec::State { step, .. } => step.clone(),
+            _ => None,
+        }
+    }
+
+    /// Returns the bucket width of a state owner that buckets by time, if it is known.
+    pub fn bucket_width(&self) -> Option<Duration> {
+        match &self.op.contract().state {
+            StateContract::Keyed(state) => match state.time {
+                StateTime::Buckets { width } => width,
+            },
+            _ => None,
+        }
+    }
 }
 
-/// The admission points the interpreter has seen, with each one's latest admission time.
+/// One stamp of an admission point.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Stamp {
+    /// The admission time.
+    pub admitted_at: AdmissionTime,
+
+    /// The epoch of the point's clock.
+    pub epoch: u32,
+
+    /// Whether the stamp reset the clock.
+    pub reset: bool,
+}
+
+/// The progress of one admission point's clock.
+#[derive(Clone, Copy, Debug, Default)]
+struct PointClock {
+    latest: Option<AdmissionTime>,
+    epoch: u32,
+}
+
+/// The admission points the interpreter has seen, with each one's clock: its latest admission time and its epoch.
 ///
 /// Admission points belong to the host, not to a generation: a source's output keeps its admission clock across
 /// installations, as long as a node with the same ID and port admits there.
-#[derive(Default)]
 pub(super) struct AdmissionPoints {
     ids: BTreeMap<(NodeId, PortName), AdmissionPointId>,
     names: Vec<(NodeId, PortName)>,
-    latest: Vec<Option<AdmissionTime>>,
+    clocks: Vec<PointClock>,
+    reset_threshold: Duration,
 }
 
 impl AdmissionPoints {
@@ -103,13 +176,29 @@ impl AdmissionPoints {
         let id = AdmissionPointId::new(self.names.len() as u32);
         self.ids.insert(key.clone(), id);
         self.names.push(key);
-        self.latest.push(None);
+        self.clocks.push(PointClock::default());
         id
     }
 
-    /// Returns the latest admission time stamped at a point, if it has stamped any.
+    /// Returns every admission point seen, in ID order.
+    pub fn ids(&self) -> impl Iterator<Item = AdmissionPointId> + '_ {
+        (0..self.clocks.len()).map(|index| AdmissionPointId::new(index as u32))
+    }
+
+    /// Returns the latest admission time stamped at a point in its current epoch, if it has stamped any.
     pub fn latest(&self, id: AdmissionPointId) -> Option<AdmissionTime> {
-        self.latest.get(id.get() as usize).copied().flatten()
+        self.clocks.get(id.get() as usize).and_then(|clock| clock.latest)
+    }
+
+    /// Returns the epoch of a point's clock: how many times it reset, wrapping.
+    pub fn epoch(&self, id: AdmissionPointId) -> u32 {
+        self.clocks.get(id.get() as usize).map_or(0, |clock| clock.epoch)
+    }
+
+    /// Returns the largest backward jump of an admission time that a point's clock absorbs: a stamp further back
+    /// resets it.
+    pub fn reset_threshold(&self) -> Duration {
+        self.reset_threshold
     }
 
     /// Returns the point's name, as `node.port`.
@@ -121,29 +210,62 @@ impl AdmissionPoints {
 
     /// Records a stamp the trace states, at a source.
     ///
-    /// Returns the previous latest time if the stamp is earlier: only a clock reset moves an admission clock back.
-    pub fn admit(&mut self, id: AdmissionPointId, at: AdmissionTime) -> Result<(), AdmissionTime> {
-        let Some(latest) = self.latest.get_mut(id.get() as usize) else {
-            return Ok(());
+    /// An admission clock stamps the later of its latest time and the wall clock, so it moves back only when the wall
+    /// clock jumps back by more than the reset threshold: a stamp that much earlier than the latest one resets the
+    /// clock, which then continues in a new epoch. Returns the latest time if the stamp is earlier by no more than
+    /// the threshold, which a clock never stamps: it would have stamped its latest time again.
+    pub fn admit(&mut self, id: AdmissionPointId, at: AdmissionTime) -> Result<Stamp, AdmissionTime> {
+        let threshold = self.reset_threshold;
+        let Some(clock) = self.clocks.get_mut(id.get() as usize) else {
+            return Ok(Stamp {
+                admitted_at: at,
+                epoch: 0,
+                reset: false,
+            });
         };
-        match *latest {
-            Some(previous) if at < previous => Err(previous),
-            _ => {
-                *latest = Some(at);
-                Ok(())
+        let reset = match clock.latest {
+            Some(previous) if at < previous => {
+                let jump = Duration::from_nanos(previous.as_unix_nanos() - at.as_unix_nanos());
+                if jump <= threshold {
+                    return Err(previous);
+                }
+                true
             }
+            _ => false,
+        };
+        if reset {
+            clock.epoch = clock.epoch.wrapping_add(1);
         }
+        clock.latest = Some(at);
+        Ok(Stamp {
+            admitted_at: at,
+            epoch: clock.epoch,
+            reset,
+        })
     }
 
     /// Stamps at a host's output when its clock reads `now`: the admission clock never moves back.
     pub fn stamp(&mut self, id: AdmissionPointId, now: AdmissionTime) -> AdmissionTime {
-        match self.latest.get_mut(id.get() as usize) {
-            Some(latest) => {
-                let stamped = latest.map_or(now, |previous| previous.max(now));
-                *latest = Some(stamped);
+        match self.clocks.get_mut(id.get() as usize) {
+            Some(clock) => {
+                let stamped = clock.latest.map_or(now, |previous| previous.max(now));
+                clock.latest = Some(stamped);
                 stamped
             }
             None => now,
+        }
+    }
+}
+
+impl Default for AdmissionPoints {
+    /// Returns no admission points, whose clocks reset at the limits table's
+    /// [`CLOCK_RESET_THRESHOLD`][crate::limits::values::CLOCK_RESET_THRESHOLD].
+    fn default() -> Self {
+        Self {
+            ids: BTreeMap::new(),
+            names: Vec::new(),
+            clocks: Vec::new(),
+            reset_threshold: crate::limits::values::CLOCK_RESET_THRESHOLD,
         }
     }
 }
@@ -177,6 +299,18 @@ pub(super) struct Program {
 
     /// The outputs the plan declares.
     pub outputs: Vec<OutputId>,
+}
+
+impl Program {
+    /// Returns the position of the node that binds an instance of an isolated state owner, if one does.
+    pub fn binding(&self, instance: usize) -> Option<usize> {
+        self.nodes.iter().position(|node| node.instance() == Some(instance))
+    }
+
+    /// Returns the positions of the sources, in plan order.
+    pub fn sources(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.nodes.len()).filter(|&node| matches!(self.nodes[node].exec, Exec::Source))
+    }
 }
 
 impl Program {
@@ -309,7 +443,8 @@ impl Program {
 /// Decides how the interpreter runs a node, and builds what a stateless node needs.
 ///
 /// A `split`'s operands come from the plan's literals and resolved values first, and from `resolver` for bindings the
-/// plan leaves unresolved.
+/// plan leaves unresolved. An isolated state owner whose kernel takes no per-call parameters from this generation is
+/// rejected unless its kernel builds from the generation's parameters.
 fn exec_for<R>(id: &NodeId, op: &ConfiguredOperator, resolver: &R) -> Result<Exec, PrepareError>
 where
     R: BindingResolver + ?Sized,
@@ -357,6 +492,29 @@ where
         },
         names::DROP => Exec::Drop,
         _ if op.contract().boundary == Boundary::OpaqueHost => Exec::Host(None),
+        _ if op.contract().boundary == Boundary::Isolated => match op.kernel() {
+            Some(spec) => {
+                let step = op.step_params(None);
+                // Without per-call parameters, a retained lineage runs on the parameters its kernel was built with, so
+                // per-call parameters that do not decode, such as a binding without a value, would leave it on another
+                // generation's. Whether or not its lineage is retained, the state owner is rejected as a first
+                // installation rejects it: by its kernel, which these parameters do not build either.
+                if step.is_none() {
+                    build_state_kernel(id, &spec, ContextBudget::exclusive())?;
+                }
+                Exec::State {
+                    spec,
+                    instance: None,
+                    step,
+                }
+            }
+            None => {
+                return Err(internal(
+                    id,
+                    &format!("a `{}` node behind an isolation fence without a kernel", op.name()),
+                ))
+            }
+        },
         _ => match op.kernel() {
             Some(spec) => {
                 let kernel = if op.contract().state == StateContract::None {
@@ -380,7 +538,20 @@ where
 
 /// Builds a kernel from its spec, outside any topology.
 pub(super) fn build_kernel(id: &NodeId, spec: &KernelSpec) -> Result<Box<dyn Kernel>, PrepareError> {
-    spec.build(&KernelBuildContext::detached(id)).map_err(|source| {
+    build_kernel_in(id, spec, KernelBuildContext::detached(id))
+}
+
+/// Builds the kernel of an isolated state owner's lineage, drawing its state from `budget`.
+pub(super) fn build_state_kernel(
+    id: &NodeId, spec: &KernelSpec, budget: ContextBudget,
+) -> Result<Box<dyn Kernel>, PrepareError> {
+    build_kernel_in(id, spec, KernelBuildContext::detached(id).with_state_budget(budget))
+}
+
+fn build_kernel_in(
+    id: &NodeId, spec: &KernelSpec, context: KernelBuildContext,
+) -> Result<Box<dyn Kernel>, PrepareError> {
+    spec.build(&context).map_err(|source| {
         PrepareError::Rejected(InstallRejection::KernelBuild {
             node: id.clone(),
             source,

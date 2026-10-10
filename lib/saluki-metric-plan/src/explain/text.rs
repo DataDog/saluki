@@ -138,7 +138,16 @@ fn write_document(explain: &Explain, out: &mut String) -> std::fmt::Result {
             .iter()
             .map(|(input, port)| format!("{} = {}", input, port))
             .collect::<Vec<_>>();
-        writeln!(out, "  {}: {}", scope.name, list(&inputs))?;
+        if scope.exits.is_empty() {
+            writeln!(out, "  {}: {}", scope.name, list(&inputs))?;
+        } else {
+            let exits = scope
+                .exits
+                .iter()
+                .map(|(exit, port)| format!("{} = {}", exit, port))
+                .collect::<Vec<_>>();
+            writeln!(out, "  {}: {}; exits {}", scope.name, list(&inputs), list(&exits))?;
+        }
     }
 
     writeln!(out)?;
@@ -206,30 +215,51 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
         for point in &fixed.admission_points {
             writeln!(
                 out,
-                "      admission point {} {} ({}) -> {}",
+                "      admission point {} {} ({}) -> {}{}",
                 point.id,
                 point.port,
                 point.mode,
-                point.to.as_deref().unwrap_or("nothing")
+                point.to.as_deref().unwrap_or("nothing"),
+                if point.feeds_state { ", feeds state" } else { "" }
             )?;
         }
     }
     writeln!(out, "  slots ({})", physical.slots.len())?;
     for slot in &physical.slots {
-        writeln!(out, "    {} (estimated {} ns per event)", slot.name, slot.cost)?;
+        // R1 never fuses an isolation slot, so its cost model does not price one.
+        match &slot.isolation {
+            Some(_) => writeln!(out, "    {} (not priced: R1 never fuses an isolation slot)", slot.name)?,
+            None => writeln!(out, "    {} (estimated {} ns per event)", slot.name, slot.cost)?,
+        }
+        if let Some(isolation) = &slot.isolation {
+            let upstream = isolation.upstream.iter().map(ToString::to_string).collect::<Vec<_>>();
+            writeln!(
+                out,
+                "      isolation slot, output point {}, watermark of admission points {}",
+                isolation.output_point,
+                list(&upstream)
+            )?;
+        }
         let nodes = slot.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();
         writeln!(out, "      nodes {}", list(&nodes))?;
         for entry in &slot.entries {
             writeln!(out, "      {}: {} -> {}", entry.key, entry.from, entry.input)?;
         }
         for exit in &slot.exits {
+            let progress = if exit.progress_points.is_empty() {
+                String::new()
+            } else {
+                let points = exit.progress_points.iter().map(ToString::to_string).collect::<Vec<_>>();
+                format!(", progress of admission points {}", list(&points))
+            };
             writeln!(
                 out,
-                "      exit {} {} -> {}{}",
+                "      exit {} {} -> {}{}{}",
                 exit.index,
                 exit.name,
                 exit.to,
-                if exit.idle { ", idle" } else { "" }
+                if exit.idle { ", idle" } else { "" },
+                progress
             )?;
         }
     }
@@ -251,10 +281,16 @@ fn write_physical(physical: &PhysicalPlan, out: &mut String) -> std::fmt::Result
     writeln!(out)?;
     writeln!(out, "segments ({})", physical.segments.len())?;
     for segment in &physical.segments {
+        // An isolation slot's output point stamps time-driven output; it admits nothing.
+        let point = if segment.mode == "time-driven" {
+            "output point"
+        } else {
+            "admission point"
+        };
         writeln!(
             out,
-            "  admission point {} {} ({})",
-            segment.admission_point, segment.from, segment.mode
+            "  {} {} {} ({})",
+            point, segment.admission_point, segment.from, segment.mode
         )?;
         writeln!(out, "    slots {}", list(&segment.slots))?;
         let nodes = segment.nodes.iter().map(ToString::to_string).collect::<Vec<_>>();

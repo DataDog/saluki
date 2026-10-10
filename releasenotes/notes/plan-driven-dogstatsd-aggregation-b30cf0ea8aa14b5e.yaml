@@ -1,0 +1,69 @@
+upgrade:
+  - |
+    ``aggregate_window_duration_seconds`` must now be one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120,
+    180, or 300 seconds, so that aggregation buckets line up at a common boundary every minute (or every 2, 3,
+    or 5 minutes) and an aggregation change can switch at a bucket boundary. Any other value, including ``0``,
+    fails startup with an error that names the nearest allowed width. The default, 10 seconds, is allowed.
+  - |
+    DogStatsD aggregation now runs in the plan-driven metrics path, in a region of its own that keeps the
+    component ID ``dsd_agg``, its health, its memory bounds (``dsd_agg.aggregate_context_limit`` in the sizing
+    guide), and its aggregation metrics (``aggregate_active_contexts``, ``aggregate_active_contexts_by_type``,
+    ``aggregate_active_contexts_bytes_by_type``, ``aggregate_flushes_total``, ``aggregate_flushed_total``, and
+    ``component_events_dropped_total`` with ``intentional:true``), which the Datadog Agent's ``aggregator.*``
+    metrics are remapped from. ``component_events_sent_total``, ``component_events_discarded_total``, and
+    ``component_send_latency_seconds`` of ``dsd_agg`` are now reported for one output named after the component
+    it sends to (``metrics_enrich`` by default) instead of ``_default``, and ``component_events_sent_total`` no
+    longer counts each metric twice. ``dsd_agg`` now also reports what every region of the metrics path does:
+    ``component_events_dropped_total`` with ``drop_reason:region_failure``, ``component_errors_total`` with
+    ``error_type:panic``, and ``plan_loss_total``; and the state of its aggregation in the new
+    ``plan_state_watermark_lag_seconds``, ``plan_state_lineages``, ``plan_clock_resets_total``, and
+    ``plan_state_tick_grace_expired_total``. Aggregation no longer emits the aggregated metrics the
+    post-aggregation filter drops, other than histogram statistics, so they are no longer counted as sent by
+    ``dsd_agg`` or received by the component after it; ``dogstatsd_post_aggregate_filtered_metrics_total`` still
+    counts them. ``aggregate_flushes_total`` counts one more flush for each change of the aggregation window,
+    and one for each clock reset (see below), which flushes outside the tick schedule.
+  - |
+    A metric is now aggregated into the bucket of the time DogStatsD received it, rather than the time
+    aggregation read it from its queue, so a backlog no longer moves metrics into later buckets. A bucket is
+    flushed at the flush tick once every metric received before the tick has been aggregated, waiting at most
+    2 seconds for a backlog; DogStatsD sends a heartbeat every second while it receives nothing, so an idle
+    listener delays a flush by at most about a second, and never past the 2-second wait. A tick that waited
+    longer than 2 seconds flushes what was received until then, and the rest at the next tick. What a flush
+    contains is unchanged: only when it is sent can change.
+  - |
+    Aggregation no longer follows a backward jump of the system clock at once. A jump of up to 300 seconds is
+    absorbed: metrics keep the last receive time until the clock catches up, so they are aggregated into one
+    bucket and nothing is flushed until then. A larger backward jump is a clock reset, which restarts
+    aggregation's clock: every bucket aggregation holds is flushed at once, open buckets included, idle counters
+    stop reporting zeros until they are seen again, and aggregation continues from the new time.
+  - |
+    A histogram statistic configured more than once in ``histogram_aggregates`` or ``histogram_percentiles`` is
+    now emitted once per histogram, rather than once per time it is configured.
+features:
+  - |
+    A policy artifact can now replace DogStatsD processing up to and including aggregation, the
+    ``dogstatsd_pre_aggregation`` scope (``GET /programmable-metrics/export?scope=dogstatsd_pre_aggregation``),
+    and change aggregation while Agent Data Plane runs, its window included. A change of the window takes effect
+    at a cut: the first boundary both windows share (a multiple of both) at least a second after the cut is
+    armed, so at most the interval at which they share a boundary, plus a second, after arming (301 seconds for a
+    300-second window). Arming is put off, and the cut comes later, while DogStatsD waits for room to pass its
+    metrics on, or while the system clock catches up after a backward jump. Metrics received before the cut are
+    aggregated and flushed with the old window, and those received from the cut on with the new one, so that no
+    bucket mixes the two. A change between windows that share a boundary less often than every 5 minutes, such as
+    from 120 to 180 seconds (every 6 minutes), is rejected; change through an intermediate window of at most 60
+    seconds instead. So is an artifact whose window shares a boundary that rarely with
+    ``aggregate_window_duration_seconds``, so that the configured aggregation can always replace it, as it does
+    when the artifact is revoked. A newer artifact replaces a change that has not reached its cut yet, as long
+    as no metric was received for it; otherwise, or if only the new window can change to it, the newer artifact
+    is installed after the cut. Every aggregation running during a cut shares the context limit.
+    ``plan_cuts_total`` counts, by ``outcome``, how each cut ended: ``completed``, ``cancelled``, or
+    ``not_armed`` (given up before it was armed); ``plan_cut_cancellations_refused_total`` counts the
+    cancellations refused because a metric had been received for the cut, which then completes.
+    During a change of the window, the DogStatsD context dump lists the contexts of both windows' aggregations,
+    so a context can appear twice until the cut completes.
+issues:
+  - |
+    If an artifact's aggregation fails under supervision after its cut, the contexts it held are lost, as when
+    Agent Data Plane restarts, and the artifact is rolled back with another cut. If it keeps failing until its
+    panic budget runs out, the metrics it receives are dropped until that cut, which comes at most 301 seconds
+    after it is armed with a 300-second window.

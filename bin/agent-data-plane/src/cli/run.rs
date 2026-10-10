@@ -42,10 +42,9 @@ use saluki_components::{
         OtlpConfiguration,
     },
     transforms::{
-        aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
-        ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDMapperProfile,
-        DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration, ReplaceRule,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
+        AggregateContextSnapshotHandle, ApmStatsTransformConfiguration, ChainedConfiguration,
+        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HostEnrichmentConfiguration,
+        ReplaceRule, TraceObfuscationConfiguration, TraceSamplerConfiguration, TraceTagReplacerConfiguration,
     },
 };
 use saluki_core::{
@@ -310,13 +309,17 @@ pub async fn handle_run_command(
     // Install a new generation of the metrics plan whenever a configuration change or a policy artifact changes it. The
     // installer's state lives outside the worker, so a restart of the worker continues where it stopped. The control
     // surface on the privileged API serves the installer's status, and the stub of the artifact channel, if
-    // configured, delivers policy artifacts to it.
+    // configured, delivers policy artifacts to it. When DogStatsD aggregation runs in a region, the snapshot bridge
+    // answers the context dump API from that region; its requests, too, live outside the worker.
     match programmable_metrics {
         Some(mut programmable_metrics) => {
             internal_supervisor.add_worker(ControlSurfaceWorker::new(programmable_metrics.status()));
             if let Some(stub) = artifact_channel_stub {
                 let transport = programmable_metrics.connect_artifact_channel();
                 internal_supervisor.add_worker(StubChannelWorker::new(stub, ClientInfo::for_process(), transport));
+            }
+            if let Some(bridge) = programmable_metrics.snapshot_bridge() {
+                internal_supervisor.add_worker(bridge);
             }
             internal_supervisor.add_worker(programmable_metrics.into_installer());
         }
@@ -459,6 +462,17 @@ impl MetricsWiring<'_> {
 
     /// Adds the DogStatsD part of the metrics path, once the DogStatsD source exists, and returns the handle of
     /// DogStatsD aggregation's context snapshots.
+    ///
+    /// The plan-driven path builds no component here: aggregation runs as a kernel in its isolation slot, which the
+    /// frame lays out. Only the legacy path, a test reference, builds the native DogStatsD transforms from the
+    /// blueprint and the configuration.
+    #[cfg_attr(
+        not(test),
+        expect(
+            unused_variables,
+            reason = "only the legacy metrics path, a test reference, builds DogStatsD components from these"
+        )
+    )]
     fn add_dogstatsd(
         &mut self, blueprint: &mut TopologyBlueprint, typed: &SalukiConfiguration,
     ) -> Result<AggregateContextSnapshotHandle, GenericError> {
@@ -466,7 +480,7 @@ impl MetricsWiring<'_> {
             Self::None => Err(generic_error!(
                 "The DogStatsD pipeline is enabled, but no metrics path was prepared for it; this is a bug."
             )),
-            Self::Plan(plan) => plan.add_dogstatsd(blueprint, typed),
+            Self::Plan(plan) => plan.add_dogstatsd(),
             #[cfg(test)]
             Self::Legacy(legacy) => legacy.add_dogstatsd(blueprint, typed),
         }
@@ -735,14 +749,27 @@ pub(crate) fn autoscaling_failover_branch(
     Ok(Some(MetricsBranch { encoder, forwarder }))
 }
 
-/// Returns the configuration of DogStatsD aggregation, and the handle to its context snapshots.
+/// Returns the configuration of the native DogStatsD aggregation transform, and the handle to its context snapshots:
+/// those of the legacy topology, which tests compare the plan-driven one against. The plan-driven topology runs
+/// aggregation as a kernel in its isolation slot, configured by lowering.
 ///
 /// # Errors
 ///
 /// Returns an error if the configured histogram statistics cannot be computed.
+#[cfg(test)]
 pub(crate) fn dogstatsd_aggregate_configuration(
     typed: &SalukiConfiguration,
-) -> Result<(AggregateConfiguration, AggregateContextSnapshotHandle), GenericError> {
+) -> Result<
+    (
+        saluki_components::transforms::AggregateConfiguration,
+        AggregateContextSnapshotHandle,
+    ),
+    GenericError,
+> {
+    use saluki_components::transforms::{
+        aggregate_context_snapshot_channel, AggregateConfiguration, HistogramConfiguration,
+    };
+
     let aggregation = &typed.domains.dogstatsd.aggregation;
     let histogram = &typed.shared.metrics_encoding.histogram;
     let dsd_hist_config = HistogramConfiguration::try_new(

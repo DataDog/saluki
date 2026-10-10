@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "test-util"))]
+use std::sync::Arc;
 use std::{future::pending, num::NonZeroU64, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
@@ -87,26 +89,62 @@ fn send_context_snapshot_if_open(
     let _ = response.send(build_snapshot());
 }
 
-/// An accepted retained-context snapshot request for test fixtures.
-#[cfg(any(test, feature = "test-util"))]
+/// The snapshot requests sent to one owner of retained contexts, taken from its
+/// [`AggregateContextSnapshotReceiver`].
+///
+/// The aggregate transform serves its requests itself. A host that runs aggregation in some other form, such as a
+/// kernel in a region, takes the requests with [`AggregateContextSnapshotReceiver::into_requests`] and answers each one
+/// with the contexts it holds.
+#[derive(Debug)]
+pub struct AggregateContextSnapshotRequests {
+    receiver: AggregateContextSnapshotRequestReceiver,
+}
+
+impl AggregateContextSnapshotRequests {
+    /// Waits for the next snapshot request.
+    ///
+    /// Returns `None` once every [`AggregateContextSnapshotHandle`] is dropped and no request is left. Dropping a
+    /// pending response without responding fails its request, as an owner that stops does.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe: a request is never lost when the returned future is dropped before it completes.
+    pub async fn next(&mut self) -> Option<AggregateContextSnapshotPendingResponse> {
+        let response = self.receiver.recv().await?;
+        Some(AggregateContextSnapshotPendingResponse { response })
+    }
+}
+
+/// An accepted retained-context snapshot request, which its owner answers once.
+#[derive(Debug)]
 pub struct AggregateContextSnapshotPendingResponse {
     response: AggregateContextSnapshotRequest,
 }
 
-#[cfg(any(test, feature = "test-util"))]
 impl AggregateContextSnapshotPendingResponse {
+    /// Returns `true` if the requester stopped waiting, so that a snapshot built for it would be discarded.
+    pub fn is_canceled(&self) -> bool {
+        self.response.is_closed()
+    }
+
     /// Responds to the accepted snapshot request with the supplied entries.
     ///
     /// If the requester was canceled after the request was accepted, the response is discarded.
     pub fn respond(self, snapshot: Vec<AggregateContextSnapshotEntry>) {
         let _ = self.response.send(snapshot);
     }
+
+    /// Responds with the entries `build_snapshot` returns, unless the requester was canceled, in which case the
+    /// snapshot is not built.
+    pub fn respond_with(self, build_snapshot: impl FnOnce() -> Vec<AggregateContextSnapshotEntry>) {
+        send_context_snapshot_if_open(self.response, build_snapshot);
+    }
 }
 
 /// A responder for retained-context snapshot test fixtures.
 #[cfg(any(test, feature = "test-util"))]
 pub struct AggregateContextSnapshotResponder {
-    receiver: AggregateContextSnapshotRequestReceiver,
+    requests: AggregateContextSnapshotRequests,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -132,12 +170,10 @@ impl AggregateContextSnapshotResponder {
     ///
     /// Returns an error if the request channel closes before a request arrives.
     pub async fn receive(&mut self) -> Result<AggregateContextSnapshotPendingResponse, GenericError> {
-        let response = self
-            .receiver
-            .recv()
+        self.requests
+            .next()
             .await
-            .ok_or_else(|| generic_error!("aggregate context snapshot request channel is closed"))?;
-        Ok(AggregateContextSnapshotPendingResponse { response })
+            .ok_or_else(|| generic_error!("aggregate context snapshot request channel is closed"))
     }
 
     /// Waits for one snapshot request and stops without responding.
@@ -161,14 +197,17 @@ pub fn aggregate_context_snapshot_channel_for_test(
     let (requests, receiver) = mpsc::channel(CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY);
     (
         AggregateContextSnapshotHandle { requests },
-        AggregateContextSnapshotResponder { receiver },
+        AggregateContextSnapshotResponder {
+            requests: AggregateContextSnapshotRequests { receiver },
+        },
     )
 }
 
 /// The owner side of a retained-context snapshot channel.
 ///
 /// The aggregate transform takes the receiver out of this holder when it is built. A receiver can only be taken once,
-/// so an [`AggregateConfiguration`] holding one can only build a single transform.
+/// so an [`AggregateConfiguration`] holding one can only build a single transform; a host that serves the requests
+/// itself takes them with [`into_requests`][Self::into_requests] instead.
 pub struct AggregateContextSnapshotReceiver {
     receiver: Mutex<Option<AggregateContextSnapshotRequestReceiver>>,
 }
@@ -182,6 +221,17 @@ impl AggregateContextSnapshotReceiver {
         receiver
             .take()
             .ok_or_else(|| generic_error!("aggregate context snapshot receiver has already been taken"))
+    }
+
+    /// Takes the snapshot requests, for a host that answers them itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the requests were already taken, as building an aggregate transform from a configuration
+    /// holding this receiver does.
+    pub fn into_requests(self) -> Result<AggregateContextSnapshotRequests, GenericError> {
+        let receiver = self.take_receiver()?;
+        Ok(AggregateContextSnapshotRequests { receiver })
     }
 }
 
@@ -284,10 +334,11 @@ impl AggregateConfiguration {
     }
 }
 
-#[async_trait]
-impl TransformBuilder for AggregateConfiguration {
-    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let context_snapshot_requests = self.context_snapshot_receiver.take_receiver()?;
+impl AggregateConfiguration {
+    fn build_with_clock(
+        &self, context: BuildContext, clock: UnixClock,
+    ) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let receiver = self.context_snapshot_receiver.take_receiver()?;
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = AggregateTelemetry::new(&metrics_builder);
 
@@ -305,8 +356,29 @@ impl TransformBuilder for AggregateConfiguration {
         Ok(Box::new(Aggregate {
             core,
             primary_flush_interval: self.primary_flush_interval,
-            context_snapshot_requests: Some(context_snapshot_requests),
+            context_snapshot_requests: Some(AggregateContextSnapshotRequests { receiver }),
+            clock,
         }))
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl AggregateConfiguration {
+    /// Returns a builder of this transform whose clock is `clock`, which returns the current Unix time in whole
+    /// seconds, instead of the system clock.
+    ///
+    /// The transform reads its clock where it reads the system clock: when each batch arrives, to bucket it, and at
+    /// each flush, to close buckets. Flushes still follow the flush interval on Tokio's timer, so a test that pauses
+    /// Tokio's time and sets the clock before each flush controls both.
+    pub fn with_clock(self, clock: Arc<dyn Fn() -> u64 + Send + Sync>) -> ClockedAggregateConfiguration {
+        ClockedAggregateConfiguration { config: self, clock }
+    }
+}
+
+#[async_trait]
+impl TransformBuilder for AggregateConfiguration {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        self.build_with_clock(context, UnixClock::System)
     }
 
     fn input_event_type(&self) -> EventType {
@@ -342,6 +414,60 @@ impl MemoryBounds for AggregateConfiguration {
     }
 }
 
+/// An aggregate transform builder whose transform reads a test clock instead of the system clock.
+///
+/// Created by [`AggregateConfiguration::with_clock`]; it builds and bounds the transform as the configuration does.
+#[cfg(any(test, feature = "test-util"))]
+pub struct ClockedAggregateConfiguration {
+    config: AggregateConfiguration,
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+#[async_trait]
+impl TransformBuilder for ClockedAggregateConfiguration {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        self.config
+            .build_with_clock(context, UnixClock::Test(Arc::clone(&self.clock)))
+    }
+
+    fn input_event_type(&self) -> EventType {
+        self.config.input_event_type()
+    }
+
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        self.config.outputs()
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl MemoryBounds for ClockedAggregateConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        self.config.specify_bounds(builder);
+    }
+}
+
+/// The clock the aggregate transform reads the current Unix time from, in whole seconds.
+#[derive(Clone)]
+enum UnixClock {
+    /// The system clock.
+    System,
+
+    /// A clock a test sets.
+    #[cfg(any(test, feature = "test-util"))]
+    Test(Arc<dyn Fn() -> u64 + Send + Sync>),
+}
+
+impl UnixClock {
+    fn now(&self) -> u64 {
+        match self {
+            Self::System => get_unix_timestamp(),
+            #[cfg(any(test, feature = "test-util"))]
+            Self::Test(clock) => clock(),
+        }
+    }
+}
+
 /// The aggregate transform: native aggregation in its own task, flushing on a timer.
 ///
 /// The aggregation itself, and every decision about what to hold and what to emit, belongs to the [`AggregateCore`];
@@ -349,7 +475,8 @@ impl MemoryBounds for AggregateConfiguration {
 pub struct Aggregate {
     core: AggregateCore,
     primary_flush_interval: Duration,
-    context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
+    context_snapshot_requests: Option<AggregateContextSnapshotRequests>,
+    clock: UnixClock,
 }
 
 #[async_trait]
@@ -372,7 +499,7 @@ impl Transform for Aggregate {
                 _ = primary_flush.tick() => {
                     // We've reached the end of the current window. Flush our aggregation state and forward the metrics
                     // onwards. The core skips the flush while it holds no contexts.
-                    if let Some(mut flush) = self.core.flush(get_unix_timestamp(), final_primary_flush) {
+                    if let Some(mut flush) = self.core.flush(self.clock.now(), final_primary_flush) {
                         debug!("Flushing aggregated metrics...");
 
                         let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
@@ -430,9 +557,7 @@ impl Transform for Aggregate {
                 },
                 snapshot_request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
                     match snapshot_request {
-                        Some(response) => {
-                            send_context_snapshot_if_open(response, || self.core.snapshot_contexts());
-                        }
+                        Some(response) => response.respond_with(|| self.core.snapshot_contexts()),
                         None => self.context_snapshot_requests = None,
                     }
                 },
@@ -440,7 +565,7 @@ impl Transform for Aggregate {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
 
-                        let current_time = get_unix_timestamp();
+                        let current_time = self.clock.now();
                         let metrics = events.into_iter().filter_map(Event::try_into_metric);
                         let outcome = self.core.admit(current_time, metrics);
                         if outcome.limit_reached {
@@ -468,17 +593,21 @@ impl Transform for Aggregate {
 }
 
 async fn receive_context_snapshot_request(
-    receiver: &mut Option<AggregateContextSnapshotRequestReceiver>,
-) -> Option<AggregateContextSnapshotRequest> {
-    match receiver {
-        Some(receiver) => receiver.recv().await,
+    requests: &mut Option<AggregateContextSnapshotRequests>,
+) -> Option<AggregateContextSnapshotPendingResponse> {
+    match requests {
+        Some(requests) => requests.next().await,
         None => pending().await,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, mem::size_of};
+    use std::{
+        cell::Cell,
+        mem::size_of,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryLimiter},
@@ -487,7 +616,7 @@ mod tests {
             sources::{Source, SourceBuilder, SourceContext},
         },
         data_model::{
-            event::metric::{context::Context, Metric, ScalarPoints},
+            event::metric::{context::Context, Metric, MetricValues, ScalarPoints},
             tags::TagSet,
         },
         health::HealthRegistry,
@@ -722,6 +851,168 @@ mod tests {
         })
         .await
         .expect("the topology should flush and stop");
+    }
+
+    #[tokio::test]
+    async fn a_transform_with_a_test_clock_buckets_and_flushes_by_that_clock() {
+        // A counter arrives at 1 and a gauge at 12, by the test clock, relative to an aligned time an hour ago; the
+        // final flush runs at 15. By that clock, the counter's bucket [0, 10) is closed and the gauge's [10, 20) is
+        // still open, so only the counter is emitted: by the system clock, both buckets would be long closed.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let base = (get_unix_timestamp() - 3600) / 10 * 10;
+            let now = Arc::new(AtomicU64::new(base + 1));
+            let clock = {
+                let now = Arc::clone(&now);
+                Arc::new(move || now.load(Ordering::SeqCst))
+            };
+            let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+            let config = AggregateConfiguration {
+                primary_flush_interval: Duration::from_secs(3600),
+                context_snapshot_receiver,
+                ..AggregateConfiguration::for_test()
+            }
+            .with_clock(clock);
+
+            let (events_tx, events_rx) = mpsc::channel(1);
+            let (metrics_tx, mut metrics_rx) = mpsc::unbounded_channel();
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("aggregate_test_clock", &component_registry);
+            blueprint
+                .add_source(
+                    "source",
+                    ControlledMetricSourceBuilder {
+                        events: Mutex::new(Some(events_rx)),
+                        outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                    },
+                )
+                .unwrap()
+                .add_transform("aggregate", config)
+                .unwrap()
+                .add_destination(
+                    "destination",
+                    CollectingMetricDestinationBuilder { metrics: metrics_tx },
+                )
+                .unwrap();
+            blueprint
+                .connect_components_in_order(["source", "aggregate", "destination"])
+                .unwrap();
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new())
+                .with_ambient_worker_pool();
+            let mut supervisor = Supervisor::new("aggregate-test-clock").unwrap();
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            // Each metric is admitted at the clock's time when it arrives: wait until it is held before moving the
+            // clock on.
+            for (name, metric, at) in [
+                ("counter", Metric::counter("counter", 1.0), base + 1),
+                ("gauge", Metric::gauge("gauge", 1.0), base + 12),
+            ] {
+                now.store(at, Ordering::SeqCst);
+                events_tx.send(Event::Metric(metric)).await.unwrap();
+                loop {
+                    let snapshot = snapshot_handle.snapshot().await.unwrap();
+                    if snapshot.iter().any(|entry| entry.context().name() == name) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+
+            now.store(base + 15, Ordering::SeqCst);
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).unwrap();
+            let topology_result = topology_task.await.unwrap();
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+
+            let mut emitted = Vec::new();
+            while let Ok(metric) = metrics_rx.try_recv() {
+                emitted.push(metric);
+            }
+            assert_eq!(emitted.len(), 1, "only the counter's bucket is closed: {emitted:?}");
+            assert_eq!(emitted[0].context().name(), "counter");
+            match emitted[0].values() {
+                MetricValues::Rate(points, interval) => {
+                    assert_eq!(*interval, Duration::from_secs(10));
+                    let points = points.into_iter().collect::<Vec<_>>();
+                    assert_eq!(points, vec![(NonZeroU64::new(base), 1.0)]);
+                }
+                other => panic!("a counter leaves as a rate, not {}", other.as_str()),
+            }
+        })
+        .await
+        .expect("the topology should flush and stop");
+    }
+
+    #[test]
+    fn a_pending_response_builds_its_snapshot_only_for_a_waiting_requester() {
+        let (response, receiver) = oneshot::channel();
+        let pending = AggregateContextSnapshotPendingResponse { response };
+        assert!(!pending.is_canceled());
+        drop(receiver);
+        assert!(pending.is_canceled());
+        pending.respond_with(|| panic!("a canceled request builds no snapshot"));
+
+        let (response, mut receiver) = oneshot::channel();
+        let pending = AggregateContextSnapshotPendingResponse { response };
+        let entry = AggregateContextSnapshotEntry::for_test(
+            Context::from_static_name("waiting"),
+            AggregateMetricType::Gauge,
+            MetaString::empty(),
+        );
+        pending.respond_with(|| vec![entry.clone()]);
+        assert_eq!(receiver.try_recv().unwrap(), vec![entry]);
+    }
+
+    #[tokio::test]
+    async fn a_host_takes_the_requests_once_and_answers_them() {
+        let (handle, receiver) = aggregate_context_snapshot_channel();
+        let mut requests = receiver.into_requests().expect("the requests are taken once");
+        let expected = vec![AggregateContextSnapshotEntry::for_test(
+            Context::from_static_name("served"),
+            AggregateMetricType::Counter,
+            MetaString::empty(),
+        )];
+        let snapshot_task = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.snapshot().await }
+        });
+        requests
+            .next()
+            .await
+            .expect("a request arrives")
+            .respond(expected.clone());
+        assert_eq!(snapshot_task.await.unwrap().unwrap(), expected);
+
+        // A pending response dropped without an answer fails its request, as an owner that stops does.
+        let snapshot_task = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.snapshot().await }
+        });
+        drop(requests.next().await.expect("a request arrives"));
+        let error = snapshot_task.await.unwrap().expect_err("an unanswered request fails");
+        assert!(error.to_string().contains("stopped before responding"));
+
+        // Once every handle is gone, the requests end.
+        drop(handle);
+        assert!(requests.next().await.is_none());
+
+        // A configuration's receiver whose requests a transform already took cannot give them out again.
+        let config = AggregateConfiguration::for_test();
+        assert!(config.build(BuildContext::test_transform("aggregate")).await.is_ok());
+        let error = config
+            .context_snapshot_receiver
+            .into_requests()
+            .expect_err("the transform took the requests");
+        assert!(error.to_string().contains("already been taken"));
     }
 
     #[test]

@@ -224,14 +224,15 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
             assert_eq!(exits, expected, "{}: exits of `{}`", name, slot.name);
         }
 
-        // Edges: the legacy ones, without those leaving or entering a fused transform, a gateway, or metrics
-        // enrichment and those leaving an output the frame reads, but with the DogStatsD taps; and the frame's.
+        // Edges: the legacy ones, without those leaving or entering a fused transform, a gateway, metrics enrichment,
+        // or aggregation, whose IDs regions keep, and those leaving an output the frame reads, but with the DogStatsD
+        // taps; and the frame's.
         let read = frame
             .admission_points()
             .iter()
             .map(|point| admission_output(frame, point.id))
             .collect::<BTreeSet<_>>();
-        let replaced = |component: &str| fused(component) || component == "metrics_enrich";
+        let replaced = |component: &str| fused(component) || component == "metrics_enrich" || component == "dsd_agg";
         let mut expected = edges(legacy)
             .into_iter()
             .filter(|(from, to)| {
@@ -242,8 +243,8 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
         expected.extend(frame_edges(frame, outputs));
         assert_eq!(edges(plan), expected, "{}: edges", name);
 
-        // Every output of a fixed component is an admission point: sources admit, hosts readmit, and none sends
-        // heartbeats yet.
+        // Every output of a fixed component is an admission point: sources admit, hosts readmit, and only the point
+        // that feeds aggregation's state heartbeats, every second.
         let mut points = plan
             .admission_points()
             .iter()
@@ -260,7 +261,8 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
                 } else {
                     AdmissionMode::Readmit
                 };
-                (point.id, admission_output(frame, point.id), mode, None)
+                let heartbeat = point.feeds_state.then_some(limits::values::HEARTBEAT_PERIOD);
+                (point.id, admission_output(frame, point.id), mode, heartbeat)
             })
             .collect::<Vec<_>>();
         assert_eq!(points, expected, "{}: admission points", name);
@@ -272,8 +274,9 @@ async fn the_plan_driven_topology_is_the_legacy_one_with_regions_in_place_of_the
 /// comparison above cannot pass by deriving both sides from the same mistake.
 #[tokio::test]
 async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
-    // DogStatsD alone, with the no-aggregation pipeline: two regions, and an idle exit to each output from the
-    // pre-aggregation region.
+    // DogStatsD alone, with the no-aggregation pipeline: the pre-aggregation region, aggregation's isolation slot, and
+    // enrichment, with an idle exit to each output from the pre-aggregation region; the isolation slot has only its
+    // boot edge's exit.
     let Topologies { legacy, plan, .. } = topologies("").await;
     let native = pairs(&[
         ("dsd_agg", "dsd_post_agg_filter"),
@@ -289,7 +292,7 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     ]);
     let path = pairs(&[
         ("dsd_in.metrics", "dsd_pre_aggregation"),
-        ("dsd_agg", "metrics_enrich"),
+        ("dsd_agg.metrics_enrich", "metrics_enrich"),
         ("dsd_pre_aggregation.dsd_agg", "dsd_agg"),
         ("dsd_pre_aggregation.metrics_enrich", "metrics_enrich"),
         ("dsd_pre_aggregation.dsd_client_telemetry", "dsd_client_telemetry_out"),
@@ -312,7 +315,7 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     ]);
     let path = pairs(&[
         ("dsd_in.metrics", "dsd_pre_aggregation"),
-        ("dsd_agg", "metrics_enrich"),
+        ("dsd_agg.metrics_enrich", "metrics_enrich"),
         ("dsd_pre_aggregation.dsd_agg", "dsd_agg"),
         ("dsd_pre_aggregation.metrics_enrich", "metrics_enrich"),
         ("dsd_pre_aggregation.dsd_client_telemetry", "dsd_client_telemetry_out"),
@@ -354,7 +357,7 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
     ];
     // Each region's exits that lead somewhere, then the outputs it has an idle exit to.
     type Region<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
-    let regions: [Region; 5] = [
+    let regions: [Region; 6] = [
         (
             "dsd_pre_aggregation",
             &[("dsd_prefix_filter_region", "dsd_prefix_filter_region")],
@@ -372,6 +375,12 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
                 ("dsd_post_agg_filter_region", "dsd_post_agg_filter_region"),
             ],
             &OUTPUTS.map(|(output, _)| output),
+        ),
+        // Aggregation's isolation slot: only its boot edge's exit.
+        (
+            "dsd_agg",
+            &[("dsd_post_agg_filter_region", "dsd_post_agg_filter_region")],
+            &[],
         ),
         (
             "dsd_post_agg_filter_region",
@@ -400,9 +409,8 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         ),
     ];
     let mut path = pairs(&[
-        // Admission points: the sources and aggregation, and nothing else.
+        // Admission points: the sources, and nothing else.
         ("dsd_in.metrics", "dsd_pre_aggregation"),
-        ("dsd_agg", "dsd_post_agg_filter_region"),
         ("otlp_in.metrics", "metrics_enrich"),
         ("checks_ipc_in.metrics", "metrics_enrich"),
         ("liveness_in.metrics", "metrics_enrich"),
@@ -427,7 +435,6 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         regions.iter().any(|(region, _, _)| *region == component)
             || fused(component)
             || [
-                "dsd_agg",
                 "dsd_client_telemetry_out",
                 "dd_metrics_encode",
                 "metrics_routing_encode_0",
@@ -459,16 +466,16 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
     // largest counts, so that no path holds less than natively.
     let cases: [RegionChains; 9] = [
         // The mapper, the prefix filter (with the listener filterlist), the no-aggregation split, and the tag
-        // filterlist; then the post-aggregation filter and enrichment. The timestamped metrics the split sends past
-        // aggregation leave `dsd_pre_aggregation` after three of its four transforms, so their path holds one
-        // transform's buffers more than natively.
+        // filterlist; aggregation, in its isolation slot, as the native transform; then the post-aggregation filter
+        // and enrichment. The timestamped metrics the split sends past aggregation leave `dsd_pre_aggregation` after
+        // three of its four transforms, so their path holds one transform's buffers more than natively.
         (
             "dogstatsd with defaults",
-            &[("dsd_pre_aggregation", 4), ("metrics_enrich", 2)],
+            &[("dsd_pre_aggregation", 4), ("dsd_agg", 1), ("metrics_enrich", 2)],
         ),
         (
             "no-aggregation pipeline off",
-            &[("dsd_pre_aggregation", 3), ("metrics_enrich", 2)],
+            &[("dsd_pre_aggregation", 3), ("dsd_agg", 1), ("metrics_enrich", 2)],
         ),
         // Enrichment alone: the region holds what the native `metrics_enrich` did, and its fan-out to the main output
         // is lowered from the encoder, whose interconnect remains.
@@ -477,6 +484,7 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
             "connected with host tags",
             &[
                 ("dsd_pre_aggregation", 4),
+                ("dsd_agg", 1),
                 ("dsd_post_agg_filter_region", 1),
                 ("metrics_enrich", 1),
             ],
@@ -486,6 +494,7 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
             "one routing group",
             &[
                 ("dsd_pre_aggregation", 4),
+                ("dsd_agg", 1),
                 ("dsd_post_agg_filter_region", 1),
                 ("metrics_enrich", 2),
             ],
@@ -495,6 +504,7 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
             "two routing groups, a shared group, and an endpoint with empty lists",
             &[
                 ("dsd_pre_aggregation", 4),
+                ("dsd_agg", 1),
                 ("dsd_post_agg_filter_region", 1),
                 ("metrics_enrich", 2),
             ],
@@ -502,7 +512,7 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
         // The post-aggregation filter, enrichment, and the failover gateway in one region.
         (
             "multi-region failover",
-            &[("dsd_pre_aggregation", 4), ("metrics_enrich", 3)],
+            &[("dsd_pre_aggregation", 4), ("dsd_agg", 1), ("metrics_enrich", 3)],
         ),
         // The pre-aggregation chain pipelined over three regions.
         (
@@ -511,6 +521,7 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
                 ("dsd_pre_aggregation", 1),
                 ("dsd_prefix_filter_region", 1),
                 ("dsd_no_agg_split_region", 2),
+                ("dsd_agg", 1),
                 ("metrics_enrich", 2),
             ],
         ),
@@ -520,6 +531,7 @@ async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_wa
                 ("dsd_pre_aggregation", 1),
                 ("dsd_prefix_filter_region", 1),
                 ("dsd_no_agg_split_region", 2),
+                ("dsd_agg", 1),
                 ("dsd_post_agg_filter_region", 1),
                 ("metrics_enrich", 2),
             ],
@@ -693,11 +705,16 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             &["dsd_post_agg_filter"],
         ),
     ];
-    for (index, (region, exits, registers, (decisions, widest), memoized, kernels, splits)) in
-        regions.into_iter().enumerate()
-    {
+    let slot_names = topologies
+        .frame
+        .slots()
+        .iter()
+        .map(|slot| slot.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(slot_names, ["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"]);
+    for (region, exits, registers, (decisions, widest), memoized, kernels, splits) in regions {
+        let index = slot_names.iter().position(|name| *name == region).unwrap();
         let slot = &topologies.frame.slots()[index];
-        assert_eq!(slot.name.as_str(), region);
         let slot_exits = slot.exits.iter().map(|exit| exit.name.as_str()).collect::<Vec<_>>();
         assert_eq!(slot_exits, exits, "`{}`", region);
         assert_eq!(topologies.programs[index].register_count(), registers, "`{}`", region);
@@ -764,6 +781,22 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
             );
         }
     }
+    // Aggregation's isolation slot: one exit, to enrichment, one register, and no decision. Its kernel is accounted at
+    // the region's top level, as the native component it stands for: the region declares every term the native
+    // component does, and has no subcomponent.
+    let index = slot_names.iter().position(|name| *name == "dsd_agg").unwrap();
+    let slot = &topologies.frame.slots()[index];
+    let slot_exits = slot.exits.iter().map(|exit| exit.name.as_str()).collect::<Vec<_>>();
+    assert_eq!(slot_exits, ["metrics_enrich"]);
+    assert_eq!(topologies.programs[index].register_count(), 1);
+    assert!(topologies.programs[index].decisions().is_empty());
+    let aggregation = at(&plan, "dsd_agg");
+    assert_eq!(aggregation.subcomponents().into_iter().count(), 0);
+    let declared = declared_without_structs(aggregation);
+    for term in declared_without_structs(at(&legacy, "dsd_agg")) {
+        assert!(declared.contains(&term), "`{}` among {:?}", term, declared);
+    }
+
     // The tag filterlist's context cache is bounded as natively: its capacity in entries.
     assert_eq!(
         at(&plan, "dsd_pre_aggregation")
@@ -780,15 +813,15 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     assert!(declared_without_structs(at(&legacy, "dsd_post_agg_filter")).is_empty());
 
     // Every other component declares what it does natively.
-    let replaced = [&FUSED[..], &["metrics_enrich", "dsd_pre_aggregation"]].concat();
+    let replaced = [&FUSED[..], &["metrics_enrich", "dsd_pre_aggregation", "dsd_agg"]].concat();
     assert_eq!(declared_by_path(&plan, &replaced), declared_by_path(&legacy, &replaced));
 
     // The interconnects: one into each transform and destination, of the default capacity, 128 buffers, but for the
     // regions', and the in-flight buffers of every source and transform besides. The legacy topology has nine
-    // transforms and three destinations. The regions replace six of its transforms with two, whose inputs hold what the
-    // transforms they replace held on the way through them, queued and in flight (four of them on the way through
-    // `dsd_pre_aggregation`, 4 * 129 - 1 buffers, and two through `metrics_enrich`, 2 * 129 - 1), so both topologies
-    // hold as many buffers.
+    // transforms and three destinations. The regions replace six of its transforms with two, and aggregation with its
+    // isolation slot, whose inputs hold what the transforms they replace held on the way through them, queued and in
+    // flight (four of them on the way through `dsd_pre_aggregation`, 4 * 129 - 1 buffers, one through `dsd_agg`, 128,
+    // and two through `metrics_enrich`, 2 * 129 - 1), so both topologies hold as many buffers.
     let in_flight_buffer = size_of::<EventsBuffer>() + size_of::<Event>() * 1024;
     let legacy_buffers = 12 * 128;
     let plan_buffers = 6 * 128 + 515 + 257;
@@ -821,40 +854,50 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
         // in its emptiness test and its name match.
         (
             "multi-region failover mirroring an allowlist",
-            &["dsd_pre_aggregation", "metrics_enrich"],
+            &["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"],
             10,
             &[("mrf_metrics_gateway", &["requests.count", "orders.total"], 1, 2)],
-            &[0, 0],
+            &[0, 0, 0],
         ),
         // A routing filter's predicate holds its names and prefixes once, as the legacy filter's source does. The
         // policy region (the fan-out's copy and the memoized routing filter, 15 ns each) leaves no room for the
         // post-aggregation filter (36 ns with its fan-out's copy) beside enrichment within the 64 ns floor: 66 ns.
         (
             "one routing group",
-            &["dsd_pre_aggregation", "dsd_post_agg_filter_region", "metrics_enrich"],
+            &[
+                "dsd_pre_aggregation",
+                "dsd_agg",
+                "dsd_post_agg_filter_region",
+                "metrics_enrich",
+            ],
             10,
             &[("metrics_routing_filter_0", &["orders.total"], 1, 1)],
-            &[0, 0, 1],
+            &[0, 0, 0, 1],
         ),
         // Two groups (the endpoint with empty lists has none, and two endpoints share one), ordered by their lists,
         // whose wider fan-out keeps enrichment from the post-aggregation filter.
         (
             "two routing groups, a shared group, and an endpoint with empty lists",
-            &["dsd_pre_aggregation", "dsd_post_agg_filter_region", "metrics_enrich"],
+            &[
+                "dsd_pre_aggregation",
+                "dsd_agg",
+                "dsd_post_agg_filter_region",
+                "metrics_enrich",
+            ],
             11,
             &[
                 ("metrics_routing_filter_0", &["catalog."], 1, 1),
                 ("metrics_routing_filter_1", &["orders.total"], 1, 1),
             ],
-            &[0, 0, 1],
+            &[0, 0, 0, 1],
         ),
         // The legacy autoscaling gateway keeps only its matcher; the predicate also holds the names.
         (
             "autoscaling failover",
-            &["dsd_pre_aggregation", "metrics_enrich"],
+            &["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"],
             10,
             &[("af_metrics_gateway", &["requests.count"], 0, 1)],
-            &[0, 0],
+            &[0, 0, 0],
         ),
     ];
     let in_flight_buffer = size_of::<EventsBuffer>() + size_of::<Event>() * 1024;
@@ -949,6 +992,10 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
         // memo of each memoized decision (of at most 64 exits, so three words an entry), counts per decision, and the
         // scratch of its widest decision.
         for ((slot, program), memoized) in frame.slots().iter().zip(&topologies.programs).zip(memoized) {
+            // Aggregation's isolation slot also declares its state and one drain step: see the test above.
+            if slot.is_isolation() {
+                continue;
+            }
             let region = bounds_at(&plan, &[&transforms[..], &[slot.name.as_str()]].concat());
             let (_, firm) = own_bytes(region);
             let decisions = program.decisions();
@@ -993,7 +1040,8 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
         // input holds what the transforms it replaces held on the way through it (see
         // `each_region_takes_what_the_native_transforms_it_replaces_held_on_the_way_through_it`), so the gateways in
         // front of the outputs, which are parallel, leave as many buffers as one gateway held.
-        let plan_transforms = legacy_transforms - 6 - gateways.len() + regions.len();
+        // The regions replace six fused transforms and aggregation, whose isolation slot keeps its ID.
+        let plan_transforms = legacy_transforms - 7 - gateways.len() + regions.len();
         let region_buffers = regions
             .iter()
             .map(|region| {

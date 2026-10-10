@@ -51,10 +51,63 @@ pub mod values {
     pub const OVERLAP_BUDGET: u64 = 4;
 
     /// The longest an idle admission point waits before sending a heartbeat.
-    pub const HEARTBEAT_PERIOD: Duration = Duration::from_secs(5);
+    ///
+    /// Decision log: lowered from 5 seconds to 1 second when aggregation became a kernel. Heartbeats bound how long an
+    /// idle source holds a state owner's watermark back, so the period bounds how late a flush tick closes buckets
+    /// when nothing arrives; 1 second keeps that lag within the tick grace.
+    pub const HEARTBEAT_PERIOD: Duration = Duration::from_secs(1);
 
     /// The backward wall-clock jump that resets an admission clock.
-    pub const CLOCK_RESET_THRESHOLD: Duration = Duration::from_secs(600);
+    ///
+    /// Decision log: lowered from 600 seconds to 300 seconds, the specification's minimum (at least the largest bucket
+    /// width), when aggregation became a kernel. A smaller backward jump is absorbed: admission times stay at the
+    /// point's latest stamp until the wall clock catches up, so input over that time collapses into one bucket and
+    /// nothing closes; the lower threshold halves the longest such freeze.
+    pub const CLOCK_RESET_THRESHOLD: Duration = Duration::from_secs(300);
+
+    /// The most admission time a region lets pass between the progress it forwards to a state owner for one admission
+    /// point, when its input from that point leaves it without output.
+    ///
+    /// Decision log: new when aggregation became a kernel. It bounds how far a state owner's watermark lags behind
+    /// traffic that a region filters out entirely, at about ten header-only batches per second per point.
+    pub const PROGRESS_PERIOD: Duration = Duration::from_millis(100);
+
+    /// The longest a flush tick waits for its state owner's watermark to reach the tick's wall-clock second.
+    ///
+    /// Decision log: new when aggregation became a kernel. A tick whose watermark lags the wall clock waits, while
+    /// input raises the watermark, so that the flush closes the buckets native aggregation would close at that tick;
+    /// once the grace ends it flushes at the watermark instead. Twice the heartbeat period, so that idle sources never
+    /// delay a tick.
+    pub const TICK_GRACE: Duration = Duration::from_secs(2);
+
+    /// The most events a state owner emits in one step of a drain before it yields.
+    pub const DRAIN_STEP_EVENTS: u64 = 1_024;
+
+    /// The most state entries a state owner visits in one step of a drain before it yields.
+    pub const DRAIN_STEP_CONTEXTS: u64 = 4_096;
+
+    /// The period at which the installer polls the admission points while a cut is in flight.
+    pub const CUT_POLL: Duration = Duration::from_millis(100);
+
+    /// The longest the installer waits for the locks of the admission points a cut is armed or cancelled over.
+    pub const CUT_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+
+    /// The delay before the installer tries again to arm a cut it could not arm.
+    pub const CUT_ARM_RETRY: Duration = Duration::from_secs(1);
+
+    /// The most consecutive lock timeouts arming an artifact's cut before the artifact is rejected.
+    ///
+    /// Decision log: new when aggregation became a kernel. An artifact whose cut cannot be armed after this many
+    /// attempts is rejected, and the active generation keeps running; a rollback keeps trying.
+    pub const CUT_ARM_ATTEMPTS: u64 = 10;
+
+    /// The largest least common multiple of the bucket widths a cut changes between.
+    ///
+    /// Decision log: new when aggregation became a kernel. A cut takes effect at a common boundary of the widths it
+    /// changes between, so this bounds how long a width change waits; a change beyond it, such as from 120 to 180
+    /// seconds, is rejected, and goes through an intermediate width of at most 60 seconds.
+    pub const MAX_TRANSITION_LCM: Duration =
+        Duration::from_secs(saluki_metric_kernels::params::MAX_TRANSITION_LCM_SECS);
 
     /// The maximum serialized size of one blob, in bytes.
     pub const BLOB_SIZE: u64 = 64 * 1024;
@@ -126,29 +179,28 @@ pub struct LimitSpec {
 
 /// The bucket widths that aggregation may use: every divisor of 60 seconds, and 120, 180, and 300 seconds.
 ///
-/// One plan uses at most one width above 60 seconds, so the least common multiple of a plan's widths is the larger of
-/// 60 seconds and its largest width.
-pub const ALLOWED_BUCKET_WIDTHS: &[Duration] = &[
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(3),
-    Duration::from_secs(4),
-    Duration::from_secs(5),
-    Duration::from_secs(6),
-    Duration::from_secs(10),
-    Duration::from_secs(12),
-    Duration::from_secs(15),
-    Duration::from_secs(20),
-    Duration::from_secs(30),
-    Duration::from_secs(60),
-    Duration::from_secs(120),
-    Duration::from_secs(180),
-    Duration::from_secs(300),
-];
+/// These are the kernels crate's
+/// [`ALLOWED_BUCKET_WIDTHS_SECS`][saluki_metric_kernels::params::ALLOWED_BUCKET_WIDTHS_SECS] as durations. One plan
+/// uses at most one width above 60 seconds, so the least common multiple of a plan's widths is the larger of 60 seconds
+/// and its largest width.
+pub const ALLOWED_BUCKET_WIDTHS: &[Duration] = &BUCKET_WIDTH_DURATIONS;
 
-/// Returns `true` if `width` is an allowed bucket width.
+const BUCKET_WIDTH_COUNT: usize = saluki_metric_kernels::params::ALLOWED_BUCKET_WIDTHS_SECS.len();
+
+const BUCKET_WIDTH_DURATIONS: [Duration; BUCKET_WIDTH_COUNT] = {
+    let secs = saluki_metric_kernels::params::ALLOWED_BUCKET_WIDTHS_SECS;
+    let mut widths = [Duration::ZERO; BUCKET_WIDTH_COUNT];
+    let mut index = 0;
+    while index < BUCKET_WIDTH_COUNT {
+        widths[index] = Duration::from_secs(secs[index]);
+        index += 1;
+    }
+    widths
+};
+
+/// Returns `true` if `width` is an allowed bucket width: a whole number of seconds the kernels crate allows.
 pub fn is_allowed_bucket_width(width: Duration) -> bool {
-    ALLOWED_BUCKET_WIDTHS.contains(&width)
+    width.subsec_nanos() == 0 && saluki_metric_kernels::params::is_allowed_bucket_width(width.as_secs())
 }
 
 /// The maximum number of contexts held in aggregation state.
@@ -166,21 +218,21 @@ pub const AGGREGATION_CONTEXT_LIMIT: LimitSpec = LimitSpec {
 
 /// The bucket widths aggregation may use.
 ///
+/// Native configuration rejects any other aggregation window at startup.
+///
 /// # Missing
 ///
-/// Nothing enforces the restriction yet. The specification introduces it with aggregation as a kernel: from then on,
-/// validation rejects an `aggregate` or `timestamp_split` window that is not an allowed width, a plan with more than
-/// one width above 60 seconds, and a `timestamp_split` whose window differs from its aggregation's, and native
-/// configuration rejects other widths at startup. Until then aggregation accepts any whole number of seconds, as
-/// native aggregation does.
+/// Validation does not enforce the restriction on plans yet: it will reject an `aggregate` or `timestamp_split` window
+/// that is not an allowed width, a plan with more than one width above 60 seconds, and a `timestamp_split` whose
+/// window differs from its aggregation's. Until then a plan's aggregation accepts any whole number of seconds.
 pub const BUCKET_WIDTHS: LimitSpec = LimitSpec {
     name: "bucket_widths",
     default: LimitValue::Durations(ALLOWED_BUCKET_WIDTHS),
     source: LimitSource::Fixed,
     description:
         "Allowed aggregation bucket widths: every divisor of 60 seconds, and 120, 180, and 300 seconds. A plan \
-         uses at most one width above 60 seconds. Enforced once aggregation is a kernel; until then any whole \
-         number of seconds is accepted, as natively.",
+                  uses at most one width above 60 seconds. Native configuration rejects any other aggregation window \
+                  at startup.",
 };
 
 /// The minimum delay between preparing a cut and the cut taking effect.
@@ -241,7 +293,9 @@ pub const ARTIFACT_MEMORY: LimitSpec = LimitSpec {
     source: LimitSource::Fixed,
     description: "Maximum memory that an artifact's nodes declare in their memory bounds, what their kernels allocate \
                   up front and at most together, such as a mapper's string interner and caches. A kernel is built \
-                  before the artifact runs, so an artifact that declares more is rejected.",
+                  before the artifact runs, so an artifact that declares more is rejected. The state a state owner \
+                  keeps in entries drawn from the host's state budget, such as aggregation's contexts, is not \
+                  counted: the budget bounds it, and the host's bounds hold it at the budget's capacity.",
 };
 
 /// The time allowed for every region to prepare a new generation.
@@ -288,8 +342,93 @@ pub const CLOCK_RESET_THRESHOLD: LimitSpec = LimitSpec {
     default: LimitValue::Duration(values::CLOCK_RESET_THRESHOLD),
     source: LimitSource::Fixed,
     description: "Backward wall-clock jump beyond which an admission clock resets: every state owner it feeds closes \
-                  its open buckets, then the clock restarts from the wall clock. Smaller jumps are absorbed. At least \
-                  the largest bucket width.",
+                  its open buckets, then the clock restarts from the wall clock. Smaller jumps are absorbed: admission \
+                  times stay at the latest stamp until the wall clock catches up. At least the largest bucket width. \
+                  This changes behavior, not only tuning.",
+};
+
+/// The most admission time a region lets pass between the progress it forwards to a state owner for one point.
+pub const PROGRESS_PERIOD: LimitSpec = LimitSpec {
+    name: "progress_period",
+    default: LimitValue::Duration(values::PROGRESS_PERIOD),
+    source: LimitSource::Fixed,
+    description: "Most admission time a region lets pass, per admission point, before it forwards a header-only \
+                  progress batch to a state owner downstream when its input from that point leaves no output, so \
+                  that filtered traffic still advances the state owner's watermark.",
+};
+
+/// The longest a flush tick waits for its state owner's watermark to reach the tick's wall-clock second.
+pub const TICK_GRACE: LimitSpec = LimitSpec {
+    name: "tick_grace",
+    default: LimitValue::Duration(values::TICK_GRACE),
+    source: LimitSource::Fixed,
+    description: "Longest a flush tick waits for its state owner's watermark to reach the tick's wall-clock second, \
+                  so that the flush closes the buckets native aggregation closes at that tick; afterwards it flushes \
+                  at the watermark. Twice the heartbeat period. This changes behavior, not only tuning.",
+};
+
+/// The most events a state owner emits in one step of a drain.
+pub const DRAIN_STEP_EVENTS: LimitSpec = LimitSpec {
+    name: "drain_step_events",
+    default: LimitValue::Count(values::DRAIN_STEP_EVENTS),
+    source: LimitSource::Fixed,
+    description: "Most events a state owner emits in one step of a flush or drain before it yields, so that a large \
+                  flush never holds its region or its memory for long. One state entry's records are never split.",
+};
+
+/// The most state entries a state owner visits in one step of a drain.
+pub const DRAIN_STEP_CONTEXTS: LimitSpec = LimitSpec {
+    name: "drain_step_contexts",
+    default: LimitValue::Count(values::DRAIN_STEP_CONTEXTS),
+    source: LimitSource::Fixed,
+    description: "Most state entries, such as aggregation contexts, a state owner visits in one step of a flush or \
+                  drain before it yields.",
+};
+
+/// The period at which the installer polls the admission points while a cut is in flight.
+pub const CUT_POLL: LimitSpec = LimitSpec {
+    name: "cut_poll",
+    default: LimitValue::Duration(values::CUT_POLL),
+    source: LimitSource::Fixed,
+    description: "Period at which the installer polls every admission point while a cut is in flight, to learn when \
+                  the cut becomes irrevocable and when every affected point has passed it.",
+};
+
+/// The longest the installer waits for the locks of the admission points a cut is armed or cancelled over.
+pub const CUT_LOCK_TIMEOUT: LimitSpec = LimitSpec {
+    name: "cut_lock_timeout",
+    default: LimitValue::Duration(values::CUT_LOCK_TIMEOUT),
+    source: LimitSource::Fixed,
+    description: "Longest the installer waits for the locks of the admission points it arms or cancels a cut over. \
+                  Arming that times out is tried again; cancelling that times out is refused, and the cut proceeds.",
+};
+
+/// The delay before the installer tries again to arm a cut it could not arm.
+pub const CUT_ARM_RETRY: LimitSpec = LimitSpec {
+    name: "cut_arm_retry",
+    default: LimitValue::Duration(values::CUT_ARM_RETRY),
+    source: LimitSource::Fixed,
+    description: "Delay before the installer tries again to arm a cut whose locks timed out, or whose admission \
+                  clocks run ahead of the wall clock.",
+};
+
+/// The most consecutive lock timeouts arming an artifact's cut before the artifact is rejected.
+pub const CUT_ARM_ATTEMPTS: LimitSpec = LimitSpec {
+    name: "cut_arm_attempts",
+    default: LimitValue::Count(values::CUT_ARM_ATTEMPTS),
+    source: LimitSource::Fixed,
+    description: "Most consecutive lock timeouts arming an artifact's cut before the artifact is rejected and the \
+                  active generation keeps running; a rollback keeps trying. This changes behavior, not only tuning.",
+};
+
+/// The largest least common multiple of the bucket widths a cut changes between.
+pub const MAX_TRANSITION_LCM: LimitSpec = LimitSpec {
+    name: "max_transition_lcm",
+    default: LimitValue::Duration(values::MAX_TRANSITION_LCM),
+    source: LimitSource::Fixed,
+    description: "Largest least common multiple of the bucket widths one cut changes between, which bounds how long a \
+                  width change waits for a common boundary. A larger change is rejected; it goes through an \
+                  intermediate width of at most 60 seconds. This changes behavior, not only tuning.",
 };
 
 /// The maximum size of one blob.
@@ -351,6 +490,15 @@ pub const LIMITS: &[LimitSpec] = &[
     OVERLAP_BUDGET,
     HEARTBEAT_PERIOD,
     CLOCK_RESET_THRESHOLD,
+    PROGRESS_PERIOD,
+    TICK_GRACE,
+    DRAIN_STEP_EVENTS,
+    DRAIN_STEP_CONTEXTS,
+    CUT_POLL,
+    CUT_LOCK_TIMEOUT,
+    CUT_ARM_RETRY,
+    CUT_ARM_ATTEMPTS,
+    MAX_TRANSITION_LCM,
     BLOB_SIZE,
     DECISION_MEMO_ENTRIES,
     BATCH_SIZE,
@@ -418,6 +566,17 @@ mod tests {
         assert_eq!(count(&DECISION_MEMO_ENTRIES), 4096);
         assert_eq!(count(&WORK_PER_TURN), 8);
         assert_eq!(FLOAT_TOLERANCE.default, LimitValue::Ratio(1e-9));
+        assert_eq!(duration(&HEARTBEAT_PERIOD), Duration::from_secs(1));
+        assert_eq!(duration(&CLOCK_RESET_THRESHOLD), Duration::from_secs(300));
+        assert_eq!(duration(&PROGRESS_PERIOD), Duration::from_millis(100));
+        assert_eq!(duration(&TICK_GRACE), Duration::from_secs(2));
+        assert_eq!(count(&DRAIN_STEP_EVENTS), 1024);
+        assert_eq!(count(&DRAIN_STEP_CONTEXTS), 4096);
+        assert_eq!(duration(&CUT_POLL), Duration::from_millis(100));
+        assert_eq!(duration(&CUT_LOCK_TIMEOUT), Duration::from_secs(1));
+        assert_eq!(duration(&CUT_ARM_RETRY), Duration::from_secs(1));
+        assert_eq!(count(&CUT_ARM_ATTEMPTS), 10);
+        assert_eq!(duration(&MAX_TRANSITION_LCM), Duration::from_secs(300));
     }
 
     #[test]
@@ -456,6 +615,20 @@ mod tests {
         // The heartbeat period is at most the native flush interval of 15 seconds.
         assert!(duration(&HEARTBEAT_PERIOD) <= Duration::from_secs(15));
 
+        // The tick grace is twice the heartbeat period, so that an idle source never delays a flush tick.
+        assert_eq!(duration(&TICK_GRACE), duration(&HEARTBEAT_PERIOD) * 2);
+
+        // Progress is forwarded more often than heartbeats arrive.
+        assert!(duration(&PROGRESS_PERIOD) < duration(&HEARTBEAT_PERIOD));
+
+        // A cut waits at most the largest bucket width for its boundary, which the reset threshold covers.
+        assert_eq!(duration(&MAX_TRANSITION_LCM), largest_width);
+        assert!(duration(&CLOCK_RESET_THRESHOLD) >= duration(&MAX_TRANSITION_LCM));
+
+        // One drain step emits at most one batch, and visits more contexts than it emits records.
+        assert_eq!(count(&DRAIN_STEP_EVENTS), count(&BATCH_SIZE));
+        assert!(count(&DRAIN_STEP_CONTEXTS) >= count(&DRAIN_STEP_EVENTS));
+
         // A blob fits in an artifact.
         assert!(count(&BLOB_SIZE) <= count(&ARTIFACT_SIZE));
 
@@ -475,7 +648,12 @@ mod tests {
             );
         }
         assert!(!is_allowed_bucket_width(Duration::from_millis(1500)));
+        assert!(!is_allowed_bucket_width(Duration::from_millis(60_001)));
         assert!(!is_allowed_bucket_width(Duration::ZERO));
         assert_eq!(BUCKET_WIDTHS.default, LimitValue::Durations(ALLOWED_BUCKET_WIDTHS));
+
+        // The table's widths are the kernels crate's, in its order.
+        let secs = ALLOWED_BUCKET_WIDTHS.iter().map(Duration::as_secs).collect::<Vec<_>>();
+        assert_eq!(secs, saluki_metric_kernels::params::ALLOWED_BUCKET_WIDTHS_SECS);
     }
 }

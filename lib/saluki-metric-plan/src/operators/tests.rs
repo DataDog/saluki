@@ -51,6 +51,7 @@ const OPERATORS_WITH_KERNELS: &[&str] = &[
     "namespace_prefix",
     "timestamp_split",
     "tag_projection",
+    "aggregate",
     "host_enrichment",
     "host_tags",
 ];
@@ -402,6 +403,7 @@ impl OperatorDef for Bucketed {
                     width: params.duration("width"),
                 },
                 admission: crate::extension::AdmissionPolicy::FirstCome,
+                emission_filter: false,
             }),
             ..EffectContract::passthrough()
         }
@@ -734,7 +736,7 @@ fn contracts_reflect_native_behavior() {
     assert_eq!(*contract.identity.get(Histogram), Identity::Opaque);
     // Four statistics by default (max, median, avg, count) plus the 95th percentile.
     assert_eq!(contract.cardinality, Cardinality::Expand { max: Some(5) });
-    assert_eq!(contract.boundary, Boundary::OpaqueHost);
+    assert_eq!(contract.boundary, Boundary::Isolated);
     assert_eq!(contract.order, OrderContract::Dependent);
     assert_eq!(
         contract.state,
@@ -745,6 +747,7 @@ fn contracts_reflect_native_behavior() {
                 width: Some(std::time::Duration::from_secs(10)),
             },
             admission: crate::extension::AdmissionPolicy::FirstCome,
+            emission_filter: true,
         })
     );
     // The context limit loses by capacity, open buckets are discarded at shutdown, and the native merge loses by
@@ -868,6 +871,26 @@ fn invalid_parameters_are_rejected_with_every_problem() {
             "timestamp_split",
             json!({"window": "0s"}),
             vec![("window", "must be at least one second")],
+        ),
+        (
+            "timestamp_split",
+            json!({"window": "7s"}),
+            vec![(
+                "window",
+                "must be one of 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120, 180, or 300 seconds, but is 7 seconds",
+            )],
+        ),
+        (
+            "aggregate",
+            {
+                let mut value = aggregate_params();
+                value["window"] = json!("4m");
+                value
+            },
+            vec![(
+                "window",
+                "but is 240 seconds: aggregation buckets must line up at a common boundary",
+            )],
         ),
         (
             "aggregate",
@@ -1026,8 +1049,40 @@ fn memory_bounds_mirror_native_accounting() {
     let (minimum, _) = bounds(&configure("dogstatsd_mapper", uncached));
     assert_eq!(minimum, 65536);
 
-    // Opaque hosts declare their own bounds as host components.
-    assert_eq!(bounds(&configure("aggregate", aggregate_params())), (0, 0));
+    // Aggregation's kernel declares what native aggregation does: the kernel itself up front, and, as the state it
+    // draws from its host's state budget, its state map and a snapshot of it, per context of its limit, firmly.
+    let state_bounds = |configured: &ConfiguredOperator| {
+        let registry = ComponentRegistry::default();
+        configured.specify_state_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("node")));
+        let bounds = registry.as_bounds();
+        (bounds.total_minimum_required_bytes(), bounds.total_firm_limit_bytes())
+    };
+    let aggregate = configure("aggregate", aggregate_params());
+    let kernel = size_of::<saluki_metric_kernels::aggregate::AggregateKernel>();
+    // The firm limit includes the minimum.
+    assert_eq!(bounds(&aggregate), (kernel, kernel));
+    assert_eq!(
+        state_bounds(&aggregate),
+        (
+            0,
+            1_000_000
+                * (saluki_metric_kernels::aggregate::STATE_ENTRY_BYTES
+                    + size_of::<saluki_metric_kernels::aggregate::AggregateContextSnapshotEntry>())
+        )
+    );
+    // Stateless operators draw nothing from a state budget.
+    assert_eq!(
+        state_bounds(&configure("tag_projection", tag_projection_params())),
+        (0, 0)
+    );
+    let mut bound = aggregate_params();
+    bound["context_limit"] = json!({"config": "aggregator.context_limit"});
+    let bound = configure("aggregate", bound);
+    assert_eq!(
+        (bounds(&bound), state_bounds(&bound)),
+        ((0, 0), (0, 0)),
+        "a context limit without a resolved value has no size"
+    );
 }
 
 #[test]
@@ -1566,4 +1621,102 @@ mod properties {
             }
         }
     }
+}
+
+#[test]
+fn aggregations_lineage_is_its_window_and_its_other_parameters_reach_its_kernel_per_call() {
+    use saluki_metric_kernels::aggregate::AggregateStepParams;
+
+    let configured = configure("aggregate", aggregate_params());
+    // The lineage is the window alone, resolved, so a change of any other parameter keeps the state.
+    assert_eq!(
+        serde_json::to_value(configured.lineage_params()).unwrap(),
+        json!({"window": "10s"})
+    );
+    let bound = {
+        let mut value = aggregate_params();
+        value["window"] = json!({"config": "aggregator.window", "resolved": "10s"});
+        configure("aggregate", value)
+    };
+    assert_eq!(
+        bound.lineage_params(),
+        configured.lineage_params(),
+        "a bound window is keyed by its resolved value"
+    );
+    assert_eq!(configured.flush_interval(), Some(std::time::Duration::from_secs(15)));
+
+    let params = configured
+        .step_params(None)
+        .expect("aggregation takes per-call parameters");
+    let step = params
+        .downcast_ref::<AggregateStepParams>()
+        .expect("aggregation's per-call parameters");
+    assert_eq!(step.admit.context_limit, 1_000_000);
+    assert_eq!(step.flush.counter_expiry.map(|expiry| expiry.get()), Some(300));
+    assert_eq!(step.flush_interval, std::time::Duration::from_secs(15));
+    assert!(step.flush.filter.is_none(), "no filter is pushed");
+
+    // A stateless operator keeps the defaults: every parameter is its lineage, and it takes none per call.
+    let prefix = configure("namespace_prefix", json!({"namespace": "ns", "exclusions": []}));
+    assert!(prefix.step_params(None).is_none());
+    assert_eq!(prefix.flush_interval(), None);
+    assert_eq!(
+        serde_json::to_value(prefix.lineage_params()).unwrap(),
+        json!({"namespace": "ns", "exclusions": []})
+    );
+
+    // A kernel built with a host's state budgets draws its contexts from them; one built without owns them alone.
+    let runtime = runtime();
+    let _context = runtime.enter();
+    let budgets = crate::runtime::StateBudgets::new(1);
+    let node: crate::ir::NodeId = "dsd_agg".parse().unwrap();
+    let mut shared = configured
+        .kernel()
+        .unwrap()
+        .build(&KernelBuildContext::detached(&node).with_state_budget(budgets.context_budget(&node)))
+        .unwrap();
+    let mut alone = configured
+        .kernel()
+        .unwrap()
+        .build(&KernelBuildContext::detached(&node))
+        .unwrap();
+    let admit = |kernel: &mut Box<dyn saluki_core::execution::Kernel>, names: &[&str]| {
+        let header = saluki_core::execution::BatchHeader {
+            admitted_at: Some(saluki_core::execution::AdmissionTime::from_unix_secs(1_700_000_003)),
+            ..Default::default()
+        };
+        let mut input = EventsBuffer::default();
+        for name in names {
+            assert!(input
+                .try_push(Event::Metric(Metric::gauge(
+                    saluki_core::data_model::event::metric::context::Context::from_parts(
+                        name.to_string(),
+                        saluki_core::data_model::tags::TagSet::default()
+                    ),
+                    1.0
+                )))
+                .is_none());
+        }
+        let mut budget = Budget::unlimited();
+        let mut outputs = PortOutputs::new(1);
+        let mut counters = TurnCounters::default();
+        let mut turn = saluki_core::execution::Turn::new(
+            &header,
+            std::time::Instant::now(),
+            &mut budget,
+            &mut outputs,
+            &mut counters,
+        );
+        kernel.consume(&mut turn, &mut input);
+        counters.loss(saluki_core::execution::LossClass::Capacity).events
+    };
+    assert_eq!(
+        admit(&mut shared, &["a", "b"]),
+        1,
+        "the host's budget holds one context"
+    );
+    assert_eq!(budgets.global().used(), 1);
+    assert_eq!(admit(&mut alone, &["a", "b"]), 0, "its own limit holds a million");
+    drop(shared);
+    assert_eq!(budgets.global().used(), 0, "a dropped kernel gives its contexts back");
 }

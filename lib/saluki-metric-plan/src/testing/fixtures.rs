@@ -23,16 +23,19 @@ pub const NO_AGGREGATION_PIPELINE_OFF_JSON: &str =
 
 /// Names the region host of a slot of a default-program fixture's frame, as the host names them.
 ///
-/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding host enrichment is
-/// `metrics_enrich`. Any other slot, one that R1's cost model cut from a pipeline, is named after its first node,
-/// without the `_in` of a merge that starts it, as `<node>_region`.
+/// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, the slot holding host enrichment is
+/// `metrics_enrich`, and the isolation slot holding DogStatsD aggregation is `dsd_agg`. Any other slot, one that R1's
+/// cost model cut from a pipeline, is named after its first node, without the `_in` of a merge that starts it, as
+/// `<node>_region`.
 ///
 /// # Errors
 ///
 /// Never fails: every slot gets a name.
 pub fn default_program_slot_name(nodes: &[NodeId]) -> Result<NativeComponentId, String> {
     let has = |id: &str| nodes.iter().any(|node| node.local().as_str() == id);
-    let name = if has("dsd_enrich") {
+    let name = if has("dsd_agg") {
+        "dsd_agg".to_string()
+    } else if has("dsd_enrich") {
         "dsd_pre_aggregation".to_string()
     } else if has("metrics_enrich") {
         "metrics_enrich".to_string()
@@ -124,7 +127,7 @@ fn hash(digit: char) -> PlanHash {
 }
 
 /// Returns the catalog the host would declare for the default program: its outputs, the configuration bindings that
-/// lowering uses with their types and liveness, and the `post_enrich` scope.
+/// lowering uses with their types and liveness, and the `dogstatsd_pre_aggregation` and `post_enrich` scopes.
 ///
 /// Binding names, types, and liveness are those of the host's binding registry, whose tests check that they agree.
 /// Endpoint routing group keys are placeholders.
@@ -293,9 +296,15 @@ pub fn default_program_catalog() -> MemoryCatalog {
     for (name, ty, liveness) in bindings {
         catalog = catalog.with_binding(BindingName::new(name).unwrap(), ty, liveness);
     }
-    catalog.with_scope_input(
-        "post_enrich".parse().unwrap(),
-        InputName::new("metrics").unwrap(),
-        PortType::ANY,
-    )
+    catalog
+        .with_scope_input(
+            "dogstatsd_pre_aggregation".parse().unwrap(),
+            InputName::new("metrics").unwrap(),
+            PortType::ANY,
+        )
+        .with_scope_input(
+            "post_enrich".parse().unwrap(),
+            InputName::new("metrics").unwrap(),
+            PortType::ANY,
+        )
 }

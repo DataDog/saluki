@@ -309,15 +309,16 @@ fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
     assert_eq!(nodes(&slots[2].release), vec!["dsd_tag_filterlist"]);
     assert_ne!(slots[2].build, slots[2].release, "the rebuilt kernel has a new key");
 
-    // Every other region is unchanged, and keeps its kernels: the mapper, the namespace prefix, none in the
-    // post-aggregation filter's region, and host enrichment with host tags.
+    // Every other region is unchanged, and keeps its kernels: the mapper, the namespace prefix, aggregation's instance
+    // in its isolation slot, none in the post-aggregation filter's region, and host enrichment with host tags.
     let unchanged = [
         vec!["dsd_enrich"],
         vec!["dsd_prefix_filter"],
+        vec!["dsd_agg"],
         Vec::new(),
         vec!["metrics_enrich", "metrics_enrich_host_tags"],
     ];
-    for (slot, reused) in [0, 1, 3, 4].into_iter().zip(unchanged) {
+    for (slot, reused) in [0, 1, 3, 4, 5].into_iter().zip(unchanged) {
         assert!(slots[slot].unchanged, "slot {}", slot);
         assert_eq!(nodes(&slots[slot].reuse), reused, "slot {}", slot);
         assert!(slots[slot].build.is_empty() && slots[slot].release.is_empty());
@@ -328,7 +329,7 @@ fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
     assert!(fresh.iter().all(|slot| slot.reuse.is_empty() && !slot.unchanged));
     assert_eq!(
         fresh.iter().map(|slot| slot.build.len()).collect::<Vec<_>>(),
-        vec![1, 1, 2, 0, 2]
+        vec![1, 1, 2, 1, 0, 2]
     );
 }
 
@@ -436,6 +437,10 @@ pub(super) fn describe(action: &Action) -> String {
             };
             format!("candidate {}{}: {}", report.candidate, generation, outcome)
         }
+        Action::ArmCut(arm) => format!("arm the cut of {} over {:?}", arm.generation.id(), arm.affected),
+        Action::WatchCut { generation, at } => format!("watch the cut of {} at {}", generation, at),
+        Action::CancelCut { generation, .. } => format!("cancel the cut of {}", generation),
+        Action::FinalizeCut { generation } => format!("finalize the cut of {}", generation.id()),
     }
 }
 
@@ -448,11 +453,12 @@ pub(super) fn described(actions: &[Action]) -> Vec<String> {
 /// filterlist is a decision; every region reuses its kernels.
 const FILTERLIST_CHANGED: &str =
     "0:unchanged reuse 1 build 0, 1:changed reuse 1 build 0, 2:unchanged reuse 2 build 0, \
-                                  3:unchanged reuse 0 build 0, 4:unchanged reuse 2 build 0";
+                                  3:unchanged reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 \
+                                  build 0";
 
 /// What every region prepares for a plan equal to the active one.
 const NOTHING_CHANGED: &str = "0:unchanged reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 2 build 0, \
-                               3:unchanged reuse 0 build 0, 4:unchanged reuse 2 build 0";
+                               3:unchanged reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0";
 
 /// Describes the preparation of `generation` with what each region prepares, as [`describe`] writes it.
 fn prepared(generation: u64, slots: &str) -> String {
@@ -471,8 +477,8 @@ fn the_boot_generation_is_active_at_once() {
     assert_eq!(boot.generation.id(), GenerationId::new(1));
     assert_eq!(
         boot.programs.len(),
-        5,
-        "three pre-aggregation regions, and two after aggregation"
+        6,
+        "three pre-aggregation regions, aggregation's isolation slot, and two after aggregation"
     );
     let status = harness.core.status();
     assert_eq!(
@@ -482,9 +488,21 @@ fn the_boot_generation_is_active_at_once() {
     assert_eq!(status.live, vec![GenerationId::new(1)]);
     assert_eq!(status.preparing, None);
     assert_eq!(status.last_known_good, None);
-    assert_eq!(harness.core.active_programs().unwrap().len(), 5);
-    // No logical rewrite applies to the boot plan yet, and no decision records one.
-    assert_eq!(harness.core.active_rewrites(), Some(&[][..]));
+    assert_eq!(harness.core.active_programs().unwrap().len(), 6);
+    // No logical rewrite applies to the boot plan, and no decision records one; R5b pushes the post-aggregation filter
+    // into aggregation.
+    let rewrites = harness.core.active_rewrites().unwrap();
+    assert_eq!(
+        rewrites
+            .iter()
+            .map(|record| (record.id, record.is_applied(), record.nodes.clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            crate::compile::rewrite::RewriteId::R5b,
+            true,
+            vec!["dsd_agg".parse().unwrap(), "dsd_post_agg_filter".parse().unwrap()]
+        )]
+    );
 }
 
 #[test]
@@ -509,7 +527,7 @@ fn a_live_change_prepares_every_region_then_commits_with_one_store() {
         panic!("prepare")
     };
     let active = harness.core.active_programs().unwrap();
-    for slot in [0, 2, 3, 4] {
+    for slot in [0, 2, 3, 4, 5] {
         assert!(
             Arc::ptr_eq(&prepare.slots[slot].program, &active[slot]),
             "unchanged region {} keeps its program",
@@ -520,7 +538,7 @@ fn a_live_change_prepares_every_region_then_commits_with_one_store() {
     assert_eq!(prepare.timeout, Duration::from_secs(10));
 
     // The barrier waits for every region.
-    for slot in 0..4 {
+    for slot in 0..5 {
         let actions = harness
             .core
             .prepare_acknowledged(GenerationId::new(2), SlotId::new(slot), Ok(()));
@@ -528,7 +546,7 @@ fn a_live_change_prepares_every_region_then_commits_with_one_store() {
     }
     let actions = harness
         .core
-        .prepare_acknowledged(GenerationId::new(2), SlotId::new(4), Ok(()));
+        .prepare_acknowledged(GenerationId::new(2), SlotId::new(5), Ok(()));
     assert_eq!(
         described(&actions),
         strings(&[
@@ -598,11 +616,11 @@ fn a_failed_preparation_of_the_default_program_is_retried_with_backoff() {
     let actions =
         harness
             .core
-            .prepare_acknowledged(GenerationId::new(2), SlotId::new(4), Err("mailbox closed".to_string()));
+            .prepare_acknowledged(GenerationId::new(2), SlotId::new(5), Err("mailbox closed".to_string()));
     assert_eq!(
         described(&actions),
         strings(&[
-            "abort 2 in 5 slots",
+            "abort 2 in 6 slots",
             "candidate 2 generation 2: rejected",
             "retry after 1s",
             "candidate 2: pending (Retry { attempt: 2 })",
@@ -626,7 +644,7 @@ fn a_failed_preparation_of_the_default_program_is_retried_with_backoff() {
     assert_eq!(
         described(&actions),
         strings(&[
-            "abort 3 in 5 slots",
+            "abort 3 in 6 slots",
             "candidate 2 generation 3: rejected",
             "retry after 2s",
             "candidate 2: pending (Retry { attempt: 3 })",
@@ -708,10 +726,20 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
         })]
     ));
 
-    let wider = edited(|value| {
-        node_mut(value, "dsd_agg")["params"]["flush_interval"]["resolved"] = json!("30s");
+    // A state owner after enrichment would need an isolation slot the frame does not have there.
+    let late = edited(|value| {
+        let mut aggregate = node_mut(value, "dsd_agg").clone();
+        aggregate["id"] = json!("late_agg");
+        value["nodes"].as_array_mut().unwrap().push(aggregate);
+        let edges = value["edges"].as_array_mut().unwrap();
+        for edge in edges.iter_mut() {
+            if edge["from"] == "metrics_enrich_host_tags.out" {
+                edge["from"] = json!("late_agg.out");
+            }
+        }
+        edges.push(json!({"from": "metrics_enrich_host_tags.out", "to": "late_agg.in"}));
     });
-    let (_, actions) = harness.propose(wider);
+    let (_, actions) = harness.propose(late);
     let [Action::Report(Report {
         outcome: Outcome::Rejected(Rejection::Unplaceable(error)),
         ..
@@ -719,8 +747,30 @@ fn invalid_and_unplaceable_candidates_are_rejected_and_the_active_generation_sta
     else {
         panic!("{:?}", described(&actions))
     };
-    assert_eq!(error.capabilities(), vec![MissingCapability::State]);
+    assert_eq!(error.capabilities(), vec![MissingCapability::ResourceGenerations]);
     assert_eq!(harness.core.status().live, vec![GenerationId::new(1)]);
+}
+
+#[test]
+fn a_change_of_aggregations_flush_interval_alone_keeps_its_instance() {
+    // The flush interval is not part of aggregation's lineage: the change is a `retain`, prepared with no cut, and
+    // aggregation's isolation slot keeps its instance with new per-call parameters.
+    let mut harness = Harness::new(InstallerConfig::default());
+    let wider = edited(|value| {
+        node_mut(value, "dsd_agg")["params"]["flush_interval"]["resolved"] = json!("30s");
+    });
+    let (_, actions) = harness.propose(wider);
+    assert_eq!(
+        described(&actions),
+        strings(&[
+            &prepared(
+                2,
+                "0:unchanged reuse 1 build 0, 1:unchanged reuse 1 build 0, 2:unchanged reuse 2 build 0, 3:changed \
+                 reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0"
+            ),
+            "candidate 2 generation 2: pending",
+        ])
+    );
 }
 
 #[test]
@@ -736,9 +786,18 @@ fn a_default_program_with_validation_errors_is_installed_as_long_as_it_fits_the_
         report,
         origin: Origin::DefaultProgram { config_change: 1 },
     });
+    // A degraded default program gets no rewrites, R5b included: the post-aggregation filter is no longer pushed into
+    // aggregation, whose per-call parameters change on the same instance.
     assert_eq!(
         described(&actions),
-        strings(&[&prepared(2, FILTERLIST_CHANGED), "candidate 2 generation 2: pending",])
+        strings(&[
+            &prepared(
+                2,
+                "0:unchanged reuse 1 build 0, 1:changed reuse 1 build 0, 2:unchanged reuse 2 build 0, 3:changed \
+                 reuse 1 build 0, 4:unchanged reuse 0 build 0, 5:unchanged reuse 2 build 0"
+            ),
+            "candidate 2 generation 2: pending",
+        ])
     );
 
     // A default program that is not structurally sound still cannot run.
@@ -828,7 +887,7 @@ fn a_newer_artifact_cancels_an_uncommitted_preparation() {
     assert_eq!(
         described(&actions),
         strings(&[
-            "abort 2 in 5 slots",
+            "abort 2 in 6 slots",
             "candidate 2 generation 2: rejected (a newer candidate cancelled the preparation)",
             &prepared(3, FILTERLIST_CHANGED),
             "candidate 3 generation 3: pending",
@@ -956,7 +1015,7 @@ fn rolling_back_prepares_the_preparation_in_flight_again_against_the_generation_
         described(&actions),
         strings(&[
             "candidate 2 generation 2: failed",
-            "abort 3 in 5 slots",
+            "abort 3 in 6 slots",
             "candidate 3 generation 3: rejected",
             "commit 1",
             "candidate 1 generation 1: active",

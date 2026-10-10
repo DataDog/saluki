@@ -22,6 +22,13 @@
 //! - **Accounting.** Each kernel is built and called inside the resource group its build context names, under the
 //!   region's own; [`kernel_accounting_name`] names that group, and [`RegionBounds`] declares each kernel's bounds
 //!   under the same name.
+//! - **State.** A state owner runs in an isolation slot, whose driver follows the time rules of [`state::rules`]:
+//!   it keeps the slot's watermark, ticks each lineage of its state owners' state on its own schedule through the tick
+//!   gate, runs clock resets, final retirements at cuts, and shutdown as bounded drains, and stamps their time-driven
+//!   output (see [`MetricRegionDriver`]). Its kernels draw their state from the host's [`StateBudgets`], and its
+//!   bounds hold one drain step ([`RegionBounds::for_slot`]).
+//! - **Testing.** With the `test-util` feature, `harness::FrameHarness` runs a whole frame of region drivers in
+//!   process, with admission points modeled on the real ones.
 //!
 //! [RegionProgram]: crate::compile::RegionProgram
 
@@ -35,21 +42,33 @@ use crate::{
 };
 
 mod bounds;
-pub use self::bounds::{kernel_accounting_name, RegionBounds};
+pub use self::bounds::{kernel_accounting_in, kernel_accounting_name, kernel_accounting_path, RegionBounds};
 
 mod code;
 
 mod driver;
-pub use self::driver::{GenerationFailureReporter, MetricRegionDriver, PrepareRegion, RegionConfig, RegionControl};
+pub use self::driver::{
+    GenerationFailureReporter, KernelControl, KernelReply, KernelTarget, MetricRegionDriver, PrepareRegion,
+    RegionConfig, RegionControl,
+};
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod harness;
 
 mod kernels;
 pub use self::kernels::{build_kernels, PreparedKernel};
+
+pub mod state;
+pub use self::state::StateBudgets;
 
 mod supervision;
 pub use self::supervision::PanicBudget;
 
 mod telemetry;
-pub use self::telemetry::{NoTelemetry, PlanTelemetry, RegisterTelemetry, PLAN_LOSS_TOTAL, PLAN_NODE_EVENTS_TOTAL};
+pub use self::telemetry::{
+    NoTelemetry, PlanTelemetry, RegisterTelemetry, StateTelemetry, PLAN_CLOCK_RESETS_TOTAL, PLAN_LOSS_TOTAL,
+    PLAN_NODE_EVENTS_TOTAL, PLAN_STATE_LINEAGES, PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL, PLAN_STATE_WATERMARK_LAG_SECONDS,
+};
 
 /// An error creating a region driver, building its kernels, or preparing a generation in it.
 #[derive(Debug, Snafu)]
@@ -165,9 +184,44 @@ pub enum RegionError {
         /// Why.
         source: ConfigureError,
     },
+
+    /// A preparation's state owners cannot be bound to instances of their state as it says.
+    #[snafu(display(
+        "Cannot prepare generation {} in region `{}`: {}. Prepare state owners with the bindings the installer \
+         computed for the active generations.",
+        generation,
+        region,
+        message
+    ))]
+    StateBinding {
+        /// The region.
+        region: String,
+
+        /// The generation.
+        generation: GenerationId,
+
+        /// What is wrong.
+        message: String,
+    },
+
+    /// A region of an isolation slot lacks what it needs to run its state owners.
+    #[snafu(display("Cannot create region `{}`: {}.", region, message))]
+    StateConfig {
+        /// The region.
+        region: String,
+
+        /// What is missing.
+        message: String,
+    },
 }
 
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
+mod r5b_tests;
+#[cfg(test)]
+mod state_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transition_tests;

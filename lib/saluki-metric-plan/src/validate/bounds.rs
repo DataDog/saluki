@@ -322,7 +322,7 @@ fn check_authority(graph: &Graph<'_>, report: &mut ValidationReport) {
                 ),
             ));
         }
-        if contract.boundary.is_fence() && artifact_revision(&entry.node.provenance).is_some() {
+        if contract.boundary.is_host() && artifact_revision(&entry.node.provenance).is_some() {
             report.push(Finding::new(
                 Rule::TrustedHost,
                 graph.location(node),

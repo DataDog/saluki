@@ -23,9 +23,59 @@ use tokio::sync::mpsc;
 
 use super::{
     reference,
-    state::{align_to_bucket_start, is_bucket_closed, AggregationState},
+    state::{align_to_bucket_start, is_bucket_closed, AggregationState, ContextLimit, FlushCursor, Insertion},
     *,
 };
+
+/// The state machine together with the parameters the native state machine was created with, which the native tests
+/// below were written against: it passes them to every call that takes them.
+struct TestState {
+    state: AggregationState,
+    context_limit: usize,
+    counter_expiry: Option<NonZeroU64>,
+    hist_config: HistogramConfiguration,
+}
+
+impl TestState {
+    fn new(
+        bucket_width_secs: NonZeroU64, context_limit: usize, counter_expiry: Option<NonZeroU64>,
+        hist_config: HistogramConfiguration, telemetry: AggregateTelemetry,
+    ) -> Self {
+        Self {
+            state: AggregationState::new(bucket_width_secs, telemetry),
+            context_limit,
+            counter_expiry,
+            hist_config,
+        }
+    }
+
+    fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
+        let limit = ContextLimit::exclusive(self.context_limit);
+        matches!(self.state.insert(timestamp, metric, limit), Insertion::Inserted { .. })
+    }
+
+    fn start_flush(&self, current_time: u64, flush_open_buckets: bool) -> FlushCursor {
+        self.state
+            .start_flush(current_time, flush_open_buckets, self.counter_expiry)
+    }
+
+    fn flush_next<F: FnMut(Metric)>(&mut self, cursor: &mut FlushCursor, sink: F) -> bool {
+        self.state.flush_next(cursor, &self.hist_config, None, None, sink)
+    }
+
+    fn finish_flush(&mut self, cursor: FlushCursor) {
+        self.state
+            .finish_flush(cursor, ContextLimit::exclusive(self.context_limit));
+    }
+}
+
+impl std::ops::Deref for TestState {
+    type Target = AggregationState;
+
+    fn deref(&self) -> &AggregationState {
+        &self.state
+    }
+}
 
 const BUCKET_WIDTH_SECS: NonZeroU64 = NonZeroU64::new(10).expect("not zero");
 const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS.get());
@@ -49,7 +99,7 @@ const fn flush_ts(step: u64) -> u64 {
 
 /// Flushes the state at `timestamp`, counting open buckets as closed for idle-counter zeros, and returns what it
 /// emitted, sorted by name.
-fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+fn get_flushed_metrics(timestamp: u64, state: &mut TestState) -> Vec<Metric> {
     let mut cursor = state.start_flush(timestamp, true);
     let mut metrics = Vec::new();
     while state.flush_next(&mut cursor, |metric| metrics.push(metric)) {}
@@ -166,7 +216,7 @@ fn aggregate_metric_type_matches_every_metric_shape() {
 
 #[test]
 fn snapshot_contexts_preserves_full_context_shape_and_unit() {
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -208,7 +258,7 @@ fn snapshot_contexts_preserves_full_context_shape_and_unit() {
 
 #[test]
 fn snapshot_contexts_follows_ordinary_context_lifecycle() {
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -229,7 +279,7 @@ fn snapshot_contexts_follows_ordinary_context_lifecycle() {
 
 #[test]
 fn snapshot_contexts_retains_idle_counter_until_expiry() {
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -294,7 +344,7 @@ fn bucket_is_closed() {
 #[test]
 fn context_limit() {
     // Create our aggregation state with a context limit of 2.
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         2,
         COUNTER_EXPIRE,
@@ -344,7 +394,7 @@ fn context_limit() {
 #[test]
 fn context_limit_with_zero_value_counters() {
     // We test here to ensure that zero-value counters contribute to the context limit.
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         2,
         COUNTER_EXPIRE,
@@ -399,7 +449,7 @@ fn context_limit_with_zero_value_counters() {
 #[test]
 fn zero_value_counters() {
     // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -448,7 +498,7 @@ fn zero_value_counters() {
 #[test]
 fn merge_identical_timestamped_values_on_flush() {
     // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -483,7 +533,7 @@ fn histogram_statistics() {
         false,
         "".into(),
     );
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -528,7 +578,7 @@ fn histogram_statistics_unit_propagation() {
         false,
         "".into(),
     );
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -574,7 +624,7 @@ fn histogram_statistics_unit_propagation() {
 #[test]
 fn distributions() {
     // We're testing that we pass through distributions untouched.
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -609,7 +659,7 @@ fn histogram_copy_to_distribution() {
         true,
         "dist_prefix.".into(),
     );
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -647,7 +697,7 @@ fn nonaggregated_counters_to_rate() {
     let counter_value = 42.0;
 
     // Create a basic aggregation state.
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         10,
         COUNTER_EXPIRE,
@@ -683,7 +733,7 @@ fn telemetry() {
     let builder = MetricsBuilder::default();
     let telemetry = AggregateTelemetry::new(&builder);
 
-    let mut state = AggregationState::new(
+    let mut state = TestState::new(
         BUCKET_WIDTH_SECS,
         2,
         COUNTER_EXPIRE,
@@ -789,6 +839,45 @@ fn an_empty_core_is_not_flushed() {
 }
 
 #[test]
+fn a_drain_or_a_discard_of_an_empty_core_forgets_its_flushes_and_a_flush_does_not() {
+    // A flush of an empty core does not run, so the next flush adds idle-counter zeros back to the last flush that ran,
+    // as native aggregation does. A drain or a discard ends the core's timeline whether or not it holds anything, so
+    // the next flush adds none.
+    const B: u64 = 1_700_000_000;
+    let flush_params = FlushParams {
+        counter_expiry: NonZeroU64::new(300),
+        flush_open_windows: false,
+        histograms: HistogramConfiguration::default(),
+        context_limit: 10,
+        filter: None,
+    };
+    type EmptyPass = fn(&mut AggregateCore, &FlushParams) -> bool;
+    let cases: [(&str, EmptyPass, usize); 3] = [
+        ("a flush", |core, _| core.flush(B + 300, false).is_none(), 61),
+        ("a drain", |core, params| core.begin_drain(params).is_none(), 1),
+        ("a discard", |core, params| core.begin_discard(params).is_none(), 1),
+    ];
+    for (case, empty_pass, points) in cases {
+        let mut core = core(10, Some(300), false);
+        core.admit(B + 1, [Metric::gauge("g", 1.0)]);
+        assert_eq!(flush_names(&mut core, B + 10, false), Some(vec!["g".to_string()]));
+        assert!(
+            empty_pass(&mut core, &flush_params),
+            "{}: an empty core starts no pass",
+            case
+        );
+
+        // A counter seen much later: zeros at every bucket from the flush at B+10 through the one before B+620, or
+        // only its own point.
+        core.admit(B + 605, [Metric::counter("c", 1.0)]);
+        let mut emitted = Vec::new();
+        core.flush_into(B + 620, false, |metric| emitted.push(metric));
+        assert_eq!(emitted.len(), 1, "{}", case);
+        assert_eq!(emitted[0].values().len(), points, "{}", case);
+    }
+}
+
+#[test]
 fn admitting_counts_drops_and_reports_the_limit_once_per_breach() {
     let recorder = TestRecorder::default();
     let _local = metrics::set_default_local_recorder(&recorder);
@@ -821,6 +910,7 @@ fn admitting_counts_drops_and_reports_the_limit_once_per_breach() {
             dropped: 2,
             dropped_points: 4,
             limit_reached: true,
+            ..AdmitOutcome::default()
         }
     );
     assert!(core.context_limit_breached());
@@ -835,6 +925,7 @@ fn admitting_counts_drops_and_reports_the_limit_once_per_breach() {
             dropped: 1,
             dropped_points: 1,
             limit_reached: false,
+            ..AdmitOutcome::default()
         }
     );
     assert_eq!(dropped(), Some(3));
@@ -842,7 +933,10 @@ fn admitting_counts_drops_and_reports_the_limit_once_per_breach() {
     // A flush that empties the core clears the breach, and a later drop reports it again.
     assert_eq!(
         core.flush_into(1_700_000_010, false, |_| {}),
-        Some(FlushOutcome { recovered: true })
+        Some(FlushOutcome {
+            recovered: true,
+            ..FlushOutcome::default()
+        })
     );
     assert!(!core.context_limit_breached());
     let outcome = core.admit(
@@ -920,7 +1014,7 @@ fn a_flush_visits_one_context_per_step() {
         names,
         BTreeSet::from(["a".to_string(), "b".to_string(), "c".to_string()])
     );
-    assert_eq!(flush.finish(), FlushOutcome { recovered: false });
+    assert_eq!(flush.finish(), FlushOutcome::default());
     assert!(core.is_empty());
 }
 
@@ -1022,13 +1116,13 @@ fn describe(metric: &Metric) -> String {
     )
 }
 
-fn multiset(metrics: &[Metric]) -> Vec<String> {
+pub(super) fn multiset(metrics: &[Metric]) -> Vec<String> {
     let mut described = metrics.iter().map(describe).collect::<Vec<_>>();
     described.sort();
     described
 }
 
-fn snapshot_set(entries: Vec<AggregateContextSnapshotEntry>) -> Vec<String> {
+pub(super) fn snapshot_set(entries: Vec<AggregateContextSnapshotEntry>) -> Vec<String> {
     let mut described = entries
         .into_iter()
         .map(|entry| {
@@ -1047,14 +1141,14 @@ fn snapshot_set(entries: Vec<AggregateContextSnapshotEntry>) -> Vec<String> {
 
 /// One step of a generated run: a batch arriving, or a flush tick. Times are offsets from the previous step's time.
 #[derive(Clone, Debug)]
-enum Step {
+pub(super) enum Step {
     Admit { after: i64, metrics: Vec<GeneratedMetric> },
     Tick { after: i64 },
 }
 
 /// A generated metric, built relative to the time its batch arrives.
 #[derive(Clone, Debug)]
-struct GeneratedMetric {
+pub(super) struct GeneratedMetric {
     name: &'static str,
     tags: Vec<&'static str>,
     unit: &'static str,
@@ -1066,7 +1160,7 @@ struct GeneratedMetric {
 }
 
 impl GeneratedMetric {
-    fn build(&self, now: u64) -> Metric {
+    pub(super) fn build(&self, now: u64) -> Metric {
         let mut values: Option<MetricValues> = None;
         for (offset, raw) in &self.pieces {
             let raw = raw.iter().map(|value| f64::from(*value)).collect::<Vec<_>>();
@@ -1134,7 +1228,7 @@ fn arb_generated_metric() -> impl Strategy<Value = GeneratedMetric> {
         )
 }
 
-fn arb_steps() -> impl Strategy<Value = Vec<Step>> {
+pub(super) fn arb_steps() -> impl Strategy<Value = Vec<Step>> {
     let after = prop_oneof![
         8 => 0i64..20,
         2 => 20i64..120,
@@ -1151,9 +1245,9 @@ fn arb_steps() -> impl Strategy<Value = Vec<Step>> {
 
 /// Generated aggregation parameters, as configuration spells them.
 #[derive(Clone, Debug)]
-struct GeneratedParams {
+pub(super) struct GeneratedParams {
     window: u64,
-    context_limit: usize,
+    pub(super) context_limit: usize,
     counter_expiry: Option<u64>,
     flush_open_windows: bool,
     aggregates: Vec<String>,
@@ -1162,7 +1256,21 @@ struct GeneratedParams {
     copy_to_distribution_prefix: String,
 }
 
-fn arb_params() -> impl Strategy<Value = GeneratedParams> {
+impl GeneratedParams {
+    /// Returns these parameters with the context limit lowered to `capacity`, if that is lower: the limit native
+    /// aggregation applies that matches a core with this limit drawing on a global budget of `capacity` alone.
+    pub(super) fn limited_to(&self, capacity: Option<u64>) -> Self {
+        let mut params = self.clone();
+        if let Some(capacity) = capacity {
+            params.context_limit = params
+                .context_limit
+                .min(usize::try_from(capacity).unwrap_or(usize::MAX));
+        }
+        params
+    }
+}
+
+pub(super) fn arb_params() -> impl Strategy<Value = GeneratedParams> {
     (
         proptest::sample::select(&[1u64, 7, 10, 15, 60][..]),
         prop_oneof![1 => Just(0usize), 4 => 1usize..6, 2 => Just(1000usize)],
@@ -1190,7 +1298,7 @@ fn arb_params() -> impl Strategy<Value = GeneratedParams> {
 }
 
 /// The frozen state machine with its run-loop decisions, and the recorder its telemetry reports to.
-fn reference_run_loop(params: &GeneratedParams, recorder: &TestRecorder) -> reference::RunLoop {
+pub(super) fn reference_run_loop(params: &GeneratedParams, recorder: &TestRecorder) -> reference::RunLoop {
     let _local = metrics::set_default_local_recorder(recorder);
     let telemetry = reference::telemetry::Telemetry::new(&MetricsBuilder::default());
     let hist_config = reference::config::HistogramConfiguration::try_new(
@@ -1215,8 +1323,8 @@ fn reference_run_loop(params: &GeneratedParams, recorder: &TestRecorder) -> refe
     }
 }
 
-fn kernel_core(params: &GeneratedParams, recorder: &TestRecorder) -> AggregateCore {
-    let _local = metrics::set_default_local_recorder(recorder);
+/// The parameters of native aggregation that generated parameters spell.
+pub(super) fn aggregate_params(params: &GeneratedParams) -> AggregateParams {
     let histograms = HistogramConfiguration::try_new(
         &params.aggregates,
         &params.percentiles,
@@ -1224,20 +1332,25 @@ fn kernel_core(params: &GeneratedParams, recorder: &TestRecorder) -> AggregateCo
         params.copy_to_distribution_prefix.clone(),
     )
     .expect("generated statistics are valid");
+    AggregateParams {
+        window: NonZeroU64::new(params.window).unwrap(),
+        context_limit: params.context_limit,
+        counter_expiry: params.counter_expiry.and_then(NonZeroU64::new),
+        flush_open_windows: params.flush_open_windows,
+        histograms,
+    }
+}
+
+pub(super) fn kernel_core(params: &GeneratedParams, recorder: &TestRecorder) -> AggregateCore {
+    let _local = metrics::set_default_local_recorder(recorder);
     AggregateCore::new(
-        AggregateParams {
-            window: NonZeroU64::new(params.window).unwrap(),
-            context_limit: params.context_limit,
-            counter_expiry: params.counter_expiry.and_then(NonZeroU64::new),
-            flush_open_windows: params.flush_open_windows,
-            histograms,
-        },
+        aggregate_params(params),
         AggregateTelemetry::new(&MetricsBuilder::default()),
     )
 }
 
 /// Runs the frozen flush at `now` through a real buffered dispatcher and returns what it emitted.
-async fn reference_tick(
+pub(super) async fn reference_tick(
     run_loop: &mut reference::RunLoop, now: u64, last: bool,
 ) -> Option<(Result<bool, String>, Vec<Metric>)> {
     let mut dispatcher = Dispatcher::<EventsBuffer>::new(ComponentContext::test_transform("reference"));
@@ -1264,7 +1377,7 @@ async fn reference_tick(
 }
 
 /// The telemetry values to compare, in a fixed order.
-fn telemetry_values(recorder: &TestRecorder) -> Vec<(String, Option<f64>)> {
+pub(super) fn telemetry_values(recorder: &TestRecorder) -> Vec<(String, Option<f64>)> {
     let mut values = vec![
         (
             "aggregate_active_contexts".to_string(),
@@ -1303,6 +1416,66 @@ fn telemetry_values(recorder: &TestRecorder) -> Vec<(String, Option<f64>)> {
     values
 }
 
+/// Drives the frozen state machine and a core through one run, as the native loop would: each batch arrives, and each
+/// tick flushes, at one time for both, and the run ends with the final tick, as the native loop's does when its input
+/// closes. Compares every admission decision, every flush, and the state after each step, and then runs `after_step`
+/// on the core.
+pub(super) fn run_against_reference(
+    expected: &mut reference::RunLoop, actual: &mut AggregateCore, start: u64, steps: &[Step],
+    mut after_step: impl FnMut(&AggregateCore) -> Result<(), TestCaseError>,
+) -> Result<(), TestCaseError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("the test runtime builds");
+
+    let mut now = 1_700_000_000 + start;
+    let last_step = steps.len();
+    for (position, step) in steps.iter().chain([Step::Tick { after: 1 }].iter()).enumerate() {
+        match step {
+            Step::Admit { after, metrics } => {
+                now = now.saturating_add_signed(*after);
+                let metrics = metrics.iter().map(|metric| metric.build(now)).collect::<Vec<_>>();
+                let (inserted, warned) = expected.events(now, metrics.iter().cloned().map(Event::Metric));
+                let outcome = actual.admit(now, metrics);
+                prop_assert_eq!(outcome.accepted, inserted.iter().filter(|inserted| **inserted).count());
+                prop_assert_eq!(outcome.dropped, inserted.iter().filter(|inserted| !**inserted).count());
+                prop_assert_eq!(outcome.limit_reached, warned);
+            }
+            Step::Tick { after } => {
+                now = now.saturating_add_signed(*after);
+                let last = position == last_step;
+                let reference_flush = runtime.block_on(reference_tick(expected, now, last));
+                let mut emitted = Vec::new();
+                let outcome = actual.flush_into(now, last, |metric| emitted.push(metric));
+                match (reference_flush, outcome) {
+                    (None, None) => {}
+                    (Some((Ok(recovered), expected_emitted)), Some(outcome)) => {
+                        prop_assert_eq!(outcome.recovered, recovered);
+                        prop_assert_eq!(multiset(&expected_emitted), multiset(&emitted), "flush at {}", now);
+                    }
+                    (expected, actual) => {
+                        return Err(TestCaseError::fail(format!(
+                            "flush at {}: the frozen state machine flushed: {:?}, the core flushed: {:?}",
+                            now,
+                            expected.map(|(outcome, _)| outcome),
+                            actual
+                        )));
+                    }
+                }
+            }
+        }
+        prop_assert_eq!(expected.state.context_limit_breached(), actual.context_limit_breached());
+        prop_assert_eq!(expected.state.is_empty(), actual.is_empty());
+        prop_assert_eq!(
+            snapshot_set(expected.state.snapshot_contexts()),
+            snapshot_set(actual.snapshot_contexts())
+        );
+        after_step(actual)?;
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1024))]
 
@@ -1312,59 +1485,11 @@ proptest! {
         start in 0u64..3600,
         steps in arb_steps(),
     ) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("the test runtime builds");
         let reference_recorder = TestRecorder::default();
         let kernel_recorder = TestRecorder::default();
         let mut expected = reference_run_loop(&params, &reference_recorder);
         let mut actual = kernel_core(&params, &kernel_recorder);
-
-        let mut now = 1_700_000_000 + start;
-        let last_step = steps.len();
-        for (position, step) in steps.iter().chain([Step::Tick { after: 1 }].iter()).enumerate() {
-            match step {
-                Step::Admit { after, metrics } => {
-                    now = now.saturating_add_signed(*after);
-                    let metrics = metrics.iter().map(|metric| metric.build(now)).collect::<Vec<_>>();
-                    let (inserted, warned) = expected.events(now, metrics.iter().cloned().map(Event::Metric));
-                    let outcome = actual.admit(now, metrics);
-                    prop_assert_eq!(outcome.accepted, inserted.iter().filter(|inserted| **inserted).count());
-                    prop_assert_eq!(outcome.dropped, inserted.iter().filter(|inserted| !**inserted).count());
-                    prop_assert_eq!(outcome.limit_reached, warned);
-                }
-                Step::Tick { after } => {
-                    now = now.saturating_add_signed(*after);
-                    // The run ends with the final tick, as the native loop's does when its input closes.
-                    let last = position == last_step;
-                    let reference_flush = runtime.block_on(reference_tick(&mut expected, now, last));
-                    let mut emitted = Vec::new();
-                    let outcome = actual.flush_into(now, last, |metric| emitted.push(metric));
-                    match (reference_flush, outcome) {
-                        (None, None) => {}
-                        (Some((Ok(recovered), expected_emitted)), Some(outcome)) => {
-                            prop_assert_eq!(outcome.recovered, recovered);
-                            prop_assert_eq!(multiset(&expected_emitted), multiset(&emitted), "flush at {}", now);
-                        }
-                        (expected, actual) => {
-                            return Err(TestCaseError::fail(format!(
-                                "flush at {}: the frozen state machine flushed: {:?}, the core flushed: {:?}",
-                                now,
-                                expected.map(|(outcome, _)| outcome),
-                                actual
-                            )));
-                        }
-                    }
-                }
-            }
-            prop_assert_eq!(expected.state.context_limit_breached(), actual.context_limit_breached());
-            prop_assert_eq!(expected.state.is_empty(), actual.is_empty());
-            prop_assert_eq!(
-                snapshot_set(expected.state.snapshot_contexts()),
-                snapshot_set(actual.snapshot_contexts())
-            );
-        }
+        run_against_reference(&mut expected, &mut actual, start, &steps, |_| Ok(()))?;
         prop_assert_eq!(telemetry_values(&reference_recorder), telemetry_values(&kernel_recorder));
     }
 }
@@ -1457,3 +1582,7 @@ fn an_abandoned_flush_leaves_the_state_the_failed_native_flush_left() {
         Some(CONTEXTS as f64 - 1024.0 - CONTEXTS as f64)
     );
 }
+
+mod budgets;
+
+pub(super) mod emission;

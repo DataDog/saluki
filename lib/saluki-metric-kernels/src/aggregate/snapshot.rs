@@ -82,3 +82,16 @@ impl AggregateContextSnapshotEntry {
         Self::new(context, metric_type, unit)
     }
 }
+
+/// A read-only control message that asks an [`AggregateKernel`][super::AggregateKernel] for the contexts it holds.
+///
+/// The kernel appends an entry for every context it holds to [`entries`][Self::entries], so one message sent to every
+/// instance of aggregation in turn collects all of their contexts; a context two instances hold appears twice. The
+/// message is read-only: a host may send it while another call of the kernel is yielded, such as in the middle of a
+/// flush, and the kernel answers from its state as it stands without disturbing the yielded call. A context a flush in
+/// progress has emptied, but not yet removed, is listed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ContextSnapshot {
+    /// The entries collected so far.
+    pub entries: Vec<AggregateContextSnapshotEntry>,
+}

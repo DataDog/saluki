@@ -135,6 +135,11 @@ impl AdmissionClock {
         self.epoch
     }
 
+    /// Reads the wall clock this clock stamps from, without stamping anything.
+    pub(crate) fn wall_now(&self) -> AdmissionTime {
+        self.wall.now()
+    }
+
     /// Reads the wall clock and assigns the next admission time.
     pub fn stamp(&mut self) -> ClockStamp {
         let wall = self.wall.now();

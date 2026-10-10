@@ -15,11 +15,11 @@ use super::{test_operators::test_registry, *};
 use crate::{
     canonical::PlanHash,
     equivalence::{compare, OutputPoints},
-    ir::RecipientId,
+    ir::{Plan, RecipientId},
     model::{Kind, PortType},
     predicate::Predicate,
     testing::{arb_metric, arb_predicate, predicate_json},
-    validate::{CatalogOutput, MemoryCatalog},
+    validate::{CatalogOutput, MemoryCatalog, Validator},
 };
 
 // Helpers.
@@ -179,12 +179,9 @@ impl OpaqueHostAdapter for EchoHost {
 /// A test adapter that holds what it admits and emits it at the next tick, followed by a gauge `host.watermark` whose
 /// value is the tick's watermark in seconds, or `-1` without one. It discards what it holds when it finishes, as native
 /// aggregation discards its open buckets at shutdown, and reports the discarded records as shutdown loss.
-///
-/// With `timestamped`, everything it emits is timestamped with the tick's clock, as aggregation timestamps its output.
 #[derive(Default)]
 struct HoldingHost {
     held: Vec<Metric>,
-    timestamped: bool,
 }
 
 impl OpaqueHostAdapter for HoldingHost {
@@ -195,10 +192,7 @@ impl OpaqueHostAdapter for HoldingHost {
     fn tick(&mut self, tick: HostTick, output: &mut HostOutput) {
         let watermark = tick.watermark.map_or(-1.0, |watermark| watermark.as_unix_secs() as f64);
         let emitted = self.held.drain(..).chain([Metric::gauge("host.watermark", watermark)]);
-        for mut metric in emitted {
-            if self.timestamped {
-                metric.values_mut().set_timestamp(tick.now.as_unix_secs());
-            }
+        for metric in emitted {
             output.push(PortIndex::PRIMARY, metric);
         }
     }
@@ -216,13 +210,6 @@ fn echo(_: &ConfiguredOperator) -> Result<Box<dyn OpaqueHostAdapter>, AdapterErr
 
 fn holding(_: &ConfiguredOperator) -> Result<Box<dyn OpaqueHostAdapter>, AdapterError> {
     Ok(Box::<HoldingHost>::default())
-}
-
-fn holding_timestamped(_: &ConfiguredOperator) -> Result<Box<dyn OpaqueHostAdapter>, AdapterError> {
-    Ok(Box::new(HoldingHost {
-        held: Vec::new(),
-        timestamped: true,
-    }))
 }
 
 /// Returns the watermark values an output received from a [`HoldingHost`], in order.
@@ -945,71 +932,6 @@ fn an_opaque_host_starts_a_new_segment_for_the_watermark() {
     assert_eq!(names(&run, "a"), strings(&["m", "host.watermark"]));
 }
 
-#[test]
-fn aggregation_runs_through_its_adapter_until_it_is_a_kernel() {
-    let aggregate = |window: &str| {
-        node(
-            "agg",
-            "aggregate",
-            json!({"window": window, "flush_interval": "15s", "context_limit": 1000, "counter_expiry": "0s",
-                   "flush_open_windows": false, "histogram_aggregates": ["max"], "histogram_percentiles": [],
-                   "copy_to_distribution": false, "copy_to_distribution_prefix": ""}),
-        )
-    };
-    let plan_with = |window: &str| {
-        plan(
-            vec![source("src", "otlp"), aggregate(window), emit("e", "a")],
-            &["src.metrics -> agg.in", "agg.out -> e.in"],
-            &["a"],
-        )
-    };
-    let registry = test_registry();
-    let catalog = test_catalog();
-    let interpreter = Interpreter::new(&registry, &catalog).with_opaque_host(id("agg"), holding_timestamped);
-    let run = interpreter
-        .run(
-            &Trace::new()
-                .install(plan_with("10s"))
-                .admit(id("src"), t(100), vec![gauge("x")])
-                .advance(t(115)),
-        )
-        .unwrap();
-    assert_eq!(names(&run, "a"), strings(&["x", "host.watermark"]));
-
-    // Aggregation's output is timestamped: an adapter that emits an untimestamped point emits something the plan's
-    // types rule out.
-    let untimestamped = Interpreter::new(&registry, &catalog).with_opaque_host(id("agg"), holding);
-    let (event, message) = run_error(
-        &untimestamped,
-        Trace::new()
-            .install(plan_with("10s"))
-            .admit(id("src"), t(100), vec![gauge("x")])
-            .advance(t(115)),
-    );
-    assert_eq!(event, Some(2));
-    assert!(
-        message.contains(
-            "Port `agg.out` carries rate, gauge, distribution (timestamped), but the batch has the \
-                          untimestamped gauge `x`"
-        ),
-        "{}",
-        message
-    );
-
-    // A changed width needs a cut, which arrives with aggregation as a kernel.
-    let (event, message) = run_error(
-        &interpreter,
-        Trace::new().install(plan_with("10s")).install(plan_with("20s")),
-    );
-    assert_eq!(event, Some(1));
-    assert!(
-        message.contains("the `cut` transition of state owner `agg`"),
-        "{}",
-        message
-    );
-    assert!(message.contains("stage 6"), "{}", message);
-}
-
 // Installation.
 
 #[test]
@@ -1048,6 +970,7 @@ fn install_switches_plans_at_its_point_in_the_trace() {
         .map(|record| match record.outcome {
             InstallOutcome::Active { generation } => (record.event, generation),
             InstallOutcome::Rejected(ref rejection) => panic!("rejected: {}", rejection),
+            ref other => panic!("not installed at once: {:?}", other),
         })
         .collect::<Vec<_>>();
     assert_eq!(outcomes, vec![(0, GenerationId::new(1)), (2, GenerationId::new(2))]);
@@ -1184,23 +1107,25 @@ fn installations_that_need_later_stages_are_explicit_errors() {
             "stage 7",
             "removing the host component `h`",
         ),
+        // A state owner that keeps its state in its own program, outside an isolation fence, has no lineage that an
+        // installation could start, end, or keep through a change.
         (
-            "adding a state owner",
+            "adding a state owner outside an isolation fence",
             Trace::new().install(plain.clone()).install(held.clone()),
-            "stage 6",
-            "adding the state owner `k`",
+            "stage 7",
+            "adding the state owner `k` outside an isolation fence",
         ),
         (
-            "removing a state owner",
+            "removing a state owner outside an isolation fence",
             Trace::new().install(held.clone()).install(plain),
-            "stage 6",
-            "removing the state owner `k`",
+            "stage 7",
+            "removing the state owner `k` outside an isolation fence",
         ),
         (
-            "changing a state owner's parameters",
+            "changing a state owner's parameters outside an isolation fence",
             Trace::new().install(held).install(relabeled),
-            "stage 6",
-            "changing the parameters of state owner `k`",
+            "stage 7",
+            "changing the state owner `k` outside an isolation fence while it keeps its state",
         ),
     ];
     for (what, trace, stage, fragment) in cases {
@@ -1259,14 +1184,14 @@ fn malformed_and_unsupported_trace_events_are_explicit_errors() {
             "moves back from 10.000000000 to 9.000000000",
         ),
         (
-            "a clock reset",
+            "an admission time that moves back within the clock-reset threshold",
             installed()
-                .admit(id("src"), t(100), vec![])
-                .admit(id("src"), t(99), vec![]),
+                .admit(id("src"), t(400), vec![])
+                .admit(id("src"), t(100), vec![]),
             2,
-            "a clock reset at admission point `src.metrics`",
+            "Admission point `src.metrics` stamps 100.000000000 after 400.000000000, a backward jump of at most the \
+             clock-reset threshold of 300 s",
         ),
-        ("a cancellation", installed().cancel(), 1, "cancelling an installation"),
         (
             "an event after close",
             installed().close().advance(t(1)),
@@ -1320,17 +1245,42 @@ fn malformed_and_unsupported_trace_events_are_explicit_errors() {
         message
     );
 
-    // Unsupported capabilities name the stage that adds them.
-    for (trace, stage) in [
-        (installed().cancel(), "stage 6"),
-        (
-            installed().admit(id("src"), t(2), vec![]).heartbeat(id("src"), t(1)),
-            "stage 6",
-        ),
-    ] {
-        let (_, message) = run_error(&interpreter, trace);
-        assert!(message.contains(stage), "{}", message);
-    }
+    // A clock reset reaches the state owners an admission point feeds, which a host component handles itself: the
+    // interpreter supports resets of isolated state owners only.
+    let hosted = self::plan(
+        vec![source("src", "otlp"), opaque("h"), emit("e", "a")],
+        &["src.metrics -> h.in", "h.out -> e.in"],
+        &["a"],
+    );
+    let with_host = Interpreter::new(&registry, &catalog).with_opaque_host(id("h"), holding);
+    let (at, message) = run_error(
+        &with_host,
+        Trace::new()
+            .install(hosted)
+            .admit(id("src"), t(7_200), vec![])
+            .heartbeat(id("src"), t(3_600)),
+    );
+    assert_eq!(at, Some(2));
+    assert!(
+        message.contains("a clock reset at admission point `src.metrics` upstream of `h`"),
+        "{}",
+        message
+    );
+    assert!(message.contains("stage 7"), "{}", message);
+
+    // A reset upstream of nothing that keeps state is a new epoch of the point's clock, and so is a `cancel` with no
+    // cut in flight nothing to cancel.
+    let run = interpreter
+        .run(
+            &installed()
+                .admit(id("src"), t(7_200), vec![gauge("before")])
+                .admit(id("src"), t(3_600), vec![gauge("after")])
+                .cancel(),
+        )
+        .unwrap();
+    assert_eq!(names(&run, "a"), strings(&["before", "after"]));
+    assert!(matches!(run.installs()[1].outcome, InstallOutcome::CancelRefused));
+    assert_eq!(run.installs()[1].event, 3);
 }
 
 #[test]

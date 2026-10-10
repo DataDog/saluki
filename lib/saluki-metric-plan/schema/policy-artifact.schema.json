@@ -25,7 +25,7 @@
       "additionalProperties": true
     },
     "edges": {
-      "description": "The edges between the scope's inputs and the artifact's node ports.",
+      "description": "The edges between the scope's inputs, the artifact's node ports, and the scope's exits.",
       "type": "array",
       "items": {
         "$ref": "#/definitions/ArtifactEdge"
@@ -97,7 +97,7 @@
           ]
         },
         "to": {
-          "description": "The input port the edge enters.",
+          "description": "The port the edge enters: an input port of an artifact node, or a scope exit.",
           "allOf": [
             {
               "$ref": "#/definitions/ArtifactPortRef"
@@ -150,7 +150,7 @@
       "pattern": "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}$"
     },
     "ArtifactPortRef": {
-      "description": "A port reference within a policy artifact: `input.<name>` or `<node>.<port>`.",
+      "description": "A port reference within a policy artifact: `input.<name>` (a scope input, only as an edge's source), `exit.<name>` (a scope exit, only as an edge's target), or `<node>.<port>`.",
       "type": "string",
       "maxLength": 127,
       "minLength": 1,

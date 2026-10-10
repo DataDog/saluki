@@ -81,6 +81,7 @@ fn layout(artifact: &PolicyArtifact, options: &PrintOptions, width: usize) -> St
                 Some(source) => leaving[source].push(edge),
                 None => dangling.push(edge),
             },
+            ArtifactPortRef::Exit(_) => dangling.push(edge),
         }
     }
     let statement = |edge: usize| {
@@ -190,7 +191,7 @@ impl<'a> Graph<'a> {
                 ArtifactPortRef::Node { node, port } if graph.index(node.as_str()).is_some() => {
                     (node.as_str(), port.clone())
                 }
-                ArtifactPortRef::Node { .. } => continue,
+                ArtifactPortRef::Node { .. } | ArtifactPortRef::Exit(_) => continue,
             };
             let unique = count.get(node.as_str()) == Some(&1);
             if unique
@@ -216,6 +217,7 @@ impl<'a> Graph<'a> {
         let edge_ref = &self.edges[edge];
         match &edge_ref.to {
             ArtifactPortRef::Input(name) => format!("input.{}", name),
+            ArtifactPortRef::Exit(name) => format!("exit.{}", name),
             ArtifactPortRef::Node { node, port } => {
                 let target = self.index(node.as_str());
                 if self.inline_edge[edge] {
@@ -336,7 +338,7 @@ impl Printer {
             .map(|&edge| {
                 let port = match &graph.edges[edge].from {
                     ArtifactPortRef::Node { port, .. } => Some(port),
-                    ArtifactPortRef::Input(_) => None,
+                    ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => None,
                 };
                 let label = port
                     .filter(|port| !tee_sugar && shape.default_output().as_ref() != Some(*port))
@@ -802,7 +804,7 @@ fn is_numbered_tee(node: &ArtifactNode, edges: &[usize], all_edges: &[ArtifactEd
             .enumerate()
             .all(|(index, &edge)| match &all_edges[edge].from {
                 ArtifactPortRef::Node { port, .. } => port.as_index().map(usize::from) == Some(index),
-                ArtifactPortRef::Input(_) => false,
+                ArtifactPortRef::Input(_) | ArtifactPortRef::Exit(_) => false,
             })
 }
 

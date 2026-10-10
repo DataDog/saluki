@@ -53,6 +53,7 @@ use super::*;
 use crate::{
     internal::ConfigUpdatesWorker,
     programmable_metrics::{
+        catalog::POST_ENRICH_SCOPE,
         telemetry::PLAN_ACTIVE_REVISION,
         test_support::{
             configuration, connected_configuration_system, facts, programmable_metrics, update, ConfigCell,
@@ -252,8 +253,14 @@ impl ArtifactPaths for ScriptedArtifacts {
     }
 
     fn apply_states(
-        &self, core: &InstallerCore, default_program_hash: Option<PlanHash>, degraded: Option<String>,
+        &self, core: &InstallerCore, bases: &BTreeMap<ScopeName, PlanHash>, degraded: Option<String>,
     ) -> ApplyStates {
+        // The script installs `post_enrich` artifacts only, so it reports the first version's form, with that scope's
+        // base alone.
+        let default_program_hash = bases
+            .iter()
+            .find(|(scope, _)| scope.as_str() == POST_ENRICH_SCOPE)
+            .map(|(_, hash)| *hash);
         let script = self.script.lock().unwrap();
         let in_effect = script.in_effect(core);
         // The core reports why the artifact it serves was not composed again, after the host's own reason.
@@ -908,6 +915,9 @@ async fn continuous_input_across_installs_a_rollback_and_a_revocation_arrives_ex
     harness.feed_until(&names, |_| true).await;
     harness.deliver(vec![harness.artifact(1, "dropped")]);
     harness.feed_until(&names, |status| active(status) == Some(2)).await;
+    // The batches in flight reach the source's admission point in their own time: the artifact's generation fails
+    // only once it processed one, so that the rollback replaces a generation that ran.
+    harness.send_until(&names, 2).await;
     harness.fail(2, "it exceeded its panic budget");
     harness.feed_until(&names, |status| active(status) == Some(1)).await;
     harness.deliver(vec![harness.artifact(2, "dropped")]);
@@ -1157,7 +1167,7 @@ async fn the_installer_keeps_the_last_snapshot_and_follows_the_configuration_onc
 
 /// Performs `actions` as the worker does, except that every preparation is acknowledged by every slot at once, in
 /// place of regions: for tests of the installer without a running topology.
-fn settle(installer: &mut Installer, actions: Vec<Action>) {
+async fn settle(installer: &mut Installer, actions: Vec<Action>) {
     let mut queue = VecDeque::from(actions);
     while let Some(action) = queue.pop_front() {
         match action {
@@ -1171,7 +1181,7 @@ fn settle(installer: &mut Installer, actions: Vec<Action>) {
                 }
             }
             action => {
-                installer.perform(action);
+                installer.perform(action).await;
                 queue.extend(installer.actions.drain(..));
             }
         }
@@ -1224,7 +1234,7 @@ async fn a_default_program_that_does_not_validate_is_reported_degraded_whenever_
         let report = Validator::new(&OperatorRegistry::native(), &catalog).validate(&plan);
         assert!(report.is_valid(), "{:?}", report.errors().collect::<Vec<_>>());
         let (_, actions) = Script::propose(&mut installer.core, Arc::new(plan), report, revision, hash);
-        settle(installer, actions);
+        settle(installer, actions).await;
         let installed = installer.current_status();
         assert_eq!(active(&installed), Some(generation));
         assert_eq!(
@@ -1243,7 +1253,7 @@ async fn a_default_program_that_does_not_validate_is_reported_degraded_whenever_
         let actions = installer
             .core
             .generation_failed(GenerationId::new(generation), "it exceeded its panic budget");
-        settle(installer, actions);
+        settle(installer, actions).await;
         let rolled_back = installer.current_status();
         assert_eq!(active(&rolled_back), Some(1), "after generation {} failed", generation);
         assert_eq!(rolled_back.degraded, errors, "after generation {} failed", generation);
@@ -1269,8 +1279,8 @@ async fn an_artifact_panic_budget_applies_only_in_the_regions_that_run_its_nodes
             .zip(slot_budgets(plan, &origin, &registry, &frame))
             .collect::<Vec<_>>()
     };
-    let slots = |budgets: [PanicBudget; 2]| {
-        ["dsd_pre_aggregation", "metrics_enrich"]
+    let slots = |budgets: [PanicBudget; 3]| {
+        ["dsd_pre_aggregation", "dsd_agg", "metrics_enrich"]
             .map(str::to_string)
             .into_iter()
             .zip(budgets)
@@ -1281,16 +1291,17 @@ async fn an_artifact_panic_budget_applies_only_in_the_regions_that_run_its_nodes
     let origin = Origin::Artifact { revision: 1, hash };
 
     // An artifact that adds nodes in front of the main output, in `metrics_enrich`: only that region may survive
-    // panics. A panic in `dsd_pre_aggregation`, which runs native nodes only, fails it, as the native component does.
+    // panics. A panic in `dsd_pre_aggregation` or in aggregation's region, which run native nodes only, fails it, as
+    // the native component does.
     let edited = dropping(&default, "dropped", 1, hash);
-    assert_eq!(budgets(&edited, origin), slots([zero, artifact]));
+    assert_eq!(budgets(&edited, origin), slots([zero, zero, artifact]));
 
     // An artifact whose nodes are all native, such as an unmodified export composed again: no region survives panics.
-    assert_eq!(budgets(&default, origin), slots([zero, zero]));
+    assert_eq!(budgets(&default, origin), slots([zero, zero, zero]));
 
     // The default program's budget is zero everywhere, whatever its nodes' provenance.
     let default_origin = Origin::DefaultProgram { config_change: 0 };
-    assert_eq!(budgets(&edited, default_origin), slots([zero, zero]));
+    assert_eq!(budgets(&edited, default_origin), slots([zero, zero, zero]));
 
     // The installer sends each region the budget of the plan the core prepares.
     let config = configuration("").await;
@@ -1312,12 +1323,12 @@ async fn an_artifact_panic_budget_applies_only_in_the_regions_that_run_its_nodes
         .collect::<BTreeSet<_>>();
     assert_eq!(
         installer.preparing_budgets(GenerationId::new(2)),
-        (vec![zero, artifact], artifact_nodes)
+        (vec![zero, zero, artifact], artifact_nodes)
     );
     // A generation the core is not preparing gets the default program's budget: its acknowledgments are ignored.
     assert_eq!(
         installer.preparing_budgets(GenerationId::new(1)),
-        (vec![zero, zero], BTreeSet::new())
+        (vec![zero, zero, zero], BTreeSet::new())
     );
 }
 

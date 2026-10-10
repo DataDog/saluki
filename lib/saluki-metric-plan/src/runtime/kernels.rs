@@ -1,8 +1,13 @@
 //! Kernel instances: built off the data path, shared by the generations whose programs use them.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    panic::{catch_unwind, AssertUnwindSafe},
+};
 
 use saluki_core::execution::{Kernel, PortOutputs};
+use tracing::warn;
 
 use super::RegionError;
 use crate::{
@@ -42,6 +47,11 @@ impl PreparedKernel {
     /// Returns the kernel's key.
     pub fn key(&self) -> &KernelKey {
         &self.key
+    }
+
+    /// Returns the context the kernel was built in, which it is rebuilt in after a panic.
+    pub fn context(&self) -> &KernelBuildContext {
+        &self.context
     }
 }
 
@@ -91,8 +101,66 @@ pub(super) struct KernelSlot {
     pub kernel: Box<dyn Kernel>,
     /// The kernel's output ports, reused by every call.
     pub ports: PortOutputs,
-    /// The number of live generations whose programs use the kernel.
+    /// The number of live generations whose programs use the kernel, in a [`KernelSlab`].
     users: usize,
+}
+
+impl KernelSlot {
+    /// Creates the slot of a prepared kernel with `port_count` output ports.
+    pub fn new(prepared: PreparedKernel, port_count: usize) -> Self {
+        let PreparedKernel {
+            key,
+            spec,
+            context,
+            kernel,
+        } = prepared;
+        Self {
+            key,
+            spec,
+            context,
+            kernel,
+            ports: PortOutputs::new(port_count),
+            users: 0,
+        }
+    }
+
+    /// Replaces the kernel with a new instance built from its spec, in its context, after a panic left it
+    /// inconsistent.
+    ///
+    /// The instance that panicked is dropped under supervision too, since dropping it can run its state's code.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the kernel could not be rebuilt, because its factory failed or panicked; the slot then keeps the
+    /// instance that panicked.
+    pub fn rebuild(&mut self) -> Result<(), String> {
+        let rebuilt = catch_unwind(AssertUnwindSafe(|| {
+            self.context.accounted(|| self.spec.build(&self.context))
+        }));
+        let rebuilt = match rebuilt {
+            Ok(Ok(rebuilt)) => rebuilt,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(payload) => return Err(format!("its factory panicked: {}", panic_message(&*payload))),
+        };
+        let replaced = std::mem::replace(&mut self.kernel, rebuilt);
+        let context = &self.context;
+        if catch_unwind(AssertUnwindSafe(|| context.accounted(|| drop(replaced)))).is_err() {
+            warn!(
+                node = %self.key.node,
+                "Dropping the instance of a kernel that panicked panicked too; its rebuilt instance runs on."
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Returns the message a panic carried.
+pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<panic payload that is not a string>".to_owned())
 }
 
 /// The kernel instances of a region, keyed by [`KernelKey`] and shared by every generation whose program has the key.
@@ -120,20 +188,9 @@ impl KernelSlab {
 
     /// Adds a new instance with one use, returning its index.
     pub fn insert(&mut self, prepared: PreparedKernel, port_count: usize) -> usize {
-        let PreparedKernel {
-            key,
-            spec,
-            context,
-            kernel,
-        } = prepared;
-        let slot = KernelSlot {
-            key: key.clone(),
-            spec,
-            context,
-            kernel,
-            ports: PortOutputs::new(port_count),
-            users: 1,
-        };
+        let mut slot = KernelSlot::new(prepared, port_count);
+        slot.users = 1;
+        let key = slot.key.clone();
         let index = match self.free.pop() {
             Some(index) => {
                 self.slots[index] = Some(slot);

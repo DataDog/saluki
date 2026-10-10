@@ -123,7 +123,7 @@ metric_filterlist_match_prefix: true
 metric_tag_filterlist: [{metric_name: m, action: include, tags: [env]}]
 metric_tag_value_allowlist: [{metric_prefix: m., tag_name: env, values: [prod], on_miss: replace, replacement: o}]
 data_plane: {dogstatsd: {aggregator_tag_filter_cache_capacity: 9}}
-aggregate_window_duration_seconds: 3600
+aggregate_window_duration_seconds: 300
 aggregate_flush_interval: 1500ms
 aggregate_context_limit: 42
 dogstatsd_expiry_seconds: 90
@@ -182,7 +182,7 @@ autoscaling: {failover: {metrics: [cpu]}}
             "dogstatsd.aggregation.aggregator_tag_filter_cache_capacity".to_string(),
             json!(9),
         ),
-        ("dogstatsd.aggregation.window_duration_seconds".to_string(), json!("1h")),
+        ("dogstatsd.aggregation.window_duration_seconds".to_string(), json!("5m")),
         ("dogstatsd.aggregation.flush_interval".to_string(), json!("1500ms")),
         ("dogstatsd.aggregation.context_limit".to_string(), json!(42)),
         ("dogstatsd.aggregation.counter_expiry_seconds".to_string(), json!("90s")),

@@ -131,6 +131,13 @@ impl DogStatsDContextDumpAPIHandler {
         }
     }
 
+    /// Returns the contexts every aggregation owner holds, as a dump request reads them before publishing them, or
+    /// `None` if a snapshot is unavailable or timed out.
+    #[cfg(test)]
+    pub(crate) async fn snapshot(&self) -> Option<Vec<AggregateContextSnapshotEntry>> {
+        self.state.coordinator.snapshot().await.ok()
+    }
+
     async fn dump_handler(State(state): State<DogStatsDContextDumpAPIState>) -> Response {
         let publication_guard = state.publication_lock.clone().lock_owned().await;
         let snapshot = match state.coordinator.snapshot().await {

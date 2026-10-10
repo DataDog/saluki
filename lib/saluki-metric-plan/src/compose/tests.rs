@@ -13,7 +13,7 @@ use crate::{
     canonical::ResolvedValues,
     export::{export, ExportBundle},
     install::diff::{diff, NodeChange},
-    ir::{Plan, PlanProvenance},
+    ir::{ArtifactEdge, ExitName, Plan, PlanProvenance},
     testing::{
         arb_predicate, default_program_catalog, predicate_json, with_opaque_gateways, DEFAULT_PROGRAM_JSON,
         NO_AGGREGATION_PIPELINE_OFF_JSON,
@@ -832,35 +832,8 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
     let output = |id: &str| id.parse::<OutputId>().unwrap();
     let post_enrich = "post_enrich".parse::<ScopeName>().unwrap();
 
-    let stateful: Mutation = |document| {
-        let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
-        let params = unresolved(&plan.node(&"dsd_agg".parse().unwrap()).unwrap().params);
-        push_node(document, json!({"id": "agg", "op": "aggregate", "params": params}));
-        edge_to(document, "metrics_policy.in")["from"] = json!("agg.out");
-        push_edge(document, "input.metrics", "agg.in");
-    };
     // (what, mutation, expected error)
     let cases: Vec<(&str, Mutation, ComposeError)> = vec![
-        (
-            "a stateful operator",
-            stateful,
-            ComposeError::Stateful {
-                node: id("agg"),
-                op: "aggregate".parse().unwrap(),
-            },
-        ),
-        (
-            "a stateful operator with parameters it does not accept",
-            |document| {
-                push_node(document, json!({"id": "agg", "op": "aggregate", "params": {}}));
-                edge_to(document, "metrics_policy.in")["from"] = json!("agg.out");
-                push_edge(document, "input.metrics", "agg.in");
-            },
-            ComposeError::Stateful {
-                node: id("agg"),
-                op: "aggregate".parse().unwrap(),
-            },
-        ),
         (
             "an unknown output",
             |document| {
@@ -964,6 +937,28 @@ fn edits_that_cannot_be_composed_are_refused_with_the_reason() {
 }
 
 #[test]
+fn a_state_owner_composes_with_the_artifacts_provenance_whatever_its_parameters() {
+    // A state owner is no composition error: whether the frame can run it where the artifact puts it is placement's to
+    // decide, and installing a change to one is a cut. So aggregation in the policy scope composes, with or without
+    // parameters its operator accepts, for validation and placement to judge.
+    let fixture = Fixture::default_program();
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let params = unresolved(&plan.node(&"dsd_agg".parse().unwrap()).unwrap().params);
+    for params in [json!(params), json!({})] {
+        let mut document = fixture.artifact();
+        push_node(&mut document, json!({"id": "agg", "op": "aggregate", "params": params}));
+        edge_to(&mut document, "metrics_policy.in")["from"] = json!("agg.out");
+        push_edge(&mut document, "input.metrics", "agg.in");
+        let composed = fixture.compose(document, &approval(1)).unwrap();
+        let correspondence = composed.correspondence.get(&"agg".parse().unwrap()).unwrap();
+        assert_eq!(correspondence.node.to_string(), "policy/agg");
+        assert_eq!(correspondence.kind, CorrespondenceKind::Added);
+        let node = composed.plan.node(&correspondence.node).unwrap();
+        assert!(matches!(node.provenance, Some(Provenance::Artifact(_))));
+    }
+}
+
+#[test]
 fn errors_about_outputs_and_state_say_what_the_author_can_do() {
     let id = |id: &str| id.parse::<ArtifactNodeId>().unwrap();
     let output = |id: &str| id.parse::<OutputId>().unwrap();
@@ -995,38 +990,10 @@ fn errors_about_outputs_and_state_say_what_the_author_can_do() {
             "Artifact node `route` emits to output `main`, which the artifact's base does not record. Add the \
              output's fingerprint from the export to `base.outputs`.",
         ),
-        (
-            ComposeError::Stateful {
-                node: id("rollup"),
-                op: "aggregate".parse().unwrap(),
-            },
-            "Artifact node `rollup` runs `aggregate`, which keeps state: artifacts cannot contain stateful operators \
-             yet. Remove the node, or keep the processing in native configuration.",
-        ),
     ];
     for (error, message) in cases {
         assert_eq!(error.to_string(), message);
     }
-}
-
-#[test]
-fn the_operators_refused_as_stateful_whatever_their_parameters_are_those_that_keep_keyed_state() {
-    // Every node of the default programs whose operator keeps keyed state, as its contract says, runs an operator that
-    // composition refuses whatever its parameters, and every other operator there keeps no keyed state.
-    let registry = OperatorRegistry::native();
-    let mut keyed = Vec::new();
-    for (name, plan) in default_programs() {
-        for node in &plan.nodes {
-            let configured = registry.configure(node.op.as_str(), &node.params).unwrap();
-            let is_keyed = matches!(configured.contract().state, StateContract::Keyed(_));
-            assert_eq!(keeps_keyed_state(&node.op), is_keyed, "{}: {}", name, node.id);
-            if is_keyed && !keyed.contains(&node.op) {
-                keyed.push(node.op.clone());
-            }
-        }
-    }
-    assert_eq!(keyed, ["aggregate".parse::<OperatorName>().unwrap()]);
-    assert!(registry.get(names::AGGREGATE).is_some());
 }
 
 #[test]
@@ -1642,9 +1609,6 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
                 && *scope == artifact.scope)
                 .then_some("a node has the ID of a reserved node outside the scope")
         }
-        ComposeError::Stateful { node: id, op } => node(id)
-            .filter(|node| node.op == *op && op.as_str() == names::AGGREGATE)
-            .map(|_| "a node aggregates"),
         ComposeError::UnrecordedOutput { node: id, output } => node(id)
             .filter(|node| node.op.as_str() == names::EMIT && emitted_output(&node.params).as_ref() == Some(output))
             .filter(|_| !artifact.base.outputs.contains_key(output) && fixture.catalog.output(output).is_some())
@@ -1687,6 +1651,7 @@ fn explains(error: &ComposeError, artifact: &PolicyArtifact, fixture: &Fixture) 
                 [&edge.from, &edge.to].into_iter().any(|end| match end {
                     ArtifactPortRef::Node { node, .. } => !ids.contains(node),
                     ArtifactPortRef::Input(input) => input.as_str() != "metrics",
+                    ArtifactPortRef::Exit(_) => true,
                 }) || matches!(edge.to, ArtifactPortRef::Input(_))
             });
             (ids.len() < artifact.nodes.len() || unknown_end).then_some("two nodes share an ID, or an edge has no end")
@@ -1776,13 +1741,12 @@ proptest! {
             return Ok(());
         };
         let artifact = &received.artifact;
-        // Nodes that are always refused: one with the ID of a reserved node outside the scope, and one that
-        // aggregates, which no node of the scope does, so it has the artifact's provenance.
+        // A node with the ID of a reserved node outside the scope is always refused. A node that aggregates, which
+        // no node of the scope does, composes with the artifact's provenance, for placement to decide.
         let reserved_outside = artifact.nodes.iter().any(|node| {
             let reserved = NodeId::reserved(node.id.to_local_id());
             fixture.plan.node(&reserved).is_some() && !fixture.is_scope_node(&reserved)
         });
-        let aggregates = artifact.nodes.iter().any(|node| node.op.as_str() == names::AGGREGATE);
         match compose(&fixture.plan, &received, &approval(4), &fixture.catalog, &registry) {
             Err(error) => {
                 prop_assert!(explains(&error, artifact, &fixture).is_some(), "{:?}: {}", edits, error);
@@ -1796,7 +1760,17 @@ proptest! {
                 }
             }
             Ok(composed) => {
-                prop_assert!(!reserved_outside && !aggregates, "{:?}", edits);
+                prop_assert!(!reserved_outside, "{:?}", edits);
+                for node in composed.plan.nodes.iter().filter(|node| node.op.as_str() == names::AGGREGATE) {
+                    if fixture.is_scope_node(&node.id) || !fixture.plan.nodes.iter().any(|kept| kept.id == node.id) {
+                        prop_assert!(
+                            matches!(node.provenance, Some(Provenance::Artifact(_))),
+                            "{:?}: `{}` aggregates without the artifact's provenance",
+                            edits,
+                            node.id
+                        );
+                    }
+                }
                 // A node or an edge removed leaves a port without its edge, which no other edit restores.
                 if removed {
                     prop_assert!(!composed.report.is_valid(), "{:?}", edits);
@@ -1831,4 +1805,261 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn a_composer_composes_one_artifact_as_compose_all_composes_it() {
+    struct Default<'a>(&'a Fixture);
+    impl Composer for Default<'_> {
+        fn compose_all(&self, artifacts: &[(&ReceivedArtifact, &Approval)]) -> Result<Composed, ComposeError> {
+            compose_all(&self.0.plan, artifacts, &self.0.catalog, &OperatorRegistry::native())
+        }
+    }
+
+    let fixture = Fixture::default_program();
+    let composer = Default(&fixture);
+    let received = receive_artifact(fixture.artifact()).unwrap();
+    let approval = approval(1);
+
+    // One artifact composes as `compose` composes it: the unmodified export composes back to the default program.
+    let composed = composer.compose(&received, &approval).unwrap();
+    assert_eq!(
+        composed.plan.hash(ResolvedValues::Include).unwrap(),
+        fixture.plan.hash(ResolvedValues::Include).unwrap()
+    );
+    assert_eq!(
+        composed.scopes.keys().map(ToString::to_string).collect::<Vec<_>>(),
+        ["post_enrich"]
+    );
+    let scope = "post_enrich".parse::<ScopeName>().unwrap();
+    assert_eq!(composed.scopes[&scope].correspondence, composed.correspondence);
+    // No artifact, or two for one scope, is refused.
+    let cases = [
+        (vec![], "no artifact was given to compose"),
+        (
+            vec![(&received, &approval), (&received, &approval)],
+            "more than one artifact replaces scope `post_enrich`; compose one artifact per scope",
+        ),
+    ];
+    for (artifacts, expected) in cases {
+        match composer.compose_all(&artifacts) {
+            Err(ComposeError::Malformed { message }) => assert_eq!(message, expected),
+            other => panic!("{} artifacts composed: {:?}", artifacts.len(), other.map(|_| ())),
+        }
+    }
+}
+
+// Scopes with exits, and scopes composed together.
+
+fn pre_aggregation() -> ScopeName {
+    "dogstatsd_pre_aggregation".parse().unwrap()
+}
+
+/// Returns an artifact as received, with the hash of its document, without reading it from the document: an artifact
+/// that reaches its scope's exits is not read from a document yet.
+fn received_directly(artifact: PolicyArtifact) -> ReceivedArtifact {
+    let hash = PlanHash::of_value(&serde_json::to_value(&artifact).unwrap()).unwrap();
+    ReceivedArtifact { artifact, hash }
+}
+
+/// Returns the export of one scope of a default program, as received.
+fn exported(plan: &Plan, scope: &ScopeName) -> ReceivedArtifact {
+    received_directly(
+        export(plan, scope, &catalog_for(plan), &BTreeMap::new())
+            .unwrap()
+            .artifact,
+    )
+}
+
+fn plan_edges(plan: &Plan) -> Vec<String> {
+    plan.edges
+        .iter()
+        .map(|edge| format!("{} -> {}", edge.from, edge.to))
+        .collect()
+}
+
+#[test]
+fn unmodified_exports_of_every_scope_compose_back_to_the_default_program_alone_and_together() {
+    let registry = OperatorRegistry::native();
+    for (name, plan) in default_programs() {
+        let catalog = catalog_for(&plan);
+        let expected = plan.hash(ResolvedValues::Include).unwrap();
+        let pre = exported(&plan, &pre_aggregation());
+        let post = exported(&plan, &"post_enrich".parse().unwrap());
+
+        let alone = compose(&plan, &pre, &approval(1), &catalog, &registry).unwrap();
+        assert_eq!(alone.plan.hash(ResolvedValues::Include).unwrap(), expected, "{}", name);
+        assert!(
+            !alone.stale_base && alone.report.is_valid(),
+            "{}: {}",
+            name,
+            alone.report
+        );
+        assert!(
+            alone
+                .correspondence
+                .iter()
+                .all(|(_, correspondence)| correspondence.kind == CorrespondenceKind::Unmodified),
+            "{}",
+            name
+        );
+
+        // Together, in either order: each scope composed against the default program, the plan validated once.
+        for artifacts in [
+            [(&pre, &approval(1)), (&post, &approval(2))],
+            [(&post, &approval(2)), (&pre, &approval(1))],
+        ] {
+            let together = compose_all(&plan, &artifacts, &catalog, &registry).unwrap();
+            assert_eq!(
+                together.plan.hash(ResolvedValues::Include).unwrap(),
+                expected,
+                "{}",
+                name
+            );
+            assert!(together.report.is_valid(), "{}: {}", name, together.report);
+            let scopes = together.scopes.keys().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(scopes, ["dogstatsd_pre_aggregation", "post_enrich"], "{}", name);
+            // The correspondences of several artifacts are each in their scope's composition.
+            assert_eq!(together.correspondence.iter().count(), 0, "{}", name);
+            assert_eq!(
+                together.scopes[&pre_aggregation()].correspondence.iter().count(),
+                pre.artifact.nodes.len()
+            );
+            // The provenance lists every revision, in scope order.
+            let revisions = together
+                .plan
+                .provenance
+                .as_ref()
+                .unwrap()
+                .artifacts
+                .iter()
+                .map(|revision| (revision.revision, revision.hash))
+                .collect::<Vec<_>>();
+            assert_eq!(revisions, [(1, pre.hash), (2, post.hash)], "{}", name);
+        }
+    }
+}
+
+#[test]
+fn an_artifacts_edges_into_its_scopes_exits_replace_those_of_the_default_program() {
+    // The pre-aggregation scope without its tag filterlist: what the timestamp split keeps for aggregation reaches it
+    // directly.
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let mut artifact = exported(&plan, &pre_aggregation()).artifact;
+    let filterlist = "dsd_tag_filterlist".parse::<ArtifactNodeId>().unwrap();
+    artifact.nodes.retain(|node| node.id != filterlist);
+    artifact
+        .edges
+        .retain(|edge| !matches!(&edge.to, ArtifactPortRef::Node { node, .. } if *node == filterlist));
+    for edge in &mut artifact.edges {
+        if matches!(&edge.from, ArtifactPortRef::Node { node, .. } if *node == filterlist) {
+            edge.from = "dsd_no_agg_split.default".parse().unwrap();
+        }
+    }
+    let received = received_directly(artifact);
+    let catalog = catalog_for(&plan);
+    let composed = compose(&plan, &received, &approval(3), &catalog, &OperatorRegistry::native()).unwrap();
+
+    // The exits' ports are fed from the artifact's edges, once each; nothing past them changes.
+    let edges = plan_edges(&composed.plan);
+    for edge in [
+        "dsd_no_agg_split.default -> dsd_agg.in",
+        "dsd_agg.out -> dsd_post_agg_filter_in.0",
+        "dsd_no_agg_split.passthrough -> dsd_post_agg_filter_in.1",
+    ] {
+        assert_eq!(edges.iter().filter(|written| *written == edge).count(), 1, "{}", edge);
+    }
+    assert!(!edges.iter().any(|edge| edge.contains("dsd_tag_filterlist")));
+    assert_eq!(edges.len(), plan.edges.len() - 1);
+    assert_eq!(
+        composed.correspondence.removed(),
+        &["dsd_tag_filterlist".parse::<NodeId>().unwrap()]
+    );
+    let changed = diff(&plan, &composed.plan, &OperatorRegistry::native())
+        .changes()
+        .map(|node| node.id.to_string())
+        .collect::<Vec<_>>();
+    // Aggregation is fed other records than the default program feeds it, so it keeps no native authority; the
+    // timestamp split feeds it from another port.
+    assert_eq!(changed, ["dsd_no_agg_split", "dsd_agg", "dsd_tag_filterlist"]);
+    let aggregation = composed.correspondence.get(&"dsd_agg".parse().unwrap()).unwrap();
+    assert_eq!(aggregation.kind, CorrespondenceKind::Modified);
+}
+
+#[test]
+fn edges_reach_a_scopes_exits_only_as_their_targets_and_only_declared_ones() {
+    let plan = Plan::from_json(DEFAULT_PROGRAM_JSON).unwrap();
+    let catalog = catalog_for(&plan);
+    let base = exported(&plan, &pre_aggregation()).artifact;
+    let last = base.edges.len();
+    // (what, the edge added, the error)
+    let cases = [
+        (
+            "an edge from an exit",
+            ArtifactEdge {
+                from: ArtifactPortRef::Exit(ExitName::new("aggregated").unwrap()),
+                to: "dsd_agg.in".parse().unwrap(),
+            },
+            format!(
+                "edge {} leaves `exit.aggregated`, which is a scope exit; edges enter a scope's exits",
+                last
+            ),
+        ),
+        (
+            "an edge to an exit the scope does not declare",
+            ArtifactEdge {
+                from: "dsd_agg.out".parse().unwrap(),
+                to: ArtifactPortRef::Exit(ExitName::new("nowhere").unwrap()),
+            },
+            format!(
+                "edge {} enters `exit.nowhere`, but the scope has no exit `nowhere`",
+                last
+            ),
+        ),
+    ];
+    for (what, edge, expected) in cases {
+        let mut artifact = base.clone();
+        artifact.edges.push(edge);
+        let received = received_directly(artifact);
+        match compose(&plan, &received, &approval(1), &catalog, &OperatorRegistry::native()) {
+            Err(ComposeError::Malformed { message }) => assert_eq!(message, expected, "{}", what),
+            other => panic!("{}: {:?}", what, other.map(|_| ())),
+        }
+    }
+}
+
+#[test]
+fn artifacts_of_two_scopes_compose_each_against_the_default_program_with_their_own_flags() {
+    let fixture = Fixture::default_program();
+    let registry = OperatorRegistry::native();
+    let pre = exported(&fixture.plan, &pre_aggregation());
+    // A policy artifact with a stale base, approved against another active plan.
+    let mut document = fixture.artifact();
+    document["base"]["program_hash"] = json!(ZERO_HASH);
+    let post = receive_artifact(document).unwrap();
+    let reviewed = Approval {
+        revision: 2,
+        approved_against: Some(hash('9')),
+        active_plan_hash: Some(hash('8')),
+    };
+    let composed = compose_all(
+        &fixture.plan,
+        &[(&pre, &approval(1)), (&post, &reviewed)],
+        &fixture.catalog,
+        &registry,
+    )
+    .unwrap();
+    let flags = composed
+        .scopes
+        .iter()
+        .map(|(scope, composition)| (scope.to_string(), composition.stale_base, composition.stale_review))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        flags,
+        [
+            ("dogstatsd_pre_aggregation".to_string(), false, false),
+            ("post_enrich".to_string(), true, true),
+        ]
+    );
+    assert!(composed.stale_base && composed.stale_review);
 }

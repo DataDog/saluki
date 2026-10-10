@@ -321,7 +321,8 @@ const COVERAGE: &[CoverageCheck] = &[
     ("DogStatsD aggregation, including histogram expansion", |f| {
         let op = f.op("dsd_agg");
         assert_eq!(op.name(), names::AGGREGATE);
-        assert_eq!(op.contract().boundary, Boundary::OpaqueHost);
+        // A declared isolation fence: aggregation runs as a kernel in its own isolation slot.
+        assert_eq!(op.contract().boundary, Boundary::Isolated);
         assert!(op.contract().writes.get(Kind::Histogram).contains(Field::Name));
         assert_eq!(
             f.port_type("dsd_agg.out"),

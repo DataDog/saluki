@@ -114,8 +114,30 @@ async fn the_status_route_serves_the_status_summary_and_acknowledgments_as_the_s
 async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
     let mut status = booted_status().await;
     let post_enrich: ScopeName = "post_enrich".parse().unwrap();
-    // The installer exports every scope of the default program it lowered: `post_enrich`.
-    assert_eq!(status.exports.keys().collect::<Vec<_>>(), [&post_enrich]);
+    let pre_aggregation: ScopeName = "dogstatsd_pre_aggregation".parse().unwrap();
+    // The installer exports every scope of the default program it lowered: `dogstatsd_pre_aggregation`, up to its
+    // exits, and `post_enrich`.
+    assert_eq!(
+        status.exports.keys().collect::<Vec<_>>(),
+        [&pre_aggregation, &post_enrich]
+    );
+    let pre_aggregation_export = status.exports[&pre_aggregation]
+        .as_ref()
+        .expect("the scope exports up to its exits");
+    let exits = pre_aggregation_export
+        .artifact
+        .edges
+        .iter()
+        .filter(|edge| edge.to.to_string().starts_with("exit."))
+        .map(|edge| format!("{} -> {}", edge.from, edge.to))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        exits,
+        [
+            "dsd_agg.out -> exit.aggregated",
+            "dsd_no_agg_split.passthrough -> exit.passthrough"
+        ]
+    );
 
     // The route serves the published export, whose artifact records the default program's base program hash.
     let exported = Arc::clone(status.exports[&post_enrich].as_ref().expect("the scope exports"));
@@ -145,17 +167,19 @@ async fn the_export_route_serves_the_export_of_the_scope_named_by_the_query() {
             "/programmable-metrics/export",
             StatusCode::BAD_REQUEST,
             "The `scope` query parameter is required: name the scope of the default program to export \
-             (`post_enrich`).",
+             (`dogstatsd_pre_aggregation`, `post_enrich`).",
         ),
         (
             "/programmable-metrics/export?scope=pre_aggregation",
             StatusCode::NOT_FOUND,
-            "The default program declares no scope `pre_aggregation`. The scopes it declares are `post_enrich`.",
+            "The default program declares no scope `pre_aggregation`. The scopes it declares are \
+             `dogstatsd_pre_aggregation`, `post_enrich`.",
         ),
         (
             "/programmable-metrics/export?scope=Not%20A%20Scope",
             StatusCode::NOT_FOUND,
-            "The default program declares no scope `Not A Scope`. The scopes it declares are `post_enrich`.",
+            "The default program declares no scope `Not A Scope`. The scopes it declares are \
+             `dogstatsd_pre_aggregation`, `post_enrich`.",
         ),
     ];
     for (uri, expected_code, expected_body) in refused {

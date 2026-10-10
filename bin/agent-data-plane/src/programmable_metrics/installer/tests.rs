@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::*;
 use crate::{
-    cli::run::{dogstatsd_aggregate_configuration, PRIMARY_TOPOLOGY},
+    cli::run::PRIMARY_TOPOLOGY,
     programmable_metrics::{
         telemetry::{PLAN_ACTIVE_GENERATION, PLAN_INSTALLS_TOTAL, PLAN_LIVE_GENERATIONS, PLAN_REWRITES_APPLIED},
         test_support::{configuration, programmable_metrics, ConfigCell},
@@ -155,21 +155,33 @@ fn timestamped(name: &'static str) -> Event {
     Event::Metric(Metric::counter(Context::from_static_name(name), (1_700_000_000, 1.0)))
 }
 
-/// A transform that forwards every batch unchanged, standing in for aggregation, so that what aggregation receives
-/// reaches the outputs at once.
+/// A transform that forwards every batch unchanged on its one output, standing in for aggregation, so that what
+/// aggregation receives reaches the outputs at once: on the default output in place of the native component, or on a
+/// named one in place of aggregation's region, with the header the region before it stamped.
 struct ForwardingTransformBuilder {
     outputs: [OutputDefinition<EventType>; 1],
+    output: Option<String>,
 }
 
 impl ForwardingTransformBuilder {
     fn new() -> Self {
         Self {
             outputs: [OutputDefinition::default_output(EventType::Metric)],
+            output: None,
+        }
+    }
+
+    fn named(output: String) -> Self {
+        Self {
+            outputs: [OutputDefinition::named_output(output.clone(), EventType::Metric)],
+            output: Some(output),
         }
     }
 }
 
-struct ForwardingTransform;
+struct ForwardingTransform {
+    output: Option<String>,
+}
 
 #[async_trait]
 impl TransformBuilder for ForwardingTransformBuilder {
@@ -182,7 +194,9 @@ impl TransformBuilder for ForwardingTransformBuilder {
     }
 
     async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        Ok(Box::new(ForwardingTransform))
+        Ok(Box::new(ForwardingTransform {
+            output: self.output.clone(),
+        }))
     }
 }
 
@@ -198,9 +212,10 @@ impl Transform for ForwardingTransform {
         loop {
             tokio::select! {
                 _ = health.live() => continue,
-                events = context.events().next() => match events {
-                    Some(events) => context.dispatcher().dispatch(events).await?,
-                    None => break,
+                events = context.events().next() => match (events, &self.output) {
+                    (Some(events), None) => context.dispatcher().dispatch(events).await?,
+                    (Some(events), Some(output)) => context.dispatcher().dispatch_named(output, events).await?,
+                    (None, _) => break,
                 },
             }
         }
@@ -208,27 +223,30 @@ impl Transform for ForwardingTransform {
     }
 }
 
-/// What stands in for DogStatsD aggregation in a test topology.
+/// What runs DogStatsD aggregation in a test topology.
 #[derive(Clone, Copy)]
 enum Aggregation {
-    /// The native aggregation component, configured as the configuration says.
+    /// Aggregation as a kernel in its `dsd_agg` region, configured as the configuration says.
     Native,
 
-    /// A transform that forwards what it receives.
+    /// A transform that forwards what it receives, in place of aggregation's region. It answers no control message,
+    /// so a topology with it installs no generation but the boot one.
     Forwarding,
 }
 
-fn add_aggregation(blueprint: &mut TopologyBlueprint, config: &SalukiConfiguration, aggregation: Aggregation) {
-    match aggregation {
-        Aggregation::Native => {
-            let (aggregate, _snapshots) = dogstatsd_aggregate_configuration(config).unwrap();
-            blueprint.add_transform("dsd_agg", aggregate).unwrap();
-        }
-        Aggregation::Forwarding => {
-            blueprint
-                .add_transform("dsd_agg", ForwardingTransformBuilder::new())
-                .unwrap();
-        }
+/// Replaces aggregation's region with a forwarding transform, for [`Aggregation::Forwarding`].
+fn replace_aggregation(blueprint: &mut TopologyBlueprint, aggregation: Aggregation) {
+    if let Aggregation::Forwarding = aggregation {
+        let snapshot = blueprint.snapshot().unwrap();
+        let region = snapshot
+            .components()
+            .iter()
+            .find(|component| &**component.id() == "dsd_agg")
+            .expect("aggregation runs in its region");
+        let output = region.outputs()[0].name().to_string();
+        blueprint
+            .replace_transform("dsd_agg", ForwardingTransformBuilder::named(output))
+            .unwrap();
     }
 }
 
@@ -266,7 +284,6 @@ impl Running {
                 },
             )
             .unwrap();
-        add_aggregation(&mut blueprint, &config, aggregation);
         let boot = metrics.boot_topology();
         let (main, main_output) = mpsc::unbounded_channel();
         let (telemetry, telemetry_output) = mpsc::unbounded_channel();
@@ -284,6 +301,7 @@ impl Running {
         }
         add_regions(&mut blueprint, boot).unwrap();
         connect_frame(&mut blueprint, boot).unwrap();
+        replace_aggregation(&mut blueprint, aggregation);
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())
@@ -360,11 +378,14 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
     let mut running = Running::start("", Aggregation::Native).await;
     status_where(&running.status, |status| active(status) == Some(1)).await;
     assert_eq!(gauge(&recorder, "metric_filterlist_size", PREFIX_FILTER), Some(0.0));
-    // The installer reports the rewrites applied in compiling the boot generation, by rewrite, from boot: none applies
-    // to DogStatsD's default program (see the next test for one that does).
+    // The installer reports the rewrites applied in compiling the boot generation, by rewrite, from boot: R5b pushes
+    // the post-aggregation filter into aggregation, once, and nothing else applies to DogStatsD's default program (see
+    // the next test for a decision-time rewrite; gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R5b, R6, R7).
     let rewrites =
         || RewriteId::ALL.map(|rewrite| gauge(&recorder, PLAN_REWRITES_APPLIED, &[("rewrite", rewrite.as_str())]));
-    assert_eq!(rewrites(), [Some(0.0); 6]);
+    let mut pushed = [Some(0.0); 7];
+    pushed[4] = Some(1.0);
+    assert_eq!(rewrites(), pushed);
 
     // Generation 1 runs the boot configuration, which blocks nothing.
     assert_eq!(running.send(&["blocked", "kept"]).await, ["blocked", "kept"]);
@@ -396,8 +417,8 @@ async fn a_configuration_change_installs_a_new_generation_and_the_old_one_retire
         counter(&recorder, PLAN_INSTALLS_TOTAL, &[("outcome", "unchanged")]),
         Some(1)
     );
-    // And it sets them at every commit, for the generation committed: still none here.
-    assert_eq!(rewrites(), [Some(0.0); 6]);
+    // And it sets them at every commit, for the generation committed: still R5b alone here.
+    assert_eq!(rewrites(), pushed);
     // The native filterlist's size and updates, which the installer records from the plan's bindings.
     assert_eq!(gauge(&recorder, "metric_filterlist_size", PREFIX_FILTER), Some(1.0));
     assert_eq!(
@@ -456,11 +477,21 @@ async fn the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_
         || RewriteId::ALL.map(|rewrite| gauge(&recorder, PLAN_REWRITES_APPLIED, &[("rewrite", rewrite.as_str())]));
 
     // With mirroring off, the Multi-Region Failover gateway's predicate, `all(flag(enabled), flag(mirroring), ...)`,
-    // is false given its resolved values, so decision compilation folds it (R3): one application, from boot. Nothing
-    // else applies (gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R6, R7).
-    let running = Running::start(&multi_region_failover(false), Aggregation::Forwarding).await;
+    // is false given its resolved values, so decision compilation folds it (R3): one application, from boot. Beside it,
+    // R5b pushes the post-aggregation filter into aggregation (gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R5b,
+    // R6, R7).
+    // Aggregation runs in its region, which every commit prepares too.
+    let running = Running::start(&multi_region_failover(false), Aggregation::Native).await;
     let boot = status_where(&running.status, |status| active(status) == Some(1)).await;
-    let folded = [Some(0.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0)];
+    let folded = [
+        Some(0.0),
+        Some(1.0),
+        Some(0.0),
+        Some(0.0),
+        Some(1.0),
+        Some(0.0),
+        Some(0.0),
+    ];
     assert_eq!(rewrites(), folded);
     // The active plan's explain document lists the same applications.
     let explained = |status: &PlanStatus| {
@@ -472,14 +503,16 @@ async fn the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_
             .map(|rewrite| rewrite.id.clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(explained(&boot), ["R3"]);
+    assert_eq!(explained(&boot), ["R5b", "R3"]);
 
     // Mirroring on: the predicate now depends on each metric's name (the allowlist is not empty), so the generation
     // committed folds nothing, and the gauges say so at the commit.
     running.cell.set(configuration(&multi_region_failover(true)).await);
     let mirroring = status_where(&running.status, |status| active(status) == Some(2)).await;
-    assert_eq!(rewrites(), [Some(0.0); 6]);
-    assert!(explained(&mirroring).is_empty());
+    let mut pushed = [Some(0.0); 7];
+    pushed[4] = Some(1.0);
+    assert_eq!(rewrites(), pushed);
+    assert_eq!(explained(&mirroring), ["R5b"]);
 
     // And off again.
     running.cell.set(configuration(&multi_region_failover(false)).await);
@@ -574,7 +607,7 @@ async fn a_preparation_no_region_acknowledges_is_aborted_and_retried_with_backof
     assert_eq!(state_of(&retried, 2), Some(GenerationState::Rejected));
     assert_eq!(
         reason_of(&retried, 2).as_deref(),
-        Some("the regions `dsd_pre_aggregation`, `metrics_enrich` did not acknowledge within 10s")
+        Some("the regions `dsd_pre_aggregation`, `dsd_agg`, `metrics_enrich` did not acknowledge within 10s")
     );
     assert_eq!(active(&retried), Some(1));
     status_where(&status, |status| {
@@ -641,7 +674,7 @@ async fn a_restarted_installer_continues_the_preparation_it_left() {
     assert_eq!(retried.config_changes, 1);
     assert_eq!(
         reason_of(&retried, 2).as_deref(),
-        Some("the regions `dsd_pre_aggregation`, `metrics_enrich` did not acknowledge within 10s")
+        Some("the regions `dsd_pre_aggregation`, `dsd_agg`, `metrics_enrich` did not acknowledge within 10s")
     );
     let generations = retried
         .installer
@@ -693,6 +726,7 @@ fn plan_status_describes_itself_for_the_logs() {
             live: vec![generation(1), generation(2)],
             revision_high_water: None,
             generations: Vec::new(),
+            cut: None,
         },
         degraded: vec!["bad".to_string()],
         config_changes: 3,
@@ -727,6 +761,51 @@ fn plan_status_describes_itself_for_the_logs() {
         "no generation active (artifact `demo` revision 7), 2 live, 3 configuration changes observed, stale base, \
          stale review"
     );
+
+    // A cut in flight says how far it got.
+    let at = saluki_core::execution::AdmissionTime::from_unix_secs(1_700_000_100);
+    let cut = |phase: CutPhase, deferred| saluki_metric_plan::install::CutStatus {
+        generation: generation(2),
+        at: phase.at(),
+        phase,
+        stamped_new: false,
+        passed: 0,
+        total: 1,
+        deferred,
+    };
+    let cases = [
+        (
+            cut(
+                CutPhase::Barrier,
+                Some((
+                    CutDeferReason::ClockAhead {
+                        by: Duration::from_secs(10),
+                    },
+                    2,
+                )),
+            ),
+            "cut to generation 2 not armed yet (put off 2 times: a clock 10s ahead of its wall clock)",
+        ),
+        (
+            cut(CutPhase::Barrier, Some((CutDeferReason::Timeout, 1))),
+            "cut to generation 2 not armed yet (put off once: admission points busy)",
+        ),
+        (cut(CutPhase::Armed { at }, None), "cut to generation 2 armed at "),
+        (
+            cut(CutPhase::Irrevocable { at }, None),
+            "cut to generation 2 irrevocable at ",
+        ),
+    ];
+    for (cut, expected) in cases {
+        let mut status = with_artifact.clone();
+        status.apply_states = ApplyStates::default();
+        status.installer.cut = Some(cut);
+        let described = status.to_string();
+        assert!(described.contains(expected), "{}", described);
+        if let CutPhase::Irrevocable { .. } = cut.phase {
+            assert!(described.ends_with(", 0 of 1 admission points passed"), "{}", described);
+        }
+    }
 }
 
 /// A metric as an output receives it, for comparing outputs as multisets: its name, its tags, sorted, and its values.

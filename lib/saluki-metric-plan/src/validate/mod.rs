@@ -19,6 +19,9 @@
 //!   that share a recipient as one (see [the analysis](#duplicate-analysis)).
 //! - **Scopes:** every scope's inputs are declared by the catalog, and every scope is closed, so that an artifact
 //!   replacing it changes nothing outside it.
+//! - **State:** a plan's state owners use at most one bucket width above 60 seconds, a `timestamp_split` gives
+//!   timestamped counters the rate interval of the aggregation its untimestamped points go to, and an artifact's
+//!   context limits fit within the host's state budget (a warning).
 //! - **Bounds:** the [limits][crate::limits] on artifacts apply to nodes with artifact provenance only, so that large
 //!   native configurations stay valid.
 //! - **Authority:** every lossy node has provenance, only native configuration places host-owned operators, nodes in
@@ -59,6 +62,7 @@ mod duplicates;
 pub(crate) mod graph;
 mod references;
 pub(crate) use self::references::binding_uses;
+mod state;
 mod types;
 pub(crate) use self::types::describe as describe_port_type;
 
@@ -167,6 +171,14 @@ rules! {
     DuplicateContribution => "duplicate_contribution", Error;
     /// The duplicate analysis completes within its work limit.
     DuplicateAnalysisLimit => "duplicate_analysis_limit", Error;
+    /// A plan's state owners use at most one bucket width above 60 seconds, so that its widths line up at least every
+    /// max(60 s, largest width).
+    WidthsAboveSixty => "widths_above_sixty", Error;
+    /// A `timestamp_split` gives timestamped counters the rate interval of the aggregation its untimestamped points go
+    /// to: its `window` equals that aggregation's.
+    SplitWindow => "split_window", Error;
+    /// An artifact's state owner's context limit is at most the host's state budget, which every state owner shares.
+    StateBudget => "state_budget", Warning;
     /// An artifact has no more nodes than the limit.
     ArtifactNodes => "artifact_nodes", Error;
     /// An artifact's predicates have no more leaves than the limit.
@@ -427,6 +439,7 @@ impl<'a> Validator<'a> {
         record_port_types(&graph, &types, &mut report);
         references::check(&graph, &types, plan, self.catalog, &mut report);
         duplicates::check(&graph, &types, plan, &mut report);
+        state::check(&graph, Some(self.catalog), &mut report);
         bounds::check(&graph, plan, &mut report);
 
         report
@@ -447,6 +460,7 @@ pub(crate) fn revalidate(registry: &OperatorRegistry, plan: &Plan) -> Validation
     references::check_scope_input_ports(&graph, plan, &mut report);
     references::check_scope_closure(&graph, plan, &mut report);
     duplicates::check(&graph, &types, plan, &mut report);
+    state::check(&graph, None, &mut report);
     bounds::check(&graph, plan, &mut report);
     report
 }

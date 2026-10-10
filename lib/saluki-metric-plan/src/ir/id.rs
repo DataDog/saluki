@@ -499,13 +499,20 @@ string_serde!(
 const ARTIFACT_PORT_REF_PATTERN: &str =
     "^[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}\\.(?:[a-z](?:[a-z0-9]|_(?=[a-z0-9])){0,62}|0|[1-9][0-9]{0,3})$";
 
-/// A reference to a port within a policy artifact, serialized as `input.<name>` or `<node>.<port>`.
+/// A reference to a port within a policy artifact, serialized as `input.<name>`, `exit.<name>`, or `<node>.<port>`.
 ///
 /// Artifact nodes are named by local identifiers, because composing the artifact into a plan decides their namespace.
+/// A scope's inputs and exits are named by the scope: an edge leaves a scope input, as `input.metrics`, and an edge
+/// that leaves the scope before the end of its paths enters one of its exits, as `exit.aggregated`. Which end of an
+/// edge each may be is checked when an artifact is read ([`PolicyArtifact::from_value`][super::PolicyArtifact]), and
+/// whether the scope declares the name when the artifact is composed into a plan.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ArtifactPortRef {
     /// One of the scope's named inputs.
     Input(InputName),
+
+    /// One of the scope's named exits: where an edge leaves the scope. Only an edge's target can be an exit.
+    Exit(ExitName),
 
     /// A port of one of the artifact's nodes.
     Node {
@@ -521,6 +528,7 @@ impl fmt::Display for ArtifactPortRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Input(name) => write!(f, "{}.{}", SCOPE_INPUT_NODE, name),
+            Self::Exit(name) => write!(f, "{}.{}", SCOPE_EXIT_NODE, name),
             Self::Node { node, port } => write!(f, "{}.{}", node, port),
         }
     }
@@ -534,11 +542,14 @@ impl FromStr for ArtifactPortRef {
             invalid(
                 "artifact port reference",
                 value,
-                "artifact port references are `input.<name>` or a node ID and a port name separated by a period",
+                "artifact port references are `input.<name>`, `exit.<name>`, or a node ID and a port name separated by \
+                 a period",
             )
         })?;
         if node == SCOPE_INPUT_NODE {
             Ok(Self::Input(port.parse()?))
+        } else if node == SCOPE_EXIT_NODE {
+            Ok(Self::Exit(port.parse()?))
         } else {
             Ok(Self::Node {
                 node: node.parse()?,
@@ -552,7 +563,8 @@ string_serde!(
     ArtifactPortRef,
     ARTIFACT_PORT_REF_PATTERN,
     (MAX_IDENTIFIER_LEN + 1 + MAX_IDENTIFIER_LEN) as u32,
-    "A port reference within a policy artifact: `input.<name>` or `<node>.<port>`."
+    "A port reference within a policy artifact: `input.<name>` (a scope input, only as an edge's source), \
+     `exit.<name>` (a scope exit, only as an edge's target), or `<node>.<port>`."
 );
 
 const BINDING_NAME_PATTERN: &str = "^[a-z0-9_]+(?:\\.[a-z0-9_]+)*$";
@@ -925,8 +937,20 @@ mod tests {
         assert!(error.contains("`input` is reserved"), "{}", error);
         let error = ArtifactNodeId::new("exit").unwrap_err().to_string();
         assert!(error.contains("`exit` is reserved"), "{}", error);
-        assert!("exit.aggregated".parse::<ArtifactPortRef>().is_err());
+        // A scope's exits are named, as its inputs are, and print as they parse.
+        let exit = "exit.aggregated".parse::<ArtifactPortRef>().unwrap();
+        assert_eq!(exit, ArtifactPortRef::Exit(ExitName::new("aggregated").unwrap()));
+        assert_eq!(exit.to_string(), "exit.aggregated");
+        assert!("exit.0".parse::<ArtifactPortRef>().is_err());
+        assert!("exit.Aggregated".parse::<ArtifactPortRef>().is_err());
         assert!(ArtifactNodeId::new("exits").is_ok());
+        assert_eq!(
+            "exits.in".parse::<ArtifactPortRef>().unwrap(),
+            ArtifactPortRef::Node {
+                node: ArtifactNodeId::new("exits").unwrap(),
+                port: PortName::new("in").unwrap(),
+            }
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@ explain_version 1
 
 plan
   ir_version 1
-  hash sha256:0803dbedd60a7d16e40f51419e4399ce92797d2b0613e7db7ae0e85390d8f8f8
-  structural_hash sha256:97dbc94c8d3a6ad90066d4599fc042fadf8152b9770da6b678be54c4d05cc0f0
+  hash sha256:7059ee443aa854a2bd73abf3fde57f3356f2143b885f1ac8aab9dde00edf8d92
+  structural_hash sha256:44613794d8a96eab70bf387629d4fd044f94f0fa8c6ed72c5dc0d96a9d6db462
   valid: 0 errors, 0 warnings
 
 nodes (34)
@@ -53,7 +53,7 @@ nodes (34)
     binding cache_capacity <- dogstatsd.aggregation.aggregator_tag_filter_cache_capacity = 100000
     in in <- dsd_no_agg_split.default, accepts every kind (mixed timestamps)
     out out -> dsd_agg.in, carries counter, gauge, set, histogram, distribution (untimestamped)
-  dsd_agg: aggregate [opaque_host, state keyed] native dsd_agg
+  dsd_agg: aggregate [isolated, state keyed] native dsd_agg
     loss policy, capacity, shutdown
     param context_limit = {"config":"dogstatsd.aggregation.context_limit","resolved":1000000}
     param copy_to_distribution = {"config":"metrics_encoding.histogram.copy_to_distribution","resolved":false}
@@ -265,7 +265,8 @@ outputs (6)
     delivery native
     emitted by af_metrics_gateway_true
 
-scopes (1)
+scopes (2)
+  dogstatsd_pre_aggregation: metrics = dsd_in.metrics; exits aggregated = dsd_post_agg_filter_in.0, passthrough = dsd_post_agg_filter_in.1
   post_enrich: metrics = metrics_enrich_host_tags.out
 
 bounds (4)

@@ -7,12 +7,13 @@
 //! region or prepares a generation in it, through [`RegisterTelemetry`]: a region never registers telemetry itself.
 
 use saluki_core::execution::{LossClass, LossCount, TurnCounters};
-use saluki_metrics::{Counter, MetricsBuilder};
+use saluki_metrics::{Counter, Gauge, MetricsBuilder};
 
 use crate::{
     compile::{RegionProgram, Route, Step},
     explain::loss_class_name,
     ir::{NodeId, PortName},
+    operators::names,
 };
 
 /// The name of the counter of events leaving each output port of each node a region runs, tagged `component_id` (the
@@ -22,6 +23,50 @@ pub const PLAN_NODE_EVENTS_TOTAL: &str = "plan_node_events_total";
 /// The name of the counter of points lost, tagged `component_id` (the node, or the region for loss outside any node)
 /// and `class` (`policy`, `capacity`, `invalid`, or `shutdown`).
 pub const PLAN_LOSS_TOTAL: &str = "plan_loss_total";
+
+/// The name of the gauge of how far an isolation slot's watermark lags its wall clock, in seconds, when the region
+/// publishes, tagged `component_id` (the region).
+pub const PLAN_STATE_WATERMARK_LAG_SECONDS: &str = "plan_state_watermark_lag_seconds";
+
+/// The name of the gauge of the lineages an isolation slot holds: instances of its state owners' state that have not
+/// retired, tagged `component_id` (the region).
+pub const PLAN_STATE_LINEAGES: &str = "plan_state_lineages";
+
+/// The name of the counter of clock resets an isolation slot ran, tagged `component_id` (the region).
+pub const PLAN_CLOCK_RESETS_TOTAL: &str = "plan_clock_resets_total";
+
+/// The name of the counter of flush ticks an isolation slot fired once their grace ended, at the watermark rather than
+/// at the tick's wall-clock second, tagged `component_id` (the region).
+pub const PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL: &str = "plan_state_tick_grace_expired_total";
+
+/// The handles an isolation slot publishes its own telemetry to: its watermark lag, its lineages, its clock resets, and
+/// its flush ticks whose grace ended.
+#[derive(Clone, Debug)]
+pub struct StateTelemetry {
+    /// [`PLAN_STATE_WATERMARK_LAG_SECONDS`].
+    pub watermark_lag: Gauge,
+
+    /// [`PLAN_STATE_LINEAGES`].
+    pub lineages: Gauge,
+
+    /// [`PLAN_CLOCK_RESETS_TOTAL`].
+    pub clock_resets: Counter,
+
+    /// [`PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL`].
+    pub tick_grace_expired: Counter,
+}
+
+impl StateTelemetry {
+    /// Returns handles that record nothing.
+    pub fn noop() -> Self {
+        Self {
+            watermark_lag: Gauge::noop(),
+            lineages: Gauge::noop(),
+            clock_resets: Counter::noop(),
+            tick_grace_expired: Counter::noop(),
+        }
+    }
+}
 
 /// The loss classes, in the order a region keeps their counts.
 pub(super) const LOSS_CLASSES: [LossClass; 4] = [
@@ -50,6 +95,13 @@ pub trait RegisterTelemetry {
     /// `component_id` is a node, or the region itself for loss outside any node, such as a batch no program can
     /// process.
     fn loss(&self, component_id: &str, class: LossClass) -> Counter;
+
+    /// Returns the handles the isolation slot `region` publishes its own telemetry to; see [`StateTelemetry`].
+    ///
+    /// The default records nothing.
+    fn state(&self, _region: &str) -> StateTelemetry {
+        StateTelemetry::noop()
+    }
 }
 
 /// The plan-level telemetry of a region: [`PLAN_NODE_EVENTS_TOTAL`] and [`PLAN_LOSS_TOTAL`], registered with a
@@ -82,6 +134,20 @@ impl RegisterTelemetry for PlanTelemetry {
                 ("class", loss_class_name(class).to_string()),
             ],
         )
+    }
+
+    fn state(&self, region: &str) -> StateTelemetry {
+        let tags = || [("component_id", region.to_string())];
+        StateTelemetry {
+            watermark_lag: self
+                .builder
+                .register_gauge_with_tags(PLAN_STATE_WATERMARK_LAG_SECONDS, tags()),
+            lineages: self.builder.register_gauge_with_tags(PLAN_STATE_LINEAGES, tags()),
+            clock_resets: self.builder.register_counter_with_tags(PLAN_CLOCK_RESETS_TOTAL, tags()),
+            tick_grace_expired: self
+                .builder
+                .register_counter_with_tags(PLAN_STATE_TICK_GRACE_EXPIRED_TOTAL, tags()),
+        }
     }
 }
 
@@ -151,7 +217,7 @@ impl Layout {
                             }
                         }
                     }
-                    Step::Map { .. } | Step::Concat { .. } | Step::Exit { .. } => {}
+                    Step::Map { .. } | Step::Concat { .. } | Step::Exit { .. } | Step::State { .. } => {}
                 }
             }
         }
@@ -177,6 +243,17 @@ pub(super) struct ProgramTelemetry {
     decision_ports: Vec<Vec<Counter>>,
     drops: Vec<Counter>,
     kernel_loss: Vec<[Counter; 4]>,
+    /// The series of the filter R5b pushed into each kernel, by kernel index.
+    pushed: Vec<Option<PushedTelemetry>>,
+}
+
+/// The series of a filter R5b pushed into a state owner, which count the records the state owner suppresses at
+/// emission as the filter would have counted them: the records on the filter's port to its `drop`, and their points
+/// as the `drop`'s policy loss. Equal labels name the same series in every region, so the filter's series are what
+/// they would be without the rewrite.
+struct PushedTelemetry {
+    records: Vec<Counter>,
+    points: Counter,
 }
 
 impl ProgramTelemetry {
@@ -203,12 +280,35 @@ impl ProgramTelemetry {
             .iter()
             .map(|node| telemetry.loss(&node.to_string(), LossClass::Policy))
             .collect();
+        let mut pushed = (0..program.kernels().len()).map(|_| None).collect::<Vec<_>>();
+        for entry in program.entries() {
+            for step in &entry.steps {
+                let Step::State { kernel, params, .. } = step else {
+                    continue;
+                };
+                let Some(site) = program.state_param(*params).and_then(|entry| entry.pushed.as_ref()) else {
+                    continue;
+                };
+                if let Some(slot) = pushed.get_mut(kernel.get()) {
+                    *slot = Some(PushedTelemetry {
+                        records: telemetry.port_events(&site.filter, names::SPLIT, &site.drop_port),
+                        points: telemetry.loss(&site.drop.to_string(), LossClass::Policy),
+                    });
+                }
+            }
+        }
         Self {
             kernel_ports,
             decision_ports,
             drops,
             kernel_loss,
+            pushed,
         }
+    }
+
+    /// Returns `true` if R5b pushed a filter into the kernel at `kernel`, whose suppressed records it counts.
+    pub fn has_pushed_filter(&self, kernel: usize) -> bool {
+        self.pushed.get(kernel).is_some_and(Option::is_some)
     }
 
     /// Adds `counts` to the counters and resets them.
@@ -229,6 +329,19 @@ impl ProgramTelemetry {
                 }
             }
             *loss = TurnCounters::default();
+        }
+        for (pushed, suppressed) in self.pushed.iter().zip(counts.pushed.iter_mut()) {
+            if let Some(pushed) = pushed {
+                if suppressed.events > 0 {
+                    for counter in &pushed.records {
+                        counter.increment(suppressed.events);
+                    }
+                }
+                if suppressed.points > 0 {
+                    pushed.points.increment(suppressed.points);
+                }
+            }
+            *suppressed = LossCount::default();
         }
     }
 }
@@ -256,6 +369,9 @@ pub(super) struct ProgramCounts {
     pub drops: Vec<LossCount>,
     /// Loss each kernel reported, by kernel index.
     pub kernel_loss: Vec<TurnCounters>,
+    /// The records, as events, and their points, that each kernel suppressed at emission for the filter R5b pushed into
+    /// it, by kernel index.
+    pub pushed: Vec<LossCount>,
 }
 
 impl ProgramCounts {
@@ -265,6 +381,7 @@ impl ProgramCounts {
             decision_ports: vec![0; layout.decision_port_count],
             drops: vec![LossCount::default(); layout.drops.len()],
             kernel_loss: vec![TurnCounters::default(); layout.kernel_ports.len()],
+            pushed: vec![LossCount::default(); layout.kernel_ports.len()],
         }
     }
 }
