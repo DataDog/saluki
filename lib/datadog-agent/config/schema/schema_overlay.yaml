@@ -196,6 +196,13 @@ inventory:
       additional_attributes:
         config_registry_filename: forwarder.rs
 
+  apm_config.apm_non_local_traffic:
+    support: full
+    pipelines: [traces]
+    description: "Accept non-local traffic on the APM receiver"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.compute_stats_by_span_kind:
     support: full
     pipelines: [traces]
@@ -484,6 +491,25 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  apm_config.receiver_port:
+    support: full
+    pipelines: [traces]
+    description: "APM receiver TCP port"
+    documentation: |-
+      With `data_plane.experimental.apm.enabled` set, ADP binds the trace receiver's TCP port (and
+      `apm_config.receiver_socket`) in front of the trace-agent, which moves to
+      `data_plane.experimental.apm.proxy_destination`. `0` disables the TCP listener, as it does for
+      the trace-agent.
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.receiver_socket:
+    support: full
+    pipelines: [traces]
+    description: "APM receiver Unix domain socket path"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.replace_tags:
     support: full
     pipelines: [traces]
@@ -542,12 +568,12 @@ inventory:
 
   bind_host:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [dogstatsd, traces]
     description: "Global listen host fallback"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
-        config_registry_filename: dogstatsd.rs
+        config_registry_filename: shared.rs
 
   cluster_agent.auth_token:
     support: full
@@ -3985,7 +4011,6 @@ excluded:
   apm_config.analyzed_rate_by_service: "ignored in initial audit 2026-04-23"
   apm_config.analyzed_spans: "ignored in initial audit 2026-04-23"
   apm_config.apm_dd_url: "ignored in initial audit 2026-04-23"
-  apm_config.apm_non_local_traffic: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
   apm_config.connection_limit: "ignored in initial audit 2026-04-23"
@@ -4050,8 +4075,6 @@ excluded:
   apm_config.profiling_receiver_timeout: "ignored in initial audit 2026-04-23"
   apm_config.profiling_send_to_main_endpoint: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.receiver_enabled: "ignored in initial audit 2026-04-23"
-  apm_config.receiver_port: "ignored in initial audit 2026-04-23"
-  apm_config.receiver_socket: "ignored in initial audit 2026-04-23"
   apm_config.receiver_timeout: "ignored in initial audit 2026-04-23"
   apm_config.send_all_internal_stats: "ignored in initial audit 2026-04-23"
   apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"

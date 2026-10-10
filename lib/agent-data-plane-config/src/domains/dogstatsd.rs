@@ -90,9 +90,6 @@ pub struct Listeners {
     /// Whether the UDP listener accepts traffic from non-local addresses.
     pub non_local_traffic: bool,
 
-    /// Host the UDP listener binds to.
-    pub bind_host: Option<String>,
-
     /// Size, in bytes, requested for the socket receive buffer.
     pub so_rcvbuf: usize,
 
@@ -153,7 +150,6 @@ impl Default for Listeners {
             pipe_name: None,
             windows_pipe_security_descriptor: String::new(),
             non_local_traffic: false,
-            bind_host: None,
             so_rcvbuf: 0,
             buffer_size: 0,
             workers_count: 0,
