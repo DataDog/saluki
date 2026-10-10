@@ -86,16 +86,20 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(context.component_context());
-        let traces_translator = OtlpTracesTranslator::new(
+        Ok(Box::new(OtlpDecoder {
+            traces_translator: self.traces_translator(),
+            metrics,
+        }))
+    }
+}
+
+impl OtlpDecoderConfiguration {
+    fn traces_translator(&self) -> OtlpTracesTranslator {
+        OtlpTracesTranslator::new(
             self.traces.clone(),
             self.max_resource_len,
             self.semantic_registry.clone(),
-        );
-
-        Ok(Box::new(OtlpDecoder {
-            traces_translator,
-            metrics,
-        }))
+        )
     }
 }
 
@@ -200,5 +204,31 @@ impl Decoder for OtlpDecoder {
         debug!("OTLP decoder stopped.");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datadog_agent_remote_config::TestPublisher;
+
+    use super::*;
+    use crate::common::otlp::semantics::remote_config::SemanticCoreDecoder;
+    use crate::common::otlp::traces::translator::{custom_status_code_registry, translate_custom_status_code};
+
+    #[test]
+    fn injected_provider_reaches_the_traces_translator() {
+        let (publisher, subscription) = TestPublisher::new();
+        let traces = domains::otlp::Traces {
+            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            ..Default::default()
+        };
+        let mut translator = OtlpDecoderConfiguration::from_configuration(&traces)
+            .with_semantic_registry(SemanticRegistryProvider::from_subscription(subscription))
+            .traces_translator();
+        let metrics = Metrics::for_tests();
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), None);
+
+        publisher.assign::<SemanticCoreDecoder>([("a", custom_status_code_registry())]);
+        assert_eq!(translate_custom_status_code(&mut translator, &metrics), Some(418.0));
     }
 }
