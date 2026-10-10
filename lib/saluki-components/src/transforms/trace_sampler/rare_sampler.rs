@@ -15,7 +15,7 @@
 use std::time::{Duration, Instant};
 
 use saluki_common::{collections::FastHashMap, rate::TokenBucket};
-use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span, Trace};
 use stringtheory::MetaString;
 
 use super::signature::{span_hash_for_rare, ServiceSignature, Signature};
@@ -259,7 +259,7 @@ mod tests {
     use std::time::Duration;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
+    use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
     use super::super::telemetry::SamplerCounters;

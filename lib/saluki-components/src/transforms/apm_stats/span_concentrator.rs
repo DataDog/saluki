@@ -3,7 +3,7 @@
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::{
     event::{
-        trace::{AttributeValue, Span},
+        trace::{AttributeValue, AttributeValueExt as _, Span},
         trace_stats::{ClientStatsBucket, ClientStatsPayload},
     },
     tags::TagSet,

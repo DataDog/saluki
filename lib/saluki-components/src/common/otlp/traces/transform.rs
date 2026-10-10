@@ -16,7 +16,7 @@ use otlp_protos::opentelemetry::proto::trace::v1::{
 };
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span as DdSpan};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::interning::{GenericMapInterner, Interner};
 use stringtheory::MetaString;

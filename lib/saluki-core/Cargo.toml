@@ -24,6 +24,7 @@ ddsketch = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
+libdd-trace-model = { workspace = true }
 loom = { workspace = true, optional = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
@@ -44,7 +45,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
-stringtheory = { workspace = true }
+stringtheory = { workspace = true, features = ["trace-model"] }
 tokio = { workspace = true, features = [
   "macros",
   "rt",

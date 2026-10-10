@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{AttributeValue, Span};
+use saluki_core::data_model::event::trace::{AttributeValue, AttributeValueExt as _, Span};
 use stringtheory::MetaString;
 
 /// Family type for the span transform evaluation context.

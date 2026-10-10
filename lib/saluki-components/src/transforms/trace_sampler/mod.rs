@@ -20,7 +20,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, BuildContext},
     data_model::event::{
-        trace::{AttributeValue, Span, Trace},
+        trace::{AttributeValue, AttributeValueExt as _, Span, Trace},
         Event, EventType,
     },
     topology::OutputDefinition,
