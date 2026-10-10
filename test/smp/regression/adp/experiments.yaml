@@ -1255,6 +1255,63 @@ experiments:
                           min: 0
                           max: 255
 
+  # Converged DDOT comparison leg: Raymond's proven converged shape but with the
+  # full metric-type payload (all types including histograms/summaries) and our
+  # gRPC 5 MiB/s load. Single-variable from the passing replication: the payload.
+  # If this passes, we have the DDOT number for the comparison notebook. If it
+  # OOMs, the version-gap finding extends to the converged shape with the new
+  # payload types — the production-relevant result.
+  #
+  # Runs on the same converged image as the Agent/ADP legs (entrypoint.sh + s6,
+  # core agent running) with DD_OTELCOLLECTOR_ENABLED=true routing OTLP to the
+  # otel-agent sidecar. The otel-config is minimal — the converter injects the
+  # rest (cumulativetodelta, batch, etc.) as it does in production.
+  - name: otlp_ingest_metrics_ddot_converged_fullmix
+    extends: otlp_ingest_converged_base
+    optimization_goal: memory
+    target:
+      environment:
+        # Route OTLP to the otel-agent sidecar (converged shape).
+        DD_OTELCOLLECTOR_ENABLED: "true"
+      files:
+        otel-config.yaml:
+          content:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                  http:
+                    endpoint: 0.0.0.0:4318
+            exporters:
+              datadog:
+                hostname: smp-regression
+                api:
+                  key: foo00000001
+                metrics:
+                  endpoint: http://127.0.0.1:9091
+                traces:
+                  endpoint: http://127.0.0.1:9091
+                logs:
+                  endpoint: http://127.0.0.1:9091
+            # Processors are injected by the converter in converged mode —
+            # minimal explicit config lets the converter do its production job.
+            service:
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  exporters: [datadog]
+                traces:
+                  receivers: [otlp]
+                  exporters: [datadog]
+                logs:
+                  receivers: [otlp]
+                  exporters: [datadog]
+    lading:
+      generator:
+        - grpc:
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
   # Leg 3: ADP handles ingest as the data-plane sidecar.
   - name: otlp_ingest_metrics_adp_5mb
     extends: otlp_ingest_converged_base
