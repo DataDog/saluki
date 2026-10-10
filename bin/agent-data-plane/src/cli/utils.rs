@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use agent_data_plane_config::SalukiConfiguration;
 use agent_data_plane_config_system::LoadedConfiguration;
 use datadog_agent_commons::ipc::tls::build_ipc_client_ipc_tls_config;
 use futures::TryFutureExt as _;
@@ -23,19 +24,17 @@ pub struct DataPlaneAPIClient {
     authority: String,
 }
 
+/// Builds a data plane API client from the given typed configuration.
+pub(crate) async fn get_api_client(config: &SalukiConfiguration) -> Result<DataPlaneAPIClient, GenericError> {
+    let dp = DataPlaneConfiguration::from_configuration(config);
+    let listen_address = dp.secure_api_listen_address()?;
+    let ipc_config = dp.ipc_auth_configuration();
+    DataPlaneAPIClient::new(ipc_config.ipc_cert_file_path(), &listen_address).await
+}
+
 /// Builds a data plane API client or exits after logging the error.
 pub(super) async fn get_api_client_or_exit(local_config: &LoadedConfiguration) -> DataPlaneAPIClient {
-    let config = local_config.local();
-    let dp = DataPlaneConfiguration::from_configuration(config);
-    let result = match dp.secure_api_listen_address() {
-        Ok(listen_address) => {
-            let ipc_config = dp.ipc_auth_configuration();
-            DataPlaneAPIClient::new(ipc_config.ipc_cert_file_path(), &listen_address).await
-        }
-        Err(error) => Err(error),
-    };
-
-    match result {
+    match get_api_client(local_config.local()).await {
         Ok(client) => client,
         Err(error) => {
             error!("Failed to create data plane API client: {:#}", error);
