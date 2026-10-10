@@ -1,0 +1,9 @@
+# Sets an unknown YAML section with one child and reads both paths.
+# Checks whether the parent and child each appear in the stream.
+name: yaml-unknown-section
+group: behavior
+why: [unknown-section-duplicate-flattened-keys]
+yaml: |
+  unknown_section_xyz:
+    child_xyz: 1
+keys: [unknown_section_xyz, unknown_section_xyz.child_xyz]

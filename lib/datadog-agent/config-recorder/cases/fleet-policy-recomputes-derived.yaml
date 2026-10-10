@@ -1,0 +1,8 @@
+# Sets forwarder_stop_timeout through a fleet policy and reads the derived timeout.
+# Probes whether the policy merge itself sends an update; selected derivations rerun.
+name: fleet-policy-recomputes-derived
+group: behavior
+why: [fleet-policy-merge-not-notified]
+fleet_policy: |
+  forwarder_stop_timeout: 6
+keys: [data_plane.stop_timeout, forwarder_stop_timeout]

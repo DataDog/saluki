@@ -1335,6 +1335,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-agent-config-corpus"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-config-overlay-model",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "datadog-agent-config-overlay-model"
 version = "0.1.0"
 dependencies = [

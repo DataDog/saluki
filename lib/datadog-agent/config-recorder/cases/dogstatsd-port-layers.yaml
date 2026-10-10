@@ -1,0 +1,15 @@
+# Sets a fleet dogstatsd_port, overrides it at runtime, then removes the runtime value.
+# Shows source priority and loss of the fleet value after removal; removal still notifies.
+name: dogstatsd-port-layers
+group: behavior
+why: [fleet-policies-outranked, unset-always-notifies-even-if-unchanged, fleet-policy-lost-after-higher-unset]
+fleet_policy: |
+  dogstatsd_port: 8130
+cli:
+  - {key: cmd_port, value: "5099"}
+updates:
+  - {key: dogstatsd_port, value: 8131, source: remote-config}
+  - {op: unset, key: dogstatsd_port, source: remote-config}
+keys:
+  - dogstatsd_port
+  - {key: cmd_port, getters: [GetInt, GetString]}

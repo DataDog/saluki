@@ -1,0 +1,11 @@
+# Sets log_level through the CLI, writes a different runtime value, then removes the CLI value.
+# Shows that a shadowed write is stored silently and appears when the CLI value is removed.
+name: update-shadowed-set
+group: behavior
+why: [set-notifies-only-on-resolved-change]
+cli:
+  - {key: log_level, value: "info"}
+updates:
+  - {key: log_level, value: "debug", source: remote-config}
+  - {op: unset, key: log_level, source: cli}
+keys: [log_level]

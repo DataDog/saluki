@@ -1,0 +1,13 @@
+# Reads comma-separated, space-separated, and JSON-array YAML strings as string lists.
+# Shows that the getter tries JSON first and otherwise splits on whitespace, not commas.
+name: string-slice-from-string
+group: behavior
+why: [getter-stringslice-json-then-whitespace]
+yaml: |
+  unknown_comma_xyz: a,b,c
+  unknown_json_xyz: '["a b", "c"]'
+  unknown_space_xyz: a b, c
+keys:
+  - {key: unknown_comma_xyz, getters: [GetStringSlice]}
+  - {key: unknown_json_xyz, getters: [GetStringSlice]}
+  - {key: unknown_space_xyz, getters: [GetStringSlice]}

@@ -1,0 +1,9 @@
+# Sets a known string key and an integer key to unquoted leading-zero YAML numbers.
+# Shows that YAML parses them as octal before casting the string key to text.
+name: yaml-plain-octal
+group: behavior
+why: [yaml-plain-octal-int]
+yaml: |
+  env: 0755
+  dogstatsd_buffer_size: 010
+keys: [dogstatsd_buffer_size, env]

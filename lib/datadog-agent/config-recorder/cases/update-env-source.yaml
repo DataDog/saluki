@@ -1,0 +1,8 @@
+# Sets log_level using the environment-variable source in a runtime update.
+# Shows that this write is allowed in production; the panic guard applies only in test builds.
+name: update-env-source
+group: behavior
+why: [env-var-set-guard-is-test-only]
+updates:
+  - {key: log_level, value: warn, source: environment-variable}
+keys: [log_level]

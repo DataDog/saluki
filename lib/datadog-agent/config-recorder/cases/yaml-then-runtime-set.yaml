@@ -1,0 +1,14 @@
+# Sets three keys in YAML and changes each through an Agent runtime update.
+# Shows that updates notify when their resolved values change.
+name: yaml-then-runtime-set
+group: behavior
+why: [set-notifies-only-on-resolved-change]
+yaml: |
+  logs_enabled: true
+  dogstatsd_port: 8126
+  log_level: error
+updates:
+  - {key: logs_enabled, value: false, source: agent-runtime}
+  - {key: dogstatsd_port, value: 8127, source: agent-runtime}
+  - {key: log_level, value: "debug", source: agent-runtime}
+keys: [logs_enabled, dogstatsd_port, log_level]
