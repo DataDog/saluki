@@ -22,7 +22,7 @@ use saluki_core::{
     },
     observability::ComponentMetricsExt as _,
     runtime,
-    topology::{EventsBuffer, PayloadsBuffer},
+    topology::{EventsBuffer, PayloadsBuffer, PayloadsDispatcher},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::{CompressionScheme, Compressor};
@@ -44,8 +44,9 @@ use crate::{
             V3EndpointConfig,
         },
         io::RB_BUFFER_CHUNK_SIZE,
-        protocol::{MetricsEndpointRouting, MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
+        protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
+        routing::{MetricsRoutingTargets, RoutingTargetCatalog, RoutingTargetKind, RoutingTargetSet},
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_V3_PATH,
@@ -226,8 +227,18 @@ pub struct DatadogMetricsConfiguration {
     /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
     additional_endpoints: HashMap<String, Vec<String>>,
 
-    /// Optional targeting applied to series and sketch payloads emitted by this encoder.
-    endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
+    /// Routing targets that series and sketch payloads emitted by this encoder are addressed to.
+    ///
+    /// When unset, payloads are not addressed to specific targets and reach every endpoint of the forwarder.
+    routing: Option<MetricsRouting>,
+}
+
+/// The routing targets an encoder addresses its payloads to, and the catalog they belong to.
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+struct MetricsRouting {
+    catalog: Arc<RoutingTargetCatalog>,
+    targets: Arc<MetricsRoutingTargets>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -254,7 +265,7 @@ impl DatadogMetricsConfiguration {
             opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
             primary_endpoint: endpoints.primary_endpoint(),
             additional_endpoints: endpoints.additional_endpoints.clone(),
-            endpoint_routing: None,
+            routing: None,
         }
     }
 
@@ -264,9 +275,15 @@ impl DatadogMetricsConfiguration {
         self
     }
 
-    /// Restricts series and sketch payloads to the configured endpoint routing policy.
-    pub fn with_endpoint_routing(mut self, endpoint_routing: MetricsEndpointRouting) -> Self {
-        self.endpoint_routing = Some(Arc::new(endpoint_routing));
+    /// Addresses series and sketch payloads to the given routing targets.
+    ///
+    /// The forwarder these payloads are sent to must share `catalog`. Protocol selection then considers only the
+    /// targeted endpoints: for example, V2 series payloads are not encoded when every targeted endpoint accepts V3.
+    pub fn with_routing(mut self, catalog: Arc<RoutingTargetCatalog>, targets: RoutingTargetSet) -> Self {
+        self.routing = Some(MetricsRouting {
+            catalog,
+            targets: Arc::new(MetricsRoutingTargets::new(targets)),
+        });
         self
     }
 
@@ -301,54 +318,68 @@ impl DatadogMetricsConfiguration {
     }
 
     fn endpoint_v3_settings(
-        &self, endpoint: &ResolvedEndpoint, metrics_primary_v3_override: Option<bool>,
+        &self, configured_endpoint: &str, metrics_primary_v3_override: Option<bool>,
     ) -> EndpointV3Settings {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            configured_endpoint: endpoint.configured_endpoint(),
+            configured_endpoint,
             series_config: &self.use_v3_api.series,
             metrics_primary_v3_override,
             serializer_v3_sketches_endpoints: &self.v3_api.sketches.endpoints,
         })
     }
 
-    fn any_series_endpoint_matches(
-        &self, mut predicate: impl FnMut(&EndpointV3Settings) -> bool,
-    ) -> Result<bool, GenericError> {
+    /// Returns the V3 settings of the endpoint that receives the primary stream.
+    ///
+    /// An alternate metrics intake replaces the primary endpoint for metrics, so it receives the primary stream with its
+    /// own protocol settings.
+    fn primary_stream_v3_settings(&self) -> Result<EndpointV3Settings, GenericError> {
         if let Some((metrics_primary_url, metrics_primary_v3_override)) =
             selected_metrics_primary_endpoint(&self.opw_metrics)
         {
             let metrics_primary = ResolvedEndpoint::from_raw_endpoint(metrics_primary_url, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
-            let settings = self.endpoint_v3_settings(&metrics_primary, Some(metrics_primary_v3_override));
-            // The alternate intake replaces the primary stream, so it inherits the primary's allowlist policy.
-            if self.routes_to_endpoint(&self.primary_endpoint) && predicate(&settings) {
-                return Ok(true);
-            }
+            Ok(self.endpoint_v3_settings(metrics_primary.configured_endpoint(), Some(metrics_primary_v3_override)))
         } else {
             let primary = ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
-            let settings = self.endpoint_v3_settings(&primary, None);
-            if self.routes_to_endpoint(&self.primary_endpoint) && predicate(&settings) {
-                return Ok(true);
+            Ok(self.endpoint_v3_settings(primary.configured_endpoint(), None))
+        }
+    }
+
+    fn any_series_endpoint_matches(
+        &self, mut predicate: impl FnMut(&EndpointV3Settings) -> bool,
+    ) -> Result<bool, GenericError> {
+        if let Some(routing) = &self.routing {
+            for target in routing.targets.targets().iter() {
+                let Some(target) = routing.catalog.get(target) else {
+                    continue;
+                };
+                let settings = match target.kind() {
+                    RoutingTargetKind::Primary => self.primary_stream_v3_settings()?,
+                    RoutingTargetKind::Additional => self.endpoint_v3_settings(target.configured_endpoint(), None),
+                };
+                if predicate(&settings) {
+                    return Ok(true);
+                }
             }
+
+            return Ok(false);
+        }
+
+        if predicate(&self.primary_stream_v3_settings()?) {
+            return Ok(true);
         }
 
         for endpoint in resolve_additional_endpoints(&self.additional_endpoints)
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
-            let settings = self.endpoint_v3_settings(&endpoint, None);
-            if self.routes_to_endpoint(endpoint.configured_endpoint()) && predicate(&settings) {
+            let settings = self.endpoint_v3_settings(endpoint.configured_endpoint(), None);
+            if predicate(&settings) {
                 return Ok(true);
             }
         }
 
         Ok(false)
-    }
-
-    fn routes_to_endpoint(&self, policy_endpoint: &str) -> bool {
-        self.endpoint_routing
-            .as_ref()
-            .is_none_or(|routing| routing.should_route_to(policy_endpoint))
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
@@ -494,7 +525,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             telemetry,
             flush_timeout,
             log_payloads: self.log_payloads,
-            endpoint_routing: self.endpoint_routing.clone(),
+            routing_targets: self.routing.as_ref().map(|routing| Arc::clone(&routing.targets)),
         }))
     }
 }
@@ -532,7 +563,7 @@ pub struct DatadogMetrics {
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
     log_payloads: bool,
-    endpoint_routing: Option<Arc<MetricsEndpointRouting>>,
+    routing_targets: Option<Arc<MetricsRoutingTargets>>,
 }
 
 struct V3RuntimeConfig {
@@ -554,7 +585,7 @@ impl Encoder for DatadogMetrics {
             telemetry,
             flush_timeout,
             log_payloads,
-            endpoint_routing,
+            routing_targets,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -592,10 +623,7 @@ impl Encoder for DatadogMetrics {
                 _ = health.live() => continue,
                 maybe_payload = payloads_rx.recv() => match maybe_payload {
                     Some(payload) => {
-                        let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
-                        if let Err(e) = context.dispatcher().dispatch(payload).await {
-                            error!("Failed to dispatch payload: {}", e);
-                        }
+                        apply_routing_and_dispatch(context.dispatcher(), payload, routing_targets.as_ref()).await;
                     }
                     None => break,
                 },
@@ -615,10 +643,7 @@ impl Encoder for DatadogMetrics {
                                     .error_context("Failed to reserve capacity for event buffer.")?,
                                 maybe_payload = payloads_rx.recv() => match maybe_payload {
                                     Some(payload) => {
-                                        let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
-                                        if let Err(e) = context.dispatcher().dispatch(payload).await {
-                                            error!("Failed to dispatch payload: {}", e);
-                                        }
+                                        apply_routing_and_dispatch(context.dispatcher(), payload, routing_targets.as_ref()).await;
                                     },
 
                                     // Our payloads channel is gone, which means our request builder task went away unexpectedly.
@@ -639,10 +664,7 @@ impl Encoder for DatadogMetrics {
 
         // Continue draining the payloads receiver until it is closed.
         while let Some(payload) = payloads_rx.recv().await {
-            let payload = apply_endpoint_routing(payload, endpoint_routing.as_ref());
-            if let Err(e) = context.dispatcher().dispatch(payload).await {
-                error!("Failed to dispatch payload: {}", e);
-            }
+            apply_routing_and_dispatch(context.dispatcher(), payload, routing_targets.as_ref()).await;
         }
 
         // Draining `payloads_rx` to completion already implies the request builder finished: it owns the only sender,
@@ -653,15 +675,27 @@ impl Encoder for DatadogMetrics {
     }
 }
 
-fn apply_endpoint_routing(payload: Payload, endpoint_routing: Option<&Arc<MetricsEndpointRouting>>) -> Payload {
-    let Some(endpoint_routing) = endpoint_routing else {
+/// Addresses a payload to the encoder's routing targets, if it has any, and dispatches it.
+///
+/// Every payload the encoder emits goes through here, so that none can leave without its routing targets.
+async fn apply_routing_and_dispatch(
+    dispatcher: &PayloadsDispatcher, payload: Payload, routing_targets: Option<&Arc<MetricsRoutingTargets>>,
+) {
+    let payload = apply_routing_targets(payload, routing_targets);
+    if let Err(e) = dispatcher.dispatch(payload).await {
+        error!("Failed to dispatch payload: {}", e);
+    }
+}
+
+fn apply_routing_targets(payload: Payload, routing_targets: Option<&Arc<MetricsRoutingTargets>>) -> Payload {
+    let Some(routing_targets) = routing_targets else {
         return payload;
     };
 
     match payload {
         Payload::Http(http_payload) => {
             let (mut metadata, request) = http_payload.into_parts();
-            metadata.set(Arc::clone(endpoint_routing));
+            metadata.set(Arc::clone(routing_targets));
             Payload::Http(HttpPayload::new(metadata, request))
         }
         payload => payload,
@@ -1838,17 +1872,26 @@ mod tests {
         (&TypedMetricsEncoding::default()).into()
     }
 
+    /// Returns a catalog built from the endpoints of `shared`, the way the topology builds the one it shares.
+    fn catalog_for(shared: &SharedConfiguration) -> Arc<RoutingTargetCatalog> {
+        Arc::new(
+            RoutingTargetCatalog::new(
+                &shared.endpoints.primary_endpoint(),
+                &shared.endpoints.additional_endpoints,
+            )
+            .expect("catalog should build"),
+        )
+    }
+
     #[test]
-    fn endpoint_routing_restricts_series_and_sketch_payloads() {
+    fn routing_targets_address_series_and_sketch_payloads() {
         use crate::common::datadog::{
             METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SKETCHES_PATH,
         };
 
-        for routing in [
-            MetricsEndpointRouting::AllExcept(["https://selected.example.com".to_string()].into()),
-            MetricsEndpointRouting::Only(["https://selected.example.com".to_string()].into()),
-        ] {
-            let routing = Arc::new(routing);
+        let catalog = catalog_for(&shared_configuration());
+        for targets in [RoutingTargetSet::new(), catalog.select(|_| true)] {
+            let routing_targets = Arc::new(MetricsRoutingTargets::new(targets));
             for (path, info) in [
                 (METRICS_SERIES_V1_PATH, MetricsPayloadInfo::v2_series()),
                 (METRICS_SERIES_V2_PATH, MetricsPayloadInfo::v2_series()),
@@ -1865,17 +1908,25 @@ mod tests {
                     let body = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE).freeze();
                     let request = Request::builder().uri(path).body(body).unwrap();
                     let payload = Payload::Http(HttpPayload::new(metadata, request));
-                    let routed = apply_endpoint_routing(payload, Some(&routing))
+                    let routed = apply_routing_targets(payload, Some(&routing_targets))
                         .try_into_http_payload()
                         .unwrap();
                     let (metadata, _) = routed.into_parts();
-                    let payload_routing = metadata.get::<Arc<MetricsEndpointRouting>>();
-                    assert!(Arc::ptr_eq(payload_routing.unwrap(), &routing));
+                    let payload_targets = metadata.get::<Arc<MetricsRoutingTargets>>();
+                    assert!(Arc::ptr_eq(payload_targets.unwrap(), &routing_targets));
                     assert_eq!(metadata.get::<MetricsPayloadInfo>(), tagged.then_some(&info));
                 }
             }
         }
     }
+
+    // TODO: Build a routed encoder and run it end to end, asserting that every payload it dispatches carries the
+    // configured routing targets. Nothing covers `build` handing `routing_targets` to the running encoder: if it passed
+    // `None` instead, every payload would leave unaddressed and reach every endpoint, and every test would still pass.
+
+    // TODO: The same end-to-end test should cover the run loop sending each payload through
+    // `apply_routing_and_dispatch`, including payloads drained at shutdown. A dispatch that bypassed it would also
+    // leave payloads unaddressed, and nothing here would notice.
 
     #[test]
     fn v3_api_settings_come_from_resolved_configuration() {
@@ -1954,33 +2005,34 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_routing_limits_protocol_selection_to_payload_targets() {
+    fn routing_targets_limit_protocol_selection_to_payload_targets() {
         // The primary Datadog endpoint is V3-authoritative under `datadog_only`, while the custom additional endpoint
-        // stays on V2. Each routing direction therefore proves that primary and additional endpoints can both be
-        // selected or excluded.
+        // stays on V2. Each target set therefore proves that primary and additional endpoints can both be selected or
+        // excluded.
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
         shared.endpoints.additional_endpoints = HashMap::from([(
             "https://custom.example.com".to_string(),
             vec!["additional-api-key".to_string()],
         )]);
+        let catalog = catalog_for(&shared);
+        let primary = catalog.select(|target| target.kind() == RoutingTargetKind::Primary);
+        let additional = catalog.select(|target| target.kind() == RoutingTargetKind::Additional);
 
-        let primary = shared.endpoints.primary_endpoint();
-        let additional = "https://custom.example.com".to_string();
-        for (routing, expects_v2) in [
-            (MetricsEndpointRouting::AllExcept([additional.clone()].into()), false),
-            (MetricsEndpointRouting::Only([additional].into()), true),
-            (MetricsEndpointRouting::AllExcept([primary.clone()].into()), true),
-            (MetricsEndpointRouting::Only([primary].into()), false),
+        for (targets, expects_v2, expects_v3) in [
+            (primary, false, true),
+            (additional, true, false),
+            (catalog.select(|_| true), true, true),
+            (RoutingTargetSet::new(), false, false),
         ] {
-            let config = metrics_config_from(&shared).with_endpoint_routing(routing);
+            let config = metrics_config_from(&shared).with_routing(Arc::clone(&catalog), targets);
             assert_eq!(config.requires_v2_series(false).unwrap(), expects_v2);
-            assert_eq!(config.requires_v3_series(false).unwrap(), !expects_v2);
+            assert_eq!(config.requires_v3_series(false).unwrap(), expects_v3);
         }
     }
 
     #[test]
-    fn alternate_metrics_intakes_inherit_primary_routing_but_keep_their_protocol() {
+    fn alternate_metrics_intakes_inherit_the_primary_target_but_keep_their_protocol() {
         for use_vector in [false, true] {
             for use_v3_series in [false, true] {
                 let mut shared = shared_configuration();
@@ -2004,12 +2056,11 @@ mod tests {
                     "https://alternate.example.com".to_string(),
                     vec!["additional-key".to_string()],
                 )]);
-                let primary = shared.endpoints.primary_endpoint();
-                for (routing, expects_v3) in [
-                    (MetricsEndpointRouting::Only([primary.clone()].into()), use_v3_series),
-                    (MetricsEndpointRouting::AllExcept([primary].into()), !use_v3_series),
-                ] {
-                    let config = metrics_config_from(&shared).with_endpoint_routing(routing);
+                let catalog = catalog_for(&shared);
+                let primary = catalog.select(|target| target.kind() == RoutingTargetKind::Primary);
+                let additional = catalog.select(|target| target.kind() == RoutingTargetKind::Additional);
+                for (targets, expects_v3) in [(primary, use_v3_series), (additional, !use_v3_series)] {
+                    let config = metrics_config_from(&shared).with_routing(Arc::clone(&catalog), targets);
                     assert_eq!(config.requires_v2_series(false).unwrap(), !expects_v3);
                     assert_eq!(config.requires_v3_series(false).unwrap(), expects_v3);
                 }

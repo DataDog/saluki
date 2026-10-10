@@ -32,9 +32,12 @@ use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration, MetricsEndpointRouting,
+        DatadogTraceConfiguration,
     },
-    forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
+    forwarders::{
+        ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration,
+        RoutingTargetCatalog,
+    },
     relays::otlp::OtlpRelayConfiguration,
     sources::{
         ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDConfiguration,
@@ -348,27 +351,39 @@ async fn create_topology(
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
     // provisions metric and service-check output paths even for proxy-only topologies.
+    let mut routing_targets = None;
     if dp.metrics_pipeline_required()
         || dp.logs_pipeline_required()
         || dp.events_pipeline_required()
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
     {
+        // The forwarder and every metrics encoder that addresses its payloads to specific endpoints share one catalog,
+        // so that both sides agree on what each routing target identifier means.
+        let catalog = Arc::new(RoutingTargetCatalog::new(
+            &shared.endpoints.primary_endpoint(),
+            &shared.endpoints.additional_endpoints,
+        )?);
         let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(
             &shared,
             config_system.live(|config| &config.shared.endpoints.api_key),
             config_system.live(|config| &config.shared.endpoints.additional_endpoints),
             config_system.live(|config| &config.shared.secrets),
-        );
+        )
+        .with_routing_targets(Arc::clone(&catalog));
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
+        routing_targets = Some(catalog);
     }
 
     if dp.metrics_pipeline_required() {
+        let routing_targets =
+            routing_targets.ok_or_else(|| generic_error!("The metrics pipeline requires the Datadog forwarder."))?;
         add_baseline_metrics_pipeline_to_blueprint(
             &mut blueprint,
             config_system,
             remote_agent_client_config,
             &shared,
+            &routing_targets,
             env_provider,
         )
         .await?;
@@ -454,7 +469,7 @@ async fn add_checks_pipeline_to_blueprint(
 async fn add_baseline_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
     remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
-    env_provider: &ADPEnvironmentProvider,
+    routing_targets: &Arc<RoutingTargetCatalog>, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
@@ -479,7 +494,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     )?;
     blueprint.add_transform("metrics_enrich", metrics_enrich_config)?;
 
-    add_metrics_output_pipelines_to_blueprint(blueprint, shared, &endpoint_routing)?;
+    add_metrics_output_pipelines_to_blueprint(blueprint, shared, routing_targets, &endpoint_routing)?;
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
@@ -537,13 +552,12 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 // Build both sides of metric filtering together: the ordinary stream excludes selected endpoints, and each
 // filtered stream targets only its policy's endpoints. This applies to both series and sketches.
 fn add_metrics_output_pipelines_to_blueprint(
-    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, routing: &MetricsEndpointRoutingConfiguration,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration, catalog: &Arc<RoutingTargetCatalog>,
+    routing: &MetricsEndpointRoutingConfiguration,
 ) -> Result<(), GenericError> {
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
     if !routing.selected_endpoints().is_empty() {
-        dd_metrics_config = dd_metrics_config.with_endpoint_routing(MetricsEndpointRouting::AllExcept(
-            routing.selected_endpoints().iter().cloned().collect(),
-        ));
+        dd_metrics_config = dd_metrics_config.with_routing(Arc::clone(catalog), routing.unfiltered_targets(catalog));
     }
     blueprint
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
@@ -558,7 +572,7 @@ fn add_metrics_output_pipelines_to_blueprint(
             policy.metric_prefix_allowlist.clone(),
         );
         let metrics_config = DatadogMetricsConfiguration::from_configuration(shared)
-            .with_endpoint_routing(MetricsEndpointRouting::Only(policy.endpoints.iter().cloned().collect()));
+            .with_routing(Arc::clone(catalog), policy.targets(catalog));
 
         blueprint
             .add_transform(filter_id.as_str(), filter_config)?

@@ -61,7 +61,7 @@ Use the overlay's existing meanings:
 - `partial`: ADP reads the key but differs in some cases. Describe those differences.
 - `none`: ADP does not support the key. Choose severity based on the effect on users and state
   whether support is planned. Link an issue when work should be tracked.
-- `unknown`: compatibility has not been established. Record what still needs investigation.
+- `unknown`: [!compatibility has not been established. Record what still needs investigation.
 - `excluded`: ADP silently ignores the key and omits it from compatibility documentation. Use this
   for features ADP does not currently support, not to hide gaps that need tracking.
 

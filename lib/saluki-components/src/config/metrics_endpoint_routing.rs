@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use agent_data_plane_config::shared;
 use saluki_error::{generic_error, GenericError};
 
+use crate::common::datadog::routing::{RoutingTargetCatalog, RoutingTargetSet};
+
 /// Sorts literal prefixes and removes duplicates and prefixes covered by another prefix.
 pub fn compact_metric_prefixes(prefixes: &mut Vec<String>) {
     prefixes.sort_unstable();
@@ -30,6 +32,19 @@ pub struct EndpointAllowlistGroup {
     pub metric_allowlist: Vec<String>,
     /// Literal metric-name prefixes permitted to reach these endpoints.
     pub metric_prefix_allowlist: Vec<String>,
+}
+
+impl EndpointAllowlistGroup {
+    /// Returns the routing targets that receive this group's filtered metric stream.
+    ///
+    /// Every API key configured for one of the group's endpoints is a target.
+    pub fn targets(&self, catalog: &RoutingTargetCatalog) -> RoutingTargetSet {
+        catalog.select(|target| {
+            self.endpoints
+                .iter()
+                .any(|endpoint| endpoint == target.configured_endpoint())
+        })
+    }
 }
 
 /// Endpoint-aware selective metric-routing configuration.
@@ -116,6 +131,17 @@ impl MetricsEndpointRoutingConfiguration {
     /// Returns every configured endpoint removed from the ordinary unfiltered metric path.
     pub fn selected_endpoints(&self) -> &[String] {
         &self.selected_endpoints
+    }
+
+    /// Returns the routing targets that receive the unfiltered metric stream.
+    ///
+    /// These are the targets whose configured endpoint has no policy.
+    pub fn unfiltered_targets(&self, catalog: &RoutingTargetCatalog) -> RoutingTargetSet {
+        catalog.select(|target| {
+            self.selected_endpoints
+                .binary_search_by(|endpoint| endpoint.as_str().cmp(target.configured_endpoint()))
+                .is_err()
+        })
     }
 
     /// Returns the filtered routing groups that require an encoder branch.
@@ -281,6 +307,42 @@ mod tests {
         let prefixes = HashMap::from([(PRIMARY.to_string(), vec!["a.".to_string()])]);
         let config = MetricsEndpointRoutingConfiguration::from_configuration(&names, &prefixes, &endpoints()).unwrap();
         assert_eq!(config.policy_groups().len(), 2);
+    }
+
+    #[test]
+    fn policies_resolve_to_complementary_routing_targets() {
+        let endpoints = endpoints();
+        let catalog =
+            RoutingTargetCatalog::new(&endpoints.primary_endpoint(), &endpoints.additional_endpoints).unwrap();
+        let allowlists = HashMap::from([
+            (PRIMARY.to_string(), vec!["metric.a".to_string()]),
+            (
+                "https://secondary-b.example.com".to_string(),
+                vec!["metric.a".to_string()],
+            ),
+            ("https://secondary-c.example.com".to_string(), vec![]),
+        ]);
+        let config =
+            MetricsEndpointRoutingConfiguration::from_configuration(&allowlists, &HashMap::new(), &endpoints).unwrap();
+
+        let configured = |targets: &RoutingTargetSet| {
+            targets
+                .iter()
+                .map(|id| catalog.get(id).unwrap().configured_endpoint().to_string())
+                .collect::<Vec<_>>()
+        };
+        // Only the endpoint without a policy keeps the unfiltered stream.
+        assert_eq!(
+            configured(&config.unfiltered_targets(&catalog)),
+            ["https://secondary-a.example.com"]
+        );
+        let [group] = config.policy_groups() else {
+            panic!("expected one policy group");
+        };
+        assert_eq!(
+            configured(&group.targets(&catalog)),
+            [PRIMARY, "https://secondary-b.example.com"]
+        );
     }
 
     #[test]

@@ -71,6 +71,7 @@ use super::{
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     retry::{SecretsGate, SecretsGateRefresher},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
+    routing::RoutingTargetId,
     telemetry::{
         ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionInputTelemetry, TransactionQueueTelemetry,
         TransactionRetryCounters, TransactionRetryTelemetry,
@@ -526,10 +527,9 @@ async fn run_io_loop<B>(
     let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
 
     for routable_endpoint in resolved_endpoints {
-        let (route, resolved_endpoint) = routable_endpoint.into_parts();
+        let (route, resolved_endpoint, target) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
-        let policy_endpoint = config.metrics_policy_endpoint(route, &resolved_endpoint).to_string();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
@@ -562,7 +562,7 @@ async fn run_io_loop<B>(
         endpoint_txs.push(EndpointSender {
             endpoint_url,
             endpoint_domain,
-            policy_endpoint,
+            target,
             route,
             tx: endpoint_tx,
         });
@@ -575,7 +575,7 @@ async fn run_io_loop<B>(
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
             }
-            if !matches_metrics_endpoint_routing(&endpoint_sender.policy_endpoint, transaction.metadata()) {
+            if !matches_metrics_routing_targets(endpoint_sender.target, transaction.metadata()) {
                 continue;
             }
 
@@ -607,7 +607,7 @@ where
 {
     endpoint_url: String,
     endpoint_domain: String,
-    policy_endpoint: String,
+    target: Option<RoutingTargetId>,
     route: EndpointRoute,
     tx: mpsc::Sender<Transaction<B>>,
 }
@@ -643,11 +643,15 @@ fn track_transaction_input_for_endpoint(
     telemetry_by_endpoint.insert(endpoint_name, transaction_input_telemetry);
 }
 
-fn matches_metrics_endpoint_routing(configured_endpoint: &str, metadata: &Metadata) -> bool {
-    metadata
-        .metrics_endpoint_routing
-        .as_ref()
-        .is_none_or(|routing| routing.should_route_to(configured_endpoint))
+/// Returns whether a transaction's routing targets allow delivery to the endpoint serving `target`.
+///
+/// A transaction that is not addressed to specific targets reaches every endpoint. One that is reaches only the
+/// endpoints serving a target it names, so an endpoint that serves no target receives none of them.
+fn matches_metrics_routing_targets(target: Option<RoutingTargetId>, metadata: &Metadata) -> bool {
+    match metadata.metrics_routing_targets.as_ref() {
+        None => true,
+        Some(targets) => target.is_some_and(|target| targets.includes(target)),
+    }
 }
 
 /// Returns the process name for the endpoint I/O loop serving `endpoint`.
@@ -1248,7 +1252,7 @@ mod tests {
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
     use crate::common::datadog::{
         endpoints::resolve_additional_endpoints,
-        protocol::MetricsEndpointRouting,
+        routing::{MetricsRoutingTargets, RoutingTargetCatalog, RoutingTargetKind, RoutingTargetSet},
         test_util::{shared_configuration, LiveConfiguration, TEST_API_KEY},
     };
     use crate::common::datadog::{
@@ -1265,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn alternate_metrics_intakes_inherit_primary_policy_for_dispatch() {
+    fn alternate_metrics_intakes_inherit_the_primary_target_for_dispatch() {
         const ALTERNATE: &str = "https://alternate.example.com";
         for use_vector in [false, true] {
             let mut shared = shared_configuration();
@@ -1279,28 +1283,42 @@ mod tests {
             } else {
                 shared.endpoints.opw_intake = alternate;
             }
-            // An additional route to the same URL must still retain its own policy identity.
+            // An additional endpoint at the same URL must still be its own target.
             shared.endpoints.additional_endpoints = HashMap::from([(ALTERNATE.to_string(), vec!["key".to_string()])]);
-            let primary = shared.endpoints.primary_endpoint();
-            let config = ForwarderConfiguration::from_configuration(&shared);
+            let catalog = Arc::new(
+                RoutingTargetCatalog::new(
+                    &shared.endpoints.primary_endpoint(),
+                    &shared.endpoints.additional_endpoints,
+                )
+                .unwrap(),
+            );
+            let config = ForwarderConfiguration::from_configuration(&shared).with_routing_targets(Arc::clone(&catalog));
             let endpoints = config.build_routable_endpoints().unwrap();
             assert!(endpoints
                 .iter()
                 .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary));
+            let primary_only = TxnMetadata {
+                metrics_routing_targets: Some(Arc::new(MetricsRoutingTargets::new(
+                    [catalog.primary()].into_iter().collect(),
+                ))),
+                ..TxnMetadata::from_event_and_data_point_count(1, 1)
+            };
+            let all_but_primary = TxnMetadata {
+                metrics_routing_targets: Some(Arc::new(MetricsRoutingTargets::new(
+                    catalog.select(|target| target.id() != catalog.primary()),
+                ))),
+                ..TxnMetadata::from_event_and_data_point_count(1, 1)
+            };
             for endpoint in endpoints {
-                let policy_endpoint = config.metrics_policy_endpoint(endpoint.route(), endpoint.endpoint());
-                let mut metadata = TxnMetadata::from_event_and_data_point_count(1, 1);
-                // Without an endpoint policy, payloads retain ordinary delivery.
-                assert!(matches_metrics_endpoint_routing(policy_endpoint, &metadata));
-                metadata.metrics_endpoint_routing =
-                    Some(MetricsEndpointRouting::AllExcept([primary.clone()].into()).into());
+                // Without routing targets, payloads retain ordinary delivery.
+                let untargeted = TxnMetadata::from_event_and_data_point_count(1, 1);
+                assert!(matches_metrics_routing_targets(endpoint.target(), &untargeted));
                 assert_eq!(
-                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    matches_metrics_routing_targets(endpoint.target(), &all_but_primary),
                     endpoint.route() == EndpointRoute::Additional
                 );
-                metadata.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([primary.clone()].into()).into());
                 assert_eq!(
-                    matches_metrics_endpoint_routing(policy_endpoint, &metadata),
+                    matches_metrics_routing_targets(endpoint.target(), &primary_only),
                     endpoint.route() != EndpointRoute::Additional
                 );
                 if endpoint.route() == EndpointRoute::MetricsPrimary {
@@ -1311,23 +1329,71 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_routing_selects_whole_payloads_before_dispatch() {
-        const SELECTED: &str = "https://secondary.example.com";
+    fn routing_targets_select_whole_payloads_before_dispatch() {
+        let shared = shared_configuration();
+        let catalog = RoutingTargetCatalog::new(&shared.endpoints.primary_endpoint(), &HashMap::new()).unwrap();
+        let primary = Some(catalog.primary());
 
-        let mut baseline = TxnMetadata::from_event_and_data_point_count(2, 2);
-        assert!(matches_metrics_endpoint_routing(SELECTED, &baseline));
-        baseline.metrics_endpoint_routing =
-            Some(MetricsEndpointRouting::AllExcept([SELECTED.to_string()].into()).into());
-        assert!(!matches_metrics_endpoint_routing(SELECTED, &baseline));
-        assert!(matches_metrics_endpoint_routing("https://other.example.com", &baseline));
+        let untargeted = TxnMetadata::from_event_and_data_point_count(2, 2);
+        assert!(matches_metrics_routing_targets(primary, &untargeted));
+        assert!(matches_metrics_routing_targets(None, &untargeted));
 
-        let mut filtered = TxnMetadata::from_event_and_data_point_count(1, 1);
-        filtered.metrics_endpoint_routing = Some(MetricsEndpointRouting::Only([SELECTED.to_string()].into()).into());
-        assert!(matches_metrics_endpoint_routing(SELECTED, &filtered));
-        assert!(!matches_metrics_endpoint_routing(
-            "https://other.example.com",
-            &filtered
-        ));
+        let mut targeted = TxnMetadata::from_event_and_data_point_count(1, 1);
+        targeted.metrics_routing_targets = Some(Arc::new(MetricsRoutingTargets::new(catalog.select(|_| true))));
+        assert!(matches_metrics_routing_targets(primary, &targeted));
+        // An endpoint that serves no target never receives addressed payloads.
+        assert!(!matches_metrics_routing_targets(None, &targeted));
+
+        targeted.metrics_routing_targets = Some(Arc::new(MetricsRoutingTargets::new(RoutingTargetSet::new())));
+        assert!(!matches_metrics_routing_targets(primary, &targeted));
+    }
+
+    #[test]
+    fn endpoints_are_labeled_with_targets_only_when_a_catalog_is_set() {
+        let mut shared = shared_configuration();
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://additional.example.com".to_string(),
+            vec!["key-a".to_string(), "key-b".to_string()],
+        )]);
+        let config = ForwarderConfiguration::from_configuration(&shared);
+        assert!(config
+            .build_routable_endpoints()
+            .unwrap()
+            .iter()
+            .all(|endpoint| endpoint.target().is_none()));
+
+        let catalog = Arc::new(
+            RoutingTargetCatalog::new(
+                &shared.endpoints.primary_endpoint(),
+                &shared.endpoints.additional_endpoints,
+            )
+            .unwrap(),
+        );
+        let endpoints = config
+            .with_routing_targets(Arc::clone(&catalog))
+            .build_routable_endpoints()
+            .unwrap();
+        // Each endpoint must serve the target for its own URL and key position, not merely some target: two keys on
+        // one URL swapping targets would otherwise go unnoticed.
+        for endpoint in &endpoints {
+            let target = endpoint
+                .target()
+                .and_then(|id| catalog.get(id))
+                .expect("every endpoint should serve a cataloged target");
+            match endpoint.endpoint().additional_endpoint_queue_key() {
+                Some((url, index)) => {
+                    assert_eq!(target.kind(), RoutingTargetKind::Additional);
+                    assert_eq!(target.configured_endpoint(), url);
+                    assert_eq!(target.api_key_index(), Some(index));
+                }
+                None => assert_eq!(target.kind(), RoutingTargetKind::Primary),
+            }
+        }
+        let targets = endpoints
+            .iter()
+            .filter_map(RoutableEndpoint::target)
+            .collect::<RoutingTargetSet>();
+        assert_eq!(targets, catalog.select(|_| true));
     }
 
     fn is_metrics_request_path(path: &'static str) -> bool {

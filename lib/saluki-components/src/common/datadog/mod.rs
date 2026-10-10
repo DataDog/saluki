@@ -9,6 +9,7 @@ mod proxy;
 pub mod request_builder;
 mod retry;
 mod retry_capacity;
+pub mod routing;
 pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_util;
