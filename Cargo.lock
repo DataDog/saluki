@@ -5557,6 +5557,7 @@ dependencies = [
  "chrono",
  "datadog-agent-commons",
  "datadog-agent-metrics-v3",
+ "datadog-agent-remote-config",
  "datadog-protos",
  "ddsketch",
  "faster-hex",

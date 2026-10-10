@@ -24,6 +24,7 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
+datadog-agent-remote-config = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true }
 faster-hex = { workspace = true }
@@ -96,6 +97,7 @@ url = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+datadog-agent-remote-config = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
