@@ -5,17 +5,18 @@
 //! is therefore a property of the leaf's declared type, not of the key, and `dogstatsd_port: "8125"`
 //! or `use_v3_api.series.enabled: true` are configurations the Agent accepts.
 //!
-//! This module ports `cast.To{Bool,Int64,Float64,String}E` so scalar leaves and string-map values
-//! accept every spelling the Agent accepts while keeping the schema's type. [`crate::env_decode`]
-//! uses the same parsers for environment strings.
+//! This module ports `cast.To{Bool,Int64,Float64,String,StringSlice}E` so scalar leaves, string
+//! lists, and string-map values accept every spelling the Agent accepts while keeping the schema's
+//! type. The string grammars themselves come from [`go_strconv`], so `"0x10"` is sixteen, `"010"` is
+//! eight, and `"0x1p-2"` is one quarter, as in the Agent. [`crate::env_decode`] uses the same parsers
+//! for environment strings.
 //!
 //! Two deliberate divergences from `cast`:
 //!
 //! - A value `cast` cannot convert is a hard error here. `cast.To*` swallows its error and yields the
 //!   zero value, so the Agent silently reads a malformed setting as `false`/`0`/`""`;
 //!   [`crate::env_decode`] already rejects such a value rather than losing it.
-//! - A numeric string is accepted in decimal only, not in Go's base-prefixed or underscored integer
-//!   literal forms. YAML and JSON parse those spellings into numbers before ADP sees them.
+//! - Surrounding whitespace is trimmed from a numeric string, which `cast` rejects.
 
 use std::{collections::HashMap, fmt, marker::PhantomData};
 
@@ -28,44 +29,65 @@ use serde::Deserialize;
 ///
 /// Returns a message naming the value when it is not one of the accepted spellings.
 pub(crate) fn parse_bool(raw: &str) -> Result<bool, String> {
-    match raw {
-        "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(true),
-        "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(false),
-        other => Err(format!("invalid boolean `{other}`")),
-    }
+    go_strconv::parse_bool(raw).map_err(|_| format!("invalid boolean `{raw}`"))
 }
 
-/// `cast.ToInt64E` for a string.
+/// `cast.ToInt64E` for a string: Go's `strconv.ParseInt(s, 0, 64)` after `trimZeroDecimal`.
 ///
 /// # Errors
 ///
-/// Returns a message naming the value when it is not a decimal integer.
+/// Returns a message naming the value when it is not a Go integer literal that fits in an `i64`.
 pub(crate) fn parse_i64(raw: &str) -> Result<i64, String> {
-    trim_zero_decimal(raw.trim())
-        .parse::<i64>()
-        .map_err(|_| format!("invalid integer `{raw}`"))
+    go_strconv::parse_int(trim_zero_decimal(raw.trim())).map_err(|_| format!("invalid integer `{raw}`"))
 }
 
 /// `cast`'s `trimZeroDecimal`, which drops an all-zero fraction before integer parsing, so `"8125.0"`
-/// is an integer setting while `"8125.5"` is not.
+/// and `"0x10.0"` are integer settings while `"8125.5"` is not.
+///
+/// A ported scan from the end: zeros are skipped, and the first `.` reached after at least one zero
+/// ends the integer part. A `.` reached before any zero is skipped too, so `"8125."` is left alone
+/// (and then rejected) while `"1.0."` trims to `"1"`.
 fn trim_zero_decimal(raw: &str) -> &str {
-    match raw.split_once('.') {
-        Some((integer, fraction)) if !fraction.is_empty() && fraction.bytes().all(|byte| byte == b'0') => integer,
-        _ => raw,
+    let mut found_zero = false;
+    for (index, byte) in raw.bytes().enumerate().rev() {
+        match byte {
+            b'.' if found_zero => return &raw[..index],
+            b'.' => {}
+            b'0' => found_zero = true,
+            _ => return raw,
+        }
     }
+    raw
 }
 
-/// `cast.ToFloat64E` for a string.
+/// `cast.ToFloat64E` for a string: Go's `strconv.ParseFloat(s, 64)`.
 ///
 /// # Errors
 ///
-/// Returns a message naming the value when it is not a finite number.
+/// Returns a message naming the value when it is not a finite number. The Agent accepts `NaN` and
+/// the infinities, but no configuration source can carry them as a JSON number.
 pub(crate) fn parse_f64(raw: &str) -> Result<f64, String> {
-    let parsed: f64 = raw.trim().parse().map_err(|_| format!("invalid number `{raw}`"))?;
+    let parsed = go_strconv::parse_float(raw.trim()).map_err(|_| format!("invalid number `{raw}`"))?;
     if !parsed.is_finite() {
         return Err(format!("non-finite number `{raw}`"));
     }
     Ok(parsed)
+}
+
+/// `cast.ToStringSliceE` for a string, as in the Agent's fork of `cast`.
+///
+/// A string that holds a JSON list of strings is that list; any other string is split on
+/// whitespace. A JSON `null` is an empty list, and a `null` element is an empty string, as Go's
+/// `json.Unmarshal` reads them into a `[]string`.
+pub(crate) fn parse_string_slice(raw: &str) -> Vec<String> {
+    match serde_json::from_str::<Option<Vec<Option<String>>>>(raw) {
+        Ok(list) => list
+            .unwrap_or_default()
+            .into_iter()
+            .map(Option::unwrap_or_default)
+            .collect(),
+        Err(_) => raw.split_whitespace().map(str::to_owned).collect(),
+    }
 }
 
 /// Deserializes a `boolean` leaf (`cast.ToBoolE`).
@@ -523,13 +545,33 @@ mod tests {
     }
 
     #[test]
+    fn integer_accepts_go_integer_literals() {
+        // `cast` parses with `strconv.ParseInt(s, 0, 0)`: the prefix sets the base, a bare leading zero
+        // means octal, and underscores may separate digits.
+        assert_eq!(as_int(json!("0x10")), Ok(16));
+        assert_eq!(as_int(json!("0X1f")), Ok(31));
+        assert_eq!(as_int(json!("-0x10")), Ok(-16));
+        assert_eq!(as_int(json!("0o17")), Ok(15));
+        assert_eq!(as_int(json!("0b101")), Ok(5));
+        assert_eq!(as_int(json!("010")), Ok(8));
+        assert_eq!(as_int(json!("1_000")), Ok(1000));
+
+        // `trimZeroDecimal` runs first, whatever the base.
+        assert_eq!(as_int(json!("0x10.0")), Ok(16));
+        assert_eq!(as_int(json!("1.0.")), Ok(1));
+    }
+
+    #[test]
     fn integer_rejects_unparseable_and_out_of_range_values() {
         for rejected in [
             json!("8125ms"),
             json!(""),
-            json!("0x1f"),
+            json!("08"),
+            json!("0x"),
+            json!("1__000"),
             json!("8125.5"),
             json!("8125."),
+            json!("9223372036854775808"),
             json!(1e300),
             json!(["8125"]),
         ] {
@@ -545,6 +587,32 @@ mod tests {
         assert_eq!(as_float(json!(true)), Ok(1.0));
         assert_eq!(as_float(json!(null)), Ok(0.0));
         assert!(as_float(json!("half")).is_err());
+    }
+
+    #[test]
+    fn number_accepts_go_float_literals() {
+        assert_eq!(as_float(json!("0x1p-2")), Ok(0.25));
+        assert_eq!(as_float(json!("0x1.8p1")), Ok(3.0));
+        assert_eq!(as_float(json!("1_000.5")), Ok(1000.5));
+
+        // Go reads these, but a non-finite value has no JSON form, and a hexadecimal float needs an
+        // exponent.
+        for rejected in [json!("NaN"), json!("Inf"), json!("1e309"), json!("0x10")] {
+            assert!(as_float(rejected.clone()).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn string_slice_prefers_a_json_list_of_strings() {
+        assert_eq!(parse_string_slice(r#"["a b","c"]"#), ["a b", "c"]);
+        assert_eq!(parse_string_slice(r#" ["a", null] "#), ["a", ""]);
+        assert_eq!(parse_string_slice("null"), Vec::<String>::new());
+
+        // Anything that is not a JSON list of strings is split on whitespace.
+        assert_eq!(parse_string_slice("a  b\tc"), ["a", "b", "c"]);
+        assert_eq!(parse_string_slice("[1,2]"), ["[1,2]"]);
+        assert_eq!(parse_string_slice(r#"["a", "b""#), [r#"["a","#, r#""b""#]);
+        assert_eq!(parse_string_slice(r#""a""#), [r#""a""#]);
     }
 
     #[test]
