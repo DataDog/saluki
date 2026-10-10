@@ -1,4 +1,4 @@
-/// Normalization functions for OTLP traces
+//! Normalization primitives for trace data, shared by every trace ingestion path.
 use std::borrow::Cow;
 use std::char;
 
@@ -162,7 +162,7 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
 /// Normalizes a service name into `out`.
 ///
 /// The output is always written from a cleared buffer.
-pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
+pub(crate) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
     out.clear();
 
     // TODO: add fall back service for languages
@@ -186,7 +186,7 @@ pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I
 
 /// How a peer service name changed while being normalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PeerServiceChange {
+pub(crate) enum PeerServiceChange {
     /// Value already conformed.
     Unchanged,
     /// Value exceeded `MAX_SERVICE_LEN` and was truncated.
@@ -199,7 +199,7 @@ pub(super) enum PeerServiceChange {
 ///
 /// The value is capped at `MAX_SERVICE_LEN` and normalized as a tag value; unlike a span's
 /// service name, nothing is substituted when normalization empties it.
-pub(super) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilder<I>) -> PeerServiceChange {
+pub(crate) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilder<I>) -> PeerServiceChange {
     out.clear();
 
     if value.is_empty() {
@@ -232,7 +232,7 @@ pub(super) fn normalize_peer_service_into<I>(value: &str, out: &mut StringBuilde
 ///
 /// Use this when the caller has already determined `value` isn't normalized, so we
 /// can skip a separate normalized fast-path check.
-pub(super) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+pub(crate) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     out.clear();
     normalize_tag_value_append_unchecked(value, out);
 }
@@ -241,14 +241,14 @@ pub(super) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut Strin
 ///
 /// Use this when extending an existing normalized prefix with a value already known to
 /// require normalization.
-pub(super) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+pub(crate) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     if value.is_empty() {
         return;
     }
     normalize_unchecked(value, false, out);
 }
 
-pub(super) fn is_normalized_tag_value(value: &str) -> bool {
+pub(crate) fn is_normalized_tag_value(value: &str) -> bool {
     is_normalized_ascii_tag(value, false)
 }
 
@@ -420,7 +420,7 @@ const fn is_valid_ascii_tag_char(c: char) -> bool {
 /// zero for `start > i64::MAX`, making the comparison `duration > 0` and zeroing any non-zero
 /// duration—the opposite of the reference for that boundary. See the regression test at the boundary
 /// below.
-pub(super) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
+pub(crate) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
     if duration > MAX_START_PLUS_DURATION.wrapping_sub(start) {
         0
     } else {
@@ -431,7 +431,7 @@ pub(super) fn validate_and_fix_duration(start: u64, duration: u64) -> u64 {
 /// Mirrors `validateAndFixStartTimeV1` (`pkg/trace/agent/normalizer.go`): a start timestamp before the
 /// year-2000 floor is replaced with the receive time minus `duration`, clamped to the receive time if
 /// that subtraction would go negative.
-pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
+pub(crate) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
     if start >= YEAR_2000_NANOSEC_TS {
         return start;
     }
@@ -447,7 +447,7 @@ pub(super) fn validate_and_fix_start_time(start: u64, duration: u64) -> u64 {
 }
 
 /// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
-pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
+pub(crate) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     truncate_utf8_str(s, max_len)
 }
 

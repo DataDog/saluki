@@ -28,18 +28,18 @@ use crate::common::otlp::semantics::{
     lookup_int64, lookup_string, Accessor, Concept, DdSpanAccessor, OtelSpanAccessor, OtlpAttributesAccessor, Registry,
     REGISTRY,
 };
-use crate::common::otlp::traces::normalize::{
-    is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name,
-    normalize_peer_service_into, normalize_service_into, normalize_tag_value_append_unchecked,
-    normalize_tag_value_into_unchecked, truncate_utf8, truncate_with_ellipses, validate_and_fix_duration,
-    validate_and_fix_start_time, PeerServiceChange, MAX_META_KEY_LEN, MAX_META_VAL_LEN, MAX_TYPE_LEN,
-};
 use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
 };
 use crate::common::otlp::Metrics;
+use crate::common::traces::normalize::{
+    is_normalized_tag_value, is_structured_meta_key, needs_name_normalization, normalize_name,
+    normalize_peer_service_into, normalize_service_into, normalize_tag_value_append_unchecked,
+    normalize_tag_value_into_unchecked, truncate_utf8, truncate_with_ellipses, validate_and_fix_duration,
+    validate_and_fix_start_time, PeerServiceChange, MAX_META_KEY_LEN, MAX_META_VAL_LEN, MAX_TYPE_LEN,
+};
 
 const EVENT_EXTRACTION_METRIC_KEY: &str = "_dd1.sr.eausr";
 const ANALYTICS_EVENT_KEY: &str = "analytics.event";
@@ -1856,7 +1856,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
 
     use super::*;
-    use crate::common::otlp::traces::normalize::YEAR_2000_NANOSEC_TS;
+    use crate::common::traces::normalize::YEAR_2000_NANOSEC_TS;
 
     // Helper to create a KeyValue with a string value
     fn kv_str(key: &str, value: &str) -> KeyValue {
