@@ -863,6 +863,12 @@ experiments:
         # traffic — and every "standalone" run since the binary switch did the same,
         # including the GOMEMLIMIT attempt, which never actually ran.)
         DD_OTELCOLLECTOR_ENABLED: "true"
+        # REQUIRED: run the binary in TRUE standalone mode. Without this, `otel-agent
+        # run` defaults to CONNECTED mode — expecting a core agent at :5001 — producing
+        # the config-sync stream failures, hostname-from-core-agent retry exhaustion,
+        # and internal submissions posting directly to api.datadoghq.com (DNS-dead in
+        # the sandbox; 453 retry-looping transaction errors in job a918f884).
+        DD_OTEL_STANDALONE: "true"
         # Go runtime: cap the GC's heap target below the 8GiB cgroup allotment. Without
         # GOMEMLIMIT, Go's default GC targets 2x the live heap and can cross the cgroup
         # limit before the GC reacts. The converged agent's startup normally derives
@@ -940,9 +946,9 @@ experiments:
     target:
       command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
       environment:
-        # REQUIRED: the otel-agent binary gates the collector on this env var even when
-        # invoked directly — without it the process exits before ingesting anything.
+        # REQUIRED: collector gate + true standalone mode (see full-mix leg comments).
         DD_OTELCOLLECTOR_ENABLED: "true"
+        DD_OTEL_STANDALONE: "true"
         GOMEMLIMIT: "7GiB"
         GODEBUG: "gctrace=1"
       files:
@@ -1002,6 +1008,65 @@ experiments:
                 contexts:
                   total_contexts:
                     constant: 100
+
+  # Slow-burn profile-capture leg: identical to the full-mix leg except the load
+  # rate (32 KiB/s instead of 5 MiB/s). The DDOT targets die every ~16s at full
+  # rate — faster than the native profiler's upload cycle, so NO target profiles
+  # ever ship (verified on job a918f884: zero service:agent-data-plane uploads from
+  # the DDOT hosts, while surviving targets ship ~40/8h). At ~1/160th the rate the
+  # balloon — if it scales with ingest — takes 20+ minutes: the target survives
+  # past an upload cycle with a ballooning live set, and the live-heap profile of
+  # the ballooning process lands in Datadog. View: Profiling explorer,
+  # service:agent-data-plane, env:single-machine-performance, then filter host to
+  # whichever runs this experiment.
+  - name: otlp_ingest_metrics_ddot_slowburn
+    extends: otlp_ingest_converged_base
+    optimization_goal: memory
+    target:
+      command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
+      environment:
+        # Same collector gate + standalone mode as legs A/B.
+        DD_OTELCOLLECTOR_ENABLED: "true"
+        DD_OTEL_STANDALONE: "true"
+        GOMEMLIMIT: "7GiB"
+        GODEBUG: "gctrace=1"
+      files:
+        otel-config.yaml:
+          content:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+            exporters:
+              datadog:
+                hostname: smp-regression
+                api:
+                  key: foo00000001
+                metrics:
+                  endpoint: http://127.0.0.1:9091
+                traces:
+                  endpoint: http://127.0.0.1:9091
+                logs:
+                  endpoint: http://127.0.0.1:9091
+                sending_queue:
+                  num_consumers: 10
+            processors:
+              batch: {}
+              cumulativetodelta: {}
+            service:
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  processors: [batch, cumulativetodelta]
+                  exporters: [datadog]
+    lading:
+      generator:
+        - grpc:
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+            # The whole point: ~1/160th the normal rate so the target outlives the
+            # profiler's upload cycle while the balloon is in progress.
+            bytes_per_second: "32 KiB"
 
   # Harness-validation cell: Raymond's ddot_metrics case replicated through our
   # suite as exactly as current lading permits — his converged shape (entrypoint +

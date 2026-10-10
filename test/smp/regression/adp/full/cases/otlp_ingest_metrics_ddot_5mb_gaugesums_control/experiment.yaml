@@ -16,6 +16,7 @@ target:
     DD_DATA_PLANE_ENABLED: "false"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
     DD_OTELCOLLECTOR_ENABLED: "true"
+    DD_OTEL_STANDALONE: "true"
     GOMEMLIMIT: 7GiB
     GODEBUG: gctrace=1
   profiling_environment:
