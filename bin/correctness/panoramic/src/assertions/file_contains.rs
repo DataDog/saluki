@@ -8,7 +8,10 @@ use bollard::{
 use futures::TryStreamExt as _;
 use tracing::trace;
 
-use crate::assertions::{Assertion, AssertionContext, AssertionResult};
+use crate::assertions::{
+    polling::{run_poll_attempt, PollAttemptResult, PROBE_ATTEMPT_TIMEOUT},
+    Assertion, AssertionContext, AssertionResult,
+};
 
 /// Assertion that checks a file exists in the container, and optionally that its contents match a pattern.
 ///
@@ -95,10 +98,35 @@ impl Assertion for FileContainsAssertion {
                 };
             }
 
-            let read_result = if ctx.is_host_process {
-                read_file_local(&self.path).await
-            } else {
-                read_file_in_container(&ctx.container_name, &self.path, ctx.target_is_windows()).await
+            let read_attempt = async {
+                if ctx.is_host_process {
+                    read_file_local(&self.path).await
+                } else {
+                    read_file_in_container(&ctx.container_name, &self.path, ctx.target_is_windows()).await
+                }
+            };
+            let read_result = match run_poll_attempt(
+                deadline,
+                PROBE_ATTEMPT_TIMEOUT,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+                read_attempt,
+            )
+            .await
+            {
+                PollAttemptResult::Completed(result) => result,
+                PollAttemptResult::TimedOut => {
+                    trace!(path = %self.path, "File read attempt timed out, retrying...");
+                    continue;
+                }
+                PollAttemptResult::Cancelled => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: "Assertion cancelled because container exited.".to_string(),
+                        duration: started.elapsed(),
+                    };
+                }
             };
             match read_result {
                 Ok(Some(content)) => {
