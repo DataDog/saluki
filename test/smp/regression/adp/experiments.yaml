@@ -1,138 +1,126 @@
-# SMP Experiment Definitions
-#
-# This file defines all SMP experiments for ADP. Run `make generate-smp-experiments` to generate
-# the experiment configuration files in `cases/`.
-#
-# Structure:
-# - global: Base configuration inherited by ALL experiments
-# - templates: Reusable partial configurations that experiments can extend
-# - experiments: Individual experiment definitions
-
 global:
   erratic: false
-
   target:
-    # Most experiments ignore the Core Agent entirely: this base configuration runs ADP directly in
-    # standalone mode. Some other experiments (like tag filtering) may end up using the "full" Agent
-    # entrypoint.
     name: agent-data-plane
     command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
     cpu_allotment: 4
     memory_allotment: 2GiB
-
-    # Default files placed in the target directory (agent-data-plane/)
     files:
       empty.yaml:
-        content: "{}"
+        content: '{}'
       cert.pem:
         source: shared/cert.pem
-
     environment:
-      # Basic configuration for any ADP instance.
       DD_HOSTNAME: smp-regression
       DD_API_KEY: foo00000001
       DD_DD_URL: http://127.0.0.1:9091
-      # The SMP blackhole is not a Datadog-owned endpoint, so `datadog_only` would keep series on
-      # V2. Explicitly enable it to exercise the V3 series encoder and forwarder path.
       DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true"}'
-
-      # Dummy, self-signed certificate since we're not running alongside the Datadog Agent which
-      # would otherwise be providing the IPC certificate.
       DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
-
-      # Emit logs in JSON so we get better parsing/search over them in the SMP target logs index.
-      DD_LOG_FORMAT_JSON: "true"
-
-      # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
-      DD_DATA_PLANE_STANDALONE_MODE: "true"
-
-      # Enable internal telemetry endpoint.
-      DD_METRICS_LEVEL: "trace"
-
-    # Applied to the replicas SMP profiles. SMP loads ddprof into the target itself, via
-    # LD_PRELOAD, so these are read by that profiler rather than by anything we run.
+      DD_LOG_FORMAT_JSON: 'true'
+      DD_DATA_PLANE_STANDALONE_MODE: 'true'
+      DD_METRICS_LEVEL: trace
     profiling_environment:
-      DD_SERVICE: "agent-data-plane"
-      DD_PROFILING_NATIVE_PRESET: "cpu_live_heap"
-      DD_PROFILING_INLINED_FUNCTIONS: "true"
-
+      DD_SERVICE: agent-data-plane
+      DD_PROFILING_NATIVE_PRESET: cpu_live_heap
+      DD_PROFILING_INLINED_FUNCTIONS: 'true'
   report_links:
-    - text: (metrics)
-      link: "https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id }}&tpl_var_experiment%5B0%5D={{ experiment }}&view=spans&from_ts={{ start_time_ms }}&to_ts={{ end_time_ms }}&live=false"
-    - text: (profiles)
-      link: "https://app.datadoghq.com/profiling/explorer?query=env%3Asingle-machine-performance%20service%3Aagent-data-plane%20job_id%3A{{ job_id }}%20experiment%3A{{ experiment }}&agg_m=count&agg_m_source=base&agg_t=count&fromUser=false&viz=stream&start={{ filter_start }}&end={{ filter_end }}&paused=true"
-    - text: (logs)
-      link: "https://app.datadoghq.com/logs?query=experiment%3A{{ experiment }}%20run_id%3A{{ job_id }}&agg_m=count&agg_m_source=base&agg_q=%40span.url&agg_q_source=base&agg_t=count&fromUser=true&index=single-machine-performance-target-logs&messageDisplay=inline&refresh_mode=paused&storage=hot&stream_sort=time%2Cdesc&top_n=100&top_o=top&viz=stream&x_missing=true&from_ts={{ filter_start }}&to_ts={{ filter_end }}&live=false"
-
+  - text: (metrics)
+    link: https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id }}&tpl_var_experiment%5B0%5D={{ experiment }}&view=spans&from_ts={{ start_time_ms
+      }}&to_ts={{ end_time_ms }}&live=false
+  - text: (profiles)
+    link: https://app.datadoghq.com/profiling/explorer?query=env%3Asingle-machine-performance%20service%3Aagent-data-plane%20job_id%3A{{ job_id }}%20experiment%3A{{ experiment }}&agg_m=count&agg_m_source=base&agg_t=count&fromUser=false&viz=stream&start={{
+      filter_start }}&end={{ filter_end }}&paused=true
+  - text: (logs)
+    link: https://app.datadoghq.com/logs?query=experiment%3A{{ experiment }}%20run_id%3A{{ job_id }}&agg_m=count&agg_m_source=base&agg_q=%40span.url&agg_q_source=base&agg_t=count&fromUser=true&index=single-machine-performance-target-logs&messageDisplay=inline&refresh_mode=paused&storage=hot&stream_sort=time%2Cdesc&top_n=100&top_o=top&viz=stream&x_missing=true&from_ts={{
+      filter_start }}&to_ts={{ filter_end }}&live=false
   lading:
     blackhole:
-      - http:
-          binding_addr: "127.0.0.1:9091"
-
+    - http:
+        binding_addr: 127.0.0.1:9091
     target_metrics:
-      - prometheus:
-          uri: "http://127.0.0.1:5100/metrics"
-
+    - prometheus:
+        uri: http://127.0.0.1:5100/metrics
 templates:
-  # Base template for DogStatsD experiments
   dsd_base:
     target:
       environment:
-        # Enable the DogStatsD pipeline.
-        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-        # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
-        DD_DOGSTATSD_PORT: "0"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: 'true'
+        DD_DOGSTATSD_PORT: '0'
         DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
-
-        # Set the baseline aggregator context limit just above 3K, which matches the default number
-        # of contexts generated. Experiments with higher context counts override this value.
-        DD_AGGREGATE_CONTEXT_LIMIT: "3100"
-
+        DD_AGGREGATE_CONTEXT_LIMIT: '3100'
     lading:
       generator:
-        - unix_datagram:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            path: "/tmp/adp-dogstatsd-dgram.sock"
-            block_cache_method: Fixed
-            variant:
-              dogstatsd:
-                contexts:
-                  inclusive:
-                    min: 3000
-                    max: 3001
-                name_length:
-                  inclusive:
-                    min: 1
-                    max: 200
-                tag_length:
-                  inclusive:
-                    min: 3
-                    max: 150
-                tags_per_msg:
-                  inclusive:
-                    min: 2
-                    max: 50
-                multivalue_count:
-                  inclusive:
-                    min: 2
-                    max: 32
-                multivalue_pack_probability: 0.08
-                kind_weights:
-                  metric: 100
-                  event: 0
-                  service_check: 0
-                metric_weights:
-                  count: 208
-                  gauge: 66
-                  timer: 0
-                  distribution: 72
-                  set: 9
-                  histogram: 1
-            maximum_prebuild_cache_size_bytes: "500 Mb"
-
-  # Endpoint routing comparisons use the same named corpus, tags, metric mix, and context count.
-  # All-match and all-miss policies contain the same number of entries; only their prefixes differ.
+      - unix_datagram:
+          seed:
+          - 2
+          - 3
+          - 5
+          - 7
+          - 11
+          - 13
+          - 17
+          - 19
+          - 23
+          - 29
+          - 31
+          - 37
+          - 41
+          - 43
+          - 47
+          - 53
+          - 59
+          - 61
+          - 67
+          - 71
+          - 73
+          - 79
+          - 83
+          - 89
+          - 97
+          - 101
+          - 103
+          - 107
+          - 109
+          - 113
+          - 127
+          - 131
+          path: /tmp/adp-dogstatsd-dgram.sock
+          block_cache_method: Fixed
+          variant:
+            dogstatsd:
+              contexts:
+                inclusive:
+                  min: 3000
+                  max: 3001
+              name_length:
+                inclusive:
+                  min: 1
+                  max: 200
+              tag_length:
+                inclusive:
+                  min: 3
+                  max: 150
+              tags_per_msg:
+                inclusive:
+                  min: 2
+                  max: 50
+              multivalue_count:
+                inclusive:
+                  min: 2
+                  max: 32
+              multivalue_pack_probability: 0.08
+              kind_weights:
+                metric: 100
+                event: 0
+                service_check: 0
+              metric_weights:
+                count: 208
+                gauge: 66
+                timer: 0
+                distribution: 72
+                set: 9
+                histogram: 1
+          maximum_prebuild_cache_size_bytes: 500 Mb
   metric_routing_base:
     extends: dsd_base
     variables:
@@ -142,7 +130,6 @@ templates:
       allowlist_prefix: routing.metric.
       routing_enabled: false
       filtered_endpoint: http://127.0.0.1:9092
-
     target:
       command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/metric-routing.yaml run
       files:
@@ -152,22 +139,19 @@ templates:
       environment:
         DD_ADDITIONAL_ENDPOINTS: '{"http://127.0.0.1:9092":["foo00000002"]}'
         DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true","http://127.0.0.1:9092":"true"}'
-
     lading:
       blackhole:
-        - http:
-            binding_addr: "127.0.0.1:9091"
-        - http:
-            binding_addr: "127.0.0.1:9092"
+      - http:
+          binding_addr: 127.0.0.1:9091
+      - http:
+          binding_addr: 127.0.0.1:9092
       generator:
-        - unix_datagram:
-            bytes_per_second: "500 MiB"
-            variant:
-              dogstatsd:
-                metric_names:
-                  - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}"
-
-  # Base template for the tag filtering experiments.
+      - unix_datagram:
+          bytes_per_second: 500 MiB
+          variant:
+            dogstatsd:
+              metric_names:
+              - '{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}'
   tagfilter_base:
     variables:
       metric_prefix: tagfilter.metric.
@@ -177,124 +161,117 @@ templates:
       tag_pool: 58
       filterlist_tags: 54
       filterlist_metrics: 0
-
     target:
       name: datadog-agent
       command: /bin/entrypoint.sh
-
       memory_allotment: 4GiB
-
       files:
         empty.yaml: null
         cert.pem: null
         datadog.yaml:
           source: shared/tagfilter-datadog.yaml.j2
-
       environment:
-        # Run in the standard control plane/data plane mode.
-        DD_DATA_PLANE_STANDALONE_MODE: "false"
-        DD_DATA_PLANE_ENABLED: "true"
-        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-
-        # The Core Agent provides the IPC certificate here, so drop the standalone dummy.
+        DD_DATA_PLANE_STANDALONE_MODE: 'false'
+        DD_DATA_PLANE_ENABLED: 'true'
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: 'true'
+        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: 'true'
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: 'true'
         DD_IPC_CERT_FILE_PATH: null
-
-        # ADP-only settings. The image's cont-init.d hook strips the `ADP_` prefix and exposes
-        # these to ADP alone, keeping Saluki-only keys out of the Core Agent's environment.
-        #
-        # Set the aggregator's context limit just above the number of contexts the generator
-        # produces, so the aggregator isn't the limiting factor, and give the context resolver's
-        # string interner room for the corpora below.
-        ADP_DD_AGGREGATE_CONTEXT_LIMIT: "80000"
-        ADP_DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
-
+        ADP_DD_AGGREGATE_CONTEXT_LIMIT: '80000'
+        ADP_DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: 32MiB
     lading:
       blackhole:
-        - http:
-            binding_addr: "127.0.0.1:9091"
-        # The process payload endpoint the Core Agent talks to.
-        - http:
-            binding_addr: "127.0.0.1:9092"
-
+      - http:
+          binding_addr: 127.0.0.1:9091
+      - http:
+          binding_addr: 127.0.0.1:9092
       target_metrics:
-        # ADP serves its internal telemetry on the unprivileged API endpoint, as everywhere else.
-        - prometheus:
-            uri: "http://127.0.0.1:5100/metrics"
-            tags:
-              sub_agent: adp
-        # The Core Agent serves its telemetry on the expvar port.
-        - prometheus:
-            uri: "http://127.0.0.1:5000/telemetry"
-            tags:
-              sub_agent: core
-
-  # Tag filtering with no traffic at all.
-  #
-  # Meant to measure the overhead of tag filtering being enabled/configured at all.
+      - prometheus:
+          uri: http://127.0.0.1:5100/metrics
+          tags:
+            sub_agent: adp
+      - prometheus:
+          uri: http://127.0.0.1:5000/telemetry
+          tags:
+            sub_agent: core
   tagfilter_idle:
     extends: tagfilter_base
     lading:
       generator: []
-
-  # Tag filtering with 100MB/s of traffic.
-  #
-  # Meant to measure the actual overhead of the tag filtering feature itself given a fixed throughput of DogStatsD
-  # metrics.
   tagfilter_dsd_uds_100mb:
     extends: tagfilter_base
-
     lading:
       generator:
-        - unix_datagram:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            path: "/tmp/adp-dogstatsd-dgram.sock"
-            block_cache_method: Fixed
-            bytes_per_second: "100 MiB"
-            maximum_prebuild_cache_size_bytes: "500 Mb"
-            variant:
-              dogstatsd:
-                contexts:
-                  inclusive:
-                    min: 78000
-                    max: 78000
-                tags_per_msg:
-                  inclusive:
-                    min: 54
-                    max: 54
-                multivalue_count:
-                  inclusive:
-                    min: 2
-                    max: 32
-                multivalue_pack_probability: 0.08
-                kind_weights:
-                  metric: 100
-                  event: 0
-                  service_check: 0
-                metric_weights:
-                  count: 208
-                  gauge: 66
-                  timer: 0
-                  distribution: 72
-                  set: 9
-                  histogram: 1
-
-                # The corpora lading draws from, as range patterns it expands at run time. Write
-                # these with `lading_range()` rather than as literal `{{X-Y}}` patterns: Jinja
-                # shares those delimiters and would evaluate the pattern as arithmetic here.
-                metric_names:
-                  - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}"
-                tag_names:
-                  - "{{ exp_vars.tag_prefix }}{{ lading_range(0, exp_vars.tag_pool) }}"
-                tag_values:
-                  - "value{{ lading_range(0, 10) }}"
-
-  # Base template for ADP-only metric tag value allow-list experiments.
-  #
-  # Unlike `metric_tag_filterlist`, this configuration does not come from the Core Agent, so these
-  # experiments run ADP standalone to avoid measuring an unrelated process. Variables drive both
-  # the generated allow-list and lading's metric/tag corpus.
+      - unix_datagram:
+          seed:
+          - 2
+          - 3
+          - 5
+          - 7
+          - 11
+          - 13
+          - 17
+          - 19
+          - 23
+          - 29
+          - 31
+          - 37
+          - 41
+          - 43
+          - 47
+          - 53
+          - 59
+          - 61
+          - 67
+          - 71
+          - 73
+          - 79
+          - 83
+          - 89
+          - 97
+          - 101
+          - 103
+          - 107
+          - 109
+          - 113
+          - 127
+          - 131
+          path: /tmp/adp-dogstatsd-dgram.sock
+          block_cache_method: Fixed
+          bytes_per_second: 100 MiB
+          maximum_prebuild_cache_size_bytes: 500 Mb
+          variant:
+            dogstatsd:
+              contexts:
+                inclusive:
+                  min: 78000
+                  max: 78000
+              tags_per_msg:
+                inclusive:
+                  min: 54
+                  max: 54
+              multivalue_count:
+                inclusive:
+                  min: 2
+                  max: 32
+              multivalue_pack_probability: 0.08
+              kind_weights:
+                metric: 100
+                event: 0
+                service_check: 0
+              metric_weights:
+                count: 208
+                gauge: 66
+                timer: 0
+                distribution: 72
+                set: 9
+                histogram: 1
+              metric_names:
+              - '{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}'
+              tag_names:
+              - '{{ exp_vars.tag_prefix }}{{ lading_range(0, exp_vars.tag_pool) }}'
+              tag_values:
+              - value{{ lading_range(0, 10) }}
   tagvaluefilter_base:
     variables:
       metric_prefix: tagvalue.metric.
@@ -310,7 +287,6 @@ templates:
       allowed_values: 10
       mismatch_action: remove
       replacement: other
-
     target:
       command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/tagvaluefilter.yaml run
       files:
@@ -318,94 +294,99 @@ templates:
         tagvaluefilter.yaml:
           source: shared/tagvaluefilter.yaml.j2
       environment:
-        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-        DD_DOGSTATSD_PORT: "0"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: 'true'
+        DD_DOGSTATSD_PORT: '0'
         DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
-        DD_AGGREGATE_CONTEXT_LIMIT: "80000"
-        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
-
-  # Value allow-list configuration with no traffic, used to measure compiled configuration memory.
+        DD_AGGREGATE_CONTEXT_LIMIT: '80000'
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: 32MiB
   tagvaluefilter_idle:
     extends: tagvaluefilter_base
     lading:
       generator: []
-
-  # Value allow-list processing under a fixed 100 MiB/s DogStatsD workload. The corpus contains 500
-  # metric names, 54 tags per message, and 12 possible values for each tag.
   tagvaluefilter_dsd_uds_100mb:
     extends: tagvaluefilter_base
     lading:
       generator:
-        - unix_datagram:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            path: /tmp/adp-dogstatsd-dgram.sock
-            block_cache_method: Fixed
-            bytes_per_second: "100 MiB"
-            maximum_prebuild_cache_size_bytes: "500 Mb"
-            variant:
-              dogstatsd:
-                contexts:
-                  inclusive:
-                    min: 78000
-                    max: 78000
-                tags_per_msg:
-                  inclusive:
-                    min: 54
-                    max: 54
-                multivalue_count:
-                  inclusive:
-                    min: 2
-                    max: 32
-                multivalue_pack_probability: 0.08
-                kind_weights:
-                  metric: 100
-                  event: 0
-                  service_check: 0
-                # Value allow-lists apply to counters and sketch-backed metrics. Exclude the metric
-                # types that intentionally bypass the transform so throughput exercises the feature.
-                metric_weights:
-                  count: 3
-                  gauge: 0
-                  timer: 0
-                  distribution: 1
-                  set: 0
-                  histogram: 0
-                metric_names:
-                  - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.traffic_metric_first, exp_vars.traffic_metrics) }}"
-                tag_names:
-                  - "{{ exp_vars.tag_prefix }}{{ lading_range(0, exp_vars.tag_pool) }}"
-                tag_values:
-                  - "{{ exp_vars.value_prefix }}{{ lading_range(0, exp_vars.value_pool) }}"
-
-  # Base template for OTLP experiments
+      - unix_datagram:
+          seed:
+          - 2
+          - 3
+          - 5
+          - 7
+          - 11
+          - 13
+          - 17
+          - 19
+          - 23
+          - 29
+          - 31
+          - 37
+          - 41
+          - 43
+          - 47
+          - 53
+          - 59
+          - 61
+          - 67
+          - 71
+          - 73
+          - 79
+          - 83
+          - 89
+          - 97
+          - 101
+          - 103
+          - 107
+          - 109
+          - 113
+          - 127
+          - 131
+          path: /tmp/adp-dogstatsd-dgram.sock
+          block_cache_method: Fixed
+          bytes_per_second: 100 MiB
+          maximum_prebuild_cache_size_bytes: 500 Mb
+          variant:
+            dogstatsd:
+              contexts:
+                inclusive:
+                  min: 78000
+                  max: 78000
+              tags_per_msg:
+                inclusive:
+                  min: 54
+                  max: 54
+              multivalue_count:
+                inclusive:
+                  min: 2
+                  max: 32
+              multivalue_pack_probability: 0.08
+              kind_weights:
+                metric: 100
+                event: 0
+                service_check: 0
+              metric_weights:
+                count: 3
+                gauge: 0
+                timer: 0
+                distribution: 1
+                set: 0
+                histogram: 0
+              metric_names:
+              - '{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.traffic_metric_first, exp_vars.traffic_metrics) }}'
+              tag_names:
+              - '{{ exp_vars.tag_prefix }}{{ lading_range(0, exp_vars.tag_pool) }}'
+              tag_values:
+              - '{{ exp_vars.value_prefix }}{{ lading_range(0, exp_vars.value_pool) }}'
   otlp_base:
     target:
       environment:
-        # Enable the OTLP pipeline.
-        DD_DATA_PLANE_OTLP_ENABLED: "true"
-        DD_OTLP_CONFIG: "{}"
-
-        # TODO(#2177): Return OTLP generator targets from the temporary ADP-only `6317`/`6318`
-        # defaults to the canonical schema-provided `4317`/`4318` endpoints.
-
-  # Base template for the OTLP metrics platform-comparison experiments: the converged Datadog Agent
-  # image with the Core Agent always running, where each experiment selects which OTLP ingestion
-  # path handles the traffic -- the Core Agent's own receiver, DDOT (`otel-agent`), or ADP. The
-  # legs are identical apart from that selection, so their results are comparable with each
-  # other, with the Core Agent leg doubling as the sidecar-less baseline. They are defined as
-  # `on_demand` experiments and only run through the manual on-demand CI job.
+        DD_DATA_PLANE_OTLP_ENABLED: 'true'
+        DD_OTLP_CONFIG: '{}'
   otlp_ingest_converged_base:
     target:
       name: datadog-agent
       command: /bin/entrypoint.sh
-
-      # Uniform across all three legs: the ceiling is not the metric (PSS measures actual
-      # usage), so equal headroom keeps every leg's runtime -- including Go GC sizing -- on
-      # identical footing. 8GiB accommodates the DDOT otel-agent's legitimate memory profile
-      # at 5 MiB/s ingest (verified: OOM-killed at 4 GiB on the Oct 9 run) while the lighter
-      # legs never come near it. See ddot-oom-root-cause.md.
       memory_allotment: 8GiB
-
       files:
         empty.yaml: null
         cert.pem: null
@@ -413,587 +394,709 @@ templates:
           content:
             hostname: smp-regression
             api_key: foo00000001
-
-            # SMP's blackholes stand in for the intake.
             dd_url: http://127.0.0.1:9091
-
-            # The target's configuration directory is mounted read-only, so the Agent can't write
-            # its IPC credentials to the default location underneath it.
             auth_token_file_path: /tmp/agent-auth-token
-
-            # Keep the target from poking around its execution environment or the network, which
-            # would otherwise add noise the experiment doesn't control for.
             cloud_provider_metadata: []
             remote_configuration:
               enabled: false
-
-            # No DogStatsD traffic in these experiments: OTLP metrics only.
             dogstatsd_port: 0
-
             telemetry:
               enabled: true
-
       environment:
-        # Run in the standard control plane/data plane mode, with the Core Agent supervising.
-        DD_DATA_PLANE_STANDALONE_MODE: "false"
-
-        # Legs other than the ADP leg leave the data plane off: the s6 data-plane service starts
-        # agent-data-plane, which sees the disabled setting and exits cleanly, at which point s6
-        # disables the service.
-        DD_DATA_PLANE_ENABLED: "false"
-
-        # No DogStatsD listener on the data plane either.
-        DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
-
-        # The Core Agent provides the IPC certificate here, so drop the standalone dummy.
+        DD_DATA_PLANE_STANDALONE_MODE: 'false'
+        DD_DATA_PLANE_ENABLED: 'false'
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: 'false'
         DD_IPC_CERT_FILE_PATH: null
-
     lading:
       generator:
-        # Identical load in every leg; each experiment only sets `target_uri` to the listener of
-        # the OTLP path it measures.
-        - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            bytes_per_second: "5 MiB"
-            parallel_connections: 1
-            maximum_prebuild_cache_size_bytes: "512 MiB"
-            variant:
-              # Full OTLP metric-type mix, EXPLICITLY pinned (not inherited from lading defaults —
-              # the July 15 #1908 default change silently altered this experiment once already).
-              # These values are today's lading defaults: 40% histograms + 10% summaries + 30% sums
-              # + 30% gauge. This payload is the point of the test: histogram/summary ingest is newly
-              # supported and must be accounted for. NOTE: at 5 MiB/s this mix OOM-kills the DDOT
-              # otel-agent at 8 GiB in every configuration tried (converged, standalone, gRPC, HTTP,
-              # GOMEMLIMIT=7GiB) while gauge/sum-only payloads pass the same pipeline at 25 MiB/s
-              # with 10k contexts (threshold template) and ~556 MB at 6 MiB/s (ddot_metrics).
-              opentelemetry_metrics:
-                metric_weights:
-                  gauge: 30
-                  sum_delta: 15
-                  sum_cumulative: 15
-                  histogram_delta: 10
-                  histogram_cumulative: 10
-                  exp_histogram_delta: 5
-                  exp_histogram_cumulative: 5
-                  summary: 10
-                contexts:
-                  total_contexts:
-                    constant: 100
-
-  # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
+      - grpc:
+          seed:
+          - 2
+          - 3
+          - 5
+          - 7
+          - 11
+          - 13
+          - 17
+          - 19
+          - 23
+          - 29
+          - 31
+          - 37
+          - 41
+          - 43
+          - 47
+          - 53
+          - 59
+          - 61
+          - 67
+          - 71
+          - 73
+          - 79
+          - 83
+          - 89
+          - 97
+          - 101
+          - 103
+          - 107
+          - 109
+          - 113
+          - 127
+          - 131
+          bytes_per_second: 5 MiB
+          parallel_connections: 1
+          maximum_prebuild_cache_size_bytes: 512 MiB
+          variant:
+            opentelemetry_metrics:
+              metric_weights:
+                gauge: 30
+                sum_delta: 15
+                sum_cumulative: 15
+                histogram_delta: 10
+                histogram_cumulative: 10
+                exp_histogram_delta: 5
+                exp_histogram_cumulative: 5
+                summary: 10
+              contexts:
+                total_contexts:
+                  constant: 100
   otlp_traces_5mb_base:
     extends: otlp_base
     lading:
       generator:
-        - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            target_uri: "http://localhost:6317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
-            parallel_connections: 1
-            maximum_prebuild_cache_size_bytes: "10 MiB"
-            variant:
-              opentelemetry_traces:
-                error_rate: 0.01
-                services:
-                  - name: api-gateway
-                    service_type: http
-                    scope_name: com.example.gateway
-                    resource_attributes:
-                      - key: deployment.environment
-                        value: production
-                      - key: cloud.region
-                        value:
-                          dictionary: cloud_regions
-                    operations:
-                      - id: get-product
-                        method: GET
-                        route: "/api/v1/products/{id}"
-                        suboperations:
-                          - to: product-service/get-product
-                      - id: list-products
-                        method: GET
-                        route: "/api/v1/products"
-                        suboperations:
-                          - to: product-service/list-products
-                  - name: product-service
-                    service_type: grpc
-                    grpc:
-                      service: ProductService
-                    scope_name: com.example.products
-                    operations:
-                      - id: get-product
-                        method: GetProduct
-                        suboperations:
-                          - to: product-cache/get-product-by-id
-                          - to: product-db/select-product-by-id
-                            rate: 0.1
-                      - id: list-products
-                        method: ListProducts
-                        suboperations:
-                          - to: product-cache/get-products
-                          - to: product-db/select-products
-                            rate: 0.1
-                  - name: product-cache
-                    service_type: database
-                    database:
-                      system: redis
-                    operations:
-                      - id: get-product-by-id
-                        query: "GET products:by_id:$1"
-                      - id: get-products
-                        query: "GET products:full"
-                  - name: product-db
-                    service_type: database
-                    database:
-                      system: postgresql
-                      name: products
-                    operations:
-                      - id: select-product-by-id
-                        table: products
-                        query: "SELECT * FROM products WHERE id = $1"
-                      - id: select-products
-                        table: products
-                        query: "SELECT * FROM products LIMIT 50"
-
+      - grpc:
+          seed:
+          - 2
+          - 3
+          - 5
+          - 7
+          - 11
+          - 13
+          - 17
+          - 19
+          - 23
+          - 29
+          - 31
+          - 37
+          - 41
+          - 43
+          - 47
+          - 53
+          - 59
+          - 61
+          - 67
+          - 71
+          - 73
+          - 79
+          - 83
+          - 89
+          - 97
+          - 101
+          - 103
+          - 107
+          - 109
+          - 113
+          - 127
+          - 131
+          target_uri: http://localhost:6317/opentelemetry.proto.collector.trace.v1.TraceService/Export
+          bytes_per_second: 5 MiB
+          parallel_connections: 1
+          maximum_prebuild_cache_size_bytes: 10 MiB
+          variant:
+            opentelemetry_traces:
+              error_rate: 0.01
+              services:
+              - name: api-gateway
+                service_type: http
+                scope_name: com.example.gateway
+                resource_attributes:
+                - key: deployment.environment
+                  value: production
+                - key: cloud.region
+                  value:
+                    dictionary: cloud_regions
+                operations:
+                - id: get-product
+                  method: GET
+                  route: /api/v1/products/{id}
+                  suboperations:
+                  - to: product-service/get-product
+                - id: list-products
+                  method: GET
+                  route: /api/v1/products
+                  suboperations:
+                  - to: product-service/list-products
+              - name: product-service
+                service_type: grpc
+                grpc:
+                  service: ProductService
+                scope_name: com.example.products
+                operations:
+                - id: get-product
+                  method: GetProduct
+                  suboperations:
+                  - to: product-cache/get-product-by-id
+                  - to: product-db/select-product-by-id
+                    rate: 0.1
+                - id: list-products
+                  method: ListProducts
+                  suboperations:
+                  - to: product-cache/get-products
+                  - to: product-db/select-products
+                    rate: 0.1
+              - name: product-cache
+                service_type: database
+                database:
+                  system: redis
+                operations:
+                - id: get-product-by-id
+                  query: GET products:by_id:$1
+                - id: get-products
+                  query: GET products:full
+              - name: product-db
+                service_type: database
+                database:
+                  system: postgresql
+                  name: products
+                operations:
+                - id: select-product-by-id
+                  table: products
+                  query: SELECT * FROM products WHERE id = $1
+                - id: select-products
+                  table: products
+                  query: SELECT * FROM products LIMIT 50
 experiments:
-  # ============================================================================
-  # DogStatsD: basic regression (CPU, memory, throughput)
-  # ============================================================================
-
-  - name: dsd_uds_512kb_3k_contexts
-    extends: dsd_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-    lading:
-      generator:
-        - unix_datagram:
-            bytes_per_second: "512 KiB"
-
-  - name: dsd_uds_1mb_3k_contexts
-    extends: dsd_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-    lading:
-      generator:
-        - unix_datagram:
-            bytes_per_second: "1 MiB"
-
-  - name: dsd_uds_10mb_3k_contexts
-    extends: dsd_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-    lading:
-      generator:
-        - unix_datagram:
-            bytes_per_second: "10 MiB"
-
-  - name: dsd_uds_100mb_3k_contexts
-    extends: dsd_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-    lading:
-      generator:
-        - unix_datagram:
-            bytes_per_second: "100 MiB"
-
-  - name: dsd_uds_500mb_3k_contexts
-    extends: dsd_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-    lading:
-      generator:
-        - unix_datagram:
-            bytes_per_second: "500 MiB"
-
-  # Unfiltered dual-shipping baseline for the all-match case below. Both destinations receive
-  # the same traffic without an extra filtering/encoding branch.
-  - name: metric_routing_dual_ship_500mb_3k_contexts
-    extends: metric_routing_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-  # Every generated metric passes the secondary's allowlist, including histogram-derived names.
-  # Comparing with dual-shipping isolates the extra filtering and encoding work at equal output.
-  - name: metric_routing_all_match_500mb_3k_contexts
-    extends: metric_routing_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-    variables:
-      routing_enabled: true
-
-  # Every aggregated metric misses the secondary's nonempty allowlist, including sketches.
-  # Use a disjoint prefix with the same policy size and workload as the all-match case.
-  - name: metric_mirroring_drop_all_500mb_3k_contexts
-    extends: metric_routing_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-    variables:
-      routing_enabled: true
-      allowlist_prefix: routing.absent.
-    target:
-      environment:
-        # Only the ordinary primary branch produces payloads in this case.
-        DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true"}'
-
-  # Measure the same guaranteed-miss policy when it selects the primary endpoint instead. The
-  # additional endpoint remains on the full-stream path. Force that remaining destination onto V3
-  # so this stays comparable to the ordinary V3 baseline rather than measuring a V3-to-V2 change.
-  - name: metric_mirroring_primary_drop_all_500mb_3k_contexts
-    extends: metric_routing_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-    variables:
-      routing_enabled: true
-      allowlist_prefix: routing.absent.
-      filtered_endpoint: http://127.0.0.1:9091
-    target:
-      environment:
-        DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9092":"true"}'
-
-  # ============================================================================
-  # DogStatsD: quality gates (memory)
-  # ============================================================================
-
-  - name: quality_gates_rss_idle
-    optimization_goal: memory
-
-    # We manually configure the DogStatsD pipeline so that ADP starts up and stays running,
-    # but we don't actually send anything, which is why we don't extend from `dsd_base` here.
-    target:
-      environment:
-        # Enable the DogStatsD pipeline.
-        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-        # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
-        DD_DOGSTATSD_PORT: "0"
-        DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
-
-    checks:
-      - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when idle."
-        bounds:
-          series: total_rss_bytes
-          upper_bound: "40.0 MiB"
-
-    lading:
-      generator: []
-
-  - name: quality_gates_rss_dsd_low
-    extends: dsd_base
-    optimization_goal: memory
-
-    checks:
-      - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling 'low' DSD traffic."
-        bounds:
-          series: total_rss_bytes
-          upper_bound: "60.0 MiB"
-
-    lading:
-      generator:
-        - unix_datagram:
-            bytes_per_second: "1 MiB"
-            maximum_prebuild_cache_size_bytes: "100 Mb"
-
-  - name: quality_gates_rss_dsd_medium
-    extends: dsd_base
-    optimization_goal: memory
-
-    target:
-      environment:
-        # Set the context limit in the aggregator to right above 10K, which matches the maximum number of contexts we expect
-        # to generate. We essentially don't want the aggregator to be a limiting factor.
-        DD_AGGREGATE_CONTEXT_LIMIT: "10100"
-
-    checks:
-      - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling 'medium' DSD traffic."
-        bounds:
-          series: total_rss_bytes
-          upper_bound: "100.0 MiB"
-
-    lading:
-      generator:
-        - unix_datagram:
-            variant:
-              dogstatsd:
-                contexts:
-                  inclusive:
-                    min: 10000
-                    max: 10001
-            bytes_per_second: "10 MiB"
-            maximum_prebuild_cache_size_bytes: "500 Mb"
-
-  - name: quality_gates_rss_dsd_heavy
-    extends: dsd_base
-    optimization_goal: memory
-
-    target:
-      environment:
-        # Sets the context resolver's string interner size.
-        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
-
-        # Set the context limit in the aggregator to right above 100K, which matches the maximum number of contexts we expect
-        # to generate. We essentially don't want the aggregator to be a limiting factor.
-        DD_AGGREGATE_CONTEXT_LIMIT: "100100"
-
-    checks:
-      - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling 'heavy' DSD traffic."
-        bounds:
-          series: total_rss_bytes
-          upper_bound: "250.0 MiB"
-
-    lading:
-      generator:
-        - unix_datagram:
-            variant:
-              dogstatsd:
-                contexts:
-                  inclusive:
-                    min: 99000
-                    max: 101000
-            bytes_per_second: "50 MiB"
-            maximum_prebuild_cache_size_bytes: "512 Mb"
-
-  - name: quality_gates_rss_dsd_ultraheavy
-    extends: dsd_base
-    optimization_goal: memory
-
-    target:
-      environment:
-        # Sets the context resolver's string interner size.
-        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "64MiB"
-
-        # Set the context limit in the aggregator to right above 250K, which matches the maximum number of contexts we
-        # expect to generate. We essentially don't want the aggregator to be a limiting factor.
-        DD_AGGREGATE_CONTEXT_LIMIT: "250100"
-
-    checks:
-      - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic."
-        bounds:
-          series: total_rss_bytes
-          upper_bound: "420.0 MiB"
-
-    lading:
-      generator:
-        - unix_datagram:
-            variant:
-              dogstatsd:
-                contexts:
-                  inclusive:
-                    min: 249000
-                    max: 251000
-            bytes_per_second: "100 MiB"
-            maximum_prebuild_cache_size_bytes: "768 Mb"
-
-  # ============================================================================
-  # OTLP Experiments
-  # ============================================================================
-
-  # ----------------------------------------------------------------------------
-  # OTLP metrics ingestion platform comparison (on-demand)
-  #
-  # Three legs over the same converged image and the same Core Agent, identical lading load, where
-  # the only variable is which process handles OTLP metrics ingest. Compare the legs against each
-  # other, using the Core Agent leg as the sidecar-less baseline: the difference between a sidecar
-  # leg and the baseline is that sidecar's cost. These are `on_demand` experiments: they never run
-  # in the nightly suite, only through the `run-benchmarks-adp-on-demand` manual CI job.
-  # ----------------------------------------------------------------------------
-
-  # Leg 1: the Core Agent's own OTLP receiver handles ingest, no sidecars.
-  - name: otlp_ingest_metrics_agent_5mb
-    extends: otlp_ingest_converged_base
-    optimization_goal: memory
-    target:
-      files:
-        datadog.yaml:
-          content:
-            # With the data plane disabled, nothing redirects these endpoints out of the way (see
-            # docker/cont-init.d/99-agent-data-plane.sh), so the Core Agent owns port 4317.
-            otlp_config:
-              receiver:
-                protocols:
-                  grpc:
-                    endpoint: 127.0.0.1:4317
+- name: dsd_uds_512kb_3k_contexts
+  extends: dsd_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  lading:
+    generator:
+    - unix_datagram:
+        bytes_per_second: 512 KiB
+- name: dsd_uds_1mb_3k_contexts
+  extends: dsd_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  lading:
+    generator:
+    - unix_datagram:
+        bytes_per_second: 1 MiB
+- name: dsd_uds_10mb_3k_contexts
+  extends: dsd_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  lading:
+    generator:
+    - unix_datagram:
+        bytes_per_second: 10 MiB
+- name: dsd_uds_100mb_3k_contexts
+  extends: dsd_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  lading:
+    generator:
+    - unix_datagram:
+        bytes_per_second: 100 MiB
+- name: dsd_uds_500mb_3k_contexts
+  extends: dsd_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  lading:
+    generator:
+    - unix_datagram:
+        bytes_per_second: 500 MiB
+- name: metric_routing_dual_ship_500mb_3k_contexts
+  extends: metric_routing_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+- name: metric_routing_all_match_500mb_3k_contexts
+  extends: metric_routing_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  variables:
+    routing_enabled: true
+- name: metric_mirroring_drop_all_500mb_3k_contexts
+  extends: metric_routing_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  variables:
+    routing_enabled: true
+    allowlist_prefix: routing.absent.
+  target:
+    environment:
+      DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9091":"true"}'
+- name: metric_mirroring_primary_drop_all_500mb_3k_contexts
+  extends: metric_routing_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  variables:
+    routing_enabled: true
+    allowlist_prefix: routing.absent.
+    filtered_endpoint: http://127.0.0.1:9091
+  target:
+    environment:
+      DD_USE_V3_API_SERIES_ENDPOINTS: '{"http://127.0.0.1:9092":"true"}'
+- name: quality_gates_rss_idle
+  optimization_goal: memory
+  target:
+    environment:
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: 'true'
+      DD_DOGSTATSD_PORT: '0'
+      DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+  checks:
+  - name: memory_usage
+    description: Acceptable upper bound on the memory used by ADP when idle.
+    bounds:
+      series: total_rss_bytes
+      upper_bound: 40.0 MiB
+  lading:
+    generator: []
+- name: quality_gates_rss_dsd_low
+  extends: dsd_base
+  optimization_goal: memory
+  checks:
+  - name: memory_usage
+    description: Acceptable upper bound on the memory used by ADP when handling 'low' DSD traffic.
+    bounds:
+      series: total_rss_bytes
+      upper_bound: 60.0 MiB
+  lading:
+    generator:
+    - unix_datagram:
+        bytes_per_second: 1 MiB
+        maximum_prebuild_cache_size_bytes: 100 Mb
+- name: quality_gates_rss_dsd_medium
+  extends: dsd_base
+  optimization_goal: memory
+  target:
+    environment:
+      DD_AGGREGATE_CONTEXT_LIMIT: '10100'
+  checks:
+  - name: memory_usage
+    description: Acceptable upper bound on the memory used by ADP when handling 'medium' DSD traffic.
+    bounds:
+      series: total_rss_bytes
+      upper_bound: 100.0 MiB
+  lading:
+    generator:
+    - unix_datagram:
+        variant:
+          dogstatsd:
+            contexts:
+              inclusive:
+                min: 10000
+                max: 10001
+        bytes_per_second: 10 MiB
+        maximum_prebuild_cache_size_bytes: 500 Mb
+- name: quality_gates_rss_dsd_heavy
+  extends: dsd_base
+  optimization_goal: memory
+  target:
+    environment:
+      DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: 32MiB
+      DD_AGGREGATE_CONTEXT_LIMIT: '100100'
+  checks:
+  - name: memory_usage
+    description: Acceptable upper bound on the memory used by ADP when handling 'heavy' DSD traffic.
+    bounds:
+      series: total_rss_bytes
+      upper_bound: 250.0 MiB
+  lading:
+    generator:
+    - unix_datagram:
+        variant:
+          dogstatsd:
+            contexts:
+              inclusive:
+                min: 99000
+                max: 101000
+        bytes_per_second: 50 MiB
+        maximum_prebuild_cache_size_bytes: 512 Mb
+- name: quality_gates_rss_dsd_ultraheavy
+  extends: dsd_base
+  optimization_goal: memory
+  target:
+    environment:
+      DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: 64MiB
+      DD_AGGREGATE_CONTEXT_LIMIT: '250100'
+  checks:
+  - name: memory_usage
+    description: Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic.
+    bounds:
+      series: total_rss_bytes
+      upper_bound: 420.0 MiB
+  lading:
+    generator:
+    - unix_datagram:
+        variant:
+          dogstatsd:
+            contexts:
+              inclusive:
+                min: 249000
+                max: 251000
+        bytes_per_second: 100 MiB
+        maximum_prebuild_cache_size_bytes: 768 Mb
+- name: otlp_ingest_metrics_agent_5mb
+  extends: otlp_ingest_converged_base
+  optimization_goal: memory
+  target:
+    files:
+      datadog.yaml:
+        content:
+          otlp_config:
+            receiver:
+              protocols:
+                grpc:
+                  endpoint: 127.0.0.1:4317
+            metrics:
+              enabled: true
+  lading:
+    generator:
+    - grpc:
+        target_uri: http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export
+- name: otlp_ingest_metrics_ddot_5mb
+  extends: otlp_ingest_converged_base
+  optimization_goal: memory
+  target:
+    command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
+    environment:
+      DD_OTELCOLLECTOR_ENABLED: 'true'
+      DD_OTEL_STANDALONE: 'true'
+      GOMEMLIMIT: 7GiB
+      GODEBUG: gctrace=1
+    files:
+      otel-config.yaml:
+        content:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+          exporters:
+            datadog:
+              hostname: smp-regression
+              api:
+                key: foo00000001
               metrics:
-                enabled: true
-    lading:
-      generator:
-        - grpc:
-            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-
-  # Leg 2: DDOT (`otel-agent`, the otelcol-based collector shipped in the Agent image) handles
-  # ingest. Runs the otel-agent binary directly (not via s6) to isolate the DDOT pipeline
-  # from Core Agent / s6 / converter overhead — the same shape as SMP's own pre-convergence
-  # ddot_metrics case that passed at 2 GiB.
-  - name: otlp_ingest_metrics_ddot_5mb
-    extends: otlp_ingest_converged_base
-    optimization_goal: memory
-    target:
-      # Run the otel-agent binary directly, skipping s6 and the Core Agent.
-      # This isolates the DDOT OTLP ingest pipeline for a fair comparison.
-      command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
-      environment:
-        # REQUIRED: the otel-agent binary gates the collector on this env var even
-        # when invoked directly — without it the process prints "OpenTelemetry Collector
-        # is not enabled, exiting application" and exits before ingesting anything.
-        # (Verified the hard way: job 98b11e7c, legs exited instantly with zero OTEL
-        # traffic — and every "standalone" run since the binary switch did the same,
-        # including the GOMEMLIMIT attempt, which never actually ran.)
-        DD_OTELCOLLECTOR_ENABLED: "true"
-        # REQUIRED: run the binary in TRUE standalone mode. Without this, `otel-agent
-        # run` defaults to CONNECTED mode — expecting a core agent at :5001 — producing
-        # the config-sync stream failures, hostname-from-core-agent retry exhaustion,
-        # and internal submissions posting directly to api.datadoghq.com (DNS-dead in
-        # the sandbox; 453 retry-looping transaction errors in job a918f884).
-        DD_OTEL_STANDALONE: "true"
-        # Go runtime: cap the GC's heap target below the 8GiB cgroup allotment. Without
-        # GOMEMLIMIT, Go's default GC targets 2x the live heap and can cross the cgroup
-        # limit before the GC reacts. The converged agent's startup normally derives
-        # this from cgroup detection, but the standalone `otel-agent run` path does not.
-        # 7GiB leaves ~1GiB headroom for stacks, runtime, and OS buffers.
-        GOMEMLIMIT: "7GiB"
-        # Diagnostic: one line per GC cycle on stderr (captured in target logs) showing
-        # heap size, live set, and GC cadence. If the run still OOMs, these lines answer
-        # whether memory is live references (retention) or garbage (throughput).
-        GODEBUG: "gctrace=1"
-        # Converter features (DD_OTELCOLLECTOR_CONVERTER_FEATURES) are genuinely
-        # converged-only — the standalone path consumes otel-config.yaml as-is.
-      files:
-        # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
-        # All signal endpoints are set explicitly so nothing is derived from a site.
-        otel-config.yaml:
-          content:
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: 0.0.0.0:4317
-            exporters:
-              datadog:
-                hostname: smp-regression
-                api:
-                  key: foo00000001
-                metrics:
-                  endpoint: http://127.0.0.1:9091
-                traces:
-                  endpoint: http://127.0.0.1:9091
-                logs:
-                  endpoint: http://127.0.0.1:9091
-                # OTAGENT-1024 (#51333, 2026-07-08) wrapped the serializer in the OTel
-                # exporterhelper, overriding the OTel defaults (num_consumers=10, queue_size=1000)
-                # with the legacy forwarder's numbers (num_consumers=1, queue_size=300) for
-                # "parity" — but the legacy worker threaded serialized bytes while the new
-                # consumer threads full translation of decoded pdata batches. With the
-                # histogram/summary payload (#1908 defaults), one consumer cannot drain
-                # 5 batches/sec; the 300-slot queue fills with decoded batches (~25 MiB
-                # each) -> ~7.5 GiB live -> OOM. Restoring the OTel default (10) is the
-                # one-variable test: if the OOM vanishes, the override is the regression.
-                sending_queue:
-                  num_consumers: 10
-            # Mirrors the effective pipeline of the converged otel-agent (the s6 converter
-            # injects these processors): batch + cumulativetodelta. NOTE: the underscored
-            # `cumulative_to_delta` name only exists in newer collectors (v0.14x+); the
-            # un-underscored `cumulativetodelta` is canonical in 7.71 (v0.133) and a
-            # deprecated-but-valid alias in 7.84.1 — required so the SAME config parses
-            # on both agents for the version-isolation job pair.
-            processors:
-              batch: {}
-              cumulativetodelta: {}
-            service:
-              pipelines:
-                metrics:
-                  receivers: [otlp]
-                  processors: [batch, cumulativetodelta]
-                  exporters: [datadog]
-    lading:
-      generator:
-        - grpc:
-            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-
-  # Control leg for the DDOT isolation matrix: identical to the full-mix DDOT leg except
-  # (a) the payload is Raymond's proven ddot_metrics mix — gauges + sums only, 256 contexts,
-  # zero histograms/summaries — and (b) the exporter uses the current DEFAULT sending_queue
-  # (post-#51333: num_consumers=1), no override. Reading the matrix in one fleet run:
-  #   control PASSES + full-mix PASSES -> consumer count was the binding constraint
-  #   control PASSES + full-mix OOMs   -> payload is fatal even at 10 consumers
-  #   control FAILS                    -> harness confound beyond payload + consumers
-  - name: otlp_ingest_metrics_ddot_5mb_gaugesums_control
-    extends: otlp_ingest_converged_base
-    optimization_goal: memory
-    target:
-      command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
-      environment:
-        # REQUIRED: collector gate + true standalone mode (see full-mix leg comments).
-        DD_OTELCOLLECTOR_ENABLED: "true"
-        DD_OTEL_STANDALONE: "true"
-        GOMEMLIMIT: "7GiB"
-        GODEBUG: "gctrace=1"
-      files:
-        otel-config.yaml:
-          content:
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: 0.0.0.0:4317
-            exporters:
-              datadog:
-                hostname: smp-regression
-                api:
-                  key: foo00000001
-                metrics:
-                  endpoint: http://127.0.0.1:9091
-                traces:
-                  endpoint: http://127.0.0.1:9091
-                logs:
-                  endpoint: http://127.0.0.1:9091
-            # Same processor pipeline as the full-mix leg (cumulativetodelta — the name
-            # that parses on both 7.71 and 7.84.1); sending_queue left unset so this leg
-            # runs each agent's own default (1 on 7.84.1, 10 on 7.71) — replicating each
-            # version's natural behavior.
-            processors:
-              batch: {}
-              cumulativetodelta: {}
-            service:
-              pipelines:
-                metrics:
-                  receivers: [otlp]
-                  processors: [batch, cumulativetodelta]
-                  exporters: [datadog]
-    lading:
-      generator:
-        - grpc:
-            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-            # Near-Raymond control payload: gauge/sum dominant. Current lading (#1908)
-            # rejects zero weights — every metric type must be present — so the new
-            # types get trace weights (1 each, ~4.8% combined vs 50% in the full mix).
-            # Contexts stay at 100 to match the failing baseline EXACTLY: this leg
-            # differs from the historical OOM runs in ONE variable only — the metric-type
-            # weights. (Raymond's case used 256, but matching OUR baseline is what makes
-            # this a clean single-variable isolation.)
+                endpoint: http://127.0.0.1:9091
+              traces:
+                endpoint: http://127.0.0.1:9091
+              logs:
+                endpoint: http://127.0.0.1:9091
+              sending_queue:
+                num_consumers: 10
+          processors:
+            batch: {}
+            cumulativetodelta: {}
+          service:
+            pipelines:
+              metrics:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                - cumulativetodelta
+                exporters:
+                - datadog
+  lading:
+    generator:
+    - grpc:
+        target_uri: http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export
+- name: otlp_ingest_metrics_ddot_5mb_gaugesums_control
+  extends: otlp_ingest_converged_base
+  optimization_goal: memory
+  target:
+    command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
+    environment:
+      DD_OTELCOLLECTOR_ENABLED: 'true'
+      DD_OTEL_STANDALONE: 'true'
+      GOMEMLIMIT: 7GiB
+      GODEBUG: gctrace=1
+    files:
+      otel-config.yaml:
+        content:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+          exporters:
+            datadog:
+              hostname: smp-regression
+              api:
+                key: foo00000001
+              metrics:
+                endpoint: http://127.0.0.1:9091
+              traces:
+                endpoint: http://127.0.0.1:9091
+              logs:
+                endpoint: http://127.0.0.1:9091
+          processors:
+            batch: {}
+            cumulativetodelta: {}
+          service:
+            pipelines:
+              metrics:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                - cumulativetodelta
+                exporters:
+                - datadog
+  lading:
+    generator:
+    - grpc:
+        target_uri: http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export
+        variant:
+          opentelemetry_metrics:
+            metric_weights:
+              gauge: 50
+              sum_delta: 25
+              sum_cumulative: 25
+              histogram_delta: 1
+              histogram_cumulative: 1
+              exp_histogram_delta: 1
+              exp_histogram_cumulative: 1
+              summary: 1
+            contexts:
+              total_contexts:
+                constant: 100
+- name: otlp_ingest_metrics_ddot_slowburn
+  extends: otlp_ingest_converged_base
+  optimization_goal: memory
+  target:
+    command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
+    environment:
+      DD_OTELCOLLECTOR_ENABLED: 'true'
+      DD_OTEL_STANDALONE: 'true'
+      GOMEMLIMIT: 7GiB
+      GODEBUG: gctrace=1
+    files:
+      otel-config.yaml:
+        content:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+          exporters:
+            datadog:
+              hostname: smp-regression
+              api:
+                key: foo00000001
+              metrics:
+                endpoint: http://127.0.0.1:9091
+              traces:
+                endpoint: http://127.0.0.1:9091
+              logs:
+                endpoint: http://127.0.0.1:9091
+              sending_queue:
+                num_consumers: 10
+          processors:
+            batch: {}
+            cumulativetodelta: {}
+          service:
+            pipelines:
+              metrics:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                - cumulativetodelta
+                exporters:
+                - datadog
+  lading:
+    generator:
+    - grpc:
+        target_uri: http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export
+        bytes_per_second: 32 KiB
+- name: otlp_ingest_metrics_ddot_raymond_replication
+  extends: otlp_base
+  optimization_goal: memory
+  target:
+    name: datadog-agent
+    command: /bin/entrypoint.sh
+    cpu_allotment: 4
+    memory_allotment: 2GiB
+    environment:
+      DD_API_KEY: a0000001
+      DD_HOSTNAME: smp-regression
+      DD_AUTH_TOKEN_FILE_PATH: /tmp/agent-auth-token
+      DD_OTELCOLLECTOR_ENABLED: 'true'
+      DD_DATA_PLANE_OTLP_ENABLED: null
+      DD_OTLP_CONFIG: null
+      DD_DD_URL: null
+      DD_USE_V3_API_SERIES_ENDPOINTS: null
+      DD_IPC_CERT_FILE_PATH: null
+      DD_LOG_FORMAT_JSON: null
+      DD_DATA_PLANE_STANDALONE_MODE: null
+      DD_METRICS_LEVEL: null
+    files:
+      empty.yaml: null
+      cert.pem: null
+      datadog.yaml:
+        content:
+          auth_token_file_path: /tmp/agent-auth-token
+          cloud_provider_metadata: []
+          logs_enabled: true
+          logs_config:
+            logs_dd_url: 127.0.0.1:9092
+            logs_no_ssl: true
+            force_use_http: true
+          dd_url: http://127.0.0.1:9091
+          process_config:
+            process_dd_url: http://localhost:9093
+          telemetry:
+            enabled: true
+            checks: '*'
+      otel-config.yaml:
+        content:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+            prometheus:
+              config:
+                scrape_configs:
+                - job_name: otelcol
+                  scrape_interval: 10s
+                  static_configs:
+                  - targets:
+                    - 0.0.0.0:8888
+          exporters:
+            datadog:
+              traces:
+                span_name_as_resource_name: true
+                endpoint: http://127.0.0.1:9091
+              hostname: smp-regression
+              api:
+                key: '123456789'
+                site: 127.0.0.1:9091
+              metrics:
+                resource_attributes_as_tags: true
+                endpoint: http://127.0.0.1:9091
+              logs:
+                endpoint: http://127.0.0.1:9091
+          processors:
+            batch: {}
+          connectors:
+            datadog/connector:
+              traces:
+                span_name_as_resource_name: true
+                compute_stats_by_span_kind: true
+                compute_top_level_by_span_kind: true
+                peer_tags_aggregation: true
+          service:
+            pipelines:
+              traces:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                exporters:
+                - datadog/connector
+              traces/send:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                exporters:
+                - datadog
+              metrics:
+                receivers:
+                - otlp
+                - datadog/connector
+                processors:
+                - batch
+                exporters:
+                - datadog
+              logs:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                exporters:
+                - datadog
+  lading:
+    blackhole:
+    - http:
+        binding_addr: 127.0.0.1:9091
+        body_variant: nothing
+    - http:
+        binding_addr: 127.0.0.1:9092
+        body_variant: nothing
+    - http:
+        binding_addr: 127.0.0.1:9093
+        body_variant: nothing
+    target_metrics:
+    - prometheus:
+        uri: http://127.0.0.1:5000/telemetry
+    generator:
+    - http:
+        seed:
+        - 2
+        - 3
+        - 5
+        - 7
+        - 11
+        - 13
+        - 17
+        - 19
+        - 23
+        - 29
+        - 31
+        - 37
+        - 41
+        - 43
+        - 47
+        - 53
+        - 59
+        - 61
+        - 67
+        - 71
+        - 73
+        - 79
+        - 83
+        - 89
+        - 97
+        - 101
+        - 103
+        - 107
+        - 109
+        - 113
+        - 127
+        - 131
+        headers:
+          content-type: application/x-protobuf
+        target_uri: http://127.0.0.1:4318/v1/metrics
+        bytes_per_second: 6 MiB
+        parallel_connections: 5
+        method:
+          post:
+            maximum_prebuild_cache_size_bytes: 512 MiB
             variant:
               opentelemetry_metrics:
                 metric_weights:
@@ -1007,558 +1110,464 @@ experiments:
                   summary: 1
                 contexts:
                   total_contexts:
-                    constant: 100
-
-  # Slow-burn profile-capture leg: identical to the full-mix leg except the load
-  # rate (32 KiB/s instead of 5 MiB/s). The DDOT targets die every ~16s at full
-  # rate — faster than the native profiler's upload cycle, so NO target profiles
-  # ever ship (verified on job a918f884: zero service:agent-data-plane uploads from
-  # the DDOT hosts, while surviving targets ship ~40/8h). At ~1/160th the rate the
-  # balloon — if it scales with ingest — takes 20+ minutes: the target survives
-  # past an upload cycle with a ballooning live set, and the live-heap profile of
-  # the ballooning process lands in Datadog. View: Profiling explorer,
-  # service:agent-data-plane, env:single-machine-performance, then filter host to
-  # whichever runs this experiment.
-  - name: otlp_ingest_metrics_ddot_slowburn
-    extends: otlp_ingest_converged_base
-    optimization_goal: memory
-    target:
-      command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
-      environment:
-        # Same collector gate + standalone mode as legs A/B.
-        DD_OTELCOLLECTOR_ENABLED: "true"
-        DD_OTEL_STANDALONE: "true"
-        GOMEMLIMIT: "7GiB"
-        GODEBUG: "gctrace=1"
-      files:
-        otel-config.yaml:
-          content:
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: 0.0.0.0:4317
-            exporters:
-              datadog:
-                hostname: smp-regression
-                api:
-                  key: foo00000001
-                metrics:
-                  endpoint: http://127.0.0.1:9091
-                traces:
-                  endpoint: http://127.0.0.1:9091
-                logs:
-                  endpoint: http://127.0.0.1:9091
-                sending_queue:
-                  num_consumers: 10
-            processors:
-              batch: {}
-              cumulativetodelta: {}
-            service:
-              pipelines:
-                metrics:
-                  receivers: [otlp]
-                  processors: [batch, cumulativetodelta]
-                  exporters: [datadog]
-    lading:
-      generator:
-        - grpc:
-            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-            # The whole point: ~1/160th the normal rate so the target outlives the
-            # profiler's upload cycle while the balloon is in progress.
-            bytes_per_second: "32 KiB"
-
-  # Harness-validation cell: Raymond's ddot_metrics case replicated through our
-  # suite as exactly as current lading permits — his converged shape (entrypoint +
-  # s6 + converter), his full otel-config (4 pipelines, datadog connector, prometheus
-  # receiver), his datadog.yaml, his env, his HTTP/4318 load at 6 MiB/s / 5 connections,
-  # his context nesting (256 contexts, 8-64 attrs/resource, 10-128 metrics/scope), and
-  # his 2GiB allotment.
-  #
-  # On the 7.71.0 job this is the anchor: PASSES (~556 MB like his nightly) -> our
-  # harness reproduces the known-good corner and the isolation matrix stands on
-  # validated ground. FAILS -> the suite itself (or one of the enumerated deltas:
-  # current-lading generator internals vs his 0.31.2, the saluki ADP image layer,
-  # suite env/infra) is the confound, and every matrix reading is suspect until the
-  # harness is diffed against his.
-  #
-  # On the 7.84.1 job this is a bonus cell (his exact case on the new agent — never
-  # run before): expect the known 7.84.1 failure modes (converter extension URL
-  # mangling on `site`, plus whatever the matrix isolates), NOT a harness signal.
-  - name: otlp_ingest_metrics_ddot_raymond_replication
-    extends: otlp_base
-    optimization_goal: memory
-    target:
-      name: datadog-agent
-      command: /bin/entrypoint.sh
-      cpu_allotment: 4
-      memory_allotment: 2GiB
-      environment:
-        # His exact env; replaces the ADP-suite globals. The nulls strip inherited
-        # keys (from `global` and `otlp_base`) so nothing from our suite leaks into
-        # his shape — notably DD_DATA_PLANE_STANDALONE_MODE, the V3 series endpoint
-        # override, and trace-level metrics logging, none of which his case had.
-        DD_API_KEY: a0000001
-        DD_HOSTNAME: smp-regression
-        DD_AUTH_TOKEN_FILE_PATH: /tmp/agent-auth-token
-        DD_OTELCOLLECTOR_ENABLED: "true"
-        DD_DATA_PLANE_OTLP_ENABLED: null
-        DD_OTLP_CONFIG: null
-        DD_DD_URL: null
-        DD_USE_V3_API_SERIES_ENDPOINTS: null
-        DD_IPC_CERT_FILE_PATH: null
-        DD_LOG_FORMAT_JSON: null
-        DD_DATA_PLANE_STANDALONE_MODE: null
-        DD_METRICS_LEVEL: null
-      files:
-        empty.yaml: null
-        cert.pem: null
-        # His datadog.yaml, verbatim.
-        datadog.yaml:
-          content:
-            auth_token_file_path: /tmp/agent-auth-token
-            cloud_provider_metadata: []
-            logs_enabled: true
-            logs_config:
-              logs_dd_url: 127.0.0.1:9092
-              logs_no_ssl: true
-              force_use_http: true
-            dd_url: http://127.0.0.1:9091
-            process_config:
-              process_dd_url: http://localhost:9093
-            telemetry:
-              enabled: true
-              checks: '*'
-        # His otel-config.yaml, verbatim: both OTLP protocols, prometheus receiver,
-        # datadog connector, 4 pipelines, batch processor, explicit endpoints.
-        otel-config.yaml:
-          content:
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: 0.0.0.0:4317
-                  http:
-                    endpoint: 0.0.0.0:4318
-              prometheus:
-                config:
-                  scrape_configs:
-                  - job_name: 'otelcol'
-                    scrape_interval: 10s
-                    static_configs:
-                      - targets: ['0.0.0.0:8888']
-            exporters:
-              datadog:
-                traces:
-                  span_name_as_resource_name: true
-                  endpoint: "http://127.0.0.1:9091"
-                hostname: "smp-regression"
-                api:
-                  key: "123456789"
-                  site: 127.0.0.1:9091
-                metrics:
-                  resource_attributes_as_tags: true
-                  endpoint: http://127.0.0.1:9091
-                logs:
-                  endpoint: http://127.0.0.1:9091
-            processors:
-              batch: {}
-            connectors:
-              datadog/connector:
-                traces:
-                  span_name_as_resource_name: true
-                  compute_stats_by_span_kind: true
-                  compute_top_level_by_span_kind: true
-                  peer_tags_aggregation: true
-            service:
-              pipelines:
-                traces:
-                  receivers: [otlp]
-                  processors: [batch]
-                  exporters: [datadog/connector]
-                traces/send:
-                  receivers: [otlp]
-                  processors: [batch]
-                  exporters: [datadog]
-                metrics:
-                  receivers: [otlp, datadog/connector]
-                  processors: [batch]
-                  exporters: [datadog]
-                logs:
-                  receivers: [otlp]
-                  processors: [batch]
-                  exporters: [datadog]
-    lading:
-      # His lading topology: three blackholes (series/sketches on 9091, logs on
-      # 9092, process on 9093) and his telemetry scrape port.
-      blackhole:
-        - http:
-            binding_addr: "127.0.0.1:9091"
-            body_variant: "nothing"
-        - http:
-            binding_addr: "127.0.0.1:9092"
-            body_variant: "nothing"
-        - http:
-            binding_addr: "127.0.0.1:9093"
-            body_variant: "nothing"
-      target_metrics:
-        - prometheus:
-            uri: "http://127.0.0.1:5000/telemetry"
-      # His generator, verbatim except the trace weights on the new metric types —
-      # current lading (#1908) rejects zero weights, so his exact 50/25/25 mix
-      # carries a 1-weight floor (~4.8%) on the types that didn't exist in his
-      # lading 0.31.2.
-      generator:
-        - http:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
-                   59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            headers:
-              content-type: "application/x-protobuf"
-            target_uri: "http://127.0.0.1:4318/v1/metrics"
-            bytes_per_second: "6 MiB"
-            parallel_connections: 5
-            method:
-              post:
-                maximum_prebuild_cache_size_bytes: "512 MiB"
-                variant:
-                  opentelemetry_metrics:
-                    metric_weights:
-                      gauge: 50
-                      sum_delta: 25
-                      sum_cumulative: 25
-                      histogram_delta: 1
-                      histogram_cumulative: 1
-                      exp_histogram_delta: 1
-                      exp_histogram_cumulative: 1
-                      summary: 1
-                    contexts:
-                      total_contexts:
-                        constant: 256
-                      attributes_per_resource:
-                        inclusive:
-                          min: 8
-                          max: 64
-                      scopes_per_resource:
-                        inclusive:
-                          min: 1
-                          max: 32
-                      attributes_per_scope:
-                        inclusive:
-                          min: 0
-                          max: 4
-                      metrics_per_scope:
-                        inclusive:
-                          min: 10
-                          max: 128
-                      attributes_per_metric:
-                        inclusive:
-                          min: 0
-                          max: 255
-
-  # Converged DDOT comparison leg: Raymond's proven converged shape but with the
-  # full metric-type payload (all types including histograms/summaries) and our
-  # gRPC 5 MiB/s load. Single-variable from the passing replication: the payload.
-  # If this passes, we have the DDOT number for the comparison notebook. If it
-  # OOMs, the version-gap finding extends to the converged shape with the new
-  # payload types — the production-relevant result.
-  #
-  # Runs on the same converged image as the Agent/ADP legs (entrypoint.sh + s6,
-  # core agent running) with DD_OTELCOLLECTOR_ENABLED=true routing OTLP to the
-  # otel-agent sidecar. The otel-config is minimal — the converter injects the
-  # rest (cumulativetodelta, batch, etc.) as it does in production.
-  - name: otlp_ingest_metrics_ddot_converged_fullmix
-    extends: otlp_ingest_converged_base
-    optimization_goal: memory
-    target:
-      environment:
-        # Route OTLP to the otel-agent sidecar (converged shape).
-        DD_OTELCOLLECTOR_ENABLED: "true"
-      files:
-        otel-config.yaml:
-          content:
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: 0.0.0.0:4317
-                  http:
-                    endpoint: 0.0.0.0:4318
-            exporters:
-              datadog:
-                hostname: smp-regression
-                api:
-                  key: foo00000001
-                metrics:
-                  endpoint: http://127.0.0.1:9091
-                traces:
-                  endpoint: http://127.0.0.1:9091
-                logs:
-                  endpoint: http://127.0.0.1:9091
-            # Processors are injected by the converter in converged mode —
-            # minimal explicit config lets the converter do its production job.
-            service:
-              pipelines:
-                metrics:
-                  receivers: [otlp]
-                  exporters: [datadog]
-                traces:
-                  receivers: [otlp]
-                  exporters: [datadog]
-                logs:
-                  receivers: [otlp]
-                  exporters: [datadog]
-    lading:
-      generator:
-        - grpc:
-            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-
-  # Leg 3: ADP handles ingest as the data-plane sidecar.
-  - name: otlp_ingest_metrics_adp_5mb
-    extends: otlp_ingest_converged_base
-    optimization_goal: memory
-    target:
-      environment:
-        DD_DATA_PLANE_ENABLED: "true"
-        DD_DATA_PLANE_OTLP_ENABLED: "true"
-        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-        DD_OTLP_CONFIG: "{}"
-    lading:
-      generator:
-        - grpc:
-            # ADP listens on the temporary ADP-only OTLP ports in converged mode (#2177); the
-            # Core Agent's own receiver gets redirected out of the way by cont-init.
-            target_uri: "http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
-
-  - name: otlp_ingest_logs_5mb
-    extends: otlp_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-    erratic: true
-
-    lading:
-      generator:
-        - http:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-            headers:
-              content-type: "application/x-protobuf"
-            target_uri: "http://localhost:6318/v1/logs"
-            bytes_per_second: "5 MiB"
-            parallel_connections: 1
-            method:
-              post:
-                maximum_prebuild_cache_size_bytes: "512 MiB"
-                variant:
-                  opentelemetry_logs:
-                    contexts:
-                      total_contexts:
-                        constant: 1000
-                    trace_cardinality:
-                      constant: 10
-                    body_size:
-                      inclusive:
-                        min: 128
-                        max: 512
-                    severity_weights:
-                      trace: 10
-                      debug: 10
-                      info: 10
-                      warn: 10
-                      error: 10
-                      fatal: 10
-
-  - name: otlp_ingest_traces_5mb
-    extends: otlp_traces_5mb_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-  - name: otlp_ingest_traces_ottl_filtering_5mb
-    extends: otlp_traces_5mb_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-    target:
-      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
-      files:
-        empty.yaml: null
-        ottl_config.yaml:
-          content:
-            ottl_filter_config:
-              error_mode: ignore
+                    constant: 256
+                  attributes_per_resource:
+                    inclusive:
+                      min: 8
+                      max: 64
+                  scopes_per_resource:
+                    inclusive:
+                      min: 1
+                      max: 32
+                  attributes_per_scope:
+                    inclusive:
+                      min: 0
+                      max: 4
+                  metrics_per_scope:
+                    inclusive:
+                      min: 10
+                      max: 128
+                  attributes_per_metric:
+                    inclusive:
+                      min: 0
+                      max: 255
+- name: otlp_ingest_metrics_ddot_converged_fullmix
+  extends: otlp_base
+  optimization_goal: memory
+  target:
+    name: datadog-agent
+    command: /bin/entrypoint.sh
+    cpu_allotment: 4
+    memory_allotment: 2GiB
+    environment:
+      DD_API_KEY: a0000001
+      DD_HOSTNAME: smp-regression
+      DD_AUTH_TOKEN_FILE_PATH: /tmp/agent-auth-token
+      DD_OTELCOLLECTOR_ENABLED: 'true'
+      DD_DATA_PLANE_OTLP_ENABLED: null
+      DD_OTLP_CONFIG: null
+      DD_DD_URL: null
+      DD_USE_V3_API_SERIES_ENDPOINTS: null
+      DD_IPC_CERT_FILE_PATH: null
+      DD_LOG_FORMAT_JSON: null
+      DD_DATA_PLANE_STANDALONE_MODE: null
+      DD_METRICS_LEVEL: null
+    files:
+      empty.yaml: null
+      cert.pem: null
+      datadog.yaml:
+        content:
+          auth_token_file_path: /tmp/agent-auth-token
+          cloud_provider_metadata: []
+          logs_enabled: true
+          logs_config:
+            logs_dd_url: 127.0.0.1:9092
+            logs_no_ssl: true
+            force_use_http: true
+          dd_url: http://127.0.0.1:9091
+          process_config:
+            process_dd_url: http://localhost:9093
+          telemetry:
+            enabled: true
+            checks: '*'
+      otel-config.yaml:
+        content:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+            prometheus:
+              config:
+                scrape_configs:
+                - job_name: otelcol
+                  scrape_interval: 10s
+                  static_configs:
+                  - targets:
+                    - 0.0.0.0:8888
+          exporters:
+            datadog:
               traces:
-                span:
-                  - 'attributes["container.name"] == "app_container_1"'
-                  - 'resource.attributes["deployment.environment"] == "production"'
-
-  - name: otlp_ingest_traces_ottl_transform_5mb
-    extends: otlp_traces_5mb_base
-    optimization_goals:
-      - cpu
-      - memory
-      - ingress_throughput
-
-    target:
-      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
-      files:
-        empty.yaml: null
-        ottl_config.yaml:
-          content:
-            ottl_transform_config:
-              error_mode: ignore
-              trace_statements:
-                - 'set(attributes["test_attr"], "test-val")'
-
-  # ============================================================================
-  # Tag filtering experiments
-  # ============================================================================
-
-  - name: tagfilter_0metrics_idle
-    extends: tagfilter_idle
-    optimization_goal: memory
-
-  - name: tagfilter_0metrics_100mb
-    extends: tagfilter_dsd_uds_100mb
-    optimization_goal: cpu
-
-  - name: tagfilter_500metrics_idle
-    extends: tagfilter_idle
-    optimization_goal: memory
-    variables:
-      filterlist_metrics: 500
-
-  - name: tagfilter_500metrics_100mb
-    extends: tagfilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      filterlist_metrics: 500
-
-  - name: tagfilter_1000metrics_idle
-    extends: tagfilter_idle
-    optimization_goal: memory
-    variables:
-      filterlist_metrics: 1000
-
-  - name: tagfilter_1000metrics_100mb
-    extends: tagfilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      filterlist_metrics: 1000
-
-  - name: tagfilter_10000metrics_idle
-    extends: tagfilter_idle
-    optimization_goal: memory
-    variables:
-      filterlist_metrics: 10000
-
-  - name: tagfilter_10000metrics_100mb
-    extends: tagfilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      filterlist_metrics: 10000
-
-  # ============================================================================
-  # Metric tag value allow-list experiments
-  # ============================================================================
-
-  # Idle variants separate the memory used by metric-prefix rules from the memory used by the
-  # allowed-value sets.
-  - name: tagvaluefilter_0rules_idle
-    extends: tagvaluefilter_idle
-    optimization_goal: memory
-
-  - name: tagvaluefilter_1rule_10values_idle
-    extends: tagvaluefilter_idle
-    optimization_goal: memory
-    variables:
-      rule_mode: broad
-      rule_metrics: 1
-      allowed_values: 10
-
-  - name: tagvaluefilter_500rules_10values_idle
-    extends: tagvaluefilter_idle
-    optimization_goal: memory
-    variables:
-      rule_mode: per_metric
-      rule_metrics: 500
-      allowed_values: 10
-
-  - name: tagvaluefilter_10000rules_10values_idle
-    extends: tagvaluefilter_idle
-    optimization_goal: memory
-    variables:
-      rule_mode: per_metric
-      rule_metrics: 10000
-      allowed_values: 10
-
-  - name: tagvaluefilter_1rule_10000values_idle
-    extends: tagvaluefilter_idle
-    optimization_goal: memory
-    variables:
-      rule_mode: broad
-      rule_metrics: 1
-      value_pool: 10000
-      allowed_values: 10000
-
-  # Traffic variants isolate the no-rule baseline, allowed-value lookup, context mutation, prefix
-  # table scaling, and the full-table miss path.
-  - name: tagvaluefilter_0rules_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-
-  - name: tagvaluefilter_1rule_allow_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      rule_mode: broad
-      rule_metrics: 1
-      allowed_values: 12
-
-  - name: tagvaluefilter_1rule_remove25_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      rule_mode: broad
-      rule_metrics: 1
-      allowed_values: 9
-      mismatch_action: remove
-
-  - name: tagvaluefilter_1rule_replace25_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      rule_mode: broad
-      rule_metrics: 1
-      allowed_values: 9
-      mismatch_action: replace
-
-  - name: tagvaluefilter_500rules_allow_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      rule_mode: per_metric
-      rule_metrics: 500
-      allowed_values: 12
-
-  - name: tagvaluefilter_10000rules_allow_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      rule_mode: per_metric
-      rule_metrics: 10000
-      allowed_values: 12
-
-  - name: tagvaluefilter_10000rules_miss_100mb
-    extends: tagvaluefilter_dsd_uds_100mb
-    optimization_goal: cpu
-    variables:
-      rule_mode: per_metric
-      rule_metric_first: 20000
-      rule_metrics: 10000
-      allowed_values: 12
+                span_name_as_resource_name: true
+                endpoint: http://127.0.0.1:9091
+              hostname: smp-regression
+              api:
+                key: '123456789'
+                site: 127.0.0.1:9091
+              metrics:
+                resource_attributes_as_tags: true
+                endpoint: http://127.0.0.1:9091
+              logs:
+                endpoint: http://127.0.0.1:9091
+          processors:
+            batch: {}
+          connectors:
+            datadog/connector:
+              traces:
+                span_name_as_resource_name: true
+                compute_stats_by_span_kind: true
+                compute_top_level_by_span_kind: true
+                peer_tags_aggregation: true
+          service:
+            pipelines:
+              traces:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                exporters:
+                - datadog/connector
+              traces/send:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                exporters:
+                - datadog
+              metrics:
+                receivers:
+                - otlp
+                - datadog/connector
+                processors:
+                - batch
+                exporters:
+                - datadog
+              logs:
+                receivers:
+                - otlp
+                processors:
+                - batch
+                exporters:
+                - datadog
+  lading:
+    blackhole:
+    - http:
+        binding_addr: 127.0.0.1:9091
+        body_variant: nothing
+    - http:
+        binding_addr: 127.0.0.1:9092
+        body_variant: nothing
+    - http:
+        binding_addr: 127.0.0.1:9093
+        body_variant: nothing
+    target_metrics:
+    - prometheus:
+        uri: http://127.0.0.1:5000/telemetry
+    generator:
+    - http:
+        seed:
+        - 2
+        - 3
+        - 5
+        - 7
+        - 11
+        - 13
+        - 17
+        - 19
+        - 23
+        - 29
+        - 31
+        - 37
+        - 41
+        - 43
+        - 47
+        - 53
+        - 59
+        - 61
+        - 67
+        - 71
+        - 73
+        - 79
+        - 83
+        - 89
+        - 97
+        - 101
+        - 103
+        - 107
+        - 109
+        - 113
+        - 127
+        - 131
+        headers:
+          content-type: application/x-protobuf
+        target_uri: http://127.0.0.1:4318/v1/metrics
+        bytes_per_second: 6 MiB
+        parallel_connections: 5
+        method:
+          post:
+            maximum_prebuild_cache_size_bytes: 512 MiB
+            variant:
+              opentelemetry_metrics:
+                metric_weights:
+                  gauge: 30
+                  sum_delta: 15
+                  sum_cumulative: 15
+                  histogram_delta: 10
+                  histogram_cumulative: 10
+                  exp_histogram_delta: 5
+                  exp_histogram_cumulative: 5
+                  summary: 10
+                contexts:
+                  total_contexts:
+                    constant: 256
+                  attributes_per_resource:
+                    inclusive:
+                      min: 8
+                      max: 64
+                  scopes_per_resource:
+                    inclusive:
+                      min: 1
+                      max: 32
+                  attributes_per_scope:
+                    inclusive:
+                      min: 0
+                      max: 4
+                  metrics_per_scope:
+                    inclusive:
+                      min: 10
+                      max: 128
+                  attributes_per_metric:
+                    inclusive:
+                      min: 0
+                      max: 255
+- name: otlp_ingest_metrics_adp_5mb
+  extends: otlp_ingest_converged_base
+  optimization_goal: memory
+  target:
+    environment:
+      DD_DATA_PLANE_ENABLED: 'true'
+      DD_DATA_PLANE_OTLP_ENABLED: 'true'
+      DD_DATA_PLANE_REMOTE_AGENT_ENABLED: 'true'
+      DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: 'true'
+      DD_OTLP_CONFIG: '{}'
+  lading:
+    generator:
+    - grpc:
+        target_uri: http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export
+- name: otlp_ingest_logs_5mb
+  extends: otlp_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  erratic: true
+  lading:
+    generator:
+    - http:
+        seed:
+        - 2
+        - 3
+        - 5
+        - 7
+        - 11
+        - 13
+        - 17
+        - 19
+        - 23
+        - 29
+        - 31
+        - 37
+        - 41
+        - 43
+        - 47
+        - 53
+        - 59
+        - 61
+        - 67
+        - 71
+        - 73
+        - 79
+        - 83
+        - 89
+        - 97
+        - 101
+        - 103
+        - 107
+        - 109
+        - 113
+        - 127
+        - 131
+        headers:
+          content-type: application/x-protobuf
+        target_uri: http://localhost:6318/v1/logs
+        bytes_per_second: 5 MiB
+        parallel_connections: 1
+        method:
+          post:
+            maximum_prebuild_cache_size_bytes: 512 MiB
+            variant:
+              opentelemetry_logs:
+                contexts:
+                  total_contexts:
+                    constant: 1000
+                trace_cardinality:
+                  constant: 10
+                body_size:
+                  inclusive:
+                    min: 128
+                    max: 512
+                severity_weights:
+                  trace: 10
+                  debug: 10
+                  info: 10
+                  warn: 10
+                  error: 10
+                  fatal: 10
+- name: otlp_ingest_traces_5mb
+  extends: otlp_traces_5mb_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+- name: otlp_ingest_traces_ottl_filtering_5mb
+  extends: otlp_traces_5mb_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  target:
+    command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
+    files:
+      empty.yaml: null
+      ottl_config.yaml:
+        content:
+          ottl_filter_config:
+            error_mode: ignore
+            traces:
+              span:
+              - attributes["container.name"] == "app_container_1"
+              - resource.attributes["deployment.environment"] == "production"
+- name: otlp_ingest_traces_ottl_transform_5mb
+  extends: otlp_traces_5mb_base
+  optimization_goals:
+  - cpu
+  - memory
+  - ingress_throughput
+  target:
+    command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
+    files:
+      empty.yaml: null
+      ottl_config.yaml:
+        content:
+          ottl_transform_config:
+            error_mode: ignore
+            trace_statements:
+            - set(attributes["test_attr"], "test-val")
+- name: tagfilter_0metrics_idle
+  extends: tagfilter_idle
+  optimization_goal: memory
+- name: tagfilter_0metrics_100mb
+  extends: tagfilter_dsd_uds_100mb
+  optimization_goal: cpu
+- name: tagfilter_500metrics_idle
+  extends: tagfilter_idle
+  optimization_goal: memory
+  variables:
+    filterlist_metrics: 500
+- name: tagfilter_500metrics_100mb
+  extends: tagfilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    filterlist_metrics: 500
+- name: tagfilter_1000metrics_idle
+  extends: tagfilter_idle
+  optimization_goal: memory
+  variables:
+    filterlist_metrics: 1000
+- name: tagfilter_1000metrics_100mb
+  extends: tagfilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    filterlist_metrics: 1000
+- name: tagfilter_10000metrics_idle
+  extends: tagfilter_idle
+  optimization_goal: memory
+  variables:
+    filterlist_metrics: 10000
+- name: tagfilter_10000metrics_100mb
+  extends: tagfilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    filterlist_metrics: 10000
+- name: tagvaluefilter_0rules_idle
+  extends: tagvaluefilter_idle
+  optimization_goal: memory
+- name: tagvaluefilter_1rule_10values_idle
+  extends: tagvaluefilter_idle
+  optimization_goal: memory
+  variables:
+    rule_mode: broad
+    rule_metrics: 1
+    allowed_values: 10
+- name: tagvaluefilter_500rules_10values_idle
+  extends: tagvaluefilter_idle
+  optimization_goal: memory
+  variables:
+    rule_mode: per_metric
+    rule_metrics: 500
+    allowed_values: 10
+- name: tagvaluefilter_10000rules_10values_idle
+  extends: tagvaluefilter_idle
+  optimization_goal: memory
+  variables:
+    rule_mode: per_metric
+    rule_metrics: 10000
+    allowed_values: 10
+- name: tagvaluefilter_1rule_10000values_idle
+  extends: tagvaluefilter_idle
+  optimization_goal: memory
+  variables:
+    rule_mode: broad
+    rule_metrics: 1
+    value_pool: 10000
+    allowed_values: 10000
+- name: tagvaluefilter_0rules_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+- name: tagvaluefilter_1rule_allow_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    rule_mode: broad
+    rule_metrics: 1
+    allowed_values: 12
+- name: tagvaluefilter_1rule_remove25_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    rule_mode: broad
+    rule_metrics: 1
+    allowed_values: 9
+    mismatch_action: remove
+- name: tagvaluefilter_1rule_replace25_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    rule_mode: broad
+    rule_metrics: 1
+    allowed_values: 9
+    mismatch_action: replace
+- name: tagvaluefilter_500rules_allow_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    rule_mode: per_metric
+    rule_metrics: 500
+    allowed_values: 12
+- name: tagvaluefilter_10000rules_allow_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    rule_mode: per_metric
+    rule_metrics: 10000
+    allowed_values: 12
+- name: tagvaluefilter_10000rules_miss_100mb
+  extends: tagvaluefilter_dsd_uds_100mb
+  optimization_goal: cpu
+  variables:
+    rule_mode: per_metric
+    rule_metric_first: 20000
+    rule_metrics: 10000
+    allowed_values: 12
