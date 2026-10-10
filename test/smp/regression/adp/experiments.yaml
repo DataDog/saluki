@@ -856,6 +856,13 @@ experiments:
       # This isolates the DDOT OTLP ingest pipeline for a fair comparison.
       command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
       environment:
+        # REQUIRED: the otel-agent binary gates the collector on this env var even
+        # when invoked directly — without it the process prints "OpenTelemetry Collector
+        # is not enabled, exiting application" and exits before ingesting anything.
+        # (Verified the hard way: job 98b11e7c, legs exited instantly with zero OTEL
+        # traffic — and every "standalone" run since the binary switch did the same,
+        # including the GOMEMLIMIT attempt, which never actually ran.)
+        DD_OTELCOLLECTOR_ENABLED: "true"
         # Go runtime: cap the GC's heap target below the 8GiB cgroup allotment. Without
         # GOMEMLIMIT, Go's default GC targets 2x the live heap and can cross the cgroup
         # limit before the GC reacts. The converged agent's startup normally derives
@@ -866,9 +873,8 @@ experiments:
         # heap size, live set, and GC cadence. If the run still OOMs, these lines answer
         # whether memory is live references (retention) or garbage (throughput).
         GODEBUG: "gctrace=1"
-        # NOTE: no DD_OTELCOLLECTOR_ENABLED or DD_OTELCOLLECTOR_CONVERTER_FEATURES here —
-        # we're running the binary directly, not through s6's service manager, so these
-        # env vars have no effect. The pipeline is purely what's in otel-config.yaml.
+        # Converter features (DD_OTELCOLLECTOR_CONVERTER_FEATURES) are genuinely
+        # converged-only — the standalone path consumes otel-config.yaml as-is.
       files:
         # otelcol-style collector configuration, consumed by the `otel-agent` s6 service.
         # All signal endpoints are set explicitly so nothing is derived from a site.
@@ -934,6 +940,9 @@ experiments:
     target:
       command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
       environment:
+        # REQUIRED: the otel-agent binary gates the collector on this env var even when
+        # invoked directly — without it the process exits before ingesting anything.
+        DD_OTELCOLLECTOR_ENABLED: "true"
         GOMEMLIMIT: "7GiB"
         GODEBUG: "gctrace=1"
       files:

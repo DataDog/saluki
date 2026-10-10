@@ -15,6 +15,7 @@ target:
     DD_METRICS_LEVEL: trace
     DD_DATA_PLANE_ENABLED: "false"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+    DD_OTELCOLLECTOR_ENABLED: "true"
     GOMEMLIMIT: 7GiB
     GODEBUG: gctrace=1
   profiling_environment:
