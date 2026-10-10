@@ -12,5 +12,17 @@ generator:
     parallel_connections: 1
     maximum_prebuild_cache_size_bytes: 512 MiB
     variant:
-      opentelemetry_metrics: {}
+      opentelemetry_metrics:
+        metric_weights:
+          gauge: 30
+          sum_delta: 15
+          sum_cumulative: 15
+          histogram_delta: 10
+          histogram_cumulative: 10
+          exp_histogram_delta: 5
+          exp_histogram_cumulative: 5
+          summary: 10
+        contexts:
+          total_contexts:
+            constant: 100
     target_uri: http://localhost:6317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export

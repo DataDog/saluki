@@ -14,8 +14,6 @@ exporters:
       endpoint: http://127.0.0.1:9091
     logs:
       endpoint: http://127.0.0.1:9091
-    sending_queue:
-      num_consumers: 10
 processors:
   batch: {}
   cumulativetodelta: {}

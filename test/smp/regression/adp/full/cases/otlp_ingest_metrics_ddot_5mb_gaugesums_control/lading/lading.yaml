@@ -14,14 +14,14 @@ generator:
     variant:
       opentelemetry_metrics:
         metric_weights:
-          gauge: 30
-          sum_delta: 15
-          sum_cumulative: 15
-          histogram_delta: 10
-          histogram_cumulative: 10
-          exp_histogram_delta: 5
-          exp_histogram_cumulative: 5
-          summary: 10
+          gauge: 50
+          sum_delta: 25
+          sum_cumulative: 25
+          histogram_delta: 1
+          histogram_cumulative: 1
+          exp_histogram_delta: 1
+          exp_histogram_cumulative: 1
+          summary: 1
         contexts:
           total_contexts:
             constant: 100

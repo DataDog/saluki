@@ -458,7 +458,27 @@ templates:
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "512 MiB"
             variant:
-              opentelemetry_metrics: {}
+              # Full OTLP metric-type mix, EXPLICITLY pinned (not inherited from lading defaults —
+              # the July 15 #1908 default change silently altered this experiment once already).
+              # These values are today's lading defaults: 40% histograms + 10% summaries + 30% sums
+              # + 30% gauge. This payload is the point of the test: histogram/summary ingest is newly
+              # supported and must be accounted for. NOTE: at 5 MiB/s this mix OOM-kills the DDOT
+              # otel-agent at 8 GiB in every configuration tried (converged, standalone, gRPC, HTTP,
+              # GOMEMLIMIT=7GiB) while gauge/sum-only payloads pass the same pipeline at 25 MiB/s
+              # with 10k contexts (threshold template) and ~556 MB at 6 MiB/s (ddot_metrics).
+              opentelemetry_metrics:
+                metric_weights:
+                  gauge: 30
+                  sum_delta: 15
+                  sum_cumulative: 15
+                  histogram_delta: 10
+                  histogram_cumulative: 10
+                  exp_histogram_delta: 5
+                  exp_histogram_cumulative: 5
+                  summary: 10
+                contexts:
+                  total_contexts:
+                    constant: 100
 
   # Base template for OTLP traces experiments at 5 MiB/s with a realistic service topology
   otlp_traces_5mb_base:
@@ -836,6 +856,16 @@ experiments:
       # This isolates the DDOT OTLP ingest pipeline for a fair comparison.
       command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
       environment:
+        # Go runtime: cap the GC's heap target below the 8GiB cgroup allotment. Without
+        # GOMEMLIMIT, Go's default GC targets 2x the live heap and can cross the cgroup
+        # limit before the GC reacts. The converged agent's startup normally derives
+        # this from cgroup detection, but the standalone `otel-agent run` path does not.
+        # 7GiB leaves ~1GiB headroom for stacks, runtime, and OS buffers.
+        GOMEMLIMIT: "7GiB"
+        # Diagnostic: one line per GC cycle on stderr (captured in target logs) showing
+        # heap size, live set, and GC cadence. If the run still OOMs, these lines answer
+        # whether memory is live references (retention) or garbage (throughput).
+        GODEBUG: "gctrace=1"
         # NOTE: no DD_OTELCOLLECTOR_ENABLED or DD_OTELCOLLECTOR_CONVERTER_FEATURES here —
         # we're running the binary directly, not through s6's service manager, so these
         # env vars have no effect. The pipeline is purely what's in otel-config.yaml.
@@ -860,15 +890,296 @@ experiments:
                   endpoint: http://127.0.0.1:9091
                 logs:
                   endpoint: http://127.0.0.1:9091
+                # OTAGENT-1024 (#51333, 2026-07-08) wrapped the serializer in the OTel
+                # exporterhelper, overriding the OTel defaults (num_consumers=10, queue_size=1000)
+                # with the legacy forwarder's numbers (num_consumers=1, queue_size=300) for
+                # "parity" — but the legacy worker threaded serialized bytes while the new
+                # consumer threads full translation of decoded pdata batches. With the
+                # histogram/summary payload (#1908 defaults), one consumer cannot drain
+                # 5 batches/sec; the 300-slot queue fills with decoded batches (~25 MiB
+                # each) -> ~7.5 GiB live -> OOM. Restoring the OTel default (10) is the
+                # one-variable test: if the OOM vanishes, the override is the regression.
+                sending_queue:
+                  num_consumers: 10
+            # Mirrors the effective pipeline of the converged otel-agent (the s6 converter
+            # injects these processors): batch + cumulativetodelta. NOTE: the underscored
+            # `cumulative_to_delta` name only exists in newer collectors (v0.14x+); the
+            # un-underscored `cumulativetodelta` is canonical in 7.71 (v0.133) and a
+            # deprecated-but-valid alias in 7.84.1 — required so the SAME config parses
+            # on both agents for the version-isolation job pair.
+            processors:
+              batch: {}
+              cumulativetodelta: {}
             service:
               pipelines:
                 metrics:
                   receivers: [otlp]
+                  processors: [batch, cumulativetodelta]
                   exporters: [datadog]
     lading:
       generator:
         - grpc:
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+
+  # Control leg for the DDOT isolation matrix: identical to the full-mix DDOT leg except
+  # (a) the payload is Raymond's proven ddot_metrics mix — gauges + sums only, 256 contexts,
+  # zero histograms/summaries — and (b) the exporter uses the current DEFAULT sending_queue
+  # (post-#51333: num_consumers=1), no override. Reading the matrix in one fleet run:
+  #   control PASSES + full-mix PASSES -> consumer count was the binding constraint
+  #   control PASSES + full-mix OOMs   -> payload is fatal even at 10 consumers
+  #   control FAILS                    -> harness confound beyond payload + consumers
+  - name: otlp_ingest_metrics_ddot_5mb_gaugesums_control
+    extends: otlp_ingest_converged_base
+    optimization_goal: memory
+    target:
+      command: /opt/datadog-agent/embedded/bin/otel-agent run --config /etc/datadog-agent/otel-config.yaml
+      environment:
+        GOMEMLIMIT: "7GiB"
+        GODEBUG: "gctrace=1"
+      files:
+        otel-config.yaml:
+          content:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+            exporters:
+              datadog:
+                hostname: smp-regression
+                api:
+                  key: foo00000001
+                metrics:
+                  endpoint: http://127.0.0.1:9091
+                traces:
+                  endpoint: http://127.0.0.1:9091
+                logs:
+                  endpoint: http://127.0.0.1:9091
+            # Same processor pipeline as the full-mix leg (cumulativetodelta — the name
+            # that parses on both 7.71 and 7.84.1); sending_queue left unset so this leg
+            # runs each agent's own default (1 on 7.84.1, 10 on 7.71) — replicating each
+            # version's natural behavior.
+            processors:
+              batch: {}
+              cumulativetodelta: {}
+            service:
+              pipelines:
+                metrics:
+                  receivers: [otlp]
+                  processors: [batch, cumulativetodelta]
+                  exporters: [datadog]
+    lading:
+      generator:
+        - grpc:
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+            # Near-Raymond control payload: gauge/sum dominant. Current lading (#1908)
+            # rejects zero weights — every metric type must be present — so the new
+            # types get trace weights (1 each, ~4.8% combined vs 50% in the full mix).
+            # Contexts stay at 100 to match the failing baseline EXACTLY: this leg
+            # differs from the historical OOM runs in ONE variable only — the metric-type
+            # weights. (Raymond's case used 256, but matching OUR baseline is what makes
+            # this a clean single-variable isolation.)
+            variant:
+              opentelemetry_metrics:
+                metric_weights:
+                  gauge: 50
+                  sum_delta: 25
+                  sum_cumulative: 25
+                  histogram_delta: 1
+                  histogram_cumulative: 1
+                  exp_histogram_delta: 1
+                  exp_histogram_cumulative: 1
+                  summary: 1
+                contexts:
+                  total_contexts:
+                    constant: 100
+
+  # Harness-validation cell: Raymond's ddot_metrics case replicated through our
+  # suite as exactly as current lading permits — his converged shape (entrypoint +
+  # s6 + converter), his full otel-config (4 pipelines, datadog connector, prometheus
+  # receiver), his datadog.yaml, his env, his HTTP/4318 load at 6 MiB/s / 5 connections,
+  # his context nesting (256 contexts, 8-64 attrs/resource, 10-128 metrics/scope), and
+  # his 2GiB allotment.
+  #
+  # On the 7.71.0 job this is the anchor: PASSES (~556 MB like his nightly) -> our
+  # harness reproduces the known-good corner and the isolation matrix stands on
+  # validated ground. FAILS -> the suite itself (or one of the enumerated deltas:
+  # current-lading generator internals vs his 0.31.2, the saluki ADP image layer,
+  # suite env/infra) is the confound, and every matrix reading is suspect until the
+  # harness is diffed against his.
+  #
+  # On the 7.84.1 job this is a bonus cell (his exact case on the new agent — never
+  # run before): expect the known 7.84.1 failure modes (converter extension URL
+  # mangling on `site`, plus whatever the matrix isolates), NOT a harness signal.
+  - name: otlp_ingest_metrics_ddot_raymond_replication
+    extends: otlp_base
+    optimization_goal: memory
+    target:
+      name: datadog-agent
+      command: /bin/entrypoint.sh
+      cpu_allotment: 4
+      memory_allotment: 2GiB
+      environment:
+        # His exact env; replaces the ADP-suite globals. The nulls strip inherited
+        # keys (from `global` and `otlp_base`) so nothing from our suite leaks into
+        # his shape — notably DD_DATA_PLANE_STANDALONE_MODE, the V3 series endpoint
+        # override, and trace-level metrics logging, none of which his case had.
+        DD_API_KEY: a0000001
+        DD_HOSTNAME: smp-regression
+        DD_AUTH_TOKEN_FILE_PATH: /tmp/agent-auth-token
+        DD_OTELCOLLECTOR_ENABLED: "true"
+        DD_DATA_PLANE_OTLP_ENABLED: null
+        DD_OTLP_CONFIG: null
+        DD_DD_URL: null
+        DD_USE_V3_API_SERIES_ENDPOINTS: null
+        DD_IPC_CERT_FILE_PATH: null
+        DD_LOG_FORMAT_JSON: null
+        DD_DATA_PLANE_STANDALONE_MODE: null
+        DD_METRICS_LEVEL: null
+      files:
+        empty.yaml: null
+        cert.pem: null
+        # His datadog.yaml, verbatim.
+        datadog.yaml:
+          content:
+            auth_token_file_path: /tmp/agent-auth-token
+            cloud_provider_metadata: []
+            logs_enabled: true
+            logs_config:
+              logs_dd_url: 127.0.0.1:9092
+              logs_no_ssl: true
+              force_use_http: true
+            dd_url: http://127.0.0.1:9091
+            process_config:
+              process_dd_url: http://localhost:9093
+            telemetry:
+              enabled: true
+              checks: '*'
+        # His otel-config.yaml, verbatim: both OTLP protocols, prometheus receiver,
+        # datadog connector, 4 pipelines, batch processor, explicit endpoints.
+        otel-config.yaml:
+          content:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                  http:
+                    endpoint: 0.0.0.0:4318
+              prometheus:
+                config:
+                  scrape_configs:
+                  - job_name: 'otelcol'
+                    scrape_interval: 10s
+                    static_configs:
+                      - targets: ['0.0.0.0:8888']
+            exporters:
+              datadog:
+                traces:
+                  span_name_as_resource_name: true
+                  endpoint: "http://127.0.0.1:9091"
+                hostname: "smp-regression"
+                api:
+                  key: "123456789"
+                  site: 127.0.0.1:9091
+                metrics:
+                  resource_attributes_as_tags: true
+                  endpoint: http://127.0.0.1:9091
+                logs:
+                  endpoint: http://127.0.0.1:9091
+            processors:
+              batch: {}
+            connectors:
+              datadog/connector:
+                traces:
+                  span_name_as_resource_name: true
+                  compute_stats_by_span_kind: true
+                  compute_top_level_by_span_kind: true
+                  peer_tags_aggregation: true
+            service:
+              pipelines:
+                traces:
+                  receivers: [otlp]
+                  processors: [batch]
+                  exporters: [datadog/connector]
+                traces/send:
+                  receivers: [otlp]
+                  processors: [batch]
+                  exporters: [datadog]
+                metrics:
+                  receivers: [otlp, datadog/connector]
+                  processors: [batch]
+                  exporters: [datadog]
+                logs:
+                  receivers: [otlp]
+                  processors: [batch]
+                  exporters: [datadog]
+    lading:
+      # His lading topology: three blackholes (series/sketches on 9091, logs on
+      # 9092, process on 9093) and his telemetry scrape port.
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+            body_variant: "nothing"
+        - http:
+            binding_addr: "127.0.0.1:9092"
+            body_variant: "nothing"
+        - http:
+            binding_addr: "127.0.0.1:9093"
+            body_variant: "nothing"
+      target_metrics:
+        - prometheus:
+            uri: "http://127.0.0.1:5000/telemetry"
+      # His generator, verbatim except the trace weights on the new metric types —
+      # current lading (#1908) rejects zero weights, so his exact 50/25/25 mix
+      # carries a 1-weight floor (~4.8%) on the types that didn't exist in his
+      # lading 0.31.2.
+      generator:
+        - http:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
+                   59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            headers:
+              content-type: "application/x-protobuf"
+            target_uri: "http://127.0.0.1:4318/v1/metrics"
+            bytes_per_second: "6 MiB"
+            parallel_connections: 5
+            method:
+              post:
+                maximum_prebuild_cache_size_bytes: "512 MiB"
+                variant:
+                  opentelemetry_metrics:
+                    metric_weights:
+                      gauge: 50
+                      sum_delta: 25
+                      sum_cumulative: 25
+                      histogram_delta: 1
+                      histogram_cumulative: 1
+                      exp_histogram_delta: 1
+                      exp_histogram_cumulative: 1
+                      summary: 1
+                    contexts:
+                      total_contexts:
+                        constant: 256
+                      attributes_per_resource:
+                        inclusive:
+                          min: 8
+                          max: 64
+                      scopes_per_resource:
+                        inclusive:
+                          min: 1
+                          max: 32
+                      attributes_per_scope:
+                        inclusive:
+                          min: 0
+                          max: 4
+                      metrics_per_scope:
+                        inclusive:
+                          min: 10
+                          max: 128
+                      attributes_per_metric:
+                        inclusive:
+                          min: 0
+                          max: 255
 
   # Leg 3: ADP handles ingest as the data-plane sidecar.
   - name: otlp_ingest_metrics_adp_5mb
