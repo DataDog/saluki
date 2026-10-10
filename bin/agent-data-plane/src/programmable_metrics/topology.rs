@@ -11,7 +11,9 @@
 //!   through the tag filterlist) and `metrics_enrich` (the post-aggregation filter through the policy region, whose
 //!   gateways select what reaches each output, as one decision R1 never cuts), and the regions R1's cost model cuts
 //!   from them so that a costly chain pipelines, such as the post-aggregation filter when it does not fit beside
-//!   enrichment (`dsd_post_agg_filter_region`). A region host's outputs are its slot's exits, in order.
+//!   enrichment (`dsd_post_agg_filter_region`). A region host's outputs are its slot's exits, in order. Its input
+//!   holds what the input queues of the native components it replaces held together (see
+//!   [`region_input_capacity`]), so that a burst backs up to its source no sooner than natively.
 //! - **Outputs** are the native encoders and forwarders, built exactly as natively, and the DogStatsD client telemetry
 //!   tap, `dsd_client_telemetry_out`, which the `metrics_enrich` slot feeds. No gateway component stands in front of an
 //!   encoder: the endpoint routing filters and the failover gateways are `split`s of the policy region, so a region
@@ -23,7 +25,11 @@
 //! The DogStatsD taps on `dsd_in.metrics` (`dsd_stats_out`, `dsd_debug_log_out`) and everything outside the metrics
 //! path keep their native construction, in `run.rs`.
 
-use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    num::NonZeroUsize,
+    sync::Arc,
+};
 
 use agent_data_plane_config::{shared::SharedConfiguration, SalukiConfiguration};
 use agent_data_plane_config_system::ConfigurationSystem;
@@ -37,7 +43,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_metric_plan::{
     compile::{FixedComponent, Frame, FrameSource, FrameTarget, Slot},
-    ir::{NativeComponentId, NodeId},
+    ir::{NativeComponentId, NodeId, Plan, Provenance},
     limits,
     operators::names,
     runtime::{build_kernels, MetricRegionDriver, PanicBudget, PrepareRegion, RegionBounds, RegionConfig},
@@ -242,14 +248,123 @@ impl<'a> PlanTopology<'a> {
     }
 }
 
-/// Adds a region host per slot of the frame, each starting with the boot generation's program for its slot.
+/// Adds a region host per slot of the frame, each starting with the boot generation's program for its slot, and with
+/// the input capacity of the native components it replaces.
 pub(super) fn add_regions(blueprint: &mut TopologyBlueprint, boot: &mut BootTopology) -> Result<(), GenericError> {
     let frame = Arc::clone(&boot.frame);
+    let interconnect = blueprint.interconnect_capacity();
     for slot in frame.slots() {
+        let capacity = region_input_capacity(&boot.plan, &frame, &boot.outputs, slot, interconnect)?;
         let host = region_host(boot, slot)?;
-        blueprint.add_transform(slot.name.as_str(), host)?;
+        blueprint
+            .add_transform(slot.name.as_str(), host)?
+            .with_component_input_capacity(slot.name.as_str(), capacity)?;
     }
     Ok(())
+}
+
+/// Returns the input capacity of a slot's region host: as many buffers as the native components the region replaces
+/// held on the way through it, so that a burst backs up to its source no sooner than it did natively.
+///
+/// Natively, each of those components was a transform of its own, with an input interconnect of `interconnect`
+/// buffers, and held one more buffer while it waited to send downstream. The region does their work in one transform,
+/// with one input interconnect, and holds one buffer while it waits. On a path through the region's boot nodes that
+/// runs through `n` of those components, `n * (interconnect + 1)` buffers waited natively, so the region's input holds
+/// `n * (interconnect + 1) - 1`, for the path that runs through the most: no path holds fewer buffers than natively,
+/// and a region that runs one chain of components holds exactly as many. A path runs through a component where it
+/// enters the component's nodes, by their native provenance, from outside the region or from another component's
+/// nodes. The components the plan-driven topology still builds are not replaced, and their interconnects remain: the
+/// sources and aggregation (the frame's fixed components), and the encoders and destinations of the outputs, which the
+/// `emit`s and the client telemetry tap's fan-out are lowered from.
+///
+/// The capacity follows the boot program: later generations run in the same regions.
+///
+/// # Errors
+///
+/// Returns an error if a slot's nodes form a cycle, or if the capacity overflows, both of which are bugs.
+fn region_input_capacity(
+    plan: &Plan, frame: &Frame, outputs: &NativeOutputs, slot: &Slot, interconnect: NonZeroUsize,
+) -> Result<NonZeroUsize, GenericError> {
+    let kept = frame
+        .fixed()
+        .iter()
+        .map(component_id)
+        .chain(outputs.iter().map(|output| output.component.clone()))
+        .collect::<BTreeSet<_>>();
+    // The native component that a node of the region does the work of, if the region replaces it.
+    let replaced = |node: &NodeId| match plan.node(node).and_then(|node| node.provenance.as_ref()) {
+        Some(Provenance::Native(component)) if !kept.contains(component.as_str()) => Some(component.as_str()),
+        _ => None,
+    };
+    // Whether a path enters a replaced component at `to`, from `from` or, for `None`, from outside the region.
+    let enters = |from: Option<&NodeId>, to: &NodeId| {
+        let component = replaced(to);
+        usize::from(component.is_some() && from.and_then(replaced) != component)
+    };
+
+    let in_slot = slot.nodes.iter().collect::<BTreeSet<_>>();
+    let mut successors = BTreeMap::<&NodeId, Vec<&NodeId>>::new();
+    let mut unvisited_predecessors = in_slot.iter().map(|node| (*node, 0usize)).collect::<BTreeMap<_, _>>();
+    // The most replaced components a path runs through up to each node, starting with the paths from outside.
+    let mut through = in_slot.iter().map(|node| (*node, 0usize)).collect::<BTreeMap<_, _>>();
+    for edge in &plan.edges {
+        let (from, to) = (&edge.from.node, &edge.to.node);
+        if !in_slot.contains(to) {
+            continue;
+        }
+        if in_slot.contains(from) {
+            successors.entry(from).or_default().push(to);
+            *unvisited_predecessors.entry(to).or_default() += 1;
+        } else {
+            through.insert(to, enters(None, to));
+        }
+    }
+
+    let mut ready = unvisited_predecessors
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(node, _)| *node)
+        .collect::<VecDeque<_>>();
+    let mut visited = 0;
+    while let Some(node) = ready.pop_front() {
+        visited += 1;
+        let here = through[node];
+        for next in successors.get(node).into_iter().flatten() {
+            let candidate = here + enters(Some(node), next);
+            let best = through.entry(next).or_default();
+            *best = (*best).max(candidate);
+            let count = unvisited_predecessors.entry(next).or_default();
+            *count -= 1;
+            if *count == 0 {
+                ready.push_back(next);
+            }
+        }
+    }
+    if visited != in_slot.len() {
+        return Err(generic_error!(
+            "The nodes of region `{}` form a cycle; this is a bug.",
+            slot.name
+        ));
+    }
+
+    let components = through.values().copied().max().unwrap_or_default();
+    if components == 0 {
+        return Ok(interconnect);
+    }
+    interconnect
+        .get()
+        .checked_add(1)
+        .and_then(|per_component| components.checked_mul(per_component))
+        .and_then(|held| NonZeroUsize::new(held - 1))
+        .ok_or_else(|| {
+            generic_error!(
+                "The input capacity of region `{}` overflows: it replaces {} native components of {} buffers each; \
+                 this is a bug.",
+                slot.name,
+                components,
+                interconnect
+            )
+        })
 }
 
 /// Connects every physical edge of the frame, and marks every admission point, reading the boot schedule.
@@ -435,6 +550,8 @@ fn target_component(frame: &Frame, outputs: &NativeOutputs, target: &FrameTarget
     }
 }
 
+#[cfg(test)]
+mod burst_tests;
 #[cfg(test)]
 mod differential_tests;
 #[cfg(test)]

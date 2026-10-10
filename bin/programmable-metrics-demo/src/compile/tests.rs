@@ -1,5 +1,19 @@
 use super::*;
-use crate::export::tests::demo_export;
+use crate::export::{
+    tests::{demo_export, DEMO_EXPORT},
+    ExportBundle,
+};
+
+/// Compiles against the export alone, as for an ADP that does not serve its default program: the structural checks
+/// run instead of composition. (Composition is tested in `preview::tests`, against a real default program.)
+fn structural(export: &ExportBundle) -> CompileContext<'_> {
+    CompileContext {
+        export,
+        default_program: None,
+        active: None,
+        revision: 1,
+    }
+}
 
 /// The demo export's artifact, as the editor prints it: hand-written, so it also pins the printed form the editor
 /// starts from. No line is longer than 80 characters, and the lines an author edits (routing predicates, binding
@@ -97,7 +111,7 @@ fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
     assert_eq!(default_program_source(&export), DEFAULT_SOURCE);
     assert!(DEFAULT_SOURCE.lines().all(|line| line.chars().count() <= 80));
 
-    let (outcome, compiled) = compile(DEFAULT_SOURCE, Some(&export));
+    let (outcome, compiled) = compile(DEFAULT_SOURCE, Some(&structural(&export)));
     assert!(outcome.ok);
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     assert_eq!((outcome.errors, outcome.warnings), (0, 0));
@@ -125,12 +139,18 @@ fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
         ReceivedArtifact::from_value(compiled.document).unwrap().artifact,
         export.artifact.artifact
     );
+    // Without the default program there is nothing to compose, so no plan diff, and the outcome says why.
+    assert!(!outcome.checked_against.composed);
     assert!(!outcome.preview.available);
-    assert!(outcome.preview.reason.contains("ADP validates the composed plan"));
+    assert!(
+        outcome.preview.reason.contains("does not serve its default program"),
+        "{}",
+        outcome.preview.reason
+    );
 
     // Written out, the fingerprints are kept as written, and printing keeps them.
     let written = with_fingerprints();
-    let (outcome, compiled) = compile(&written, Some(&export));
+    let (outcome, compiled) = compile(&written, Some(&structural(&export)));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     assert!(outcome.restored_fingerprints.is_empty());
     assert_eq!(compiled.unwrap().hash, export.artifact.hash);
@@ -141,7 +161,7 @@ fn the_default_program_prints_compiles_without_findings_and_keeps_its_hash() {
 fn edits_change_the_hash_and_reformatting_does_not() {
     let export = demo_export();
     let reformatted = DEFAULT_SOURCE.replace("\n\n", "\n").replace("true  ->", "true ->");
-    let (outcome, _) = compile(&reformatted, Some(&export));
+    let (outcome, _) = compile(&reformatted, Some(&structural(&export)));
     assert_eq!(outcome.artifact_hash, Some(export.artifact.hash.to_string()));
     assert_eq!(outcome.canonical_source.as_deref(), Some(DEFAULT_SOURCE));
 
@@ -150,7 +170,7 @@ fn edits_change_the_hash_and_reformatting_does_not() {
         "  input.metrics -> drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  -> \
          drop\n    false -> metrics_policy\n  }\n",
     );
-    let (outcome, compiled) = compile(&edited, Some(&export));
+    let (outcome, compiled) = compile(&edited, Some(&structural(&export)));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     let hash = compiled.unwrap().hash;
     assert_ne!(hash, export.artifact.hash);
@@ -159,12 +179,34 @@ fn edits_change_the_hash_and_reformatting_does_not() {
     // Removing a route removes its output from the restored fingerprints: an artifact lists what it refers to.
     let without_mrf = replaced("    -> mrf_metrics_gateway\n", "");
     let without_mrf = without_mrf.replace(&DEFAULT_SOURCE[DEFAULT_SOURCE.find("\n  node mrf").unwrap()..], "\n}\n");
-    let (outcome, _) = compile(&without_mrf, Some(&export));
+    let (outcome, _) = compile(&without_mrf, Some(&structural(&export)));
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
     assert!(!outcome
         .restored_fingerprints
         .contains(&"mrf_metrics_encode".to_string()));
     assert_eq!(outcome.restored_fingerprints.len(), 3);
+
+    // An output emitted to twice is restored once.
+    let twice = replaced(
+        "  input.metrics -> metrics_policy
+",
+        "  input.metrics -> copy_main
+
+  node copy_main = split(name starts_with \"demo.copy.\") {\n    true  -> \
+         emit dd_metrics_encode\n    false -> metrics_policy\n  }\n",
+    );
+    let (outcome, _) = compile(&twice, Some(&structural(&export)));
+    assert_eq!(
+        outcome.restored_fingerprints,
+        [
+            "dd_metrics_encode",
+            "metrics_routing_encode_0",
+            "metrics_routing_encode_1",
+            "mrf_metrics_encode"
+        ],
+        "{:#?}",
+        outcome.diagnostics
+    );
 }
 
 #[test]
@@ -177,7 +219,7 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
         "    or intake_name matches(\n      values: config(\"endpoint_routing.group.b0b0b0b0.prefixes\"),\n      \
          prefix: true,\n    )\n    or tag(\"team\") == \"platform\"\n",
     );
-    let (outcome, compiled) = compile(&widened, Some(&demo_export()));
+    let (outcome, compiled) = compile(&widened, Some(&structural(&demo_export())));
     assert!(outcome.ok && compiled.is_some());
     assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
 }
@@ -186,7 +228,7 @@ fn the_examples_of_the_demo_scenarios_compile_without_findings() {
 fn syntax_errors_are_placed_by_line_and_column() {
     // `=>` instead of `->` on line 7: `=` is a token, and the `>` after it, at column 6, is not.
     let source = replaced("    -> emit dd_metrics_encode", "    => emit dd_metrics_encode");
-    let (outcome, compiled) = compile(&source, Some(&demo_export()));
+    let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
     assert_eq!(outcome.diagnostics.len(), 1, "{:#?}", outcome.diagnostics);
@@ -204,7 +246,7 @@ fn syntax_errors_are_placed_by_line_and_column() {
 #[test]
 fn documents_the_plan_crate_cannot_read_are_reported_at_the_start() {
     let source = replaced("policy post_enrich {\n", "policy post_enrich {\n  ir_version 99\n");
-    let (outcome, compiled) = compile(&source, Some(&demo_export()));
+    let (outcome, compiled) = compile(&source, Some(&structural(&demo_export())));
     assert!(!outcome.ok);
     assert!(compiled.is_none());
     assert_eq!(outcome.diagnostics.len(), 1);
@@ -295,7 +337,7 @@ fn structural_findings_are_placed_where_the_problem_is() {
 
     let export = demo_export();
     for (case, source, expected) in cases {
-        let (outcome, compiled) = compile(&source, Some(&export));
+        let (outcome, compiled) = compile(&source, Some(&structural(&export)));
         // Findings never prevent publishing: ADP has the last word.
         assert!(outcome.ok, "{}: {:#?}", case, outcome.diagnostics);
         assert!(compiled.is_some(), "{}", case);
@@ -353,7 +395,7 @@ fn stateful_operators_are_reported_as_rejected_until_stage_6() {
         "  input.metrics -> metrics_policy\n",
         "  input.metrics -> rollup\n\n  node rollup = aggregate {\n    -> metrics_policy\n  }\n",
     );
-    let (outcome, compiled) = compile(&source, Some(&export));
+    let (outcome, compiled) = compile(&source, Some(&structural(&export)));
     assert!(outcome.ok && compiled.is_some(), "{:#?}", outcome.diagnostics);
     let stateful = outcome
         .diagnostics
@@ -363,13 +405,59 @@ fn stateful_operators_are_reported_as_rejected_until_stage_6() {
     assert_eq!(stateful.len(), 1, "{:#?}", outcome.diagnostics);
     assert_eq!(stateful[0].severity, Severity::Error);
     assert_eq!(stateful[0].range.line, 6);
-    assert!(stateful[0].message.contains("until stage 6"));
+    assert!(stateful[0]
+        .message
+        .contains("does not accept stateful operators in artifacts yet"));
     // Stateless operators are not reported.
-    let (outcome, _) = compile(DEFAULT_SOURCE, Some(&export));
+    let (outcome, _) = compile(DEFAULT_SOURCE, Some(&structural(&export)));
     assert!(!outcome
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.message.contains("keeps state")));
+}
+
+#[test]
+fn what_adp_installs_unchecked_is_not_reported() {
+    // Until the gateways lower to routing operators, ADP's export holds them as opaque hosts, whose state is their host
+    // component's: ADP installs its unmodified export, so the editor reports nothing about it.
+    let mut document = serde_json::from_str::<serde_json::Value>(DEMO_EXPORT).unwrap();
+    let all = serde_json::json!({"kinds": "all", "timestamps": "mixed"});
+    let artifact = &mut document["artifact"];
+    let nodes = artifact["nodes"].as_array_mut().unwrap();
+    nodes.retain(|node| node["id"] != "mrf_metrics_gateway_false");
+    let gateway = nodes
+        .iter_mut()
+        .find(|node| node["id"] == "mrf_metrics_gateway")
+        .unwrap();
+    gateway["op"] = serde_json::json!("opaque_host");
+    gateway["params"] = serde_json::json!({"component": "mrf_metrics_gateway", "input": all, "outputs": {"out": all}});
+    let edges = artifact["edges"].as_array_mut().unwrap();
+    edges.retain(|edge| edge["from"] != "mrf_metrics_gateway.false");
+    for edge in edges
+        .iter_mut()
+        .filter(|edge| edge["from"] == "mrf_metrics_gateway.true")
+    {
+        edge["from"] = serde_json::json!("mrf_metrics_gateway.out");
+    }
+    let export = ExportBundle::from_value(document).unwrap();
+    let source = default_program_source(&export);
+    assert!(source.contains("opaque_host"), "{}", source);
+    let (outcome, _) = compile(&source, Some(&structural(&export)));
+    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
+
+    // ADP checks the fingerprints of the outputs an artifact emits to; one the base still records, but that nothing
+    // emits to any more, cannot be removed under the artifact, whatever its fingerprint.
+    let stale = "sha256:5555555555555555555555555555555555555555555555555555555555555556";
+    let source = replaced_in(
+        &with_fingerprints(),
+        "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        stale,
+    );
+    let source = replaced_in(&source, "    -> mrf_metrics_gateway\n", "");
+    let source = source.replace(&source[source.find("\n  node mrf").unwrap()..], "\n}\n");
+    assert!(source.contains(stale));
+    let (outcome, _) = compile(&source, Some(&structural(&demo_export())));
+    assert!(outcome.diagnostics.is_empty(), "{:#?}", outcome.diagnostics);
 }
 
 #[test]

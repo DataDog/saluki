@@ -20,6 +20,7 @@
 //! reader of a document sees the same document.
 
 mod document;
+pub(crate) use self::document::parse_document;
 
 mod id;
 pub use self::id::{

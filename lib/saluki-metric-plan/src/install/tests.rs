@@ -27,17 +27,17 @@ fn id(id: &str) -> NodeId {
 }
 
 /// The stage 3 default program, edited.
-fn edited(edit: impl FnOnce(&mut Value)) -> Plan {
+pub(super) fn edited(edit: impl FnOnce(&mut Value)) -> Plan {
     let mut value = with_opaque_gateways(DEFAULT_PROGRAM_JSON);
     edit(&mut value);
     Plan::from_value(value).unwrap()
 }
 
-fn boot_plan() -> Plan {
+pub(super) fn boot_plan() -> Plan {
     edited(|_| {})
 }
 
-fn node_mut<'a>(value: &'a mut Value, id: &str) -> &'a mut Value {
+pub(super) fn node_mut<'a>(value: &'a mut Value, id: &str) -> &'a mut Value {
     value["nodes"]
         .as_array_mut()
         .unwrap()
@@ -335,15 +335,15 @@ fn kernel_reuse_keeps_every_kernel_whose_key_is_unchanged() {
 // The installer core.
 
 /// An installer over the stage 3 frame, booted with the default program, and the retirements its tokens reported.
-struct Harness {
-    core: InstallerCore,
-    boot: Option<Boot>,
+pub(super) struct Harness {
+    pub(super) core: InstallerCore,
+    pub(super) boot: Option<Boot>,
     retired: Arc<Mutex<Vec<GenerationId>>>,
     next_change: u64,
 }
 
 impl Harness {
-    fn new(config: InstallerConfig) -> Self {
+    pub(super) fn new(config: InstallerConfig) -> Self {
         let retired = Arc::new(Mutex::new(Vec::new()));
         let notified = Arc::clone(&retired);
         let notifier = move |_: GenerationId| {
@@ -386,13 +386,13 @@ impl Harness {
     }
 
     /// Delivers the retirements the tokens reported since the last call.
-    fn deliver_retirements(&mut self) -> Vec<Action> {
+    pub(super) fn deliver_retirements(&mut self) -> Vec<Action> {
         let retired = std::mem::take(&mut *self.retired.lock().unwrap());
         retired.into_iter().flat_map(|id| self.core.retired(id)).collect()
     }
 }
 
-fn candidate(plan: Plan, origin: Origin) -> Candidate {
+pub(super) fn candidate(plan: Plan, origin: Origin) -> Candidate {
     let report = Validator::new(&OperatorRegistry::native(), &default_program_catalog()).validate(&plan);
     Candidate {
         plan: Arc::new(plan),
@@ -402,7 +402,7 @@ fn candidate(plan: Plan, origin: Origin) -> Candidate {
 }
 
 /// A compact description of an action, for comparing action lists.
-fn describe(action: &Action) -> String {
+pub(super) fn describe(action: &Action) -> String {
     match action {
         Action::Prepare(prepare) => format!(
             "prepare {} [{}]",
@@ -439,7 +439,7 @@ fn describe(action: &Action) -> String {
     }
 }
 
-fn described(actions: &[Action]) -> Vec<String> {
+pub(super) fn described(actions: &[Action]) -> Vec<String> {
     actions.iter().map(describe).collect()
 }
 

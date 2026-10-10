@@ -42,7 +42,8 @@ use super::component_worker::{
     RunnableComponent, SourceRunnable, TransformRunnable,
 };
 use super::{
-    graph::Graph, ComponentOutputId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, TypedComponentId,
+    graph::Graph, ComponentId, ComponentOutputId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer,
+    TypedComponentId,
 };
 use crate::execution::{AdmissionPoint, AdmissionPointConfig};
 use crate::health::{Health, HealthRegistry};
@@ -99,6 +100,7 @@ pub(crate) struct BuiltTopology {
     admission_points: Vec<AdmissionPointBinding>,
     component_token: ResourceGroupToken,
     interconnect_capacity: NonZeroUsize,
+    input_capacities: HashMap<ComponentId, NonZeroUsize>,
     worker_pool_config: WorkerPoolConfiguration,
 }
 
@@ -114,7 +116,8 @@ impl BuiltTopology {
         encoders: HashMap<ComponentContext, (Box<dyn Encoder + Send>, ComponentRegistry)>,
         forwarders: HashMap<ComponentContext, (Box<dyn Forwarder + Send>, ComponentRegistry)>,
         admission_points: Vec<AdmissionPointBinding>, component_token: ResourceGroupToken,
-        interconnect_capacity: NonZeroUsize, worker_pool_config: WorkerPoolConfiguration,
+        interconnect_capacity: NonZeroUsize, input_capacities: HashMap<ComponentId, NonZeroUsize>,
+        worker_pool_config: WorkerPoolConfiguration,
     ) -> Self {
         Self {
             name,
@@ -130,6 +133,7 @@ impl BuiltTopology {
             admission_points,
             component_token,
             interconnect_capacity,
+            input_capacities,
             worker_pool_config,
         }
     }
@@ -188,6 +192,7 @@ impl BuiltTopology {
         // Build our interconnects, which we'll grab from piecemeal as we build our components.
         let mut interconnects = ComponentInterconnects::from_graph(
             self.interconnect_capacity,
+            self.input_capacities,
             &self.topology_id,
             &self.graph,
             &self.admission_points,
@@ -358,6 +363,7 @@ impl BuiltTopology {
 
 struct ComponentInterconnects {
     interconnect_capacity: NonZeroUsize,
+    input_capacities: HashMap<ComponentId, NonZeroUsize>,
     topology_id: SubsystemIdentifier,
     events_dispatchers: HashMap<ComponentContext, EventsDispatcher>,
     payloads_dispatchers: HashMap<ComponentContext, PayloadsDispatcher>,
@@ -367,12 +373,15 @@ struct ComponentInterconnects {
 }
 
 impl ComponentInterconnects {
+    /// Creates the interconnects of `graph`: each component's input holds `interconnect_capacity` items, or the
+    /// component's own capacity in `input_capacities`.
     fn from_graph(
-        interconnect_capacity: NonZeroUsize, topology_id: &SubsystemIdentifier, graph: &Graph,
-        admission_points: &[AdmissionPointBinding],
+        interconnect_capacity: NonZeroUsize, input_capacities: HashMap<ComponentId, NonZeroUsize>,
+        topology_id: &SubsystemIdentifier, graph: &Graph, admission_points: &[AdmissionPointBinding],
     ) -> Result<Self, GenericError> {
         let mut interconnects = Self {
             interconnect_capacity,
+            input_capacities,
             topology_id: topology_id.clone(),
             events_dispatchers: HashMap::new(),
             payloads_dispatchers: HashMap::new(),
@@ -551,10 +560,18 @@ impl ComponentInterconnects {
         }
     }
 
+    /// Returns the capacity of a component's input: its own, or else the interconnect capacity.
+    fn input_capacity(&self, component_id: &ComponentId) -> NonZeroUsize {
+        self.input_capacities
+            .get(component_id)
+            .copied()
+            .unwrap_or(self.interconnect_capacity)
+    }
+
     fn get_or_create_events_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<EventsBuffer> {
         let (component_id, component_type) = component_id.into_parts();
-        let component_context = ComponentContext::new(&self.topology_id, component_id.clone(), component_type);
-        let interconnect_capacity = self.interconnect_capacity;
+        let interconnect_capacity = self.input_capacity(&component_id);
+        let component_context = ComponentContext::new(&self.topology_id, component_id, component_type);
 
         let (sender, _) = match component_type {
             ComponentType::Transform | ComponentType::Destination | ComponentType::Encoder => self
@@ -584,8 +601,8 @@ impl ComponentInterconnects {
 
     fn get_or_create_payloads_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<PayloadsBuffer> {
         let (component_id, component_type) = component_id.into_parts();
-        let component_context = ComponentContext::new(&self.topology_id, component_id.clone(), component_type);
-        let interconnect_capacity = self.interconnect_capacity;
+        let interconnect_capacity = self.input_capacity(&component_id);
+        let component_context = ComponentContext::new(&self.topology_id, component_id, component_type);
 
         let (sender, _) = match component_type {
             ComponentType::Decoder | ComponentType::Forwarder => self
@@ -703,7 +720,7 @@ mod tests {
         // Ensure we can properly build the interconnects for them, which requires adding the outputs
         // before attaching senders to them:
         let interconnect_capacity = NonZeroUsize::new(10).unwrap();
-        let _ = ComponentInterconnects::from_graph(interconnect_capacity, &topology_id, &graph, &[])
+        let _ = ComponentInterconnects::from_graph(interconnect_capacity, HashMap::new(), &topology_id, &graph, &[])
             .expect("should build interconnects successfully");
     }
 
@@ -724,6 +741,7 @@ mod tests {
             Vec::new(),
             ResourceGroupToken::root(),
             NonZeroUsize::new(128).unwrap(),
+            HashMap::new(),
             worker_pool_config,
         )
     }

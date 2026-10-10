@@ -6,9 +6,9 @@ use saluki_metric_plan::{
     canonical::{strip_resolved_values, ResolvedValues},
     ir::{
         ArtifactBase, ArtifactEdge, ArtifactNode, ArtifactNodeId, ArtifactPortRef, InputName, NodeId, OutputId, Plan,
-        PolicyArtifact, PortRef,
+        PolicyArtifact, PortRef, ReceivedArtifact,
     },
-    testing::DEFAULT_PROGRAM_JSON,
+    testing::{default_program_catalog, with_opaque_gateways, DEFAULT_PROGRAM_JSON, NO_AGGREGATION_PIPELINE_OFF_JSON},
 };
 
 use super::*;
@@ -17,32 +17,21 @@ fn default_program() -> Plan {
     Plan::from_json(DEFAULT_PROGRAM_JSON).expect("the default program fixture reads")
 }
 
+/// Exports the `post_enrich` scope of a plan as the host does, as an artifact.
+fn host_export(plan: &Plan) -> PolicyArtifact {
+    saluki_metric_plan::export::export(
+        plan,
+        &"post_enrich".parse().unwrap(),
+        &default_program_catalog(),
+        &BTreeMap::new(),
+    )
+    .expect("the default program's policy scope exports")
+    .artifact
+}
+
 /// Exports the `post_enrich` scope of the default program as an artifact.
 fn export_post_enrich() -> PolicyArtifact {
-    let plan = default_program();
-    let scope = plan
-        .scopes
-        .get("post_enrich")
-        .expect("the default program has the post_enrich scope");
-    let entry: &PortRef = scope.inputs.get("metrics").expect("post_enrich has the input metrics");
-
-    // The region is everything reachable from the scope input; the scope has no exits.
-    let mut region = BTreeSet::new();
-    let mut frontier = vec![entry.clone()];
-    while let Some(port) = frontier.pop() {
-        for edge in plan.edges.iter().filter(|edge| edge.from == port) {
-            if region.insert(edge.to.node.clone()) {
-                let node = plan.node(&edge.to.node).expect("edges reach nodes");
-                frontier.extend(
-                    plan.edges
-                        .iter()
-                        .filter(|e| e.from.node == node.id)
-                        .map(|e| e.from.clone()),
-                );
-            }
-        }
-    }
-    export(&plan, "post_enrich", entry, &region)
+    host_export(&default_program())
 }
 
 /// Exports the region of the default program's DogStatsD pipeline between its source and the shared enrichment, the
@@ -63,14 +52,14 @@ fn export_dogstatsd_chain() -> PolicyArtifact {
         .map(|node| node.id.clone())
         .filter(|id| id.local().as_str().starts_with("dsd_") && id.local().as_str() != "dsd_in")
         .collect::<BTreeSet<_>>();
-    export(&plan, "dogstatsd_pre_aggregation", &source, &region)
+    export_region(&plan, "dogstatsd_pre_aggregation", &source, &region)
 }
 
-/// Exports a region of the default program as an artifact, the way the design describes exports: the region's nodes,
-/// and the edges between them, in the plan's order, without provenance or resolved values; the edge from `entry` as
-/// leaving the scope input `metrics`; and a base of the program's hash and the fingerprints of the outputs the region
-/// emits to.
-fn export(plan: &Plan, scope: &str, entry: &PortRef, region: &BTreeSet<NodeId>) -> PolicyArtifact {
+/// Exports a region of the default program that is not one of its declared scopes, which the host does not export, as
+/// an artifact, the way the host exports scopes: the region's nodes, and the edges between them, in the plan's order,
+/// without provenance or resolved values; the edge from `entry` as leaving the scope input `metrics`; and a base of the
+/// program's hash and the fingerprints of the outputs the region emits to.
+fn export_region(plan: &Plan, scope: &str, entry: &PortRef, region: &BTreeSet<NodeId>) -> PolicyArtifact {
     let local = |id: &NodeId| ArtifactNodeId::new(id.local().as_str()).unwrap();
     let nodes = plan
         .nodes
@@ -224,6 +213,40 @@ fn the_default_programs_policy_scope_prints_and_parses_back() {
     );
     let flag = parsed.spans.param("mrf_metrics_gateway", "predicate").unwrap();
     assert!(text(&expected, flag).starts_with("flag(config(\"multi_region_failover.enabled\"))\n    and"));
+}
+
+#[test]
+fn every_default_programs_export_prints_and_parses_back_to_the_same_document() {
+    let plans = [
+        ("default program", default_program()),
+        (
+            "no-aggregation pipeline off",
+            Plan::from_json(NO_AGGREGATION_PIPELINE_OFF_JSON).unwrap(),
+        ),
+        (
+            "default program, opaque gateways",
+            Plan::from_value(with_opaque_gateways(DEFAULT_PROGRAM_JSON)).unwrap(),
+        ),
+        (
+            "no-aggregation pipeline off, opaque gateways",
+            Plan::from_value(with_opaque_gateways(NO_AGGREGATION_PIPELINE_OFF_JSON)).unwrap(),
+        ),
+    ];
+    for (what, plan) in plans {
+        let export = host_export(&plan);
+        let printed = print_default(&export);
+        let parsed = parse_ok(&printed);
+        assert_eq!(parsed.artifact, export, "{}:\n{}", what, printed);
+
+        // So the parsed document is the exported one, and has its hash.
+        let hash = |artifact: &PolicyArtifact| {
+            ReceivedArtifact::from_value(serde_json::to_value(artifact).unwrap())
+                .unwrap()
+                .hash
+        };
+        assert_eq!(hash(&parsed.artifact), hash(&export), "{}", what);
+        assert_eq!(print_default(&parsed.artifact), printed, "{}", what);
+    }
 }
 
 #[test]

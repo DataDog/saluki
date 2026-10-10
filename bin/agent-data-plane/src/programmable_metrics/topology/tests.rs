@@ -448,6 +448,115 @@ async fn the_metrics_path_has_exactly_the_edges_of_its_frame() {
         .all(|component| !fused(&component.id().to_string())));
 }
 
+/// One configuration's regions, each with the most native transforms that one path through it runs through.
+type RegionChains<'a> = (&'a str, &'a [(&'a str, usize)]);
+
+#[tokio::test]
+async fn each_region_takes_what_the_native_transforms_it_replaces_held_on_the_way_through_it() {
+    // Natively, each transform has an input of 128 buffers, and holds one more while it waits to send. A region that
+    // replaces `n` transforms on one path holds, queued and in flight, as many buffers as they did: its input holds
+    // `n * 129 - 1`, and it holds one while it waits. Where its paths run through different numbers of transforms, the
+    // largest counts, so that no path holds less than natively.
+    let cases: [RegionChains; 9] = [
+        // The mapper, the prefix filter (with the listener filterlist), the no-aggregation split, and the tag
+        // filterlist; then the post-aggregation filter and enrichment. The timestamped metrics the split sends past
+        // aggregation leave `dsd_pre_aggregation` after three of its four transforms, so their path holds one
+        // transform's buffers more than natively.
+        (
+            "dogstatsd with defaults",
+            &[("dsd_pre_aggregation", 4), ("metrics_enrich", 2)],
+        ),
+        (
+            "no-aggregation pipeline off",
+            &[("dsd_pre_aggregation", 3), ("metrics_enrich", 2)],
+        ),
+        // Enrichment alone: the region holds what the native `metrics_enrich` did, and its fan-out to the main output
+        // is lowered from the encoder, whose interconnect remains.
+        ("otlp without dogstatsd", &[("metrics_enrich", 1)]),
+        (
+            "connected with host tags",
+            &[
+                ("dsd_pre_aggregation", 4),
+                ("dsd_post_agg_filter_region", 1),
+                ("metrics_enrich", 1),
+            ],
+        ),
+        // Enrichment, then the routing filter on the way to its encoder.
+        (
+            "one routing group",
+            &[
+                ("dsd_pre_aggregation", 4),
+                ("dsd_post_agg_filter_region", 1),
+                ("metrics_enrich", 2),
+            ],
+        ),
+        // The two filters are parallel: one path runs through enrichment and one of them.
+        (
+            "two routing groups, a shared group, and an endpoint with empty lists",
+            &[
+                ("dsd_pre_aggregation", 4),
+                ("dsd_post_agg_filter_region", 1),
+                ("metrics_enrich", 2),
+            ],
+        ),
+        // The post-aggregation filter, enrichment, and the failover gateway in one region.
+        (
+            "multi-region failover",
+            &[("dsd_pre_aggregation", 4), ("metrics_enrich", 3)],
+        ),
+        // The pre-aggregation chain pipelined over three regions.
+        (
+            "mapper profiles, a namespace prefix, and filterlists",
+            &[
+                ("dsd_pre_aggregation", 1),
+                ("dsd_prefix_filter_region", 1),
+                ("dsd_no_agg_split_region", 2),
+                ("metrics_enrich", 2),
+            ],
+        ),
+        (
+            "every branch",
+            &[
+                ("dsd_pre_aggregation", 1),
+                ("dsd_prefix_filter_region", 1),
+                ("dsd_no_agg_split_region", 2),
+                ("dsd_post_agg_filter_region", 1),
+                ("metrics_enrich", 2),
+            ],
+        ),
+    ];
+    for (name, chains) in cases {
+        let Topologies { plan, frame, .. } = topologies(matrix_entry(name)).await;
+        let regions = frame.slots().iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            regions,
+            chains.iter().map(|(region, _)| *region).collect::<Vec<_>>(),
+            "{}",
+            name
+        );
+        for (region, transforms) in chains {
+            let capacity = plan
+                .component(region)
+                .unwrap()
+                .input_capacity()
+                .map(|capacity| capacity.get());
+            assert_eq!(capacity, Some(transforms * 129 - 1), "{}: `{}`", name, region);
+        }
+        // Every other component keeps the default capacity.
+        for component in plan.components() {
+            if component.input().is_some() && !regions.contains(&&**component.id()) {
+                assert_eq!(
+                    component.input_capacity().map(|capacity| capacity.get()),
+                    Some(128),
+                    "{}: `{}`",
+                    name,
+                    component.id()
+                );
+            }
+        }
+    }
+}
+
 /// Returns the bounds of the component at `path` below the registry's root.
 fn bounds_at<'a>(bounds: &'a ComponentBounds, path: &[&str]) -> &'a ComponentBounds {
     path.iter().fold(bounds, |bounds, segment| {
@@ -674,17 +783,21 @@ async fn region_bounds_are_their_kernels_native_bounds_and_their_buffers_and_the
     let replaced = [&FUSED[..], &["metrics_enrich", "dsd_pre_aggregation"]].concat();
     assert_eq!(declared_by_path(&plan, &replaced), declared_by_path(&legacy, &replaced));
 
-    // The interconnects: one of the default capacity, 128 buffers, into each transform and destination, and the
-    // in-flight buffers of every source and transform besides. The legacy topology has nine transforms and three
-    // destinations; the regions replace six of its transforms with two, so the plan-driven one has four interconnects,
-    // and four transforms' in-flight buffers, fewer.
+    // The interconnects: one into each transform and destination, of the default capacity, 128 buffers, but for the
+    // regions', and the in-flight buffers of every source and transform besides. The legacy topology has nine
+    // transforms and three destinations. The regions replace six of its transforms with two, whose inputs hold what the
+    // transforms they replace held on the way through them, queued and in flight (four of them on the way through
+    // `dsd_pre_aggregation`, 4 * 129 - 1 buffers, and two through `metrics_enrich`, 2 * 129 - 1), so both topologies
+    // hold as many buffers.
     let in_flight_buffer = size_of::<EventsBuffer>() + size_of::<Event>() * 1024;
-    for (bounds, transforms, destinations) in [(&legacy, 9, 3), (&plan, 5, 3)] {
-        let interconnects = transforms + destinations;
+    let legacy_buffers = 12 * 128;
+    let plan_buffers = 6 * 128 + 515 + 257;
+    for (bounds, transforms, buffers) in [(&legacy, 9, legacy_buffers), (&plan, 5, plan_buffers)] {
         let (minimum, firm) = own_bytes(bounds_at(bounds, &["topology", "primary", "interconnects"]));
-        assert_eq!(minimum, interconnects * 128 * size_of::<EventsBuffer>());
-        assert_eq!(firm, (interconnects * 128 + 1 + transforms) * in_flight_buffer);
+        assert_eq!(minimum, buffers * size_of::<EventsBuffer>());
+        assert_eq!(firm, (buffers + 1 + transforms) * in_flight_buffer);
     }
+    assert_eq!(plan_buffers + 5, legacy_buffers + 9);
 }
 
 /// One gateway of a configuration: its node, the strings its lists hold, and how many copies of them, besides its
@@ -876,18 +989,38 @@ async fn gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_
             name
         );
 
-        // One interconnect, and one transform's in-flight buffers, per transform: the gateways' are gone.
+        // One interconnect, and one transform's in-flight buffers, per transform: the gateways' are gone. A region's
+        // input holds what the transforms it replaces held on the way through it (see
+        // `each_region_takes_what_the_native_transforms_it_replaces_held_on_the_way_through_it`), so the gateways in
+        // front of the outputs, which are parallel, leave as many buffers as one gateway held.
         let plan_transforms = legacy_transforms - 6 - gateways.len() + regions.len();
-        for (bounds, transforms) in [(&legacy, legacy_transforms), (&plan, plan_transforms)] {
-            let interconnects = transforms + 3;
+        let region_buffers = regions
+            .iter()
+            .map(|region| {
+                topologies
+                    .plan
+                    .component(region)
+                    .unwrap()
+                    .input_capacity()
+                    .unwrap()
+                    .get()
+            })
+            .sum::<usize>();
+        let legacy_buffers = (legacy_transforms + 3) * 128;
+        let plan_buffers = (plan_transforms - regions.len() + 3) * 128 + region_buffers;
+        for (bounds, transforms, buffers) in [
+            (&legacy, legacy_transforms, legacy_buffers),
+            (&plan, plan_transforms, plan_buffers),
+        ] {
             let (minimum, firm) = own_bytes(bounds_at(bounds, &["topology", "primary", "interconnects"]));
-            assert_eq!(minimum, interconnects * 128 * size_of::<EventsBuffer>(), "{}", name);
-            assert_eq!(
-                firm,
-                (interconnects * 128 + 1 + transforms) * in_flight_buffer,
-                "{}",
-                name
-            );
+            assert_eq!(minimum, buffers * size_of::<EventsBuffer>(), "{}", name);
+            assert_eq!(firm, (buffers + 1 + transforms) * in_flight_buffer, "{}", name);
         }
+        assert_eq!(
+            plan_buffers + plan_transforms + (gateways.len() - 1) * 129,
+            legacy_buffers + legacy_transforms,
+            "{}",
+            name
+        );
     }
 }

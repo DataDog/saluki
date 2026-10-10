@@ -928,6 +928,50 @@ fn a_panic_within_the_budget_rebuilds_the_kernels_of_its_generation_and_the_regi
     assert_eq!(summary(&written), vec![(0, strings(&["keep.c.a1"]))]);
 }
 
+#[test]
+fn a_panic_in_a_node_the_artifact_budget_does_not_cover_fails_the_region() {
+    // (the nodes the artifact's budget covers, whether the region survives a panic in `count`)
+    let cases: [(Option<&[&str]>, bool); 4] = [
+        (None, true),
+        (Some(&["count"]), true),
+        // The decision and the drop behind it are the artifact's, but the kernel that panics is native.
+        (Some(&["keep", "dropped"]), false),
+        (Some(&[]), false),
+    ];
+    for (covered, survives) in cases {
+        let plan = filter_plan("a", "keep");
+        let frame = frame_of(&plan);
+        let programs = compiled(&plan, &frame).programs;
+        let telemetry = RecordingTelemetry::default();
+        let failures = Failures::default();
+        let one: GenerationRef = Arc::new(GenerationToken::new(GenerationId::new(1)));
+        let mut boot = prepare_all(&one, &programs[0], PanicBudget::ARTIFACT, &telemetry);
+        if let Some(covered) = covered {
+            boot = boot.with_artifact_nodes(covered.iter().map(|node| id(node)));
+        }
+        let config = RegionConfig::for_slot(&frame.slots()[0], &telemetry).with_failure_reporter(failures.reporter());
+        let mut region = MetricRegionDriver::new(config, boot).unwrap();
+
+        match (panic_in(&mut region, &one, Instant::now()), survives) {
+            (PanicOutcome::Continue, true) => {
+                let written = process(&mut region, 1, batch(header(Some(&one), 0), &["keep.a"]));
+                assert_eq!(summary(&written), vec![(0, strings(&["keep.a.a1"]))], "{:?}", covered);
+            }
+            (PanicOutcome::Fail(error), false) => assert_eq!(
+                error.to_string(),
+                "Region `region_count` panicked in node `count` of generation 1, which native configuration placed: \
+                 a native node's panic budget is zero, as the default program's is, even in an artifact's \
+                 generation, so the region fails as a native component does.",
+                "{:?}",
+                covered
+            ),
+            (outcome, _) => panic!("{:?}: unexpected outcome {:?}", covered, outcome),
+        }
+        // The region fails, or the generation survives: neither reports the generation failed.
+        assert_eq!(failures.take(), Vec::new(), "{:?}", covered);
+    }
+}
+
 /// Runs a batch that panics in the region, as the host does, and returns what the driver decides.
 fn panic_in(region: &mut MetricRegionDriver, generation: &GenerationRef, at: Instant) -> PanicOutcome {
     let panicking = batch(header(Some(generation), 0), &["panic"]);

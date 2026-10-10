@@ -74,6 +74,7 @@ impl FakeAdp {
                     artifact_hash: Some(hash.clone()),
                 }),
                 stale_base: Some(false),
+                stale_review: Some(false),
                 degraded: None,
                 live_generations: Some(1),
             }),

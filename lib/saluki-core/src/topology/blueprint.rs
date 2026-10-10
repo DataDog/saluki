@@ -87,6 +87,7 @@ struct TopologyBuildState {
     admission_points: Vec<AdmissionPointBinding>,
     component_registry: ComponentRegistry,
     interconnect_capacity: NonZeroUsize,
+    input_capacities: HashMap<ComponentId, NonZeroUsize>,
     shutdown_timeout: Duration,
     worker_pool_config: WorkerPoolConfiguration,
     environment_ready: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
@@ -112,6 +113,7 @@ impl TopologyBlueprint {
             admission_points: Vec::new(),
             component_registry,
             interconnect_capacity: super::DEFAULT_INTERCONNECT_CAPACITY,
+            input_capacities: HashMap::new(),
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             worker_pool_config: WorkerPoolConfiguration::Dedicated,
             environment_ready: None,
@@ -146,10 +148,55 @@ impl TopologyBlueprint {
     /// through until in-flight items are processed. This will apply backpressure to the upstream components. Raising or lowering
     /// the capacity allows trading off throughput at the expense of memory usage.
     ///
+    /// This is the capacity of every component's input, except for the components given one of their own with
+    /// [`with_component_input_capacity`][Self::with_component_input_capacity].
+    ///
     /// Defaults to 128.
     pub fn with_interconnect_capacity(&mut self, capacity: NonZeroUsize) -> &mut Self {
         self.state_mut().set_interconnect_capacity(capacity);
         self
+    }
+
+    /// Returns the capacity of interconnects in the topology, which
+    /// [`with_interconnect_capacity`][Self::with_interconnect_capacity] sets.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the blueprint has already been initialized.
+    pub fn interconnect_capacity(&self) -> NonZeroUsize {
+        self.build_state
+            .lock()
+            .expect("topology blueprint mutex poisoned")
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .interconnect_capacity
+    }
+
+    /// Sets the capacity of one component's input interconnect, in place of the
+    /// [interconnect capacity][Self::with_interconnect_capacity] of the topology.
+    ///
+    /// A component's input interconnect holds what upstream components send it until it reads it: once it is full,
+    /// they wait. A larger capacity lets a component that does the work of several others, each of which had an input
+    /// interconnect of its own, take as much from upstream before they wait as those components together did. The
+    /// capacity stays the component's when the interconnect capacity of the topology changes, and when the component
+    /// is replaced.
+    ///
+    /// The memory bounds of the topology count the component's interconnect at this capacity. Only transforms and
+    /// destinations, whose input interconnects the bounds account for, can have a capacity of their own.
+    ///
+    /// # Errors
+    ///
+    /// If the blueprint has no component `component_id`, or if the component is not a transform or a destination, an
+    /// error is returned and the blueprint is unchanged.
+    pub fn with_component_input_capacity<I>(
+        &mut self, component_id: I, capacity: NonZeroUsize,
+    ) -> Result<&mut Self, GenericError>
+    where
+        I: AsRef<str>,
+    {
+        self.state_mut()
+            .set_component_input_capacity(component_id.as_ref(), capacity)?;
+        Ok(self)
     }
 
     /// Sets how long the topology waits for components to stop during graceful shutdown.
@@ -579,9 +626,47 @@ impl TopologyBuildState {
         self.recalculate_bounds();
     }
 
-    fn recalculate_bounds(&mut self) {
-        let interconnect_capacity = self.interconnect_capacity.get();
+    fn set_component_input_capacity(&mut self, component_id: &str, capacity: NonZeroUsize) -> Result<(), GenericError> {
+        let id = ComponentId::try_from(component_id).map_err(|reason| {
+            generic_error!(
+                "Cannot set the input capacity of '{}': it is not a valid component ID: {}.",
+                component_id,
+                reason
+            )
+        })?;
+        match self.graph.component_type(&id) {
+            Some(ComponentType::Transform | ComponentType::Destination) => {}
+            Some(other) => {
+                return Err(generic_error!(
+                    "Cannot set the input capacity of {} '{}': only transforms and destinations can have an input \
+                     capacity of their own, since the topology's memory bounds account for their input interconnects \
+                     only.",
+                    other.as_str(),
+                    id
+                ))
+            }
+            None => {
+                return Err(generic_error!(
+                    "Cannot set the input capacity of '{}': the blueprint has no such component. Add the component \
+                     before setting its input capacity.",
+                    id
+                ))
+            }
+        }
+        self.input_capacities.insert(id, capacity);
+        self.recalculate_bounds();
+        Ok(())
+    }
 
+    /// Returns the capacity of a component's input interconnect: its own, or else the interconnect capacity.
+    fn input_capacity(&self, component_id: &ComponentId) -> NonZeroUsize {
+        self.input_capacities
+            .get(component_id)
+            .copied()
+            .unwrap_or(self.interconnect_capacity)
+    }
+
+    fn recalculate_bounds(&mut self) {
         let mut bounds_builder = self.component_registry.bounds_builder(&self.topology_id);
         let mut bounds_builder = bounds_builder.subcomponent("interconnects");
         bounds_builder.reset();
@@ -589,8 +674,13 @@ impl TopologyBuildState {
         // Adjust the bounds related to interconnects.
         //
         // This deals with the minimum size of the interconnects themselves, since they're bounded and thus allocated
-        // up-front. Every non-source component has an interconnect.
-        let total_interconnect_capacity = interconnect_capacity * (self.transforms.len() + self.destinations.len());
+        // up-front. Every non-source component has an interconnect, of the topology's capacity or of its own.
+        let total_interconnect_capacity = self
+            .transforms
+            .keys()
+            .chain(self.destinations.keys())
+            .map(|component_id| self.input_capacity(component_id).get())
+            .sum::<usize>();
         bounds_builder
             .minimum()
             .with_array::<EventsBuffer>("events", total_interconnect_capacity);
@@ -608,10 +698,8 @@ impl TopologyBuildState {
         //
         // TODO: Somewhat fragile. Need to revisit this.
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
-        let max_in_flight_event_buffers = ((self.transforms.len() + self.destinations.len()) * interconnect_capacity)
-            + self.sources.len()
-            + self.decoders.len()
-            + self.transforms.len();
+        let max_in_flight_event_buffers =
+            total_interconnect_capacity + self.sources.len() + self.decoders.len() + self.transforms.len();
 
         bounds_builder
             .firm()
@@ -695,7 +783,7 @@ impl TopologyBuildState {
     }
 
     fn snapshot(&self) -> BlueprintSnapshot {
-        let (components, edges) = self.graph.snapshot();
+        let (components, edges) = self.graph.snapshot(&|component_id| self.input_capacity(component_id));
         let admission_points = self
             .admission_points
             .iter()
@@ -724,8 +812,10 @@ impl TopologyBuildState {
     {
         let mut scratch = Graph::default();
         let id = add(&mut scratch).error_context("Failed to describe the replacement component.")?;
-        let (replacement, _) = scratch.snapshot();
-        let (components, _) = self.graph.snapshot();
+        // A replacement keeps the input capacity of the component it replaces.
+        let input_capacity = |component_id: &ComponentId| self.input_capacity(component_id);
+        let (replacement, _) = scratch.snapshot(&input_capacity);
+        let (components, _) = self.graph.snapshot(&input_capacity);
         let existing = components
             .iter()
             .find(|component| component.id() == &id && component.component_type() == component_type)
@@ -1086,6 +1176,7 @@ impl TopologyBuildState {
             self.admission_points,
             topology_token,
             self.interconnect_capacity,
+            self.input_capacities,
             self.worker_pool_config,
         ))
     }
@@ -2944,6 +3035,314 @@ mod tests {
             .replace_transform("fwd", ForwardingTransformBuilder::new())
             .unwrap();
         assert_eq!(blueprint.snapshot().unwrap(), before);
+    }
+
+    /// Returns each component of `blueprint`'s snapshot with the capacity of its input, if it has one.
+    fn input_capacities(blueprint: &TopologyBlueprint) -> Vec<(String, Option<usize>)> {
+        blueprint
+            .snapshot()
+            .unwrap()
+            .components()
+            .iter()
+            .map(|component| {
+                (
+                    component.id().to_string(),
+                    component.input_capacity().map(NonZeroUsize::get),
+                )
+            })
+            .collect()
+    }
+
+    /// Returns the minimum and firm bytes `registry` declares in all.
+    fn total_bytes(registry: &ComponentRegistry) -> (usize, usize) {
+        let bounds = registry.as_bounds();
+        (bounds.total_minimum_required_bytes(), bounds.total_firm_limit_bytes())
+    }
+
+    #[test]
+    fn a_component_input_capacity_replaces_the_interconnect_capacity_for_that_component_alone() {
+        let capacity = |capacity: usize| NonZeroUsize::new(capacity).unwrap();
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint.with_interconnect_capacity(capacity(4));
+        blueprint
+            .add_source(
+                "src",
+                ScriptedSourceBuilder::new(Vec::new(), ManualWallClock::default()),
+            )
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_transform("wide", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_destination("out", TestDestinationBuilder::with_input_type(EventType::Metric))
+            .unwrap()
+            .add_encoder(
+                "enc",
+                TestEncoderBuilder::with_input_and_output_type(EventType::Metric, PayloadType::Http),
+            )
+            .unwrap()
+            .connect_components_in_order(["src", "fwd", "wide", "out"])
+            .unwrap()
+            .connect_components("src.other", "enc")
+            .unwrap();
+        assert_eq!(blueprint.interconnect_capacity(), capacity(4));
+
+        blueprint
+            .with_component_input_capacity("wide", capacity(3))
+            .unwrap()
+            .with_component_input_capacity("wide", capacity(10))
+            .unwrap()
+            .with_component_input_capacity("out", capacity(7))
+            .unwrap();
+        // The last capacity set is the component's; the others keep the topology's, and a source has no input.
+        let expected = |default: usize| {
+            vec![
+                ("enc".to_string(), Some(default)),
+                ("fwd".to_string(), Some(default)),
+                ("out".to_string(), Some(7)),
+                ("src".to_string(), None),
+                ("wide".to_string(), Some(10)),
+            ]
+        };
+        assert_eq!(input_capacities(&blueprint), expected(4));
+
+        // The bounds count each transform's and destination's interconnect at its own capacity, and the in-flight
+        // buffers of the source and of each transform besides (the encoder's interconnect is not counted, as before).
+        let per_buffer =
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Event>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let bytes = |interconnects: usize| {
+            let minimum = interconnects * std::mem::size_of::<EventsBuffer>();
+            (minimum, minimum + (interconnects + 1 + 2) * per_buffer)
+        };
+        assert_eq!(total_bytes(&component_registry), bytes(4 + 10 + 7));
+
+        // A new interconnect capacity applies to every component without one of its own.
+        blueprint.with_interconnect_capacity(capacity(6));
+        assert_eq!(input_capacities(&blueprint), expected(6));
+        assert_eq!(total_bytes(&component_registry), bytes(6 + 10 + 7));
+
+        // A replaced transform keeps its capacity.
+        blueprint
+            .replace_transform("wide", ForwardingTransformBuilder::new())
+            .unwrap();
+        assert_eq!(input_capacities(&blueprint), expected(6));
+        assert_eq!(total_bytes(&component_registry), bytes(6 + 10 + 7));
+    }
+
+    #[test]
+    fn only_transforms_and_destinations_can_have_an_input_capacity_of_their_own() {
+        let mut blueprint = blueprint_with_every_component_type();
+        let before = input_capacities(&blueprint);
+        let capacity = NonZeroUsize::new(512).unwrap();
+        let only = |what: &str, id: &str| {
+            format!(
+                "Cannot set the input capacity of {} '{}': only transforms and destinations can have an input \
+                 capacity of their own, since the topology's memory bounds account for their input interconnects \
+                 only.",
+                what, id
+            )
+        };
+        let rejected = [
+            (
+                "missing",
+                "Cannot set the input capacity of 'missing': the blueprint has no such component. Add the component \
+                 before setting its input capacity."
+                    .to_string(),
+            ),
+            ("src", only("source", "src")),
+            ("relay", only("relay", "relay")),
+            ("dec", only("decoder", "dec")),
+            ("enc", only("encoder", "enc")),
+            ("fwdr", only("forwarder", "fwdr")),
+        ];
+        for (id, expected) in rejected {
+            let error = blueprint
+                .with_component_input_capacity(id, capacity)
+                .map(|_| ())
+                .expect_err(id);
+            assert_eq!(error.to_string(), expected, "{}", id);
+        }
+        let invalid = blueprint
+            .with_component_input_capacity("not an id", capacity)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            invalid.starts_with("Cannot set the input capacity of 'not an id': it is not a valid component ID:"),
+            "{}",
+            invalid
+        );
+        assert_eq!(input_capacities(&blueprint), before);
+
+        // Transforms and destinations can.
+        blueprint
+            .with_component_input_capacity("fwd", capacity)
+            .unwrap()
+            .with_component_input_capacity("out", capacity)
+            .unwrap();
+        let changed = input_capacities(&blueprint)
+            .into_iter()
+            .filter(|(id, input)| !before.contains(&(id.clone(), *input)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changed,
+            vec![("fwd".to_string(), Some(512)), ("out".to_string(), Some(512))]
+        );
+    }
+
+    /// A source that sends `batches` buffers of one metric each, counting each send once it completes, and then runs
+    /// until shutdown.
+    struct CountingSource {
+        batches: usize,
+        sent: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Source for CountingSource {
+        async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            for value in 0..self.batches {
+                let mut buffer = EventsBuffer::with_capacity(1);
+                assert!(buffer
+                    .try_push(Event::Metric(Metric::gauge("m", value as f64)))
+                    .is_none());
+                context.dispatcher().dispatch(buffer).await?;
+                self.sent.fetch_add(1, Ordering::SeqCst);
+            }
+            shutdown.await;
+            Ok(())
+        }
+    }
+
+    struct CountingSourceBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+        batches: usize,
+        sent: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for CountingSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            Ok(Box::new(CountingSource {
+                batches: self.batches,
+                sent: Arc::clone(&self.sent),
+            }))
+        }
+    }
+
+    impl MemoryBounds for CountingSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A destination that reads nothing until its gate opens, and then counts the events it receives until its input
+    /// closes.
+    struct GatedDestination {
+        gate: Arc<tokio::sync::Semaphore>,
+        received: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Destination for GatedDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            self.gate.acquire().await.expect("the gate is never closed").forget();
+            while let Some(buffer) = context.events().next().await {
+                self.received.fetch_add(buffer.len(), Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    struct GatedDestinationBuilder {
+        gate: Arc<tokio::sync::Semaphore>,
+        received: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for GatedDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(GatedDestination {
+                gate: Arc::clone(&self.gate),
+                received: Arc::clone(&self.received),
+            }))
+        }
+    }
+
+    impl MemoryBounds for GatedDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_running_topology_takes_what_its_input_capacities_hold_before_its_source_waits() {
+        // src -> fwd (input capacity 3) -> out (input capacity 5), with `out` reading nothing until its gate opens.
+        // The source sends until both inputs are full and the transform holds one more buffer, waiting to send it.
+        let batches = 20;
+        let sent = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let received = Arc::new(AtomicUsize::new(0));
+        let capacity = |capacity: usize| NonZeroUsize::new(capacity).unwrap();
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source(
+                "src",
+                CountingSourceBuilder {
+                    outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+                    batches,
+                    sent: Arc::clone(&sent),
+                },
+            )
+            .unwrap()
+            .add_transform("fwd", ForwardingTransformBuilder::new())
+            .unwrap()
+            .add_destination(
+                "out",
+                GatedDestinationBuilder {
+                    gate: Arc::clone(&gate),
+                    received: Arc::clone(&received),
+                },
+            )
+            .unwrap()
+            .connect_components_in_order(["src", "fwd", "out"])
+            .unwrap()
+            .with_component_input_capacity("fwd", capacity(3))
+            .unwrap()
+            .with_component_input_capacity("out", capacity(5))
+            .unwrap()
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new())
+            .with_ambient_worker_pool();
+
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
+        let held = 3 + 1 + 5;
+        wait_until("the source sent what the topology holds", || {
+            sent.load(Ordering::SeqCst) == held
+        })
+        .await;
+        // The clock is paused: the sleep ends once every task waits, so nothing more is sent after it.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(sent.load(Ordering::SeqCst), held);
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+
+        // Once the destination reads, everything arrives.
+        gate.add_permits(1);
+        wait_until("the destination received every batch", || {
+            received.load(Ordering::SeqCst) == batches
+        })
+        .await;
+        assert_eq!(sent.load(Ordering::SeqCst), batches);
+        tx.send(()).expect("should send shutdown signal");
+        let result = join_topology(handle).await;
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
     }
 
     #[tokio::test]

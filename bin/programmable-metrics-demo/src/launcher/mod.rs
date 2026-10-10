@@ -481,11 +481,12 @@ fn describe_exit(status: ExitStatus) -> String {
     }
 }
 
-/// Returns the default run directory: a new directory under `target/programmable-metrics-demo`, named for the time.
-pub fn default_run_dir() -> PathBuf {
+/// Returns the default run directory: a new directory under `target/programmable-metrics-demo`, named for what runs
+/// in it (`run`, or `check` for a scripted check) and the time.
+pub fn default_run_dir(kind: &str) -> PathBuf {
     PathBuf::from("target")
         .join("programmable-metrics-demo")
-        .join(format!("run-{}", unix_millis() / 1000))
+        .join(format!("{}-{}", kind, unix_millis() / 1000))
 }
 
 #[cfg(test)]

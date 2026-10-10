@@ -80,9 +80,15 @@ lib/saluki-metric-plan/               IR, contracts, compiler, interpreter, inst
             and 7 policies: a one-region fan-out's decision and region, the stage 4
             default program's policy region in its own frame, and memo hits and misses        [4]
   install/  diff.rs (plan diff, kernel reuse), lifecycle.rs, core.rs (InstallerCore, no I/O)   [3]
-            correspondence                                                                     [5]
-  channel/  artifact channel types                                                             [5]
-  compose.rs, export.rs                                                                        [5]
+            core/artifacts.rs (snapshots, the policy in effect, acknowledgments, status
+            summary), correspondence.rs, artifact_tests.rs (the lifecycle table and property)  [5]
+  channel/  snapshot.rs (products, configs, snapshots), envelope.rs, state.rs (acknowledgments
+            and status summary, the stub protocol's wire form), feed.rs (the watch-based
+            channel between a transport and the installer)                                     [5]
+  compose.rs  receipt checks (receive_artifact) and composition (compose, Composer);
+              compose/tests.rs (accept and reject tables, property tests)                      [5]
+  export.rs   the export bundle (export) and an artifact's base (base); export/tests.rs        [5]
+  fixtures/export/default-program-post-enrich.json  the hand-written export of the fixture     [5]
   testing/  `test-util`: metric strategies, fixtures, harnesses                               [1+]
 
 lib/saluki-metric-plan-syntax/        surface syntax: parser, printer, spans                    [demo]
@@ -93,16 +99,31 @@ bin/agent-data-plane/src/programmable_metrics/
   lowering/        Lowering::{new, lower}, and its tests: the configuration matrix, a hand-written
                    every-branch fixture, the structural comparison with the legacy blueprint, and a
                    run of the lowered program through the reference interpreter                         [2, 4]
-  topology.rs      PlanTopology: the metrics path of the blueprint, built from the frame                  [3]
+  lowering/export_tests.rs  every matrix configuration exports, prints and parses back, and
+                   composes back unchanged (the syntax crate is a dev-dependency)                         [5]
+  topology.rs      PlanTopology: the metrics path of the blueprint, built from the frame, with each
+                   region's input capacity (region_input_capacity); burst tests against the legacy
+                   topology in topology/burst_tests.rs                                                 [3, 5]
   installer.rs     ProgrammableMetrics::boot, the supervised InstallerWorker, PlanStatus                 [3, 5]
   telemetry.rs     RegionTelemetry (RegisterTelemetry, kernel identities), InstallerTelemetry            [3]
   test_topology.rs test-only: the primary topology, legacy or plan-driven, with its I/O replaced by test
-                   doubles in place (scripted sources, clocked aggregation, collecting encoders), which the
-                   differential, live-change, fault, telemetry, and measurement tests run                [3]
-  channel_stub.rs api.rs                                                    [5]
+                   doubles in place (scripted sources, clocked, gated, or scripted aggregation,
+                   collecting encoders, counted sends), which the differential, live-change, fault,
+                   lifecycle, telemetry, burst, and measurement tests run                              [3, 5]
+  channel_stub.rs  the local stub of the artifact channel (StubChannelWorker); tests against an
+                   in-process fake stub server in channel_stub/tests.rs                                   [5]
+  api.rs           the control surface on the privileged API (ControlSurfaceWorker); handler and
+                   mutual TLS tests in api/tests.rs                                                       [5]
+  installer/artifact_tests.rs  artifacts in a running topology, with a double of the core's
+                   artifact paths and with the core's own; installer bookkeeping without a
+                   topology                                                                               [5]
+  installer/lifecycle_tests.rs  the stage 5 exit-gate suites through the core's own paths: continuous
+                   input across a series of real artifacts, restarts, stale proposals, refusals, the
+                   stub worker against an in-process stub, panicking artifact kernels, and 100 installs   [5]
 bin/agent-data-plane/src/cli/run/legacy.rs   the legacy metrics path, a test-only differential reference [3]
 
-bin/programmable-metrics-demo/        demo server, embedded UI, recording intakes, load        [demo]
+bin/programmable-metrics-demo/        demo server, embedded UI, recording intakes, load, preview   [demo]
+                                      (compose, validate, diff as ADP), headless check (scenario/)
 ```
 
 Dependency direction:
@@ -124,10 +145,14 @@ saluki-core <- saluki-metric-kernels <- saluki-metric-plan <- saluki-metric-plan
 - `agent-data-plane-config-system` depends on it for one function: it validates `metric_tag_value_allowlist` at load
   with the kernels crate's `params::validate_tag_value_rule_keys`, the one implementation of that rule, and words the
   errors in terms of its keys. The configuration model (`agent-data-plane-config`) depends on neither.
-- `saluki-metric-plan` adds `serde`, `serde_json`, `schemars` (with `derive`), `tokio` (`sync`), `saluki-tls` (for
-  FIPS-consistent SHA-256), and, for the region driver (stage 3), `saluki-error`, `saluki-metrics`, and `tracing`. It
-  does not depend on `saluki-components` or `agent-data-plane-config`. Operators never read configuration; ADP converts
-  typed configuration into the kernels crate's parameter types.
+- `saluki-metric-plan` adds `serde`, `serde_json`, `schemars` (with `derive`), `tokio` (`sync`, for the artifact
+  channel's `watch` channels), `saluki-tls` (for FIPS-consistent SHA-256), and, for the region driver (stage 3),
+  `saluki-error`, `saluki-metrics`, and `tracing`. It does not depend on `saluki-components` or
+  `agent-data-plane-config`. Operators never read configuration; ADP converts typed configuration into the kernels
+  crate's parameter types.
+- ADP adds `rustls` (an empty root certificate store for the stub's plain-HTTP client) and, for tests only, `axum`
+  (the fake stub server) and `saluki-metric-plan-syntax` (export round trips); all were already workspace
+  dependencies.
 - Legacy components stay where they are as thin adapters over the kernels until the stage 3 plan-driven topology
   replaces them. They then become test-only differential references (`#[cfg(test)]`), after the non-metric parts of the
   legacy builder functions are split out (construction rule 4). Stage 3 did this in ADP: `dogstatsd_prefix_filter`,
@@ -256,14 +281,25 @@ pub struct EntryId(u16);
 ### Blueprint introspection and graph checks
 
 - `TopologyBlueprint::snapshot() -> Option<BlueprintSnapshot>` (`None` once initialized) describes the blueprint's
-  structure: `components()` sorted by ID (`ComponentSnapshot { id, component_type, input: Option<DataType>, outputs:
-  [OutputSnapshot { id, data_type }] }`, plus `component(id)`), `edges()` sorted (`EdgeSnapshot { from:
-  ComponentOutputId, to: ComponentId }`), and `admission_points()` (`AdmissionPointSnapshot { output, id, mode,
+  structure: `components()` sorted by ID (`ComponentSnapshot { id, component_type, input: Option<DataType>,
+  input_capacity: Option<NonZeroUsize>, outputs: [OutputSnapshot { id, data_type }] }`, plus `component(id)`; the
+  accessors are `input()` and `input_capacity()`, both `None` for sources and relays), `edges()` sorted (`EdgeSnapshot
+  { from: ComponentOutputId, to: ComponentId }`), and `admission_points()` (`AdmissionPointSnapshot { output, id, mode,
   heartbeat }`). Equal structures have equal snapshots whatever the assembly order. `DataType` is exported from
   `saluki_core::topology`. Lowering compares a lowered plan with this snapshot of the legacy blueprint.
 - The graph rejects a repeated edge (`GraphError::DuplicateEdge`), which would deliver every buffer twice, and its
   cycle check runs a depth-first search from every component, so cycles on paths that end in encoders and forwarders
   (no destination) are found. A cycle is reported in edge order, starting and ending at its smallest component ID.
+- **Input capacity per component** (stage 5). `TopologyBlueprint::with_component_input_capacity(component, capacity:
+  NonZeroUsize) -> Result<&mut Self, GenericError>` gives one transform or destination an input interconnect of its
+  own capacity in place of the interconnect capacity of the topology (`with_interconnect_capacity`, default 128,
+  unchanged), which `interconnect_capacity()` reads. A component's own capacity survives later
+  `with_interconnect_capacity` calls and `replace_*`, and the last one set wins. The blueprint's interconnect bounds
+  count each transform's and destination's interconnect at its capacity: the minimum is one `EventsBuffer` struct per
+  slot, and the firm limit one full buffer per slot plus one in-flight buffer per source, decoder, and transform, as
+  before. Other component types are refused with an actionable error (an unknown or invalid ID too), since the bounds
+  count only the interconnects of transforms and destinations; encoders' event interconnects are not counted at all, a
+  gap that predates this work.
 
 ### Generations
 
@@ -929,10 +965,20 @@ A plan is a DAG serialized as JSON (`deny_unknown_fields`). The schema is genera
   the same document.
 - **What each hash covers.** Serializing a plan or artifact writes its **normalized form**: members at their defaults
   (empty `outputs`, `recipients`, `exits`, base `outputs`, `blobs`, and the `native` delivery policy) are left out, so a
-  document this crate writes reads back and writes out byte for byte. `Plan::hash` is the RFC 8785 digest of the
-  plan's normalized form without plan-level provenance, with resolved values stripped from node parameters under
-  `ResolvedValues::Exclude`; the export's `base.program_hash` uses that form, so native parameter changes never change a
-  base hash and structural changes do. **Approval binds to the received artifact document**: `ReceivedArtifact`
+  document this crate writes reads back and writes out byte for byte. `Plan::hash` is the RFC 8785 digest of the plan's
+  normalized form without plan-level provenance, with resolved values stripped from node parameters under
+  `ResolvedValues::Exclude`. An artifact's `base.program_hash` is the hash of the **export** it was derived from, not of
+  the whole plan: the RFC 8785 digest of the exported artifact document without its `base.program_hash` member
+  (`ir_version`, `scope`, `nodes`, `edges`, and `base.outputs`, the fingerprint of every output the scope emits to; an
+  export has no blobs, no resolved values, and no node provenance). So native parameter changes never change a base
+  hash; a structural change inside the scope, or another binding of an output the scope emits to, always does; and a
+  change outside the scope (another DogStatsD configuration, a source enabled, an output the scope does not emit to)
+  never does. The base program hash changes exactly when the export's artifact does, which is what the stub protocol's
+  `default_program_hash` is for: a client that keeps an export fetches it again when the hash it last saw changes
+  (catalog binding values change without it). A stale base always means that rebasing on the current export changes
+  something. A tool can tell an unmodified export by comparing the hash of its document without `base.program_hash` with
+  `base.program_hash`. `export::base(plan, scope)` is the one definition; ADP reports its `program_hash` as
+  `default_program_hash` (amendment 61). **Approval binds to the received artifact document**: `ReceivedArtifact`
   (`{artifact, hash}`, from `ReceivedArtifact::from_json`) keeps the RFC 8785 digest of the document exactly as
   received, before migration, which is what an approval tool computes and what stays valid across ADP upgrades that
   migrate the document. A cross-implementation fixture checks both hashes against digests computed with Python.
@@ -1072,15 +1118,26 @@ reporting every problem, and returns a `ConfiguredOperator` with its ports and c
   `tee_fan_out` (any copying node), and `work_per_input`, computed in reverse topological order as visits to artifact
   nodes, summing over copies, taking the maximum over point-disjoint ports, and multiplying by declared expansion; it is
   reported at artifact entry nodes. Artifact and blob sizes apply to artifact documents, not to composed plans, so they
-  are checked where artifacts are received (stage 5). `ValidationReport::bounds()` exposes every measure as a
+  are checked where artifacts are received (stage 5): the document, each blob, and the document's inlined size
+  (written without blobs, each reference as a copy of its blob) within the artifact size; that last bound is what
+  limits the artifact's part of the composed plan. `ValidationReport::bounds()` exposes every measure as a
   `BoundMeasure { limit, maximum, scope, value }`: first the whole plan's (scope `Plan`, counting every node and, for
   work per input, entering at the sources; never enforced), then each artifact revision's (enforced, and reported as a
-  finding when exceeded). `explain` shows both.
+  finding when exceeded). `explain` shows both. Since the stage 5 review, `artifact_memory` too: the memory an
+  artifact's nodes declare in their memory bounds (`OperatorDef::specify_bounds`, what their kernels allocate up front
+  and at most together, such as a mapper's string interner and caches) is within 64 MiB, reported at the node that
+  declares the most (a finding only, not a measure). A kernel is built before the artifact runs, so a size the host
+  cannot allocate would abort the process (allocation failure is not a panic), past any panic budget or rollback, and
+  any size beyond the host's memory bounds would escape them, since they cover the boot program (stage 7).
 - **Authority**: `loss_authority` (every lossy node, of any loss class, has provenance), `trusted_host` (sources and
   opaque hosts never have artifact provenance), and `provenance_consistency` (every artifact revision a node names is
-  listed in the plan's `provenance.artifacts`). Whether a listed revision was approved is the catalog's to say once
-  artifacts install (stage 5 adds an approved-revisions query and checks the list against it). Blob integrity is
-  checked when an artifact is read; plans have no blobs.
+  listed in the plan's `provenance.artifacts`). Whether a listed revision was approved is not validation's to say
+  through stage 5, as built: artifact provenance is written only by composition (`compose::compose`), which the
+  installer core runs, through the host's `Composer`, on the artifacts it accepted from the channel, under the accepted
+  revision, so the list is the accepted revision by construction. An approved-revisions query in the catalog would
+  check that path against itself; it is deferred until artifact provenance can come from elsewhere (another composer,
+  or a host that proposes artifact candidates itself), and `check_provenance_consistency` says so under `# Missing`.
+  Blob integrity is checked when an artifact is read; plans have no blobs.
 
 ### Reference interpreter and equivalence
 
@@ -1250,7 +1307,8 @@ transitions (6).
 on): artifact size 256 KiB, artifact nodes
 256, predicate leaves 1,024 per artifact, tee fan-out 32, worst-case work per input 4,096 node visits, prepare timeout
 10 s, drain deadline 30 s, overlap budget 4 live generations (active, last-known-good, and two draining), heartbeat period
-`min(5 s, smallest downstream flush interval)`, clock-reset threshold 600 s, blob size 64 KiB, R4 memo 4,096 entries per
+`min(5 s, smallest downstream flush interval)`, clock-reset threshold 600 s, blob size 64 KiB (each reference to a blob
+counts as a copy of it toward the artifact size, as composition inlines it), R4 memo 4,096 entries per
 decision, batch size 1,024, work per turn 8 batches, floating-point tolerance 1e-9 relative. Behavior-changing limits get
 decision-log entries. `source` is `Fixed` or `Parameter { operator, parameter }`: only the context limit comes from a
 parameter (`aggregate.context_limit`, which the default program binds to native configuration in ADP's `bindings.rs`),
@@ -1367,11 +1425,47 @@ created only when the composed, resolved plan differs from the active one.
 `install::diff(active, candidate, &registry) -> PlanDiff` lists every node as unchanged or changed (operator, parameters
 including resolved values, provenance, or the edges at its ports, each flagged) in candidate order, then the removed
 ones; the edges added and removed; every node that keeps state in both plans with its transition class
-(`ConfiguredOperator::transition_to`); and every output as reused, rebound, added, or removed. **Correspondence**: an
-artifact node whose local ID equals a reserved ID in its base export's scope keeps that reserved ID. Its provenance
-switches to the artifact only if its operator or parameters differ, so installing an unmodified export diffs as no
-change. New local IDs enter the `policy` namespace. The validator rejects artifact local IDs equal to reserved IDs
-outside the scope.
+(`ConfiguredOperator::transition_to`); and every output as reused, rebound, added, or removed. **Correspondence**
+(composition, `compose::compose`). An artifact node whose local ID equals a reserved ID inside the scope of the current
+default program keeps that reserved ID. It keeps the default program's node exactly, with its native provenance and
+resolved values (`Unmodified`), if its operator and parameters are the default program's (parameters compared without
+resolved values, first as written and then as the operator decodes them, so a set written in another order is the
+same set) and, for a node that can lose records (`contract.loss` is `Lossy`) or is a fence (an opaque host), it is
+also **fed what the default program feeds it**. Otherwise it gets the artifact's provenance (`Modified`). Every other
+local ID enters the `policy` namespace with the artifact's provenance (`Added`).
+
+What feeds a node is computed over the scope's region in both plans (`compose::Feeds`): for each input port, the
+streams entering it, counted. A stream is named by where it comes from: a port outside the region (the scope input),
+or the output port of a region node that is itself unchanged, that is, has the default's operator and parameters and is
+fed as in the default program (recursively, back to the scope input). Any other node produces a changed stream, except
+`tee` and `merge`, which pass on what enters them: a stream through them keeps its name, so resizing a `tee` or moving
+a branch to another of its ports changes nothing downstream. Counting makes a node fed one stream twice different from
+one fed it once, and keeps the computation linear however copies nest; a cycle is a changed stream. Lossless nodes
+(`emit`, `split`, `tee`) keep native provenance whatever feeds them, so edits off the lossy paths keep it, and an
+unmodified export still composes to the default program exactly.
+
+Why: native configuration authorizes the policy loss it already expresses, and that loss is a node's operation **on
+the records it receives**. A kept `drop` fed the whole primary stream (or a split's other side) would otherwise keep
+native provenance, so `plan_loss_total`, explain, and per-provenance supervision would attribute loss to native
+configuration that it never expressed; a kept opaque host fed another stream would escape `trusted_host`. So an
+artifact that filters in front of the policy tree, or changes a gateway's predicate, gives the drops behind it the
+artifact's provenance (they diff as `changed provenance`). Since stage 4 the gateways are `split`s, `emit`s, and
+`drop`s, whose artifact provenance is valid, so such an artifact installs; with stage 3's opaque gateways it was
+rejected by `trusted_host` (resizing the tee or removing a branch was not), which the plan crate's tests still pin
+over `testing::with_opaque_gateways`.
+
+Composition, not the validator, rejects a local ID equal to a reserved ID outside the scope
+(`ComposeError::ReservedOutsideScope`): once composed, the plan no longer says which IDs were an artifact's local IDs.
+The node feeding the scope's input, outside the scope, diffs as `changed edges` when the artifact's first node changes.
+The composed plan lists the default program's nodes and edges in order, the artifact's taking the places of the
+scope's in order (any left over follow the last), so installing an unmodified export composes to the default program
+itself (same nodes, edges, and hash; only plan-level provenance, which is not hashed, lists the artifact revision):
+`propose` answers `Unchanged`, and `install::correspondence::diff_with_correspondence(active, candidate,
+&Correspondence, registry) -> CorrespondingDiff { diff, artifact_nodes }` lists no changed node, with every scope node
+mapped back to its artifact node. That diff is the ordinary diff by ID, since composition already gave every artifact
+node its corresponding ID, plus the way back from each plan node to its artifact node, so a preview can place the diff
+in the artifact's source (`Correspondence::{get, artifact_node, iter, removed}`; `removed` lists, in default order,
+the scope's reserved nodes the artifact did not keep).
 
 Kernel reuse: stateless kernels are keyed by `KernelKey { node, params_hash }`. `install::kernel_reuse(active,
 candidate)` gives, per slot, whether the program is unchanged (equal fingerprints), the keys to reuse (the active
@@ -1406,8 +1500,11 @@ says and nothing else could run in its place (amendment 14). The caller reports 
    every region. Artifacts report `rejected`. Default-program candidates stay `pending` and are retried with backoff
    (1 s doubling to 30 s), keeping only the latest candidate, so native eventual application of live configuration is
    preserved. One preparation runs at a time. A newer default-program candidate waits behind it (replacing any waiting
-   one) rather than cancelling it, so that a stream of configuration changes always commits; a newer artifact cancels
-   an uncommitted preparation, as the specification's ordering rule says.
+   one) rather than cancelling it, so that a stream of configuration changes always commits, and so does the
+   re-composition of the artifact in effect after a configuration change (since the stage 5 review: it cancelled
+   before, so changes arriving faster than regions acknowledged never committed); a newly accepted artifact cancels an
+   uncommitted preparation, as the specification's ordering rule says, and starts at once, without waiting out the
+   retry delay of a candidate whose preparation failed and which it replaces (`InstallerCore::submit`'s `Arrival`).
 3. **Commit.** One store of `AdmissionSchedule::Steady(new)` (stage 6: `Cut`), which the caller performs on
    `Action::Commit` before anything else; the core counts the generation active from that action. It is irrevocable.
    Abort is legal only before the store. Later proposals are normal installs on top. Before the store, a state owner
@@ -1440,11 +1537,59 @@ state. The core keeps records of live generations plus the 16 most recent others
   remaining batches are dropped and counted.
 - Rollback chain: failed artifact → last-known-good; failed last-known-good artifact → default program. Last-known-good
   stays prepared in every region (the installer holds its token), so rollback is one schedule store. A failure does not
-  change the revision high-water mark. The core keeps last-known-good only when an artifact generation commits (the
-  generation it replaces); a default-program generation cannot roll back, so committing one releases any kept
-  generation. `generation_failed` on the active artifact generation returns `Commit` of last-known-good (only while it
-  is still `prepared`), or `InstallDefaultProgram` when none is kept; on a default-program generation it only records
-  the failure, and a failure already recorded changes nothing.
+  change the revision high-water mark. The core keeps last-known-good only when an artifact generation commits over a
+  generation that serves another artifact document (compared by artifact hash, not by revision) or the default
+  program, and never over one that serves a revoked artifact; a default-program generation cannot roll back, so
+  committing one releases any kept generation. A composition of the same document, whether a re-composition after a
+  configuration change or an approval under a newer revision, replaces the earlier composition without keeping it, so
+  the generation kept before stays kept and a rollback never reinstalls the document that just failed.
+  `generation_failed` on the active artifact generation returns `Commit` of last-known-good (only while it is still
+  `prepared`); on a default-program generation it only records the failure, and a failure already recorded changes
+  nothing.
+- A failed active artifact generation takes its artifact document out of effect first: every composition of it in
+  flight, under any revision that approved the same document, is dropped (`rejected`, "failed under supervision")
+  rather than prepared again against the generation rolled back to, and no other generation serves it any more. A
+  newer, different artifact in flight is kept and, after a rollback, prepared again against the generation rolled back
+  to. A delivery of the failed document after the failure (a newer revision) is accepted anew.
+- **Asking for the default program** (`Action::InstallDefaultProgram`, which the host performs by lowering the current
+  configuration and calling `on_default_program`, never `propose`). Every public event of the core ends in one settling
+  step (`artifacts.rs`, `settle`). After a failed or timed-out preparation, or a supervision failure, it asks when
+  nothing in flight will replace the active generation and either the active generation is an artifact's that failed,
+  or the event rolled back or ended the policy's installation and the active generation predates the latest
+  configuration change (its candidate is older than the one `on_default_program` last created). It asks at most once
+  per event, and never after an event that changed nothing, so it cannot loop. Revocation asks too (see Artifact
+  handling). With the policy in effect, `on_default_program` composes the policy again, so a rollback to an artifact
+  catches up with configuration changes made while a newer artifact ran.
+- A re-composition of an artifact that was running when the configuration changed is retried after a failed
+  preparation, as a default-program candidate is (1 s doubling to 30 s), so configuration changes are applied
+  eventually; an artifact's first installation is rejected on a failed preparation, as before. A re-composition that
+  cannot be composed, or whose plan is invalid (such as a removed output), leaves the artifact as it was composed, and
+  the status summary's `degraded` names it. The failure is tied to that artifact: it is reported while the artifact is
+  the policy in effect or the active generation serves it, and forgotten when a later re-composition of it succeeds or
+  the artifact neither is in effect nor runs any more (a newer artifact committed, or a revocation's default program
+  replaced it). A newer artifact that is rejected resolves nothing, so the degraded state stays.
+- **Panic budgets as built in stage 5.** The runtime's budgets are per generation and region: `PanicBudget::ARTIFACT` (3
+  in 60 s, 5 in all) and `PanicBudget::DEFAULT_PROGRAM` (zero). ADP gives each region of an artifact generation
+  (re-compositions included) `ARTIFACT` only if the composed plan places a node with artifact provenance in that region,
+  and zero otherwise (`installer::slot_budgets`, from `InstallerCore::preparing_plan` and `place_unvalidated` into the
+  frame; a plan that does not place again falls back to `ARTIFACT` everywhere, with a warning). A native kernel's panic
+  in a region that runs native nodes only therefore fails the region as the native component does, and is never charged
+  to the artifact, nor survived silently; an artifact whose nodes are all native (an unmodified export composed again
+  after a configuration change) has a zero budget everywhere. Default-program generations keep zero everywhere. "Any
+  panic in a state-owning node fails at once" is vacuous through stage 5, since every state owner (aggregation) is a
+  fixed component outside the regions; stage 6 adds it to the driver with aggregation as a kernel. **Per node since the
+  stage 5 review:** a region that runs both kinds of node, such as `metrics_enrich` (host enrichment beside the policy
+  region's decision), charged a native node's panic to the artifact. The budget now covers the artifact's nodes only:
+  ADP passes the composed plan's artifact-provenance nodes with each preparation (`PrepareRegion::with_artifact_nodes`,
+  from `installer::artifact_nodes`), and `reset_after_panic` treats a panic charged to any other node as budget zero:
+  the region fails at once, as the native component does, whatever the generation's budget. A decision runs its group as
+  one step, so a panic while it runs is the artifact's if any node of the group is (a group can hold both kinds, such as
+  an artifact's `split` in front of the native policy `tee`); a panic in the region's own steps between nodes stays
+  charged to the generation's budget, which is zero in a region with no artifact node. Tested in the driver
+  (`a_panic_in_a_node_the_artifact_budget_does_not_cover_fails_the_region`) and end to end (the lifecycle suite's
+  `a_native_node_that_panics_beside_an_artifact_fails_the_topology_and_is_not_charged_to_the_artifact`: a native
+  `test_panic` node beside the artifact's own in `metrics_enrich`; the artifact's panic is survived, the native one
+  fails the topology, the artifact stays active, not failed or rolled back).
 - A failed generation stays failed (stage 3 review). A commit that replaces it does not supersede it and never keeps it
   as last-known-good: it keeps the last-known-good it had (for an artifact) or releases it (for the default program).
   A candidate equal to a failed active generation is not `Unchanged`: it is prepared as a new generation. A
@@ -1470,6 +1615,20 @@ deadlines; actions are queued and performed one at a time, so a panic loses at m
 worker is a child of the internal supervisor (one restart per five seconds), on the main runtime, so kernels it builds
 keep their background tasks there.
 
+**As built in stage 5.** `ProgrammableMetrics` holds the `Installer` itself until `into_installer`, which creates the
+`InstallerState` `Arc` (one mutex over the installer, plus the published status). Before then, `run.rs` can still
+change the installer without locking: `connect_artifact_channel` gives it the installer's end of the artifact channel.
+Everything above about the state outliving worker restarts is unchanged, and the artifact channel's installer end is
+part of that state, with the last snapshot whose handling by the core returned. A restarted worker hands the core the
+latest snapshot again only if it is not that one (`ArtifactFeed::mark_unseen`), that is, only if a panic interrupted
+its handling. Handling a snapshot again is not idempotent in general: after its artifact failed under supervision and
+rolled back, its revision is at the high-water mark, so handling it again would reject it as stale and replace its
+`failed` acknowledgment. (The core also ignores a snapshot equal to the last one it handled; the worker does not rely
+on that.) The actions a handled snapshot queued are in the installer's state, so a restarted worker performs them. The
+core's artifact state (`ArtifactState`: the policy in effect, acknowledgments, revocations, and the delivery that set
+the high-water mark) is inside the `InstallerCore`, so it survives a worker restart with the high-water mark and is
+lost with the process; after a restart of ADP the channel's next delivery installs the artifact anew.
+
 ### Artifact handling
 
 - Snapshots are complete; an empty snapshot revokes (the default program runs). More than one config in the policy
@@ -1482,7 +1641,179 @@ keep their background tasks there.
 - Acknowledgments carry state (`rejected`, `pending`, `prepared`, `active`, `retired`, `failed`), artifact hash,
   revision, generation, cut time `T` when prepared, and error text. Mapping to Remote Config's three apply states is a
   stage 8 deliverable.
-- Stateful operators in artifacts are rejected through stage 5 with an error naming stage 6.
+- Stateful operators in artifacts are rejected through stage 5 (they need stage 6's state transitions), with an error
+  that says artifacts cannot contain them yet.
+
+**As built in stage 5: the shared shapes.**
+
+- `channel` (plan crate). `ArtifactProduct::Policy` (`"policy"`), `ArtifactConfigId` (a string), `ArtifactConfig { id,
+  version, sha256, payload }` with `transport_hash(payload)` and `verify_transport_hash()`, and `ArtifactSnapshot {
+  product, configs }` (`revokes()` when empty). `Envelope { revision, artifact_hash, approved_against:
+  Option<ApprovedAgainst { active_plan_hash }>, artifact: Value }`; `Envelope::parse(payload)` reads it with the IR
+  document parser, so a repeated member name anywhere is refused. `ApplyState` (`pending`, `prepared`, `active`,
+  `retired`, `rejected`, `failed`), `ConfigAcknowledgment { product, id, version, revision, artifact_hash, state,
+  generation, cut_at, error }` (`cut_at` in whole milliseconds since the Unix epoch, `None` through stage 5),
+  `StatusSummary { default_program_hash, revision_high_water, active_generation, active_plan_hash, active_artifact:
+  Option<ActiveArtifact { id, revision, artifact_hash }>, stale_base, stale_review, degraded, live_generations }`, and
+  `ApplyStates { status (flattened), config_states }`, which is both what the installer reports and the body of the
+  status route. Every member is written, `null` when it has no value. `artifact_channel() -> (TransportEnd { publisher,
+  apply_states }, InstallerEnd { feed, reporter })`: `ArtifactPublisher::publish(snapshot)` (an equal snapshot wakes
+  nobody), `ArtifactFeed::{latest, changed, mark_unseen}` (`latest` is `None` until the first delivery; `changed` is
+  `None` once the publisher is gone, and is cancel-safe, so the worker can wait on it in `select!`; a restarted worker
+  calls `mark_unseen`), `ApplyStateReporter::report(states)`, and `ApplyStateReceiver::{latest, changed}`. A transport
+  failure publishes nothing.
+- `compose` (plan crate). `receive_artifact(Value) -> Result<ReceivedArtifact, ReceiptError>` and `compose(default_plan,
+  &ReceivedArtifact, &Approval { revision, approved_against, active_plan_hash }, &dyn Catalog, &OperatorRegistry) ->
+  Result<Composed { plan, report, correspondence, stale_base, stale_review }, ComposeError>`; the report is returned,
+  not judged, so the core rejects an artifact with errors as it does any candidate. The host implements the `Composer`
+  trait (`compose(&ReceivedArtifact, &Approval)`) over `compose` with the default program it last lowered and its
+  catalog; the core composes only through it.
+- `export` (plan crate). `export(plan, scope, &MemoryCatalog, &labels) -> Result<ExportBundle { export_version,
+  scope, artifact, ir_versions: IrVersions { current, accepted }, catalog, labels }, ExportError>` and `base(plan,
+  scope) -> Result<ArtifactBase, ExportError>`. `base` is the one definition of an artifact's base: the export fills
+  its artifact's base with it, composition compares an artifact's base with it (program hash: stale base; a missing or
+  different output fingerprint: removed output), and the status's `default_program_hash` is its `program_hash`.
+- `install` (plan crate). `InstallerCore::on_snapshot(&ArtifactSnapshot, &dyn Composer) -> Vec<Action>`,
+  `on_default_program(Candidate, &dyn Composer) -> (CandidateId, Vec<Action>)` (`propose` while no artifact is in
+  effect; otherwise the artifact is composed again against the new default program and proposed under its own
+  revision, so bindings stay live), `policy_in_effect()` (test-only since the stage 5 review: nothing outside the
+  core's tests reads it), `config_states()`, `status_summary(default_program_hash,
+  degraded)`, `apply_states(..)`, and `preparing_plan()` (the plan of the generation being prepared, from which ADP
+  derives each region's panic budget). The failure entry point is the existing `generation_failed`, which also
+  acknowledges a failed artifact `failed`. `Rejection::Refused { message }` reports an artifact refused before it became
+  a plan (envelope, receipt, or composition), so it is counted like any rejected candidate. These live in
+  `install/core/artifacts.rs`, a child module of `core.rs`, with the core's artifact state (`ArtifactState`).
+
+**As built in stage 5: receipt, composition, and export.**
+
+- **Receipt** (`compose::receive_artifact`), in order: the canonical form's length within `ARTIFACT_SIZE` (a document
+  without one is refused by the read, which names the number); the read (`ReceivedArtifact::from_value`: accepted IR
+  version and migration, structure, no resolved values in node parameters, consistent blob table); the node count
+  within `ARTIFACT_NODES`; each blob's canonical length within `BLOB_SIZE`, and no resolved value in any blob's content
+  (`ResolvedInBlob`); the **inlined size**, the size the artifact would have written without blobs (the document's
+  canonical length, less its `blobs` member, less each reference's canonical length, plus the referenced blob's),
+  within `ARTIFACT_SIZE` (`TooLargeInlined`), computed from the sizes without copying anything; and the predicate
+  leaves of every node, with blob references inlined and parameters decoded by the native registry, within
+  `PREDICATE_LEAVES` (a node that does not decode counts none; validation rejects it). Composition copies a blob into
+  every place that refers to it, so without the inlined bound a 136 KB document referring to one 63 KiB blob 500 times
+  composes into a 32 MB plan; with it, blobs never let an artifact cost the host more than an artifact written without
+  them may. Receipt bounds what the host does with an untrusted document before it knows what it does, so it counts
+  every node of the document, kept from the default program or not; validation of the composed plan applies the node
+  and leaf limits again to artifact-provenance nodes only (`bounds`), unchanged.
+- **Composition** (`compose::compose`): the scope's region is every node reachable from the scope's inputs in the
+  current default program (`export::ScopeRegion`, shared with the export); the artifact's nodes replace it and its edges
+  replace the edges entering it; outputs and scopes are the default program's. Node IDs and provenance follow the
+  correspondence (Plan diff and correspondence). Blob references are inlined. Modified and added nodes resolve their
+  bindings from the catalog (`resolved` is set to the catalog's value, which ADP's catalog computes with the function
+  lowering uses); a binding the catalog does not declare stays unresolved for validation (`known_binding`), and one
+  declared without a value is `ComposeError::UnresolvedBinding`. Unmodified nodes are the default program's own, so a
+  live binding change reaches them by recomposing against the re-lowered default program. Every `emit` of the artifact
+  (kept or not) must name an output its base records (`UnrecordedOutput` otherwise, for an output the catalog declares;
+  one it does not declare either is `UndeclaredOutput`, which lists the outputs the default program declares, since no
+  export could record it) that the catalog declares with that fingerprint (`RemovedOutput { declared: false | true }`
+  otherwise); base entries for outputs the artifact no longer emits to are ignored. An artifact-provenance node whose
+  operator keeps keyed state is `ComposeError::Stateful` (artifacts cannot contain stateful operators yet): by its
+  contract when its parameters configure, and by its operator (`aggregate`) when they do not, so an author is never sent
+  to complete parameters for a node that cannot be installed. An opaque host (opaque state, a host component) is left to
+  validation, whose `trusted_host` rule rejects host components in artifacts. `stale_base` is a base program hash other
+  than the current export's; `stale_review` is an `approved_against` other than the active plan hash (or with no active
+  plan). The composed plan's provenance is the default program's `config_change` and the one artifact revision
+  `{revision, hash: received.hash}`.
+- **Errors**: `ComposeError::{UnknownScope, DefaultProgram (the default program's scope cannot be written as an
+  artifact), ReservedOutsideScope, Stateful, UnresolvedBinding, UndeclaredOutput, UnrecordedOutput, RemovedOutput,
+  Malformed (two nodes with one ID, an edge from an undeclared input or into one, an edge to a missing node, a blob that
+  cannot be inlined)}`; `ReceiptError::{TooLarge, TooLargeInlined, TooManyNodes, TooManyPredicateLeaves, BlobTooLarge,
+  ResolvedInBlob, Document}`. Both are `Clone + Eq`; the core reports them as `Rejection::Refused { message }`.
+- **Export** (`export::export(plan, scope, &MemoryCatalog, &labels)`): the region's nodes in plan order with local IDs,
+  their parameters without resolved values, and no provenance; every edge entering the region in plan order, an edge
+  from a scope input's port written `input.<name>`; the base as in the IR section. `ExportError::NotExportable` for a
+  scope with exits (stage 6), two inputs naming one port, a region node fed from outside other than through an input, a
+  missing node, a local ID artifacts cannot have (`input`, `exit`) or two region nodes with one local ID, and an `emit`
+  to an output the plan does not declare. With the stage 4 default program the export holds the policy tree: the
+  `metrics_policy` tee, the main output's `emit`, and each gateway's `split` with its `_true` `emit` and `_false`
+  `drop`, its predicate written with its bindings (`fixtures/export/default-program-post-enrich.json`).
+- **Reading a bundle** (`ExportBundle`'s `Deserialize`) ignores members it does not know, in the bundle and in its
+  catalog's top level, outputs, and bindings (additive evolution, as the stub protocol requires), reads the artifact
+  as `PolicyArtifact::from_value` does, and takes an output's display label from `labels` or, when `labels` has none
+  for it, from a `label` member of the catalog's output. The catalog document alone (`MemoryCatalog`) stays strict.
+
+**As built in stage 5: the lifecycle** (`install/core/artifacts.rs`).
+
+- **The policy in effect** is the latest artifact the core accepted, until a newer one replaces it, the channel revokes
+  it, or its installation ends without it running (rejected, or failed under supervision). Each candidate composed from
+  an artifact records the artifact it serves; when the policy's installation ends, the policy in effect becomes the
+  artifact of what the schedule will hold (the waiting candidate, else the one being prepared, else the active
+  generation unless it failed), unless that artifact is revoked: an older artifact still running, the artifact of the
+  generation rolled back to, or none. `InstallerCore::policy_in_effect()` (test-only) returns it.
+- **Snapshot handling** (`on_snapshot`). A snapshot equal to the latest one handled changes nothing. More than one
+  policy config: every config is acknowledged `rejected` and no generation changes, the policy in effect included; the
+  message names at most 10 config IDs ("and N more"), so the acknowledgments stay linear in the number of configs. One
+  config is checked in order: transport hash, envelope, receipt (`compose::receive_artifact`), and `artifact_hash`
+  against `ReceivedArtifact::hash`; a failure is `rejected` and does not move the high-water mark. Then: an artifact
+  whose hash equals the policy in effect acknowledges its current state if it is a redelivery, that is, its revision is
+  the high-water mark and the mark was set by a delivery of the same hash at that revision, or its revision is above the
+  mark (an approval of the same document under a newer revision, which moves the mark). Since the stage 5 review such a
+  delivery becomes the policy in effect without composing anything (`reapprove`): the candidates serving the policy
+  serve it instead, as an attribution to a composition of the same document does, so the status summary's
+  `active_artifact` names its config and revision (it named the first acceptance's before), its review is checked as a
+  new acceptance's is (`approved_against` against the active plan hash, which also becomes the hash re-compositions
+  compare with), every acknowledgment that followed the policy follows it, and later re-compositions compose under its
+  revision (so the first configuration change after it creates a generation whose artifact nodes name the new revision).
+  Any other revision at or below the mark is `rejected` as stale; otherwise the mark moves to the revision, even if
+  composition or validation then rejects the artifact (amendments 53 and 54). Composition goes through the host's
+  `Composer`, with `Approval { revision, approved_against, active_plan_hash }`, the active plan hash when the artifact
+  is accepted; re-compositions reuse that hash, so composing again after a configuration change does not make the review
+  stale. The accepted artifact becomes the policy in effect and is proposed as `Origin::Artifact { revision, hash }`
+  without a second stale check, and so cancels an uncommitted preparation and starts without waiting out a replaced
+  candidate's retry delay. A refusal after the envelope is read is also reported as
+  `Report { outcome: Rejected(Refused | Stale) }` under the envelope's revision and hash, so the host counts it; a
+  refusal before it has no origin and is acknowledged only.
+- **An artifact equal to what the schedule will hold** (an unmodified export composes to the default program) creates
+  no generation: the generation holding that plan serves it (an attribution), keeping its own origin and panic budget
+  (amendment 57). An artifact cancels the preparation in flight, so "what the schedule will hold" is then the active
+  plan: an artifact equal to the active plan cancels the preparation and is `Unchanged` (no duplicate generation, no
+  artifact budget on a plan of native nodes). When the generation holding the plan was composed from the same document
+  (an approval under a newer revision, or a delivery of a revoked document again), it serves the new acceptance in
+  place of the old one. A later re-composition replaces that generation without keeping it. A default program equal to
+  what the schedule holds, with no policy in effect (after a revocation), takes the generation back from any artifact
+  it served.
+- **Revocation** (empty snapshot) revokes every artifact accepted before it, through a revocation count each accepted
+  artifact compares with the count when it was accepted. The policy leaves effect, attributions are dropped, an
+  artifact waiting or being prepared is dropped (`rejected`, "revoked"), a kept last-known-good generation that serves
+  an artifact is released (a kept default program stays kept), and the core asks for the default program if a policy
+  was in effect, an artifact was in flight, or an artifact generation is active, unless a default-program candidate is
+  already in flight. A revoked artifact never becomes the policy in effect again (so `on_default_program` never
+  composes it), is never kept as last-known-good, and runs only in the generation that was active at the revocation,
+  until that generation is replaced, unless the channel delivers it anew under a newer revision (amendment 58). An empty
+  snapshot with nothing to revoke changes nothing.
+- **Configuration changes** (`on_default_program`): without a policy, `propose`; with one, the policy is composed again
+  and proposed under its own revision (amendment 56; the host's `Composer` must already compose against the default
+  program just lowered; the candidate passed in is then unused). The returned candidate ID is the re-composition's.
+  Like a default program, a re-composition waits for a preparation in flight (replacing a waiting candidate, latest
+  wins) instead of cancelling it, so a stream of configuration changes always commits; it is still `Unchanged` when it
+  equals what the schedule will hold.
+- **Acknowledgments** are kept per config ID (at most one), for the configs of the latest snapshot, those still in
+  progress, and the 16 most recent others. A config refused on receipt is `rejected` with the reason. Any other config
+  follows the installation of the artifact it was accepted as (or the policy in effect it equalled): `pending` (with the
+  preparing generation, if any) while a candidate serving it waits or is prepared, `active` while a generation serving
+  it is active (unless failed), `prepared` while one is kept as last-known-good, and then how its installation ended,
+  from the core's reports: `rejected` (with the rejection, or "superseded" or "revoked"), `failed` (with the
+  supervision reason; a failure is never overwritten by the rejection reported with it), or `retired`. When a
+  generation stops serving the artifact without ending its installation (superseded and draining, released from
+  last-known-good, or taken over by the default program after a revocation), the acknowledgment stays as it was
+  (`active`, or `prepared` for a released last-known-good) until the generation retires, and then reads `retired`: it
+  never reads `retired` while its generation is alive, nor `active` again after `prepared` (amendment 55). An ended
+  acknowledgment keeps naming the last generation it had. `cut_at` is `None` through stage 5.
+- **Earlier deliveries.** A new delivery of a config does not hide what becomes of the artifact an earlier delivery of
+  that config installed: when the new delivery is refused, the earlier installation stays followed while it runs or is
+  in flight; when it is accepted, while the earlier one runs (active or kept), until the new delivery's artifact is
+  active. The acknowledgment reported is the latest change (the new delivery's state, then any change of the earlier
+  installation, such as its failure, a rollback to it, or its retirement, under the earlier delivery's version and
+  revision; amendment 60).
+- **Status summary**: `active_artifact` and the stale flags are those of the artifact the active generation serves
+  (none when it failed; a revoked artifact while its generation is still active), from the composition that generation
+  runs; `revision_high_water`; `live_generations`; and `degraded`, the host's reason joined with the re-composition
+  failure of the artifact in effect or running, if any.
 
 ## ADP integration
 
@@ -1751,8 +2082,8 @@ that a change to a `Startup` input changes nothing.
   `dsd_post_agg_filter` and the listener filterlist, which run as decisions, are gone: their work is accounted to their
   region's group. Each region's bounds are its kernels' native bounds, without the struct of each native component, its
   decisions' predicates, memos, counts, and scratch (from stage 4), plus a full buffer per exit and per register; every
-  other component's bounds are the legacy ones, and the interconnects lose one queue per fused transform beyond one per
-  region, four with a default configuration (a topology test pins all of it against `create_legacy_topology`). The
+  other component's bounds are the legacy ones, and the interconnects hold as many buffers, queued and in flight, as the
+  legacy ones (see Buffering below; a topology test pins all of it against `create_legacy_topology`). The
   gateways run as decisions, so their groups (`topology.primary.transforms.<gateway>`) are gone; their CPU time is their
   region's. `RegionBounds` declares each predicate of the boot program's decisions under the subcomponent of the first
   `split` using it (`<region>.<split>`, `policy` for an artifact's): the predicate itself, its values
@@ -1762,14 +2093,32 @@ that a change to a `Startup` input changes nothing.
   declared for its lists (one copy of the strings and the matcher's entries); Multi-Region Failover's declares one more
   copy of its allowlist (its emptiness test's), and autoscaling failover's the names its matcher keeps besides them
   (`topology::tests::gateways_run_in_regions_and_declare_their_lists_as_the_legacy_gateways_do`, which also pins each
-  region's memoized decisions). Each gateway removes one interconnect and one transform's in-flight buffers.
-- **Buffering** (stage 3 review). Fusion removes the interconnects between fused components. With a default
-  configuration, DogStatsD metrics cross two 128-buffer queues between `dsd_in` and aggregation (into
-  `dsd_pre_aggregation` and `dsd_agg`) where the legacy chain had five, and two after aggregation (into `metrics_enrich`
-  and the encoder) where it had three; a pipelined chain keeps one queue per region. A burst, or a long aggregation
-  flush, therefore fills the queues sooner, and the DogStatsD source blocks and its socket drops sooner (host loss,
-  outside the plan). The region's own exits hold a buffer each while a send waits. Burst loss against legacy is not
-  measured yet (see Risks).
+  region's memoized decisions). Each gateway removes one interconnect and one transform's in-flight buffers. The
+  gateways are parallel, and the policy region's input holds one gateway's buffers on each path, so with more than one
+  gateway the plan-driven topology holds 129 buffers fewer per gateway beyond the first, and never fewer on a path to an
+  output.
+- **Buffering** (stage 3 review; as built in stage 5). Fusion removes the interconnects between fused components. With
+  one 128-buffer input per region, DogStatsD metrics crossed two queues between `dsd_in` and aggregation where the
+  legacy chain had five, and a burst into a stalled aggregation backed up to the source after 257 batches where legacy
+  took 644. Each region host therefore gets the input capacity of the transforms it replaces
+  (`topology::region_input_capacity`, set with `TopologyBlueprint::with_component_input_capacity`). Natively, each of
+  them had an input of `c` buffers (the blueprint's interconnect capacity, 128) and held one more while it waited to
+  send; the region holds one while it waits. A region whose boot nodes run through `n` of them on one path gets an input
+  of `n * (c + 1) - 1` buffers, for the path that runs through the most, so that no path holds fewer buffers than
+  natively and a region that runs one chain holds exactly as many. A path runs through a native component where it
+  enters the component's nodes (by `Provenance::Native`) from outside the region or from another component's nodes; the
+  components the topology still builds are not counted: the frame's fixed components, and the outputs' encoders and
+  destinations, whose provenance the `emit`s and the client telemetry tap's fan-out carry. With a default configuration,
+  `dsd_pre_aggregation` gets 515 (the mapper, the prefix filter with the listener filterlist, the no-aggregation split,
+  and the tag filterlist) and `metrics_enrich` 257 (the post-aggregation filter and enrichment); with Multi-Region
+  Failover, `metrics_enrich` gets 386 (and the gateway); the regions of a pipelined chain share the count (1, 1, and 2
+  for the mapper-profile configuration's three pre-aggregation regions). The interconnects' firm bounds (queued and
+  in-flight buffers) then equal those of the legacy topology, less 129 per parallel gateway beyond the first; the
+  minimum grows by `n - 1` buffer structs (80 bytes each) per region. A path that leaves a region before its longest
+  path ends holds more than natively: the timestamped metrics the no-aggregation split sends past aggregation leave
+  `dsd_pre_aggregation` after three of its four transforms, and their path holds 129 buffers more. The capacity follows
+  the boot program; later generations, artifacts included, run in the same regions. The region's own exits hold a buffer
+  each while a send waits, as before.
 - **Installer worker** (`InstallerWorker`, a child of the internal supervisor). Before anything else it waits for every
   region to run (`ControlSender::running`, or shutdown), so that a configuration change made while the topology waits
   for its environment is prepared once the regions can answer, rather than timing out and filling the overlap budget
@@ -1783,19 +2132,142 @@ that a change to a `Startup` input changes nothing.
   one schedule store followed by the binding gauges, and reports update telemetry, logs, and status. A preparation's
   panic budget follows its generation's origin. Generations that are still draining after `DRAIN_DEADLINE` are logged
   once and listed in `PlanStatus::overdue`.
-- Saluki-only keys `experimental.programmable_metrics.artifact_channel.stub_url` and `.poll_interval` (default 1 s),
-  per the config-system skill. Unset means no channel. The stub accepts only loopback addresses, warns at startup, and
-  is documented as development-only. It polls `POST {stub_url}/v1/artifacts/poll` with rich acknowledgments and a status
-  summary (`default_program_hash`, `revision_high_water`, active generation) and receives a complete snapshot.
-- Privileged routes: `GET /programmable-metrics/status`, `/explain`, `/plan` (active composed plan with resolved
-  values), and `/export?scope=post_enrich`. The export is a versioned bundle: `{artifact, ir_versions, catalog,
-  labels}`, where `artifact` carries its base, `catalog` is the `MemoryCatalog` document (outputs, bindings with their
-  types, liveness, and current values, and the scope's inputs), and `labels` maps output IDs to display labels. The
-  payload envelope's `artifact_hash` is checked against `ReceivedArtifact::hash` of its `artifact` document. The
-  `artifact` lists its nodes and edges in the surface syntax's canonical order (see Demo), the order lowering writes
-  plans in, so printing an export and parsing the text gives back the same document and hash; stage 5 tests
-  `parse(print(export)) == export` for every scope in the lowering test matrix (the syntax crate may be a
-  dev-dependency there, never a runtime one).
+- The stub protocol and control surface contract is `docs/design/programmable-metrics-stub-protocol.md` (normative for
+  ADP's `channel_stub.rs` and the demo server). Saluki-only keys `experimental.programmable_metrics.artifact_channel.
+  stub_url` and `.poll_interval` (default 1 s), per the config-system skill. Unset means no channel. The stub accepts
+  only `http://` URLs of loopback addresses, warns at startup, and is documented as development-only. It polls `POST
+  {stub_url}/v1/artifacts/poll` with rich acknowledgments and a status summary and receives a complete snapshot of the
+  `policy` product.
+- Privileged routes: `GET /programmable-metrics/status` (`ApplyStates`), `/explain` (`?format=text`), `/plan` (active
+  composed plan with resolved values), `/default-program` (the default program last lowered, which artifacts are
+  composed into; added for the demo's preview), and `/export?scope=post_enrich`. Every body is read from the published
+  `PlanStatus`, so a request never waits on an installation. The export is a versioned bundle `{export_version, scope,
+  artifact, ir_versions, catalog, labels}`, where `artifact` carries its base, `catalog` is exactly the `MemoryCatalog`
+  document (outputs, bindings with their types, liveness, and current values, and the scope's inputs), and output
+  display labels are in the top-level `labels` member, left out when empty (the demo reads both forms). The payload
+  envelope's `artifact_hash` is checked against `ReceivedArtifact::hash` of its `artifact` document. The `artifact`
+  lists its nodes and edges in the surface syntax's canonical order (see Demo), the order lowering writes plans in, so
+  printing an export and parsing the text gives back the same document and hash. `lowering/export_tests.rs` tests
+  `parse(print(export)) == export`, that the base program hash is the digest of the exported document without it and
+  records the catalog's fingerprint of every output the export emits to, and that composing the export back gives the
+  default program, for every configuration of the lowering test matrix (the syntax crate is an ADP dev-dependency,
+  never a runtime one); the syntax crate's own fixture tests do the same for the plan crate's default-program fixtures,
+  with their gateways as routing operators and as opaque hosts.
+- The status summary adds `stale_review` to the protocol's `status` object, as an additive member: the protocol says a
+  stale review is flagged in status but named no member for it. The repository copy of the protocol documents it.
+
+**As built in stage 5 (ADP channel).**
+
+- **Configuration.** `control.programmable_metrics.artifact_channel` (`agent_data_plane_config::control::{
+  ProgrammableMetrics, ArtifactChannel { stub_url: Option<String>, poll_interval: Duration }}`), seeded from the
+  Saluki-only source `experimental.programmable_metrics.artifact_channel.{stub_url, poll_interval}` (`SalukiOnly::
+  experimental.programmable_metrics.artifact_channel`, a `DurationString` interval). The default interval is defined
+  once, `defaults::DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL` (1 s), which the model's `Default` and `seed` reference. An
+  empty `stub_url` is the same as unset (the Agent-style convention, so
+  `DD_EXPERIMENTAL_PROGRAMMABLE_METRICS_ARTIFACT_CHANNEL_STUB_URL=""` turns the stub off). A zero `poll_interval` is
+  rejected by the source's deserializer, so it fails the configuration load, as a zero
+  `aggregate_window_duration_seconds` does. Both keys are in `SALUKI_KEYS` (`programmable_metrics.rs`, metric
+  pipelines' affinity) with a prose section in the generated configuration reference. A live configuration update
+  cannot reconfigure the stub: the keys are read once.
+- **Where the stub URL is checked (an explicit exception to the config-system skill's "input validation at the
+  boundary").** The model keeps the URL as a `String`, as it keeps every other URL (`dd_url`, the Cluster Agent's
+  `url`), and the stub checks it: `StubChannelConfig::new` parses it and requires an `http://` URL of a loopback
+  address (`127.0.0.1`, `[::1]`, or `localhost`) without a query. These rules are the stub's own security policy (it
+  has no authentication, so it may only be reached on the loopback interface over plain HTTP), kept in one place with
+  one actionable error naming the key, rather than split between a syntax check in the source and a host check in
+  ADP. `run.rs` calls `StubChannelConfig::from_configuration(&ArtifactChannel)` right after the configuration is
+  loaded and checked for compatibility, before the environment provider is set up and the metrics path booted, so a
+  bad URL fails startup at once. `StubChannelConfig::new` also refuses a zero interval, as a precondition of the
+  constructor (Tokio's interval timer panics on a zero period), which the configuration already guarantees.
+- **Stub worker** (`StubChannelWorker`, on the internal supervisor, beside the installer; `ClientInfo::for_process()`
+  creates the random client ID once per process). On every start it logs, at `warn`, that the stub is for development
+  only. It polls `POST <stub_url>/v1/artifacts/poll`: a path in the stub URL is kept and the poll path appended to it
+  (less a trailing `/`). It polls at once, then every `poll_interval` (`tokio::time::interval` with
+  `MissedTickBehavior::Delay`, so a late poll delays the next rather than bunching them up), sending
+  `PollRequest::new(&client, &apply_states.latest())` as `application/json`. The HTTP client is saluki-io's
+  `HttpClient`, HTTP/1.1 only, with an empty root certificate store (the stub is plain HTTP; building any `HttpClient`
+  still loads the platform's root certificates for its proxy connector, `hyper-http-proxy`'s `ProxyConnector::new`,
+  which is why the stub's tests can fail to build a client in a sandbox where the platform's trust settings cannot be
+  read). Each poll has a 5 s deadline (`channel_stub::POLL_TIMEOUT`) over the whole exchange, from connecting to reading
+  the whole answer: the client's own request timeout ends when the headers arrive, so a stub that sends its headers and
+  then stalls its body would otherwise stop polling for good. An answer is read up to 32 times the artifact size limit
+  (8 MiB). Transport failures, which publish nothing, are: a connection error, a poll that does not complete within the
+  deadline, a status other than `200 OK`, a body that is not a poll answer (including one without a `products` member,
+  such as an error object), an answer that states another `protocol_version`, an answer larger than the limit, and a
+  `policy` member that is not a list of configs (including `null`). Products ADP does not know are skipped unread,
+  whatever their shape (`PollResponse::products` is read with a lenient deserializer). An empty `products` object, or a
+  missing or empty `policy` list, revokes. A failure is logged when it starts or changes, and once more when polls
+  succeed again. Shutdown stops the worker at once, also during a poll.
+- **Control surface** (`ControlSurfaceWorker`, also on the internal supervisor: it asserts its `DynamicRoute` on the
+  privileged endpoint into the shared dataspace, as `ConfigRuntimeWorker` does). `GET /programmable-metrics/status`
+  answers `PlanStatus::apply_states` (the summary flattened, plus `config_states`); `/export?scope=<scope>` the
+  published `ExportBundle` of the scope (`400` without `scope`, `404` naming the declared scopes for an unknown one,
+  `500` with the reason when the scope could not be exported); `/plan` the active generation's plan as JSON, resolved
+  values included; `/default-program` the default program last lowered (`PlanStatus::default_program`, the installer's
+  `last_lowered`), resolved values included, which a client composes artifacts into as the installer does; `/explain`
+  its explain document (`Explain::to_json`, or `to_text` with `?format=text`; `400` for another format). `/plan` and
+  `/explain` answer `503` while no generation is active. Errors are plain text. With a metrics pipeline, `run.rs` always
+  runs the control surface and runs the stub worker when it is configured (after `connect_artifact_channel`); without
+  one, it warns that the stub is not polled.
+- **Installer wiring.** `ProgrammableMetrics::{connect_artifact_channel() -> TransportEnd, status() ->
+  Arc<ArcSwap<PlanStatus>>}`. The worker's `next_event` also waits for `ArtifactFeed::changed` (after the deadlines,
+  before configuration changes); a closed feed (the transport is gone) stops that branch and keeps the last snapshot in
+  effect. A snapshot goes to `InstallerCore::on_snapshot`, and every lowered default program to
+  `InstallerCore::on_default_program` (so a configuration change recomposes an artifact in effect), both with a
+  `DefaultProgramComposer` over the last lowered default program and its `AdpCatalog`, which implements `Composer` over
+  `compose::compose`; the composer is updated to the just-lowered program before `on_default_program` is called, and
+  `Action::InstallDefaultProgram` lowers the current configuration and calls `on_default_program` too. These calls, and
+  `InstallerCore::apply_states`, go through a small seam, `installer::ArtifactPaths` (production: `CoreArtifactPaths`,
+  which delegates; tests: a double), so that the worker's handling of what the core decides is tested independently of
+  the core's artifact rules, and with them
+  (`an_exported_artifact_installs_follows_configuration_and_rolls_back_through_the_real_core`). Each lowering that
+  changes the default program or its catalog recomputes a `DefaultProgramView`: `export::export` of every scope the plan
+  declares, with the catalog document (`AdpCatalog::to_document`) and the output labels, and `export::base(plan,
+  post_enrich).program_hash`, reported as `default_program_hash`. Output labels name what an output is, never its
+  endpoints (`Main metrics output`, `Endpoint routing group <i>`, `Multi-region failover`, `Autoscaling failover`,
+  `DogStatsD client telemetry`). After every event (and once at `connect_artifact_channel`, so the first poll carries
+  the boot status), the worker computes the apply states (`core.apply_states(default_program_hash, degraded)`), reports
+  them through the channel, and keeps them in `PlanStatus::apply_states`.
+- **Test seams for the exit gate (stage 5 lifecycle tests).** `ProgrammableMetrics::from_lowering` takes the operator
+  registry plans are validated, laid out, composed, and compiled with (`boot` passes `OperatorRegistry::native()`;
+  the registry is `Copy`, so the frame, the core, the composer, and explain all use the one passed). Tests reach it
+  through `test_support::programmable_metrics_with_operators` and `test_topology::Options::operators`, which default
+  to the native registry; the lifecycle suite registers a test operator, `test_panic` (a passthrough kernel that
+  panics on a metric of a given name), since no native kernel panics on its input. A default program whose kernel
+  panics is stood in by an `ArtifactPaths` wrapper over the core's own paths that adds a native-provenance
+  `test_panic` node to every default program lowered after boot. `TestTopology::failure` waits for a topology that
+  stops on its own (a component failed) and returns the supervisor's error and what the outputs received; the
+  supervisor's error does not carry the component's (the test supervisor restarts the topology, which then fails to
+  initialize, `FailedToInitialize { child_name: "primary" }`; ADP's root supervisor restarts nothing), so the suite
+  shows the cause by the timing (the topology stops right after the fatal batch, after surviving eight artifact
+  panics) and by the installer's status (the default program's generation is still active, not failed).
+- **Degraded and last error.** The validation errors of every default-program candidate are kept with its candidate
+  for as long as the core holds it (pending, preparing, active, or kept as last-known-good; the boot candidate's from
+  boot), and used whenever the candidate becomes active, so a rollback to a default program that does not validate
+  reports it degraded again. `PlanStatus::last_error` is set by a rejection of a default-program candidate or of the
+  candidate proposed for the latest configuration change (an artifact composed again), and cleared by a commit, or by
+  an `Unchanged` report of the candidate proposed for the latest configuration change: the plan that change resolves
+  to is what runs or is being prepared, so an earlier change that was not installed no longer describes the
+  configuration in effect (for example, a configuration change reverted after the artifact in effect could not
+  follow it). A lowering failure sets it and forgets the latest change's candidate. A rejected artifact from the
+  channel is acknowledged through the channel instead. The reason ADP passes as `degraded` is `the active default
+  program does not validate: <first error> (and <n> more)`, or `the last configuration change was not installed:
+  <error>` for a default program or lowering that was not installed, or `None`. A rejected re-composition of the
+  artifact in effect is left out of it (integration): the core joins that reason (`artifact revision <r> ... stays as
+  it was composed before: <error>`) to the summary itself, so the summary says it once, while `PlanStatus::last_error`
+  still records it.
+- **Active plan and telemetry.** `PlanStatus` also carries `exports` and `active: Option<Arc<ActivePlan { generation,
+  plan, explain }>>`, described once per active generation: the plan's validation report against the current catalog,
+  the rewrites compiling the active generation considered (`InstallerCore::active_rewrites`, stage 4's rewrites
+  section), and the physical sections of the plan as it runs, rewritten, from compiling the active plan into the frame
+  again as the core did (`compile`, or `compile_unvalidated` for a default program that does not validate; the
+  sections are omitted, with a warning, if it does not compile). Panic budgets are per region (Installation >
+  Supervision and fallback); region failures reach `generation_failed`, whose `Commit` of last-known-good or
+  `InstallDefaultProgram` the worker performs as before. The installer publishes `plan_active_revision`: the revision
+  of the artifact in effect as the status summary reports it (`status.active_artifact`), `0` while none is, so that
+  the metric and the status sent to the stub agree, also while an artifact is served by a generation of another origin
+  (an unmodified export, which creates no generation). Generation failures are logged as failed under supervision,
+  not as not installed.
 
 ## Demo
 
@@ -1847,56 +2319,81 @@ that a change to a `Startup` input changes nothing.
   }
   ```
 
-- **`programmable-metrics-demo`** (built; `bin/programmable-metrics-demo`, one Tokio process with axum, nothing
-  depends on it): `programmable-metrics-demo run --adp-bin <path> [--run-dir <dir>] [--no-launch]`, every port a flag.
-  Each component is a module with a small interface. The **stub** (`stub/`) serves `POST /v1/artifacts/poll`: a complete
-  `policy` snapshot of at most one config (`demo`, version = revision), whose `payload` is the envelope as a JSON
-  string with its SHA-256; the store is durable in the run directory (`store.json`, written to a temporary file,
-  flushed, and renamed over the old one, so a failed write changes nothing; `history.jsonl`, a best-effort log whose
-  highest revision also seeds the counter), the next revision is `max(local, ADP's high-water) + 1` (high-water from
-  the latest poll and the privileged status route, for the preview in the UI as for the publish), revoke empties the
-  snapshot (revoking an empty one changes nothing), and every poll is recorded, consecutive identical polls folding into
-  one acknowledgment timeline entry. Only `protocol_version` decides whether a poll is answered: every other field is
-  read on its own, and one ADP gets wrong is noted in the timeline rather than refusing the poll, since a refusal keeps
-  ADP on its current feed; unreadable bodies are recorded too. `stub/protocol.rs` documents the messages; ADP's
-  `channel_stub.rs` is the other side. The **control surface client** (`adp_api.rs`, `control.rs`) uses
-  `build_ipc_client_ipc_tls_config` over the `saluki-io` HTTP client, polls `/programmable-metrics/status` every
-  second (read field by field like a poll, and kept with its receive time, so the UI shows a status that stopped
-  arriving as last known), and fetches the export when the default program hash the status reports changes or every
-  30 s; a `404`, which is what ADP answers until stage 5, is reported as ADP not exposing the programmable-metrics
-  control surface yet. The export reader ignores catalog members the plan crate's `MemoryCatalog` does not know, and
-  takes output labels from `labels` or an output's `label`. **Compile** parses with the syntax crate, reads the
-  document back with `ReceivedArtifact` (the hash approval binds to), and, with an export in hand, runs structural
-  checks against it (`checks.rs`): scope, accepted IR versions, stale base, output fingerprints, emits to undeclared or
-  unlisted outputs (the message gives the line to add), operator parameters through `OperatorRegistry::configure`,
-  stateful operators (rejected through stage 5), bindings, and scope inputs, each placed in the source through
-  `SpanMap`. Findings never block publishing, so a guardrail can be sent past the UI to show ADP's rejection.
-  Composition, validation of the composed plan, and the plan diff preview are the stage 5 integration point marked in
-  `checks.rs`. The editor shows programs printed 64 columns wide without output fingerprints; a source that lists none
-  gets the export's fingerprint of each output it emits to when it is compiled. **Publish** takes the hash the user
-  approved and refuses anything but the last compiled artifact's, and uses the approval up, so a repeated or concurrent
-  approval publishes one revision; `approved_against` is ADP's active plan hash at compile time. **Recording intakes**
-  (one listener per recipient) decode v1, v2, sketch, and v3 payloads with `stele` after `tower-http` decompression
-  (on a blocking thread, so a decoder panic is a refused request), record name, tags, kind, points, API key (header,
-  or the `api_key` query parameter of the forwarder's validation), path, and receive time in bounded rings, and
-  summarize metric families per second as events (counted values, sketch samples; points for gauges), in bounded
-  maps; `GET /api/v1/validate` → 200, anything else → 202, and every refusal (a body that cannot be decoded, an
-  unsupported encoding, a body too large) is recorded with its reason. The **traffic generator** sends one datagram
+- **`programmable-metrics-demo`** (built; `bin/programmable-metrics-demo`, one Tokio process with axum, nothing depends
+  on it): `programmable-metrics-demo run --adp-bin <path> [--run-dir <dir>] [--no-launch]`, every port a flag. Each
+  component is a module with a small interface. The **stub** (`stub/`) serves `POST /v1/artifacts/poll`: a complete
+  `policy` snapshot of at most one config (`demo`, version = revision), whose `payload` is the envelope as a JSON string
+  with its SHA-256; the store is durable in the run directory (`store.json`, written to a temporary file, flushed, and
+  renamed over the old one, so a failed write changes nothing; `history.jsonl`, a best-effort log whose highest revision
+  also seeds the counter), the next revision is `max(local, ADP's high-water) + 1` (high-water from the latest poll and
+  the privileged status route, for the preview in the UI as for the publish), revoke empties the snapshot (revoking an
+  empty one changes nothing), and every poll is recorded, consecutive identical polls folding into one acknowledgment
+  timeline entry. Only `protocol_version` decides whether a poll is answered: every other field is read on its own, and
+  one ADP gets wrong is noted in the timeline rather than refusing the poll, since a refusal keeps ADP on its current
+  feed; unreadable bodies are recorded too. `stub/protocol.rs` documents the messages; ADP's `channel_stub.rs` is the
+  other side. The **control surface client** (`adp_api.rs`, `control.rs`) uses `build_ipc_client_ipc_tls_config` over
+  the `saluki-io` HTTP client, polls `/programmable-metrics/status` every second (read field by field like a poll, and
+  kept with its receive time, so the UI shows a status that stopped arriving as last known), fetches the export, and the
+  default program with it, when the default program hash the status reports changes or every 30 s, and the active plan
+  when the active plan hash the status reports changes; a `404`, which is what ADP answers until stage 5, is reported as
+  ADP not exposing the programmable-metrics control surface yet. The export reader ignores catalog members the plan
+  crate's `MemoryCatalog` does not know, and takes output labels from `labels` or an output's `label`. **Compile**
+  parses with the syntax crate and receives the document as ADP does (`compose::receive_artifact`: the artifact limits,
+  then `ReceivedArtifact`, the hash approval binds to; a document refused on receipt is reported and can still be
+  published). With ADP's export and default program in hand (`preview.rs`), it then does what ADP's installer does when
+  the artifact arrives: `compose::compose` into the default program ADP serves (`GET
+  /programmable-metrics/default-program`, kept only while its base is the export's) with the export's catalog, as
+  revision `max(local, ADP's high-water) + 1` (the revision a publish gets) and approved against the active plan hash;
+  validation of the composed plan (the report `compose` returns); and `install::diff_with_correspondence` against the
+  active plan (`GET /programmable-metrics/plan`, fetched when the status reports another active plan hash, and again at
+  compile time if it is stale), or against the default program when the active plan is not available. A composition
+  error is one finding at the node, output, or scope it names (an emit to an output the catalog does not declare also
+  lists the declared ones) and no diff; validation findings are placed through the correspondence (plan node to artifact
+  node to `SpanMap::node`; `valid_parameters` at the parameter, `SpanMap::param`; an edge finding at the artifact edge
+  entering the same port; an output finding at its `emit`), and findings outside the artifact are prefixed with their
+  location; a stale base is a warning at the base line. The compile outcome carries the preview: what it was diffed
+  against (kind, plan hash, generation, artifact revision), the composed plan's hash (the active plan hash ADP reports
+  once it installs the artifact, which the headless check asserts), validity, `unchanged`, stale base, and every changed
+  node (plan ID, artifact node, operator, added, removed, or changed with the aspects that differ, its provenance, its
+  source range), edge, and output. With an export but no default program (an ADP before this route), the structural
+  checks (`checks.rs`) run instead, and the outcome says so. Findings never block publishing, so a guardrail can be sent
+  past the UI to show ADP's rejection. The editor shows programs printed 64 columns wide without output fingerprints; a
+  source that lists none gets the export's fingerprint of each output it emits to when it is compiled. **Publish** takes
+  the hash the user approved and refuses anything but the last compiled artifact's, and uses the approval up, so a
+  repeated or concurrent approval publishes one revision; `approved_against` is ADP's active plan hash at compile time.
+  **Recording intakes** (one listener per recipient) decode v1, v2, sketch, and v3 payloads with `stele` after
+  `tower-http` decompression (on a blocking thread, so a decoder panic is a refused request), record name, tags, kind,
+  points, API key (header, or the `api_key` query parameter of the forwarder's validation), path, and receive time in
+  bounded rings, and summarize metric families per second as events (counted values, sketch samples; points for gauges),
+  in bounded maps; `GET /api/v1/validate` → 200, anything else → 202, and every refusal (a body that cannot be decoded,
+  an unsupported encoding, a body too large) is recorded with its reason. The **traffic generator** sends one datagram
   per tick with the whole metric set and counts the canaries it sends per second. The **canary check** compares those
   with the canaries the primary intake received by point timestamp over a recent 10-second range that every flush has
   had time to deliver, and waits while ADP is not up for the whole range, so it follows the present rather than
-  accumulating since the demo started.
-  The **telemetry scraper** reads `/metrics` every second, turns counters into rates averaged over 5 scrapes (`plan_*`,
-  `component_events_*`, `component_errors_total`), and drops series 10 s after they were last seen, also while ADP
-  does not answer.
+  accumulating since the demo started. The **telemetry scraper** reads `/metrics` every second, turns counters into
+  rates averaged over 5 scrapes (`plan_*`, `component_events_*`, `component_errors_total`), and drops series 10 s after
+  they were last seen, also while ADP does not answer.
 - **UI** (built; one page, embedded with `include_str!`, no build step or CDN): a sticky header with the badges (ADP,
-  control surface, active program, greyed as last known when ADP's status stops arriving), and on wide screens two
-  panes of equal width that scroll on their own, so the editor and the intake columns stay on screen together. The
+  control surface, active program, greyed as last known when ADP's status stops arriving, and marked "stale base" or
+  "stale review" when the status says so), and on wide screens two panes that scroll on their own, so the editor and
+  the intake columns stay on screen together (the editor's slightly wider, in a 12-pixel font, so that it shows the
+  default program's longest lines, about 81 columns, whole at 1280 pixels). The
   editor (line numbers, diagnostics listed and highlighted by line, a click selects the span; Load default program,
   Compile with Ctrl+Enter, Format, Publish showing the hash and asking for approval with the revision it will get and
   warnings such as ADP never having polled, Revoke while something is published), the published revision's outcome
-  from ADP's acknowledgments under the Publish button, the compile status worded as what ran ("structural checks
-  passed; ADP validates the composed plan"), and the configuration bindings with their current values. Drafts are
+  from ADP's acknowledgments under the Publish button, the compile status worded as what ran ("composed into ADP's
+  default program and validated as ADP will: no findings", or "1 error, so ADP will reject it"; "structural checks"
+  when ADP does not serve its default program), each diagnostic tagged with its validation rule or the step that found
+  it (receipt, composition, check) and kept to three lines until clicked, the **plan diff** directly above Publish
+  (against the active plan, naming its generation and artifact revision: "✓ No change" for an unmodified export,
+  otherwise counts and one line per added, removed, or changed node with what differs, clickable to its source line;
+  nodes whose only change is provenance, the losses the artifact now authorizes, folded into one line; edges in a
+  collapsed list; "✓ ADP runs it now (gen N)" once the status reports the composed plan active, and a note when the
+  active plan changed since the compile; hidden, its verdict cleared, once the editor holds anything else), the approval
+  panel saying what installing it changes (or that it composes to the active plan itself, acknowledged without a new
+  generation), for an artifact with errors that ADP will reject it, with the first error, and, when ADP's active plan
+  changed since the compile, that the diff is against the plan it ran then and that ADP will flag the review as stale,
+  and the configuration bindings with their current values. Drafts are
   kept per default program hash and only for what the user types; the editor loads the default program as soon as ADP
   serves its export. The viewer: one column per intake, headed by the outputs that feed it and by any unexpected API
   key or refused request, listing metric families seen in the last 5 s, fading after 3 s, with sparklines of events
@@ -1905,7 +2402,11 @@ that a change to a `Startup` input changes nothing.
   acknowledgment timeline, per-node rates from `plan_node_events_total` (native per-component rates until the
   plan-driven topology, labelled as delivered per consumer), greyed while ADP does not answer, plan telemetry, traffic
   controls, and the canary check. Light and dark themes follow `prefers-color-scheme`; nothing scrolls sideways at
-  1280 pixels. Not built yet: the plan diff and the plan graph, which need stage 5's routes.
+  1280 pixels. A family that begins arriving at an intake well after the page loaded is marked "new" for 8 s (green),
+  next to the fading of one that stopped, so a routing change reads at a glance. ADP's long rejection messages (a
+  duplicate contribution names both paths from the source) are kept to two lines in the publish outcome and three in
+  the acknowledgment timeline until clicked; a run of polls' count goes under its time, and the timeline's notes say
+  "stale base" and "stale review" when the status says so. Not built: the plan graph.
 - **Launcher** `make demo-programmable-metrics` (built): a run directory (default
   `target/programmable-metrics-demo/run-<unix seconds>`; reuse one with `--run-dir` to keep the published artifact,
   which is S7), an IPC certificate generated with `rcgen` (written readable only by its owner and renamed into place,
@@ -1913,7 +2414,7 @@ that a change to a `Startup` input changes nothing.
   `dd_url: http://127.0.0.1:17101`, `additional_endpoints` `{17102: [demo-team-b], 17103: [demo-team-c]}`,
   `metric_prefix_allowlist` `{17102: [demo.checkout.], 17103: [demo.catalog.]}`, MRF `{enabled, api_key: demo-mrf,
   dd_url: http://127.0.0.1:17104}` (mirroring off), stub URL `http://127.0.0.1:17100` with `poll_interval: 1s` (keys
-  ADP reads from stage 5), API ports 17110/17111, `dogstatsd_port: 17125` with both Unix sockets disabled, a run-local
+  ADP reads since stage 5), API ports 17110/17111, `dogstatsd_port: 17125` with both Unix sockets disabled, a run-local
   log file, `aggregate_flush_interval: 1s`, `flush_timeout_secs: 1`, and two keys not in the original list, both so
   that the intake columns follow what is sent within seconds: `aggregate_window_duration_seconds: 1` (with the native
   10-second window each context reaches the intakes once per 10 s, too slow for 5-second columns) and
@@ -1924,14 +2425,52 @@ that a change to a `Startup` input changes nothing.
   for `/ready`, and Ctrl-C, `SIGTERM`, or `SIGHUP` at any point, the ready wait included, sends `SIGTERM` to the group
   and `SIGKILL` after 10 s or on a second Ctrl-C. A `SIGKILL` or abort of the demo itself cannot stop ADP. The UI is on
   `http://127.0.0.1:17080`. `--no-launch` serves the demo for an ADP started separately, with the command line to
-  start it.
-- **Scenarios**: S0 baseline export; S1 drop `demo.debug.*`; S2 widen the checkout route with `or tag("team") ==
-  "platform"` after its prefix match; S3 exclusive tag routing; S4 mirroring via `const(true)` and a literal allowlist;
-  S5 guardrails (duplicate branch, undeclared output, stateful node) shown in the UI and once sent past the UI so ADP's
-  rejection appears; S6 revoke with an empty snapshot; S7 optional restart and redelivery.
-- **`make demo-programmable-metrics-check`** (not built yet: it needs stage 5) runs S0–S6 headless and asserts intake
-  contents and canary conservation. It runs at every stage gate from the demo through stage 6. The demo server's API
-  (`/api/compile`, `/api/publish`, `/api/revoke`, `/api/state`, `/api/intakes/{name}/recent`) is what it drives.
+  start it. `programmable-metrics-demo check --adp-bin <path> [--run-dir <dir>] [--port-offset 10000]
+  [--traffic-rate 20]` runs the same components headless (run directory
+  `target/programmable-metrics-demo/check-<unix seconds>`), on the default ports moved up by the offset (UI 27080, stub
+  27100, intakes 27101-27104, APIs 27110/27111, DogStatsD 27125), so it can run beside a demo on the default ports.
+- **Scenarios**, each an edit of the default program as exported (`scenario/edits.rs`, which find the lines they change
+  by what they say and fail naming what they looked for): S0 publish the unmodified export; S1 drop `demo.debug.*`
+  (`split(name starts_with "demo.debug.")` between the scope input and the policy `tee`); S2 widen the route that feeds
+  team B with `or tag("team") == "platform"` after its prefix match; S3 exclusive tag routing
+  (`split(tag("team") == "checkout")` in front of the `tee`, its `true` branch emitting to team B's output only); S4
+  mirroring, the failover gateway's predicate replaced by `true and name in ["demo.checkout.requests"]`; S5 guardrails
+  (a second `tee` branch to the primary output, an emit to `metrics_routing_encode_99`, an `aggregate` node), each
+  shown in the UI and sent past it so ADP's rejection appears; S6 revoke with an empty snapshot; S7 optional restart
+  and redelivery (manual). Each scenario edits the default program, not the previous scenario's program, so every
+  step's expected intake contents are the default routing with one change. **For a presenter** that means a step
+  also undoes the step before it, since an artifact replaces the one in effect: at S2 the primary intake marks
+  `demo.debug.*` new again (S1 undone) as team B gains the platform family, and the diff lists S1's nodes removed; at
+  S3 the platform family leaves team B as the checkout families leave the primary intake; at S4 the checkout families
+  come back to the primary intake beside the mirror. To narrate one change at a time, either revoke between steps (the
+  default program comes back, which shows the previous step undone on its own), or keep editing the program in the
+  editor instead of loading the default program again (S1 and S2 together diff as one change and five re-authorized
+  nodes against S1). The **Load default program** button's hover text says so.
+- **`make demo-programmable-metrics-check`** (built; `DEMO_CHECK_ARGS` for extra flags) builds ADP and the demo in
+  `devel` and runs `programmable-metrics-demo check`: the demo's components and ADP, launched as `run` launches them,
+  then S0-S6 driven through the demo server's API (`scenario/mod.rs`, over plain HTTP on loopback), then everything
+  stopped; exit 1 on any failure, with the run directory named. The intake contents are the `demo.` families seen within
+  3.5 s at each intake, and each step waits (30 s at most) for every intake to receive exactly what the scenario says,
+  and for that to hold 3 s. Each step: compile (the editor must compose it: no findings and a non-empty diff, an empty
+  one for S0, or for S5 an error naming the problem: `duplicate_contribution`, the undeclared output, "keeps state");
+  publish; ADP's acknowledgment on the privileged status route and in its next poll of the stub (`active`, or `rejected`
+  with an error naming the same problem); the active artifact revision; ADP's active plan hash equal to the plan hash
+  the editor composed (so the preview is what ADP installed); a new generation, or for S0 the boot generation still
+  running; for S5 the generation and artifact of S4 still running and the S4 routing still delivered; for S6 the boot
+  plan hash active again, the stub's polls reporting it, and the default routing back. S0 also checks `/export` (base
+  hash = the status's default program hash) and `/default-program` (hashes to the boot plan); after S1, `/plan` (hashes
+  to the status's active plan hash, has `policy/drop_debug`) and `/explain` (JSON and text, describing it). Throughout,
+  every sample of `/api/state` (about 4 per second) checks the rolling canary range (balanced, never missing or excess),
+  that no other intake receives canaries, and that no intake refuses a request or sees an unexpected API key; at the
+  end, once the rolling range covers the last change, the canaries of the whole run, from the first balanced range to
+  the last, are checked through `GET /api/canary?from_s=&to_s=` (a new demo route). Both checks balance within the
+  allowance for canaries counted next to a range's edges (6 at 20 datagrams per second): they catch an aggregated canary
+  point lost or delivered twice (20 canaries with 1-second windows), not a few datagrams lost or doubled ahead of
+  aggregation, which ADP's continuous-input tests check exactly. The report, with compile, publish-to-acknowledgment,
+  and publish-to-visible timings per step, is written to `check-report.json` in the run directory and printed. A run
+  takes about 70 s, 18 s of it waiting at the start for the canary check to have a whole range behind ADP's start, and
+  about 10 s at the end for the rolling range to cover the last change. It runs at every stage gate from the demo
+  through stage 6.
 
 ## Stage plan
 
@@ -1980,8 +2519,9 @@ telemetry tap by collectors, and every forwarder by one that drops, in place, th
   `no_aggregation.flush`.
 - **Accounting** (`topology/tests.rs`, `telemetry/tests.rs`, added in the stage 3 review): each region's bounds are
   its kernels' native bounds plus a full buffer per exit and per register, every other component's bounds are the
-  legacy ones, and the interconnects are four queues fewer, all exactly against `create_legacy_topology`; each kernel
-  is accounted in a resource group of its own under its region, where its memory shows.
+  legacy ones, and the interconnects were four queues fewer, all exactly against `create_legacy_topology` (since
+  stage 5 they hold as many buffers as the legacy ones; see Stage 5 exit evidence); each kernel is accounted in a
+  resource group of its own under its region, where its memory shows.
 - **Measurements** (`topology/measurement_tests.rs`, rerun after the stage 3 review): on one and on four workers,
   throughput, worker time per metric, allocated bytes per metric, and p99 latency are no worse than legacy within the
   run-to-run noise of legacy against itself, in every phase; see [Risks](#risks) for the numbers and what is not
@@ -2069,6 +2609,153 @@ ADP's part, on the stage 3 harness:
 - **Selection** (`benches/selection.rs`): the gate's "selection cost near the hand-written baseline" rests on
   `selection_default_program`, the frame ADP runs; numbers in Risks.
 
+**Stage 5 exit evidence** (as integrated onto stage 4). The plan crate's part:
+
+- **Lifecycle** (`install::artifact_tests`): a table of 32 hand-derived lifecycle cases (each expected summary written
+  by hand: acknowledgments, the policy in effect, the high-water mark, kept and active generations, degraded), covering
+  idempotent redelivery and re-approval, stale revisions (below the mark, equal to a mark another artifact set),
+  multi-config snapshots, damaged transport hashes and envelopes, rollback to last-known-good and then to the default
+  program, revocation (of a running, a kept, and an in-flight artifact), re-composition after configuration changes
+  (accepted, rejected, retried), unmodified exports served by the running generation, and acknowledgments that outlive
+  a refused redelivery; and `property_test_the_high_water_mark_never_decreases_and_only_accepted_plans_run` (512 cases
+  of up to 40 random steps against a model: deliveries at offsets from the mark, redeliveries of earlier configs,
+  revocations, preparation outcomes, supervision failures by hash, retirements; the mark never decreases, only
+  accepted plans run, a revoked or failed hash is never in effect, kept, or prepared, every non-final acknowledgment
+  names a revision and hash the model accepted, and a `retired` one never names a live generation). Mutation checks of
+  nine rules each fail the table, the property, or both.
+- **Composition and export** (`compose::tests`, `export::tests`, `install::correspondence::tests`): the unmodified
+  export of every default-program fixture (both configurations, gateways as splits and as opaque hosts) composes back
+  to the default program exactly and diffs as no change; accept, reject, and composes-but-invalid tables with
+  hand-written correspondence, provenance, removed lists, and diffs (removed branch, renamed node, new node, modified
+  predicate, binding to literal, reordered set, blob reference, stale base, stale review, stateful node, unknown and
+  unrecorded output, fingerprint mismatch, reserved ID outside the scope); the receipt table (oversized, inlined size,
+  too many nodes, leaves, leaves inside a blob, oversized blob, resolved values in a blob, IR version 2, at-limit
+  documents accepted); `property_test_valid_random_artifacts_compose_into_valid_plans` and
+  `property_test_edited_artifacts_compose_or_are_refused_cleanly`; the export fixture and its program hash computed
+  independently, base invariance and sensitivity, and bundles read ignoring unknown members.
+- **Channel** (`channel::*::tests`): wire forms member for member against the protocol's JSON, transport hashes, the
+  refusals of the envelope parser, and the feed's wake-ups, including a cancelled wait that loses no snapshot.
+
+ADP's part, on the stage 3 harness:
+
+- **Artifacts in a running topology** (`installer/artifact_tests.rs`, timestamped DogStatsD batches through the
+  no-aggregation pipeline; every test ends by checking that every batch arrived exactly once and whole, processed by one
+  generation): with the double of the core's artifact paths, install and revocation, rollback to last-known-good with
+  the high-water mark unchanged and a later stale revision rejected, the chain artifact, last-known-good artifact,
+  default program, a configuration change the artifact cannot follow (degraded in the status and through the
+  channel, once) resolved by a revocation or by reverting the change, an unmodified export in effect without a
+  generation of its own (and `plan_active_revision` 1), the status read by the channel before the worker runs, worker
+  restarts that hand the core only an unfinished snapshot again, the transport going away, panic budgets per region,
+  and `continuous_input_across_installs_a_rollback_and_a_revocation_arrives_exactly_once_in_whole_batches` (32 batches
+  per millisecond without waiting; commits and the rollback land mid-stream; generations `[1, 2, 1, 3, 4]`). With the
+  core's own paths, `an_exported_artifact_installs_follows_configuration_and_rolls_back_through_the_real_core`: the
+  export served by the status, the unmodified export acknowledged `active` with generation 1, an edited export (a split
+  in front of the main output) installed as generation 2, a `metric_filterlist` change composed again under the same
+  revision as generation 3 with the new binding and nothing degraded, and a supervision failure rolled back to the
+  generation kept, whose unmodified export is composed again as generation 4; every batch arrives exactly once, with
+  what each generation's policy keeps.
+- **Exit-gate suites through the core's own paths** (`installer/lifecycle_tests.rs`). One endpoint routing group, so the
+  policy region delivers to the main output and the group's; every batch carries one timestamped counter per family
+  (`kept`, `orders.total`, `app.requests`, `debug.noise`) tagged with its sequence number, a context of its own that the
+  no-aggregation pipeline passes without aggregating; every artifact is an edit of the export the status serves, in a
+  real envelope with real hashes; after stopping, each batch is checked at the main output, the routing group's, and the
+  client telemetry tap against the policy of the generation that processed it (each included point exactly once, with
+  that generation; no excluded point). Tests run on a four-worker runtime, so admission, preparation, and commits run in
+  parallel.
+  - `continuous_input_across_a_series_of_real_artifacts_delivers_every_point_the_policy_includes_exactly_once`: 32
+    batches per millisecond without waiting, across the unmodified export (acknowledged `active` with generation 1,
+    no generation), a route change (the routing filter's predicate edited: generation 2), a family drop on top of it
+    (generation 3, the route change kept), a revocation (the default program as generation 4; the revoked config reads
+    `retired` once generation 3 retires; the mark stays), the route change re-approved under a higher revision
+    (delivered anew after the revocation: generation 5, same structure as generation 2 but for provenance, the
+    default program kept), and the same document under a higher revision again (acknowledged under the new revision,
+    no generation, mark moves). Generations `[1, 2, 3, 4, 5]` in order, about 100 to 200 batches each.
+  - Recovery: `after_a_restart_the_default_program_runs_until_the_channel_delivers_again_and_then_the_artifact` (a
+    second topology with new installer state reports nothing seen, runs the default program until the snapshot is
+    delivered again, then installs the artifact under the same revision with the same plan hash as the first);
+    `a_restarted_installer_worker_keeps_the_high_water_mark_and_the_acknowledgments` (after an aborted worker run,
+    another artifact under the mark's revision and one below are stale, then a newer revision installs).
+  - `stale_revisions_are_rejected_and_a_redelivery_or_a_reapproval_acknowledges_the_current_state`: another artifact at
+    or below the mark is `rejected` with the stale message and the delivery's revision and hash; the artifact in
+    effect at the revision that set the mark acknowledges `active` with its generation; under a newer revision it is
+    acknowledged under that revision and moves the mark; another artifact at a mark it did not set is stale, and so is
+    the artifact in effect below the mark; nothing is prepared, nothing degraded, and the transport sees the status.
+  - `an_artifact_on_a_stale_base_or_review_runs_and_is_reported_stale`: a base program hash other than the export's
+    installs with `stale_base`; an approval against the running plan is fresh; one against another plan installs with
+    `stale_review`.
+  - `deliveries_the_core_refuses_are_acknowledged_with_the_reason_and_leave_what_runs` (table, run while the default
+    program runs, as at boot, and again while an artifact runs): an output fingerprint other than the host's
+    (`RemovedOutput`, declared), an output the host does not declare (`RemovedOutput`), an output the base does not
+    record (`UnrecordedOutput`), a stateful `aggregate` node (`Stateful`), a payload damaged in transit
+    (transport hash), an envelope hash that is not the artifact's, and a snapshot of two configs (both rejected); each
+    with its exact message, its revision only once the envelope is read, the mark moved only for authentic configs,
+    and what runs unchanged.
+  - `the_stub_worker_installs_what_the_stub_serves_and_keeps_it_through_transport_failures`: the real stub worker
+    polling an in-process stub every 20 ms; unanswered polls leave the default program; a served artifact installs and
+    the next polls carry its acknowledgment; a 500, a body that is not JSON, an answer without `products`, and another
+    protocol version keep the artifact (feed kept, polling continues, acknowledgment still reported); the same snapshot
+    changes nothing; an empty one revokes.
+  - Faults: `an_artifact_that_panics_falls_back_to_last_known_good_and_then_to_the_default_program_which_fails_fast`
+    (artifacts with a `test_panic` node in front of the main output, in `metrics_enrich`): three panics of the second
+    artifact are survived (each loses its batch at the policy region's outputs, which the tap, fed by
+    `dsd_post_agg_filter_region`, still receives); the fourth fails it ("it exceeded its panic budget, with 4 panics,
+    the last in node `policy/faulty`", acknowledged `failed`) and rolls back to the first; the first fails the same way
+    and, with nothing kept, the default program is lowered and installed; that default program's first panic fails
+    the region and stops the topology.
+  - `a_hundred_installs_leave_health_accounting_metric_series_and_acknowledgments_bounded`: after two warm-up installs,
+    100 more, alternating two artifacts (each a family drop and a kernel of its own), each in a config of its own:
+    health registrations, resource groups, the memory bounds tree, and metric series equal the warm-up's; at every
+    install at most 18 acknowledgments (latest, kept, 16 retired) and 18 generation records (2 alive, 16 history), and
+    exactly 18 of each at the end, with the states by config hand-derived; `plan_live_generations` 2.
+- **Export** (`lowering/export_tests.rs`): every configuration of the lowering matrix exports, prints and parses back
+  to the same document, composes back with ADP's catalog to the same plan with no findings and an empty diff, and has
+  a base program hash equal to the digest of its document without it.
+- **Burst slack** (`topology/burst_tests.rs`, `topology/tests.rs`, on a paused clock, so a test waits for a topology
+  to settle). Five bursts of 1,000 one-metric batches through both topologies, with the component after the stretch
+  reading nothing until the burst has settled: into a gated aggregation with defaults and through the mapper-profile
+  configuration's three pipelined regions (644 batches each: four transforms of 129, then aggregation's 128), and from
+  a scripted aggregation to the main output (386), to a routing group (515), and to Multi-Region Failover (515). Both
+  topologies take exactly the hand-derived count before the feeding component waits, and deliver every batch exactly
+  once when the stalled component reads; without the region capacities the plan-driven topology took 257 into
+  aggregation. `each_region_takes_what_the_native_transforms_it_replaces_held_on_the_way_through_it` pins every
+  region's capacity in nine configurations by hand (and 128 for every other component), and the two accounting tests
+  pin the interconnect bounds against the legacy topology (equal; one gateway's fewer per extra gateway). In
+  `saluki-core`, `topology::blueprint::tests` cover the API: the capacities in the snapshot and the bounds, kept across
+  interconnect-capacity changes and replacement, refused for other component types, and a running topology whose
+  source sends exactly what the inputs and the transform's in-flight buffer hold before it waits.
+- **Stub and control surface** (`channel_stub/tests.rs`, `api/tests.rs`): against an in-process fake stub, the poll
+  body, acknowledgments carried on the next poll, snapshots published once, revocations, eight transport-failure
+  shapes and the poll timeout (feed kept, polling continues), the answer limit, poll spacing, a stub under a path, and
+  shutdown during a hung poll; every route and error path over a booted installer's status (the published export
+  included), and the routes over the real privileged API with mutual TLS.
+- **Configuration** (`agent-data-plane-config-system`): the keys round-trip through the inventory, are off by default,
+  an empty URL leaves the stub off, and an unreadable or zero interval fails the load.
+
+End to end, against the built binaries (`make demo-programmable-metrics-check`, macOS, `devel` builds, DogStatsD over
+UDP on loopback): S0 to S6 pass in five runs, three of them in a row (each about 69 s: ADP ready in 2 s, a balanced
+canary range after 18 s). Publish to acknowledgment 0.8-2.1 s (one poll interval plus preparation); publish to the
+endpoints showing an addition 1.1-2.3 s, a removal 3.4-4.7 s (a family counts as gone 3.5 s after its last point); S0
+acknowledged `active` in the boot generation with an empty diff; S1-S4 each a new generation whose active plan hash is
+the editor's composed plan hash; the three guardrails rejected by ADP with errors naming `duplicate_contribution`,
+`metrics_routing_encode_99`, and `keeps state`, the S4 generation kept; S6 back to the boot plan in a new generation.
+Canary conservation held in every one of about 187 rolling 10-second ranges per run and over the whole run (1,199/1,199,
+1,219/1,220, 1,200/1,200, 1,219/1,218, 1,239/1,242 sent/received; the differences are canaries counted in the second
+next to a range edge, within the allowance of 6, while a lost or doubled aggregated point would be 20). A mutant S2 edit
+(`tag("team") == "nobody"`) fails the check at S2 naming `team-b is not receiving demo.platform.queue_depth`. With every
+stage 5 part merged (lifecycle tests and burst slack included), it passed twice more in a row (67.8 s and 67.3 s;
+publish to acknowledgment 0.8-2.1 s; canaries 1,199/1,199 and 1,200/1,199 over the whole run, 184 and 187 rolling ranges
+balanced). After the stage 5 review fixes it passed three more times in a row (70.9 s, 73.0 s, and 70.2 s; publish to
+acknowledgment 0.8-2.1 s; S5b rejected with `UndeclaredOutput`, which lists the outputs ADP declares, S5c with a message
+that names no implementation stage; canaries 1,259/1,259, 1,299/1,299, and 1,239/1,239 over the whole run, 193, 203,
+and 193 rolling ranges balanced), and the full nextest run of the twelve crates involved passed whole under default
+parallelism (3,257 tests), without the platform-certificate failures of the runs before.
+
+Not covered by a test: with the real core, a re-composition the core rejects (no live configuration change was found
+that makes a stage 5 re-composition invalid without also changing the frame); the ADP double that stands in for it
+reports the core's own refusal (`Rejection::Refused` with the composition error and the core's wording) since the stage
+5 review, not a stale revision the core never reports on that path. A native kernel's panic beside artifact nodes is
+covered since the review (Supervision and fallback).
+
 ## Stage 6 outline
 
 1. Aggregation becomes a stateful kernel in the `dsd_agg` slot behind a declared isolation fence, keeping component ID
@@ -2112,7 +2799,9 @@ native behavior. Nothing in the specification is edited without the author.
    `dsd_post_agg_filter_in` and `metrics_enrich_in`; slot components are named by slot. Interconnect series for fused
    components disappear (release note); kernel metrics keep native names and `component_id` values.
 5. **Physical frame**: structure is fixed at boot; candidates place into it; unused exits stay idle.
-6. **Correspondence**: artifact nodes that keep a reserved ID correspond to it; provenance changes only with the node.
+6. **Correspondence**: artifact nodes that keep a reserved ID correspond to it; provenance changes only with the node,
+   or, for a lossy node or a fence, with what feeds it (stage 5): native configuration authorizes only the loss it
+   expresses, on the records it gives the node.
 7. **Admission**: points are per component output; opaque hosts readmit; the generation is stamped at the point from a
    shared schedule.
 8. **Progress**: starved branches carry header-only progress to state owners, not only idle sources (stage 6).
@@ -2277,7 +2966,9 @@ native behavior. Nothing in the specification is edited without the author.
     preparation that has not committed" applies to artifact revisions. A newer default-program candidate waits until
     the preparation in flight commits or fails, replacing any candidate already waiting, so a steady stream of
     configuration changes cannot keep every preparation from committing; the latest configuration is always applied
-    next.
+    next. Since the stage 5 review this also holds for the artifact in effect composed again after a configuration
+    change (amendment 56): it is a configuration change, not a newer approval, so it queues too; only a newly accepted
+    revision cancels.
 46. **Last-known-good is kept only below an artifact generation.** It is "the plan that was active before the current
     one", which matters only when the current one can fail and roll back: an artifact generation. A default-program
     generation's panic budget is zero, so committing one releases any kept generation instead of holding its programs
@@ -2306,6 +2997,11 @@ native behavior. Nothing in the specification is edited without the author.
     capacity loss") speaks of loss inside the plan; this moves loss outside it, to the source socket, sooner under a
     burst. The proposal is to accept it as R1's cost, to measure burst loss against legacy before stage 3's gate is
     final, and, if it is worse, to give a region's input interconnect the capacity of the queues it replaces.
+
+    **Resolved in stage 5.** Measured with a stalled component (see Stage 5 exit evidence), fusion made a burst back
+    up to the DogStatsD source after 257 batches where legacy took 644. The proposal's last step is built: each
+    region's input gets the capacity of the queues it replaces and of their in-flight buffers, and both topologies
+    now take exactly as many batches. No amendment is needed.
 49. **The capacity rule is checked against one interleaving** (stage 4). "Never increase capacity loss for any
     policy-included contribution" depends on which records an output accepts first, and the specification leaves how
     a `merge` interleaves unspecified. The reference interpreter fixes one delivery order, in which a `merge` passes its
@@ -2335,6 +3031,49 @@ native behavior. Nothing in the specification is edited without the author.
     and the duplicate analysis are unchanged; the candidate, its hash, and its diff are what was proposed, since
     rewrites run in compilation; and `explain` lists each reordering. The proposal is to say "operator parameters, other
     than the order of a pure `all` or `any`'s operands (R7)".
+53. **Idempotency compares with the policy in effect, and only for redeliveries** (stage 5). "Installing an artifact
+    whose hash matches the active or preparing one acknowledges the current state" is read as: matches the artifact the
+    schedule will hold, which is the one being prepared when there is one, and the delivery is a redelivery (its
+    revision is the high-water mark, set by the same artifact) or a newer approval (its revision is above the mark). A
+    redelivery of the active artifact while a newer one is prepared, of a revoked one, or under a revision below the
+    mark or equal to one seen for another artifact, is stale, since it is not what the installer is installing or not
+    newer than what it has seen.
+54. **A revision counts as seen once its artifact is authentic** (stage 5). The high-water mark moves for a config that
+    passes its transport hash, envelope, receipt, and artifact hash checks, even if composition or validation then
+    rejects it, and does not move for one that fails them: an unauthenticated revision could otherwise block every
+    later proposal.
+55. **An acknowledgment whose generation stops serving it stays as it was until the generation retires** (stage 5; see
+    44): acknowledgments have no draining state, and the generation still processes its stamped batches. A superseded
+    artifact stays `active`, a released last-known-good stays `prepared`, and an unmodified export whose generation the
+    default program takes over after a revocation stays `active`; each is `retired` once its generation retires, or
+    `failed` if supervision fails it while it is active or kept (a draining one that fails drops its remaining batches,
+    counted; nothing rolls back).
+56. **Configuration changes reach an artifact by re-composition under its revision** (stage 5). The re-composition
+    replaces the artifact's earlier composition without keeping it as last-known-good (the plan before the artifact
+    stays kept), is retried after a failed preparation as the default program is, and a rollback whose plan predates
+    the latest configuration change is composed again, so live configuration is applied eventually whichever plan
+    runs.
+57. **An artifact equal to the running plan creates no generation** (stage 5). An unmodified export composes to the
+    default program; the generation already holding that plan serves it, with its own panic budget (zero: every node in
+    it is native). This holds also when the artifact cancels a preparation: it is compared with the active plan then.
+58. **Revocation is final for every artifact accepted before it** (stage 5). A revoked artifact is never in effect,
+    composed, or kept as last-known-good again; its generation runs until the default program (or a newer artifact)
+    replaces it. Only a new delivery under a newer revision brings the document back.
+59. **A supervision failure is the artifact document's** (stage 5). Last-known-good and failure handling compare
+    artifacts by hash, not by revision: a newer approval of the document that failed, already in flight, is dropped
+    with it, and a generation of the same document is never kept to roll back to beneath another of it.
+60. **Per-config outcomes survive a refused redelivery** (stage 5). A config's acknowledgment follows the installation
+    an earlier delivery of it started while that installation runs and the latest delivery's does not, so a failure,
+    rollback, or retirement of the running artifact is acknowledged even after a stale, damaged, rejected, or
+    multi-config delivery replaced the config's acknowledgment.
+61. **A stale base is relative to the policy region and its outputs** (stage 5). The specification reports an artifact
+    stale when its base "no longer matches the current default program." The base program hash covers the exported
+    policy region and the fingerprints of the outputs it emits to, so a structural change elsewhere in the default
+    program (upstream of `metrics_enrich`, which native configuration defines through stage 5) does not make an
+    artifact stale: the artifact is composed into the new default program as it is, and rebasing it on the new export
+    would change nothing. A structural change inside the region, or another binding of an output it emits to, does (an
+    artifact that still emits to a rebound output is also invalid: a removed output). When the region extends upstream
+    (stage 6), the base covers the extended region.
 
 ## Risks
 
@@ -2361,10 +3100,13 @@ native behavior. Nothing in the specification is edited without the author.
 - Per-kernel resource groups (restored in the stage 3 review) cost two thread CPU-time reads per kernel per buffer on
   Linux, about 1.7 µs, as `ChainedConfiguration` pays natively. The measurements ran on macOS, with the tracking
   allocator and so with that entry, but at the cost on macOS; Linux numbers are open.
-- **Less buffering** (amendment 48). Fusion removes the queues between fused components, and fused exits feed encoder
-  channels directly. Stage 3E checks the function (a preparation commits while an exit waits on a full channel, and
-  nothing is lost), not burst loss at the DogStatsD socket against legacy, nor p99 under slow sinks; both are still to
-  measure.
+- **Buffering** (amendment 48, resolved in stage 5). Region inputs take what the transforms they replace held (see
+  ADP integration, Buffering), so a burst backs up to the DogStatsD source after exactly as many batches as natively,
+  and the interconnects' firm bounds do not grow. Still open: loss at a real UDP socket under a burst (the tests stall
+  a component instead of measuring the socket), p99 under slow sinks, and the sizing for a region's longest path, by
+  which paths that leave a region early, such as the passthrough path, hold up to one region's buffers more than
+  natively. A region's capacity follows the boot program, so an artifact that adds work to the policy region runs
+  within it.
 - **Measurements** (after the stage 3 review, release mode, Apple Silicon, local). Criterion benches, each against a
   hand-written baseline that calls the same kernels with no program, registers, or telemetry:
 
@@ -2471,3 +3213,37 @@ native behavior. Nothing in the specification is edited without the author.
   512; its own tests sample more).
 - `component_events_sent_total` double counts for `BufferedDispatcher` users natively; regions do not use it. Tracked
   separately.
+- **Receipt limits count every node of an artifact document** (stage 5), including the nodes it keeps from the default
+  program unmodified, while validation exempts native-provenance nodes. A native configuration whose policy region
+  alone exceeds an artifact limit (256 nodes, 1,024 predicate leaves, 256 KiB; about 80 endpoint routing groups)
+  exports, but its unmodified export is refused on receipt. Nothing in the lowering matrix comes close; if it matters,
+  receipt can exempt nodes the default program's export has unchanged.
+- **Panic budgets per region, not per node** (stage 5; resolved in the stage 5 review). A host-enrichment panic under
+  an edited artifact was survived up to the artifact's budget, since `metrics_enrich` runs host enrichment beside the
+  policy region's decision. The budget now covers the artifact's nodes only (Supervision and fallback). What remains
+  charged to the artifact: a panic in a decision group that holds any artifact node, and one in the region's own steps
+  between nodes in a region that runs artifact nodes.
+- **Status details of re-approvals** (stage 5; the revision gap resolved in the stage 5 review). An approval of the
+  artifact in effect under a newer revision, or a delivery of it in another config, now becomes the artifact in effect
+  (`reapprove`): `status.active_artifact` names its config and revision, and `stale_review` its own review. What
+  remains: the generation's `Origin`, and its plan's node provenance, keep the revision it was composed under until a
+  re-composition (the next configuration change) composes under the new one, which makes that change a generation
+  even when it changes nothing else; a config that followed the earlier acceptance and is no longer delivered keeps
+  following the installation, so it stays acknowledged `active` beside the new config while the document runs. After
+  a revocation, an unmodified export taken over by the default program stays acknowledged `active` until its
+  generation retires, which may be the next configuration change (amendment 55).
+- **A transition rejection after a cancellation** (stage 6). An artifact cancels the preparation in flight before
+  `start()` checks state-owner transitions, so a re-composition of the old policy that a `Transition` rejection
+  cancels leaves the reverted policy behind the configuration until the next event. Unreachable through stage 5 (no
+  state owner is in a region); stage 6 should check transitions before cancelling.
+- **Stub tests under load** (resolved in the stage 5 review). Tests that build an `HttpClient` (the `channel_stub`
+  tests, the control surface's, the demo's, and the lifecycle suite's stub test) failed to load the platform's root
+  certificates under full-workspace parallel runs. The certificates were loaded for the proxy connector's own TLS,
+  which only a proxy reached over HTTPS uses: `saluki-io`'s `HttpClientBuilder::build` now builds that TLS only for a
+  client with proxies, so the loopback stub and demo clients, which trust no certificate authority, need none of the
+  platform's.
+- **The editor's preview composes with the export's catalog** (stage 5 demo). ADP composes with `AdpCatalog`; the
+  editor with the `MemoryCatalog` document the export carries (`AdpCatalog::to_document`), so the two agree only as
+  long as that document carries everything composition and validation read. The headless check asserts it at every
+  install (ADP's active plan hash equals the editor's composed plan hash). Compilation into the frame (capability
+  errors, such as a new output) is not previewed: a plan the editor validates can still be refused by ADP's compile.

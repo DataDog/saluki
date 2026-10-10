@@ -14,6 +14,7 @@ use saluki_core::{
     data_model::tags::{SharedTagSet, Tag},
     health::HealthRegistry,
 };
+use saluki_metric_plan::operators::OperatorRegistry;
 use tokio::sync::{mpsc, watch};
 
 use super::{
@@ -193,10 +194,19 @@ impl ConfigCell {
 pub(super) fn programmable_metrics(
     config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
 ) -> Option<ProgrammableMetrics> {
+    programmable_metrics_with_operators(config, live, registry, OperatorRegistry::native())
+}
+
+/// Prepares the programmable metrics path as [`programmable_metrics`] does, with the operators of `operators` in place
+/// of the native ones.
+pub(super) fn programmable_metrics_with_operators(
+    config: &SalukiConfiguration, live: Live<SalukiConfiguration>, registry: &ComponentRegistry,
+    operators: OperatorRegistry,
+) -> Option<ProgrammableMetrics> {
     let facts = facts(config);
     let lowering = Lowering::new(Arc::new(config.clone()), facts.clone()).expect("the configuration lowers")?;
     Some(
-        ProgrammableMetrics::from_lowering(lowering, facts, config, live, registry)
+        ProgrammableMetrics::from_lowering(lowering, facts, config, live, registry, operators)
             .expect("the programmable metrics path is prepared"),
     )
 }

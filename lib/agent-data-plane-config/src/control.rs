@@ -8,7 +8,10 @@ use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
-use crate::{defaults::DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES, ConfigValue};
+use crate::{
+    defaults::{DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, DEFAULT_REMOTE_AGENT_STRING_INTERNER_SIZE_BYTES},
+    ConfigValue,
+};
 
 /// Topology gates and orchestration decisions. Most are static; `logging.level` is live.
 ///
@@ -111,6 +114,51 @@ pub struct ControlConfiguration {
     /// Run `Permissive` first to learn whether a ceiling fits the topology, then move to `Strict` where the platform
     /// kills a process that exceeds its ceiling and refusing to start is the better failure.
     pub memory_mode: MemoryMode,
+
+    /// Programmable metric processing settings, read once at startup. (not in Datadog Agent config schema)
+    pub programmable_metrics: ProgrammableMetrics,
+}
+
+/// Programmable metric processing settings (`experimental.programmable_metrics.*`), read once at startup. (not in
+/// Datadog Agent config schema)
+///
+/// These settings are experimental: they may change, move, or be removed without backward compatibility.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ProgrammableMetrics {
+    /// How policy artifacts reach the process.
+    pub artifact_channel: ArtifactChannel,
+}
+
+/// The artifact channel, which delivers approved policy artifacts for the metrics path
+/// (`experimental.programmable_metrics.artifact_channel.*`). (not in Datadog Agent config schema)
+///
+/// Only the local development stub exists: without a stub URL there is no channel, and the metrics path runs the
+/// default program lowered from configuration.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ArtifactChannel {
+    /// The URL of the local development stub of the artifact channel, which the process polls for policy artifacts.
+    ///
+    /// Defaults to `None`: no channel, so the default program runs. An empty string is the same as unset. The URL
+    /// must be an `http://` URL of a loopback address (`127.0.0.1`, `[::1]`, or `localhost`) without a query, since
+    /// the stub has no authentication; any other URL fails startup. The process polls `<stub_url>/v1/artifacts/poll`.
+    /// Set it only for development, tests, and demos.
+    pub stub_url: Option<String>,
+
+    /// How often the stub is polled.
+    ///
+    /// Defaults to [`DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL`] (1 second). Each poll reports the latest
+    /// acknowledgments, so a shorter interval reports outcomes sooner, at the cost of more requests to the stub. It is
+    /// greater than zero: a configured value of zero fails the configuration load.
+    pub poll_interval: Duration,
+}
+
+impl Default for ArtifactChannel {
+    fn default() -> Self {
+        Self {
+            stub_url: None,
+            poll_interval: DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL,
+        }
+    }
 }
 
 /// Memory bounds validation and limiter behavior.

@@ -7,10 +7,10 @@
 //!   region host counts on a port of the node (`MetricSource::PortEvents`). It also names the component each kernel
 //!   reports its own telemetry as, and the resource group each kernel's memory and CPU time are accounted to:
 //!   `<region>.<node>`, under the region's own, as a native component's sub-transforms are.
-//! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the live generations, the
-//!   installations by outcome, and the rewrites applied in compiling the active generation, and the native metrics
-//!   that telemetry profiles say the installer records from the plan a generation runs (`MetricSource::BindingLength`,
-//!   `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
+//! - [`InstallerTelemetry`] is what the installer publishes: the active generation, the active artifact's revision,
+//!   the live generations, the installations by outcome, and the rewrites applied in compiling the active generation,
+//!   and the native metrics that telemetry profiles say the installer records from the plan a generation runs
+//!   (`MetricSource::BindingLength`, `MatcherEntries`, `TagProjectionRules`, and `BindingChanges`).
 
 use std::collections::BTreeMap;
 
@@ -42,6 +42,9 @@ use super::{
 
 /// The name of the gauge of the active generation's identifier.
 pub const PLAN_ACTIVE_GENERATION: &str = "plan_active_generation";
+
+/// The name of the gauge of the active artifact's revision: `0` while the default program runs.
+pub const PLAN_ACTIVE_REVISION: &str = "plan_active_revision";
 
 /// The name of the gauge of the generations alive: active, kept, preparing, and draining.
 pub const PLAN_LIVE_GENERATIONS: &str = "plan_live_generations";
@@ -200,6 +203,7 @@ type NativeKey = (&'static str, String, &'static str, &'static [&'static str]);
 pub struct InstallerTelemetry {
     topology: SubsystemIdentifier,
     active_generation: Gauge,
+    active_revision: Gauge,
     live_generations: Gauge,
     installs: Vec<(InstallOutcome, Counter)>,
     rewrites: Vec<(RewriteId, Gauge)>,
@@ -226,6 +230,7 @@ impl InstallerTelemetry {
         .collect();
         Self {
             active_generation: builder.register_gauge(PLAN_ACTIVE_GENERATION),
+            active_revision: builder.register_gauge(PLAN_ACTIVE_REVISION),
             live_generations: builder.register_gauge(PLAN_LIVE_GENERATIONS),
             installs,
             rewrites: Vec::new(),
@@ -275,6 +280,13 @@ impl InstallerTelemetry {
                 .count();
             gauge.set(applied as f64);
         }
+    }
+
+    /// Sets the revision of the active artifact, or `None` while the default program runs.
+    pub fn active_revision(&self, revision: Option<u64>) {
+        // Revisions are safe integers: the IR keeps every number within 2^53.
+        self.active_revision
+            .set(revision.map_or(0.0, |revision| revision as f64));
     }
 
     /// Sets the native gauges the installer records from the plan of a generation, as the generation is installed:

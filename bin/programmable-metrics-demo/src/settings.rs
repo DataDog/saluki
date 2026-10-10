@@ -59,6 +59,23 @@ impl Default for DemoPorts {
 }
 
 impl DemoPorts {
+    /// Returns the default ports, each moved up by `offset`, or `None` if one would pass 65535.
+    pub fn offset_from_default(offset: u16) -> Option<Self> {
+        let ports = Self::default();
+        let up = |port: u16| port.checked_add(offset);
+        Some(Self {
+            ui: up(ports.ui)?,
+            stub: up(ports.stub)?,
+            primary: up(ports.primary)?,
+            team_b: up(ports.team_b)?,
+            team_c: up(ports.team_c)?,
+            mrf: up(ports.mrf)?,
+            api: up(ports.api)?,
+            secure_api: up(ports.secure_api)?,
+            dogstatsd: up(ports.dogstatsd)?,
+        })
+    }
+
     /// Returns the loopback socket address of the given port.
     pub fn loopback(port: u16) -> SocketAddr {
         SocketAddr::from((LOOPBACK, port))

@@ -1,6 +1,6 @@
 //! Read-only descriptions of a topology blueprint's structure.
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use super::{graph::DataType, ComponentId, ComponentOutputId, OutputName};
 use crate::{
@@ -8,8 +8,8 @@ use crate::{
     execution::{AdmissionMode, AdmissionPointId},
 };
 
-/// A read-only description of a topology blueprint's structure: its components, their outputs, the connections between
-/// them, and the outputs marked as admission points.
+/// A read-only description of a topology blueprint's structure: its components, their outputs and input capacities, the
+/// connections between them, and the outputs marked as admission points.
 ///
 /// Every list is sorted, so two blueprints with the same structure have equal snapshots regardless of the order in
 /// which they were assembled.
@@ -61,13 +61,15 @@ impl BlueprintSnapshot {
 pub struct ComponentSnapshot {
     id: ComponentId,
     component_type: ComponentType,
-    input: Option<DataType>,
+    input: Option<(DataType, NonZeroUsize)>,
     outputs: Vec<OutputSnapshot>,
 }
 
 impl ComponentSnapshot {
+    /// Creates the description of a component, whose input, if it has one, is of the given data type and capacity.
     pub(super) fn new(
-        id: ComponentId, component_type: ComponentType, input: Option<DataType>, mut outputs: Vec<OutputSnapshot>,
+        id: ComponentId, component_type: ComponentType, input: Option<(DataType, NonZeroUsize)>,
+        mut outputs: Vec<OutputSnapshot>,
     ) -> Self {
         outputs.sort_by(|a, b| a.id.cmp(&b.id));
         Self {
@@ -90,7 +92,16 @@ impl ComponentSnapshot {
 
     /// Returns the data type the component accepts, or `None` for sources and relays, which have no input.
     pub fn input(&self) -> Option<DataType> {
-        self.input
+        self.input.map(|(data_type, _)| data_type)
+    }
+
+    /// Returns the capacity of the component's input interconnect, in buffers, or `None` for sources and relays, which
+    /// have no input.
+    ///
+    /// This is the blueprint's interconnect capacity, unless the component has a capacity of its own (see
+    /// [`TopologyBlueprint::with_component_input_capacity`][super::TopologyBlueprint::with_component_input_capacity]).
+    pub fn input_capacity(&self) -> Option<NonZeroUsize> {
+        self.input.map(|(_, capacity)| capacity)
     }
 
     /// Returns the outputs the component declares, sorted by output ID.

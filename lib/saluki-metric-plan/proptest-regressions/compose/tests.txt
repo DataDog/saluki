@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 71d3669ad92eb8f6eb87d7ff0eecb5a91164e1bd61dd7d0ffe51d6161fd305e6 # shrinks to tree = Drop
+cc f1643a004477994c963e5beef89824bba212d51c898f727ad17a64e7e85e506a # shrinks to edits = [Operator(0, "aggregate")]
+cc 3ae16e20ee9cc5f8205f7e2b3746f5e2251076f1bf0a5d156cf81dabb784299b # shrinks to edits = [RemoveNode(3415647548981866100), Output(11140085066923457437, "dsd_client_telemetry")]

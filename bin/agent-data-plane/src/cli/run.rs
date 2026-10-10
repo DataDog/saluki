@@ -72,7 +72,12 @@ use crate::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
         ConfigUpdatesWorker, DogStatsDControlSurface, TopologyControlSurfaces,
     },
-    programmable_metrics::{installer::ProgrammableMetrics, topology::PlanTopology},
+    programmable_metrics::{
+        api::ControlSurfaceWorker,
+        channel_stub::{ClientInfo, StubChannelConfig, StubChannelWorker},
+        installer::ProgrammableMetrics,
+        topology::PlanTopology,
+    },
 };
 use crate::{
     config::{remote_agent_client_configuration, DataPlaneConfiguration},
@@ -182,6 +187,11 @@ pub async fn handle_run_command(
     config_sys
         .check_compatibility(&active_pipelines)
         .error_context("Incompatible configuration detected.")?;
+
+    // The local stub of the programmable metrics artifact channel, if configured. A stub URL that is not an `http://`
+    // URL of a loopback address fails startup, as soon as the configuration is loaded.
+    let artifact_channel_stub =
+        StubChannelConfig::from_configuration(&config_sys.config().control.programmable_metrics.artifact_channel)?;
 
     let remote_agent_client_config = if standalone {
         None
@@ -297,10 +307,26 @@ pub async fn handle_run_command(
         internal_supervisor.add_worker(ConfigUpdatesWorker::new(config_updates));
     }
 
-    // Install a new generation of the metrics plan whenever a configuration change changes it. The installer's state
-    // lives outside the worker, so a restart of the worker continues where it stopped.
-    if let Some(programmable_metrics) = programmable_metrics {
-        internal_supervisor.add_worker(programmable_metrics.into_installer());
+    // Install a new generation of the metrics plan whenever a configuration change or a policy artifact changes it. The
+    // installer's state lives outside the worker, so a restart of the worker continues where it stopped. The control
+    // surface on the privileged API serves the installer's status, and the stub of the artifact channel, if
+    // configured, delivers policy artifacts to it.
+    match programmable_metrics {
+        Some(mut programmable_metrics) => {
+            internal_supervisor.add_worker(ControlSurfaceWorker::new(programmable_metrics.status()));
+            if let Some(stub) = artifact_channel_stub {
+                let transport = programmable_metrics.connect_artifact_channel();
+                internal_supervisor.add_worker(StubChannelWorker::new(stub, ClientInfo::for_process(), transport));
+            }
+            internal_supervisor.add_worker(programmable_metrics.into_installer());
+        }
+        None if artifact_channel_stub.is_some() => {
+            warn!(
+                "The programmable metrics artifact channel stub is configured, but no metrics pipeline is enabled: \
+                 the stub is not polled."
+            );
+        }
+        None => {}
     }
 
     if let Some(env_supervisor) = maybe_env_supervisor {

@@ -44,6 +44,15 @@
       <div class="compile-status" id="compile-status">Load the default program, edit it, then compile.</div>
       <ul class="diagnostics" id="diagnostics"></ul>
 
+      <section class="plan-diff" id="plan-diff" aria-label="Plan diff" hidden>
+        <div class="plan-diff-head" id="plan-diff-head"></div>
+        <ul class="plan-diff-nodes" id="plan-diff-nodes"></ul>
+        <details class="plan-diff-edges" id="plan-diff-edges" hidden>
+          <summary id="plan-diff-edges-summary"></summary>
+          <ul id="plan-diff-edge-list"></ul>
+        </details>
+      </section>
+
       <div class="publish-row">
         <button type="button" id="btn-publish" class="approve" disabled>Publish</button>
         <button type="button" id="btn-format" class="quiet" hidden
@@ -56,6 +65,7 @@
       <div class="confirm" id="confirm" hidden>
         <p>Approve and publish this artifact as revision <strong id="confirm-revision">?</strong>?</p>
         <p class="hash-line"><code id="confirm-hash"></code></p>
+        <p class="confirm-diff" id="confirm-diff" hidden></p>
         <ul class="confirm-warnings" id="confirm-warnings" hidden></ul>
         <div class="confirm-actions">
           <button type="button" id="btn-confirm" class="approve">Approve and publish</button>

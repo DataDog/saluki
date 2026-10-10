@@ -38,6 +38,9 @@ pub mod values {
     /// The maximum number of node visits one input record can cause.
     pub const WORK_PER_INPUT: u64 = 4096;
 
+    /// The maximum memory an artifact's nodes declare, in bytes.
+    pub const ARTIFACT_MEMORY: u64 = 64 * 1024 * 1024;
+
     /// The time allowed for every region to prepare a generation.
     pub const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -231,6 +234,16 @@ pub const WORK_PER_INPUT: LimitSpec = LimitSpec {
                   path it can take and the declared expansion of every operator on them.",
 };
 
+/// The maximum memory an artifact's nodes declare in their memory bounds.
+pub const ARTIFACT_MEMORY: LimitSpec = LimitSpec {
+    name: "artifact_memory",
+    default: LimitValue::Bytes(values::ARTIFACT_MEMORY),
+    source: LimitSource::Fixed,
+    description: "Maximum memory that an artifact's nodes declare in their memory bounds, what their kernels allocate \
+                  up front and at most together, such as a mapper's string interner and caches. A kernel is built \
+                  before the artifact runs, so an artifact that declares more is rejected.",
+};
+
 /// The time allowed for every region to prepare a new generation.
 pub const PREPARE_TIMEOUT: LimitSpec = LimitSpec {
     name: "prepare_timeout",
@@ -332,6 +345,7 @@ pub const LIMITS: &[LimitSpec] = &[
     PREDICATE_LEAVES,
     TEE_FAN_OUT,
     WORK_PER_INPUT,
+    ARTIFACT_MEMORY,
     PREPARE_TIMEOUT,
     DRAIN_DEADLINE,
     OVERLAP_BUDGET,
@@ -396,6 +410,7 @@ mod tests {
         assert_eq!(count(&PREDICATE_LEAVES), 1024);
         assert_eq!(count(&TEE_FAN_OUT), 32);
         assert_eq!(count(&WORK_PER_INPUT), 4096);
+        assert_eq!(count(&ARTIFACT_MEMORY), 67_108_864);
         assert_eq!(duration(&PREPARE_TIMEOUT), Duration::from_secs(10));
         assert_eq!(duration(&DRAIN_DEADLINE), Duration::from_secs(30));
         assert_eq!(count(&OVERLAP_BUDGET), 4);

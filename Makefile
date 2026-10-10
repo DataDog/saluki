@@ -391,6 +391,14 @@ demo-programmable-metrics: ## Runs the programmable metrics demo: ADP on the def
 	@echo "[*] Running the programmable metrics demo (UI at http://127.0.0.1:17080 unless --ui-port is in DEMO_ARGS)..."
 	@target/devel/programmable-metrics-demo run --adp-bin target/devel/agent-data-plane $(DEMO_ARGS)
 
+.PHONY: demo-programmable-metrics-check
+demo-programmable-metrics-check: build-adp
+demo-programmable-metrics-check: ## Runs the programmable metrics demo scenarios S0-S6 headless against ADP and checks what each endpoint receives (extra flags: DEMO_CHECK_ARGS)
+	@echo "[*] Building the programmable metrics demo..."
+	@cargo build --profile devel --package programmable-metrics-demo
+	@echo "[*] Running the programmable metrics demo check (scenarios S0-S6, headless, UI port 27080 unless --port-offset is in DEMO_CHECK_ARGS)..."
+	@target/devel/programmable-metrics-demo check --adp-bin target/devel/agent-data-plane $(DEMO_CHECK_ARGS)
+
 ##@ Kubernetes
 
 .PHONY: k8s-create-cluster

@@ -352,8 +352,9 @@ impl HttpClientBuilder {
     ///
     /// # Errors
     ///
-    /// If there was an error building the TLS configuration for the client, or if a supplied complete TLS
-    /// configuration fails FIPS validation in a FIPS build, an error will be returned.
+    /// If there was an error building the TLS configuration for the client, or for reaching its proxies when it has
+    /// any, or if a supplied complete TLS configuration fails FIPS validation in a FIPS build, an error will be
+    /// returned.
     pub fn build(self) -> Result<HttpClient, GenericError> {
         let tls_config = match self.client_tls_config {
             Some(mut config) => {
@@ -368,7 +369,14 @@ impl HttpClientBuilder {
         // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
         // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
         // being used.
-        let mut proxy_connector = hyper_http_proxy::ProxyConnector::new(connector)?;
+        //
+        // The proxy connector's own TLS configuration, which loads the platform's root certificates, is used only to
+        // reach a proxy over HTTPS: without proxies, nothing uses it, so it is not built, and a client without proxies
+        // does not depend on the platform's trust settings beyond its own TLS configuration.
+        let mut proxy_connector = match self.proxies.as_deref() {
+            Some(proxies) if !proxies.is_empty() => hyper_http_proxy::ProxyConnector::new(connector)?,
+            _ => hyper_http_proxy::ProxyConnector::unsecured(connector),
+        };
         // A zero timeout means the handshake deadline is disabled, matching `HttpsCapableConnector`'s own
         // handling of `Duration::ZERO` for direct connections.
         let proxy_tls_handshake_timeout = (!tls_handshake_timeout.is_zero()).then_some(tls_handshake_timeout);

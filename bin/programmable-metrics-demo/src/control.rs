@@ -1,10 +1,16 @@
-//! The control surface watcher: polls ADP's programmable-metrics status every second, and keeps the export bundle
-//! current.
+//! The control surface watcher: polls ADP's programmable-metrics status every second, and keeps the export bundle,
+//! the default program, and the active plan current.
 //!
 //! The export is fetched again when the default program hash ADP's status reports changes from what it reported when
 //! the export in hand was fetched, and at least every [`EXPORT_MAX_AGE`] otherwise, so the editor's checks follow
 //! configuration changes. The watcher compares the reported hash with its own earlier value, never with the export's
 //! `base.program_hash`, since the protocol does not say that the two are computed alike.
+//!
+//! The default program (`GET /programmable-metrics/default-program`), which the editor composes artifacts into, is
+//! fetched with every export, and kept only if it is the program the export was taken from: its base program hash is
+//! the export's. One that is not (the configuration changed between the two requests) makes the watcher fetch both
+//! again. The active plan (`GET /programmable-metrics/plan`), which the editor diffs against, is fetched when the
+//! active plan hash the status reports changes.
 //!
 //! The status is read field by field (see [`AdpStatus::read`]), and the status in hand is kept, with when it was
 //! received, when a later request fails, so that the UI can show it as last known.
@@ -14,6 +20,11 @@ use std::{
     time::Duration,
 };
 
+use saluki_metric_plan::{
+    canonical::{PlanHash, ResolvedValues},
+    export::base,
+    ir::{Plan, ScopeName},
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -61,6 +72,13 @@ struct ControlState {
     export_fetched_ms: Option<u64>,
     /// The default program hash ADP's status reported when the export in hand was fetched.
     export_reported_hash: Option<String>,
+    /// The default program the export in hand was taken from.
+    default_program: Option<Arc<Plan>>,
+    default_program_state: Option<SurfaceState>,
+    default_program_error: Option<String>,
+    /// The active plan, with its hash.
+    active_plan: Option<(PlanHash, Arc<Plan>)>,
+    active_plan_error: Option<String>,
 }
 
 impl ControlState {
@@ -109,6 +127,18 @@ pub struct ControlView {
 
     /// The default program hash of the export in hand.
     pub export_program_hash: Option<String>,
+
+    /// Whether the default program route answered with the program the export in hand was taken from.
+    pub default_program_state: SurfaceState,
+
+    /// Why the default program route, or reading its plan, failed, if it did.
+    pub default_program_error: Option<String>,
+
+    /// The hash of the active plan in hand.
+    pub active_plan_hash: Option<String>,
+
+    /// Why the plan route, or reading its plan, failed, if it did.
+    pub active_plan_error: Option<String>,
 }
 
 /// The control surface watcher's record.
@@ -136,6 +166,20 @@ impl ControlSurface {
         self.lock().export.clone()
     }
 
+    /// Returns the export bundle in hand with the default program it was taken from, when ADP served that program.
+    pub fn export_with_default_program(&self) -> Option<(Arc<ExportBundle>, Option<Arc<Plan>>)> {
+        let state = self.lock();
+        let export = state.export.clone()?;
+        Some((export, state.default_program.clone()))
+    }
+
+    /// Returns the active plan in hand, if its hash is `hash`.
+    pub fn active_plan(&self, hash: &PlanHash) -> Option<Arc<Plan>> {
+        let state = self.lock();
+        let (held, plan) = state.active_plan.as_ref()?;
+        (held == hash).then(|| Arc::clone(plan))
+    }
+
     /// Returns what the watcher knows.
     pub fn view(&self) -> ControlView {
         let state = self.lock();
@@ -160,6 +204,10 @@ impl ControlSurface {
             export_error: state.export_error.clone(),
             export_fetched_ms: state.export_fetched_ms,
             export_program_hash: state.export.as_ref().map(|export| export.program_hash().to_string()),
+            default_program_state: state.default_program_state.unwrap_or(SurfaceState::Unknown),
+            default_program_error: state.default_program_error.clone(),
+            active_plan_hash: state.active_plan.as_ref().map(|(hash, _)| hash.to_string()),
+            active_plan_error: state.active_plan_error.clone(),
         }
     }
 
@@ -204,11 +252,84 @@ impl ControlSurface {
             }
             Surface::NotExposed => {
                 state.export = None;
+                state.default_program = None;
                 state.export_error = None;
             }
             Surface::Failed(error) => state.export_error = Some(error.clone()),
         }
         answer
+    }
+
+    /// Records the answer of the default program route, keeping the program only if the export in hand was taken from
+    /// it, and returns whether it was kept.
+    ///
+    /// A program whose base differs from the export's was lowered from another configuration than the export (the
+    /// configuration changed between the two requests): it is refused, and the export is marked to be fetched again.
+    pub fn record_default_program(&self, answer: Surface<Value>) -> SurfaceState {
+        let mut state = self.lock();
+        let answer = answer.map(|value| {
+            Plan::from_value(value).map_err(|error| format!("ADP's default program cannot be read: {}", error))
+        });
+        let answer = match (answer, state.export.clone()) {
+            (Surface::Available(plan), Some(export)) => match matching_base(&plan, &export) {
+                Ok(()) => Surface::Available(plan),
+                Err(error) => {
+                    // Fetched again on the next tick, with the export.
+                    state.export_reported_hash = None;
+                    Surface::Failed(error)
+                }
+            },
+            (Surface::Available(_), None) => {
+                Surface::Failed("There is no export in hand to match the default program with.".to_string())
+            }
+            (other, _) => other,
+        };
+        let answer_state = answer.state();
+        state.default_program_state = Some(answer_state);
+        match answer {
+            Surface::Available(plan) => {
+                state.default_program = Some(Arc::new(plan));
+                state.default_program_error = None;
+            }
+            Surface::NotExposed => {
+                state.default_program = None;
+                state.default_program_error = None;
+            }
+            Surface::Failed(error) => {
+                state.default_program = None;
+                state.default_program_error = Some(error);
+            }
+        }
+        answer_state
+    }
+
+    /// Records the answer of the plan route: the active plan, kept with its hash, which is returned.
+    pub fn record_active_plan(&self, answer: Surface<Value>) -> Option<(PlanHash, Arc<Plan>)> {
+        let answer = answer.map(|value| {
+            let plan =
+                Plan::from_value(value).map_err(|error| format!("ADP's active plan cannot be read: {}", error))?;
+            let hash = plan
+                .hash(ResolvedValues::Include)
+                .map_err(|error| format!("ADP's active plan cannot be hashed: {}", error))?;
+            Ok((hash, Arc::new(plan)))
+        });
+        let mut state = self.lock();
+        match answer {
+            Surface::Available(active) => {
+                state.active_plan = Some(active.clone());
+                state.active_plan_error = None;
+                Some(active)
+            }
+            Surface::NotExposed => {
+                state.active_plan = None;
+                state.active_plan_error = None;
+                None
+            }
+            Surface::Failed(error) => {
+                state.active_plan_error = Some(error);
+                None
+            }
+        }
     }
 
     /// Returns `true` if the export should be fetched at `now_ms`.
@@ -225,10 +346,39 @@ impl ControlSurface {
         }
     }
 
-    /// Fetches the export now, and records it.
+    /// Fetches the export now, and the default program it was taken from, and records them.
     pub async fn refresh_export(&self, api: &AdpApi) -> Surface<Arc<ExportBundle>> {
         let answer = api.control_json::<Value>(routes::EXPORT).await;
-        self.record_export(answer, unix_millis())
+        let export = self.record_export(answer, unix_millis());
+        if let Surface::Available(_) = export {
+            let answer = api.control_json::<Value>(routes::DEFAULT_PROGRAM).await;
+            self.record_default_program(answer);
+        }
+        export
+    }
+
+    /// Returns the active plan whose hash is `hash`: the one in hand, or, if that is another, the one ADP serves now,
+    /// which is `None` if it is not `hash` either (another generation became active meanwhile).
+    pub async fn refresh_active_plan(&self, api: &AdpApi, hash: &PlanHash) -> Option<Arc<Plan>> {
+        if let Some(plan) = self.active_plan(hash) {
+            return Some(plan);
+        }
+        let answer = api.control_json::<Value>(routes::PLAN).await;
+        self.record_active_plan(answer)
+            .filter(|(served, _)| served == hash)
+            .map(|(_, plan)| plan)
+    }
+
+    /// Returns the active plan hash ADP's status reports, if it reports one that can be read.
+    pub fn reported_active_plan_hash(&self) -> Option<PlanHash> {
+        self.lock()
+            .status
+            .as_ref()?
+            .status
+            .active_plan_hash
+            .as_deref()?
+            .parse()
+            .ok()
     }
 
     /// Polls the status route every [`STATUS_INTERVAL`], fetching the export when wanted, until the task is dropped.
@@ -242,11 +392,32 @@ impl ControlSurface {
             if self.export_wanted(unix_millis()) {
                 self.refresh_export(&api).await;
             }
+            if let Some(active) = self.reported_active_plan_hash() {
+                self.refresh_active_plan(&api, &active).await;
+            }
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ControlState> {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Checks that `plan` is the default program `export` was taken from: its base program hash is the export's.
+fn matching_base(plan: &Plan, export: &ExportBundle) -> Result<(), String> {
+    let scope = ScopeName::new(export.scope.as_str())
+        .map_err(|error| format!("The export's scope `{}` is not a scope name: {}", export.scope, error))?;
+    let base = base(plan, &scope)
+        .map_err(|error| format!("ADP's default program cannot be checked against its export: {}", error))?;
+    if &base.program_hash == export.program_hash() {
+        Ok(())
+    } else {
+        Err(format!(
+            "ADP's default program has base {}, but the export in hand was taken from {}: the configuration changed \
+             between the two requests. Both are fetched again.",
+            base.program_hash,
+            export.program_hash()
+        ))
     }
 }
 
@@ -301,6 +472,44 @@ mod tests {
             (Some(5_000), Some(1_000))
         );
         assert_eq!(control.status().unwrap().0, 1_000);
+    }
+
+    #[test]
+    fn the_default_program_is_kept_with_the_export_it_belongs_to_and_the_active_plan_by_its_hash() {
+        let (plan, export) = crate::preview::tests::fixture_documents();
+        let control = ControlSurface::new();
+        let program = || Surface::Available(serde_json::to_value(&plan).unwrap());
+
+        // Without an export there is nothing to match it with.
+        assert_eq!(control.record_default_program(program()), SurfaceState::Failed);
+        assert!(control.export_with_default_program().is_none());
+
+        control.record_export(Surface::Available(export), 1_000);
+        assert_eq!(control.record_default_program(program()), SurfaceState::Available);
+        let (_, default_program) = control.export_with_default_program().unwrap();
+        assert_eq!(*default_program.unwrap(), plan);
+        assert_eq!(control.view().default_program_state, SurfaceState::Available);
+
+        // An ADP that does not serve the route: structural checks only, without an error.
+        assert_eq!(
+            control.record_default_program(Surface::NotExposed),
+            SurfaceState::NotExposed
+        );
+        assert!(control.export_with_default_program().unwrap().1.is_none());
+        assert_eq!(control.view().default_program_error, None);
+
+        // The active plan is kept by the hash it has, which is what callers ask for.
+        let hash = plan.hash(ResolvedValues::Include).unwrap();
+        let (kept, _) = control.record_active_plan(program()).unwrap();
+        assert_eq!(kept, hash);
+        assert!(control.active_plan(&hash).is_some());
+        assert!(control.active_plan(&PlanHash::of_bytes(b"another plan")).is_none());
+        assert_eq!(control.view().active_plan_hash, Some(hash.to_string()));
+        let unreadable = control.record_active_plan(Surface::Available(serde_json::json!({"nodes": 3})));
+        assert!(unreadable.is_none());
+        assert!(control.view().active_plan_error.unwrap().contains("cannot be read"));
+        // A failed request keeps the plan in hand.
+        assert!(control.active_plan(&hash).is_some());
     }
 
     #[test]

@@ -76,8 +76,9 @@ use std::{
 
 use agent_data_plane_config::control::MemoryMode;
 use agent_data_plane_config::defaults::{
-    DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN, DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL,
-    DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, DEFAULT_ENABLE_GLOBAL_LIMITER, DEFAULT_MAX_RESOURCE_LEN,
+    DEFAULT_MEMORY_SLOP_FACTOR, DEFAULT_METRICS_LEVEL, DEFAULT_STRING_INTERNER_SIZE_BYTES,
+    MAX_STRING_INTERNER_SIZE_BYTES,
 };
 use agent_data_plane_config::domains::dogstatsd::MetricTagValueAllowlistEntry;
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
@@ -294,6 +295,46 @@ pub struct SalukiOnly {
 pub struct Experimental {
     /// Startup-only per-endpoint metric filtering (`experimental.metrics_endpoint_routing.*`).
     pub metrics_endpoint_routing: MetricsEndpointRouting,
+    /// Programmable metric processing (`experimental.programmable_metrics.*`).
+    pub programmable_metrics: ProgrammableMetrics,
+}
+
+/// Experimental programmable metric processing settings (`experimental.programmable_metrics.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ProgrammableMetrics {
+    /// The artifact channel (`experimental.programmable_metrics.artifact_channel.*`).
+    pub artifact_channel: ArtifactChannel,
+}
+
+/// The programmable metrics artifact channel (`experimental.programmable_metrics.artifact_channel.*`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ArtifactChannel {
+    /// The URL of the channel's local development stub (`experimental.programmable_metrics.artifact_channel.stub_url`).
+    ///
+    /// Defaults to absent, which means no channel; an empty string is the same as absent. The stub's startup checks
+    /// that it is an `http://` URL of a loopback address, the stub's own rule for where it may be.
+    pub stub_url: Option<String>,
+    /// How often the stub is polled (`experimental.programmable_metrics.artifact_channel.poll_interval`), given as a
+    /// duration string such as `1s`. Defaults to 1 second.
+    ///
+    /// The stub cannot be polled continuously, so a zero interval is rejected here.
+    #[serde(deserialize_with = "deserialize_optional_positive_duration")]
+    pub poll_interval: Option<DurationString>,
+}
+
+fn deserialize_optional_positive_duration<'de, D>(deserializer: D) -> Result<Option<DurationString>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let duration = Option::<DurationString>::deserialize(deserializer)?;
+    if duration.is_some_and(|duration| duration.as_duration().is_zero()) {
+        return Err(serde::de::Error::custom(
+            "the duration must be greater than zero, such as `1s`",
+        ));
+    }
+    Ok(duration)
 }
 
 /// Experimental metrics endpoint-routing settings (`experimental.metrics_endpoint_routing.*`).
@@ -642,6 +683,12 @@ impl SalukiOnly {
         if let Some(v) = self.remote_agent_string_interner_size_bytes {
             config.control.ipc.remote_agent_string_interner_size_bytes = v;
         }
+        let channel = &self.experimental.programmable_metrics.artifact_channel;
+        let destination = &mut config.control.programmable_metrics.artifact_channel;
+        destination.stub_url = channel.stub_url.clone().filter(|url| !url.is_empty());
+        destination.poll_interval = channel
+            .poll_interval
+            .map_or(DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, |v| v.as_duration());
 
         // shared
         config.shared.metrics_level = self
@@ -908,12 +955,15 @@ mod tests {
                     "dispatch_timeout": "3s"
                 }
             },
-            // nested: experimental.metrics_endpoint_routing
+            // nested: experimental.metrics_endpoint_routing and experimental.programmable_metrics
             "experimental": {
                 "metrics_endpoint_routing": {
                     "metric_allowlist": {
                         "https://app.us5.datadoghq.com": ["allowed.metric", "also.allowed"]
                     }
+                },
+                "programmable_metrics": {
+                    "artifact_channel": { "stub_url": "http://127.0.0.1:17100", "poll_interval": "250ms" }
                 }
             },
             // nested: apm_config
@@ -959,6 +1009,9 @@ mod tests {
         assert!(!config.control.enable_global_limiter);
         assert_eq!(config.control.memory_mode, MemoryMode::Strict);
         assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes.get(), 4096);
+        let channel = &config.control.programmable_metrics.artifact_channel;
+        assert_eq!(channel.stub_url.as_deref(), Some("http://127.0.0.1:17100"));
+        assert_eq!(channel.poll_interval, Duration::from_millis(250));
 
         // shared
         assert_eq!(config.shared.metrics_level, "debug");
@@ -1110,6 +1163,33 @@ mod tests {
         saluki_only.seed(&mut config);
         assert_eq!(config.control.memory_slop_factor, 0.0);
         assert!(!config.control.enable_global_limiter);
+    }
+
+    #[test]
+    fn the_artifact_channel_is_off_by_default_and_an_empty_stub_url_leaves_it_off() {
+        for value in [
+            json!({}),
+            json!({ "experimental": { "programmable_metrics": { "artifact_channel": { "stub_url": "" } } } }),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value.clone()).expect("the source deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            let channel = &config.control.programmable_metrics.artifact_channel;
+            assert_eq!(channel.stub_url, None, "{value}");
+            assert_eq!(channel.poll_interval, DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, "{value}");
+        }
+        assert_eq!(DEFAULT_ARTIFACT_CHANNEL_POLL_INTERVAL, Duration::from_secs(1));
+
+        // A poll interval that is not a duration, or is zero, fails the load.
+        for poll_interval in [json!("often"), json!("0s"), json!("0ms")] {
+            let unreadable = json!({ "experimental": { "programmable_metrics": { "artifact_channel": {
+                "poll_interval": poll_interval
+            } } } });
+            assert!(
+                serde_json::from_value::<SalukiOnly>(unreadable).is_err(),
+                "{poll_interval}"
+            );
+        }
     }
 
     #[test]

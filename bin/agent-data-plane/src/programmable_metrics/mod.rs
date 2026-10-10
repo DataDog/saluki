@@ -1,7 +1,7 @@
 //! Programmable metric processing: ADP's side of the plan crate's contracts.
 //!
-//! The metrics path of the topology runs the default program: native configuration lowered into a plan. This module
-//! holds what the plan crate leaves to the host:
+//! The metrics path of the topology runs the default program, native configuration lowered into a plan, or a policy
+//! artifact composed into it. This module holds what the plan crate leaves to the host:
 //!
 //! - [`host_facts`]: what lowering needs to know about the process, captured once at boot;
 //! - [`bindings`]: the closed registry of configuration bindings that plan parameters may name;
@@ -11,11 +11,16 @@
 //! - [`lowering`]: native configuration into the default program;
 //! - [`topology`]: the metrics path of the topology, built from the default program's physical frame;
 //! - [`installer`]: booting the metrics path, and installing a new generation of the plan whenever a configuration
-//!   change changes it;
-//! - [`telemetry`]: what regions and the installer publish, under the native identities of the nodes.
+//!   change or a policy artifact changes it;
+//! - [`telemetry`]: what regions and the installer publish, under the native identities of the nodes;
+//! - [`channel_stub`]: the local development stub of the artifact channel, which polls a stub server for policy
+//!   snapshots;
+//! - [`api`]: the control surface on the privileged API: status, export, plan, and explain.
 
+pub mod api;
 pub mod bindings;
 pub mod catalog;
+pub mod channel_stub;
 pub mod host_facts;
 pub mod installer;
 pub mod lowering;

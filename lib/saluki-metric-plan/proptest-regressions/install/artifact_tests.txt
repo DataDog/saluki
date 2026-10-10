@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0057d6a4c9e101a25448f25e8621cc160ac616f2f9a088c19baea4cb080eb555 # shrinks to drafts = [Draft(Deliver([Policy { id: "demo", version: 0, revision: 0, marker: "c", approved_against: None, damage: None }])), Draft(Acknowledge), Draft(Configure("x")), Draft(RefusePrepare), Draft(Deliver([Policy { id: "demo", version: 2, revision: 2, marker: "a", approved_against: None, damage: None }])), Draft(Deliver([Policy { id: "demo", version: 2, revision: 2, marker: "c", approved_against: None, damage: None }])), Draft(Panic), Draft(Retry), Draft(Acknowledge)]

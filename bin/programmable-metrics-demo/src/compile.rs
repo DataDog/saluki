@@ -1,9 +1,12 @@
 //! Compiling surface syntax into a policy artifact, for the editor.
 //!
-//! Compiling parses the source with `saluki-metric-plan-syntax`, reads the artifact document back with the plan crate
-//! (which checks what reading a document checks, such as the blob table, and computes the hash approval binds to), and,
-//! when ADP's export bundle is at hand, runs the structural [checks](crate::checks) against its catalog. Every problem
-//! is a diagnostic with a line, a column, and the span of the source it is about, so the editor can mark it.
+//! Compiling parses the source with `saluki-metric-plan-syntax`, receives the artifact document as ADP does (the plan
+//! crate's `receive_artifact`: the artifact limits, what reading a document checks, such as the blob table, and the
+//! hash approval binds to), and, when ADP's export bundle and default program are at hand, composes the artifact into
+//! the default program, validates the composed plan, and diffs it against the active plan, as ADP will when the
+//! artifact arrives (see [`preview`](crate::preview)). With an export but no default program (an ADP that does not
+//! serve it), the structural [checks](crate::checks) run against the export's catalog instead. Every problem is a
+//! diagnostic with a line, a column, and the span of the source it is about, so the editor can mark it.
 //!
 //! The editor shows programs printed with [`DISPLAY`]: narrow enough for the editor at 1280 pixels, and without the
 //! output fingerprints, which are long digests a reader does not edit. A source that lists no fingerprints gets them
@@ -12,6 +15,7 @@
 
 use saluki_metric_plan::{
     canonical::PlanHash,
+    compose::receive_artifact,
     ir::{OutputId, PolicyArtifact, ReceivedArtifact},
     operators::names,
     validate::Catalog as _,
@@ -23,6 +27,7 @@ use serde_json::Value;
 use crate::{
     checks::{check_against_export, Severity},
     export::ExportBundle,
+    preview::{compose_preview, CompileContext, Preview},
 };
 
 /// How the editor prints programs: lines of up to about 64 characters where the syntax can break them, which the
@@ -45,11 +50,17 @@ pub enum Origin {
     /// The surface syntax: the text does not parse, or refers to something it does not define.
     Syntax,
 
-    /// The artifact document: reading it as a policy artifact failed.
+    /// The artifact document: receiving it as ADP does (its limits, reading it as a policy artifact) failed.
     Document,
 
-    /// The structural checks against ADP's export bundle.
+    /// The structural checks against ADP's export bundle, which run when ADP does not serve its default program.
     Check,
+
+    /// Composing the artifact into ADP's default program.
+    Composition,
+
+    /// Validating the composed plan.
+    Validation,
 }
 
 /// A source range as lines and columns, both counted from 1, columns in characters.
@@ -83,6 +94,9 @@ pub struct CompileDiagnostic {
     /// Where it comes from.
     pub origin: Origin,
 
+    /// The validation rule, for a validation finding.
+    pub rule: Option<&'static str>,
+
     /// What is wrong.
     pub message: String,
 
@@ -90,11 +104,15 @@ pub struct CompileDiagnostic {
     pub range: Range,
 }
 
-/// Whether the source was checked against ADP's export bundle.
+/// What the source was checked against.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CheckContext {
-    /// Whether the structural checks ran.
+    /// Whether the source was checked against ADP's export bundle: composed and validated, or checked structurally.
     pub available: bool,
+
+    /// Whether the artifact was composed into ADP's default program and the composed plan validated, rather than only
+    /// checked structurally.
+    pub composed: bool,
 
     /// Why they did not run, when they did not.
     pub reason: Option<String>,
@@ -130,21 +148,11 @@ pub struct CompileOutcome {
     /// The outputs whose fingerprints the source did not list and the export supplied.
     pub restored_fingerprints: Vec<String>,
 
-    /// Whether the structural checks ran.
+    /// What the source was checked against.
     pub checked_against: CheckContext,
 
-    /// The plan diff preview, which arrives with composition in stage 5.
+    /// The plan diff preview: what installing the artifact changes.
     pub preview: Preview,
-}
-
-/// The plan diff preview of an artifact against the active plan.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct Preview {
-    /// Whether a preview was computed.
-    pub available: bool,
-
-    /// Why it was not.
-    pub reason: String,
 }
 
 /// A compiled artifact, kept for publishing.
@@ -158,13 +166,13 @@ pub struct CompiledArtifact {
 }
 
 /// Maps byte offsets of a source to lines and columns.
-struct LineIndex<'a> {
+pub(crate) struct LineIndex<'a> {
     source: &'a str,
     line_starts: Vec<usize>,
 }
 
 impl<'a> LineIndex<'a> {
-    fn new(source: &'a str) -> Self {
+    pub(crate) fn new(source: &'a str) -> Self {
         let line_starts = std::iter::once(0)
             .chain(source.match_indices('\n').map(|(at, _)| at + 1))
             .collect();
@@ -182,7 +190,7 @@ impl<'a> LineIndex<'a> {
         (line, self.source[start..offset].chars().count() + 1)
     }
 
-    fn range(&self, span: Option<Span>) -> Range {
+    pub(crate) fn range(&self, span: Option<Span>) -> Range {
         let span = span.unwrap_or_default();
         let (line, column) = self.position(span.start);
         let (end_line, end_column) = self.position(span.end.max(span.start));
@@ -198,7 +206,7 @@ impl<'a> LineIndex<'a> {
 }
 
 /// Gives an artifact that lists no output fingerprints the export's fingerprint of every output it emits to, and
-/// returns those outputs.
+/// returns those outputs, each once, in the order the artifact first emits to them.
 ///
 /// The base of the export lists each output's fingerprint as of the default program; an output it does not list takes
 /// the catalog's. An output neither knows stays out, and the checks report the emit.
@@ -206,12 +214,17 @@ fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle) ->
     if !artifact.base.outputs.is_empty() {
         return Vec::new();
     }
-    let emitted = artifact
+    let mut emitted = Vec::new();
+    for output in artifact
         .nodes
         .iter()
         .filter(|node| node.op.as_str() == names::EMIT)
         .filter_map(|node| node.params.get("output")?.as_str()?.parse::<OutputId>().ok())
-        .collect::<Vec<_>>();
+    {
+        if !emitted.contains(&output) {
+            emitted.push(output);
+        }
+    }
     let mut restored = Vec::new();
     for output in emitted {
         let fingerprint = export
@@ -229,24 +242,40 @@ fn restore_fingerprints(artifact: &mut PolicyArtifact, export: &ExportBundle) ->
     restored
 }
 
-/// Compiles a source, checking it against an export bundle when one is given.
+/// Compiles a source, checking it against what ADP serves when `context` gives it.
 ///
 /// A source that lists no output fingerprints, as the editor prints programs, gets the export's fingerprint of each
-/// output it emits to (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none.
+/// output it emits to (see [`CompileOutcome::restored_fingerprints`]); without an export, it keeps none. With the
+/// default program too, the artifact is composed into it, the composed plan validated, and the plan diff computed, as
+/// ADP will (see [`compose_preview`]); with the export alone, the structural checks run.
 ///
-/// Returns the outcome for the editor and, if the source produced an artifact, the artifact for publishing. Structural
-/// findings do not prevent publishing: ADP is the authority, and publishing an artifact the checks flag is how the
-/// demo shows ADP's own rejection.
-pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, Option<CompiledArtifact>) {
+/// Returns the outcome for the editor and, if the source produced an artifact, the artifact for publishing. Findings
+/// do not prevent publishing, not even those ADP is certain to reject: ADP is the authority, and publishing an artifact
+/// the editor flags is how the demo shows ADP's own rejection.
+pub fn compile(source: &str, context: Option<&CompileContext<'_>>) -> (CompileOutcome, Option<CompiledArtifact>) {
     let index = LineIndex::new(source);
-    let checked_against = match export {
-        Some(export) => CheckContext {
+    let export = context.map(|context| context.export);
+    let default_program = context.and_then(|context| context.default_program);
+    let checked_against = match (export, default_program) {
+        (Some(export), Some(_)) => CheckContext {
             available: true,
+            composed: true,
             reason: None,
             default_program_hash: Some(export.program_hash().to_string()),
         },
-        None => CheckContext {
+        (Some(export), None) => CheckContext {
+            available: true,
+            composed: false,
+            reason: Some(
+                "ADP does not serve its default program (GET /programmable-metrics/default-program), which composing \
+                 the artifact needs, so only the structural checks against its export ran."
+                    .to_string(),
+            ),
+            default_program_hash: Some(export.program_hash().to_string()),
+        },
+        (None, _) => CheckContext {
             available: false,
+            composed: false,
             reason: Some(
                 "ADP's export bundle is not available, so the artifact was parsed but not checked against ADP's \
                  catalog."
@@ -254,6 +283,10 @@ pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, 
             ),
             default_program_hash: None,
         },
+    };
+    let preview = match &checked_against.reason {
+        Some(reason) => Preview::unavailable(format!("No plan diff: {}", reason)),
+        None => Preview::default(),
     };
     let mut outcome = CompileOutcome {
         ok: false,
@@ -265,12 +298,7 @@ pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, 
         canonical_source: None,
         restored_fingerprints: Vec::new(),
         checked_against,
-        preview: Preview {
-            available: false,
-            reason: "ADP validates the composed plan when it installs the artifact: composition, validation, and the \
-                     plan diff preview arrive with stage 5."
-                .to_string(),
-        },
+        preview,
     };
 
     let mut parsed = match parse(source) {
@@ -281,11 +309,13 @@ pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, 
                 .map(|diagnostic| CompileDiagnostic {
                     severity: Severity::Error,
                     origin: Origin::Syntax,
+                    rule: None,
                     message: diagnostic.message.clone(),
                     range: index.range(Some(diagnostic.span)),
                 })
                 .collect();
             outcome.errors = outcome.diagnostics.len();
+            outcome.preview = Preview::unavailable("No plan diff: the source does not parse.");
             return (outcome, None);
         }
     };
@@ -299,40 +329,77 @@ pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, 
             outcome.diagnostics.push(CompileDiagnostic {
                 severity: Severity::Error,
                 origin: Origin::Document,
+                rule: None,
                 message: format!("The artifact cannot be serialized: {}", error),
                 range: index.range(None),
             });
             outcome.errors = 1;
+            outcome.preview = Preview::unavailable("No plan diff: there is no artifact document.");
             return (outcome, None);
         }
     };
-    let received = match ReceivedArtifact::from_value(document.clone()) {
-        Ok(received) => received,
+    // Reading the document gives the hash approval binds to; without one there is nothing to publish.
+    let hash = match ReceivedArtifact::from_value(document.clone()) {
+        Ok(received) => received.hash,
         Err(error) => {
             outcome.diagnostics.push(CompileDiagnostic {
                 severity: Severity::Error,
                 origin: Origin::Document,
+                rule: None,
                 message: error.to_string(),
                 range: index.range(None),
             });
             outcome.errors = 1;
             outcome.artifact = Some(document);
+            outcome.preview = Preview::unavailable("No plan diff: the document is not a policy artifact.");
             return (outcome, None);
         }
     };
 
-    if let Some(export) = export {
-        outcome.diagnostics = check_against_export(source, &parsed, export)
-            .into_iter()
-            .map(|finding| CompileDiagnostic {
-                severity: finding.severity,
-                origin: Origin::Check,
-                message: finding.message,
-                range: index.range(finding.span),
-            })
-            .collect();
-        outcome.diagnostics.sort_by_key(|diagnostic| diagnostic.range.start);
+    // ADP receives the document with the artifact limits checked first. One it refuses can still be published, to
+    // show the refusal, but there is nothing to compose.
+    match (receive_artifact(document.clone()), context) {
+        (Err(error), _) => {
+            outcome.diagnostics.push(CompileDiagnostic {
+                severity: Severity::Error,
+                origin: Origin::Document,
+                rule: None,
+                message: format!("ADP refuses this document on receipt: {}", error),
+                range: index.range(None),
+            });
+            outcome.preview = Preview::unavailable("No plan diff: ADP refuses the artifact on receipt.");
+        }
+        (Ok(received), Some(context)) => match context.default_program {
+            Some(default_program) => {
+                let (findings, preview) = compose_preview(source, &parsed, &received, context, default_program, &index);
+                outcome.diagnostics = findings
+                    .into_iter()
+                    .map(|finding| CompileDiagnostic {
+                        severity: finding.severity,
+                        origin: finding.origin,
+                        rule: finding.rule,
+                        message: finding.message,
+                        range: index.range(finding.span),
+                    })
+                    .collect();
+                outcome.preview = preview;
+            }
+            None => {
+                outcome.diagnostics = check_against_export(source, &parsed, context.export)
+                    .into_iter()
+                    .map(|finding| CompileDiagnostic {
+                        severity: finding.severity,
+                        origin: Origin::Check,
+                        rule: None,
+                        message: finding.message,
+                        range: index.range(finding.span),
+                    })
+                    .collect();
+            }
+        },
+        (Ok(_), None) => {}
     }
+    outcome.diagnostics.sort_by_key(|diagnostic| diagnostic.range.start);
     outcome.errors = outcome
         .diagnostics
         .iter()
@@ -340,7 +407,7 @@ pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, 
         .count();
     outcome.warnings = outcome.diagnostics.len() - outcome.errors;
     outcome.ok = true;
-    outcome.artifact_hash = Some(received.hash.to_string());
+    outcome.artifact_hash = Some(hash.to_string());
     // Printed as it was written: without fingerprints if the export supplied them (they come back on compiling), with
     // them if the source listed them.
     let options = if outcome.restored_fingerprints.is_empty() && !parsed.artifact.base.outputs.is_empty() {
@@ -350,13 +417,7 @@ pub fn compile(source: &str, export: Option<&ExportBundle>) -> (CompileOutcome, 
     };
     outcome.canonical_source = Some(print(&parsed.artifact, &options));
     outcome.artifact = Some(document.clone());
-    (
-        outcome,
-        Some(CompiledArtifact {
-            document,
-            hash: received.hash,
-        }),
-    )
+    (outcome, Some(CompiledArtifact { document, hash }))
 }
 
 /// Prints an export bundle's artifact as source, for the editor's starting point, as [`DISPLAY`] prints.

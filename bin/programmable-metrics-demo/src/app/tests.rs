@@ -6,6 +6,7 @@ use tower::ServiceExt as _;
 
 use super::*;
 use crate::{
+    adp_api::SurfaceState,
     control::NOT_EXPOSED_MESSAGE,
     export::{tests::DEMO_EXPORT, ExportBundle},
     launcher::{self, Phase},
@@ -241,6 +242,96 @@ async fn the_compile_api_returns_placed_diagnostics_and_checks_against_the_expor
     assert_eq!(body["ok"], false);
     assert_eq!(body["diagnostics"][0]["origin"], "syntax");
     assert_eq!(body["diagnostics"][0]["range"]["line"], 2);
+}
+
+#[tokio::test]
+async fn the_compile_api_composes_into_the_default_program_adp_serves_as_the_revision_a_publish_would_get() {
+    let harness = harness().await;
+    let app = &harness.app;
+    let (plan, export) = crate::preview::tests::fixture_documents();
+    let active_plan_hash = plan
+        .hash(saluki_metric_plan::canonical::ResolvedValues::Include)
+        .unwrap()
+        .to_string();
+    // ADP's high-water mark is 4, so a publish would be revision 5; the default program is active, in generation 2.
+    app.control.record_status(
+        Surface::Available(json!({
+            "active_plan_hash": active_plan_hash,
+            "active_generation": 2,
+            "revision_high_water": 4,
+        })),
+        unix_millis(),
+    );
+    app.control.record_export(Surface::Available(export), unix_millis());
+    assert_eq!(
+        app.control
+            .record_default_program(Surface::Available(serde_json::to_value(&plan).unwrap())),
+        SurfaceState::Available
+    );
+    app.control
+        .record_active_plan(Surface::Available(serde_json::to_value(&plan).unwrap()));
+
+    let source = app
+        .control
+        .export()
+        .map(|export| default_program_source(&export))
+        .unwrap()
+        .replacen(
+            "  input.metrics -> metrics_policy\n",
+            "  input.metrics -> drop_debug\n\n  node drop_debug = split(name starts_with \"demo.debug.\") {\n    true  \
+             -> drop\n    false -> metrics_policy\n  }\n",
+            1,
+        );
+    let (status, body) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["checked_against"]["composed"], true);
+    assert_eq!(body["diagnostics"], json!([]));
+    let preview = &body["preview"];
+    assert_eq!((&preview["available"], &preview["valid"]), (&json!(true), &json!(true)));
+    assert_eq!(
+        preview["against"],
+        json!({
+            "kind": "active",
+            "plan_hash": active_plan_hash,
+            "generation": 2,
+            "artifact_revision": null,
+        })
+    );
+    let split = preview["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node"] == "policy/drop_debug")
+        .expect("the new split is in the diff");
+    assert_eq!(
+        (&split["change"], &split["provenance"]),
+        (&json!("added"), &json!("revision 5"))
+    );
+
+    // A default program that is not the one the export was taken from (the configuration changed between the two
+    // requests) is refused, and compiling falls back to the structural checks.
+    let mut other = plan.clone();
+    let gateway = other
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.to_string() == "af_metrics_gateway")
+        .unwrap();
+    gateway
+        .params
+        .insert("predicate".parse().unwrap(), json!({ "const": true }));
+    let state = app
+        .control
+        .record_default_program(Surface::Available(serde_json::to_value(&other).unwrap()));
+    assert_eq!(state, SurfaceState::Failed);
+    assert!(app
+        .control
+        .view()
+        .default_program_error
+        .unwrap()
+        .contains("fetched again"));
+    let (_, body) = call(app, "POST", "/api/compile", Some(json!({ "source": source }))).await;
+    assert_eq!(body["checked_against"]["composed"], false);
+    assert_eq!(body["preview"]["available"], false);
 }
 
 #[tokio::test]

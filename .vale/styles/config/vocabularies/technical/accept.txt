@@ -309,3 +309,10 @@ unstamp(s|ed)?
 [Mm]atcher(s|'s)?
 [Ss]ubgraphs?
 [Rr]eorderable
+[Rr]edeliver(y|ies|ed|s)?
+[Rr]ebas(e|es|ed|ing)
+[Rr]efetch(es|ed|ing)?
+inlines
+[Uu]nparsable
+[Rr]einstall(s|ed|ing)?
+[Uu]ndescribed

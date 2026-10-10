@@ -165,6 +165,9 @@ pub struct ChannelStatus {
     /// Whether the active artifact's base no longer matches the default program.
     pub stale_base: Option<bool>,
 
+    /// Whether the active artifact was approved against another active plan than the one it was prepared against.
+    pub stale_review: Option<bool>,
+
     /// Why ADP is degraded, if it is.
     pub degraded: Option<String>,
 
@@ -202,6 +205,7 @@ impl ChannelStatus {
                     }
                 }),
             stale_base: member(status, path, "stale_base", notes).flatten(),
+            stale_review: member(status, path, "stale_review", notes).flatten(),
             degraded: member(status, path, "degraded", notes).flatten(),
             live_generations: member(status, path, "live_generations", notes).flatten(),
         }

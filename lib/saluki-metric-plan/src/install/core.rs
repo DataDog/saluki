@@ -1,5 +1,7 @@
 //! The installer's decisions, without I/O.
 
+mod artifacts;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -9,6 +11,7 @@ use std::{
 
 use saluki_core::execution::{GenerationId, GenerationIdAllocator, GenerationRef, GenerationToken, RetireNotifier};
 
+use self::artifacts::{ArtifactState, Settle};
 use super::{
     diff::{diff, kernel_reuse},
     lifecycle::{GenerationState, LifecycleEvent},
@@ -207,7 +210,13 @@ pub enum Action {
     /// Call [`InstallerCore::retry`] after the delay.
     RetryAfter(Duration),
 
-    /// Lower and propose the default program: an artifact generation failed and nothing is kept to roll back to.
+    /// Lower the current configuration into the default program and hand it to
+    /// [`InstallerCore::on_default_program`].
+    ///
+    /// The core asks for it when the plan the schedule holds must change without a configuration change: an artifact
+    /// generation failed with nothing kept to roll back to, the policy was revoked, or a rollback or a rejected
+    /// artifact left a plan running that was composed before the latest configuration change. With a policy in effect,
+    /// `on_default_program` composes the policy against the default program; otherwise it proposes the default program.
     InstallDefaultProgram,
 
     /// Report what happened to a candidate, in status, telemetry, and acknowledgments.
@@ -326,6 +335,13 @@ pub enum Rejection {
 
     /// A newer candidate cancelled the preparation before it committed.
     Cancelled,
+
+    /// An artifact from the channel was refused before it became a plan: its snapshot, config, envelope, document, or
+    /// composition is wrong.
+    Refused {
+        /// Why, in plain text.
+        message: String,
+    },
 }
 
 impl fmt::Display for Rejection {
@@ -345,8 +361,8 @@ impl fmt::Display for Rejection {
                 class: TransitionClass::Cut,
             } => write!(
                 f,
-                "state owner `{}` would change its time contract, which needs a cut at a bucket boundary: that \
-                 requires stage 6 state transitions",
+                "state owner `{}` would change its time contract, which needs a cut at a bucket boundary, and the \
+                 installer cannot cut state over yet",
                 node
             ),
             Self::Transition { node, class } => write!(
@@ -357,6 +373,7 @@ impl fmt::Display for Rejection {
             ),
             Self::Prepare { message } => write!(f, "preparation failed: {}", message),
             Self::Cancelled => f.write_str("a newer candidate cancelled the preparation"),
+            Self::Refused { message } => f.write_str(message),
         }
     }
 }
@@ -432,6 +449,19 @@ struct Installed {
     rewrites: Arc<[RewriteRecord]>,
 }
 
+/// What a new candidate does to a preparation in flight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Arrival {
+    /// It waits for the preparation to end, replacing any candidate already waiting, so that a stream of
+    /// configuration changes always commits: a default program, or an artifact in effect composed again after a
+    /// configuration change.
+    Queue,
+
+    /// It cancels a preparation that has not committed, as the ordering rule says a newer proposal does: a newly
+    /// accepted artifact, or an artifact proposed directly.
+    Cancel,
+}
+
 /// A candidate ready to be prepared.
 struct Queued {
     candidate: CandidateId,
@@ -469,9 +499,11 @@ type NotifierFactory = dyn Fn(GenerationId) -> RetireNotifier + Send + Sync;
 /// artifact is rejected, and a default-program candidate is tried again after a delay, unless a newer candidate
 /// replaced it, so that native configuration is applied eventually.
 ///
-/// Only one preparation runs at a time, and only the latest candidate waits: a newer default-program candidate
-/// replaces a waiting one, and a newer artifact also cancels an uncommitted preparation. A candidate equal to the
-/// plan being prepared, or to the active one when nothing is, changes nothing.
+/// Only one preparation runs at a time, and only the latest candidate waits: a newer default-program candidate, or a
+/// re-composition of the artifact in effect after a configuration change, replaces a waiting one, and a newly accepted
+/// artifact also cancels an uncommitted preparation, without waiting out the retry delay of a candidate that failed to
+/// prepare. A candidate equal to the plan being prepared, or to the active one when nothing is, changes nothing; nor
+/// does a newly accepted artifact equal to the active plan, beyond cancelling the preparation.
 ///
 /// # Overlap budget
 ///
@@ -482,10 +514,20 @@ type NotifierFactory = dyn Fn(GenerationId) -> RetireNotifier + Send + Sync;
 /// # Last-known-good and failure
 ///
 /// When an artifact generation commits, the generation it replaces stays prepared as last-known-good, so rolling back
-/// to it is one schedule store; when a default-program generation commits, none is kept. When supervision fails the
-/// active artifact generation, the core rolls back to last-known-good, or asks for the default program when there is
-/// none. A failed generation stays failed: it is never kept to roll back to, and when a newer generation replaces it,
-/// the generation kept before, if any, stays kept. A failure never changes the revision high-water mark.
+/// to it is one schedule store; when a default-program generation commits, none is kept. A composition of the same
+/// artifact document (a re-composition after a configuration change, or under a newer revision) replaces the earlier
+/// composition without keeping it, and so does any generation over one that serves a revoked artifact: the generation
+/// kept before stays kept. When supervision fails the active artifact generation, the core
+/// rolls back to last-known-good, or asks for the default program when there is none. A failed generation stays
+/// failed: it is never kept to roll back to, and when a newer generation replaces it, the generation kept before, if
+/// any, stays kept. A failure never changes the revision high-water mark.
+///
+/// # Artifacts
+///
+/// Snapshots from the artifact channel arrive through [`on_snapshot`][Self::on_snapshot], and configuration changes
+/// through [`on_default_program`][Self::on_default_program], which composes the policy in effect again. Every event
+/// keeps each config's acknowledgment ([`config_states`][Self::config_states]) and the status summary
+/// ([`status_summary`][Self::status_summary]) current.
 pub struct InstallerCore {
     frame: Arc<Frame>,
     registry: OperatorRegistry,
@@ -501,6 +543,7 @@ pub struct InstallerCore {
     retry_scheduled: bool,
     live: BTreeSet<GenerationId>,
     records: BTreeMap<GenerationId, GenerationRecord>,
+    artifacts: ArtifactState,
 }
 
 impl fmt::Debug for InstallerCore {
@@ -542,6 +585,7 @@ impl InstallerCore {
             retry_scheduled: false,
             live: BTreeSet::new(),
             records: BTreeMap::new(),
+            artifacts: ArtifactState::default(),
         };
         let candidate = core.candidate_id();
         if let Origin::Artifact { revision, .. } = boot.origin {
@@ -587,6 +631,12 @@ impl InstallerCore {
         self.active.as_ref().map(|active| active.programs.as_slice())
     }
 
+    /// Returns the plan of the generation being prepared, if one is: what an [`Action::Prepare`] prepares, for the
+    /// caller to derive what each region needs beside the programs, such as the panic budget of each slot.
+    pub fn preparing_plan(&self) -> Option<&Arc<Plan>> {
+        self.preparing.as_ref().map(|preparing| &preparing.installed.plan)
+    }
+
     /// Returns the installer's state.
     pub fn status(&self) -> InstallerStatus {
         let record = |installed: Option<&Installed>| {
@@ -608,6 +658,32 @@ impl InstallerCore {
         let id = self.candidate_id();
         let origin = candidate.origin;
         let mut actions = Vec::new();
+        if let Origin::Artifact { revision, .. } = origin {
+            if let Some(high_water) = self.high_water.filter(|high_water| revision <= *high_water) {
+                actions.push(Action::Report(Report {
+                    candidate: id,
+                    origin,
+                    generation: None,
+                    outcome: Outcome::Rejected(Rejection::Stale { revision, high_water }),
+                }));
+                return (id, self.settle(actions, Settle::Quiet));
+            }
+            self.high_water = Some(revision);
+        }
+        let arrival = if origin.can_roll_back() {
+            Arrival::Cancel
+        } else {
+            Arrival::Queue
+        };
+        self.submit(id, candidate, arrival, &mut actions);
+        (id, self.settle(actions, Settle::Quiet))
+    }
+
+    /// Proposes a candidate whose revision, if it is an artifact's, has been checked against the high-water mark.
+    ///
+    /// Returns `true` if the candidate is unchanged: it equals what the schedule will hold.
+    fn submit(&mut self, id: CandidateId, candidate: Candidate, arrival: Arrival, actions: &mut Vec<Action>) -> bool {
+        let origin = candidate.origin;
         let report = |outcome| {
             Action::Report(Report {
                 candidate: id,
@@ -617,48 +693,50 @@ impl InstallerCore {
             })
         };
 
-        if let Origin::Artifact { revision, .. } = origin {
-            if let Some(high_water) = self.high_water.filter(|high_water| revision <= *high_water) {
-                actions.push(report(Outcome::Rejected(Rejection::Stale { revision, high_water })));
-                return (id, actions);
-            }
-            self.high_water = Some(revision);
-        }
-
         // Nothing changes if the candidate is what the schedule will hold once the current preparation, if any, ends. A
-        // generation that supervision failed is not a state to keep: a candidate equal to it is installed anew.
+        // generation that supervision failed is not a state to keep: a candidate equal to it is installed anew. A newly
+        // accepted artifact cancels the preparation, so the schedule will then hold the active plan: an artifact equal
+        // to it cancels the preparation and changes nothing more.
+        let active = self
+            .active
+            .as_ref()
+            .filter(|active| !self.has_failed(active.generation.id()))
+            .map(|active| active.plan_hash);
         let target = match &self.preparing {
             Some(preparing) => Some(preparing.installed.plan_hash),
-            None => self
-                .active
-                .as_ref()
-                .filter(|active| !self.has_failed(active.generation.id()))
-                .map(|active| active.plan_hash),
+            None => active,
         };
+        let cancels = arrival == Arrival::Cancel && self.preparing.is_some();
         let plan_hash = candidate.plan.hash(ResolvedValues::Include).ok();
-        if plan_hash.is_some() && plan_hash == target {
+        if plan_hash.is_some() && (plan_hash == target || (cancels && plan_hash == active)) {
             if let Some(replaced) = self.pending.take() {
                 actions.push(Self::report(&replaced, Outcome::Superseded));
             }
+            if plan_hash != target {
+                self.cancel_preparation(actions);
+            }
             actions.push(report(Outcome::Unchanged));
-            return (id, actions);
+            return true;
         }
 
         let queued = match self.queue(id, candidate) {
             Ok(queued) => queued,
             Err(rejection) => {
                 actions.push(report(Outcome::Rejected(rejection)));
-                return (id, actions);
+                return false;
             }
         };
         if let Some(replaced) = self.pending.replace(queued) {
             actions.push(Self::report(&replaced, Outcome::Superseded));
         }
-        if origin.can_roll_back() && self.preparing.is_some() {
-            self.cancel_preparation(&mut actions);
+        if arrival == Arrival::Cancel {
+            self.cancel_preparation(actions);
+            // A newer approval takes over at once: it does not wait out the retry delay of a candidate that failed to
+            // prepare, which it replaces. A retry delay that passes later starts nothing that is not waiting.
+            self.retry_scheduled = false;
         }
-        self.try_start(&mut actions);
-        (id, actions)
+        self.try_start(actions);
+        false
     }
 
     /// Reports one region's acknowledgment of a preparation: `Ok` if it holds the generation's program, or the error it
@@ -688,7 +766,7 @@ impl InstallerCore {
                 self.fail_preparation(message, GenerationState::Rejected, &mut actions);
             }
         }
-        actions
+        self.settle(actions, Settle::AfterFailure { rolled_back: false })
     }
 
     /// Reports that a preparation's timeout passed.
@@ -714,7 +792,7 @@ impl InstallerCore {
             self.config.prepare_timeout
         );
         self.fail_preparation(message, GenerationState::Rejected, &mut actions);
-        actions
+        self.settle(actions, Settle::AfterFailure { rolled_back: false })
     }
 
     /// Reports that the delay of an [`Action::RetryAfter`] passed.
@@ -722,7 +800,7 @@ impl InstallerCore {
         let mut actions = Vec::new();
         self.retry_scheduled = false;
         self.try_start(&mut actions);
-        actions
+        self.settle(actions, Settle::Quiet)
     }
 
     /// Reports that a generation's token was dropped: nothing references it any more.
@@ -742,7 +820,7 @@ impl InstallerCore {
         }
         self.prune();
         self.try_start(&mut actions);
-        actions
+        self.settle(actions, Settle::Quiet)
     }
 
     /// Reports that supervision failed a generation: it exceeded its panic budget.
@@ -756,7 +834,23 @@ impl InstallerCore {
     ///
     /// A failed generation stays active until another commits, since the schedule still stamps it, but it is never
     /// kept to roll back to, and a candidate equal to it is not reported unchanged.
+    ///
+    /// This is also the artifact paths' failure entry point. A failed active artifact generation takes its artifact out
+    /// of effect: the artifact's config is acknowledged `failed`, its re-compositions in flight are dropped rather than
+    /// prepared again, and the policy in effect becomes the artifact of the generation rolled back to, if any. When the
+    /// generation rolled back to predates the latest configuration change, the core asks for the default program
+    /// ([`Action::InstallDefaultProgram`]), so that the plan catches up with it.
     pub fn generation_failed(&mut self, generation: GenerationId, reason: &str) -> Vec<Action> {
+        let mut actions = Vec::new();
+        self.withdraw_failing(generation, reason, &mut actions);
+        let before = self.active.as_ref().map(|active| active.generation.id());
+        actions.extend(self.fail_generation(generation, reason));
+        self.try_start(&mut actions);
+        let rolled_back = self.active.as_ref().map(|active| active.generation.id()) != before;
+        self.settle(actions, Settle::AfterFailure { rolled_back })
+    }
+
+    fn fail_generation(&mut self, generation: GenerationId, reason: &str) -> Vec<Action> {
         let mut actions = Vec::new();
         let reason = reason.to_string();
         let is = |installed: &Option<Installed>| {
@@ -788,25 +882,23 @@ impl InstallerCore {
                 .last_known_good
                 .take()
                 .filter(|kept| self.state_of(kept.generation.id()) == Some(GenerationState::Prepared));
-            match kept {
-                Some(kept) => {
-                    // The preparation in flight, if any, was diffed against the failed generation and reuses kernels
-                    // that only the failed generation may hold once its batches drain: prepare its candidate again,
-                    // against the generation rolled back to.
-                    self.restart_preparation(&mut actions);
-                    let id = kept.generation.id();
-                    self.transition(id, LifecycleEvent::Committed, None);
-                    actions.push(Action::Commit {
-                        generation: kept.generation.clone(),
-                    });
-                    self.report_generation(id, &mut actions);
-                    // The failed generation is dropped here: the core no longer holds it.
-                    self.active = Some(kept);
-                    self.prune();
-                    self.try_start(&mut actions);
-                }
-                // The failed generation stays active, and holds its kernels, until a new one commits.
-                None => actions.push(Action::InstallDefaultProgram),
+            // Without one, the failed generation stays active, and holds its kernels, until a new one commits. Unless a
+            // candidate in flight replaces it, the default program is asked for when the event settles.
+            if let Some(kept) = kept {
+                // The preparation in flight, if any, was diffed against the failed generation and reuses kernels that
+                // only the failed generation may hold once its batches drain: prepare its candidate again, against the
+                // generation rolled back to.
+                self.restart_preparation(&mut actions);
+                let id = kept.generation.id();
+                self.transition(id, LifecycleEvent::Committed, None);
+                actions.push(Action::Commit {
+                    generation: kept.generation.clone(),
+                });
+                self.report_generation(id, &mut actions);
+                // The failed generation is dropped here: the core no longer holds it.
+                self.active = Some(kept);
+                self.prune();
+                self.try_start(&mut actions);
             }
             return actions;
         }
@@ -1001,19 +1093,28 @@ impl InstallerCore {
         self.report_generation(id, actions);
 
         let keep = installed.origin.can_roll_back();
+        let candidate = installed.candidate;
         if let Some(replaced) = self.active.replace(installed) {
             let replaced_id = replaced.generation.id();
             let released = if self.state_of(replaced_id) == Some(GenerationState::Active) {
+                // A composition of the same artifact document (a re-composition after a configuration change, or under
+                // a newer revision) replaces its earlier composition, which is not a plan to roll back to, and nothing
+                // a revoked artifact installed is either: the generation kept before stays kept.
+                let kept = keep
+                    && !self.serve_same_artifact(candidate, replaced.candidate)
+                    && !self.serves_revoked(replaced.candidate);
                 self.transition(
                     replaced_id,
                     LifecycleEvent::Superseded {
-                        kept_as_last_known_good: keep,
+                        kept_as_last_known_good: kept,
                     },
                     None,
                 );
                 self.report_generation(replaced_id, actions);
-                if keep {
+                if kept {
                     self.last_known_good.replace(replaced)
+                } else if keep {
+                    None
                 } else {
                     self.last_known_good.take()
                 }
@@ -1096,7 +1197,10 @@ impl InstallerCore {
         self.transition(id, event, Some(message.clone()));
         self.report_generation(id, actions);
 
-        let retried = !installed.origin.can_roll_back() && state == GenerationState::Rejected;
+        // Configuration changes are applied eventually: a default-program candidate is tried again, and so is the
+        // re-composition of an artifact that was running when the configuration changed.
+        let retried = (!installed.origin.can_roll_back() || self.is_retried(installed.candidate))
+            && state == GenerationState::Rejected;
         let report = |outcome| {
             Action::Report(Report {
                 candidate: installed.candidate,

@@ -1,0 +1,62 @@
+{
+  "ir_version": 1,
+  "scope": "post_enrich",
+  "base": {
+    "program_hash": "sha256:d5cc6b1329e0e0e43503b783a1d4889aa489e04e0867a612fdbc95d0001004c6",
+    "outputs": {
+      "af_metrics_encode": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "dd_metrics_encode": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "metrics_routing_encode_0": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "metrics_routing_encode_1": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "mrf_metrics_encode": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  },
+  "nodes": [
+    {"id": "metrics_policy", "op": "tee", "params": {"ports": 5}},
+    {"id": "metrics_policy_0", "op": "emit", "params": {"output": "dd_metrics_encode"}},
+    {"id": "metrics_routing_filter_0", "op": "split", "params": {"predicate": {"any": [
+       {"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.names"},
+                                    "prefix": false}}},
+       {"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.0123456789abcdef.prefixes"},
+                                    "prefix": true}}}]}}},
+    {"id": "metrics_routing_filter_0_true", "op": "emit", "params": {"output": "metrics_routing_encode_0"}},
+    {"id": "metrics_routing_filter_0_false", "op": "drop"},
+    {"id": "metrics_routing_filter_1", "op": "split", "params": {"predicate": {"any": [
+       {"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.names"},
+                                    "prefix": false}}},
+       {"intake_name": {"matches": {"values": {"config": "metrics_endpoint_routing.group.fedcba9876543210.prefixes"},
+                                    "prefix": true}}}]}}},
+    {"id": "metrics_routing_filter_1_true", "op": "emit", "params": {"output": "metrics_routing_encode_1"}},
+    {"id": "metrics_routing_filter_1_false", "op": "drop"},
+    {"id": "mrf_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
+       {"flag": {"config": "multi_region_failover.enabled"}},
+       {"flag": {"config": "multi_region_failover.metric_mirroring.enabled"}},
+       {"any": [
+         {"is_empty": {"config": "multi_region_failover.metric_mirroring.allowlist"}},
+         {"name": {"matches": {"values": {"config": "multi_region_failover.metric_mirroring.allowlist"},
+                               "prefix": false}}}]}]}}},
+    {"id": "mrf_metrics_gateway_true", "op": "emit", "params": {"output": "mrf_metrics_encode"}},
+    {"id": "mrf_metrics_gateway_false", "op": "drop"},
+    {"id": "af_metrics_gateway", "op": "split", "params": {"predicate": {"all": [
+       {"kind_in": ["counter", "rate", "gauge", "set"]},
+       {"name": {"matches": {"values": {"config": "autoscaling_failover.metrics"}, "prefix": false}}}]}}},
+    {"id": "af_metrics_gateway_true", "op": "emit", "params": {"output": "af_metrics_encode"}},
+    {"id": "af_metrics_gateway_false", "op": "drop"}
+  ],
+  "edges": [
+    {"from": "input.metrics", "to": "metrics_policy.in"},
+    {"from": "metrics_policy.0", "to": "metrics_policy_0.in"},
+    {"from": "metrics_policy.1", "to": "metrics_routing_filter_0.in"},
+    {"from": "metrics_routing_filter_0.true", "to": "metrics_routing_filter_0_true.in"},
+    {"from": "metrics_routing_filter_0.false", "to": "metrics_routing_filter_0_false.in"},
+    {"from": "metrics_policy.2", "to": "metrics_routing_filter_1.in"},
+    {"from": "metrics_routing_filter_1.true", "to": "metrics_routing_filter_1_true.in"},
+    {"from": "metrics_routing_filter_1.false", "to": "metrics_routing_filter_1_false.in"},
+    {"from": "metrics_policy.3", "to": "mrf_metrics_gateway.in"},
+    {"from": "mrf_metrics_gateway.true", "to": "mrf_metrics_gateway_true.in"},
+    {"from": "mrf_metrics_gateway.false", "to": "mrf_metrics_gateway_false.in"},
+    {"from": "metrics_policy.4", "to": "af_metrics_gateway.in"},
+    {"from": "af_metrics_gateway.true", "to": "af_metrics_gateway_true.in"},
+    {"from": "af_metrics_gateway.false", "to": "af_metrics_gateway_false.in"}
+  ]
+}

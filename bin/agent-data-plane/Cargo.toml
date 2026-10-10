@@ -36,6 +36,7 @@ ottl = { workspace = true }
 process-memory = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+rustls = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
@@ -77,6 +78,7 @@ tikv-jemallocator = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
@@ -84,6 +86,7 @@ saluki-components = { workspace = true, features = ["test-util"] }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metric-plan = { workspace = true, features = ["test-util"] }
+saluki-metric-plan-syntax = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
 serde_yaml = { workspace = true }

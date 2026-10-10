@@ -407,7 +407,7 @@ async fn a_restarted_installer_worker_keeps_its_state_and_installs_the_next_chan
 }
 
 /// Returns the components of a health registry snapshot, with whether each is live and ready.
-fn health_components(health: &HealthRegistry) -> BTreeSet<(String, bool, bool)> {
+pub(super) fn health_components(health: &HealthRegistry) -> BTreeSet<(String, bool, bool)> {
     let snapshot = serde_json::from_str::<Value>(&health.snapshot_json()).expect("the snapshot is JSON");
     snapshot
         .as_object()
@@ -418,7 +418,7 @@ fn health_components(health: &HealthRegistry) -> BTreeSet<(String, bool, bool)> 
 }
 
 /// Returns the names of every resource group registered in the process.
-fn resource_groups() -> BTreeSet<String> {
+pub(super) fn resource_groups() -> BTreeSet<String> {
     let mut groups = BTreeSet::new();
     ResourceGroupRegistry::global().visit_resource_groups(|name, _| {
         groups.insert(name.to_string());
@@ -427,7 +427,7 @@ fn resource_groups() -> BTreeSet<String> {
 }
 
 /// Returns the path of every component in a memory bounds tree, with its minimum and firm bytes.
-fn bounds_tree(bounds: &ComponentBounds) -> BTreeSet<(String, usize, usize)> {
+pub(super) fn bounds_tree(bounds: &ComponentBounds) -> BTreeSet<(String, usize, usize)> {
     fn visit(prefix: &str, bounds: &ComponentBounds, into: &mut BTreeSet<(String, usize, usize)>) {
         into.insert((
             prefix.to_string(),
@@ -444,7 +444,7 @@ fn bounds_tree(bounds: &ComponentBounds) -> BTreeSet<(String, usize, usize)> {
 }
 
 /// Returns every metric series registered with `recorder`.
-fn series(recorder: &TestRecorder) -> BTreeSet<String> {
+pub(super) fn series(recorder: &TestRecorder) -> BTreeSet<String> {
     let counters = recorder
         .counters()
         .into_iter()
@@ -458,7 +458,7 @@ fn series(recorder: &TestRecorder) -> BTreeSet<String> {
 }
 
 /// Returns the status `GET /ready` answers.
-async fn ready(health: &HealthRegistry) -> StatusCode {
+pub(super) async fn ready(health: &HealthRegistry) -> StatusCode {
     let handler = health.api_handler();
     let request = Request::builder().uri("/ready").body(Empty::<Bytes>::new()).unwrap();
     handler
@@ -472,7 +472,7 @@ async fn ready(health: &HealthRegistry) -> StatusCode {
 
 /// Waits until the components of the topology, the regions among them, are registered, `GET /ready` answers
 /// `200 OK`, and every component is live.
-async fn wait_until_healthy(health: &HealthRegistry) {
+pub(super) async fn wait_until_healthy(health: &HealthRegistry) {
     tokio::time::timeout(PATIENCE, async {
         loop {
             let components = health_components(health);

@@ -1,0 +1,25 @@
+features:
+  - |
+    Agent Data Plane can install policy artifacts, which replace the policy region of its metrics path, from a
+    local development stub of an artifact channel, for development, tests, and demos. Set the experimental
+    ``experimental.programmable_metrics.artifact_channel.stub_url`` to the ``http://`` URL of a stub on a loopback
+    address (``127.0.0.1``, ``[::1]``, or ``localhost``), and Agent Data Plane polls
+    ``<stub_url>/v1/artifacts/poll`` every ``experimental.programmable_metrics.artifact_channel.poll_interval``
+    (1 second by default). Any other URL, a URL with a query, or a zero interval fails startup. The stub has no
+    authentication: do not use it in production. A panic in an artifact's own processing is survived up to 3 times
+    within 60 seconds, and 5 in all; after that, the artifact is rolled back to the one installed before it, or to
+    the metrics path the configuration describes. A panic in processing the configuration describes fails as it
+    does without artifacts, even while an artifact runs.
+  - |
+    A policy artifact starts from the export of the metrics path the configuration describes, and can send metrics
+    only to the outputs that export declares. Artifacts with stateful operators, such as aggregation, are rejected,
+    and so are artifacts whose operators declare more than 64 MiB of memory together, such as mapper interners.
+    Each artifact's outcome (pending, prepared, active, retired, rejected, or failed) is reported back to the stub
+    with every poll, and a revision at or below the highest one accepted is rejected as stale.
+  - |
+    When a metrics pipeline is enabled, the privileged API serves the state of the metrics path:
+    ``GET /programmable-metrics/status``, ``GET /programmable-metrics/export?scope=post_enrich``,
+    ``GET /programmable-metrics/plan``, ``GET /programmable-metrics/default-program`` (the metrics path the
+    configuration describes, which artifacts are composed into), and ``GET /programmable-metrics/explain``
+    (``?format=text`` for text). The new ``plan_active_revision`` metric reports the revision of the policy artifact
+    in effect, or ``0`` while the metrics path the configuration describes runs.

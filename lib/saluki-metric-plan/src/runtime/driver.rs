@@ -1,7 +1,7 @@
 //! The region driver of one slot.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Weak},
@@ -32,7 +32,7 @@ use crate::{
         DecisionIndex, DecisionMemo, ExitSet, ExitSetCounts, KernelIndex, RegionProgram, Slot, SlotId,
         COUNTED_EXIT_SETS,
     },
-    ir::NativeComponentId,
+    ir::{NativeComponentId, NodeId},
     limits::values::DECISION_MEMO_ENTRIES,
 };
 
@@ -115,13 +115,15 @@ impl fmt::Debug for RegionConfig {
     }
 }
 
-/// What a region prepares for one generation: its program, the kernels to build it with, its panic budget, and the
-/// counters it publishes to.
+/// What a region prepares for one generation: its program, the kernels to build it with, its panic budget and the
+/// nodes it covers, and the counters it publishes to.
 pub struct PrepareRegion {
     generation: GenerationRef,
     program: Arc<RegionProgram>,
     kernels: Vec<PreparedKernel>,
     budget: PanicBudget,
+    /// The nodes whose panics the budget covers, or `None` for every node.
+    budgeted: Option<BTreeSet<NodeId>>,
     layout: Layout,
     telemetry: ProgramTelemetry,
 }
@@ -146,9 +148,25 @@ impl PrepareRegion {
             program,
             kernels,
             budget,
+            budgeted: None,
             layout,
             telemetry,
         }
+    }
+
+    /// Limits the panic budget to the given nodes: those of the generation's plan with an artifact's provenance.
+    ///
+    /// A panic in any other node of the program, one native configuration placed, fails the region at once, as under a
+    /// zero budget, whatever the generation's budget: a native node fails as the native component does, even in an
+    /// artifact's generation, and its panics are never charged to the artifact. A decision runs its nodes as one step,
+    /// so a panic while it runs is charged to the budget if the budget covers any of its nodes. A panic in the
+    /// region's own steps between nodes is charged to the budget. Without this, the budget covers every node.
+    pub fn with_artifact_nodes<I>(mut self, nodes: I) -> Self
+    where
+        I: IntoIterator<Item = NodeId>,
+    {
+        self.budgeted = Some(nodes.into_iter().collect());
+        self
     }
 
     /// Returns the generation.
@@ -175,6 +193,7 @@ impl fmt::Debug for PrepareRegion {
             .field("fingerprint", &self.program.fingerprint())
             .field("kernels", &self.kernels)
             .field("budget", &self.budget)
+            .field("budgeted", &self.budgeted)
             .finish_non_exhaustive()
     }
 }
@@ -224,6 +243,11 @@ struct LiveGeneration {
     counts: ProgramCounts,
     telemetry: ProgramTelemetry,
     budget: PanicBudget,
+    /// Whether each of the program's kernels, by kernel index, is a node the budget does not cover: a panic in it
+    /// fails the region at once.
+    native_kernels: Vec<bool>,
+    /// Whether each of the program's decisions, by decision index, has only nodes the budget does not cover.
+    native_decisions: Vec<bool>,
     panics: PanicHistory,
     /// Whether the generation exceeded its panic budget: its batches are dropped.
     failed: bool,
@@ -396,11 +420,12 @@ struct InvalidLoss {
 /// After a panic, the driver discards every buffer the call that panicked held, and its kernels' unrecorded loss
 /// counts, and charges the panic to the generation and node it was running. What the call counted before it panicked
 /// stays counted: it is work the nodes did. Under the generation's [`PanicBudget::Zero`], the default program's, the
-/// region fails, as a native component does. Under a limited budget, the driver rebuilds the kernels of the generation
-/// that panicked from their specs and continues; a generation that exceeds its budget fails, its later batches are
-/// dropped as invalid loss, and the failure goes to the [failure reporter][RegionConfig::failures]. A kernel that
-/// cannot be rebuilt fails every generation that uses it, and the region if one of them has a zero budget. A panic
-/// outside any program's steps fails the region.
+/// region fails, as a native component does, and so it does after a panic in a node the budget does not cover
+/// ([`PrepareRegion::with_artifact_nodes`]): one native configuration placed, in an artifact's generation. Under a
+/// limited budget, the driver rebuilds the kernels of the generation that panicked from their specs and continues; a
+/// generation that exceeds its budget fails, its later batches are dropped as invalid loss, and the failure goes to the
+/// [failure reporter][RegionConfig::failures]. A kernel that cannot be rebuilt fails every generation that uses it, and
+/// the region if one of them has a zero budget. A panic outside any program's steps fails the region.
 ///
 /// # Accounting
 ///
@@ -494,6 +519,7 @@ impl MetricRegionDriver {
             program,
             kernels,
             budget,
+            budgeted,
             layout,
             telemetry,
         } = prepare;
@@ -565,6 +591,17 @@ impl MetricRegionDriver {
                 counts: ExitSetCounts::with_capacity(if decision.is_some() { COUNTED_EXIT_SETS } else { 0 }),
             })
             .collect();
+        let native = |node: &NodeId| budgeted.as_ref().is_some_and(|budgeted| !budgeted.contains(node));
+        let native_kernels = program
+            .kernels()
+            .iter()
+            .map(|kernel| native(&kernel.key.node))
+            .collect();
+        let native_decisions = program
+            .decisions()
+            .iter()
+            .map(|decision| decision.nodes.iter().all(|node| native(&node.node)))
+            .collect();
         let live = LiveGeneration {
             id,
             token: Arc::downgrade(&generation),
@@ -576,6 +613,8 @@ impl MetricRegionDriver {
             kernels,
             telemetry,
             budget,
+            native_kernels,
+            native_decisions,
             panics: PanicHistory::default(),
             failed: false,
         };
@@ -831,9 +870,27 @@ impl RegionDriver for MetricRegionDriver {
             None => None,
         }
         .unwrap_or_else(|| "the region's own steps".to_string());
+        // A node native configuration placed has a zero budget, even in an artifact's generation.
+        let native = match cursor.node {
+            Some(NodeRef::Kernel(kernel)) => generation.native_kernels.get(kernel).copied(),
+            Some(NodeRef::Decision(decision)) => generation.native_decisions.get(decision).copied(),
+            None => None,
+        }
+        .unwrap_or(false);
+        let budget = if native { PanicBudget::Zero } else { generation.budget };
 
-        if !generation.panics.record(generation.budget, now) {
-            if generation.budget == PanicBudget::Zero {
+        if !generation.panics.record(budget, now) {
+            if native && generation.budget != PanicBudget::Zero {
+                return PanicOutcome::Fail(generic_error!(
+                    "Region `{}` panicked in {} of generation {}, which native configuration placed: a native node's \
+                     panic budget is zero, as the default program's is, even in an artifact's generation, so the \
+                     region fails as a native component does.",
+                    self.name,
+                    node,
+                    generation.id
+                ));
+            }
+            if budget == PanicBudget::Zero {
                 return PanicOutcome::Fail(generic_error!(
                     "Region `{}` panicked in {} of generation {}, whose panic budget is zero, as the default \
                      program's is, so the region fails as a native component does.",

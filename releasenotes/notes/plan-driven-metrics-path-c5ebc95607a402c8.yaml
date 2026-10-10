@@ -33,8 +33,12 @@ upgrade:
     them.
   - |
     There are fewer queues between the DogStatsD source and aggregation (two instead of five with the
-    default configuration) and after aggregation, so during a burst of metrics, or while a large
-    aggregation flush is sent, DogStatsD stops reading its socket, and the socket drops packets, sooner
+    default configuration) and after aggregation, but the input queue of each component that runs the
+    work of several former components holds as many buffers as their queues, and the buffers they held
+    while waiting to send, did together: with the default configuration, 515 for
+    ``dsd_pre_aggregation`` and 257 for ``metrics_enrich``, instead of 128. As many metrics wait
+    between the DogStatsD source and aggregation, and after aggregation, as before, so during a burst
+    of metrics, or while a large aggregation flush is sent, DogStatsD stops reading its socket no sooner
     than before.
   - |
     Timestamped metrics that the no-aggregation pipeline sends past aggregation are now forwarded with

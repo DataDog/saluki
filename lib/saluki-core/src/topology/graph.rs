@@ -2,6 +2,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    num::NonZeroUsize,
 };
 
 use indexmap::IndexSet;
@@ -454,16 +455,25 @@ impl Graph {
         })
     }
 
+    /// Returns the type of the given component, if the graph has it.
+    pub fn component_type(&self, component_id: &ComponentId) -> Option<ComponentType> {
+        self.nodes.get(component_id).map(Node::component_type)
+    }
+
     /// Returns a description of every component, sorted by component ID, and every edge, sorted by output and then by
     /// downstream component.
-    pub fn snapshot(&self) -> (Vec<ComponentSnapshot>, Vec<EdgeSnapshot>) {
+    ///
+    /// `input_capacity` gives the capacity of each component's input; it is asked only about components that have one.
+    pub fn snapshot(
+        &self, input_capacity: &dyn Fn(&ComponentId) -> NonZeroUsize,
+    ) -> (Vec<ComponentSnapshot>, Vec<EdgeSnapshot>) {
         let mut components = self
             .nodes
             .iter()
             .map(|(id, node)| {
                 let input = match node {
                     Node::Source { .. } | Node::Relay { .. } => None,
-                    _ => Some(self.get_input_type(id)),
+                    _ => Some((self.get_input_type(id), input_capacity(id))),
                 };
                 let outputs = match node {
                     Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs

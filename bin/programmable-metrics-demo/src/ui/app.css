@@ -55,6 +55,9 @@
 
 * { box-sizing: border-box; }
 
+/* An element the page hides stays hidden, whatever display its class gives it. */
+[hidden] { display: none !important; }
+
 html, body { margin: 0; }
 
 body {
@@ -151,10 +154,11 @@ button.quiet { background: transparent; }
 .banner details p { margin: 4px 0 0; }
 
 /* Layout: on wide screens the page fits the window and each pane scrolls on its own, so the editor and what each
-   endpoint receives are on screen together. */
+   endpoint receives are on screen together. The editor's pane is a little wider, so that at 1280 pixels it shows the
+   default program's longest lines (about 81 columns: the routing groups' binding names) whole. */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   gap: 16px;
   padding: 14px 20px 16px;
 }
@@ -198,12 +202,12 @@ button.quiet { background: transparent; }
   --line: 20px;
   display: flex;
   flex: 1 1 380px;
-  min-height: 240px;
+  min-height: 200px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
   overflow: hidden;
-  font: 13px/var(--line) var(--mono);
+  font: 12px/var(--line) var(--mono);
 }
 @media (max-width: 1100px) {
   .editor { flex: none; height: 60vh; }
@@ -267,7 +271,7 @@ textarea#source:focus-visible { outline: none; }
   flex-direction: column;
   gap: 6px;
   flex: none;
-  max-height: 11em;
+  max-height: 8.5em;
   overflow-y: auto;
 }
 .diagnostics:empty { display: none; }
@@ -287,6 +291,67 @@ textarea#source:focus-visible { outline: none; }
 .diagnostics li:hover { background: var(--panel-2); }
 .diagnostics .where { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
 .diagnostics .message { overflow-wrap: anywhere; }
+
+.diagnostics .tag {
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* The plan diff: what publishing would change, next to the Publish button. */
+.plan-diff {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-diff.unchanged { border-left-color: var(--ok); }
+.plan-diff.invalid { border-left-color: var(--err); }
+.plan-diff.none { border-left-color: var(--faint); color: var(--muted); }
+.plan-diff-head strong { font-weight: 650; }
+.plan-diff-head .against { color: var(--muted); }
+.plan-diff-head .since { color: var(--muted); font-style: italic; }
+.plan-diff-head .since.ok { color: var(--ok); font-style: normal; font-weight: 600; }
+.plan-diff-nodes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 7em;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.plan-diff-nodes:empty { display: none; }
+.plan-diff-nodes li {
+  display: grid;
+  grid-template-columns: 1.2em minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 1px 2px;
+  border-radius: 4px;
+}
+.plan-diff-nodes li[data-line] { cursor: pointer; }
+.plan-diff-nodes li[data-line]:hover { background: var(--panel-2); }
+.plan-diff-nodes .sign { font-weight: 700; text-align: center; }
+.plan-diff-nodes .added .sign { color: var(--ok); }
+.plan-diff-nodes .removed .sign { color: var(--err); }
+.plan-diff-nodes .changed .sign { color: var(--accent); }
+.plan-diff-nodes .what { color: var(--muted); font-family: var(--sans); font-size: 13px; white-space: nowrap; }
+.plan-diff-nodes .id { overflow-wrap: anywhere; }
+.plan-diff-nodes .authority { color: var(--muted); }
+.plan-diff-edges summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.plan-diff-edges ul { margin: 4px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 12.5px; }
+.confirm-diff { font-size: 14px; }
 
 .publish-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .publish-row .spacer { flex: 1; }
@@ -370,6 +435,17 @@ textarea#source:focus-visible { outline: none; }
   transition: opacity 0.6s ease;
 }
 .family.fading { opacity: 0.35; }
+/* A family that started arriving a moment ago, after the start: what a change just routed here. */
+.family.arrived { box-shadow: inset 3px 0 0 var(--ok); background: var(--ok-soft); }
+.family-name .new {
+  margin-left: 4px;
+  color: var(--ok);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 /* Large enough to read on a projector; at 1280 pixels a name wraps after a dot onto at most two lines. */
 .family-name {
   font-family: var(--mono);
@@ -408,9 +484,22 @@ td.detail { color: var(--muted); overflow-wrap: anywhere; }
 td.detail.err { color: var(--err); }
 td.detail.warn { color: var(--warn); }
 .acks td:first-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
-.acks .polls { color: var(--muted); font-size: 12.5px; }
+/* The poll count goes under the time, so that a long run of polls never pushes the generation out of the card. */
+.acks .polls { display: block; color: var(--muted); font-size: 12.5px; }
 .acks tr.has-detail td { border-bottom: 0; padding-bottom: 1px; }
 .acks tr.detail-row td { padding-top: 0; font-size: 13.5px; white-space: normal; }
+
+/* Long messages (ADP's errors list whole paths) keep to a few lines; a click shows the rest, and the tooltip has it. */
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.clamp.two { -webkit-line-clamp: 2; line-clamp: 2; }
+.clamp.expanded { -webkit-line-clamp: unset; line-clamp: unset; display: block; }
+.clamp-toggle { cursor: pointer; }
 .pill {
   display: inline-block;
   padding: 1px 8px;

@@ -10,7 +10,10 @@
 //!   transition class, and which kernels each slot reuses ([`kernel_reuse`]).
 //! - [`lifecycle`]: the states of a generation and the events that move it between them.
 //! - [`InstallerCore`]: the installer's state and decisions, without I/O: the caller performs the
-//!   [actions][Action] it returns and reports what happens.
+//!   [actions][Action] it returns and reports what happens. Artifacts from the [channel](crate::channel) reach it as
+//!   snapshots ([`InstallerCore::on_snapshot`]), and it keeps each config's acknowledgment.
+//! - [`correspondence`]: which plan node each artifact node became when it was composed, and the plan diff in the
+//!   artifact's terms.
 //!
 //! Through stage 5 every change is stateless or `retain`, and commits at the next batch boundary of each segment:
 //! the schedule is always `Steady`. A `cut` needs state transitions (stage 6), and is rejected naming them.
@@ -21,11 +24,17 @@ pub use self::core::{
     Outcome, PendingReason, Prepare, Rejection, Report, SlotPrepare,
 };
 
+pub mod correspondence;
+pub use self::correspondence::{diff_with_correspondence, Correspondence, CorrespondingDiff};
+
 pub mod diff;
 pub use self::diff::{diff, kernel_reuse, PlanDiff};
 
 pub mod lifecycle;
 pub use self::lifecycle::{GenerationState, InvalidTransition, LifecycleEvent};
+
+#[cfg(test)]
+mod artifact_tests;
 
 #[cfg(test)]
 mod tests;

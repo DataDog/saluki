@@ -51,6 +51,7 @@ use crate::{
 };
 
 mod bounds;
+pub(crate) use self::bounds::predicate_leaves;
 mod catalog;
 pub use self::catalog::{Catalog, CatalogBinding, CatalogOutput, Liveness, MemoryCatalog};
 
@@ -174,6 +175,8 @@ rules! {
     TeeFanOut => "tee_fan_out", Error;
     /// One record entering an artifact causes no more node visits than the limit.
     WorkPerInput => "work_per_input", Error;
+    /// An artifact's nodes declare no more memory than the limit.
+    ArtifactMemory => "artifact_memory", Error;
     /// Every lossy node has provenance: native configuration or an approved artifact.
     LossAuthority => "loss_authority", Error;
     /// Host-owned operators, such as sources and opaque hosts, come only from native configuration.

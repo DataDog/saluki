@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use saluki_core::{accounting::ComponentRegistry, support::SubsystemIdentifier};
+
 use super::{graph::Graph, BoundMeasure, BoundScope, Finding, Location, Rule, ValidationReport};
 use crate::{
     ir::{ArtifactRevision, ParamValue, Plan, Provenance},
@@ -10,7 +12,7 @@ use crate::{
 };
 
 /// Returns the number of predicate leaves in a parameter value.
-fn predicate_leaves(value: &ParamValue) -> u64 {
+pub(crate) fn predicate_leaves(value: &ParamValue) -> u64 {
     match value {
         ParamValue::Predicate(predicate) => predicate.leaf_count() as u64,
         ParamValue::List(values) | ParamValue::Set(values) => values.iter().map(predicate_leaves).sum(),
@@ -82,6 +84,7 @@ pub(super) fn check(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationRepor
         }
         check_fan_out(graph, &members, report);
         check_work_per_input(graph, &members, report);
+        check_memory(graph, &members, &artifact, report);
     }
 }
 
@@ -154,6 +157,45 @@ fn check_fan_out(graph: &Graph<'_>, members: &[bool], report: &mut ValidationRep
             ));
         }
     }
+}
+
+/// Returns the memory a node's operator declares in its memory bounds, in bytes: what its kernel allocates up front and
+/// at most, together.
+fn declared_memory(op: &ConfiguredOperator) -> u64 {
+    let registry = ComponentRegistry::default();
+    op.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_segments(["node"])));
+    u64::try_from(registry.as_bounds().total_firm_limit_bytes()).unwrap_or(u64::MAX)
+}
+
+/// Reports an artifact whose nodes declare more memory than the limit, naming the node that declares the most.
+///
+/// A kernel's memory is allocated when it is built, before the artifact runs: a size beyond what the host can allocate
+/// would end the process, which no panic budget or rollback can recover from, and any size beyond the host's memory
+/// bounds escapes them, since those cover the boot program.
+fn check_memory(graph: &Graph<'_>, members: &[bool], artifact: &str, report: &mut ValidationReport) {
+    let limit = values::ARTIFACT_MEMORY;
+    let declared = (0..graph.nodes.len())
+        .filter(|&node| members[node])
+        .filter_map(|node| graph.op(node).map(|op| (node, declared_memory(op))))
+        .collect::<Vec<_>>();
+    let total = declared
+        .iter()
+        .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes));
+    if total <= limit {
+        return;
+    }
+    let Some(&(largest, bytes)) = declared.iter().max_by_key(|(_, bytes)| *bytes) else {
+        return;
+    };
+    report.push(Finding::new(
+        Rule::ArtifactMemory,
+        graph.location(largest),
+        format!(
+            "the nodes of {} declare {} bytes of memory, more than the limit of {}, and this node declares {} of \
+             them; reduce its cache and interner sizes",
+            artifact, total, limit, bytes
+        ),
+    ));
 }
 
 /// Returns how many visits to artifact nodes one record arriving at a node can cause, given the visits caused by a
@@ -232,8 +274,10 @@ fn check_work_per_input(graph: &Graph<'_>, members: &[bool], report: &mut Valida
 ///
 /// # Missing
 ///
-/// Whether a listed revision was approved is the host's to say: once artifacts are installed, the catalog declares the
-/// approved revisions, and validation checks the plan's list against it.
+/// Whether a listed revision was approved is not checked here. Composition writes artifact provenance, and the
+/// installer composes only the artifacts it accepted, under their revision, so on that path the list is approved by
+/// construction. A plan whose artifact provenance comes from elsewhere would need the catalog to declare the approved
+/// revisions, and validation to check the plan's list against them.
 fn check_provenance_consistency(graph: &Graph<'_>, plan: &Plan, report: &mut ValidationReport) {
     let listed = plan
         .provenance

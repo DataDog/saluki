@@ -459,15 +459,27 @@ async fn the_installer_reports_the_rewrites_of_the_boot_generation_and_of_every_
     // is false given its resolved values, so decision compilation folds it (R3): one application, from boot. Nothing
     // else applies (gauges in `RewriteId::ALL` order: R2, R3, R4, R5a, R6, R7).
     let running = Running::start(&multi_region_failover(false), Aggregation::Forwarding).await;
-    status_where(&running.status, |status| active(status) == Some(1)).await;
+    let boot = status_where(&running.status, |status| active(status) == Some(1)).await;
     let folded = [Some(0.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0)];
     assert_eq!(rewrites(), folded);
+    // The active plan's explain document lists the same applications.
+    let explained = |status: &PlanStatus| {
+        let explain = &status.active.as_ref().expect("a generation is active").explain;
+        let rewrites = explain.rewrites.as_ref().expect("the document has a rewrites section");
+        rewrites
+            .iter()
+            .filter(|rewrite| rewrite.outcome == "applied")
+            .map(|rewrite| rewrite.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(explained(&boot), ["R3"]);
 
     // Mirroring on: the predicate now depends on each metric's name (the allowlist is not empty), so the generation
     // committed folds nothing, and the gauges say so at the commit.
     running.cell.set(configuration(&multi_region_failover(true)).await);
-    status_where(&running.status, |status| active(status) == Some(2)).await;
+    let mirroring = status_where(&running.status, |status| active(status) == Some(2)).await;
     assert_eq!(rewrites(), [Some(0.0); 6]);
+    assert!(explained(&mirroring).is_empty());
 
     // And off again.
     running.cell.set(configuration(&multi_region_failover(false)).await);
@@ -656,6 +668,7 @@ async fn a_configuration_whose_program_no_operator_accepts_fails_the_boot() {
         &config,
         ConfigCell::new(config.clone()).live(),
         &ComponentRegistry::default(),
+        OperatorRegistry::native(),
     ) {
         Ok(_) => panic!("the boot fails"),
         Err(error) => error.to_string(),
@@ -685,11 +698,34 @@ fn plan_status_describes_itself_for_the_logs() {
         config_changes: 3,
         last_error: Some("no".to_string()),
         overdue: vec![generation(1)],
+        apply_states: ApplyStates::default(),
+        exports: BTreeMap::new(),
+        default_program: Arc::new(Plan::from_json(saluki_metric_plan::testing::DEFAULT_PROGRAM_JSON).unwrap()),
+        active: None,
     };
     assert_eq!(
         status.to_string(),
         "no generation active, 2 live, 3 configuration changes observed, degraded: bad, last change not installed: \
          no, draining past the deadline: 1"
+    );
+
+    // An active artifact is named after the generation, and its stale flags follow.
+    let mut with_artifact = status;
+    with_artifact.degraded.clear();
+    with_artifact.last_error = None;
+    with_artifact.overdue.clear();
+    let summary = &mut with_artifact.apply_states.status;
+    summary.active_artifact = Some(saluki_metric_plan::channel::ActiveArtifact {
+        id: saluki_metric_plan::channel::ArtifactConfigId::new("demo"),
+        revision: 7,
+        artifact_hash: saluki_metric_plan::canonical::PlanHash::of_bytes(b"artifact"),
+    });
+    summary.stale_base = true;
+    summary.stale_review = true;
+    assert_eq!(
+        with_artifact.to_string(),
+        "no generation active (artifact `demo` revision 7), 2 live, 3 configuration changes observed, stale base, \
+         stale review"
     );
 }
 

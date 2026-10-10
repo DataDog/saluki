@@ -21,6 +21,10 @@
 //! - [`explain`]: the versioned description of a plan, as JSON and as text.
 //! - [`compile`]: the physical frame computed at boot, placement of candidate plans into it, and region programs.
 //! - [`install`]: plan diffs, the generation lifecycle, and the installer's decisions, without I/O.
+//! - [`channel`]: the artifact channel's snapshots, envelopes, and acknowledgments, and the in-process channel between
+//!   a transport and the installer.
+//! - [`export`]: the default program's policy scope exported as an artifact, with the catalog it is checked against.
+//! - [`compose`]: the checks an artifact passes on receipt, and its composition into the default program.
 //! - [`runtime`]: the region driver, which runs the region programs of every live generation in one slot.
 //!
 //! With the `test-util` feature, the `testing` module provides property-testing strategies for metrics and predicates.
@@ -28,9 +32,12 @@
 #![deny(missing_docs)]
 
 pub mod canonical;
+pub mod channel;
 pub mod compile;
+pub mod compose;
 pub mod equivalence;
 pub mod explain;
+pub mod export;
 pub mod extension;
 pub mod install;
 pub mod interpret;

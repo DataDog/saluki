@@ -10,8 +10,8 @@
 //!   and `demo.catalog.` to team C.
 //! - Datadog: `multi_region_failover.{enabled, api_key, dd_url}`, the failover recipient. `failover_metrics` stays
 //!   `false`, so mirroring is off.
-//! - Saluki-only, **not read yet**: `experimental.programmable_metrics.artifact_channel.{stub_url, poll_interval}`, the
-//!   stub. ADP reads these keys from stage 5.
+//! - Saluki-only: `experimental.programmable_metrics.artifact_channel.{stub_url, poll_interval}`, the stub, which ADP
+//!   polls from stage 5 (earlier builds ignore these keys).
 //! - Saluki-only: `data_plane.standalone_mode: true`.
 //! - Datadog: `data_plane.{api_listen_address, secure_api_listen_address, log_file}` (loopback ports and a run-local
 //!   log) and `ipc_cert_file_path` (the generated certificate).

@@ -7,6 +7,7 @@
   const POLL_MS = 1000;
   const LIST_WINDOW_MS = 5000; // families seen in the last 5 s are listed...
   const FADE_AFTER_MS = 3000; // ...and fade after 3 s without points.
+  const ARRIVED_MS = 8000; // a family that began arriving within 8 s is marked new
   // Payloads arrive every second or two, so rates average over at least two seconds, and over up to twelve once a
   // family has been arriving that long; sparklines average over four, a multiple of the flush cadence, so that a
   // steady flow draws flat.
@@ -44,10 +45,14 @@
     canary: $("canary"), nodes: $("nodes"), nodesHead: $("nodes-head"), nodesTitle: $("nodes-title"),
     nodesHint: $("nodes-hint"), planStats: $("plan-stats"), foot: $("foot"), toast: $("toast"),
     badgeAdp: $("badge-adp"), badgeSurface: $("badge-surface"), badgeProgram: $("badge-program"),
+    diff: $("plan-diff"), diffHead: $("plan-diff-head"), diffNodes: $("plan-diff-nodes"),
+    diffEdges: $("plan-diff-edges"), diffEdgesSummary: $("plan-diff-edges-summary"),
+    diffEdgeList: $("plan-diff-edge-list"), confirmDiff: $("confirm-diff"),
   };
   const nodesTable = ui.nodes.closest("table");
 
   let state = null; // the last /api/state answer
+  let firstSeenMs = Infinity; // when the page first had a state: families arriving soon after are not news
   let compiled = null; // { source, outcome, published } of the last compile; `published` once its approval is used
   // Where the editor's text came from ("empty", "sample", "default", "draft", or "user" once edited), and the
   // default program hash it belongs to, which keys its draft.
@@ -288,6 +293,7 @@
   function refreshEditor() {
     renderEditor();
     renderCompileStatus();
+    renderPreview();
     renderPublish();
   }
 
@@ -337,12 +343,14 @@
       compiled = null;
       setStatus("err", `Compile failed: ${error.message}.`);
       renderDiagnostics();
+      renderPreview();
       renderPublish();
       return;
     }
     renderEditor();
     renderCompileStatus();
     renderDiagnostics();
+    renderPreview();
     renderPublish();
   }
 
@@ -358,19 +366,33 @@
       setStatus("err", `${plural(outcome.errors, "error")}: no artifact.`);
       return;
     }
-    // Structural checks are not validation: say what ran, and leave the verdict to ADP.
+    // Say what ran: composition and validation as ADP runs them, or, when ADP does not serve its default program,
+    // structural checks only, which leave the verdict to ADP.
+    const checked = outcome.checked_against;
+    const found = [];
+    if (outcome.errors) found.push(plural(outcome.errors, "error"));
+    if (outcome.warnings) found.push(plural(outcome.warnings, "warning"));
     let tone = "", verdict;
-    if (!outcome.checked_against.available) {
+    if (!checked.available) {
       tone = "warn";
       verdict = "not checked: ADP's export is not available";
+    } else if (checked.composed) {
+      if (outcome.errors) {
+        tone = "err";
+        verdict = `composed as ADP will: ${found.join(" and ")}, so ADP will reject it`;
+      } else if (outcome.warnings) {
+        tone = "warn";
+        verdict = `composed and validated as ADP will: ${found.join(" and ")}`;
+      } else {
+        tone = "ok";
+        verdict = "composed into ADP's default program and validated as ADP will: no findings";
+      }
     } else if (outcome.errors) {
       tone = "err";
-      const found = [plural(outcome.errors, "error")];
-      if (outcome.warnings) found.push(plural(outcome.warnings, "warning"));
       verdict = `structural checks found ${found.join(" and ")}: ADP will reject it`;
     } else if (outcome.warnings) {
       tone = "warn";
-      verdict = `structural checks found ${plural(outcome.warnings, "warning")}`;
+      verdict = `structural checks found ${found.join(" and ")}`;
     } else {
       verdict = "structural checks passed";
     }
@@ -378,7 +400,7 @@
     if (outcome.restored_fingerprints.length) {
       notes.push(`${plural(outcome.restored_fingerprints.length, "output fingerprint")} from ADP's export.`);
     }
-    notes.push(outcome.preview.reason);
+    if (checked.reason) notes.push(checked.reason);
     ui.status.className = tone ? `compile-status ${tone}` : "compile-status";
     ui.status.append(
       "Compiled ",
@@ -391,15 +413,145 @@
   function renderDiagnostics() {
     ui.diagnostics.replaceChildren();
     if (!compiled) return;
+    const origins = {
+      syntax: "syntax", document: "receipt", check: "check", composition: "composition", validation: "validation",
+    };
     for (const d of compiled.outcome.diagnostics) {
+      // Where the finding comes from: the validation rule, or the step that made it.
+      const tag = el("span", { class: "tag", text: d.rule || origins[d.origin] || d.origin });
+      const message = el("span", { class: "message clamp", title: d.message }, tag, d.message);
       const item = el(
         "li",
         { class: d.severity, title: `${d.origin} ${d.severity}` },
         el("span", { class: "where", text: `${d.range.line}:${d.range.column}` }),
-        el("span", { class: "message", text: d.message }),
+        message,
       );
-      item.addEventListener("click", () => reveal(d.range));
+      // A click selects the span, and shows the whole message.
+      item.addEventListener("click", () => {
+        message.classList.add("expanded");
+        reveal(d.range);
+      });
       ui.diagnostics.append(item);
+    }
+  }
+
+  // Whether a diff entry only changes a node's provenance: the artifact now authorizes what native configuration did.
+  function provenanceOnly(node) {
+    return node.change === "changed" && node.aspects.length === 1 && node.aspects[0] === "provenance";
+  }
+
+  function diffBase(against) {
+    if (against.kind !== "active") return "the default program (ADP's active plan was not available)";
+    const program = against.artifact_revision ? `artifact rev ${against.artifact_revision}` : "default program";
+    return `the active plan (gen ${against.generation ?? "?"}, ${program})`;
+  }
+
+  // Counts a preview's changes in a few words, for the diff's header and the approval panel.
+  function diffCounts(preview) {
+    const structural = preview.nodes.filter((n) => !provenanceOnly(n));
+    const parts = [];
+    const added = structural.filter((n) => n.change === "added").length;
+    const changed = structural.filter((n) => n.change === "changed").length;
+    const removed = structural.filter((n) => n.change === "removed").length;
+    if (added) parts.push(`${added} added`);
+    if (changed) parts.push(`${changed} changed`);
+    if (removed) parts.push(`${removed} removed`);
+    const authority = preview.nodes.length - structural.length;
+    if (authority) parts.push(`${authority} re-authorized`);
+    const outputs = preview.outputs.length;
+    if (outputs) parts.push(plural(outputs, "output"));
+    return parts.length ? parts.join(" · ") : "edges only";
+  }
+
+  // The plan diff of the last compile, next to Publish: what installing the artifact changes in ADP's active plan.
+  function renderPreview() {
+    const fresh = freshCompile();
+    ui.diffNodes.replaceChildren();
+    ui.diffEdgeList.replaceChildren();
+    ui.diffEdges.hidden = true;
+    if (!fresh) {
+      // No verdict of an earlier compile may describe what the editor holds now.
+      ui.diff.hidden = true;
+      ui.diff.className = "plan-diff";
+      ui.diffHead.replaceChildren();
+      return;
+    }
+    const preview = fresh.outcome.preview;
+    ui.diff.hidden = false;
+    if (!preview.available) {
+      ui.diff.className = "plan-diff none";
+      ui.diffHead.replaceChildren(el("strong", { text: "No plan diff. " }),
+        preview.reason.replace(/^No plan diff: /, ""));
+      return;
+    }
+    const base = el("span", { class: "against", text: ` against ${diffBase(preview.against)}` });
+    const stale = preview.stale_base ? " · stale base" : "";
+    // Whether ADP has moved on since the compile: it runs this plan now, or another than the one diffed against.
+    const latest = state && latestStatus(state);
+    const active = latest && latest.status.active_plan_hash;
+    let since = null;
+    if (active && active === preview.plan_hash && active !== preview.against.plan_hash) {
+      const text = ` · ✓ ADP runs it now (gen ${latest.status.active_generation})`;
+      since = el("span", { class: "since ok", text });
+    } else if (active && active !== preview.against.plan_hash && active !== preview.plan_hash) {
+      const text = " · ADP's active plan changed since: compile again to diff against it";
+      since = el("span", { class: "since", text });
+    }
+    if (preview.unchanged) {
+      ui.diff.className = "plan-diff unchanged";
+      ui.diffHead.replaceChildren(el("strong", { text: "✓ No change" }), base,
+        `: ADP keeps running it${stale}.`, since || "");
+      return;
+    }
+    ui.diff.className = preview.valid ? "plan-diff" : "plan-diff invalid";
+    const verdict = preview.valid ? "" : " · does not validate: ADP will reject it";
+    ui.diffHead.replaceChildren(el("strong", { text: "Plan diff" }), base, `: ${diffCounts(preview)}${stale}${verdict}`,
+      since || "");
+
+    const signs = { added: "+", removed: "−", changed: "~" };
+    for (const node of preview.nodes.filter((n) => !provenanceOnly(n))) {
+      let what;
+      if (node.change === "added") what = `${node.op} · ${node.provenance || ""}`;
+      else if (node.change === "removed") what = node.op;
+      else what = `${node.op}: ${node.aspects.join(", ")}`;
+      const name = node.artifact_node && node.artifact_node !== node.node
+        ? `${node.node} (${node.artifact_node})` : node.node;
+      const item = el("li", { class: node.change },
+        el("span", { class: "sign", text: signs[node.change] || "?" }),
+        el("span", { class: "id", text: name }),
+        el("span", { class: "what", text: what }));
+      if (node.range) {
+        item.dataset.line = String(node.range.line);
+        item.title = `Line ${node.range.line}: click to select it in the editor`;
+        item.addEventListener("click", () => reveal(node.range));
+      }
+      ui.diffNodes.append(item);
+    }
+    const reauthorized = preview.nodes.filter(provenanceOnly);
+    if (reauthorized.length) {
+      const ids = reauthorized.map((n) => n.node);
+      const item = el("li", { class: "changed authority" },
+        el("span", { class: "sign", text: "~" }),
+        el("span", { class: "id", text: ids.join(", ") }),
+        el("span", { class: "what", text: `now authorized by ${reauthorized[0].provenance || "the artifact"}` }));
+      item.title = "Unchanged nodes whose loss the artifact authorizes now, since what reaches them changed";
+      ui.diffNodes.append(item);
+    }
+    for (const output of preview.outputs) {
+      ui.diffNodes.append(el("li", { class: "changed" },
+        el("span", { class: "sign", text: "~" }),
+        el("span", { class: "id", text: output.output }),
+        el("span", { class: "what", text: `output ${output.change}` })));
+    }
+    const edges = [
+      ...preview.edges_added.map((edge) => `+ ${edge}`),
+      ...preview.edges_removed.map((edge) => `− ${edge}`),
+    ];
+    if (edges.length) {
+      ui.diffEdges.hidden = false;
+      ui.diffEdgesSummary.textContent = `${plural(preview.edges_added.length, "edge")} added, `
+        + `${preview.edges_removed.length} removed`;
+      ui.diffEdgeList.replaceChildren(...edges.map((text) => el("li", { text })));
     }
   }
 
@@ -481,12 +633,34 @@
     const outcome = compiled.outcome;
     ui.confirmHash.textContent = outcome.artifact_hash;
     ui.confirmRevision.textContent = state ? String(state.channel.next_revision) : "next";
+    const preview = outcome.preview;
+    let diffText = null;
+    if (preview.available && preview.unchanged) {
+      diffText = `It composes to ${diffBase(preview.against)} itself: ADP acknowledges it without a new generation.`;
+    } else if (preview.available) {
+      diffText = `Installing it changes ${diffBase(preview.against)}: ${diffCounts(preview)}.`;
+    }
+    ui.confirmDiff.textContent = diffText || "";
+    ui.confirmDiff.hidden = !diffText;
     const warnings = [];
     if (outcome.errors) {
-      warnings.push(`The structural checks found ${plural(outcome.errors, "error")}: ADP will likely reject it.`);
+      const first = outcome.diagnostics.find((d) => d.severity === "error");
+      const how = outcome.checked_against.composed ? "Composed as ADP will" : "The structural checks";
+      warnings.push(`${how}, it has ${plural(outcome.errors, "error")}: ADP will reject it and keep running its `
+        + `active plan. ${first ? first.message : ""}`);
     }
     if (!outcome.checked_against.available) {
       warnings.push("Not checked against ADP's catalog: ADP's export is not available.");
+    }
+    // The approval names the active plan the compile diffed against: if ADP runs another one now, the diff above is
+    // not what installing it changes, and ADP flags the review as stale.
+    const latest = state && latestStatus(state);
+    const active = latest && latest.status.active_plan_hash;
+    if (preview.available && preview.against.kind === "active" && active && active !== preview.against.plan_hash) {
+      const generation = latest.status.active_generation ?? "?";
+      warnings.push(`ADP's active plan changed since the compile (it runs gen ${generation} now): the diff above is `
+        + "against the plan it ran then, and ADP will flag this review as stale. Compile again to review what "
+        + "installing it changes now.");
     }
     const lastPoll = state && state.channel.last_poll;
     if (state && !state.channel.polls_total) {
@@ -495,7 +669,8 @@
     } else if (lastPoll && state.now_ms - lastPoll.received_ms > staleAfterMs(state)) {
       warnings.push(`ADP last polled the stub ${ago(lastPoll.received_ms)}.`);
     }
-    ui.confirmWarnings.replaceChildren(...warnings.map((text) => el("li", { text })));
+    const warning = (text) => el("li", {}, el("div", { class: "clamp", text, title: text }));
+    ui.confirmWarnings.replaceChildren(...warnings.map(warning));
     ui.confirmWarnings.hidden = warnings.length === 0;
     ui.confirm.hidden = false;
     ui.confirm.scrollIntoView({ block: "nearest" });
@@ -598,6 +773,9 @@
     }
   }
 
+  ui.load.title = "Replaces the editor's text with ADP's default program. An artifact published from it replaces the "
+    + "one in effect, so it also undoes that one's changes: keep editing the current text to add a change, or revoke "
+    + "first to show one change at a time.";
   ui.load.addEventListener("click", () => busy(ui.load, "Loading…", () => loadDefault(false)));
   ui.compile.addEventListener("click", () => busy(ui.compile, "Compiling…", compile));
 
@@ -660,6 +838,15 @@
       text = `Artifact rev ${status.active_artifact.revision ?? "?"} · gen ${generation}`;
       kind = "artifact";
       title = `Active artifact ${status.active_artifact.artifact_hash || ""}`;
+      // Flags that ADP installed the artifact although it changed since the approval: a stale base or review.
+      const stale = [status.stale_base ? "stale base" : null, status.stale_review ? "stale review" : null]
+        .filter(Boolean);
+      if (stale.length) {
+        text = `${text} · ${stale.join(" · ")}`;
+        title = `${title}. ${stale.includes("stale review") ? "It was approved against another active plan than the "
+          + "one ADP installed it over. " : ""}${stale.includes("stale base") ? "Its base is not ADP's current "
+          + "default program. " : ""}ADP runs it anyway.`;
+      }
     } else {
       text = `Default program · gen ${generation}`;
       kind = "ok";
@@ -783,6 +970,11 @@
         // Allow names to wrap after their dots rather than be cut off in a narrow column.
         row.nameNode.replaceChildren(...breakable(family.family, "."));
         if (family.names > 1) row.nameNode.append(el("span", { class: "count", text: ` ×${family.names}` }));
+        // A family that began arriving here a moment ago, well after the demo started, is what a change just routed
+        // here: it is marked for a few seconds.
+        const arrived = s.now_ms - family.active_since_ms < ARRIVED_MS && family.active_since_ms - firstSeenMs > 15000;
+        if (arrived) row.nameNode.append(el("span", { class: "new", text: "new" }));
+        row.root.classList.toggle("arrived", arrived);
         const more = family.names > 1 ? ` and ${family.names - 1} more` : "";
         row.nameNode.title = `${family.example}${more} · ${family.kinds.join(", ")} · `
           + `${count(family.points_total)} points`;
@@ -843,10 +1035,22 @@
     }
     node.className = `publish-outcome ${tone}`;
     const revision = `Revision ${current.revision} (${tinyHash(current.artifact_hash)}): `;
-    node.append(revision, el("span", { class: "state", text }));
-    node.title = current.artifact_hash;
+    // A rejection names the paths it is about, which can take many lines: two are shown until a click shows the rest.
+    const expanded = expandedOutcome === current.revision;
+    const body = el("div", { class: `clamp two clamp-toggle${expanded ? " expanded" : ""}` },
+      revision, el("span", { class: "state", text }));
+    body.title = expanded ? current.artifact_hash : `${text}\n\nClick to show the whole message.`;
+    body.addEventListener("click", () => {
+      expandedOutcome = expandedOutcome === current.revision ? null : current.revision;
+      renderOutcome(s);
+    });
+    node.append(body);
     node.hidden = false;
   }
+
+  let expandedOutcome = null; // the revision whose outcome is shown whole
+
+  const expandedDetails = new Set(); // the acknowledgment details shown whole, by entry
 
   function renderAcks(s) {
     const timeline = s.channel.timeline;
@@ -863,7 +1067,8 @@
         rows.push([when, "—", null, "refused", "—", entry.error, "err"]);
         continue;
       }
-      const notes = [restarted, status.degraded, status.stale_base ? "stale base" : null, unreadable]
+      const notes = [restarted, status.degraded, status.stale_base ? "stale base" : null,
+        status.stale_review ? "stale review" : null, unreadable]
         .filter(Boolean).join(" · ");
       const tone = unreadable ? "warn" : "";
       const states = entry.config_states.length ? entry.config_states : [null];
@@ -896,8 +1101,18 @@
         el("td", { class: "num", text: String(generation) }),
       ));
       if (detail) {
+        const key = `${when[0]}:${revision}:${detail.length}`;
+        const text = el("div", {
+          class: `clamp clamp-toggle${expandedDetails.has(key) ? " expanded" : ""}`,
+          text: detail,
+          title: "Click to show or hide the whole message",
+        });
+        text.addEventListener("click", () => {
+          if (!expandedDetails.delete(key)) expandedDetails.add(key);
+          text.classList.toggle("expanded");
+        });
         ui.acks.append(el("tr", { class: "detail-row" },
-          el("td", { colspan: "5", class: tone ? `detail ${tone}` : "detail", text: detail })));
+          el("td", { colspan: "5", class: tone ? `detail ${tone}` : "detail" }, text)));
       }
     }
     const current = s.channel.current;
@@ -1062,6 +1277,7 @@
     renderTraffic(s);
     renderNodes(s);
     renderFoot(s);
+    renderPreview();
     renderPublish();
     followExport(s);
   }
@@ -1074,6 +1290,7 @@
       const { ok, data } = await api("GET", "/api/state");
       if (ok && data) {
         state = data;
+        firstSeenMs = Math.min(firstSeenMs, data.now_ms);
         render(data);
       }
     } catch (_) {

@@ -322,6 +322,13 @@ impl StubChannel {
         self.lock_store().revoke(now_ms)
     }
 
+    /// Returns the revision the next publish would use, counting `reported_high_water` as [`publish`][Self::publish]
+    /// does.
+    pub fn next_revision(&self, reported_high_water: Option<u64>) -> u64 {
+        let high_water = self.high_water(reported_high_water);
+        self.lock_store().next_revision(high_water)
+    }
+
     /// Returns what the stub knows, with up to `timeline_limit` timeline entries.
     ///
     /// The next revision counts `reported_high_water` as [`publish`][Self::publish] does.

@@ -21,7 +21,7 @@ pub const DEFAULT_PROGRAM_JSON: &str = include_str!("../../fixtures/default-prog
 pub const NO_AGGREGATION_PIPELINE_OFF_JSON: &str =
     include_str!("../../fixtures/default-program-no-aggregation-pipeline-off.json");
 
-/// Names the region host of a slot of a default-program fixture's frame, as ADP names them.
+/// Names the region host of a slot of a default-program fixture's frame, as the host names them.
 ///
 /// The slot holding the DogStatsD mapper is `dsd_pre_aggregation`, and the slot holding host enrichment is
 /// `metrics_enrich`. Any other slot, one that R1's cost model cut from a pipeline, is named after its first node,

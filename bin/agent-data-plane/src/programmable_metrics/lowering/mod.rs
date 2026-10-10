@@ -720,3 +720,6 @@ mod legacy_tests;
 
 #[cfg(test)]
 mod interpreter_tests;
+
+#[cfg(test)]
+mod export_tests;

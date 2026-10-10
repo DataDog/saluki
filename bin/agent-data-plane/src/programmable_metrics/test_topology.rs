@@ -6,10 +6,12 @@
 //! siblings):
 //!
 //! - every source, and the trace sampler, which emits metrics of its own, with a scripted component that sends each
-//!   batch the test feeds it, as one buffer, on its `metrics` output;
+//!   batch the test feeds it, as one buffer, on its `metrics` output, and counts the sends that completed
+//!   ([`TestTopology::sent`]);
 //! - DogStatsD aggregation, when asked, with native aggregation on a test clock ([`Aggregation::Clocked`]): it admits
 //!   every metric at [`ADMITTED_AT`] and flushes once, when its input ends, at [`FLUSHED_AT`], past every bucket, so
-//!   that what it emits does not depend on when a test runs;
+//!   that what it emits does not depend on when a test runs; or with a transform that reads nothing until its gate
+//!   opens ([`Aggregation::Gated`]), or one that sends what the test feeds it ([`Aggregation::Scripted`]);
 //! - every metrics encoder, and the DogStatsD client telemetry destination, with a collector that records each buffer
 //!   it receives and encodes nothing;
 //! - every forwarder with one that drops what it receives, so nothing leaves the process.
@@ -20,7 +22,10 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::Duration,
 };
 
@@ -49,7 +54,7 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metric_kernels::aggregate::{AggregateCore, AggregateParams, AggregateTelemetry};
-use saluki_metric_plan::{equivalence::OutputPoints, ir::OutputId};
+use saluki_metric_plan::{equivalence::OutputPoints, ir::OutputId, operators::OperatorRegistry};
 use saluki_metrics::MetricsBuilder;
 use tokio::{
     sync::{mpsc, oneshot, Semaphore},
@@ -58,8 +63,8 @@ use tokio::{
 };
 
 use super::{
-    installer::{BootTopology, InstallerWorker, PlanStatus},
-    test_support::{environment_provider, programmable_metrics},
+    installer::{BootTopology, InstallerWorker, PlanStatus, ProgrammableMetrics},
+    test_support::{environment_provider, programmable_metrics_with_operators},
 };
 use crate::{
     cli::run::{create_legacy_topology, create_topology, dogstatsd_aggregate_configuration},
@@ -100,7 +105,19 @@ pub(super) enum Aggregation {
     /// Native aggregation on a test clock: it admits every metric at [`ADMITTED_AT`] and flushes once, at
     /// [`FLUSHED_AT`], when its input ends.
     Clocked,
+
+    /// A transform that reads nothing until its gate, `dsd_agg`, [opens](TestTopology::open_gate), so that what is sent
+    /// to aggregation backs up, and then sends what it reads on unchanged.
+    Gated,
+
+    /// A scripted transform that drops what it reads and sends each batch the test feeds it on `dsd_agg`, as
+    /// aggregation's output.
+    Scripted,
 }
+
+/// The component DogStatsD aggregation runs as, which also names the gate of gated aggregation and the feed of scripted
+/// aggregation.
+pub(super) const DSD_AGG: &str = "dsd_agg";
 
 /// One buffer an output received.
 #[derive(Clone, Debug)]
@@ -120,6 +137,10 @@ pub(super) struct Delivery {
 
 /// What a test does to the plan-driven metrics path between its boot and the construction of the topology.
 pub(super) type BeforeTopology = Box<dyn FnOnce(&mut BootTopology)>;
+
+/// What a test does to the plan-driven metrics path once the topology is built and before its installer runs, such as
+/// connecting an artifact channel.
+pub(super) type BeforeInstall = Box<dyn FnOnce(&mut ProgrammableMetrics)>;
 
 /// How a test topology is started.
 pub(super) struct Options {
@@ -147,12 +168,19 @@ pub(super) struct Options {
     /// What to do to the plan-driven metrics path between its boot and the construction of the topology.
     pub before_topology: Option<BeforeTopology>,
 
+    /// What to do to the plan-driven metrics path once the topology is built and before its installer runs.
+    pub before_install: Option<BeforeInstall>,
+
     /// Which metrics the collectors keep in their deliveries; every one by default.
     pub keep: fn(&Metric) -> bool,
 
     /// What the topology waits for after it is built and before it starts its components, as `run.rs` waits for the
     /// environment to be ready; nothing by default.
     pub environment_ready: Option<futures::future::BoxFuture<'static, ()>>,
+
+    /// The operators the plan-driven metrics path validates, composes, and compiles plans with: the native ones by
+    /// default, which a test extends with operators of its own.
+    pub operators: OperatorRegistry,
 }
 
 impl Options {
@@ -167,15 +195,37 @@ impl Options {
             gated: BTreeSet::new(),
             supervise_installer: true,
             before_topology: None,
+            before_install: None,
             keep: |_| true,
             environment_ready: None,
+            operators: OperatorRegistry::native(),
         }
+    }
+}
+
+/// The input a test feeds into one component output, and how many of the batches fed the component has sent.
+struct Feed {
+    batches: mpsc::UnboundedSender<Vec<Event>>,
+    sent: Arc<AtomicUsize>,
+}
+
+impl Feed {
+    /// Returns a feed, with the receiving side of its batches and its count of sends for the scripted component that
+    /// sends them.
+    fn new() -> (Self, mpsc::UnboundedReceiver<Vec<Event>>, Arc<AtomicUsize>) {
+        let (batches, receiver) = mpsc::unbounded_channel();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let feed = Self {
+            batches,
+            sent: Arc::clone(&sent),
+        };
+        (feed, receiver, sent)
     }
 }
 
 /// A running test topology.
 pub(super) struct TestTopology {
-    feeds: BTreeMap<String, mpsc::UnboundedSender<Vec<Event>>>,
+    feeds: BTreeMap<String, Feed>,
     deliveries: mpsc::UnboundedReceiver<Delivery>,
     received: Vec<Delivery>,
     status: Option<Arc<ArcSwap<PlanStatus>>>,
@@ -202,8 +252,10 @@ impl TestTopology {
             gated,
             supervise_installer,
             before_topology,
+            before_install,
             keep,
             environment_ready,
+            operators,
         } = options;
         let config = SalukiConfiguration::clone(&system.config());
         let env = environment_provider(&config).await;
@@ -217,14 +269,18 @@ impl TestTopology {
                 (blueprint, None)
             }
             MetricsPath::Plan => {
-                let mut metrics = programmable_metrics(&config, system.live(|config| config), &registry)
-                    .expect("a metrics pipeline is required");
+                let mut metrics =
+                    programmable_metrics_with_operators(&config, system.live(|config| config), &registry, operators)
+                        .expect("a metrics pipeline is required");
                 if let Some(before_topology) = before_topology {
                     before_topology(metrics.boot_topology());
                 }
                 let (blueprint, _) = create_topology(system, &env, &registry, Some(&mut metrics))
                     .await
                     .expect("the plan-driven topology builds");
+                if let Some(before_install) = before_install {
+                    before_install(&mut metrics);
+                }
                 (blueprint, Some(metrics.into_installer()))
             }
         };
@@ -232,8 +288,10 @@ impl TestTopology {
         let snapshot = blueprint.snapshot().expect("the blueprint is not running yet");
         let (deliveries_tx, deliveries) = mpsc::unbounded_channel();
         let mut feeds = BTreeMap::new();
+        let gated_aggregation = (aggregation == Aggregation::Gated).then(|| DSD_AGG.to_string());
         let gates = gated
             .into_iter()
+            .chain(gated_aggregation)
             .map(|output| (output, Arc::new(Semaphore::new(0))))
             .collect::<BTreeMap<_, _>>();
         let collector = |id: &str| Collector {
@@ -246,24 +304,44 @@ impl TestTopology {
             let id = component.id().to_string();
             match component.component_type() {
                 ComponentType::Source => {
-                    let (feed, batches) = mpsc::unbounded_channel();
+                    let (feed, batches, sent) = Feed::new();
                     blueprint
-                        .replace_source(&id, ScriptedSourceBuilder::new(component, batches))
+                        .replace_source(&id, ScriptedSourceBuilder::new(component, batches, sent))
                         .expect("a scripted source declares what it replaces");
                     feeds.insert(format!("{}.metrics", id), feed);
                 }
                 ComponentType::Transform if METRIC_EMITTING_TRANSFORMS.contains(&id.as_str()) => {
-                    let (feed, batches) = mpsc::unbounded_channel();
+                    let (feed, batches, sent) = Feed::new();
+                    let output = OutputName::Given("metrics".into());
                     blueprint
-                        .replace_transform(&id, ScriptedTransformBuilder::new(component, batches))
+                        .replace_transform(&id, ScriptedTransformBuilder::new(component, output, batches, sent))
                         .expect("a scripted transform declares what it replaces");
                     feeds.insert(format!("{}.metrics", id), feed);
                 }
-                ComponentType::Transform if id == "dsd_agg" && aggregation == Aggregation::Clocked => {
-                    blueprint
-                        .replace_transform(&id, ClockedAggregateBuilder::new(&config))
-                        .expect("clocked aggregation declares what it replaces");
-                }
+                ComponentType::Transform if id == DSD_AGG => match aggregation {
+                    Aggregation::Native => {}
+                    Aggregation::Clocked => {
+                        blueprint
+                            .replace_transform(&id, ClockedAggregateBuilder::new(&config))
+                            .expect("clocked aggregation declares what it replaces");
+                    }
+                    Aggregation::Gated => {
+                        let gate = gates.get(DSD_AGG).cloned().expect("gated aggregation has a gate");
+                        blueprint
+                            .replace_transform(&id, GatedTransformBuilder::new(component, gate))
+                            .expect("gated aggregation declares what it replaces");
+                    }
+                    Aggregation::Scripted => {
+                        let (feed, batches, sent) = Feed::new();
+                        blueprint
+                            .replace_transform(
+                                &id,
+                                ScriptedTransformBuilder::new(component, OutputName::Default, batches, sent),
+                            )
+                            .expect("scripted aggregation declares what it replaces");
+                        feeds.insert(DSD_AGG.to_string(), feed);
+                    }
+                },
                 ComponentType::Encoder if component.input() == Some(DataType::Event(EventType::Metric)) => {
                     let payloads = match component.outputs().first().map(|output| output.data_type()) {
                         Some(DataType::Payload(payloads)) => payloads,
@@ -361,7 +439,8 @@ impl TestTopology {
             .expect("the installer is not supervised, and not taken yet")
     }
 
-    /// Opens the gate of `output`: its collector starts reading what was sent to it.
+    /// Opens the gate of `output`: its collector, or gated aggregation for `dsd_agg`, starts reading what was sent to
+    /// it.
     pub(super) fn open_gate(&self, output: &str) {
         self.gates
             .get(output)
@@ -380,8 +459,23 @@ impl TestTopology {
             .get(feed)
             .unwrap_or_else(|| panic!("the topology has no feed `{}`; it has {:?}", feed, self.feeds.keys()));
         sender
+            .batches
             .send(metrics.into_iter().map(Event::Metric).collect())
             .expect("the scripted component runs until its feed closes");
+    }
+
+    /// Returns how many of the batches fed on `feed` its scripted component has sent so far. A send completes once
+    /// every component the output is connected to has taken the batch into its input.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the topology has no such feed.
+    pub(super) fn sent(&self, feed: &str) -> usize {
+        self.feeds
+            .get(feed)
+            .unwrap_or_else(|| panic!("the topology has no feed `{}`; it has {:?}", feed, self.feeds.keys()))
+            .sent
+            .load(Ordering::SeqCst)
     }
 
     /// Returns the next buffer an output receives, without recording it, or `None` once the outputs have stopped.
@@ -448,6 +542,28 @@ impl TestTopology {
         }
         self.received
     }
+
+    /// Waits until the topology stops on its own, as it does when one of its components fails, without asking it to,
+    /// and returns why it stopped, and every buffer the outputs received, in arrival order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the topology does not stop in time, or stops cleanly.
+    pub(super) async fn failure(mut self) -> (SupervisorError, Vec<Delivery>) {
+        let result = tokio::time::timeout(PATIENCE, &mut self.task)
+            .await
+            .expect("the topology stops in time")
+            .expect("the supervisor does not panic");
+        let error = match result {
+            Ok(()) => panic!("the topology stopped cleanly"),
+            Err(error) => error,
+        };
+        self.feeds.clear();
+        while let Some(delivery) = self.deliveries.recv().await {
+            self.received.push(delivery);
+        }
+        (error, self.received)
+    }
 }
 
 /// Returns the points every output received in `deliveries`, keyed by output component.
@@ -477,6 +593,14 @@ pub(super) fn collected_outputs(snapshot: &BlueprintSnapshot) -> BTreeSet<String
         .collect()
 }
 
+/// Returns the events a transform accepts.
+fn event_input(component: &ComponentSnapshot) -> EventType {
+    match component.input() {
+        Some(DataType::Event(input)) => input,
+        other => panic!("transform `{}` accepts {:?}", component.id(), other),
+    }
+}
+
 /// Returns the event outputs a component declares, as output definitions.
 fn event_outputs(component: &ComponentSnapshot) -> Vec<OutputDefinition<EventType>> {
     component
@@ -494,27 +618,29 @@ fn event_outputs(component: &ComponentSnapshot) -> Vec<OutputDefinition<EventTyp
         .collect()
 }
 
-/// Returns the metrics as one buffer.
+/// Returns the metrics as one buffer, sized to them.
 fn buffer_of(events: Vec<Event>) -> EventsBuffer {
-    let mut buffer = EventsBuffer::default();
+    let mut buffer = EventsBuffer::with_capacity(events.len());
     for event in events {
         assert!(buffer.try_push(event).is_none(), "a fed batch fits one buffer");
     }
     buffer
 }
 
-/// Builds a source that sends each batch it is fed on its `metrics` output, and declares the outputs of the source it
-/// replaces.
+/// Builds a source that sends each batch it is fed on its `metrics` output, counting each send once it completes in
+/// `sent`, and declares the outputs of the source it replaces.
 struct ScriptedSourceBuilder {
     outputs: Vec<OutputDefinition<EventType>>,
     batches: StdMutex<Option<mpsc::UnboundedReceiver<Vec<Event>>>>,
+    sent: Arc<AtomicUsize>,
 }
 
 impl ScriptedSourceBuilder {
-    fn new(replaced: &ComponentSnapshot, batches: mpsc::UnboundedReceiver<Vec<Event>>) -> Self {
+    fn new(replaced: &ComponentSnapshot, batches: mpsc::UnboundedReceiver<Vec<Event>>, sent: Arc<AtomicUsize>) -> Self {
         Self {
             outputs: event_outputs(replaced),
             batches: StdMutex::new(Some(batches)),
+            sent,
         }
     }
 }
@@ -532,7 +658,10 @@ impl SourceBuilder for ScriptedSourceBuilder {
             .map_err(|_| generic_error!("poisoned"))?
             .take()
             .ok_or_else(|| generic_error!("the scripted source was already built"))?;
-        Ok(Box::new(ScriptedSource { batches }))
+        Ok(Box::new(ScriptedSource {
+            batches,
+            sent: Arc::clone(&self.sent),
+        }))
     }
 }
 
@@ -542,6 +671,7 @@ impl MemoryBounds for ScriptedSourceBuilder {
 
 struct ScriptedSource {
     batches: mpsc::UnboundedReceiver<Vec<Event>>,
+    sent: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -557,7 +687,10 @@ impl Source for ScriptedSource {
             tokio::select! {
                 _ = health.live() => {}
                 batch = self.batches.recv() => match batch {
-                    Some(events) => context.dispatcher().dispatch_named("metrics", buffer_of(events)).await?,
+                    Some(events) => {
+                        context.dispatcher().dispatch_named("metrics", buffer_of(events)).await?;
+                        self.sent.fetch_add(1, Ordering::SeqCst);
+                    }
                     None => break,
                 },
             }
@@ -571,24 +704,28 @@ impl Source for ScriptedSource {
     }
 }
 
-/// Builds a transform that sends each batch it is fed on its `metrics` output and drops its input, in place of a
-/// transform that emits metrics of its own, such as the trace sampler.
+/// Builds a transform that sends each batch it is fed on `output` and drops its input, counting each send once it
+/// completes in `sent`, in place of a transform that emits metrics of its own, such as the trace sampler, or of
+/// aggregation.
 struct ScriptedTransformBuilder {
     input: EventType,
     outputs: Vec<OutputDefinition<EventType>>,
+    output: OutputName,
     batches: StdMutex<Option<mpsc::UnboundedReceiver<Vec<Event>>>>,
+    sent: Arc<AtomicUsize>,
 }
 
 impl ScriptedTransformBuilder {
-    fn new(replaced: &ComponentSnapshot, batches: mpsc::UnboundedReceiver<Vec<Event>>) -> Self {
-        let input = match replaced.input() {
-            Some(DataType::Event(input)) => input,
-            other => panic!("transform `{}` accepts {:?}", replaced.id(), other),
-        };
+    fn new(
+        replaced: &ComponentSnapshot, output: OutputName, batches: mpsc::UnboundedReceiver<Vec<Event>>,
+        sent: Arc<AtomicUsize>,
+    ) -> Self {
         Self {
-            input,
+            input: event_input(replaced),
             outputs: event_outputs(replaced),
+            output,
             batches: StdMutex::new(Some(batches)),
+            sent,
         }
     }
 }
@@ -610,7 +747,11 @@ impl TransformBuilder for ScriptedTransformBuilder {
             .map_err(|_| generic_error!("poisoned"))?
             .take()
             .ok_or_else(|| generic_error!("the scripted transform was already built"))?;
-        Ok(Box::new(ScriptedTransform { batches }))
+        Ok(Box::new(ScriptedTransform {
+            output: self.output.clone(),
+            batches,
+            sent: Arc::clone(&self.sent),
+        }))
     }
 }
 
@@ -619,7 +760,9 @@ impl MemoryBounds for ScriptedTransformBuilder {
 }
 
 struct ScriptedTransform {
+    output: OutputName,
     batches: mpsc::UnboundedReceiver<Vec<Event>>,
+    sent: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -633,12 +776,93 @@ impl Transform for ScriptedTransform {
                 _ = health.live() => {}
                 events = context.events().next(), if input_open => input_open = events.is_some(),
                 batch = self.batches.recv(), if feed_open => match batch {
-                    Some(events) => context.dispatcher().dispatch_named("metrics", buffer_of(events)).await?,
+                    Some(events) => {
+                        let buffer = buffer_of(events);
+                        match &self.output {
+                            OutputName::Default => context.dispatcher().dispatch(buffer).await?,
+                            OutputName::Given(name) => context.dispatcher().dispatch_named(name, buffer).await?,
+                        }
+                        self.sent.fetch_add(1, Ordering::SeqCst);
+                    }
                     None => feed_open = false,
                 },
             }
         }
         Ok(())
+    }
+}
+
+/// Builds a transform that reads nothing until its gate opens, answering liveness probes meanwhile, and then sends
+/// every buffer it reads on its default output unchanged, until its input closes.
+struct GatedTransformBuilder {
+    input: EventType,
+    outputs: Vec<OutputDefinition<EventType>>,
+    gate: Arc<Semaphore>,
+}
+
+impl GatedTransformBuilder {
+    fn new(replaced: &ComponentSnapshot, gate: Arc<Semaphore>) -> Self {
+        Self {
+            input: event_input(replaced),
+            outputs: event_outputs(replaced),
+            gate,
+        }
+    }
+}
+
+#[async_trait]
+impl TransformBuilder for GatedTransformBuilder {
+    fn input_event_type(&self) -> EventType {
+        self.input
+    }
+
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        &self.outputs
+    }
+
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        Ok(Box::new(GatedTransform {
+            gate: Arc::clone(&self.gate),
+        }))
+    }
+}
+
+impl MemoryBounds for GatedTransformBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
+struct GatedTransform {
+    gate: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl Transform for GatedTransform {
+    async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+        wait_for_gate(&self.gate, &mut health).await;
+        loop {
+            tokio::select! {
+                _ = health.live() => {}
+                events = context.events().next() => match events {
+                    Some(events) => context.dispatcher().dispatch(events).await?,
+                    None => return Ok(()),
+                },
+            }
+        }
+    }
+}
+
+/// Waits until `gate` opens, answering liveness probes meanwhile.
+async fn wait_for_gate(gate: &Semaphore, health: &mut Health) {
+    loop {
+        tokio::select! {
+            _ = health.live() => {}
+            permit = gate.acquire() => {
+                permit.expect("gates are never closed").forget();
+                return;
+            }
+        }
     }
 }
 
@@ -731,15 +955,8 @@ struct Collector {
 impl Collector {
     /// Waits until the collector's gate opens, if it has one, answering liveness probes meanwhile.
     async fn wait_for_gate(&self, health: &mut Health) {
-        let Some(gate) = &self.gate else { return };
-        loop {
-            tokio::select! {
-                _ = health.live() => {}
-                permit = gate.acquire() => {
-                    permit.expect("gates are never closed").forget();
-                    return;
-                }
-            }
+        if let Some(gate) = &self.gate {
+            wait_for_gate(gate, health).await;
         }
     }
 

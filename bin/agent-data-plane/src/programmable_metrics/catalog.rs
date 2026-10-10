@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use saluki_metric_plan::{
     ir::{BindingName, InputName, OutputId, ScopeName, ValueType},
     model::PortType,
-    validate::{Catalog, CatalogBinding, CatalogOutput},
+    validate::{Catalog, CatalogBinding, CatalogOutput, MemoryCatalog},
 };
 
 use super::{
@@ -77,12 +77,7 @@ impl AdpCatalog {
     }
 
     /// Returns the catalog's document form, as exports carry it.
-    ///
-    /// Nothing exports the default program until stage 5, so only tests use it.
-    #[cfg(test)]
-    pub fn to_document(&self) -> saluki_metric_plan::validate::MemoryCatalog {
-        use saluki_metric_plan::validate::MemoryCatalog;
-
+    pub fn to_document(&self) -> MemoryCatalog {
         let mut catalog = MemoryCatalog::new();
         for (id, output) in &self.outputs {
             catalog = catalog.with_output(id.clone(), output.clone());

@@ -1,9 +1,9 @@
 //! Clients for ADP's two APIs: the unprivileged one (`/ready`, `/metrics`), and the privileged one, which requires
 //! mutual TLS with the IPC certificate, where the programmable-metrics control surface lives.
 //!
-//! The control surface (`GET /programmable-metrics/{status,export,plan,explain}`) arrives with stage 5 of the
-//! implementation plan. Until ADP serves it, its routes answer `404 Not Found`, which [`Surface::NotExposed`] reports
-//! so that the UI can say so plainly instead of showing an error.
+//! The control surface (`GET /programmable-metrics/{status,export,plan,default-program,explain}`) arrives with stage 5
+//! of the implementation plan. An ADP that does not serve a route answers `404 Not Found`, which
+//! [`Surface::NotExposed`] reports so that the UI can say so plainly instead of showing an error.
 
 use std::{
     path::Path,
@@ -36,6 +36,9 @@ pub mod routes {
 
     /// The active composed logical plan.
     pub const PLAN: &str = "/programmable-metrics/plan";
+
+    /// The default program ADP last lowered, which artifacts are composed into.
+    pub const DEFAULT_PROGRAM: &str = "/programmable-metrics/default-program";
 
     /// The explain document of the active plan, as JSON.
     pub const EXPLAIN: &str = "/programmable-metrics/explain";
