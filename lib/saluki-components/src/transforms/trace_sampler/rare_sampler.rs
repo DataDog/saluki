@@ -148,6 +148,13 @@ impl RareSampler {
         }
     }
 
+    /// Turns rare sampling on or off without forgetting previously seen span signatures.
+    ///
+    /// The rate limiter also keeps its state, as in the Datadog Agent's `pkg/trace/sampler/rare_sampler.go`.
+    pub(super) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     /// Sample a trace. Returns `true` if the trace should be kept by the rare sampler.
     ///
     /// Iterates top-level and measured spans. If any span has a signature that hasn't been seen
