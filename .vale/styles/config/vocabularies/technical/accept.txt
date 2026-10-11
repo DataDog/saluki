@@ -316,3 +316,5 @@ inlines
 [Uu]nparsable
 [Rr]einstall(s|ed|ing)?
 [Uu]ndescribed
+uncontended
+[Dd]efunctionaliz(e|ed|es|ing|ation)

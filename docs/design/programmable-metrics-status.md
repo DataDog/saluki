@@ -1,0 +1,934 @@
+# Programmable metric processing: status
+
+**Status:** the state of the work at `b01049372e` (October 10, 2026), on branch `luke/programmable-metrics`. This
+document records where the implementation of [the specification](programmable-metrics.md) stands, how to run it, what
+it changed outside its own crates, what is still open, and what the next stages inherit. It summarizes and links to
+[the implementation design](programmable-metrics-implementation.md) rather than repeating it, and it holds the open
+items that no other document in the repository records. Where a document disagrees with the code, the code is
+authoritative.
+
+## Contents
+
+1. [Where things stand](#where-things-stand)
+2. [Documents](#documents)
+3. [Running it](#running-it)
+4. [Code map](#code-map)
+5. [Changes users can see](#changes-users-can-see)
+6. [Changes outside the new code](#changes-outside-the-new-code)
+7. [Decisions awaiting the owner](#decisions-awaiting-the-owner)
+8. [Spec amendments index](#spec-amendments-index)
+9. [Known limitations and risks](#known-limitations-and-risks)
+10. [Deferred work by stage](#deferred-work-by-stage)
+11. [Environment notes](#environment-notes)
+12. [How the work was done](#how-the-work-was-done)
+
+## Where things stand
+
+Stages 1 to 6 of the specification are implemented, with a local demo (committed after stage 2, connected to ADP's
+artifact channel and given its headless check in stage 5, and extended in stage 6):
+
+- ADP's metrics path always runs from the plan. Lowering turns the native configuration into the default program, the
+  frame lays it out once at boot, and region hosts run its regions. The legacy metrics path exists only under
+  `cfg(test)`, as a differential reference, so there is no production switch back to it.
+- Configuration changes, policy artifacts, and aggregation changes install live as generations: stateless ones with a
+  prepare barrier and one schedule store, aggregation changes whose bucket width changes at a cut.
+- DogStatsD aggregation runs as a stateful kernel in the `dsd_agg` isolation slot, bucketing by admission time and
+  closing buckets by watermark.
+- Policy artifacts arrive through a local development stub of the artifact channel, for two scopes: `post_enrich` (the
+  policy region) and `dogstatsd_pre_aggregation` (DogStatsD processing up to and including aggregation). The privileged
+  API serves the status, export, plan, explain, and default program.
+- Stages 7 to 10 are not built. Their extension-point types exist, only native defaults are accepted, and each
+  unsupported case is a capability error that names a stage (see [Deferred work by stage](#deferred-work-by-stage)).
+
+**Branch.** Nine commits on top of `main` (`b940bf1f8b`, the merge base). They are local only: the branch has no
+upstream and nothing is pushed. The spec commit is signed; the eight implementation commits are unsigned (made with
+`--no-gpg-sign`, since the repository sets `commit.gpgsign=true`). No CI pipeline has run on the branch.
+
+| Commit | Stage | What it delivered |
+|---|---|---|
+| `e435160474` | spec | The specification. Unchanged since. |
+| `f11cffe4a1` | 1 | `saluki-core` execution types (batch header, generation types, kernel trait). The plan crate: semantic model, IR with schema and versioning, canonical hash, predicates, operator registry with contracts, validator with duplicate analysis and catalog, reference interpreter, equivalence, explain, limits, extension-slot types, and hand-written default-program fixtures. |
+| `3e058a556a` | 2 | Batch headers on buffers, admission clocks with reset epochs, admission points that stamp `t_a` and the generation in the dispatcher, heartbeats, blueprint snapshots and graph checks. `saluki-metric-kernels`: the native cores extracted, with frozen pre-extraction references and kernel-against-reference property tests. Lowering of native configuration (host facts, bindings, outputs, telemetry profiles), checked against the legacy blueprint. |
+| `a4c72a4f2a` | demo | `saluki-metric-plan-syntax` (parser, printer, spans) and `programmable-metrics-demo` (launcher, stub, editor, recording intakes, telemetry viewer). Hardens `stele`'s v3 decoder. |
+| `d991c4b923` | demo | Keeps the syntax crate's property-test input generation within a small stack. |
+| `f6ef9cddcb` | 3 | The region host and driver, the frame with R1 and its cost model, placement, region programs, plan diff and kernel reuse, the I/O-free installer core, and the plan-driven ADP metrics path with a supervised installer. Fixes the blueprint's memory bounds omitting the last component added. |
+| `4c64b4c522` | 4 | Endpoint routing, Multi-Region Failover, and autoscaling failover gateways lowered to routing operators, run as one memoized decision in `metrics_enrich`. Decisions, R2 to R4, R5a, R6, R7, and capacity semantics in the interpreter. |
+| `26af093620` | 5 | Channel types, the stub, the export bundle, composition with correspondence and provenance, the artifact lifecycle (revision high-water mark, redelivery, revocation, stale base, last-known-good, panic budgets with rollback), the control surface, and region input capacities that keep native burst slack. The demo's integration with ADP (the `default-program` route, preview composition, plan diff) and its headless check. The `saluki-io` proxy TLS change. |
+| `b01049372e` | 6 | Aggregation as a kernel in `dsd_agg`: admission-time bucketing, watermarks, heartbeats, progress, the tick gate, clock resets, lineages and transitions, the cut protocol, shared budgets, resumable drains, R5b as emission suppression, the `dogstatsd_pre_aggregation` scope, and allowed bucket widths. |
+
+**Next.** The next phase is stages 7 and 9, designed in
+[programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md). Stage 8, the real artifact channel,
+is not part of it beyond what stage 7 needs to settle who may declare endpoints. The owner's direction for this phase
+(October 10, 2026):
+
+- Stage 7: no full stage 8. Endpoint privilege may be settled by a configuration-driven change, or by declaring
+  endpoints apart from ordinary program definitions. Security is not a priority yet, as long as nothing is
+  unrecoverable. Other stage 7 questions take the path that least surprises operators and contributors, to revisit
+  later if needed.
+- Stage 9: the specification's stage 9 list is not binding. Partitioning is to be designed as a whole, from the state
+  of the art and the constraints of this problem, to restore the parallelism that fusion gave up while adding as little
+  coordination and communication as possible. If first-class parallelism makes R1's cost model unnecessary, it should
+  go (see [what it couples to](#stage-9-partitioned-execution)).
+
+## Documents
+
+| Document | What it holds |
+|---|---|
+| [programmable-metrics.md](programmable-metrics.md) | The specification, authoritative for semantics. It is never edited without its author; refinements go to the proposed amendments. |
+| [programmable-metrics-implementation.md](programmable-metrics-implementation.md) | The implementation design, stages 1 to 6 as built: [code layout](programmable-metrics-implementation.md#code-layout), [execution contracts](programmable-metrics-implementation.md#execution-contracts-in-saluki-core), [frame and region programs](programmable-metrics-implementation.md#physical-frame-and-region-programs) (R1 to R7), [the plan crate](programmable-metrics-implementation.md#the-plan-crate), [installation](programmable-metrics-implementation.md#installation), [ADP integration](programmable-metrics-implementation.md#adp-integration), [demo](programmable-metrics-implementation.md#demo), [stage plan](programmable-metrics-implementation.md#stage-plan) with stage 3 to 5 exit evidence, [stage 6](programmable-metrics-implementation.md#stage-6-stateful-kernels) with its [exit evidence](programmable-metrics-implementation.md#exit-evidence), [87 proposed spec amendments](programmable-metrics-implementation.md#proposed-spec-amendments), and [risks](programmable-metrics-implementation.md#risks). |
+| [programmable-metrics-stub-protocol.md](programmable-metrics-stub-protocol.md) | The contract between ADP and the demo server: the poll, the envelope, the control surface routes, and the demo server's side. |
+| This document | Status, how to run, changes outside the new code, open decisions, the amendments index, deferred work, and environment notes. |
+| [programmable-metrics-stages-7-and-9.md](programmable-metrics-stages-7-and-9.md) | The next phase's design (being written; the link works once it is committed). |
+
+Release notes, one per stage that changed what operators see:
+
+- Stage 3: [`plan-driven-metrics-path-c5ebc95607a402c8.yaml`](../../releasenotes/notes/plan-driven-metrics-path-c5ebc95607a402c8.yaml)
+  (its buffering item was rewritten in stage 5).
+- Stage 4: [`plan-driven-metrics-gateways-8f5f8bebdc56b2e3.yaml`](../../releasenotes/notes/plan-driven-metrics-gateways-8f5f8bebdc56b2e3.yaml).
+- Stage 5: [`programmable-metrics-artifact-channel-stub-f17b83af422ad285.yaml`](../../releasenotes/notes/programmable-metrics-artifact-channel-stub-f17b83af422ad285.yaml).
+  Its sentence "Artifacts with stateful operators, such as aggregation, are rejected" stopped being true for the
+  `dogstatsd_pre_aggregation` scope in stage 6; it still holds for `post_enrich`. Reword it if the notes ship in one
+  release.
+- Stage 6: [`plan-driven-dogstatsd-aggregation-b30cf0ea8aa14b5e.yaml`](../../releasenotes/notes/plan-driven-dogstatsd-aggregation-b30cf0ea8aa14b5e.yaml).
+
+## Running it
+
+### Prerequisites
+
+- Rust as `rust-toolchain.toml` pins it (1.96.0), `jq`, and `protoc`; `make` checks all three
+  (`check-rust-build-tools`).
+- For tests and the gate: `cargo-nextest`, the nightly Rust the `Makefile` names (`RUST_NIGHTLY_VERSION`,
+  `nightly-2026-01-18`, for `check-fmt`, `fmt`, and `generate-api-docs`), `cargo-sort`, `cargo-machete`, `cargo-hack`,
+  `cargo-deny`, and `dd-rust-license-tool` (the `Makefile` installs these as needed), and `vale`.
+- The demo needs no Datadog Agent. ADP runs in standalone mode, every listener is on 127.0.0.1, and nothing leaves the
+  machine. TCP ports 17080, 17100 to 17104, 17110, and 17111 and UDP port 17125 must be free (each plus 10000 for the
+  check).
+
+### The demo
+
+`make demo-programmable-metrics` builds ADP (`make build-adp`, profile `devel`) and the demo, then runs
+`target/devel/programmable-metrics-demo run --adp-bin target/devel/agent-data-plane $(DEMO_ARGS)`. Open
+`http://127.0.0.1:17080`. Ctrl-C, `SIGTERM`, or `SIGHUP` stops the demo and ADP (ADP gets `SIGTERM`, then `SIGKILL`
+after 10 s or on a second Ctrl-C). A `SIGKILL` of the demo leaves ADP running in its own process group; before starting
+ADP, the launcher names any port that is taken, which is usually such a leftover ADP.
+
+- **Run directory**: `target/programmable-metrics-demo/run-<unix seconds>` by default. `DEMO_ARGS="--run-dir <dir>"`
+  reuses one, which keeps the published artifact across a restart (scenario S7). It holds `ipc_cert.pem` (self-signed,
+  owner-only), `datadog.yaml` (the whole ADP configuration: inherited `DD_*` variables are removed from ADP's
+  environment), `adp.log`, `adp.console.log`, and `channel/` (the stub's store, `store.json` and `history.jsonl`).
+- **Ports**, each with a flag (for example `DEMO_ARGS="--ui-port 18080"`):
+
+  | Listener | Port | Flag |
+  |---|---|---|
+  | UI and JSON API | 17080 | `--ui-port` |
+  | Artifact channel stub | 17100 | `--stub-port` |
+  | Primary intake (`dd_url`) | 17101 | `--primary-port` |
+  | Team B intake (additional endpoint) | 17102 | `--team-b-port` |
+  | Team C intake (additional endpoint) | 17103 | `--team-c-port` |
+  | Multi-Region Failover intake | 17104 | `--mrf-port` |
+  | ADP unprivileged API | 17110 | `--api-port` |
+  | ADP privileged API (mutual TLS) | 17111 | `--secure-api-port` |
+  | ADP DogStatsD (UDP) | 17125 | `--dogstatsd-port` |
+
+- **Other flags**: `--poll-interval-ms` (1000), `--aggregate-window-secs` (1, so changes show within seconds; it must be
+  an allowed width), `--counter-expiry-secs` (0, so a paused or rerouted counter leaves the columns at once; ADP's own
+  default is 300), `--traffic-rate` (datagrams per second, 20), `--traffic-paused`, and `--no-launch` (serves the demo
+  for an ADP started separately and prints its command line).
+- **Configuration and traffic**: the [Demo](programmable-metrics-implementation.md#demo) section lists the generated
+  ADP configuration. Traffic carries `demo.checkout.requests` (a counter) and `demo.checkout.latency` (a distribution)
+  tagged `team:checkout`, `demo.catalog.views` (`team:catalog`), `demo.platform.queue_depth` (a gauge,
+  `team:platform`), the 20 counters `demo.debug.0` to `demo.debug.19`, and the canary counter `demo.canary`, once per
+  datagram. By default the primary column receives everything, team B `demo.checkout.*`, team C `demo.catalog.*`, and
+  the failover column nothing.
+
+**A visible change in about 30 seconds:**
+
+1. The editor loads the default program once ADP serves its export (**Load default program** reloads it). It is the
+   `post_enrich` scope: `input.metrics -> <policy node>`, then the policy `tee`, the routing `split`s, and the
+   Multi-Region Failover gateway's `split`.
+2. Replace the line `input.metrics -> <node>` with the following, keeping the original target in the `false` branch:
+
+   ```text
+   input.metrics -> drop_debug
+
+   node drop_debug = split(name starts_with "demo.debug.") {
+     true  -> drop
+     false -> <node>
+   }
+   ```
+
+3. Press **Compile** (Ctrl+Enter). The status reads that the artifact was composed and validated with no findings, and
+   the plan diff lists the added nodes. Press **Publish** and approve.
+4. Within about 3 s, `demo.debug.*` fades out of the primary column, the outcome under Publish reads that ADP runs it
+   (with the generation), the acknowledgment timeline shows `active`, the per-node rates show `drop_debug`, and the
+   canary check stays balanced.
+
+Other edits: put `or tag("team") == "platform"` on its own line before the `) {` of the split that feeds team B (S2);
+replace the failover split's predicate with `true and name in ["demo.checkout.requests"]` (S4); add a second branch
+to the primary output in the `tee`, emit to `metrics_routing_encode_99`, or add an `aggregate` node to see ADP reject
+each one while the previous generation keeps running (S5); **Revoke** restores the default routing (S6). Each scenario
+edits the default program, so each one undoes the one before; to narrate one change at a time, revoke between steps or
+keep editing the same program.
+
+**The pre-aggregation scope** has no picker in the UI. Fetch its source with
+`curl -s 'http://127.0.0.1:17080/api/default-program?scope=dogstatsd_pre_aggregation' | jq -r .source` and paste it
+into the editor; Compile picks the scope from the source. To change the window, set both `dsd_no_agg_split`'s and
+`dsd_agg`'s `window` to the same literal, such as `10s` (a `timestamp_split`'s window must equal its aggregation's,
+amendment 83). The change installs at a cut, the first shared boundary at least 1 s after arming; watch
+`plan_cuts_total{outcome}`. `POST /api/revoke` with `{"scope": "dogstatsd_pre_aggregation"}` revokes only that scope;
+the **Revoke** button sends no scope and empties the whole snapshot. The headless check does not cover this scope; ADP's
+lifecycle and cut tests do.
+
+**Headless check.** `make demo-programmable-metrics-check` builds the same binaries and runs
+`target/devel/programmable-metrics-demo check --adp-bin target/devel/agent-data-plane $(DEMO_CHECK_ARGS)`. Flags:
+`--run-dir` (default `target/programmable-metrics-demo/check-<unix seconds>`), `--port-offset` (10000: the UI on
+27080 and every other port moved up the same way, so it runs beside a demo), and `--traffic-rate` (20). When other
+ports are taken, pass `DEMO_CHECK_ARGS="--port-offset <n>"`. It exits 1 on any failure,
+naming the run directory, and writes `check-report.json` there with compile, publish-to-acknowledgment, and
+publish-to-visible timings. Each step compiles, publishes, waits up to 20 s for the acknowledgment on the status route
+and in the next stub poll, checks that ADP's active plan hash equals the plan the editor composed, then waits up to
+30 s for every intake to receive exactly the expected families and hold them for 3 s. Throughout, the rolling canary
+range must balance, and at the end the whole run's canaries are checked (both within an allowance of 6 at 20 per
+second: they catch an aggregated canary point lost or doubled, not a few datagrams ahead of aggregation, which ADP's
+continuous-input tests check exactly).
+
+| Step | Edit | What it proves |
+|---|---|---|
+| S0 | The unmodified export. | Acknowledged `active` with no new generation and an empty diff; `/export` and `/default-program` hash as expected. |
+| S1 | `drop_debug` ahead of the policy `tee`. | `demo.debug.*` leaves the primary intake only; `/plan` and `/explain` describe it. |
+| S2 | Team B's route widened with `or tag("team") == "platform"`. | Team B also receives the platform family. |
+| S3 | `split(tag("team") == "checkout")` ahead of the `tee`, `true` to team B only. | Exclusive routing: checkout families reach team B and not the primary intake. |
+| S4 | Failover predicate `true and name in ["demo.checkout.requests"]`. | Mirroring: the failover intake receives only that family. |
+| S5a to S5d | A duplicate branch to the primary output; an emit to an undeclared output; an `aggregate` without parameters; a full `aggregate` in the policy scope. | ADP rejects each one naming the problem (`duplicate_contribution`, the undeclared output, `valid_parameters`, and placement's "runs only in an isolation slot" for S5d, which the editor cannot flag because it does not place), and S4 keeps running. |
+| S6 | Revoke (an empty snapshot). | The boot plan hash is active again and the default routing is back. |
+
+A run takes about 70 to 75 s (69.6 to 74.8 s in the recorded stage 6 runs): about 18 s waiting at the start for a
+whole canary range behind ADP's start, and about 10 s at the end for the rolling range to cover the last change. The
+check was added in stage 5 and passed in every recorded run of stages 5 and 6, deliberate mutation runs aside.
+
+### The stage gate
+
+Each stage gate ran the commands below with the packages each stage touched (stage 6's list shown). This is not
+`make check-all` plus `make test-all`, which the [stage plan](programmable-metrics-implementation.md#stage-plan) states
+inaccurately; see [Known limitations and risks](#known-limitations-and-risks) for what it leaves to CI.
+
+```sh
+cargo check --workspace --tests
+make check-fmt
+make check-clippy
+PKGS="saluki-core saluki-io saluki-metric-kernels saluki-metric-plan saluki-components agent-data-plane \
+  agent-data-plane-config agent-data-plane-config-system saluki-metric-plan-syntax programmable-metrics-demo"
+for p in $PKGS; do
+  # On macOS in a sandbox, add --test-threads 4 for saluki-components and saluki-io (see Environment notes).
+  cargo nextest run -p "$p" --no-fail-fast -E 'not test(/property_test_/)'
+done
+for p in $PKGS; do
+  cargo nextest run -p "$p" --release --no-fail-fast -E 'test(/property_test_/)' --no-tests=pass
+done
+make check-unused-deps
+make check-features    # stage 6 also ran: cargo hack --feature-powerset --package <p> check --tests, per package
+make check-licenses
+make check-deny
+make generate-api-docs
+vale --minAlertLevel=error docs/design/programmable-metrics-implementation.md lib/saluki-metric-plan \
+  lib/saluki-metric-kernels lib/saluki-core/src/execution
+```
+
+The last gate before the stage 6 commit passed every step but `nextest-saluki-io`, whose two failures are proxy
+tests that fail in a sandbox (see [flaky tests](#known-limitations-and-risks)); `--test-threads 4` for `saluki-io`
+was added to the script only afterwards. Stage 6 also ran `make demo-programmable-metrics-check` twice, the
+release-note check on its note (`ci/tooling/release_notes.py check`; `make check-release-notes` passes at
+`b01049372e`), `RUSTDOCFLAGS='-D warnings' cargo doc -p saluki-metric-plan -p saluki-metric-kernels -p saluki-core
+--no-deps --features saluki-metric-plan/test-util`, `cargo nextest run -p saluki-metric-plan` with and without
+`--features test-util` (622 tests each at integration; 630 with `test-util` after the review fixes), and the
+measurements and benches below.
+
+### Focused tests and golden files
+
+```sh
+cargo nextest run -p saluki-metric-plan -E 'test(/compile::|install::|runtime::|interpret::/)'
+cargo nextest run -p saluki-metric-plan --features test-util     # and without: both must pass
+cargo nextest run -p saluki-core -E 'test(/execution::/)'
+cargo nextest run -p saluki-metric-kernels
+cargo nextest run -p agent-data-plane -E 'test(/programmable_metrics::/)'      # every ADP plan test (slow)
+cargo nextest run -p agent-data-plane -E 'test(/programmable_metrics::(installer|channel_stub|api)/)'
+cargo nextest run -p agent-data-plane -E 'test(/burst_tests/)'
+cargo nextest run -p programmable-metrics-demo -p stele -p saluki-metric-plan-syntax
+
+# Rewrite golden files, then review the diff line by line:
+SALUKI_METRIC_PLAN_UPDATE_EXPLAIN=1 cargo nextest run -p saluki-metric-plan -E 'test(/explain/)'
+SALUKI_METRIC_PLAN_UPDATE_SCHEMA=1 cargo nextest run -p saluki-metric-plan -E 'test(/checked_in_schemas_are_current/)'
+```
+
+Golden files are change detectors only; each one is backed by separate hand-derived checks.
+
+### Property tests, benches, and measurements
+
+```sh
+# Property tests, release only (stage 6: 58 tests in these four crates). CI runs them through make test-property.
+cargo nextest run -p saluki-metric-plan -p saluki-metric-plan-syntax -p saluki-metric-kernels -p saluki-core \
+  --release -E 'test(/property_test_/)'
+
+# Criterion benches. The plan crate's declare required-features = ["test-util"]: without it, cargo skips them.
+cargo bench -p saluki-metric-plan --features test-util --bench region_driver
+cargo bench -p saluki-metric-plan --features test-util --bench selection   # selection_default_program: stage 4 gate
+cargo bench -p saluki-core --bench region_host
+
+# Ignored measurement tests: release, an idle machine, one at a time.
+cargo nextest run -p agent-data-plane --release --run-ignored only -E 'test(/measurement_tests/)' \
+  --no-capture --test-threads 1
+```
+
+Saved property-test regressions are committed in the new crates' `proptest-regressions/` directories. The five
+measurement tests compare plan against legacy on one and four workers, with and without `GATEWAYS`, and legacy
+against itself as the noise check; the tolerances are 7% throughput, 7% CPU and allocated bytes, and 10% p99, as
+medians of five rounds. Machine load above about 4 makes legacy fail its own tolerances. To run only the gateway
+configuration and the noise check, filter with `-E
+'test(/measurement_tests::(with_gateways|the_legacy_topology_against_itself)/)'`.
+
+## Code map
+
+The [code layout](programmable-metrics-implementation.md#code-layout) maps every module with the stage that added it,
+and gives the dependency direction. This section is the orientation that layout leaves out.
+
+| Crate or module | Role | Start reading at |
+|---|---|---|
+| [`lib/saluki-core/src/execution/`](../../lib/saluki-core/src/execution) | Generic execution contracts with no metric knowledge: batch header, admission clocks, points, schedules and registry, generations and tokens, the `Kernel` trait, `StateBudget`, and the generic region host. | `region/host.rs` (`RegionHostBuilder` and the transform it builds), `region/driver.rs` (`RegionDriver`), `admission.rs`, `kernel.rs`, `budget.rs` |
+| [`lib/saluki-metric-kernels/`](../../lib/saluki-metric-kernels) | Native metric semantics, extracted once and shared by the legacy components and the plan. | `aggregate/` (`AggregateCore`, `AggregateKernel`), `matcher.rs`, `params/` |
+| [`lib/saluki-metric-plan/`](../../lib/saluki-metric-plan) | IR, operators and contracts, validator, interpreter, compiler (frame, placement, rewrites, decisions), region driver, installer core, channel, composition, export. No I/O. | `compile/frame.rs` (`Frame::compute`), `runtime/driver.rs` (`MetricRegionDriver`), `install/core.rs` (`InstallerCore`, `Action`), `interpret/mod.rs` (`Interpreter`) |
+| [`lib/saluki-metric-plan-syntax/`](../../lib/saluki-metric-plan-syntax) | Surface syntax for tools only; nothing that runs plans may depend on it. | `parse`, `print` |
+| [`bin/agent-data-plane/src/programmable_metrics/`](../../bin/agent-data-plane/src/programmable_metrics) | ADP integration: host facts, bindings, catalog, outputs, lowering, the plan topology, the installer worker, the stub worker, the control surface, the snapshot bridge, and the test topology. | `installer.rs` (`ProgrammableMetrics::boot`, `InstallerWorker`), `lowering/mod.rs` (`Lowering`), `topology.rs` (`PlanTopology`) |
+| [`bin/agent-data-plane/src/cli/run.rs`](../../bin/agent-data-plane/src/cli/run.rs) | Topology assembly: `MetricsWiring` hooks, the workers on the internal supervisor; the legacy path in `run/legacy.rs` (tests only). | `handle_run_command`, `create_topology` |
+| [`bin/programmable-metrics-demo/`](../../bin/programmable-metrics-demo) | Demo server, embedded UI, recording intakes, traffic, preview, launcher, and the headless check. | `app.rs` (routes), `scenario/mod.rs` (S0 to S6) |
+
+**At runtime:**
+
+- **Boot.** `handle_run_command` calls `ProgrammableMetrics::boot`, which captures `HostFacts` (host tags are fetched
+  here, once), lowers with `Lowering::new` and `lower`, validates (a default program that fails validation runs
+  degraded), computes the frame with `Frame::compute`, and creates `InstallerCore::new` with the boot generation. Then
+  `create_topology` builds the metrics path from the frame through the `MetricsWiring` hooks, and `run.rs` adds the
+  control surface (`ControlSurfaceWorker`), the stub worker (`StubChannelWorker`, only with a stub URL), the snapshot
+  bridge (when aggregation runs in a region), and the installer worker (`into_installer`) to the internal supervisor.
+- **Per batch.** A source's dispatcher stamps each buffer's header (`t_a`, epoch, generation from the shared schedule)
+  under its admission point's lock, the region host (the transform `RegionHostBuilder` builds) reads it, and
+  `MetricRegionDriver::process` runs the program of the
+  generation the header carries, writing to exits that the host dispatches in order.
+- **Configuration change.** The installer worker sees `ConfigChanged`, lowers again, and passes the result to the core
+  (`on_default_program`). The core's actions prepare every region (`RegionControl::Prepare`), wait for every
+  acknowledgment, commit with one store of the schedule, and release programs after the old generation retires.
+- **Cut** (a state owner's transition that cannot share its instance). `Action::ArmCut` arms it in one transaction
+  under the affected points' locks, `WatchCut` polls until a point stamps the new generation (then the cut is
+  irrevocable), and `FinalizeCut` completes it once every affected point has crossed.
+- **Artifact.** The stub worker polls, publishes snapshots on the `ArtifactFeed`, and the installer passes each to the
+  core (`on_snapshot`), which checks receipt, composes into the default program, and proposes it like a configuration
+  change; acknowledgments go back with the next poll (`apply_states_with_bases`).
+
+**Invariants to keep** (each is stated where it is built, in the implementation design):
+
+1. Generations are assigned only at admission points. Regions never choose one; a batch runs whole under the
+   generation its header carries.
+2. A commit is one store of the schedule; every point switches at its next stamp.
+3. A cut's instant `T` is on the new generation's token before publication. A cut can be cancelled only until some
+   point stamps the new generation.
+4. State owners run only in isolation slots, each fed by exactly one admission point (until stage 9).
+5. The physical frame is fixed at boot. Candidates place into it; anything needing a new slot, edge, output, or host
+   component is a capability error (stage 7).
+6. Native component IDs and series survive (slot names, `component_id` tags, accounting paths under the slot); only the
+   fused components' own component series go.
+7. Panic budgets cover artifact nodes only. A panic under the default program fails the component, as natively.
+8. Rewrites never increase capacity loss under the interpreter's delivery order, which is the oracle (one pass per
+   trace event, in topological order). Native filters move only whole (R5a, R6); R5b is emission suppression.
+9. Artifacts emit only to outputs the base declares, with matching fingerprints; host components never come from
+   artifacts; only composition writes provenance; revisions strictly increase across scopes.
+10. A region's input holds as many buffers as the queues it replaces and their in-flight buffers did.
+11. Dead legacy code goes behind `cfg(test)`, never `#[allow(dead_code)]`.
+
+**Names worth knowing.** Slots keep native IDs: `dsd_pre_aggregation`, `dsd_agg` (the isolation slot), and
+`metrics_enrich`; a chain R1 cuts gets `<first node>_region` slots such as `dsd_prefix_filter_region`,
+`dsd_no_agg_split_region`, and `dsd_post_agg_filter_region`. Region input capacities with defaults: 515
+(`dsd_pre_aggregation`), 257 (`metrics_enrich`), 386 (`metrics_enrich` with Multi-Region Failover), 128 (`dsd_agg`).
+Limits and their decision-log notes are in [`limits.rs`](../../lib/saluki-metric-plan/src/limits.rs). In method
+syntax, `FixedSizeEventBuffer`'s inherent `header_mut` (returning `&mut BatchHeader`) shadows the trait method
+`Dispatchable::header_mut` (returning an `Option`).
+
+**Fixtures and tests.** The hand-written default programs are in `lib/saluki-metric-plan/fixtures/`, with the exports
+in `fixtures/export/` and the explain golden files in `fixtures/explain/` (`default-program-stage3*` keep the stage 3
+form, whose gateways are opaque hosts); the checked-in JSON schemas are in `lib/saluki-metric-plan/schema/`. ADP's
+lowering matrix is `programmable_metrics/lowering/matrix.rs` (`MATRIX`), with `lowering/fixtures/every-branch.json`;
+the demo's export fixture is `bin/programmable-metrics-demo/fixtures/export-post-enrich.json`. The ADP test topology
+(`test_topology.rs`) replaces I/O with test doubles in place through `TopologyBlueprint::replace_*` and runs the
+differential, live-change, fault, lifecycle, telemetry, burst, and measurement tests. The frame harness
+(`runtime::harness::FrameHarness`, `test-util`) runs whole frames of region drivers in process.
+
+## Changes users can see
+
+The release notes are the operator-facing record. This list adds what they leave out, marked **not release-noted**.
+
+**Configurations that now fail at startup:**
+
+- `aggregate_window_duration_seconds` other than 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60, 120, 180, or 300, including
+  0. The error names the nearest width. This applies with or without artifacts (stage 6).
+- `aggregate_context_limit` or `dogstatsd_mapper_cache_size` above 2^53−1, and some durations above 2^53−1 seconds
+  (stage 3, amendment 14).
+- A `stub_url` that is not `http://` on a loopback address, has a query, or a zero `poll_interval` (stage 5; only when
+  the experimental keys are set).
+- The reverse, **not release-noted**: a host with no platform CA certificates and no proxy used to fail at startup
+  ("no native root CA certificates found") and now starts; HTTPS endpoints then fail at the handshake. See
+  [the root-certificate change](#the-root-certificate-change).
+
+**Behavior:**
+
+- Live changes to the metric filterlist, the tag filterlist, and Multi-Region Failover install as generations (stages 3
+  and 4).
+- Timestamped passthrough metrics go out with their batch; `aggregate_passthrough_idle_flush_timeout` has no effect,
+  and the native loss at shutdown is gone (stage 3, amendment 12).
+- The host-tags deadline counts from process start, including startup waits for the Agent (stage 3, amendment 9).
+- Region inputs hold 515 and 257 buffers where native components held 128 each, so a burst backs up to the source
+  exactly as natively (stages 3 and 5).
+- Aggregation buckets by receive time, flushes at the tick once the watermark arrives (waiting up to 2 s), absorbs
+  backward clock jumps up to 300 s and resets on larger ones, emits a repeated histogram statistic once, and changes
+  window live through artifacts at a cut (stage 6).
+- **Not release-noted:** order within a batch is now preserved where native filters reordered survivors
+  (`swap_remove_back`), so a gauge context sampled twice in one batch after a filter dropped a metric can report a
+  different last sample (amendment 2).
+- **Not release-noted:** reordering a set-typed filterlist no longer counts in `metric_filterlist_updates_total` or
+  `tag_filterlist_updates_total`, which now compare resolved values.
+- **Not release-noted:** with several configuration errors, metrics-path errors are reported first, and host tags are
+  fetched before topology assembly (amendment 38). With one error, the error is the native one.
+- **Not release-noted:** the memory bounds of every topology now count the last component added (a `saluki-core` fix,
+  named only in the stage 3 commit message), and `EventsBuffer` grew from 40 to 80 bytes, adding 40 bytes per channel
+  slot to every pipeline's interconnect bounds, logs, traces, and events included.
+
+**Telemetry** (all release-noted): the fused components' and gateways' component, health, and task series are gone;
+`metrics_enrich` and `dsd_agg` report sent counts per output instead of `_default`; accounting paths nest under the
+slot; `dsd_agg` no longer counts sent metrics twice, no longer emits what R5b suppresses, and counts one extra flush
+per cut and per reset; `aggregate_passthrough_flushes_total` counts incoming batches, and the passthrough batcher's
+`aggregate_passthrough_batch_duration_secs` and `buffer_full` drops are gone. New series: `plan_active_generation`,
+`plan_live_generations`, `plan_installs_total`, `plan_node_events_total`, `plan_loss_total`, `plan_rewrites_applied`,
+`plan_active_revision`, `plan_cuts_total`, `plan_cut_cancellations_refused_total`, `plan_state_watermark_lag_seconds`,
+`plan_state_lineages`, `plan_clock_resets_total`, and `plan_state_tick_grace_expired_total`.
+
+**New surfaces** (experimental, release-noted): the `experimental.programmable_metrics.artifact_channel.{stub_url,
+poll_interval}` keys, and the privileged routes `/programmable-metrics/{status,export,plan,explain,default-program}`.
+
+Native quirks are preserved on purpose and pinned by fixtures; see
+[native behavior: preserved and changed](programmable-metrics-implementation.md#native-behavior-preserved-and-changed)
+and the issues never filed under [Follow-ups](#follow-ups-not-tied-to-a-stage).
+
+## Changes outside the new code
+
+New code is `lib/saluki-metric-kernels`, `lib/saluki-metric-plan`, `lib/saluki-metric-plan-syntax`,
+`bin/programmable-metrics-demo`, `bin/agent-data-plane/src/programmable_metrics`, and `lib/saluki-core/src/execution`.
+Outside them the branch touches 71 paths (`git diff --name-status -M main..HEAD`): three files renamed into the
+kernels crate, the three design documents and four release notes under [Documents](#documents), and the code and
+configuration below. It adds no third-party crate: `Cargo.lock` gains the four workspace packages and edges between
+existing ones, so `LICENSE-3rdparty.csv`, `deny.toml`, and CI configuration are untouched.
+
+Classes: **permanent** (an improvement that stands on its own), **integration** (required by the new code, permanent),
+**workaround** (temporary), **test seam** (`#[cfg(test)]` or a `test-util` feature).
+
+| Where | What changed | Why | Class |
+|---|---|---|---|
+| `Cargo.toml`, `Cargo.lock` | Four workspace members. `saluki-components` drops `float-cmp`, `foldhash`, `hashbrown`, `smallvec` (moved with the cores); `saluki-core` gains `arc-swap`; ADP gains `rustls` and dev-dependency `axum`. | New crates. | integration |
+| `Makefile` | `demo-programmable-metrics` and `demo-programmable-metrics-check`. | Demo entry points. | permanent while the demo exists |
+| `.vale/.../accept.txt` | About 28 terms. | Keeps Vale clean on the new prose and doc comments. | integration |
+| ADP `main.rs` | Passes `started_at: SystemTime` to `handle_run_command`. | Time parameters from wall-clock process start (amendment 9). | integration, behavior change |
+| ADP `cli/run.rs`, `cli/mod.rs` | The metrics path is always plan-driven, through `MetricsWiring` hooks; new workers; metric builders made `pub(crate)` and return `MetricsBranch`. | Stages 3, 5, 6. | integration |
+| ADP `cli/run/legacy.rs` (new) | The legacy metrics path, `#[cfg(test)]`. | Differential reference. | test seam, removable once differential and measurement tests retire |
+| ADP `components/` | `dogstatsd_filterlist` deleted and `metric_name.rs` moved into the kernels crate; `dogstatsd_no_agg_split`, `dogstatsd_post_aggregate_filter`, `dogstatsd_prefix_filter`, `metric_filter`, and the `tag_filterlist` and `host_tags` transforms compile only for tests; `fetch_host_tags` and the tag rule conversions stay. | One implementation of each native rule. | integration and test seam |
+| ADP `dogstatsd_contexts/api.rs`, `internal/control_surfaces.rs` | `#[cfg(test)]` accessors. | Context-dump tests through the snapshot bridge. | test seam |
+| `agent-data-plane-config` `control.rs`, `defaults.rs` | `programmable_metrics.artifact_channel.{stub_url, poll_interval}` (1 s default). | The stub channel. | integration; the keys are temporary until a real channel replaces the stub |
+| `agent-data-plane-config` `domains/dogstatsd.rs` | Tag-value allowlist validation removed. | Moved to `saluki_metric_kernels::params`. | integration |
+| `agent-data-plane-config-system` `saluki_only.rs` | Validation delegates to the kernels crate; window widths at deserialization; the stub keys. | Stages 2, 5, 6. | integration, behavior change (widths) |
+| `config-overlay-model` `saluki_keys.rs`; generated `configuration.md` | The two keys and the window's documentation. | Key inventory. | integration |
+| `saluki-components` aggregation, mapper, autoscaling gateway, endpoint routing | Cores moved to the kernels crate; transforms became adapters; frozen references under `aggregate/reference/`; aggregation's snapshot request API; `AggregateConfiguration::with_clock` (`test-util`). | Extraction; the `dsd_agg` snapshot bridge; clocked legacy reference. | integration and test seam |
+| `saluki-components` forwarders, `common/datadog/` | `metrics_recipients()` on the Datadog and Cluster Agent forwarder configurations; `should_route_to_endpoint` shared. | Recipient identities and output fingerprints come from the forwarder itself, so they cannot drift (amendments 13, 41). | integration |
+| `saluki-core` interconnect (`event_buffer.rs`, `dispatcher.rs`, `mod.rs`) | Inline `BatchHeader`; `with_capacity`, order-preserving `retain`, `move_into`, `reserve`; stamping under one mutex per admission point. `EventsBuffer` grows from 40 to 80 bytes. | Headers travel with batches. | integration (a cost on every buffer) |
+| `saluki-core` `blueprint.rs`, `graph.rs`, `built.rs`, `snapshot.rs`, `ids.rs` | Admission points, per-component input capacity, snapshots; `GraphError::DuplicateEdge`; cycle check from every component; `replace_*` (`test-util`). | Introspection and burst parity. | integration; the cycle check and the bounds fix (below) are permanent improvements; `replace_*` is a test seam |
+| `saluki-core` `blueprint.rs` bounds | Bounds recalculated after inserting a component. | The last component added was never counted. | permanent (bug fix) |
+| `saluki-core` data model, `health/mod.rs`, `benches/region_host.rs` | `ContextKey::as_u64`, `Context::key`, `SetPoints::members`; health test helpers; a bench. | Memo keys and set comparison; region health tests. | integration; test seam (health) |
+| `saluki-metrics` `test.rs` | `TestRecorder` accessors. | Telemetry parity tests. | test seam |
+| `stele` `metrics.rs` | v3 decoder hardening: capacities capped, wrapping delta decode, checked ranges. | A 20-byte malformed payload aborted the demo. Could ship on its own. | permanent (bug fix) |
+| `saluki-io` `client.rs` | The proxy connector's TLS is built only when proxies are configured. | See below. | **permanent** |
+
+### The root-certificate change
+
+**What changed.** `HttpClientBuilder::build`
+([`client.rs`](../../lib/saluki-io/src/net/client/http/client.rs), stage 5) used to build
+`hyper_http_proxy::ProxyConnector::new(connector)` for every client. It now builds it only when the proxy list is
+non-empty, and `ProxyConnector::unsecured(connector)` otherwise. `ProxyConnector::new` (with `rustls-tls-native-roots`)
+reads the platform's root certificates on every client build and fails when it finds none; `unsecured` reads nothing.
+
+**Why.** In stage 5, tests that build an HTTP client (the stub client, the control surface, the demo, the lifecycle
+suite's stub test, and 22 existing `saluki-components` tests) failed under full-workspace parallel nextest on macOS in
+a sandbox: the macOS trust-settings reads failed (OS error -36) after about 24 to 30 s. The reads were for a TLS
+configuration that nothing uses without proxies: `hyper-http-proxy` reads it only after a request matches a proxy, and
+the Datadog forwarder passes an empty proxy list when none is configured.
+
+**Verdict: a permanent improvement, not a workaround.** It removes a redundant per-client platform read without
+changing any connection: clients with proxies, HTTPS destinations through a proxy, FIPS builds, and custom CA settings
+behave as before. The one observable change is the zero-certificate host above, which is arguably closer to the
+Agent's behavior (Go fails at the handshake). It could ship as its own pull request. What remains a workaround is only
+the local `--test-threads 4` in the gate (see [Environment notes](#environment-notes)).
+
+**Two corrections and an option.**
+
+- The new code comment says the proxy connector's TLS "is used only to reach a proxy over HTTPS": in fact it is used
+  for the TLS session to an HTTPS destination inside a CONNECT tunnel, through any proxy; reaching an `https://` proxy
+  goes through the inner connector with saluki's TLS. The existing `TODO(fips)` comment has the same confusion. The
+  decision to skip it is still correct.
+- [Risks](programmable-metrics-implementation.md#risks) ("Stub tests under load") repeats the inaccurate wording, and
+  the stub worker paragraph in [ADP integration](programmable-metrics-implementation.md#topology-construction-installer-stub-control-surface)
+  still says that building any `HttpClient` loads the platform's certificates.
+- Optional, not done: build the connector `unsecured` and give it the client's own rustls configuration with
+  `ProxyConnector::set_tls`. Tunnelled TLS would then honor saluki's root store, minimum version, and FIPS checks
+  (resolving the `TODO(fips)`), and proxied clients would stop reading platform certificates. That changes behavior for
+  proxied clients and needs its own pull request and release note.
+
+## Decisions awaiting the owner
+
+| Decision | State | What is needed |
+|---|---|---|
+| **Clock-reset threshold** | 300 s, the specification's minimum (was 600 s), in `limits::values::CLOCK_RESET_THRESHOLD`, amendment 64, and the stage 6 release note. It halves the longest freeze of an absorbed backward jump. It was chosen pending the owner's confirmation, which never came. | Confirm 300 s, or revert: one constant plus the release note and amendment text. |
+| **Amendments needing a decision** | 15 of the 87: 9, 12, 14, 20, 47, 49, 51, 52, 62, 64, 65, 66, 71, 76, 83 (see the [index](#spec-amendments-index)). | A value, a decision-log entry, wording to adopt, statements to withdraw, or an operator-visible break to accept. |
+| **Decision-log entries** | `limits.rs` has "Decision log" notes for `HEARTBEAT_PERIOD` (1 s, was 5 s), `CLOCK_RESET_THRESHOLD`, `PROGRESS_PERIOD` (100 ms), `TICK_GRACE` (2 s), `CUT_ARM_ATTEMPTS` (10), and `MAX_TRANSITION_LCM` (300 s). The drain deadline (30 s) and the overlap budget (4), which amendment 20 says need entries, have none, nor does `ARTIFACT_MEMORY` (64 MiB). | Accept the noted entries into the specification's decision log, and decide entries for the three without notes. |
+| **Allowed bucket widths** | Other `aggregate_window_duration_seconds` values now fail startup (amendment 83, upgrade release note). | Accept the break. |
+| **Intentional changes against native** | Release-noted and recorded as decided: 9 (host-tags deadline), 12 (passthrough timeout without effect), 14 (values above 2^53−1 fail boot), 26 (statistics once), 82 (kind conflicts counted as loss). | Confirm. |
+| **Antithesis panic hook** | `initialize_antithesis` in ADP's `main.rs` reports every panic as `unreachable!`, including artifact panics a region survives within its budget (3 per 60 s, 5 in all), so an Antithesis run reports a failed property for designed behavior. Stage 3 deferred this to stage 5, which did not decide it; the [execution contracts](programmable-metrics-implementation.md#region-host) text still says stage 5 must. | Keep it, or report contained panics with `sometimes!` (or a flag on the panic). |
+| **Strong `GenerationRef` in `Prepare`** | A region that stops reading its control mailbox keeps every preparation sent to it alive; that is what bounds the unbounded mailbox (retries stop at the overlap budget), pinned by a fault test. | Keep it, or carry a `Weak` in the message and bound the mailbox. |
+| **Release-note gaps** | The items marked not release-noted under [Changes users can see](#changes-users-can-see), and the stale stage 5 sentence on stateful artifacts. | Decide which to note before the notes ship. |
+| **Capability stage numbers** | Placement maps `MissingCapability::State` to stage 6, the frame names stage 10 for a state owner without an isolation fence, and the interpreter names stage 7 for a cut or reset with state in a host component or without a fence. | Settle the numbering in the stage 7, 9, and 10 plans. |
+| **The specification's Vale errors** | The specification, which only its author edits, adds 12 errors to `make check-docs`, a CI job (see [Environment notes](#environment-notes)). | Before CI runs: add the 11 flagged words to the Vale vocabulary, and edit or exempt the hyphenated `Exactly-once`. |
+
+## Spec amendments index
+
+The 87 proposals are in [proposed spec amendments](programmable-metrics-implementation.md#proposed-spec-amendments),
+numbered in order: 1 to 41 from stages 1 and 2, 42 to 48 from stage 3, 49 to 52 from stage 4, 53 to 61 from stage 5,
+and 62 to 87 from stage 6; the next is 88. Nothing in the specification is edited without its author. The theme and
+kind columns are this document's classification. [Native behavior](programmable-metrics-implementation.md#native-behavior-preserved-and-changed)
+lists four more corrections to the specification's compatibility matrix from the stage 6 research: the histogram row,
+the shutdown row, the expiry row, and the timestamped row.
+
+- **Themes:** EXE execution (admission, generations, time); FRM frame, fusion, rewrites; NAT native parity; IR IR,
+  predicates, validation; INS installation and lifecycle; ART artifacts and channel; TEL telemetry; STA state (stage
+  6); VER verification.
+- **Kinds:** C clarifies the specification; N restates it to match native behavior; D changes the design or a rule; L
+  defers to a later stage.
+- **Owner:** "yes" means a decision beyond approving the text.
+
+| # | Short title | Theme | Kind | Owner |
+|---|---|---|---|---|
+| 1 | Native components never restart; only artifact regions do | INS | N | no |
+| 2 | Native filters reorder within a batch; regions keep order | NAT | N | no |
+| 3 | Binding liveness follows native | NAT | N | no |
+| 4 | Node and component IDs keep native names | TEL | C | no |
+| 5 | Physical frame fixed at boot; candidates place into it | FRM | L | no |
+| 6 | Correspondence by reserved IDs | ART | C | no |
+| 7 | Admission per component output; opaque hosts readmit | EXE | C | no |
+| 8 | Starved branches carry header-only progress | EXE | C | no |
+| 9 | Host-tags deadline is process start plus duration | NAT | D | yes: accept that startup waits consume `expected_tags_duration` |
+| 10 | Client telemetry output taps the post-aggregation filter | NAT | N | no |
+| 11 | Native aggregation quirks pinned by fixtures | NAT | N | no (the quirks were never filed; see follow-ups) |
+| 12 | Passthrough emitted per input batch | NAT | D | yes: `aggregate_passthrough_idle_flush_timeout` has no effect; deprecate it? |
+| 13 | Recipient identity is native; duplicate delivery kept | NAT | N | no |
+| 14 | Invalid default program runs degraded; huge integers fail boot | INS | D | yes: accept boot failure above 2^53−1 |
+| 15 | Gateways only where native wiring builds them | NAT | N | no |
+| 16 | Kernels may own native cache-expiry tasks | EXE | C | no |
+| 17 | No configuration version; changes numbered per process | INS | C | no |
+| 18 | Predicates add `const`, `flag`, `is_empty`, `matches` | IR | D | no |
+| 19 | Fused kernels' accounting nests under their slot | TEL | C | no |
+| 20 | Behavior-changing limits need decision-log entries | INS | C | yes: drain deadline and overlap budget entries |
+| 21 | Canonical numbers: integers within ±(2^53−1) | IR | C | no |
+| 22 | Contract vocabulary | IR | C | no |
+| 23 | Authority covers every loss class | ART | C | no |
+| 24 | A host source enters the plan once | IR | C | no |
+| 25 | Intervening writers include the divergence node | IR | C | no |
+| 26 | Repeated histogram statistics listed once (emitted once from stage 6) | NAT | D | no |
+| 27 | Split ports narrow kinds by predicate | IR | C | no |
+| 28 | Equivalence compares contexts by parts | VER | C | no |
+| 29 | Interpreter trace time | VER | C | no |
+| 30 | Trace events before their stage are explicit errors | VER | L | no (stale since stage 6) |
+| 31 | Stage 9 sum check is pairwise per bucket | VER | C | no (revisit in stage 9) |
+| 32 | Aggregation's contract as an opaque host | IR | C | no (historical) |
+| 33 | Provenance is consistent | ART | C | no |
+| 34 | Approval binds to the document as received | ART | C | no |
+| 35 | Scopes are closed and can end at exits | ART | C | no |
+| 36 | Traces are well typed | VER | C | no |
+| 37 | Binding names are typed-model paths; credentials never bindable | IR | C | no |
+| 38 | Lowering fails where native construction fails | NAT | N | no (stale on aggregation since stage 6) |
+| 39 | Host facts include the Cluster Agent endpoint | NAT | C | no |
+| 40 | Before stage 4, gateway emits are named `<gateway>_out` | ART | C | no (historical) |
+| 41 | Output fingerprints cover where an output delivers | ART | C | no |
+| 42 | A clock reset admits to the cut's new generation | STA | D | no |
+| 43 | Fusion stops at cycles through a fence | FRM | C | no |
+| 44 | A superseded generation is `draining` until it retires | INS | C | no |
+| 45 | Configuration changes queue behind a preparation | INS | D | no |
+| 46 | Last-known-good only below an artifact generation | INS | D | no |
+| 47 | R1 pipelines by cost | FRM | D | yes: a design choice; the owner favors removing it if stage 9's parallelism makes it unnecessary |
+| 48 | Fusion removes queues | FRM | D | no (resolved in stage 5; drop it) |
+| 49 | Capacity rule judged under one interleaving | VER | C | yes: adopt the Equivalence wording |
+| 50 | Native filters move only whole | FRM | D | no |
+| 51 | Decisions group only directly joined splits and tees | FRM | D | yes: adopt the wording |
+| 52 | R7 writes its operand order into the plan | FRM | D | yes: adopt the wording |
+| 53 | Idempotency against the policy in effect, redeliveries only | ART | C | no |
+| 54 | A revision counts as seen once authentic | ART | C | no |
+| 55 | Acknowledgment unchanged until its generation retires | ART | C | no |
+| 56 | Configuration changes reach artifacts by re-composition | ART | C | no |
+| 57 | Artifact equal to the running plan creates no generation | INS | C | no |
+| 58 | Revocation final for artifacts accepted before it | ART | C | no |
+| 59 | A supervision failure belongs to the document | INS | C | no |
+| 60 | Per-config outcomes survive a refused redelivery | ART | C | no |
+| 61 | Stale base relative to the policy region and outputs | ART | C | no |
+| 62 | Bucketing by substitution, with a 2 s tick grace | STA | D | yes: `TICK_GRACE` entry |
+| 63 | Shutdown discards the bucket open at the latest time | STA | N | no |
+| 64 | Clock reset flushes everything; threshold 300 s | STA | D | **yes: confirm 300 s and its entry** |
+| 65 | Heartbeats carry their scheduled generation; 1 s period | STA | D | yes: `HEARTBEAT_PERIOD` and `PROGRESS_PERIOD` entries |
+| 66 | Cut arming is one transaction | STA | D | yes: `CUT_ARM_ATTEMPTS` entry |
+| 67 | Cut phases | STA | C | no |
+| 68 | The cut boundary travels with the generation | STA | C | no |
+| 69 | Time-driven output generation | STA | C | no |
+| 70 | Retirement at the crossing | STA | D | no |
+| 71 | Transition width bound: `lcm` at most 300 s | STA | D | yes: `MAX_TRANSITION_LCM` |
+| 72 | Cut installations keep no last-known-good generation | STA | D | no |
+| 73 | Drain deadline of a cut's replaced generation starts at finalization | STA | C | no |
+| 74 | One global context budget | STA | D | no |
+| 75 | Lineage key is node plus state contract | STA | C | no |
+| 76 | R5b is emission suppression inside the state owner | STA | D | yes: withdraw two decision-log statements |
+| 77 | The aggregation slot `dsd_agg` | STA | C | no |
+| 78 | The pre-aggregation scope | ART | D | no |
+| 79 | Proposals during a cut | STA | C | no |
+| 80 | Context snapshots cover every lineage | TEL | C | no |
+| 81 | Interpreter time | VER | C | no |
+| 82 | Kind and rate-interval conflicts counted as policy loss | TEL | D | no |
+| 83 | Bucket widths validated at configuration load | NAT | D | yes: accept the startup failure |
+| 84 | One admission point per state owner through stage 8 | STA | L | no (input to stage 9) |
+| 85 | Supervision of state | STA | D | no |
+| 86 | Verification of bucket assignment | VER | C | no |
+| 87 | Same-revision configs in one snapshot all rejected | ART | C | no |
+
+Totals: kinds C 49, D 26, N 9, L 3; themes STA 20, ART 16, NAT 12, INS 9, IR 8, VER 8, FRM 7, TEL 4, EXE 3.
+
+Wording proposed for adoption: amendment 49 ("under the reference interpreter's delivery order"), 51 ("a maximal
+group of `split` and `tee` operators joined directly by edges within one region"), and 52 ("operator parameters,
+other than the order of a pure `all` or `any`'s operands"). Amendment 76 proposes withdrawing two statements. The
+first is "removing keys can only reduce capacity loss." The second is "the optimized plan's occupied keys are always
+a subset of the original's." Both are in the R5b row of the specification's Rewrites table (under Compiler), not in
+its decision log, as the amendment and the R5b section of the implementation design call it.
+
+## Known limitations and risks
+
+[Risks](programmable-metrics-implementation.md#risks) records the performance evidence and what it does not cover
+(SMP on Linux, queue bytes, slow sinks, key skew, decoder-pool contention at the admission mutex, the encoder-side cost
+of per-batch passthrough, the per-kernel resource-group cost on Linux, burst loss at a real UDP socket), R1's coarse
+estimates, memo costs, and the stage 6 risks. The gaps below are recorded there only in part, if at all.
+
+**Verification the gate did not do:**
+
+- The gate is not CI. It never ran `make check-docs` (whole-tree Vale, a CI job: the specification adds 12 errors
+  there, see [Environment notes](#environment-notes)), `check-fips-module`, `check-aix-cross` (which type-checks ADP,
+  and so the new crates, for AIX), or `test-docs` (parts ran `cargo test --doc` on the crates they touched, the gate
+  never did). Nor did it run the CI jobs outside `check-all`, such as `check-schema-overlay`, which fails if the
+  generated configuration reference the branch changed is out of date. `test-miri` and `test-loom` never ran either,
+  but their targets (`stringtheory`, and `saluki-core`'s `observability::metrics`) are untouched.
+- No Panoramic correctness or integration run on the plan-driven path, and no correctness case exercises endpoint
+  allowlists, Multi-Region Failover, or autoscaling failover. A parity check without a mode flag: run the `dsd-*`
+  cases with `panoramic --image-override baseline=<upstream image>`.
+- The runtime differential tests run standalone only. Connected mode's `liveness_in` and host tags are covered only by
+  the structural comparison with the legacy blueprint.
+- The frame property test never generates candidates whose nodes differ from the boot plan's; one compile test covers
+  placing new nodes.
+- ADP-level stage 6 tests not built (covered at unit or harness level): a snapshot-bridge panic in a running
+  topology, revocation while a cut is irrevocable, two-scope composition, trace 13, a failed cut generation's loss
+  window, and arming while `dsd_in` or `otlp_in` is blocked under load. Trace 14's irrevocable phase runs only in the
+  interpreter.
+- `property_test_r5b_exact` draws artifact-shaped plans, not the default program, and does not run
+  `compare_under_capacity`.
+- No ADP test with the real core of a re-composition that the core rejects.
+- The `GATEWAYS` measurement has never run on an idle machine; it passed in stage 6 at load about 7.
+
+**Behavior worth knowing:**
+
+- When artifacts for both scopes arrive in one snapshot and the combined candidate fails the transition-class or
+  cut-width check, every new artifact in the snapshot is rejected, not only the one at fault: `accept` checks
+  acceptances together and then alone through `InstallerCore::check`, but those two checks run later, in `start`.
+- The stage 4 selection numbers in Risks came from a temporary alternating-rounds harness that is not checked in;
+  `benches/selection.rs` measures the same shapes with criterion, more noisily.
+- The demo's exit evidence included a manual run with screenshots; none are checked in.
+
+**Flaky or environment-dependent tests:** six proxy tests that exist on `main` (four in `saluki-components`
+`common::datadog::proxy`, two `saluki-io` proxy tunnel timeout tests) fail intermittently on macOS in a sandbox under
+parallel load; the `channel_stub` and `api` network tests can time out (about 30 s) on the first run of a freshly built
+binary and pass on rerun; nextest reports one to four "leaky" tests per full run that never reproduce; and
+`a_transaction_takes_its_locks_one_at_a_time_in_the_order_given` occasionally reports a leak under load.
+
+## Deferred work by stage
+
+The branch adds no `FIXME`, `todo!`, or `unimplemented!`; its five `TODO`s were carried over from `main` by the
+extraction (the mapper and aggregation cores), and its five `#[ignore]`s are the measurement tests. Deferred work is
+marked by capability errors that name a stage, and by the notes below.
+
+### Stage 7: resource generations
+
+- **Capability errors in code.** `MissingCapability::ResourceGenerations` (`compile/placement.rs`, stage 7) is raised
+  for adding an output, changing an output's binding, adding or removing a host component, adding a region after a
+  host, a new physical edge, a new exit from a region, and a state owner whose input's region has no exit to an
+  isolation slot ("a new exit from a region to an isolation slot," or "adding an isolation slot" when the frame has
+  none; demo step S5d hits this one). The interpreter raises stage 7 for a cut while a state owner runs in a host
+  component (`interpret/installation.rs`) and a clock reset upstream of a state owner without an isolation fence
+  (`interpret/drains.rs`). Tests pin the messages in `compile/tests.rs`, `interpret/tests.rs`, and ADP's
+  `installer/lifecycle_tests.rs`. `outputs.rs` documents that outputs change only at restart until stage 7.
+- **Endpoint privilege today.** Artifacts emit only to native outputs that the catalog declares and the base records,
+  with matching fingerprints (`ComposeError::{UnrecordedOutput, UndeclaredOutput, RemovedOutput}` in `compose.rs`).
+  Endpoints come only from native configuration (`additional_endpoints`, `metric_prefix_allowlist`, Multi-Region
+  Failover), and outputs exist exactly when `run.rs` wires their branches from the startup configuration.
+  Routing-group renumbering after a restart invalidates an artifact by fingerprint, deliberately. The stub accepts only
+  loopback `http://` URLs, and the control routes are on the privileged API.
+- **The forwarder drops queued requests on close.** In `run_endpoint_io_loop`
+  ([`io.rs`](../../lib/saluki-components/src/common/datadog/io.rs)), once the input closes, `done` disables the dispatch
+  branch, so a transaction queued but not yet in flight is persisted (with a disk retry queue) or dropped, never sent.
+  At process shutdown this is native behavior; a retiring output generation would lose the encoder's final flush. The
+  spike branch `experiment/programmable-metrics-spike` has the fix; it is local, with no upstream configured, so this
+  clone may hold the only copy. The fix is an opt-in `drain_on_close` flag on the forwarder configuration
+  (`with_queue_drain()`, also on the Datadog forwarder's configuration), with dispatch enabled while `!done ||
+  drain_on_close`, a readiness error during a drain returned as an error rather than a `break`, the drain bounded by
+  the supervisor's shutdown timeout, and the test `queue_drain_dispatches_accepted_transactions_after_input_closes`.
+  This is the seam for the delivery policy's closure behavior.
+- **Registrations are never released.** `HealthRegistry::register_component` rejects duplicates and has no unregister,
+  and a dropped `Health` marks the component dead for good; resource groups are global and never freed. Through stage
+  6 this was avoided structurally (long-lived region hosts, policy nodes sharing a group per slot). Output generations
+  need a release API or must reuse registrations.
+- **Bounds cover the boot program only.** Later generations' kernels, memos, counts, and predicates are not accounted,
+  and `artifact_memory` is not tied to the host's bounds.
+- The encoder drops oversized V2 payloads without counting them (`flush_v2_metrics` ignores recoverable errors such as
+  `PayloadTooLarge`; a TODO in the metrics encoder), so this host loss is not reported, though the specification
+  assumes it is.
+
+### Stage 8: production control plane
+
+- The stub, its `experimental.programmable_metrics.artifact_channel.*` keys, and ADP's `rustls` dependency (the stub
+  client's empty root store) exist only until a real channel replaces them.
+- Approved-revisions authority in validation is deferred by decision: composition is the only writer of provenance, so
+  it is needed only once provenance can come from elsewhere.
+- Facts about Remote Config from the codebase survey: an Agent cache expiry arrives as an empty snapshot, which the
+  specification treats as a revocation; apply states are synchronous decoder verdicts, so asynchronous install
+  outcomes need an extension of the client crate; and versions are invisible to the subscriber, so revisions must
+  travel in the payload.
+- Through stage 8, regions replace only chains of synchronous work (`compile/mod.rs`).
+
+### Stage 9: partitioned execution
+
+- **Frame restrictions.** `FrameError::StateOwnerPoints` (a state owner is fed by one admission point until stage 9
+  adds repartition edges) and `StateOwnerPaths` (one physical path per point); amendment 84. The interpreter drains
+  everything on a reset at any of several points; the multi-point reset rule arrives with repartition edges. The
+  watermark tracker already keeps the min-over-points rule, so only the reset rule changes.
+- **The oracle is partly built.** `compare_reordered` decides counters and rates (pairwise within 1e-9 relative), sets
+  (by union), and count mismatches; gauges, histograms, and distributions are `Undecided`, since the gauge check needs
+  the admitted inputs (amendment 31).
+- **Where the parallelism went.** Legacy ran the five DogStatsD transforms as five tasks, pipelining consecutive
+  batches. Fusing them into one region (about 250 ns per metric, serial) ran one saturated stream at 0.68 to 0.72 of
+  legacy on four workers. R1's cost model (`OperatorDef::cost`, `REGION_COST_FLOOR` 64 ns, `FusionVerdict::Pipelined`)
+  cuts chains back into pipelined regions, restoring 1.04 (four workers) and 1.27 (one worker) at 0.77 to 0.94 of the
+  worker time. In the stage 3 benches (Risks) the region driver cost 1 to 3% over hand-written kernel calls (the
+  post-aggregation case ran faster than its baseline), and the host about 70 ns per buffer; the stage 6 benches, at
+  load about 7, show 6 to 13%, with the stage 5 tree at 10% on post-aggregation in the same conditions.
+- **What the cost model couples to**, if first-class parallelism removes it: `compile/frame.rs` (`REGION_COST_FLOOR`,
+  `Slot::cost`, `Frame::cost_budget`); `operators/routing.rs` (`decision_cost`); R4 memoization, which decides by the
+  same costs (`MEMO_COST_FLOOR` 25 in `compile/decision.rs`), so removing R1 still needs a memo rule;
+  `explain/physical.rs` and `explain/text.rs` and the cost lines of the explain golden files; `testing/fixtures.rs`
+  (slot naming after cuts); ADP's `region_input_capacity` and the burst pins (515, 257, 386), which follow frame paths;
+  `GATEWAY_REGIONS` in `telemetry::tests` and the frame and edge pins in `topology::tests`; `selection_default_program`
+  (it asserts the fused policy decision); amendment 47. Slot names change too: the stage 3 and 4 release notes
+  advertise `dsd_prefix_filter_region`, `dsd_no_agg_split_region`, and `dsd_post_agg_filter_region` as component IDs.
+  Isolation slots are already unpriced.
+- **Order and admission.** One `tokio::sync::Mutex` per admission point is held across the stamp and the sequential
+  fan-out; FIFO order by `t_a` per channel rests on it, including for the DogStatsD decoder pool, which shares one
+  dispatcher. Native fan-out awaits each sender in turn, so one full output stalls the others, and regions reproduce
+  that. Contention between decoders is unmeasured.
+- **Context hashes are process-local.** `ContextKey` comes from a `foldhash` state seeded once per process
+  (`ContextKey::as_u64` documents this): a partition key derived from it is stable within a process only, so fixtures
+  cannot pin it and nothing may persist it.
+- **Registrations** (see stage 7): partitions must be fixed at boot or reuse their health and resource-group
+  registrations.
+- **State.** One global `StateBudget` is shared by lineages: an `Arc` of an atomic counter that every new context
+  acquires from with a compare-and-swap (`execution/budget.rs`), so partitions of one owner would contend on it unless
+  credits are split (the specification's stage 9 lists credit splitting). `CutBoundary::epochs` is per point. The
+  interpreter shares one output latch per set of upstream points where the frame gives each isolated owner of a boot
+  plan its own slot, so comparisons must avoid two isolated owners over one point.
+- **Placement gaps.** A state owner fed straight by a point whose route reaches the isolation slot only through
+  pipelined slots has no placement (a pre-aggregation artifact's aggregation under mapper profiles); a multi-hop
+  pass-through, or stage 7's new edges, would give it one.
+  `AdmissionPointSnapshot` carries no heartbeat recipients (optional). R1 prices a memoized decision as a hit, and with
+  DogStatsD defaults and every gateway estimates `metrics_enrich` at 75 ns against a 64 ns budget.
+- **Stage 6 choices and the reasons behind them.** The
+  [decisions](programmable-metrics-implementation.md#decisions) of stage 6 list which alternatives it took; a redesign
+  needs why:
+
+  | Choice | Rejected alternative | Reason |
+  |---|---|---|
+  | Arm under the affected points' locks only | Lock every point | A point's lock is held across its fan-out, so locking an unaffected source under backpressure (five points from `connect_metrics_source`) would stall DogStatsD. |
+  | Heartbeats carry generations | Generation-free heartbeats | A slot could not tell a post-publication reset at an idle point from a pre-publication one. |
+  | Heartbeats only toward state owners | To every consumer | `dsd_in.metrics` also feeds host taps (`dsd_stats_out`, `dsd_debug_log_out`). |
+  | Retirement at the crossing | At the next tick | The old lineage releases every budget credit before the new one admits, so a cut near the context limit loses nothing. |
+  | Reset by `control(ClockReset)`, instance kept | Rebuild the instance | No rebuild on the data path; credits and gauges stay continuous. |
+  | One upstream point per slot | Several | A second point's reset would emit the first point's open buckets of the new timeline early; deferred with the restriction. |
+  | `lcm` at most 300 s | 900 s | Keeps the specification's cut-wait bound and a bounded overlap. |
+  | A failed cut generation rolls back by reinstalling the last-known-good plan as a new installation with its own cut | A one-store `Steady(last-known-good)` commit | After the cut, that would run two lineages of one series without a boundary and feed a retiring lineage. |
+  | A revocation or newer artifact against an armed cut cancels it while cancellable, else installs after finalization | Re-arm a replacement at the same `T` | That needs a cancel transaction per native change and a second token with an equal `T`; installing after finalization is simpler and never moves `T`. |
+  | Progress throttled to 100 ms of `t_a` | The heartbeat period (1 s) | Closure lag under fully filtered traffic is ten times smaller, at about 10 header-only buffers per second. |
+  | Output epoch is the slot's reset count | The upstream point's epoch | Well defined, and independent of the one-point restriction. |
+  | Lineage key from the state contract only, other parameters passed per call | Every parameter, any change a `cut` | The specification classifies transitions by contract. |
+  | One global context budget plus per-node caps, credits released on `Drop` | Per-node credits with a sum-of-limits placement rule | With one lineage it is exactly native `len >= limit`; the global cap keeps the firm state bound true during a cut. |
+  | R5b as emission suppression | The specification's removal form; ghost entries at insertion | Removal breaks the capacity rule for first-come admission with expiry (amendment 76); ghost entries diverge when an installation changes the filter. |
+  | One product-wide revision mark | One per scope | One mark satisfies "revisions strictly increase" across scopes. |
+  | Ticks gated by in-band headers | Driver-requested heartbeats | A driver cannot await or reach the registry; in-band headers have the same effect. |
+
+### Stage 10: measured extensions
+
+The specification's stage 10 is a list of candidates, each needing its own measured benefit; the code names it for
+the ones it meets. The frame names stage 10 for an isolation fence without keyed state, state in a region without an
+isolation fence, operators that read host signals, and a state owner that no admission point feeds (such as one fed
+by another state owner's time-driven output) (`compile/frame.rs`). Placement has `MissingCapability::Signals`; the
+interpreter rejects signal readers (`interpret/program.rs`).
+
+### Follow-ups not tied to a stage
+
+**Native issues preserved on purpose and never filed** (the design says "tracked separately"; nothing tracks them):
+
+- `flush_open_windows` (`dogstatsd_flush_incomplete_buckets`) has no observable effect, since a final flush emits only
+  closed buckets either way, but three places promise "flush open buckets on shutdown": the aggregate transform's
+  configuration docs in `saluki-components`, `agent-data-plane-config`'s `domains/dogstatsd.rs`, and
+  `schema_overlay.yaml`, which also marks the key `support: full`. The kernels crate documents it correctly.
+- New counters get zeros for buckets before they were first seen, and an empty tick leaves `last_flush` stale, so the
+  first counter after an idle gap gets a zero for every bucket of the gap (99 zeros after 1,000 s). Fixing it changes
+  customer output and needs a release note.
+- `aggregate_active_contexts_by_type` and `aggregate_active_contexts_bytes_by_type` are incremented with a context's
+  first kind and decremented with its current one (`aggregate/state.rs` in the kernels crate), so after a counter to
+  gauge conflict `{metric_type:counter}` stays at +1 and `{metric_type:gauge}` goes to -1. They feed the Agent's
+  `aggregator.dogstatsd_contexts_by_mtype`.
+- `component_events_sent_total` double counts for `BufferedDispatcher` users: `DispatchTarget::send` adds senders
+  times items and `BufferedDispatcher::flush` adds the flushed length again. Regions do not use it, so `dsd_agg` no
+  longer double counts; native buffering components still do.
+- The encoder's uncounted V2 payload drops (see stage 7).
+
+**Plan crate and runtime:** live updates allocate 1.3 to 2.1 times legacy per metric (each change lowers, compiles,
+and prepares every region; regions could reuse an unchanged program's code and telemetry, which
+`SlotKernels::unchanged` already hands them); kernel construction is not fallible, so an allocation failure in a kernel
+such as the mapper's interner aborts past any panic budget (`try_reserve` would fix it; `artifact_memory` keeps
+artifacts away from it); nothing compiles with an `OperandProfile`; the two random-plan generators could merge;
+`testing::with_opaque_gateways` could retire; explain shows no per-node memory bounds; admission points have no
+telemetry for stamps, heartbeats, or lock contention (resets have `plan_clock_resets_total`); the interpreter cannot
+preview an unresolved plan whose kernel parameters are bound (the demo composes into `/default-program` instead);
+unmemoized selection is dominated by `CompiledPredicate::evaluate`, and a fused evaluation of `any` over
+`intake_name` leaves would close more of the gap to the hand-written selection; R3 leaves dead subgraphs below dead
+ports that are not a `split`'s (such as an untimestamped input's passthrough), since removing them would need a `drop`
+node; the `live_binding_on_host` validation warning (`Rule::LiveBindingOnHost`) has had no native producer since
+aggregation became a kernel, and is kept for later hosts.
+
+**Installation and artifacts:** see [Risks](programmable-metrics-implementation.md#risks) for receipt limits counting
+unmodified nodes, panic charging residue, and re-approval provenance; the joint two-scope attribution is under
+[Known limitations and risks](#known-limitations-and-risks).
+
+**ADP:** the configuration reference has no sentence on region input capacities (it is generated from
+`schema_overlay.yaml`; a sentence under `aggregator_buffer_size` was suggested); encoders' event interconnects are not
+counted in the blueprint's bounds (existing on `main`); region input sizing follows the longest boot path.
+
+**Demo:** an exact whole-run canary check (pauses at both range edges, about 30 s more per run); a check step for the
+pre-aggregation scope; compiling the preview into the frame (capability errors show only at ADP); shorter
+duplicate-contribution messages; a printer break inside `config("...")` for editors below about 81 columns (46 test
+strings depend on today's layout); a liveness check of ADP after `/ready`; the plan graph; S7 is manual.
+
+**Syntax crate:** pretty printing is O(depth times size) for deeply nested predicates (a 58-level, 220 KB case prints
+in 0.58 s in release; memoized flat widths would make it linear); one syntax error per parse; no `->` chains; enums and
+output references are quoted strings; comments are not preserved; spans inside predicates fall back to the predicate's.
+The crate documentation lists the round-trip holes, all in invalid artifacts.
+
+**Stale text in the implementation design and code:**
+
+- The stage plan says every gate ran `make check-all` and `make test-all` (see [the stage gate](#the-stage-gate)).
+- The region host's panic-hook paragraph says stage 5 must decide; it did not.
+- The stub worker paragraph, the Risks entry on stub tests, and the comment in `client.rs` describe the proxy TLS
+  inaccurately (see [the root-certificate change](#the-root-certificate-change)).
+- The stage 6 exit evidence says `make check-features` "was not run as is"; the gate script did run it, and it passed
+  (see [Environment notes](#environment-notes)).
+- The Demo section's S5 list ("an `aggregate` node") and check expectations ("keeps state") describe stage 5's
+  guardrails; the stage 6 [scopes section](programmable-metrics-implementation.md#scopes-ir-composition-channel) has
+  the current S5c and S5d.
+- Amendment 30 says `cancel` and clock resets are interpreter errors; stage 6 implemented both. Amendment 38 and the
+  default-program paragraph say native aggregation still emits repeated statistics once per listing; since stage 6 it
+  emits them once. Amendment 26's title says "rejected" where its text says listed once.
+- Amendment 76 and the R5b section call the two statements it withdraws the decision log's; they are in the
+  specification's Rewrites table.
+- Amendment 11 says the aggregation quirks are "tracked separately," and Risks says so of
+  `component_events_sent_total`; nothing tracks either.
+- `limits::BUCKET_WIDTHS`'s `# Missing` section says validation does not enforce widths; it does: parameter checks
+  call `check_bucket_width` (`operators/mod.rs`) from `operators/aggregate.rs` and `operators/dogstatsd.rs`, and
+  `validate/state.rs` adds the `widths_above_sixty` and `split_window` rules.
+
+**Outside this work:** `agent-data-plane-config-system`'s `system.rs` comment says there is no timeout on the initial
+snapshot wait, but the code waits 15 s; `docs/development/testing.md` says airlock talks to containerd over gRPC, but
+it uses Docker through bollard.
+
+## Environment notes
+
+- **macOS test concurrency.** In a sandbox on macOS, tests that configure proxies still load platform certificates per
+  client build, and under parallel load the trust-settings reads fail (OS error -36, about 24 s). Run
+  `saluki-components` and `saluki-io` with `--test-threads 4` (stage 5 verified `--test-threads 2`). This is a local
+  workaround: the flag was added for `saluki-io` after the stage 6 gate, whose only failure was those two `saluki-io`
+  tests, so no recorded gate ran it that way. The script's comment blames slow root-certificate loading; the failures
+  are the trust-settings reads. Linux CI is unaffected (`rustls-native-certs` reads PEM files there), and the macOS CI
+  jobs run outside a sandbox and ran these tests on `main`. Running outside the sandbox, or the optional `set_tls`
+  change, removes the need.
+- **Cold network tests.** `channel_stub` and `api` tests can time out on the first run of a freshly built binary under
+  full parallel load; rerun.
+- **`PROPTEST_CASES` is ignored** by tests that set `ProptestConfig::with_cases`, which most plan crate property tests
+  do. To run more cases, raise the count in the source temporarily.
+- **Measurements need an idle machine.** Above a load of about 4, legacy against itself fails its own tolerances.
+- **Disk.** Parallel work trees each build their own `target/` and fill the disk quickly. Remove a work tree's `target/`
+  when it finishes (`cargo clean --release` or `rm -rf target`), and build with `CARGO_INCREMENTAL=0`. When the disk
+  is full, the step of `make fmt` that installs or updates the nightly Rust (`ensure-rust-nightly`) fails; its
+  other steps can run directly (`cargo +nightly-2026-01-18 fmt`, `cargo autoinherit`, `cargo sort --workspace .`).
+- **`make check-features`** walks every `Cargo.toml` under the repository, including other sessions' work trees under
+  `.claude/worktrees/` (empty now) and `.git/pi-main-archive` (whose virtual manifest prints a harmless error). It then
+  checks each package once per tree that has it, and would fail on a package only another tree has. The stage 6 gate's
+  run passed; the stage 6 integration also ran `cargo hack --feature-powerset --package <p> check --tests` once per
+  package of this workspace.
+- **Vale.** `make check-docs` (a CI job) reports 51 errors at `b01049372e` with Vale 3.21.0: 12 in the specification,
+  which this branch adds, and 39 already on `main` (38 in `lib/datadog-agent/remote-config`, 1 in `panoramic`). The
+  gate therefore ran Vale on the changed paths only. Eleven of the specification's errors are spelling (such as
+  `injective`, `unflushed`, and `syntaxes`) that entries in the Vale vocabulary
+  (`.vale/styles/config/vocabularies/technical/accept.txt`) would clear without editing it; the twelfth,
+  `Google.LyHyphens` on `Exactly-once`, needs the author's edit or a rule exception.
+- **Release notes.** `reno` is not installed. Fragment suffixes came from `openssl rand -hex 8`, and fragments were
+  checked with `make check-release-notes` or `.venv/bin/python3 -I ci/tooling/release_notes.py check <note>` (the
+  system Python lacks PyYAML).
+- **Local ADP on macOS** (the demo launcher handles all of this): ADP needs a configuration file that exists, a
+  non-empty `api_key` and an explicit `hostname` in standalone mode, a readable IPC certificate
+  (`make create-dummy-ipc-cert`), and a writable log path (set `DD_DATA_PLANE_LOG_FILE` or
+  `DD_DISABLE_FILE_LOGGING=true`). DogStatsD binds 127.0.0.1, not `::1`; standalone mode never applies configuration
+  updates; `datadog-intake` binds `0.0.0.0:2049`.
+- **Agent tooling.** File writes by agents sometimes rewrote string literals starting with `"/` into a proxy URL;
+  `git grep gh.072103` finds any. None are in the tree at `b01049372e`.
+- **Session leftovers.** The working session registered a git work tree in its temporary directory
+  (`scratchpad/demo-wt`, detached at `b01049372e`) and wrote a `.claude/launch.json`, not tracked by git, that points
+  at that work tree's binaries and a scratch run directory. After the directory is deleted, run `git worktree prune`,
+  and delete or rewrite `.claude/launch.json`. Scratch-only material is lost with it: the stage 4 selection harness
+  (`selection_rounds.rs`), the demo screenshots and the headless-browser drivers that took them, a Python stand-in for
+  ADP's stage 5 side, and the review probes (every finding they reproduced has a regression test in the tree).
+
+## How the work was done
+
+- **Per stage:** the design first, as a section of the implementation design (stage 6 merged two drafts and reviewed
+  them before any code); then an interfaces step that fixes the types parts share; then three to six parts in parallel
+  work trees, each implemented, reviewed through several lenses, and fixed; then one integration step that merges,
+  regenerates golden files, runs [the stage gate](#the-stage-gate) and the demo check, and updates the design and
+  release notes; then one local commit. Stage 3, built as five serial parts, took about six hours; the
+  interfaces-first fan-out roughly halved later stages.
+- **Conventions:** semantic fixtures are hand-written expected results, independent of the code under test; golden
+  files only detect change. A restructured native component keeps a frozen `#[cfg(test)]` copy of its pre-extraction
+  code (`reference.rs`), with kernel-against-reference property tests. Every fix was mutation-checked by hand:
+  introduce the bug, see a test fail, revert. Property tests are named `property_test_*` and run in release. Test seams
+  live behind `#[cfg(test)]` or `test-util`. `saluki-core` stays free of metric and Datadog knowledge. The
+  specification is never edited; refinements become proposed amendments.
+- **Practice:** keep a short orientation brief so parts need not read every earlier note; start the next stage's
+  independent parts on the last committed base; run focused tests while iterating and the full gate only at
+  integration; commit locally and unsigned; leave `architecture-experiment/`, which git does not track, alone.
